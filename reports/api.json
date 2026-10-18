@@ -157263,7 +157263,15 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Create a new commit from the current index. Resolves author/committer from\noptions or "
+										"text": "Create a new commit from the current index. Takes the index lock, updates the\nindex's "
+									},
+									{
+										"kind": "code",
+										"text": "`TREE`"
+									},
+									{
+										"kind": "text",
+										"text": " cache and writes the index back when that changed it, builds the\ncommit object from the resulting tree, and updates HEAD's target ref (or detached\nHEAD itself). Resolves author/committer from options or "
 									},
 									{
 										"kind": "code",
@@ -157279,7 +157287,31 @@
 									},
 									{
 										"kind": "text",
-										"text": ", writes a tree from the index, builds the\ncommit object, and updates HEAD's target ref (or detached HEAD itself).\n\nThrows "
+										"text": ".\nIntent-to-add entries are left out of the tree.\n\nThrows "
+									},
+									{
+										"kind": "code",
+										"text": "`RESOURCE_LOCKED`"
+									},
+									{
+										"kind": "text",
+										"text": " when the index is locked and "
+									},
+									{
+										"kind": "code",
+										"text": "`MERGE_HAS_CONFLICTS`"
+									},
+									{
+										"kind": "text",
+										"text": " for\nan unmerged index. The remaining refusals fire after the index write, so the\nupdated "
+									},
+									{
+										"kind": "code",
+										"text": "`TREE`"
+									},
+									{
+										"kind": "text",
+										"text": " stays: "
 									},
 									{
 										"kind": "code",
@@ -157287,7 +157319,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " when the new tree matches the parent's tree and\n"
+										"text": " when the new tree matches the parent's\ntree and "
 									},
 									{
 										"kind": "code",
@@ -157303,7 +157335,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " when the message is blank\nand "
+										"text": " when the message is\nblank and "
 									},
 									{
 										"kind": "code",

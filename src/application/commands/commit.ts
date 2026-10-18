@@ -1,13 +1,9 @@
-import type { IndexEntry } from '../../domain/git-index/index.js';
-import { indexPathOfBytes, splitAtSlash } from '../../domain/git-index/index-path-key.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import { decodeEscapingInvalid } from '../../domain/objects/encoding.js';
-import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
+import type { AuthorIdentity, ObjectId } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
-import { treeEntry } from '../../domain/objects/tree.js';
 import {
   commitCherryPickReflog,
   commitInitialReflog,
@@ -29,17 +25,14 @@ import {
   assertValidBooleanConfig,
   assertValidPromisorRemoteConfig,
 } from '../primitives/internal/boolean-config-guard.js';
-import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { reduceHeads } from '../primitives/merge-base.js';
-import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { writeTree } from '../primitives/write-tree.js';
 import { removeCommittedState } from './internal/branch-state.js';
 import { readCherryPickHead } from './internal/cherry-pick-state.js';
 import {
@@ -62,7 +55,7 @@ import {
 import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { readRevertHead } from './internal/revert-state.js';
 import { signCommitData } from './internal/sign-request.js';
-import { rejectUnmergedIndex } from './internal/unmerged-index.js';
+import { writeIndexCacheTree } from './internal/write-index-cache-tree.js';
 import { applyMergeAutostash } from './stash.js';
 
 export interface CommitOptions {
@@ -91,13 +84,17 @@ export interface CommitResult {
 }
 
 /**
- * Create a new commit from the current index. Resolves author/committer from
- * options or `.git/config` `[user]`, writes a tree from the index, builds the
- * commit object, and updates HEAD's target ref (or detached HEAD itself).
+ * Create a new commit from the current index. Takes the index lock, updates the
+ * index's `TREE` cache and writes the index back when that changed it, builds the
+ * commit object from the resulting tree, and updates HEAD's target ref (or detached
+ * HEAD itself). Resolves author/committer from options or `.git/config` `[user]`.
+ * Intent-to-add entries are left out of the tree.
  *
- * Throws `NOTHING_TO_COMMIT` when the new tree matches the parent's tree and
- * `allowEmpty` is not set; `EMPTY_COMMIT_MESSAGE` when the message is blank
- * and `allowEmptyMessage` is not set.
+ * Throws `RESOURCE_LOCKED` when the index is locked and `MERGE_HAS_CONFLICTS` for
+ * an unmerged index. The remaining refusals fire after the index write, so the
+ * updated `TREE` stays: `NOTHING_TO_COMMIT` when the new tree matches the parent's
+ * tree and `allowEmpty` is not set; `EMPTY_COMMIT_MESSAGE` when the message is
+ * blank and `allowEmptyMessage` is not set.
  */
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
@@ -118,6 +115,9 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // pre-commit runs before the index is read, so a hook that re-stages files
   // (e.g. a formatter) is reflected in the committed tree.
   await runPreCommitHook(ctx, noVerify);
+  // git's prepare_index: the index is updated and written before the message, identity and
+  // emptiness checks, so a commit refused afterwards still leaves the refreshed TREE behind.
+  const treeId = await writeIndexCacheTree(ctx);
   // A resolution commit for a pending merge / cherry-pick / revert reuses MERGE_MSG as its draft.
   const resolvingPending =
     mergeHead !== undefined || cherryPickHead !== undefined || revertHead !== undefined;
@@ -136,9 +136,6 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   }
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
   const committer = resolveCommitter(buildCommitterInput(opts.committer, author, configUser));
-  const index = await readIndex(ctx);
-  rejectUnmergedIndex(index.entries);
-  const treeId = await buildTreeFromIndex(ctx, index.entries);
   const head = await readHeadRaw(ctx);
   const parentId = head.kind === 'symbolic' ? await tryResolve(ctx, head.target) : head.id;
   const parents = await buildParents(ctx, parentId, markers.mergeHeads);
@@ -385,83 +382,4 @@ const getParentTree = async (ctx: Context, parentId: ObjectId): Promise<ObjectId
   const obj = await readObject(ctx, parentId);
   if (obj.type !== 'commit') return zeroOid(ctx.hashConfig);
   return obj.data.tree;
-};
-
-// A tree entry name: a UTF-8 string, or the raw bytes of a name that is not valid UTF-8.
-type TreeName = string | Uint8Array;
-
-interface SubtreeNode {
-  readonly files: Map<
-    string,
-    { readonly name: TreeName; readonly id: ObjectId; readonly mode: string }
-  >;
-  readonly subdirs: Map<string, { readonly name: TreeName; readonly node: SubtreeNode }>;
-}
-
-const componentsOf = (entry: IndexEntry): ReadonlyArray<TreeName> =>
-  entry.pathBytes === undefined
-    ? entry.path.split('/')
-    : splitAtSlash(entry.pathBytes).map((bytes) => {
-        const component = indexPathOfBytes(bytes);
-        return component.pathBytes ?? component.path;
-      });
-
-const componentKey = (name: TreeName): string =>
-  typeof name === 'string' ? name : decodeEscapingInvalid(name);
-
-const buildTreeFromIndex = async (
-  ctx: Context,
-  entries: ReadonlyArray<IndexEntry>,
-): Promise<ObjectId> => {
-  const root: SubtreeNode = { files: new Map(), subdirs: new Map() };
-  for (const entry of entries) {
-    insertEntry(root, componentsOf(entry), entry);
-  }
-  return writeSubtree(ctx, root);
-};
-
-const insertEntry = (
-  node: SubtreeNode,
-  parts: ReadonlyArray<TreeName>,
-  entry: IndexEntry,
-): void => {
-  if (parts.length === 1) {
-    const name = parts[0] as TreeName;
-    node.files.set(componentKey(name), { name, id: entry.id, mode: entry.mode });
-    return;
-  }
-  const [head, ...rest] = parts;
-  const name = head as TreeName;
-  const key = componentKey(name);
-  let child = node.subdirs.get(key);
-  if (child === undefined) {
-    child = { name, node: { files: new Map(), subdirs: new Map() } };
-    node.subdirs.set(key, child);
-  }
-  insertEntry(child.node, rest, entry);
-};
-
-const writeSubtree = async (ctx: Context, node: SubtreeNode): Promise<ObjectId> => {
-  const treeEntries: TreeEntry[] = [];
-  for (const leaf of node.files.values()) {
-    treeEntries.push(treeEntry(leaf.mode as TreeEntry['mode'], leaf.name, leaf.id));
-  }
-  // Subtrees at the same level are independent — write them in parallel,
-  // bounded by the ioBound policy.
-  const subdirs = await boundedMapFor(
-    ctx,
-    'ioBound',
-    Array.from(node.subdirs.values()),
-    async (child) => ({
-      name: child.name,
-      id: await writeSubtree(ctx, child.node),
-    }),
-  );
-  for (const { name, id } of subdirs) {
-    treeEntries.push(treeEntry('40000', name, id));
-  }
-  // Sorting is done by the domain serializer with the correct git tree comparator
-  // (directories sort as if their name ended with `/`); pre-sorting here would be
-  // both redundant and use the wrong ordering.
-  return writeTree(ctx, treeEntries);
 };

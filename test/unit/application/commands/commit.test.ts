@@ -5,13 +5,16 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
+import { carriedCacheTreeOf } from '../../../../src/domain/git-index/cache-tree-update.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
@@ -252,6 +255,50 @@ describe('commit', () => {
         expect(result.branch).toBe('refs/heads/main');
         const refContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
         expect(refContent.trim()).toBe(result.id);
+      });
+    });
+  });
+
+  describe('Given a commit that is refused after the index pass', () => {
+    const carriedRootOf = async (ctx: Context) =>
+      carriedCacheTreeOf((await readIndex(ctx)).extensions, ctx.hashConfig.digestLength);
+
+    describe('When the message is empty without allowEmptyMessage', () => {
+      it('Then it throws EMPTY_COMMIT_MESSAGE and the index carries the updated TREE', async () => {
+        // Arrange
+        const ctx = await seed({ 'a/x': 'x', top: 't' });
+        const sut = commit;
+
+        // Act
+        const attempt = sut(ctx, { message: '', author });
+
+        // Assert
+        await expectError(() => attempt, 'EMPTY_COMMIT_MESSAGE');
+        const carried = await carriedRootOf(ctx);
+        expect(carried?.entryCount).toBe(2);
+        expect(carried?.id).toBe(
+          await synthesizeTreeFromIndex(ctx, (await readIndex(ctx)).entries),
+        );
+      });
+    });
+
+    describe('When a stat-only re-add leaves nothing to commit', () => {
+      it('Then it throws NOTHING_TO_COMMIT and the index carries a fully valid TREE', async () => {
+        // Arrange
+        const ctx = await seed({ 'a/x': 'x', top: 't' });
+        await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top`, 't');
+        await add(ctx, ['top']);
+        const sut = commit;
+
+        // Act
+        const attempt = sut(ctx, { message: 'second', author });
+
+        // Assert
+        await expectError(() => attempt, 'NOTHING_TO_COMMIT');
+        const carried = await carriedRootOf(ctx);
+        expect(carried?.entryCount).toBe(2);
+        expect(carried?.children.map((child) => child.entryCount)).toEqual([1]);
       });
     });
   });
