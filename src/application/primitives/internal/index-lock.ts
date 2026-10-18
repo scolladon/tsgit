@@ -1,6 +1,10 @@
 import { TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
-import { invalidateCacheTree, serializeCacheTree } from '../../../domain/git-index/cache-tree.js';
+import {
+  invalidateCacheTree,
+  invalidateCacheTreeKeepingOids,
+  serializeCacheTree,
+} from '../../../domain/git-index/cache-tree.js';
 import { carriedCacheTreeOf } from '../../../domain/git-index/cache-tree-update.js';
 import {
   type CarryKind,
@@ -252,7 +256,10 @@ const repairedCacheTree = async (
   const carried = previous && carriedCacheTreeOf(previous.extensions, ctx.hashConfig.digestLength);
   const seed =
     previous && carried
-      ? invalidateCacheTree(carried, diffIndexEntries(previous.entries, entries).changedPaths)
+      ? invalidateCacheTreeKeepingOids(
+          carried,
+          diffIndexEntries(previous.entries, entries).changedPaths,
+        )
       : undefined;
   const { cacheTree } = await updateCacheTree(ctx, entries, seed, 'repair');
   return invalidateCacheTree(cacheTree, restagedPaths);

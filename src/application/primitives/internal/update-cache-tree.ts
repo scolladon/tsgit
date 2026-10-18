@@ -1,3 +1,4 @@
+import { toRepairedCacheTree } from '../../../domain/git-index/cache-tree-abort.js';
 import {
   type CacheTreePlan,
   type PlannedNode,
@@ -73,19 +74,24 @@ const withoutObjects = (node: CacheTreeEntry, missing: ReadonlySet<ObjectId>): C
   children: node.children.map((child) => withoutObjects(child, missing)),
 });
 
+interface SettledPlan {
+  readonly plan: CacheTreePlan;
+  readonly tree: CacheTreeEntry | undefined;
+}
+
 /** Plans until every topmost reused node exists; a missing one is invalidated and rebuilt in either mode. */
 const settlePlan = async (
   ctx: Context,
   limiter: ConcurrencyLimiter,
   entries: ReadonlyArray<IndexEntry>,
   carried: CacheTreeEntry | undefined,
-): Promise<CacheTreePlan> => {
+): Promise<SettledPlan> => {
   const present = new Set<ObjectId>();
   let tree = carried;
   for (;;) {
     const plan = planCacheTree(entries, tree);
     const missing = await missingAmong(ctx, limiter, plan, present);
-    if (missing.length === 0) return plan;
+    if (missing.length === 0) return { plan, tree };
     const ids = new Set(
       missing.map((index) => (plan.nodes[index] as PlannedNode).reused as ObjectId),
     );
@@ -224,10 +230,10 @@ export async function updateCacheTree(
   sink: TreeSink,
 ): Promise<WrittenCacheTree | RepairedCacheTree> {
   const limiter = limiterFor(ctx, 'ioBound');
-  const plan = await settlePlan(ctx, limiter, entries, carried);
+  const { plan, tree } = await settlePlan(ctx, limiter, entries, carried);
   const ids = await buildAll(ctx, limiter, plan, sink);
-  const cacheTree = toCacheTreeEntry(plan, ids);
-  return sink === 'write' ? { cacheTree, rootTree: ids[ROOT] as ObjectId } : { cacheTree };
+  if (sink === 'repair') return { cacheTree: toRepairedCacheTree(plan, ids, tree) };
+  return { cacheTree: toCacheTreeEntry(plan, ids), rootTree: ids[ROOT] as ObjectId };
 }
 
 const flatten = (root: CacheTreeEntry): CacheTreeEntry[] => {

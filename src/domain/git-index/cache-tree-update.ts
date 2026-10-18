@@ -17,6 +17,8 @@ export interface PlannedNode {
   readonly nameBytes: Uint8Array;
   readonly entryCount: number;
   readonly reused?: ObjectId;
+  /** The oid the carried node held before it was invalidated or outgrown. */
+  readonly previousId?: ObjectId;
   readonly invalid: boolean;
   readonly children: ReadonlyArray<number>;
 }
@@ -68,14 +70,22 @@ interface Drafts {
   readonly names: Uint8Array[];
   readonly counts: number[];
   readonly reused: (ObjectId | undefined)[];
+  readonly previous: (ObjectId | undefined)[];
   readonly invalid: boolean[];
   readonly children: number[][];
 }
 
-const addNode = (drafts: Drafts, name: Uint8Array, count: number, invalid: boolean): number => {
+const addNode = (
+  drafts: Drafts,
+  name: Uint8Array,
+  count: number,
+  invalid: boolean,
+  previous?: ObjectId,
+): number => {
   drafts.names.push(name);
   drafts.counts.push(count);
   drafts.reused.push(undefined);
+  drafts.previous.push(previous);
   drafts.invalid.push(invalid);
   drafts.children.push([]);
   return drafts.names.length - 1;
@@ -223,7 +233,7 @@ const planChild = (
   const { drafts, badBefore } = planning;
   const count = run.end - run.start;
   const invalid = (badBefore[run.end] as number) - (badBefore[run.start] as number) > 0;
-  const node = addNode(drafts, run.name, count, invalid);
+  const node = addNode(drafts, run.name, count, invalid, carried?.id);
   (drafts.children[parent.node] as number[]).push(node);
   const reused = reusableId(carried, count, invalid);
   if (carried !== undefined && reused !== undefined) {
@@ -250,7 +260,14 @@ const expand = (planning: Planning, region: Region): TreeBuild => {
 };
 
 const startPlanning = (entries: ReadonlyArray<IndexEntry>, carried: CacheTreeEntry | undefined) => {
-  const drafts: Drafts = { names: [], counts: [], reused: [], invalid: [], children: [] };
+  const drafts: Drafts = {
+    names: [],
+    counts: [],
+    reused: [],
+    previous: [],
+    invalid: [],
+    children: [],
+  };
   const badBefore = badEntriesBefore(entries);
   const invalid = (badBefore[entries.length] as number) > 0;
   addNode(drafts, new Uint8Array(0), entries.length, invalid);
@@ -285,16 +302,17 @@ export const planCacheTree = (
     nameBytes,
     entryCount: drafts.counts[i] as number,
     ...(drafts.reused[i] === undefined ? {} : { reused: drafts.reused[i] as ObjectId }),
+    ...(drafts.previous[i] === undefined ? {} : { previousId: drafts.previous[i] as ObjectId }),
     invalid: drafts.invalid[i] as boolean,
     children: drafts.children[i] as number[],
   }));
   return { nodes, builds: visited.reverse() };
 };
 
-export const toCacheTreeEntry = (
+export const cacheTreeNodesOf = (
   plan: CacheTreePlan,
   ids: ReadonlyArray<ObjectId | undefined>,
-): CacheTreeEntry => {
+): CacheTreeEntry[] => {
   const entries: CacheTreeEntry[] = [];
   for (let i = plan.nodes.length - 1; i >= 0; i--) {
     const node = plan.nodes[i] as PlannedNode;
@@ -309,5 +327,10 @@ export const toCacheTreeEntry = (
       children: node.children.map((child) => entries[child] as CacheTreeEntry),
     };
   }
-  return entries[ROOT] as CacheTreeEntry;
+  return entries;
 };
+
+export const toCacheTreeEntry = (
+  plan: CacheTreePlan,
+  ids: ReadonlyArray<ObjectId | undefined>,
+): CacheTreeEntry => cacheTreeNodesOf(plan, ids)[ROOT] as CacheTreeEntry;

@@ -134,9 +134,28 @@ const buildMixedBase = async (dir: string, format: Format): Promise<void> => {
   await settle(dir);
 };
 
+const buildAbcBase = async (dir: string, format: Format, withD: boolean): Promise<void> => {
+  runGit(['init', '-q', '-b', 'main', `--object-format=${format}`, dir]);
+  git(dir, 'config', 'user.name', 'Ada');
+  git(dir, 'config', 'user.email', 'ada@example.com');
+  git(dir, 'config', 'gc.auto', '0');
+  git(dir, 'config', 'commit.gpgsign', 'false');
+  await write(dir, 'a/x', 'x\n');
+  await write(dir, 'b/f', 'b\n');
+  await write(dir, 'c/f', 'c\n');
+  if (withD) await write(dir, 'd/f', 'd\n');
+  commitAll(dir, 'base');
+  git(dir, 'checkout', '-q', '-b', 'other');
+  await write(dir, 'b/f', 'other\n');
+  if (withD) git(dir, 'rm', '-q', 'd/f');
+  commitAll(dir, 'other');
+  git(dir, 'checkout', '-q', 'main');
+  await settle(dir);
+};
+
 interface Row {
   readonly title: string;
-  readonly base?: 'unpack' | 'mixed';
+  readonly base?: 'unpack' | 'mixed' | 'abc' | 'abcd';
   readonly prepare?: (dir: string) => Promise<void>;
   readonly git: (dir: string) => void;
   readonly tsgit: (ctx: Context) => Promise<unknown>;
@@ -347,10 +366,28 @@ const GUARDS: ReadonlyArray<Row> = [
     git: lenient('merge', 'side'),
     tsgit: (c) => mergeRun(c, { rev: 'side' }),
   },
+  {
+    title: 'checkout other above a staged new directory a/new that has no tree',
+    base: 'abc',
+    prepare: (dir) => restage(dir, 'a/new/f', 'n\n'),
+    git: ok('checkout', '-q', 'other'),
+    tsgit: (c) => checkout(c, { rev: 'other' }),
+  },
+  {
+    title: 'checkout other above a staged a/new, with d deleted by the target',
+    base: 'abcd',
+    prepare: (dir) => restage(dir, 'a/new/f', 'n\n'),
+    git: ok('checkout', '-q', 'other'),
+    tsgit: (c) => checkout(c, { rev: 'other' }),
+  },
 ];
 
-const buildBase = (row: Row, dir: string, format: Format): Promise<void> =>
-  row.base === 'mixed' ? buildMixedBase(dir, format) : buildUnpackBase(dir, format);
+const buildBase = (row: Row, dir: string, format: Format): Promise<void> => {
+  if (row.base === 'mixed') return buildMixedBase(dir, format);
+  if (row.base === 'abc' || row.base === 'abcd')
+    return buildAbcBase(dir, format, row.base === 'abcd');
+  return buildUnpackBase(dir, format);
+};
 
 const indexTreeOf = (row: Row, dir: string, format: Format): Promise<Uint8Array | undefined> =>
   treeBytesOf(

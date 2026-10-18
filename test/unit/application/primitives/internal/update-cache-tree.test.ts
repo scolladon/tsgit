@@ -96,6 +96,43 @@ describe('updateCacheTree', () => {
     });
   });
 
+  describe('Given a new directory a/new whose tree cannot be repaired and no earlier oid', () => {
+    const setup = async (stored: string[]) => {
+      const ctx = createMemoryContext();
+      const { cacheTree } = await updateCacheTree(ctx, entriesOf(...stored), undefined, 'write');
+      const seed = invalidateCacheTree(cacheTree, entriesOf('a/new/g', 'b/f'));
+      return { ctx, seed };
+    };
+
+    describe('When repairing', () => {
+      it('Then the later sibling b is left invalid while the untouched c stays valid', async () => {
+        // Arrange
+        const { ctx, seed } = await setup(['a/x', 'b/f', 'c/f']);
+        const entries = entriesOf('a/new/g', 'a/x', 'b/f', 'c/f');
+        // Act
+        const result = await updateCacheTree(ctx, entries, seed, 'repair');
+        // Assert
+        expect(result.cacheTree.entryCount).toBe(-1);
+        expect(childNamed(result.cacheTree, 'a').entryCount).toBe(-1);
+        expect(childNamed(childNamed(result.cacheTree, 'a'), 'new').entryCount).toBe(-1);
+        expect(childNamed(result.cacheTree, 'b').entryCount).toBe(-1);
+        expect(childNamed(result.cacheTree, 'c').entryCount).toBe(1);
+      });
+
+      it('Then a carried directory the index no longer has is kept', async () => {
+        // Arrange
+        const { ctx, seed } = await setup(['a/x', 'b/f', 'c/f', 'd/f']);
+        const entries = entriesOf('a/new/g', 'a/x', 'b/f', 'c/f');
+        const invalidated = invalidateCacheTree(seed, entriesOf('d/f'));
+        // Act
+        const result = await updateCacheTree(ctx, entries, invalidated, 'repair');
+        // Assert
+        expect(result.cacheTree.subtreeCount).toBe(4);
+        expect(childNamed(result.cacheTree, 'd').entryCount).toBe(-1);
+      });
+    });
+  });
+
   describe('Given entries whose trees all exist', () => {
     describe('When repairing', () => {
       it('Then the tree is fully valid and the ids equal the written ones', async () => {
