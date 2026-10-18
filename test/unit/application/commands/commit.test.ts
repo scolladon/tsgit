@@ -30,6 +30,7 @@ import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { gpgSignerStub, stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
+import { seedIndex } from './add-index-fixtures.js';
 import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -946,6 +947,43 @@ describe('commit — hooks', () => {
 
         // Assert — aborted before the branch ref was created.
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a pre-commit hook that leaves the index unmerged', () => {
+    describe('When commit', () => {
+      it('Then it refuses with MERGE_HAS_CONFLICTS and HEAD does not move', async () => {
+        // Arrange
+        let ctx!: Context;
+        const runner: HookRunner = {
+          run: async (request) => {
+            if (request.name === 'pre-commit') {
+              await seedIndex(ctx, [
+                { path: 'a.txt', text: 'base', stage: 1 },
+                { path: 'a.txt', text: 'ours', stage: 2 },
+              ]);
+            }
+            return { kind: 'ran', exitCode: 0, stdout: '', stderr: '' };
+          },
+        };
+        ctx = createMemoryContext({ hooks: runner });
+        await seedHooked(ctx);
+        const first = await commit(ctx, { message: 'first', author, noVerify: true });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'changed');
+        await add(ctx, ['a.txt']);
+        const sut = commit;
+
+        // Act
+        const error = await expectError(
+          () => sut(ctx, { message: 'second', author }),
+          'MERGE_HAS_CONFLICTS',
+        );
+
+        // Assert
+        expect(error.data).toEqual({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['a.txt'] });
+        const head = await getRefStore(ctx).resolveDirect('refs/heads/main' as RefName);
+        expect(head).toEqual({ kind: 'direct', id: first.id });
       });
     });
   });
