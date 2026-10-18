@@ -153,6 +153,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ),
     filenameProbe: nodeFilenameProbe,
     windowsPathSyntax: nativePolicy.windowsSyntax,
+    windowsIndexPaths: nativePolicy.windowsSyntax,
   };
   return createContext(parts);
 }

@@ -32,11 +32,12 @@ import {
   pathBytesOf,
   viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
 import { emptyPathspec } from '../../domain/index.js';
 import { encode, wellFormed } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -134,7 +135,7 @@ export const mv = async (
     assertNoTargetCollision(planned);
     const moved = plannedMoves(planned);
     if (opts.dryRun === true) return { moved, skipped };
-    applyToIndex(byPath, planned);
+    applyToIndex(indexPathRulesOf(ctx), byPath, planned);
     for (const item of planned) {
       await renameInWorkingTree(ctx, item.source, item.target);
     }
@@ -334,13 +335,14 @@ const plannedMoves = (planned: ReadonlyArray<PlanItem>): ReadonlyArray<MvMove> =
 };
 
 const applyToIndex = (
+  pathRules: IndexPathRules,
   byPath: Map<IndexPathKey, IndexEntry>,
   planned: ReadonlyArray<PlanItem>,
 ): void => {
   for (const item of planned) {
     for (const entry of item.entries) {
       const moved = withPath(entry, { path: repath(entry, item.source, item.target) });
-      validateIndexPath(moved.path, NO_PARSER_OFFSET, moved.mode);
+      pathRules.validateIndexPath(moved.path, NO_PARSER_OFFSET, moved.mode);
       byPath.delete(indexPathKey(entry));
       byPath.set(indexPathKey(moved), moved);
     }

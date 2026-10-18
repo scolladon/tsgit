@@ -27,7 +27,7 @@ import {
   isLossy,
   keyOfPath,
 } from '../../domain/git-index/index-path-key.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import { NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
 import {
   type ResolveUndoRecord,
   resolveUndoRecordOf,
@@ -62,6 +62,7 @@ import { type ConversionRoute, convertToGit } from '../primitives/internal/conve
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import type { CommitOptions, IndexLock } from '../primitives/internal/index-lock.js';
+import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -833,7 +834,7 @@ const renormalizeOne = async (
     throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
   const mode: FileMode = deriveWorkingMode(fresh);
-  validateIndexPath(path, NO_PARSER_OFFSET, mode);
+  indexPathRulesOf(ctx).validateIndexPath(path, NO_PARSER_OFFSET, mode);
   const { id } = await writeCleanedBlob(ctx, path, fresh, scope, previous, 'renormalize');
   return indexEntryFromStat(fresh, mode, id, path);
 };
@@ -1267,7 +1268,7 @@ const stageFromStat = async (
     throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
   const mode: FileMode = deriveWorkingMode(fresh);
-  validateIndexPath(path, NO_PARSER_OFFSET, mode);
+  indexPathRulesOf(ctx).validateIndexPath(path, NO_PARSER_OFFSET, mode);
   const { id, notice } = await writeCleanedBlob(ctx, path, fresh, scope, previous, 'write');
   const entry = indexEntryFromStat(fresh, mode, id, path);
   return notice === undefined ? { entry } : { entry, notice };

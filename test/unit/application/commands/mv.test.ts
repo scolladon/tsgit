@@ -923,6 +923,47 @@ describe('mv re-validating the moved path', () => {
   });
 });
 
+describe('mv re-validating a tracked directory member', () => {
+  describe('Given a tracked directory d holding x\\y', () => {
+    describe('When mv d e runs under Windows path syntax', () => {
+      it('Then it rejects with the backslash reason and nothing moves', async () => {
+        // Arrange
+        const ctx = await seedRows({ 'd/x\\y': 'y' }, [{ path: 'd/x\\y' }]);
+        const before = await indexView(ctx);
+        const sut = mv;
+
+        // Act
+        const error = await captureError(() =>
+          sut({ ...ctx, windowsPathSyntax: true }, ['d'], 'e'),
+        );
+
+        // Assert
+        expect(error?.data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: 'backslash rejected under Windows path syntax',
+        });
+        expect(await indexView(ctx)).toEqual(before);
+        expect(await exists(ctx, 'd/x\\y')).toBe(true);
+        expect(await exists(ctx, 'e')).toBe(false);
+      });
+    });
+
+    describe('When mv d e runs under POSIX path syntax', () => {
+      it('Then it resolves and the index lists e/x\\y', async () => {
+        // Arrange
+        const ctx = await seedRows({ 'd/x\\y': 'y' }, [{ path: 'd/x\\y' }]);
+        const sut = mv;
+
+        // Act
+        await sut(ctx, ['d'], 'e');
+
+        // Assert
+        expect((await indexView(ctx)).map(([path]) => path)).toEqual(['e/x\\y']);
+      });
+    });
+  });
+});
+
 describe('mv on a directory holding a lossy member', () => {
   const seedMember = (): Promise<Context> =>
     seedRows({ 'd/y': 'y' }, [{ path: 'd/y' }, { path: 'd/�', bytes: [0x64, 0x2f, 0xff] }]);

@@ -2371,6 +2371,80 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given an add entry x\\y', () => {
+    const BACKSLASH_REASON = 'backslash rejected under Windows path syntax';
+
+    describe('When applyChangeset runs under Windows path syntax', () => {
+      it('Then throws INVALID_INDEX_ENTRY with the backslash reason and writes nothing', async () => {
+        // Arrange
+        const seeded = await buildSeededContext();
+        const ctx = { ...seeded, windowsPathSyntax: true };
+        const id = await writeBlob(ctx, new TextEncoder().encode('hostile'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('x\\y', id)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toStrictEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: BACKSLASH_REASON,
+        });
+        expect(await ctx.fs.exists(`${WORKDIR}/x\\y`)).toBe(false);
+      });
+    });
+
+    describe('When applyChangeset runs under POSIX path syntax', () => {
+      it('Then writes the file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('plain'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeAdd('x\\y', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/x\\y`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a delete entry x\\y from a parsed index', () => {
+    describe('When applyChangeset runs under Windows path syntax', () => {
+      it('Then it removes the file without verifying the path', async () => {
+        // Arrange
+        const seeded = await buildSeededContext();
+        const ctx = { ...seeded, windowsPathSyntax: true };
+        const bytes = new TextEncoder().encode('tracked');
+        const id = await writeBlob(ctx, bytes);
+        await ctx.fs.write(`${WORKDIR}/x\\y`, bytes);
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('x\\y', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/x\\y`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a changeset whose LAST entry is hostile and earlier entries are safe', () => {
     describe('When applyChangeset runs', () => {
       it('Then refuses before writing any entry (checks nothing out)', async () => {

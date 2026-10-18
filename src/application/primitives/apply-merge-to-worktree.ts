@@ -46,6 +46,7 @@ import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenEscapedTree } from './flatten-tree.js';
 import { writeAutoMerge } from './internal/auto-merge-ref.js';
 import { limiterFor } from './internal/concurrency.js';
+import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { lazily } from './internal/lazily.js';
 import { forgetAfterLink } from './internal/link-first-wave.js';
 import { readMergeRenormalize, readUiDiffAlgorithm } from './internal/merge-rename-config.js';
@@ -451,7 +452,7 @@ const materialiseConflict = async (
   // Whole-set path gate, hoisted above the write wave: a hostile name
   // anywhere in the batch refuses before the FIRST byte is written, not
   // partway through it.
-  validateMergeWritePaths(merged.outcomes, merged.conflicts, changed);
+  validateMergeWritePaths(indexPathRulesOf(ctx), merged.outcomes, merged.conflicts, changed);
   await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
   const mergedBlobs = await mergedBlobEntries(ctx, merged.outcomes);
   await writeAutoMerge(

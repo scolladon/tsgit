@@ -790,6 +790,57 @@ describe('buildIndexFromTree', () => {
     });
   });
 
+  describe('Given a tree leaf named \\.git\\hooks\\post-checkout', () => {
+    const LEAF = '\\.git\\hooks\\post-checkout';
+    const arrange = async () => {
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'x');
+      const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, LEAF as FilePath, blobId)]);
+      return { ctx, treeId };
+    };
+
+    describe('When buildIndexFromTree runs under Windows path syntax', () => {
+      it('Then throws INVALID_INDEX_ENTRY with the backslash reason', async () => {
+        // Arrange
+        const { ctx, treeId } = await arrange();
+        const sut = buildIndexFromTree;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(
+            { ...ctx, windowsPathSyntax: true },
+            { targetTree: treeId, currentIndex: EMPTY_INDEX },
+          );
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: 'backslash rejected under Windows path syntax',
+        });
+      });
+    });
+
+    describe('When buildIndexFromTree runs under POSIX path syntax', () => {
+      it('Then resolves to one entry named after the leaf', async () => {
+        // Arrange
+        const { ctx, treeId } = await arrange();
+        const sut = buildIndexFromTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+
+        // Assert
+        expect(result.map((entry) => entry.path)).toEqual([LEAF]);
+      });
+    });
+  });
+
   describe('Given a tree holding raw \xff.txt and a literal U+FFFD .txt with donors for both', () => {
     const RAW = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
     const arrange = async () => {

@@ -9,7 +9,12 @@ import { MemoryHashService } from '../../../src/adapters/memory/memory-hash-serv
 import { MemoryHttpTransport } from '../../../src/adapters/memory/memory-http-transport.js';
 import { NodeFileSystem } from '../../../src/adapters/node/node-file-system.js';
 import { nativePolicy } from '../../../src/adapters/node/path-policy.js';
+import { indexPathRulesOf } from '../../../src/application/primitives/internal/index-path-rules.js';
 import { objectSources } from '../../../src/application/primitives/object-store.js';
+import {
+  posixIndexPathRules,
+  windowsIndexPathRules,
+} from '../../../src/domain/git-index/path-validator.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import type { ObjectContent } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
@@ -278,6 +283,50 @@ describe('openRepository host hooks', () => {
         ]);
         expect(hooks.makeConfinedFs).toHaveBeenCalledWith(['C:/host/objects']);
         await repo.dispose();
+      });
+    });
+  });
+
+  describe('Given a Windows node runtime opened over a caller-supplied fs', () => {
+    describe('When the repository context is built', () => {
+      it('Then git for Windows index path rules apply while the caller fs keeps POSIX path syntax', async () => {
+        // Arrange
+        const fallback = {
+          ...nodeFallback(hostHooks()),
+          windowsPathSyntax: true,
+          windowsIndexPaths: true,
+        };
+        const sut = await openRepository(
+          { cwd: REPO, fs: await userFsListing(DRIVE_OBJECTS) },
+          fallback,
+        );
+
+        // Act
+        const result = indexPathRulesOf(sut.ctx);
+
+        // Assert
+        expect(result).toBe(windowsIndexPathRules);
+        expect(sut.ctx.windowsPathSyntax).toBeUndefined();
+        await sut.dispose();
+      });
+    });
+  });
+
+  describe('Given a POSIX node runtime opened over a caller-supplied fs', () => {
+    describe('When the repository context is built', () => {
+      it('Then POSIX index path rules apply', async () => {
+        // Arrange
+        const sut = await openRepository(
+          { cwd: REPO, fs: await userFsListing(DRIVE_OBJECTS) },
+          nodeFallback(hostHooks()),
+        );
+
+        // Act
+        const result = indexPathRulesOf(sut.ctx);
+
+        // Assert
+        expect(result).toBe(posixIndexPathRules);
+        await sut.dispose();
       });
     });
   });

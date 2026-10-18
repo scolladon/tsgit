@@ -5,6 +5,7 @@ import {
   isDotGitAlias,
   isDotGitWalkEntry,
   verifyPath,
+  verifyWindowsPath,
 } from '../../../../src/domain/path/verify-path.js';
 
 // TAB (0x09) is accepted inside a component — verified by the matrix row below.
@@ -21,6 +22,72 @@ const PDF = String.fromCodePoint(0x202e);
 const INHIBIT_ARABIC_FORM_SHAPING = String.fromCodePoint(0x206a);
 const BOM = String.fromCodePoint(0xfeff);
 const WORD_JOINER = String.fromCodePoint(0x2060);
+
+const GIT_REFUSES = [
+  // baseline, already refused today
+  '.gitmodules',
+  '.GITMODULES',
+  'gitmod~1',
+  'gitmod~1 ',
+  'GI7EBA~1',
+  'x\\/gitmod~1',
+  'x/gitmod~1',
+  '.gitmodules/y',
+  '.GITMODULES/y',
+  '.gitmodules:s/y',
+  'gitmod~1:s/y',
+  `.gitmod${ZWNJ}ules/y`,
+  // alias right after a mid-component backslash
+  'x\\.gitmodules',
+  'x\\.GITMODULES',
+  'x\\gitmod~1',
+  'x\\GITMOD~1',
+  'x\\gitmod~4',
+  'x\\gi7eba~1',
+  'x\\.gitmodules.',
+  'x\\.gitmodules ',
+  'x\\.gitmodules. .',
+  'x\\gitmod~1.',
+  'x\\gitmod~1 ',
+  'x\\gitmod~1 . ',
+  'x\\.gitmodules:s',
+  'x\\gitmod~1:s',
+  'x\\.gitmodules:s\\y',
+  'a\\b\\.gitmodules',
+  'y/x\\gitmod~1',
+  'x\\\\gitmod~1',
+  '\\\\gitmod~1',
+  'x:\\gitmod~1',
+  'x\\g~123456',
+  // generic 8.3 fall-back short name
+  'gi7eb~12',
+  'g~123456',
+  '~1234567',
+] as const;
+
+const GIT_ADMITS = [
+  '.gitmodules\\y',
+  'x\\.gitmodules\\y',
+  'x\\gitmod~1\\y',
+  'x\\.gitmodules/y',
+  'x\\gitmod~1/y',
+  'x\\gitmod~5',
+  `x\\.gitmod${ZWNJ}ules`,
+  'gi7eba~10',
+  'gi7eb~1',
+  'x\\',
+  'xy.gitmodules',
+  // a backslash that opens its component is never tested
+  '\\gitmod~1',
+  'x/\\gitmod~1',
+  '\\.gitmodules',
+  // alias followed by '/'
+  'gitmod~1/y',
+  'gi7eba~1/y',
+  '.gitmodules./y',
+  'gitmod~1./y',
+  'xy/gitmod~1/z',
+] as const;
 
 describe('verifyPath', () => {
   describe("Given a name from git's pinned verify_path matrix", () => {
@@ -599,6 +666,122 @@ describe('verifyPath', () => {
       });
     });
   });
+
+  describe("Given a symlink path from git's pinned .gitmodules alias matrix", () => {
+    describe('When verified at 120000', () => {
+      it.each(GIT_REFUSES)('Then %j is refused as gitmodules-not-regular', (path) => {
+        // Arrange
+        const mode = FILE_MODE.SYMLINK;
+
+        // Act
+        const result = verifyPath(path, mode);
+
+        // Assert
+        expect(result).toBe('gitmodules-not-regular');
+      });
+
+      it.each(GIT_ADMITS)('Then %j is admitted', (path) => {
+        // Arrange
+        const mode = FILE_MODE.SYMLINK;
+
+        // Act
+        const result = verifyPath(path, mode);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+
+    describe('When verified at 100644', () => {
+      it.each([...GIT_REFUSES, ...GIT_ADMITS])('Then %j is admitted', (path) => {
+        // Arrange
+        const mode = FILE_MODE.REGULAR;
+
+        // Act
+        const result = verifyPath(path, mode);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe("Given a regular path whose component opens with a backslash, from git's pinned verify_path matrix", () => {
+    describe('When verified at 100644', () => {
+      it.each(['\\.git', '\\git~1', 'x/\\.git', '\\.git\\y', 'x/\\.git/y', '\\.git:s'])(
+        'Then %j is admitted',
+        (path) => {
+          // Arrange
+          const mode = FILE_MODE.REGULAR;
+
+          // Act
+          const result = verifyPath(path, mode);
+
+          // Assert
+          expect(result).toBeUndefined();
+        },
+      );
+
+      it.each(['\\\\.git', 'x\\.git'])('Then %j is refused as dotgit-alias', (path) => {
+        // Arrange
+        const mode = FILE_MODE.REGULAR;
+
+        // Act
+        const result = verifyPath(path, mode);
+
+        // Assert
+        expect(result).toBe('dotgit-alias');
+      });
+    });
+  });
+});
+
+describe('verifyWindowsPath', () => {
+  const ROWS = [
+    {
+      path: '\\.git\\hooks\\post-checkout',
+      mode: FILE_MODE.REGULAR,
+      posix: undefined,
+      windows: 'backslash',
+    },
+    { path: '\\.git\\config', mode: FILE_MODE.REGULAR, posix: undefined, windows: 'backslash' },
+    { path: 'x/\\.git\\hooks\\y', mode: FILE_MODE.REGULAR, posix: undefined, windows: 'backslash' },
+    { path: 'x\\y', mode: FILE_MODE.REGULAR, posix: undefined, windows: 'backslash' },
+    { path: 'a\\b\\c', mode: FILE_MODE.REGULAR, posix: undefined, windows: 'backslash' },
+    { path: '\\gitmod~1', mode: FILE_MODE.SYMLINK, posix: undefined, windows: 'backslash' },
+    { path: '\\.gitmodules', mode: FILE_MODE.SYMLINK, posix: undefined, windows: 'backslash' },
+    { path: 'x/\\gitmod~1', mode: FILE_MODE.SYMLINK, posix: undefined, windows: 'backslash' },
+    {
+      path: 'x\\gitmod~1',
+      mode: FILE_MODE.SYMLINK,
+      posix: 'gitmodules-not-regular',
+      windows: 'backslash',
+    },
+    { path: '../a\\b', mode: FILE_MODE.REGULAR, posix: 'dotdot-segment', windows: 'backslash' },
+    { path: 'a/b', mode: FILE_MODE.REGULAR, posix: undefined, windows: undefined },
+    { path: 'gitmod~1/y', mode: FILE_MODE.SYMLINK, posix: undefined, windows: undefined },
+    { path: '.git/x', mode: FILE_MODE.REGULAR, posix: 'dotgit-alias', windows: 'dotgit-alias' },
+  ] as const;
+
+  describe('Given a path from the git for Windows matrix', () => {
+    describe('When verified under each path syntax', () => {
+      it.each(ROWS)(
+        'Then $path is $posix under POSIX and $windows under Windows',
+        ({ path, mode, posix, windows }) => {
+          // Arrange
+          const sut = verifyWindowsPath;
+
+          // Act
+          const posixResult = verifyPath(path, mode);
+          const result = sut(path, mode);
+
+          // Assert
+          expect(posixResult).toBe(posix);
+          expect(result).toBe(windows);
+        },
+      );
+    });
+  });
 });
 
 describe('isDotGitAlias', () => {
@@ -725,6 +908,21 @@ describe('verifyPath on raw path bytes', () => {
       ),
     );
   const viewOf = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+  describe('Given a symlink path whose alias follows a mid-component backslash', () => {
+    describe('When verified with the raw bytes', () => {
+      it('Then x\\gitmod~1 is gitmodules-not-regular', () => {
+        // Arrange
+        const bytes = rawPath('x\\gitmod~1');
+
+        // Act
+        const result = verifyPath(viewOf(bytes), FILE_MODE.SYMLINK, bytes);
+
+        // Assert
+        expect(result).toBe('gitmodules-not-regular');
+      });
+    });
+  });
 
   describe('Given a backslash-led part followed by a dotgit lookalike in the same component', () => {
     describe('When verified with the raw bytes', () => {

@@ -26,7 +26,7 @@ import {
   indexPathOfEscaped,
   viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
-import { validateTreePath } from '../../domain/git-index/path-validator.js';
+import { posixIndexPathRules, validateTreePath } from '../../domain/git-index/path-validator.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ConflictType,
@@ -91,6 +91,7 @@ import {
 import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import {
   hasLinkMode,
   runLinkFirstWave,
@@ -1285,7 +1286,7 @@ const persistOctopusConflict = async (
   const outcomes = outcomesBetween(ours, result.worktree, new Set(marked.map((c) => c.path)));
   const changed = changedPaths(outcomes, result.conflicts, ours);
   await assertNothingOverwritten(ctx, changed);
-  validateMergeWritePaths(outcomes, result.conflicts, changed);
+  validateMergeWritePaths(indexPathRulesOf(ctx), outcomes, result.conflicts, changed);
   const matcher = await loadSparseMatcher(ctx);
   const merged = outcomesBetween(new Map(), result.merged, new Set());
   const remotes = commit.parents.filter((id) => id !== commit.ourId);
@@ -1658,7 +1659,7 @@ const refuseUnwritableConflicts = async (
   rejectUnsupportedConflicts(result.conflicts);
   const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
   await assertNothingOverwritten(ctx, changed);
-  validateMergeWritePaths(result.outcomes, result.conflicts, changed);
+  validateMergeWritePaths(indexPathRulesOf(ctx), result.outcomes, result.conflicts, changed);
   return changed;
 };
 
@@ -1876,7 +1877,8 @@ const conflictWave = (
   return {
     path: conflict.path,
     isLink: hasLinkMode(modes),
-    validate: () => validateConflictWritePaths(conflict),
+    // Stryker disable next-line ArrowFunction: equivalent — every conflict wave runs after the merge write gate, which already validated this conflict under the host's rules (a superset of the posix rules), so this re-check never throws.
+    validate: () => validateConflictWritePaths(posixIndexPathRules, conflict),
     needsDirectories: isWritablePath(conflict.path) && mode !== undefined,
     run: () => writeConflictToTree(ctx, conflict, writer, scanner),
   };
@@ -1954,7 +1956,7 @@ export const writeConflictToTree = async (
   // mode is derivable — the only mode-sensitive rule is the write-time-only
   // `.gitmodules`-symlink rejection, inapplicable when nothing is written.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  validateConflictWritePaths(conflict);
+  validateConflictWritePaths(posixIndexPathRules, conflict);
   if (recordsOwnPaths(conflict)) {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;

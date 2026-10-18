@@ -1,7 +1,8 @@
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../../domain/git-index/path-validator.js';
+import { NO_PARSER_OFFSET } from '../../../domain/git-index/path-validator.js';
 import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { deriveContext } from '../derive-context.js';
+import { indexPathRulesOf } from './index-path-rules.js';
 import { joinPath } from './join-working-tree-path.js';
 import { inheritedAcceptanceVerdicts } from './layout-verdict.js';
 import { requireWorkTree } from './repo-state.js';
@@ -71,7 +72,7 @@ export const deriveSubmoduleContext = async (
   // this path becomes the child repository's work directory. Checked here
   // rather than where the context is built, so a hostile name is refused
   // whether or not the submodule happens to be initialised locally.
-  validateIndexPath(treeRelPath, NO_PARSER_OFFSET, FILE_MODE.GITLINK);
+  indexPathRulesOf(ctx).validateIndexPath(treeRelPath, NO_PARSER_OFFSET, FILE_MODE.GITLINK);
   const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
   // Defense-in-depth: under the absorbed layout + safe-name rules, the child
   // gitDir strictly extends an ancestor (`/modules/<name>` is appended at every

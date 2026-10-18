@@ -316,6 +316,8 @@ export interface RuntimeFallback {
   readonly makeConfinedFs?: (roots: ReadonlyArray<string>) => FileSystem;
   /** Whether the runtime's filesystem reads paths the Windows way (see `Context`). */
   readonly windowsPathSyntax?: boolean;
+  /** Whether the runtime's host applies git for Windows' index path rules (see `Context`). */
+  readonly windowsIndexPaths?: boolean;
   /** The runtime's existence-only filename probe (see `Context`); absent on sandboxed runtimes. */
   readonly filenameProbe?: FilenameProbe;
 }
@@ -518,6 +520,7 @@ interface OptionalCtxInputs {
   readonly nativeEol: Context['nativeEol'];
   readonly cacheBudgets: Context['cacheBudgets'];
   readonly windowsPathSyntax: boolean | undefined;
+  readonly windowsIndexPaths: boolean | undefined;
   readonly filenameProbe: FilenameProbe | undefined;
 }
 
@@ -539,6 +542,9 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.cacheBudgets !== undefined ? { cacheBudgets: inputs.cacheBudgets } : {}),
   ...(inputs.windowsPathSyntax !== undefined
     ? { windowsPathSyntax: inputs.windowsPathSyntax }
+    : {}),
+  ...(inputs.windowsIndexPaths !== undefined
+    ? { windowsIndexPaths: inputs.windowsIndexPaths }
     : {}),
   ...(inputs.filenameProbe !== undefined ? { filenameProbe: inputs.filenameProbe } : {}),
 });
@@ -742,6 +748,7 @@ export const openRepository = async (
       nativeEol: fallback.nativeEol,
       cacheBudgets: fallback.cacheBudgets,
       windowsPathSyntax: hostHooks.windowsPathSyntax,
+      windowsIndexPaths: fallback.windowsIndexPaths,
       filenameProbe: hostHooks.filenameProbe,
     }),
     promisor,

@@ -27,7 +27,7 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -45,6 +45,7 @@ import { removeEmptyDirectory } from './internal/empty-directories.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { lstatIfReachable } from './internal/fs-probes.js';
 import { buildRepoIgnorePredicate } from './internal/ignore-evaluator.js';
+import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { lazily } from './internal/lazily.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
@@ -310,17 +311,16 @@ const evaluateDirtyPath = async (
 // The checkout path's tree->index boundary. Every `add`/`update` entry
 // carries a path sourced from a target-tree walk (`walkTree` never
 // validates entry names — that is git's `mktree` escape hatch), so each
-// one is re-checked here before `applyAllEntries` writes anything.
-// `delete`/`noop` entries are skipped: their path already passed this same
-// check when the CURRENT index was parsed (`index-parser.ts`).
-const validateChangesetEntry = (entry: ChangesetEntry): void => {
-  // Stryker disable next-line ConditionalExpression: equivalent — computeChangeset sources a `delete`/`noop` entry's `path` AND `mode` unchanged from the current index (`classify` in compute-changeset.ts), which index-parser.ts already ran through this same validateIndexPath(path, _, mode) at parse time; the throw decision depends only on (path, mode), not offset, so re-running it on an already-validated pair can never newly throw.
+// one is checked here before `applyAllEntries` writes anything.
+// `delete`/`noop` entries are skipped: git does not verify a path it
+// removes or leaves in place (unpack-trees verifies only entries it adds).
+const validateChangesetEntry = (pathRules: IndexPathRules, entry: ChangesetEntry): void => {
   if (entry.kind !== 'add' && entry.kind !== 'update') return;
-  validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
+  pathRules.validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
 };
 
-const validateChangesetPaths = (changeset: Changeset): void => {
-  for (const entry of changeset.entries) validateChangesetEntry(entry);
+const validateChangesetPaths = (pathRules: IndexPathRules, changeset: Changeset): void => {
+  for (const entry of changeset.entries) validateChangesetEntry(pathRules, entry);
 };
 
 // A lossy delete is never applied, and its decoded path may name a different, untracked file.
@@ -812,7 +812,7 @@ const applyChangesetInScope = async (
 ): Promise<ApplyChangesetResult> => {
   const { changeset, force, workdir } = opts;
 
-  validateChangesetPaths(changeset);
+  validateChangesetPaths(indexPathRulesOf(ctx), changeset);
 
   // Hoisted above the dirty check so a `noop`-heavy changeset never
   // pays a dirty probe — or a pool slot — for entries that carry no I/O.

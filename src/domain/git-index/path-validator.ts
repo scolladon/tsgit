@@ -1,16 +1,17 @@
 /**
  * Path-segment safety check for git index entries.
  *
- * Called from `parseIndex` before constructing the branded
- * `FilePath`. Downstream consumers can then trust that any `FilePath`
- * value obtained from a parsed `GitIndex` is free of `..`, `.`, empty
- * segments, and leading-slash absolute paths.
+ * The posix rules guard `parseIndex` and write-tree before the branded
+ * `FilePath` is constructed; the windows rules guard index writes under
+ * Windows path syntax. Downstream consumers can then trust that any
+ * `FilePath` they hold is free of `..`, `.`, empty segments, and
+ * leading-slash absolute paths.
  *
  * The throw is shaped as `INVALID_INDEX_ENTRY` so the parser's error
  * vocabulary stays consistent.
  */
 import type { FileMode, FilePath } from '../objects/index.js';
-import { type VerifyPathRejection, verifyPath } from '../path/verify-path.js';
+import { type VerifyPathRejection, verifyPath, verifyWindowsPath } from '../path/verify-path.js';
 import { invalidIndexEntry } from './error.js';
 import { indexPathOfEscaped } from './index-path-key.js';
 
@@ -31,8 +32,8 @@ const reasonFor = (segment: string): string => {
   return "'..' segment rejected";
 };
 
-// verifyPath owns every shape (absolute/empty/dot/dotdot), alias, and
-// gitmodules family reachable through validateIndexPath — the table stays
+// verifyPath and verifyWindowsPath own every shape (absolute/empty/dot/dotdot),
+// alias, backslash, and gitmodules family reachable through validateIndexPath — the table stays
 // total over VerifyPathRejection so the compiler enforces a distinct string
 // for every reason verifyPath can return at this call site.
 const VERIFY_PATH_REASON: Record<VerifyPathRejection, string> = {
@@ -45,6 +46,7 @@ const VERIFY_PATH_REASON: Record<VerifyPathRejection, string> = {
   'dotgit-ntfs-stream': "'.git' NTFS alternate data stream rejected",
   'dotgit-hfs-alias': "'.git' HFS+ ignorable-codepoint alias rejected",
   'gitmodules-not-regular': "'.gitmodules' must not be a symlink",
+  backslash: 'backslash rejected under Windows path syntax',
 };
 
 /**
@@ -65,52 +67,73 @@ const VERIFY_PATH_REASON: Record<VerifyPathRejection, string> = {
  * --add --cacheinfo` and a real `git add` of an on-disk file both STAGE
  * these bytes) and is deliberately NOT rejected here, so the parse boundary
  * and the write boundary (`add.ts`'s `stageFromStat`) agree with each other
- * and with canonical git.
+ * and with canonical git. The posix rules admit a backslash; the windows
+ * rules refuse it, as git for Windows does.
  */
 const unsafeReason = (path: string): string | undefined =>
   path.includes('\0') ? 'NUL byte rejected' : undefined;
 
-/**
- * Throws `INVALID_INDEX_ENTRY` if `path` is unsafe. The `offset` is the
- * byte offset of the failing entry's header — propagated into the error
- * `data` so the caller can localise the failure inside the index file.
- *
- * Rejection rules (every check at the input boundary so downstream
- * consumers can trust the branded `FilePath` value):
- *
- * - A NUL byte anywhere — not a git-parity rule but an index-FORMAT
- *  constraint (see `unsafeReason` above); real git never validates this
- *  byte because it can never reach `verify_path` in the first place.
- * - Leading `/` (absolute path); `..`, `.`, or empty segments; `.git`
- *  and its NTFS (`git~1`, `.git:`-stream) / HFS+ (ignorable-codepoint)
- *  aliases; and a `.gitmodules` component whose entry `mode` is a
- *  symlink (CVE-2018-11235 hardening) — all delegated to a single,
- *  git-faithful, first-component-wins pass over the path: `verifyPath`
- *  in `../path/verify-path.js`.
- *
- * The error `reason` deliberately does NOT echo the offending path
- * verbatim. Index entries can carry attacker-supplied paths up to
- * 0xfff bytes long (e.g., from a hostile remote's pack stream);
- * embedding the path in `reason` would amplify log volume and reflect
- * untrusted content.
- */
-export const validateIndexPath = (
-  path: string,
-  offset: number,
-  mode: FileMode,
-  pathBytes?: Uint8Array,
-): void => {
-  const reason = unsafeReason(path);
-  if (reason !== undefined) {
-    throw invalidIndexEntry(offset, reason);
-  }
-  const rejection = verifyPath(path, mode, pathBytes);
-  if (rejection !== undefined) {
-    throw invalidIndexEntry(offset, VERIFY_PATH_REASON[rejection]);
-  }
+type PathVerifier = typeof verifyPath;
+
+/** The index-write path check, under one platform's path syntax. */
+export interface IndexPathRules {
+  /**
+   * Throws `INVALID_INDEX_ENTRY` if `path` is unsafe. The `offset` is the
+   * byte offset of the failing entry's header — propagated into the error
+   * `data` so the caller can localise the failure inside the index file.
+   *
+   * Rejection rules (every check at the input boundary so downstream
+   * consumers can trust the branded `FilePath` value):
+   *
+   * - A NUL byte anywhere — not a git-parity rule but an index-FORMAT
+   *  constraint (see `unsafeReason` above); real git never validates this
+   *  byte because it can never reach `verify_path` in the first place.
+   * - Leading `/` (absolute path); `..`, `.`, or empty segments; `.git`
+   *  and its NTFS (`git~1`, `.git:`-stream) / HFS+ (ignorable-codepoint)
+   *  aliases; and a `.gitmodules` component whose entry `mode` is a
+   *  symlink (CVE-2018-11235 hardening) — all delegated to a single,
+   *  git-faithful, first-component-wins pass over the path: `verifyPath`
+   *  in `../path/verify-path.js`.
+   * - A backslash anywhere (windows rules only): git for Windows reads `\` as a
+   *  directory separator, so every one is refused.
+   *
+   * The error `reason` deliberately does NOT echo the offending path
+   * verbatim. Index entries can carry attacker-supplied paths up to
+   * 0xfff bytes long (e.g., from a hostile remote's pack stream);
+   * embedding the path in `reason` would amplify log volume and reflect
+   * untrusted content.
+   */
+  readonly validateIndexPath: (
+    path: string,
+    offset: number,
+    mode: FileMode,
+    pathBytes?: Uint8Array,
+  ) => void;
+  /** Same checks as `validateIndexPath` for a tree entry, which has no index-file offset. */
+  readonly validateTreePath: (path: FilePath, mode: FileMode) => void;
+}
+
+const indexPathRulesFor = (verify: PathVerifier): IndexPathRules => {
+  const validateIndexPath = (
+    path: string,
+    offset: number,
+    mode: FileMode,
+    pathBytes?: Uint8Array,
+  ): void => {
+    const reason = unsafeReason(path);
+    if (reason !== undefined) throw invalidIndexEntry(offset, reason);
+    const rejection = verify(path, mode, pathBytes);
+    if (rejection !== undefined) throw invalidIndexEntry(offset, VERIFY_PATH_REASON[rejection]);
+  };
+  const validateTreePath = (path: FilePath, mode: FileMode): void => {
+    const { path: view, pathBytes } = indexPathOfEscaped(path);
+    validateIndexPath(view, NO_PARSER_OFFSET, mode, pathBytes);
+  };
+  return { validateIndexPath, validateTreePath };
 };
 
-export const validateTreePath = (path: FilePath, mode: FileMode): void => {
-  const { path: view, pathBytes } = indexPathOfEscaped(path);
-  validateIndexPath(view, NO_PARSER_OFFSET, mode, pathBytes);
-};
+/** git's rules on POSIX: parse, write-tree and archive use them on every platform. */
+export const posixIndexPathRules = indexPathRulesFor(verifyPath);
+/** git for Windows' rules: index writes under Windows path syntax. */
+export const windowsIndexPathRules = indexPathRulesFor(verifyWindowsPath);
+export const { validateIndexPath, validateTreePath } = posixIndexPathRules;

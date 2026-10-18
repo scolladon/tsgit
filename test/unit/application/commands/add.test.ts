@@ -4115,3 +4115,48 @@ describe('add — a literal whose probe lstat fails for a reason other than a mi
     });
   });
 });
+
+describe('add renormalize re-validating index paths', () => {
+  describe('Given an index entry x\\y on disk', () => {
+    describe('When add renormalize "." runs under Windows path syntax', () => {
+      it('Then it rejects with the backslash reason and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'x\\y': CRLF });
+        await indexCrlfEntries(ctx, [{ path: 'x\\y' }]);
+        const before = await idsByPath(ctx);
+        const sut = add;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...ctx, windowsPathSyntax: true }, ['.'], RENORMALIZE);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: 'backslash rejected under Windows path syntax',
+        });
+        expect(await idsByPath(ctx)).toEqual(before);
+      });
+    });
+
+    describe('When add renormalize "." runs under POSIX path syntax', () => {
+      it('Then it resolves and keeps the entry', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'x\\y': CRLF });
+        await indexCrlfEntries(ctx, [{ path: 'x\\y' }]);
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(Object.keys(await idsByPath(ctx))).toContain('x\\y');
+      });
+    });
+  });
+});

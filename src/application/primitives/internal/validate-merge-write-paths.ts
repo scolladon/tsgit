@@ -1,4 +1,4 @@
-import { validateTreePath } from '../../../domain/git-index/path-validator.js';
+import type { IndexPathRules } from '../../../domain/git-index/path-validator.js';
 import {
   type MergeConflict,
   type MergeOutcome,
@@ -20,23 +20,27 @@ import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects
  * still validated for the same reason: the index entry is written for it
  * regardless of whether any working-tree bytes follow.
  *
+ * The caller passes its host's rules, so the gate refuses a `\` under Windows
+ * syntax before any write, removals included.
+ *
  * Shared by the `merge` command and the primitive that cherry-pick, revert,
  * rebase and stash apply go through; both write the same set the same way,
  * and a gate that drifted between them would be a gate on one surface only.
  */
 export const validateMergeWritePaths = (
+  pathRules: IndexPathRules,
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   changed: ReadonlySet<FilePath>,
 ): void => {
   for (const outcome of outcomes) {
     if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
-    validateTreePath(
+    pathRules.validateTreePath(
       outcome.path,
       outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
     );
   }
-  for (const conflict of conflicts) validateConflictWritePaths(conflict);
+  for (const conflict of conflicts) validateConflictWritePaths(pathRules, conflict);
 };
 
 /**
@@ -45,14 +49,21 @@ export const validateMergeWritePaths = (
  * must not taint another side's path (or the reverse). Only the
  * `.gitmodules`-symlink rule is mode-sensitive.
  */
-export const validateConflictWritePaths = (conflict: MergeConflict): void => {
+export const validateConflictWritePaths = (
+  pathRules: IndexPathRules,
+  conflict: MergeConflict,
+): void => {
   if (!recordsOwnPaths(conflict)) {
     const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-    validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
+    pathRules.validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
     return;
   }
-  validateTreePath(conflict.path, modeWrittenAt(conflict, conflict.path) ?? FILE_MODE.REGULAR);
-  for (const [path, mode] of sidePaths(conflict)) validateTreePath(path, mode ?? FILE_MODE.REGULAR);
+  pathRules.validateTreePath(
+    conflict.path,
+    modeWrittenAt(conflict, conflict.path) ?? FILE_MODE.REGULAR,
+  );
+  for (const [path, mode] of sidePaths(conflict))
+    pathRules.validateTreePath(path, mode ?? FILE_MODE.REGULAR);
 };
 
 type SidePath = readonly [FilePath, FileMode | undefined];

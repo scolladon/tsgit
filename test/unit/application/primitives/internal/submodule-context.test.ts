@@ -14,6 +14,44 @@ const seedHead = async (
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/modules/${name}/HEAD`, 'ref: refs/heads/main\n');
 };
 
+describe('Given a gitlink path x\\y', () => {
+  describe('When the submodule context is derived under Windows path syntax', () => {
+    it('Then it throws INVALID_INDEX_ENTRY with the backslash reason', async () => {
+      // Arrange
+      const ctx = { ...createMemoryContext(), windowsPathSyntax: true };
+
+      // Act
+      let caught: unknown;
+      try {
+        await deriveSubmoduleContext(ctx, 'm', 'x\\y' as FilePath);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as { data: unknown }).data).toStrictEqual({
+        code: 'INVALID_INDEX_ENTRY',
+        offset: -1,
+        reason: 'backslash rejected under Windows path syntax',
+      });
+    });
+  });
+
+  describe('When derived under POSIX path syntax', () => {
+    it('Then the child work directory holds the backslash verbatim', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedHead(ctx, 'm');
+
+      // Act
+      const result = await deriveSubmoduleContext(ctx, 'm', 'x\\y' as FilePath);
+
+      // Assert
+      expect(result?.layout.workDir).toBe(`${ctx.layout.workDir}/x\\y`);
+    });
+  });
+});
+
 describe('Given a superproject Context and a submodule name', () => {
   describe('When the absorbed gitdir is present', () => {
     it('Then a child Context targeting modules/<name> is returned', async () => {
