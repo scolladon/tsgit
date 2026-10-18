@@ -107,8 +107,10 @@ describe('planCacheTree properties', () => {
             const plan = planCacheTree(entries, undefined);
             const emitted = toCacheTreeEntry(plan, allIds(plan));
 
+            const sut = parseCacheTree;
+
             // Act
-            const result = parseCacheTree(serializeCacheTree(emitted, 20), 20);
+            const result = sut(serializeCacheTree(emitted, 20), 20);
 
             // Assert
             expect(result).toEqual(emitted);
@@ -126,8 +128,10 @@ describe('planCacheTree properties', () => {
             const plan = planCacheTree(entries, undefined);
             const carried = toCacheTreeEntry(plan, allIds(plan));
 
+            const sut = planCacheTree;
+
             // Act
-            const result = planCacheTree(entries, carried);
+            const result = sut(entries, carried);
 
             // Assert
             expect(result.builds).toEqual([]);
@@ -152,8 +156,10 @@ describe('planCacheTree properties', () => {
                 { path: changed?.path as never },
               ]);
 
+              const sut = planCacheTree;
+
               // Act
-              const result = planCacheTree(entries, carried);
+              const result = sut(entries, carried);
 
               // Assert
               const built = new Set(result.builds.map((b) => b.node));

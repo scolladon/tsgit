@@ -87,8 +87,9 @@ describe('updateCacheTree', () => {
         // Arrange
         const ctx = await setup();
         const writes = countWrites(ctx);
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entriesOf('a/f', 'c/g'), undefined, 'repair');
+        const result = await sut(ctx, entriesOf('a/f', 'c/g'), undefined, 'repair');
         // Assert
         expect(childNamed(result.cacheTree, 'a').entryCount).toBe(1);
         expect(childNamed(result.cacheTree, 'c').entryCount).toBe(-1);
@@ -111,8 +112,9 @@ describe('updateCacheTree', () => {
         // Arrange
         const { ctx, seed } = await setup(['a/x', 'b/f', 'c/f']);
         const entries = entriesOf('a/new/g', 'a/x', 'b/f', 'c/f');
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, seed, 'repair');
+        const result = await sut(ctx, entries, seed, 'repair');
         // Assert
         expect(result.cacheTree.entryCount).toBe(-1);
         expect(childNamed(result.cacheTree, 'a').entryCount).toBe(-1);
@@ -126,8 +128,9 @@ describe('updateCacheTree', () => {
         const { ctx, seed } = await setup(['a/x', 'b/f', 'c/f', 'd/f']);
         const entries = entriesOf('a/new/g', 'a/x', 'b/f', 'c/f');
         const invalidated = invalidateCacheTree(seed, entriesOf('d/f'));
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, invalidated, 'repair');
+        const result = await sut(ctx, entries, invalidated, 'repair');
         // Assert
         expect(result.cacheTree.subtreeCount).toBe(4);
         expect(childNamed(result.cacheTree, 'd').entryCount).toBe(-1);
@@ -140,8 +143,9 @@ describe('updateCacheTree', () => {
       it('Then the root is valid and names the empty tree', async () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, [], undefined, 'repair');
+        const result = await sut(ctx, [], undefined, 'repair');
         // Assert
         expect(result.cacheTree.entryCount).toBe(0);
         expect(result.cacheTree.id).toBe(emptyTreeOid(ctx.hashConfig));
@@ -161,8 +165,9 @@ describe('updateCacheTree', () => {
           id: emptyTreeOid(ctx.hashConfig),
           children: [],
         };
+        const sut = isCacheTreeFullyValid;
         // Act
-        const result = await isCacheTreeFullyValid(ctx, root);
+        const result = await sut(ctx, root);
         // Assert
         expect(result).toBe(true);
       });
@@ -182,9 +187,10 @@ describe('updateCacheTree', () => {
         const carried = { path: '', entryCount: 1, subtreeCount: 0, id: blob, children: [] };
         const entries = [{ ...entryAt('f'), id: blob }];
         let error: TsgitError | undefined;
+        const sut = updateCacheTree;
         // Act
         try {
-          await updateCacheTree(ctx, entries, carried, 'write');
+          await sut(ctx, entries, carried, 'write');
         } catch (e) {
           error = e as TsgitError;
         }
@@ -206,8 +212,9 @@ describe('updateCacheTree', () => {
         const ctx = createMemoryContext();
         const entries = entriesOf('a/x/f', 'b/f', 'top');
         const written = await updateCacheTree(ctx, entries, undefined, 'write');
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, undefined, 'repair');
+        const result = await sut(ctx, entries, undefined, 'repair');
         // Assert
         expect(result.cacheTree).toEqual(written.cacheTree);
       });
@@ -221,8 +228,9 @@ describe('updateCacheTree', () => {
         const ctx = createMemoryContext();
         const entries = [...entriesOf('a/f'), entryAt('d/f', { ...STAGE0_FLAGS, stage: 2 })];
         await updateCacheTree(ctx, entriesOf('a/f'), undefined, 'write');
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, undefined, 'repair');
+        const result = await sut(ctx, entries, undefined, 'repair');
         // Assert
         expect(childNamed(result.cacheTree, 'd').entryCount).toBe(-1);
         expect(result.cacheTree.entryCount).toBe(-1);
@@ -235,13 +243,9 @@ describe('updateCacheTree', () => {
       it('Then every node is valid, stored, and the root id is the written root tree', async () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(
-          ctx,
-          entriesOf('a/x/f', 'b/f', 'top'),
-          undefined,
-          'write',
-        );
+        const result = await sut(ctx, entriesOf('a/x/f', 'b/f', 'top'), undefined, 'write');
         // Assert
         const nodes = nodesOf(result.cacheTree);
         expect(result.cacheTree.entryCount).toBe(3);
@@ -262,8 +266,9 @@ describe('updateCacheTree', () => {
         const first = await updateCacheTree(ctx, entries, undefined, 'write');
         const carried = invalidateCacheTree(first.cacheTree, [entries[3] as IndexEntry]);
         vi.mocked(hasObject).mockClear();
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, carried, 'write');
+        const result = await sut(ctx, entries, carried, 'write');
         // Assert
         const probed = vi.mocked(hasObject).mock.calls.map(([, id]) => id);
         expect(probed).toEqual([childNamed(first.cacheTree, 'big').id]);
@@ -289,8 +294,9 @@ describe('updateCacheTree', () => {
           e.path === FilePath.from('a/x/f') ? { ...e, id: 'e'.repeat(40) as ObjectId } : e,
         );
         const carried = invalidateCacheTree(first.cacheTree, [changed[0] as IndexEntry]);
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, changed, carried, 'write');
+        const result = await sut(ctx, changed, carried, 'write');
         // Assert
         expect(touch).not.toHaveBeenCalled();
         expect(childNamed(result.cacheTree, 'b').id).toBe(childNamed(first.cacheTree, 'b').id);
@@ -310,8 +316,9 @@ describe('updateCacheTree', () => {
           children: [{ path: 'b', entryCount: 1, subtreeCount: 0, id: missing, children: [] }],
         };
         const entries = entriesOf('b/f', 'top');
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, { ...carried, entryCount: 9 }, 'write');
+        const result = await sut(ctx, entries, { ...carried, entryCount: 9 }, 'write');
         // Assert
         const rebuilt = childNamed(result.cacheTree, 'b');
         expect(rebuilt.id).not.toBe(missing);
@@ -326,12 +333,15 @@ describe('updateCacheTree', () => {
         // Arrange
         const ctx = createMemoryContext();
         const entries = [entryAt('a/f'), entryAt('a/n', ITA)];
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, undefined, 'write');
+        const result = await sut(ctx, entries, undefined, 'write');
         // Assert
         expect(result.cacheTree.entryCount).toBe(-1);
         expect(childNamed(result.cacheTree, 'a').entryCount).toBe(-1);
         expect(await hasObject(ctx, result.rootTree)).toBe(true);
+        const root = await readTree(ctx, result.rootTree);
+        expect(root.entries.map((e) => e.name)).toEqual(['a']);
       });
     });
   });
@@ -342,8 +352,9 @@ describe('updateCacheTree', () => {
         // Arrange
         const ctx = createMemoryContext();
         const entries = [entryAt('a/n', ITA), entryAt('top')];
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, undefined, 'write');
+        const result = await sut(ctx, entries, undefined, 'write');
         // Assert
         const root = await readTree(ctx, result.rootTree);
         expect(root.entries.map((e) => e.name)).toEqual(['top']);
@@ -357,13 +368,9 @@ describe('updateCacheTree', () => {
         // Arrange
         const base = createMemoryContext();
         const ctx = { ...base, config: { ...base.config, parallelism: { io: 1 } } };
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(
-          ctx,
-          entriesOf('a/b/c/f', 'a/g', 'h/f'),
-          undefined,
-          'write',
-        );
+        const result = await sut(ctx, entriesOf('a/b/c/f', 'a/g', 'h/f'), undefined, 'write');
         // Assert
         expect(nodesOf(result.cacheTree).every((n) => n.entryCount >= 0)).toBe(true);
       });
@@ -376,8 +383,9 @@ describe('updateCacheTree', () => {
         // Arrange
         const ctx = createMemoryContext({ algorithm: 'sha256' });
         const entries = entriesOf('a/f').map((e) => ({ ...e, id: 'f'.repeat(64) as ObjectId }));
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, undefined, 'write');
+        const result = await sut(ctx, entries, undefined, 'write');
         // Assert
         expect(result.rootTree).toMatch(/^[0-9a-f]{64}$/);
         expect(childNamed(result.cacheTree, 'a').id).toMatch(/^[0-9a-f]{64}$/);
@@ -407,8 +415,9 @@ describe('updateCacheTree', () => {
           ],
         };
         const writes = countWrites(ctx);
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, carried, 'repair');
+        const result = await sut(ctx, entries, carried, 'repair');
         // Assert
         expect(result.cacheTree.entryCount).toBe(-1);
         expect(writes()).toBe(0);
@@ -429,8 +438,9 @@ describe('isCacheTreeFullyValid', () => {
           undefined,
           'write',
         );
+        const sut = isCacheTreeFullyValid;
         // Act
-        const result = await isCacheTreeFullyValid(ctx, cacheTree);
+        const result = await sut(ctx, cacheTree);
         // Assert
         expect(result).toBe(true);
       });
@@ -487,8 +497,9 @@ describe('isCacheTreeFullyValid', () => {
       it('Then it is not valid', async () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = isCacheTreeFullyValid;
         // Act
-        const result = await isCacheTreeFullyValid(ctx, undefined);
+        const result = await sut(ctx, undefined);
         // Assert
         expect(result).toBe(false);
       });
@@ -509,8 +520,9 @@ describe('updateCacheTree with a missing reused subtree', () => {
         await deleteObject(ctx, childNamed(a, 'a2').id);
         const carried = invalidateCacheTree(first.cacheTree, [entries[2] as IndexEntry]);
         const writes = countWrites(ctx);
+        const sut = updateCacheTree;
         // Act
-        const result = await updateCacheTree(ctx, entries, carried, 'repair');
+        const result = await sut(ctx, entries, carried, 'repair');
         // Assert
         const repaired = childNamed(result.cacheTree, 'a');
         expect(repaired.entryCount).toBe(-1);
@@ -533,8 +545,9 @@ describe('updateCacheTree with a missing reused subtree', () => {
         await deleteObject(ctx, childNamed(first.cacheTree, 'a').id);
         const carried = invalidateCacheTree(first.cacheTree, [entries[2] as IndexEntry]);
         vi.mocked(hasObject).mockClear();
+        const sut = updateCacheTree;
         // Act
-        await updateCacheTree(ctx, entries, carried, 'write');
+        await sut(ctx, entries, carried, 'write');
         // Assert
         const siblingId = childNamed(first.cacheTree, 'b').id;
         const probes = vi.mocked(hasObject).mock.calls.filter(([, id]) => id === siblingId);
