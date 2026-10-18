@@ -56,6 +56,7 @@ import {
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { indexRuleEntries } from './internal/index-rule-entries.js';
+import { diffTreesPruned, isBelowShared } from './internal/pruned-tree-diff.js';
 import {
   type AttributeDirection,
   attributeBlobLookup,
@@ -301,6 +302,34 @@ const sparseMovers = (
   return new Set([...outside, ...hidden].map(indexPathKey));
 };
 
+interface HeadAgreement {
+  /** Paths whose index entry (or absence) the switch leaves alone. */
+  readonly agreed: (key: IndexPathKey) => boolean;
+}
+
+/** Applies git's two-way rule over HEAD, the target and the index, or refuses. */
+const agreementWithHead = async (
+  ctx: Context,
+  opts: MaterializeTreeOpts & { readonly headTree: ObjectId },
+  allTarget: ReadonlyArray<TargetEntry>,
+  stageZero: ReadonlyArray<IndexEntry>,
+): Promise<HeadAgreement> => {
+  const { oldFiles, sharedDirs } = await diffTreesPruned(ctx, opts.headTree, opts.targetTree);
+  const unshared = (e: IndexPath): boolean => !isBelowShared(sharedDirs, indexPathKey(e));
+  const carry = carryStagedChanges(
+    oldFiles,
+    allTarget.filter(unshared),
+    stageZero.filter(unshared),
+  );
+  if (carry.refused.length > 0) {
+    throw checkoutOverwriteDirty({
+      localChanges: [...carry.refused].sort(comparePaths),
+      untracked: [],
+    });
+  }
+  return { agreed: (key) => carry.kept.has(key) || isBelowShared(sharedDirs, key) };
+};
+
 /** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
 const carryHeadAgreement = async (
   ctx: Context,
@@ -308,30 +337,29 @@ const carryHeadAgreement = async (
   allTarget: ReadonlyArray<TargetEntry>,
 ): Promise<CarriedOpts> => {
   if (opts.headTree === undefined) return { opts, allTarget, carried: [] };
-  const head = await collectTargetEntries(ctx, opts.headTree);
   const stageZero = opts.currentIndex.entries.filter((e) => e.flags.stage === 0);
-  const carry = carryStagedChanges(head, allTarget, stageZero);
-  const { refused } = carry;
-  if (refused.length > 0) {
-    throw checkoutOverwriteDirty({ localChanges: [...refused].sort(comparePaths), untracked: [] });
-  }
+  const { agreed } = await agreementWithHead(
+    ctx,
+    { ...opts, headTree: opts.headTree },
+    allTarget,
+    stageZero,
+  );
   const movers = sparseMovers(opts.sparse, allTarget, stageZero);
-  const kept = new Set([...carry.kept].filter((key) => !movers.has(key)));
-  const carried = stageZero.filter((e) => kept.has(indexPathKey(e)));
-  const carriedSet = new Set(carried);
+  const isKept = (key: IndexPathKey): boolean => agreed(key) && !movers.has(key);
+  const carried = new Set(stageZero.filter((e) => isKept(indexPathKey(e))));
   return {
     opts: {
       ...opts,
       currentIndex: {
         ...opts.currentIndex,
-        entries: opts.currentIndex.entries.filter((e) => !carriedSet.has(e)),
+        entries: opts.currentIndex.entries.filter((e) => !carried.has(e)),
       },
     },
     allTarget: [
-      ...allTarget.filter((e) => !kept.has(indexPathKey(e))),
-      ...stagedOutsideTarget(stageZero, allTarget, carry.kept, movers),
+      ...allTarget.filter((e) => !isKept(indexPathKey(e))),
+      ...stagedOutsideTarget(stageZero, allTarget, agreed, movers),
     ],
-    carried,
+    carried: [...carried],
   };
 };
 
@@ -339,13 +367,13 @@ const carryHeadAgreement = async (
 const stagedOutsideTarget = (
   stageZero: ReadonlyArray<IndexEntry>,
   allTarget: ReadonlyArray<TargetEntry>,
-  kept: ReadonlySet<IndexPathKey>,
+  agreed: (key: IndexPathKey) => boolean,
   movers: ReadonlySet<IndexPathKey>,
 ): IndexEntry[] => {
   const inTarget = new Set(allTarget.map(indexPathKey));
   return stageZero.filter((e) => {
     const key = indexPathKey(e);
-    return kept.has(key) && movers.has(key) && !inTarget.has(key);
+    return movers.has(key) && agreed(key) && !inTarget.has(key);
   });
 };
 
