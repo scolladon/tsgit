@@ -381,6 +381,37 @@ describe('add', () => {
     });
   });
 
+  describe('Given a literal file that holds more bytes than its probed size', () => {
+    describe('When add', () => {
+      it('Then it refuses with OPERATION_ABORTED and stages nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'grown.txt': 'abcdef' });
+        const grownPath = `${ctx.layout.workDir}/grown.txt`;
+        const baseLstat = ctx.fs.lstat;
+        const fs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (p: string) => {
+              const real = await baseLstat(p);
+              return p === grownPath ? { ...real, size: 3 } : real;
+            };
+          },
+        });
+        const sut = add;
+
+        // Act
+        const err = await expectError(
+          () => sut({ ...ctx, fs }, ['grown.txt']),
+          'OPERATION_ABORTED',
+        );
+
+        // Assert
+        expect(err.data).toEqual({ code: 'OPERATION_ABORTED' });
+        expect((await readIndex(ctx)).entries).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a bare repo (no work tree)', () => {
     describe('When add', () => {
       it('Then throws WORK_TREE_REQUIRED with operation="add"', async () => {

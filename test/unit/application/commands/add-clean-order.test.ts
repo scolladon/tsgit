@@ -151,10 +151,10 @@ describe('Given a tracked modified b.txt that cannot be read and untracked a.txt
       );
       const unreadable = new Proxy(ctx.fs, {
         get(target, prop, receiver) {
-          if (prop !== 'read') return Reflect.get(target, prop, receiver);
-          return async (path: string) => {
+          if (prop !== 'readSlice') return Reflect.get(target, prop, receiver);
+          return async (path: string, offset: number, length: number) => {
             if (path.endsWith('/b.txt')) throw new Error('unreadable b.txt');
-            return target.read(path);
+            return target.readSlice(path, offset, length);
           };
         },
       });

@@ -1457,5 +1457,16 @@ const readContent = async (
   // layers on the wider `validateWorkingTreePath` — leading-colon and
   // `.git`-alias rejections meant for user-typed pathspec text) keeps
   // walked content from being rejected by a pathspec-only rule.
-  return ctx.fs.read(joinPath(workDir, path));
+  return readProbedBytes(ctx, joinPath(workDir, path), stat.size);
+};
+
+/** git's `index_core` reads the lstat'd size and no more: a longer file grew or was swapped since the probe. */
+const readProbedBytes = async (
+  ctx: Context,
+  fullPath: string,
+  probedSize: number,
+): Promise<Uint8Array> => {
+  const bytes = await ctx.fs.readSlice(fullPath, 0, probedSize + 1);
+  if (bytes.byteLength > probedSize) throw operationAborted();
+  return bytes;
 };
