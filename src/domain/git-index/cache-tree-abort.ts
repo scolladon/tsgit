@@ -75,9 +75,10 @@ const visitedBy = (
 ): Map<string, number> => {
   const ordered = inIndexOrder(plan, (plan.nodes[index] as PlannedNode).children);
   const cut = ordered.findIndex((child) => aborted.has(child));
-  const reached = cut === -1 ? ordered : ordered.slice(0, cut + 1);
   return new Map(
-    reached.map((child) => [keyOf((plan.nodes[child] as PlannedNode).nameBytes), child]),
+    ordered
+      .slice(0, cut + 1)
+      .map((child) => [keyOf((plan.nodes[child] as PlannedNode).nameBytes), child]),
   );
 };
 
