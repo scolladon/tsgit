@@ -141,7 +141,7 @@ const chunksOf = async function* (source: BlobSource): AsyncIterable<Uint8Array>
     yield* source.stream;
     return;
   }
-  if (source.content.length > 0) yield source.content;
+  yield source.content;
 };
 
 const transformedChunks = async function* (
