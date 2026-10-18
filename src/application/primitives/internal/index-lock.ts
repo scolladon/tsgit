@@ -1,5 +1,6 @@
 import { TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
+import { serializeCacheTree } from '../../../domain/git-index/cache-tree.js';
 import {
   type CarryKind,
   type CarrySettings,
@@ -10,7 +11,11 @@ import {
 } from '../../../domain/git-index/carry-extensions.js';
 import { diffIndexEntries } from '../../../domain/git-index/diff-index-entries.js';
 import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
-import type { GitIndex, IndexExtension } from '../../../domain/git-index/index-entry.js';
+import type {
+  CacheTreeEntry,
+  GitIndex,
+  IndexExtension,
+} from '../../../domain/git-index/index-entry.js';
 import { type IndexPath, indexPathKey } from '../../../domain/git-index/index-path-key.js';
 import type { ResolveUndoRecord } from '../../../domain/git-index/resolve-undo.js';
 import { bytesEqual } from '../../../domain/objects/encoding.js';
@@ -42,6 +47,8 @@ export interface CommitOptions {
   readonly restagedPaths?: ReadonlyArray<IndexPath>;
   /** The unmerged paths this write resolved; written into `REUC` merged with the previous records. */
   readonly resolveUndo?: ReadonlyArray<ResolveUndoRecord>;
+  /** The tree the writer computed for exactly these entries; replaces the carried `TREE`. */
+  readonly cacheTree?: CacheTreeEntry;
 }
 
 export interface IndexLock {
@@ -219,6 +226,18 @@ const carriedExtensions = async (
   );
 };
 
+const TREE_SIGNATURE = 'TREE';
+
+const withComputedTree = (
+  extensions: ReadonlyArray<IndexExtension>,
+  cacheTree: CacheTreeEntry | undefined,
+  digestLength: 20 | 32,
+): ReadonlyArray<IndexExtension> => {
+  if (cacheTree === undefined) return extensions;
+  const tree = { signature: TREE_SIGNATURE, data: serializeCacheTree(cacheTree, digestLength) };
+  return [tree, ...extensions.filter((extension) => extension.signature !== TREE_SIGNATURE)];
+};
+
 const carrySettings = async (ctx: Context): Promise<CarrySettings> => ({
   untrackedCache: (await readConfig(ctx)).core?.untrackedCache,
   digestLength: ctx.hashConfig.digestLength,
@@ -361,7 +380,8 @@ const commitLocked = async (
   if (isSpent(state)) return;
   const previous = await readPreviousIndex(ctx);
   const smudged = await smudgeRacilyClean(ctx, entries, previous);
-  const extensions = await carriedExtensions(ctx, previous, smudged, kind, options);
+  const carried = await carriedExtensions(ctx, previous, smudged, kind, options);
+  const extensions = withComputedTree(carried, options.cacheTree, ctx.hashConfig.digestLength);
   await writeLocked(ctx, sites.lockPath, sites.indexFile, smudged, extensions);
   state.committed = true;
 };

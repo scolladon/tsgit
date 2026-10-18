@@ -12,6 +12,7 @@ import {
   readIndex,
 } from '../../../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
+import { serializeCacheTree } from '../../../../../src/domain/git-index/cache-tree.js';
 import {
   type CacheTreeEntry,
   type IndexEntry,
@@ -890,6 +891,53 @@ describe('IndexLock.commit once spent', () => {
 
         // Assert
         expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(settled);
+      });
+    });
+  });
+});
+
+describe('IndexLock.commit with a computed cache-tree', () => {
+  const computed = treeOf(OTHER_ID);
+
+  describe('Given an index carrying TREE, REUC and UNTR', () => {
+    describe('When committing unchanged entries with a cacheTree option', () => {
+      it('Then TREE is the computed tree and REUC and UNTR are kept', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const entries = (await readIndex(ctx)).entries;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'update', { cacheTree: computed });
+
+        // Assert
+        const written = await indexExtensionsOf(ctx);
+        expect([...written.keys()]).toEqual(['TREE', 'REUC', 'UNTR']);
+        expect(written.get('TREE')).toEqual(serializeCacheTree(computed, SHA1_DIGEST));
+        expect(written.get('REUC')).toEqual(resolveUndoExtension('r', OTHER_ID, SHA1_DIGEST).data);
+        expect(written.get('UNTR')).toEqual(UNTR_EXTENSION.data);
+      });
+    });
+  });
+
+  describe('Given an index carrying no extensions', () => {
+    describe('When committing with a cacheTree option', () => {
+      it('Then TREE is the only extension', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'a\n');
+        await add(ctx, ['a' as FilePath]);
+        const entries = (await readIndex(ctx)).entries;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'update', { cacheTree: computed });
+
+        // Assert
+        const written = await indexExtensionsOf(ctx);
+        expect([...written.keys()]).toEqual(['TREE']);
+        expect(written.get('TREE')).toEqual(serializeCacheTree(computed, SHA1_DIGEST));
       });
     });
   });
