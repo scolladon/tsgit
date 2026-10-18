@@ -1134,7 +1134,7 @@ describe('write-working-tree-file', () => {
                 const collected: Uint8Array[] = [];
                 for await (const chunk of source) collected.push(chunk);
                 chunks.push(...collected);
-                await seeded.fs.write(path, new Uint8Array(0));
+                return seeded.fs.write(path, new Uint8Array(0));
               },
             },
           };

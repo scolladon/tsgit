@@ -62,8 +62,9 @@ const seedIndex = async (ctx: Context, entries: ReadonlyArray<IndexEntry>): Prom
 };
 
 /** Write a working-tree file at `path` under the repo root. */
-const seedWorkFile = (ctx: Context, path: string, content: string): Promise<void> =>
-  ctx.fs.write(`${ctx.layout.workDir}/${path}`, encoder.encode(content));
+const seedWorkFile = async (ctx: Context, path: string, content: string): Promise<void> => {
+  await ctx.fs.write(`${ctx.layout.workDir}/${path}`, encoder.encode(content));
+};
 
 const fileExists = (ctx: Context, path: string): Promise<boolean> =>
   ctx.fs.exists(`${ctx.layout.workDir}/${path}`);

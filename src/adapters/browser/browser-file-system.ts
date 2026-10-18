@@ -9,7 +9,13 @@ import {
   unsupportedOperation,
 } from '../../domain/index.js';
 import { createLruCache, type LruCache } from '../../domain/storage/lru-cache.js';
-import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
+import type {
+  DirEntry,
+  FileHandle,
+  FileStat,
+  FileSystem,
+  WriteOptions,
+} from '../../ports/file-system.js';
 
 export interface BrowserFileSystemOptions {
   readonly rootHandle: FileSystemDirectoryHandle;
@@ -62,20 +68,27 @@ export class BrowserFileSystem implements FileSystem {
     return file.text();
   }
 
-  async write(path: string, data: Uint8Array): Promise<void> {
+  // OPFS has no permission bits, so the creation mode is accepted and ignored.
+  async write(path: string, data: Uint8Array, _options?: WriteOptions): Promise<FileStat> {
     const handle = await this.resolveFileHandle(path, true);
     const writable = await handle.createWritable();
     await writable.write(data as FileSystemWriteChunkType);
     await writable.close();
+    return this.lstat(path);
   }
 
-  async writeStream(path: string, source: AsyncIterable<Uint8Array>): Promise<void> {
+  async writeStream(
+    path: string,
+    source: AsyncIterable<Uint8Array>,
+    _options?: WriteOptions,
+  ): Promise<FileStat> {
     const handle = await this.resolveFileHandle(path, true);
     const writable = await handle.createWritable();
     for await (const chunk of source) {
       await writable.write(chunk as FileSystemWriteChunkType);
     }
     await writable.close();
+    return this.lstat(path);
   }
 
   async writeExclusive(path: string, data: Uint8Array): Promise<void> {

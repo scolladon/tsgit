@@ -1278,8 +1278,9 @@ describe('materializeTree carrying staged changes (headTree)', () => {
       Object.entries(files).map(([name, id]) => treeEntry(FILE_MODE.REGULAR, name as FilePath, id)),
     );
 
-  const writeWork = (ctx: SeededContext, name: string, body: string): Promise<void> =>
-    ctx.fs.write(`${ctx.layout.workDir}/${name}`, new TextEncoder().encode(body));
+  const writeWork = async (ctx: SeededContext, name: string, body: string): Promise<void> => {
+    await ctx.fs.write(`${ctx.layout.workDir}/${name}`, new TextEncoder().encode(body));
+  };
 
   const readWork = async (ctx: SeededContext, name: string): Promise<string | undefined> =>
     (await ctx.fs.exists(`${ctx.layout.workDir}/${name}`))

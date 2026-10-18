@@ -13,7 +13,7 @@
  * Recorder: every `write`, `writeStream` and `mkdir` lists the leading
  * prefixes that are symlinks at that instant, in `recorded`.
  */
-import type { FileSystem } from '../../../../../src/ports/file-system.js';
+import type { FileStat, FileSystem } from '../../../../../src/ports/file-system.js';
 
 export interface SymlinkTraversal {
   readonly op: 'write' | 'writeStream' | 'mkdir';
@@ -95,15 +95,15 @@ export const createInterleavingFs = (inner: FileSystem, opts: InterleavingOpts):
   const gatedWrite =
     <A extends unknown[]>(
       op: 'write' | 'writeStream',
-      run: (folded: string, ...rest: A) => Promise<void>,
+      run: (folded: string, ...rest: A) => Promise<FileStat>,
     ) =>
-    async (path: string, ...rest: A): Promise<void> => {
+    async (path: string, ...rest: A): Promise<FileStat> => {
       const folded = fold(path);
       if (leadingPrefixes(folded).length > 0) await nextMacrotask();
       await awaitPendingLeadingSymlink(folded);
-      await tracked(async () => {
+      return tracked(async () => {
         await recordTraversals(op, path, folded);
-        await run(folded, ...rest);
+        return run(folded, ...rest);
       });
     };
 

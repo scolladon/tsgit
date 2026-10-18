@@ -240,7 +240,7 @@ describe('applyChangeset write wave and an object source', () => {
         const realWrite = ctx.fs.writeStream.bind(ctx.fs);
         vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
           order.push(path);
-          await realWrite(path, chunks);
+          return realWrite(path, chunks);
         });
         const changeset = makeChangeset([
           makeAdd('z', ids[0] as ObjectId),
@@ -3062,7 +3062,7 @@ describe('applyChangeset write order under a long-running filter', () => {
     vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
       phases.push('write');
       written.push(path);
-      await realWrite(path, chunks);
+      return realWrite(path, chunks);
     });
     const changeset = makeChangeset([
       makeAdd('z', ids[0] as ObjectId),
@@ -3588,7 +3588,7 @@ describe('applyChangeset leading-symlink safety', () => {
         const realWriteStream = ctx.fs.writeStream.bind(ctx.fs);
         vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (file, chunks) => {
           events.push(`write ${file}`);
-          await realWriteStream(file, chunks);
+          return realWriteStream(file, chunks);
         });
         const sut = applyChangeset;
 

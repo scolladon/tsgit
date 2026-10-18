@@ -9,7 +9,13 @@ import {
   unsupportedOperation,
 } from '../../domain/index.js';
 import { collapsePosixSegments } from '../../domain/path/collapse-posix-segments.js';
-import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
+import type {
+  DirEntry,
+  FileHandle,
+  FileStat,
+  FileSystem,
+  WriteOptions,
+} from '../../ports/file-system.js';
 
 const DEFAULT_HOME = '/home/user';
 const DEFAULT_XDG_CONFIG_HOME = '/home/user/.config';
@@ -127,7 +133,8 @@ export class MemoryFileSystem implements FileSystem {
     return undefined;
   };
 
-  write = async (path: string, data: Uint8Array): Promise<void> => {
+  // Modes are not modelled, so the creation mode is accepted and ignored.
+  write = async (path: string, data: Uint8Array, _options?: WriteOptions): Promise<FileStat> => {
     const normalized = this.walk(path, 'create');
     // node: EISDIR for a directory leaf, ELOOP for a symlink leaf under O_NOFOLLOW —
     // mapErrno sends both to PERMISSION_DENIED.
@@ -137,9 +144,14 @@ export class MemoryFileSystem implements FileSystem {
     this.ensureParentDirs(normalized);
     this.files.set(normalized, data.slice());
     this.touch(normalized);
+    return this.buildStat(normalized, path);
   };
 
-  writeStream = async (path: string, source: AsyncIterable<Uint8Array>): Promise<void> => {
+  writeStream = async (
+    path: string,
+    source: AsyncIterable<Uint8Array>,
+    options?: WriteOptions,
+  ): Promise<FileStat> => {
     const chunks: Uint8Array[] = [];
     for await (const chunk of source) chunks.push(chunk);
     const total = chunks.reduce((n, c) => n + c.length, 0);
@@ -149,7 +161,7 @@ export class MemoryFileSystem implements FileSystem {
       out.set(c, off);
       off += c.length;
     }
-    await this.write(path, out);
+    return this.write(path, out, options);
   };
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {

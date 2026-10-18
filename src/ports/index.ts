@@ -13,7 +13,7 @@ export type {
 } from './context.js';
 export { createContext } from './context.js';
 export type { EnvReader } from './env-reader.js';
-export type { DirEntry, FileStat, FileSystem } from './file-system.js';
+export type { DirEntry, FileStat, FileSystem, WriteOptions } from './file-system.js';
 export type { FilenameProbe } from './filename-probe.js';
 export type { GenerationView } from './generation-view.js';
 export type { Hasher, HashService } from './hash-service.js';

@@ -2,7 +2,6 @@ import * as fs from 'node:fs';
 import type * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { pipeline } from 'node:stream/promises';
 import {
   directoryNotEmpty,
   fileExists,
@@ -13,7 +12,13 @@ import {
   unsupportedOperation,
 } from '../../domain/index.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
-import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
+import type {
+  DirEntry,
+  FileHandle,
+  FileStat,
+  FileSystem,
+  WriteOptions,
+} from '../../ports/file-system.js';
 import type { FsOperations, SyncFsOperations } from './fs-operations.js';
 import { realFsOps } from './fs-operations.js';
 import type { PathPolicy } from './path-policy.js';
@@ -79,6 +84,8 @@ const REMOVE_TREE_CONCURRENCY = 8;
  */
 const WRITE_CREATE_FLAGS =
   fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
+/** Node's own `writeFile` default; the process umask narrows it at create. */
+const DEFAULT_CREATE_MODE = 0o666;
 const WRITE_EXCLUSIVE_FLAGS =
   fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
 const APPEND_FLAGS =
@@ -104,14 +111,14 @@ const REGULAR_READ_FLAGS = fs.constants.O_RDONLY | nonBlockFlag(fs.constants);
 /** Size of the extra read issued once a sync fill reaches the reported size, to detect growth. */
 const EOF_PROBE_BYTES = 1;
 
-/**
- * `@types/node` types `WriteStreamOptions.flags` as `string`, but Node's own
- * implementation (`stringToFlags`) returns a numeric `flags` argument
- * unchanged rather than string-parsing it — verified against Node's source,
- * not guessed. A numeric flag is the only way to compose `O_NOFOLLOW` into
- * `writeStream`'s open; no string flag alias expresses it.
- */
-type WriteStreamNumericFlags = Omit<fs.WriteStreamOptions, 'flags'> & { readonly flags: number };
+/** Writes every byte of `chunk`: a handle `write` may report fewer bytes than asked. */
+async function writeFully(handle: fsPromises.FileHandle, chunk: Uint8Array): Promise<void> {
+  let remaining = chunk;
+  while (remaining.length > 0) {
+    const { bytesWritten } = await handle.write(remaining);
+    remaining = remaining.subarray(bytesWritten);
+  }
+}
 
 /** What `lstat` reports for `ino` on a volume that has no inodes (FAT, some network shares). */
 const NO_INODE = 0n;
@@ -1193,27 +1200,61 @@ export class NodeFileSystem implements FileSystem {
     return orAbsent(() => this.fsOps.readFile(real, 'utf-8'), path);
   };
 
-  write = async (path: string, data: Uint8Array): Promise<void> => {
+  write = async (path: string, data: Uint8Array, options?: WriteOptions): Promise<FileStat> => {
     const real = await this.resolveWrite(path);
     await this.assertWritableLeaf(real, path);
-    await runFs(async () => {
-      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await this.fsOps.writeFile(real, data, { flag: WRITE_CREATE_FLAGS });
-    }, path);
+    return runFs(
+      () =>
+        this.writeThroughHandle(real, options, async (handle) => {
+          await handle.writeFile(data);
+        }),
+      path,
+    );
   };
 
-  writeStream = async (path: string, source: AsyncIterable<Uint8Array>): Promise<void> => {
+  writeStream = async (
+    path: string,
+    source: AsyncIterable<Uint8Array>,
+    options?: WriteOptions,
+  ): Promise<FileStat> => {
     const real = await this.resolveWrite(path);
     await this.assertWritableLeaf(real, path);
-    await runFs(async () => {
-      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      const streamOptions: WriteStreamNumericFlags = { flags: WRITE_CREATE_FLAGS };
-      await pipeline(
-        source,
-        fs.createWriteStream(real, streamOptions as unknown as fs.WriteStreamOptions),
-      );
-    }, path);
+    return runFs(
+      () =>
+        this.writeThroughHandle(real, options, async (handle) => {
+          for await (const chunk of source) await writeFully(handle, chunk);
+        }),
+      path,
+    );
   };
+
+  private async writeThroughHandle(
+    real: string,
+    options: WriteOptions | undefined,
+    body: (handle: fsPromises.FileHandle) => Promise<void>,
+  ): Promise<FileStat> {
+    const handle = await this.openForWrite(real, options?.mode ?? DEFAULT_CREATE_MODE);
+    try {
+      await body(handle);
+      return mapStat(await handle.stat({ bigint: true }));
+    } finally {
+      await handle.close();
+    }
+  }
+
+  // Opens first and creates the parent only when that reports it absent: a
+  // destination directory almost always exists, so the common case costs one
+  // open instead of an unconditional `mkdir` walk. A second `ENOENT` after
+  // `mkdir` is a real fault and propagates.
+  private async openForWrite(real: string, mode: number): Promise<fsPromises.FileHandle> {
+    try {
+      return await this.fsOps.open(real, WRITE_CREATE_FLAGS, mode);
+    } catch (err) {
+      if (!isErrnoException(err) || err.code !== 'ENOENT') throw err;
+      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+      return this.fsOps.open(real, WRITE_CREATE_FLAGS, mode);
+    }
+  }
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.resolveWrite(path);

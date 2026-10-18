@@ -35,6 +35,7 @@ import {
   fakeFsOps,
   fakeSyncFsOps,
   fakeSyncIoPolicy,
+  fakeWriteHandle,
 } from './node-fs-fakes.js';
 
 // Stryker's vitest runner does not apply the config's restoreMocks; spies
@@ -121,6 +122,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({
+          open: vi.fn().mockImplementation(async () => fakeWriteHandle()),
           realpath: realpathSpy,
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
@@ -268,6 +270,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
           return input;
         });
         const fsOps = fakeFsOps({
+          open: vi.fn().mockImplementation(async () => fakeWriteHandle()),
           realpath: realpathSpy,
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
@@ -297,6 +300,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({
+          open: vi.fn().mockImplementation(async () => fakeWriteHandle()),
           realpath: realpathSpy,
           lstat: vi.fn().mockResolvedValue(fileStat),
           rm: vi.fn().mockResolvedValue(undefined),
@@ -673,10 +677,10 @@ describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () =
       it('Then it still resolves the root set and succeeds (lazy-load path)', async () => {
         // Arrange
         const rootDir = '/root';
-        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const open = vi.fn().mockImplementation(async () => fakeWriteHandle());
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
-          writeFile,
+          open,
         });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
@@ -684,7 +688,7 @@ describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () =
         await sut.write('/root/first.bin', new Uint8Array([1]));
 
         // Assert
-        expect(writeFile).toHaveBeenCalledTimes(1);
+        expect(open).toHaveBeenCalledTimes(1);
       });
     });
   });
@@ -694,9 +698,12 @@ describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () =
       it('Then every write succeeds and the root-set loader (realpath(rootDir)) runs exactly once', async () => {
         // Arrange
         const rootDir = '/root';
-        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const open = vi.fn().mockImplementation(async () => fakeWriteHandle());
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({ realpath: realpathSpy, writeFile });
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          open,
+        });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         const writeCount = 5;
 
@@ -710,7 +717,7 @@ describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () =
         }
 
         // Assert
-        expect(writeFile).toHaveBeenCalledTimes(writeCount);
+        expect(open).toHaveBeenCalledTimes(writeCount);
         const rootCalls = realpathSpy.mock.calls.filter(
           ([arg]: readonly unknown[]) => arg === rootDir,
         );
@@ -1221,6 +1228,7 @@ describe('NodeFileSystem — 8.3 short-name parent reconciliation (DI)', () => {
         let realpathHits = 0;
 
         const fsOps = fakeFsOps({
+          open: vi.fn().mockImplementation(async () => fakeWriteHandle()),
           realpath: vi.fn().mockImplementation(async (input: string) => {
             if (input !== shortRoot) throw enoent();
             realpathHits += 1;
@@ -1249,8 +1257,7 @@ describe('NodeFileSystem — 8.3 short-name parent reconciliation (DI)', () => {
         // the two sites.
         expect(caught).toBeUndefined();
         expect(realpathHits).toBe(2);
-        expect(fsOps.writeFile).toHaveBeenCalledTimes(1);
-        expect(fsOps.mkdir).toHaveBeenCalled();
+        expect(fsOps.open).toHaveBeenCalledTimes(1);
       });
     });
   });
@@ -2321,13 +2328,13 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
 
   describe('Given a contained target', () => {
     describe('When write is called', () => {
-      it('Then fsOps.writeFile receives O_NOFOLLOW composed into the creation flags', async () => {
+      it('Then fsOps.open receives O_NOFOLLOW composed into the creation flags', async () => {
         // Arrange
         const rootDir = '/root';
-        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const open = vi.fn().mockImplementation(async () => fakeWriteHandle());
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
-          writeFile,
+          open,
         });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
@@ -2335,9 +2342,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
         await sut.write('/root/leaf.bin', new Uint8Array([1]));
 
         // Assert
-        expect(writeFile).toHaveBeenCalledWith('/root/leaf.bin', new Uint8Array([1]), {
-          flag: WRITE_CREATE_FLAGS,
-        });
+        expect(open).toHaveBeenCalledWith('/root/leaf.bin', WRITE_CREATE_FLAGS, 0o666);
       });
     });
 
@@ -2469,6 +2474,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat,
+          open: vi.fn().mockImplementation(async () => fakeWriteHandle()),
         });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
@@ -2495,6 +2501,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat,
+          open: vi.fn().mockImplementation(async () => fakeWriteHandle()),
         });
         const caseInsensitivePosixPolicy = { ...posixPolicy, caseInsensitive: true };
         const sut = new NodeFileSystem(rootDir, {
@@ -2551,12 +2558,12 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
         // Arrange — O_NOFOLLOW is silently ignored by the Win32 API, so the
         // explicit pre-write lstat is the only defence there.
         const rootDir = 'C:\\Root';
-        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const open = vi.fn().mockImplementation(async () => fakeWriteHandle());
         const lstat = vi.fn().mockResolvedValue({ isSymbolicLink: () => true });
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat,
-          writeFile,
+          open,
         });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
@@ -2572,7 +2579,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
         expect(lstat).toHaveBeenCalledWith('C:\\Root\\link.bin');
-        expect(writeFile).not.toHaveBeenCalled();
+        expect(open).not.toHaveBeenCalled();
       });
     });
 
@@ -2580,12 +2587,12 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
       it('Then the pre-write lstat runs and the write proceeds', async () => {
         // Arrange
         const rootDir = 'C:\\Root';
-        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const open = vi.fn().mockImplementation(async () => fakeWriteHandle());
         const lstat = vi.fn().mockResolvedValue({ isSymbolicLink: () => false });
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat,
-          writeFile,
+          open,
         });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
@@ -2594,7 +2601,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
 
         // Assert
         expect(lstat).toHaveBeenCalledWith('C:\\Root\\leaf.bin');
-        expect(writeFile).toHaveBeenCalledTimes(1);
+        expect(open).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -4014,6 +4021,7 @@ describe('NodeFileSystem — rmRecursive parent-realpath invalidation (DI)', () 
   const partialRemovalOps = (realpathSpy: (input: string) => Promise<string>) =>
     fakeFsOps({
       realpath: realpathSpy as unknown as FsOperations['realpath'],
+      open: vi.fn().mockImplementation(async () => fakeWriteHandle()),
       lstat: vi.fn().mockImplementation(async (input: string) => {
         if (input === '/root/sub') return entry('directory', 2);
         if (input === CHILD) return entry('file', 3);
@@ -4145,6 +4153,7 @@ describe('NodeFileSystem rmdir', () => {
           pathPolicy: posixPolicy,
           fsOps: fakeFsOps({
             realpath: realpathSpy as unknown as FsOperations['realpath'],
+            open: vi.fn().mockImplementation(async () => fakeWriteHandle()),
             rmdir: vi.fn().mockResolvedValue(undefined),
           }),
         });
@@ -6362,6 +6371,278 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
         dataFor(caught, 'FILE_NOT_FOUND');
         expect(writeFile).toHaveBeenCalledTimes(2);
         expect(mkdir).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.write / writeStream — open with a creation mode, stat the descriptor (DI)', () => {
+  const WRITE_CREATE_FLAGS =
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
+
+  const writtenStat = (size: number) => ({
+    ctimeMs: BigInt(1),
+    mtimeMs: BigInt(2),
+    ctimeNs: BigInt(1_000_000),
+    mtimeNs: BigInt(2_000_000),
+    dev: BigInt(3),
+    ino: BigInt(4),
+    mode: BigInt(0o100644),
+    uid: BigInt(5),
+    gid: BigInt(6),
+    size: BigInt(size),
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  });
+
+  const fakeHandle = (size = 0) => ({
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    write: vi.fn().mockImplementation(async (chunk: Uint8Array) => ({
+      bytesWritten: chunk.length,
+    })),
+    stat: vi.fn().mockResolvedValue(writtenStat(size)),
+    close: vi.fn().mockResolvedValue(undefined),
+  });
+
+  const build = (overrides: Parameters<typeof fakeFsOps>[0]) =>
+    new NodeFileSystem('/root', {
+      pathPolicy: posixPolicy,
+      fsOps: fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        ...overrides,
+      }),
+    });
+
+  describe('Given the parent directory exists', () => {
+    describe('When write is called without options', () => {
+      it('Then open gets the default creation mode and mkdir is never called', async () => {
+        // Arrange
+        const open = vi.fn().mockResolvedValue(fakeHandle());
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const adapter = build({ open, mkdir });
+        const sut = adapter.write.bind(adapter);
+
+        // Act
+        await sut('/root/a.bin', new Uint8Array([1]));
+
+        // Assert
+        expect(open).toHaveBeenCalledExactlyOnceWith('/root/a.bin', WRITE_CREATE_FLAGS, 0o666);
+        expect(mkdir).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When write is called with an executable mode', () => {
+      it('Then open gets that creation mode', async () => {
+        // Arrange
+        const open = vi.fn().mockResolvedValue(fakeHandle());
+        const adapter = build({ open });
+        const sut = adapter.write.bind(adapter);
+
+        // Act
+        await sut('/root/a.bin', new Uint8Array([1]), { mode: 0o777 });
+
+        // Assert
+        expect(open).toHaveBeenCalledExactlyOnceWith('/root/a.bin', WRITE_CREATE_FLAGS, 0o777);
+      });
+    });
+
+    describe('When write is called', () => {
+      it('Then the bytes go through the handle, the stat is read from it, and it is closed', async () => {
+        // Arrange
+        const handle = fakeHandle(3);
+        const adapter = build({ open: vi.fn().mockResolvedValue(handle) });
+        const sut = adapter.write.bind(adapter);
+        const data = new Uint8Array([1, 2, 3]);
+
+        // Act
+        const result = await sut('/root/a.bin', data);
+
+        // Assert
+        expect(handle.writeFile).toHaveBeenCalledExactlyOnceWith(data);
+        expect(handle.stat).toHaveBeenCalledExactlyOnceWith({ bigint: true });
+        expect(handle.close).toHaveBeenCalledTimes(1);
+        expect(result.size).toBe(3);
+        expect(result.isFile).toBe(true);
+        expect(result.mtimeNs).toBe(BigInt(2_000_000));
+      });
+    });
+
+    describe('When the handle write fails', () => {
+      it('Then the handle is still closed and the error propagates', async () => {
+        // Arrange
+        const handle = fakeHandle();
+        handle.writeFile.mockRejectedValue(eacces());
+        const adapter = build({ open: vi.fn().mockResolvedValue(handle) });
+        const sut = adapter.write.bind(adapter);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/a.bin', new Uint8Array([1]));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        dataFor(caught, 'PERMISSION_DENIED');
+        expect(handle.close).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given the parent directory is missing (first open throws ENOENT)', () => {
+    describe('When write is called', () => {
+      it('Then it retries in order: open, mkdir of the parent, open', async () => {
+        // Arrange
+        const calls: string[] = [];
+        const open = vi
+          .fn()
+          .mockImplementationOnce(() => {
+            calls.push('open');
+            return Promise.reject(enoent());
+          })
+          .mockImplementationOnce(() => {
+            calls.push('open');
+            return Promise.resolve(fakeHandle());
+          });
+        const mkdir = vi.fn().mockImplementation(() => {
+          calls.push('mkdir');
+          return Promise.resolve(undefined);
+        });
+        const adapter = build({ open, mkdir });
+        const sut = adapter.write.bind(adapter);
+
+        // Act
+        await sut('/root/sub/a.bin', new Uint8Array([1]));
+
+        // Assert
+        expect(calls).toEqual(['open', 'mkdir', 'open']);
+        expect(mkdir).toHaveBeenCalledWith('/root/sub', { recursive: true });
+      });
+    });
+
+    describe('When the second open also throws ENOENT', () => {
+      it('Then FILE_NOT_FOUND propagates after exactly one retry', async () => {
+        // Arrange
+        const open = vi.fn().mockRejectedValue(enoent());
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const adapter = build({ open, mkdir });
+        const sut = adapter.write.bind(adapter);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/sub/a.bin', new Uint8Array([1]));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = dataFor(caught, 'FILE_NOT_FOUND');
+        expect(data.path).toBe('/root/sub/a.bin');
+        expect(open).toHaveBeenCalledTimes(2);
+        expect(mkdir).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a non-ENOENT failure on the first open (EACCES)', () => {
+    describe('When write is called', () => {
+      it('Then PERMISSION_DENIED propagates and mkdir is never called', async () => {
+        // Arrange
+        const open = vi.fn().mockRejectedValue(eacces());
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const adapter = build({ open, mkdir });
+        const sut = adapter.write.bind(adapter);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/a.bin', new Uint8Array([1]));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        dataFor(caught, 'PERMISSION_DENIED');
+        expect(mkdir).not.toHaveBeenCalled();
+        expect(open).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a source of three chunks', () => {
+    describe('When writeStream is called with a mode', () => {
+      it('Then the chunks are written in order and the written stat is returned', async () => {
+        // Arrange
+        const handle = fakeHandle(6);
+        const open = vi.fn().mockResolvedValue(handle);
+        const adapter = build({ open });
+        const sut = adapter.writeStream.bind(adapter);
+        const chunks = [new Uint8Array([1, 2]), new Uint8Array([3]), new Uint8Array([4, 5, 6])];
+        async function* source() {
+          yield* chunks;
+        }
+
+        // Act
+        const result = await sut('/root/a.bin', source(), { mode: 0o777 });
+
+        // Assert
+        expect(open).toHaveBeenCalledExactlyOnceWith('/root/a.bin', WRITE_CREATE_FLAGS, 0o777);
+        expect(handle.write.mock.calls.map(([chunk]) => chunk)).toEqual(chunks);
+        expect(handle.close).toHaveBeenCalledTimes(1);
+        expect(result.size).toBe(6);
+        expect(result.isFile).toBe(true);
+      });
+    });
+
+    describe('When the handle writes a chunk partially', () => {
+      it('Then the remainder is written until the chunk is complete', async () => {
+        // Arrange
+        const handle = fakeHandle(4);
+        handle.write
+          .mockResolvedValueOnce({ bytesWritten: 1 })
+          .mockResolvedValueOnce({ bytesWritten: 3 });
+        const adapter = build({ open: vi.fn().mockResolvedValue(handle) });
+        const sut = adapter.writeStream.bind(adapter);
+        async function* source() {
+          yield new Uint8Array([1, 2, 3, 4]);
+        }
+
+        // Act
+        await sut('/root/a.bin', source());
+
+        // Assert
+        expect(handle.write.mock.calls.map(([chunk]) => Array.from(chunk as Uint8Array))).toEqual([
+          [1, 2, 3, 4],
+          [2, 3, 4],
+        ]);
+      });
+    });
+
+    describe('When the source throws mid-stream', () => {
+      it('Then the handle is closed and the error propagates', async () => {
+        // Arrange
+        const handle = fakeHandle();
+        const adapter = build({ open: vi.fn().mockResolvedValue(handle) });
+        const sut = adapter.writeStream.bind(adapter);
+        async function* source(): AsyncGenerator<Uint8Array> {
+          yield new Uint8Array([1]);
+          throw eacces();
+        }
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/a.bin', source());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        dataFor(caught, 'PERMISSION_DENIED');
+        expect(handle.close).toHaveBeenCalledTimes(1);
       });
     });
   });

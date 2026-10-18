@@ -47,6 +47,15 @@ export interface FileHandle {
   readonly close: () => Promise<void>;
 }
 
+/** Creation options for a regular-file write. */
+export interface WriteOptions {
+  /**
+   * Permission bits used when the write creates the file (git's 0o666 or 0o777); the platform
+   * applies the process umask. Ignored when the file exists, and by adapters without permission bits.
+   */
+  readonly mode?: number;
+}
+
 export interface FileSystem {
   /** Read entire file as bytes. Throws FILE_NOT_FOUND if not found. */
   readonly read: (path: string) => Promise<Uint8Array>;
@@ -59,18 +68,23 @@ export interface FileSystem {
 
   /**
    * Write bytes to file, creating parent directories as needed. Overwrites a regular file;
-   * refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.
+   * refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED. Resolves the
+   * written file's stat (Node: `fstat` of the open descriptor).
    */
-  readonly write: (path: string, data: Uint8Array) => Promise<void>;
+  readonly write: (path: string, data: Uint8Array, options?: WriteOptions) => Promise<FileStat>;
 
   /**
    * Stream bytes to file from an async source, creating parent directories as needed. Overwrites
    * a regular file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.
    * Writes bytes verbatim. A refused write may already have consumed the source: the memory
    * adapter buffers it before writing, while Node refuses at the open — a single-use source is
-   * not reusable after a refusal on either.
+   * not reusable after a refusal on either. Resolves the written file's stat, as `write` does.
    */
-  readonly writeStream: (path: string, source: AsyncIterable<Uint8Array>) => Promise<void>;
+  readonly writeStream: (
+    path: string,
+    source: AsyncIterable<Uint8Array>,
+    options?: WriteOptions,
+  ) => Promise<FileStat>;
 
   /**
    * Write bytes to file. Fails with FILE_EXISTS if anything already occupies `path` — a regular
