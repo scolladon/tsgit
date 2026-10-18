@@ -49,6 +49,8 @@ export interface CommitOptions {
   readonly resolveUndo?: ReadonlyArray<ResolveUndoRecord>;
   /** The tree the writer computed for exactly these entries; replaces the carried `TREE`. */
   readonly cacheTree?: CacheTreeEntry;
+  /** Paths the writer already found unchanged; the racy smudge does not re-read them. */
+  readonly verified?: IsVerified;
 }
 
 export interface IndexLock {
@@ -243,7 +245,7 @@ const carrySettings = async (ctx: Context): Promise<CarrySettings> => ({
   digestLength: ctx.hashConfig.digestLength,
 });
 
-const withRefreshedStat = (
+export const withRefreshedStat = (
   read: GitIndex,
   refreshed: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
@@ -379,7 +381,7 @@ const commitLocked = async (
 ): Promise<void> => {
   if (isSpent(state)) return;
   const previous = await readPreviousIndex(ctx);
-  const smudged = await smudgeRacilyClean(ctx, entries, previous);
+  const smudged = await smudgeRacilyClean(ctx, entries, previous, options.verified);
   const carried = await carriedExtensions(ctx, previous, smudged, kind, options);
   const extensions = withComputedTree(carried, options.cacheTree, ctx.hashConfig.digestLength);
   await writeLocked(ctx, sites.lockPath, sites.indexFile, smudged, extensions);

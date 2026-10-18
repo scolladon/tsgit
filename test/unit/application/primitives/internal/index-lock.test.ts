@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { init } from '../../../../../src/application/commands/init.js';
@@ -938,6 +938,71 @@ describe('IndexLock.commit with a computed cache-tree', () => {
         const written = await indexExtensionsOf(ctx);
         expect([...written.keys()]).toEqual(['TREE']);
         expect(written.get('TREE')).toEqual(serializeCacheTree(computed, SHA1_DIGEST));
+      });
+    });
+  });
+});
+
+describe('IndexLock.commit verified paths', () => {
+  const TICK_MS = 1_700_000_000_100;
+  const TRACKED = 'f.txt' as FilePath;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(TICK_MS);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const racyRewrittenRepo = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${TRACKED}`, 'm1\n');
+    await add(ctx, [TRACKED]);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${TRACKED}`, 'm2\n');
+    invalidateIndexCache(ctx);
+    return ctx;
+  };
+
+  const committedSize = async (ctx: Context, verified?: (path: FilePath) => boolean) => {
+    const entries = (await readIndex(ctx)).entries;
+    const lock = await acquireIndexLock(ctx);
+    await lock.commit(entries, 'update', verified === undefined ? {} : { verified });
+    invalidateIndexCache(ctx);
+    return (await readIndex(ctx)).entries[0]?.fileSize;
+  };
+
+  describe('Given a racy entry rewritten with the same stat', () => {
+    describe('When committing without a verified set', () => {
+      it('Then the entry is smudged to size 0', async () => {
+        // Arrange
+        const ctx = await racyRewrittenRepo();
+
+        // Act
+        const result = await committedSize(ctx);
+
+        // Assert
+        expect(result).toBe(0);
+      });
+    });
+
+    describe('When committing with the path verified', () => {
+      it('Then the entry is not re-read and keeps its size', async () => {
+        // Arrange
+        const ctx = await racyRewrittenRepo();
+        const read = vi.spyOn(ctx.fs, 'read');
+
+        // Act
+        const result = await committedSize(ctx, (path) => path === TRACKED);
+
+        // Assert
+        expect(result).toBe(3);
+        expect(read.mock.calls.map(([path]) => String(path))).not.toContain(
+          `${ctx.layout.workDir}/${TRACKED}`,
+        );
       });
     });
   });

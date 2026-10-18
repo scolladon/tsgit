@@ -26,27 +26,22 @@ import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { deriveWorkingMode, type FileMode, type RefName } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import {
-  compareAndRefresh,
-  type WorkingTreeComparison,
-  type WorkingTreeDelta,
+import type {
+  WorkingTreeComparison,
+  WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
-import {
-  type CleanOrder,
-  configuresFilterDriver,
-  inIndexOrder,
-} from '../primitives/internal/clean-order.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { acquireOptionalIndexLock, type IndexLock } from '../primitives/internal/index-lock.js';
 import { hasRacyTimestamp } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
-import {
-  type AttributeProvider,
-  buildCheckinAttributeProvider,
-} from '../primitives/internal/read-gitattributes.js';
 import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
+import {
+  scanTrackedEntries,
+  type TrackedScan,
+  verifiedBy,
+} from '../primitives/internal/scan-tracked-entries.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -131,10 +126,6 @@ export interface StatusResult {
 
 const STATUS_SCAN_OP = 'status:scan';
 const STATUS_SCAN_GRANULARITY = 100;
-
-interface GranularityTracker {
-  readonly tick: () => void;
-}
 
 /**
  * Summarize the state of the working tree against git's columns, one correlated
@@ -246,40 +237,26 @@ interface ScannedTree {
   readonly untracked: ReadonlyArray<FilePath>;
 }
 
-/** The tracked pass: every tracked file's delta plus the entries whose stat data drifted. */
-interface TrackedScan {
-  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
-  readonly refreshed: ReadonlyArray<IndexEntry>;
-}
-
 /** Write the refreshed stat data back, only when something is worth persisting:
  *  a drifted entry, or an entry racy against the index file's own mtime. */
 const updateIndexIfAble = async (
   lock: IndexLock,
   index: GitIndex,
-  { workingMap, refreshed }: TrackedScan,
+  scan: TrackedScan,
 ): Promise<void> => {
   const racy = index.indexMtime !== undefined && hasRacyTimestamp(index.entries, index.indexMtime);
-  if (refreshed.length === 0 && !racy) return lock.release();
+  if (scan.refreshed.length === 0 && !racy) return lock.release();
   // A path the scan found unchanged, by stat or by content, is git's `CE_UPTODATE`.
-  await lock.commitRefresh(
-    index,
-    refreshed,
-    (path) => workingMap.get(path)?.status === 'unchanged',
-  );
+  await lock.commitRefresh(index, scan.refreshed, verifiedBy(scan));
 };
 
-/** Build the check-in attribute provider once per status invocation. It is always
- *  present; a path whose attributes resolve to the identity conversion costs one lookup. */
 const scanTrackedTree = async (
   ctx: Context,
   index: GitIndex,
   tracked: TrackedEntries,
 ): Promise<TrackedScan> => {
   const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-  const provider = await buildCheckinAttributeProvider(ctx, index);
-  const { staged } = tracked.grouped;
-  return scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
+  return scanTrackedEntries(ctx, index, tracked.grouped.staged, () => tracker.tick());
 };
 
 /** git's status names HEAD through `get_oid`, warning on an ambiguous HEAD and
@@ -307,75 +284,6 @@ const reportStatus = async (
   const { untracked } = scanned;
   const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
   return { changes, untracked, unmerged, clean };
-};
-
-/**
- * Working-tree pass: compare every stage-0 entry to its working file. A
- * skip-worktree entry is intentionally absent from disk (sparse), so it is not
- * compared — its staged column is still surfaced via `stage0Map`. Every entry
- * ticks the progress tracker. The provider enables clean-filter
- * re-application so smudged-then-unmodified files report unchanged. The
- * optional `indexMtime` (the `.git/index` file's own mtime) arms the
- * stat-cache short-circuit in `compareWorkingTreeDelta`. The comparisons fan out through the
- * `ioBound` bucket: each `lstat`+optional-hash is independent per path, and
- * `boundedMap`'s completion-order-independent result array is safe here
- * because every entry is keyed by its own unique path.
- */
-const scanEntry = async (
-  ctx: Context,
-  entry: IndexEntry,
-  provider: AttributeProvider,
-  indexMtime: GitIndex['indexMtime'],
-  filterDriversConfigured: boolean,
-): Promise<ScannedEntry | undefined> => {
-  if (entry.flags.skipWorktree) return undefined;
-  const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
-    provider,
-    ...(indexMtime !== undefined && { indexMtime }),
-    filterDriversConfigured,
-  });
-  return { path: escapedPathOf(entry), delta, refreshed };
-};
-
-interface ScannedEntry {
-  readonly path: FilePath;
-  readonly delta: WorkingTreeDelta;
-  readonly refreshed: IndexEntry | undefined;
-}
-
-const scanWorkingTree = async (
-  ctx: Context,
-  stage0: ReadonlyArray<IndexEntry>,
-  tracker: GranularityTracker,
-  provider: AttributeProvider,
-  indexMtime: GitIndex['indexMtime'],
-): Promise<TrackedScan> => {
-  const filterDriversConfigured = await configuresFilterDriver(ctx);
-  const scan = (order?: CleanOrder) =>
-    boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
-      try {
-        const scanned = await scanEntry(ctx, entry, provider, indexMtime, filterDriversConfigured);
-        tracker.tick();
-        return scanned;
-      } finally {
-        order?.release(entry.path);
-      }
-    });
-  // A clean driver hears the paths in index order, however the reads race;
-  // with no driver configured no clean runs or refuses, and the scan needs no order.
-  const results = filterDriversConfigured ? await inIndexOrder(ctx, stage0, scan) : await scan();
-  return trackedScanOf(results);
-};
-
-const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): TrackedScan => {
-  const workingMap = new Map<FilePath, WorkingTreeDelta>();
-  const refreshed: IndexEntry[] = [];
-  for (const result of results) {
-    if (result === undefined) continue;
-    workingMap.set(result.path, result.delta);
-    if (result.refreshed !== undefined) refreshed.push(result.refreshed);
-  }
-  return { workingMap, refreshed };
 };
 
 /**
