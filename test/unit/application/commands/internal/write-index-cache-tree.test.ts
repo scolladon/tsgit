@@ -416,6 +416,56 @@ describe('writeIndexCacheTree stat refresh', () => {
     });
   });
 
+  describe('Given a racy unchanged entry, an invalid TREE and another entry whose stat moved', () => {
+    describe('When the cache-tree is written', () => {
+      it('Then the racy file is read once', async () => {
+        // Arrange
+        const ctx = await seedRacy();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c/f`, 'c');
+        await add(ctx, ['c/f']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/f`, 'a');
+        at(4);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+        at(5);
+        const reads = vi.spyOn(ctx.fs, 'read');
+        const sut = writeIndexCacheTree;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const racyReads = reads.mock.calls.filter(
+          ([p]) => String(p) === `${ctx.layout.workDir}/a/f`,
+        );
+        expect(racyReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a racy unchanged entry and another entry whose stat moved', () => {
+    describe('When the continue pass runs', () => {
+      it('Then the racy file is read once', async () => {
+        // Arrange
+        const ctx = await seedRacy();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/f`, 'a');
+        at(4);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+        at(5);
+        const reads = vi.spyOn(ctx.fs, 'read');
+        const sut = writeContinuedIndex;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const racyReads = reads.mock.calls.filter(
+          ([p]) => String(p) === `${ctx.layout.workDir}/a/f`,
+        );
+        expect(racyReads).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given an unmerged index', () => {
     describe('When the cache-tree is written', () => {
       it('Then it refuses before any worktree lstat', async () => {
