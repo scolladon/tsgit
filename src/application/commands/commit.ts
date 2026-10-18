@@ -183,11 +183,6 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   return { id, tree: treeId, branch, parents };
 };
 
-/**
- * Tri-state signing decision: an explicit `opts.sign` always wins; leaving it
- * `undefined` falls back to `commit.gpgsign` from config. Returns `undefined`
- * when signing is off, otherwise the resolved armor (or throws).
- */
 /** The tree of the index a pre-commit hook left behind; in memory only, as git's post-hook cache_tree_update. */
 const treeAfterHook = async (ctx: Context): Promise<ObjectId> => {
   const index = await readIndex(ctx);
@@ -196,6 +191,11 @@ const treeAfterHook = async (ctx: Context): Promise<ObjectId> => {
   return (await updateCacheTree(ctx, index.entries, carried, 'write')).rootTree;
 };
 
+/**
+ * Tri-state signing decision: an explicit `opts.sign` always wins; leaving it
+ * `undefined` falls back to `commit.gpgsign` from config. Returns `undefined`
+ * when signing is off, otherwise the resolved armor (or throws).
+ */
 const resolveGpgSignature = async (
   ctx: Context,
   config: ParsedConfig,
