@@ -8,6 +8,8 @@ import {
 } from '../../../../../src/application/primitives/internal/update-cache-tree.js';
 import { looseObjectPath } from '../../../../../src/application/primitives/path-layout.js';
 import { readTree } from '../../../../../src/application/primitives/read-tree.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import type { TsgitError } from '../../../../../src/domain/error.js';
 import { invalidateCacheTree } from '../../../../../src/domain/git-index/cache-tree.js';
 import {
   type CacheTreeEntry,
@@ -163,6 +165,36 @@ describe('updateCacheTree', () => {
         const result = await isCacheTreeFullyValid(ctx, root);
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a carried root that names a blob', () => {
+    describe('When updating in write mode', () => {
+      it('Then it refuses with the blob named as the wrong type', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array(0),
+          id: '' as ObjectId,
+        });
+        const carried = { path: '', entryCount: 1, subtreeCount: 0, id: blob, children: [] };
+        const entries = [{ ...entryAt('f'), id: blob }];
+        let error: TsgitError | undefined;
+        // Act
+        try {
+          await updateCacheTree(ctx, entries, carried, 'write');
+        } catch (e) {
+          error = e as TsgitError;
+        }
+        // Assert
+        expect(error?.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'tree',
+          actual: 'blob',
+          id: blob,
+        });
       });
     });
   });

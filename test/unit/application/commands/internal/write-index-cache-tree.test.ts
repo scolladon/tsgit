@@ -12,6 +12,7 @@ import {
 } from '../../../../../src/application/primitives/read-index.js';
 import { synthesizeTreeFromIndex } from '../../../../../src/application/primitives/synthesize-tree-from-index.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import { serializeCacheTree } from '../../../../../src/domain/git-index/cache-tree.js';
 import { carriedCacheTreeOf } from '../../../../../src/domain/git-index/cache-tree-update.js';
 import {
   type GitIndex,
@@ -63,7 +64,54 @@ const indexBytes = (ctx: Context): Promise<Uint8Array> => ctx.fs.read(`${ctx.lay
 const carriedOf = async (ctx: Context) =>
   carriedCacheTreeOf((await readIndex(ctx)).extensions, ctx.hashConfig.digestLength);
 
+const plantRootNaming = async (ctx: Context, id: ObjectId): Promise<void> => {
+  const root = { path: '', entryCount: 1, subtreeCount: 0, id, children: [] };
+  const tree = { signature: 'TREE', data: serializeCacheTree(root, ctx.hashConfig.digestLength) };
+  const index: GitIndex = {
+    version: 3,
+    entries: [entryOf('f', id, 0)],
+    extensions: [tree],
+    trailerSha: new Uint8Array(0),
+  };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+};
+
+const refusalOf = async (attempt: () => Promise<unknown>): Promise<TsgitError | undefined> => {
+  try {
+    await attempt();
+  } catch (e) {
+    return e as TsgitError;
+  }
+  return undefined;
+};
+
 describe('writeIndexCacheTree', () => {
+  describe('Given a TREE whose root names a blob', () => {
+    describe.each([
+      ['writeIndexCacheTree', writeIndexCacheTree],
+      ['writeContinuedIndex', writeContinuedIndex],
+    ])('When %s settles the tree', (_name, sut) => {
+      it('Then it refuses with the blob named as the wrong type and leaves the index alone', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const blob = await emptyBlob(ctx);
+        await plantRootNaming(ctx, blob);
+        const before = await indexBytes(ctx);
+        // Act
+        const error = await refusalOf(() => sut(ctx));
+        // Assert
+        expect(error?.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'tree',
+          actual: 'blob',
+          id: blob,
+        });
+        expect(await indexBytes(ctx)).toEqual(before);
+      });
+    });
+  });
+
   describe('Given three staged files and no TREE in the index', () => {
     describe('When the cache-tree is written', () => {
       it('Then the index carries a fully valid TREE whose root is the returned tree', async () => {

@@ -11,7 +11,8 @@
  *   unique:         commit maintains the index TREE, excludes intent-to-add entries and refuses as git does
  *   interopSurface: index
  */
-import { chmod, lstat, mkdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { chmod, lstat, mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -129,6 +130,8 @@ interface Step {
 
 interface Row {
   readonly title: string;
+  /** The prepared index is corrupt on purpose, so fsck cannot pass in either repository. */
+  readonly corruptByDesign?: boolean;
   readonly fixture?: Fixture;
   readonly steps: ReadonlyArray<Step>;
 }
@@ -263,6 +266,25 @@ const withoutIdentity = async (dir: string): Promise<void> => {
   git(dir, 'add', 'b/f');
 };
 
+const TREE_SIGNATURE = 'TREE';
+const SIGNATURE_BYTES = 4;
+const SIZE_BYTES = 4;
+const SHA1_BYTES = 20;
+const NEWLINE = 0x0a;
+
+/** The valid TREE kept as git wrote it, except its root now names a blob; the trailer is recomputed. */
+const rootNamingABlob = async (dir: string): Promise<void> => {
+  const blob = git(dir, 'hash-object', '-w', 'b/f').trim();
+  const file = indexPathOf(dir);
+  const bytes = Buffer.from(await readFile(file));
+  const data = bytes.indexOf(TREE_SIGNATURE) + SIGNATURE_BYTES + SIZE_BYTES;
+  const oidAt = bytes.indexOf(NEWLINE, data) + 1;
+  Buffer.from(blob, 'hex').copy(bytes, oidAt);
+  const body = bytes.subarray(0, bytes.length - SHA1_BYTES);
+  createHash('sha1').update(body).digest().copy(bytes, body.length);
+  await writeFile(file, bytes);
+};
+
 const HOOK_MODE = 0o755;
 const RESTAGING_HOOK = '#!/bin/sh\necho hook >> c/f\ngit add c/f\n';
 
@@ -358,6 +380,20 @@ const SETTLED_ROWS: ReadonlyArray<Row> = [
         gitExit: GIT_DIED,
         tsgit: commitWith('step'),
         refusal: 'MERGE_HAS_CONFLICTS',
+        rewritten: false,
+      }),
+    ],
+  },
+  {
+    title: 'commit over a valid TREE whose root names a blob',
+    corruptByDesign: true,
+    steps: [
+      withIndexWrite({
+        prepare: rootNamingABlob,
+        gitArgs: ['commit', '-q', '--allow-empty', '-m', 'step'],
+        gitExit: GIT_DIED,
+        tsgit: commitWith('step', { allowEmpty: true }),
+        refusal: 'UNEXPECTED_OBJECT_TYPE',
         rewritten: false,
       }),
     ],
@@ -514,7 +550,7 @@ const describeRow = (row: Row, format: Format = 'sha1'): void => {
         });
       });
 
-      it('Then git fsck exits 0 on the tsgit twin', () => {
+      it.skipIf(row.corruptByDesign === true)('Then git fsck exits 0 on the tsgit twin', () => {
         // Arrange + Assert
         expect(tryRunGitWithExit(['-C', pair.ours, 'fsck']).exitCode).toBe(0);
       });

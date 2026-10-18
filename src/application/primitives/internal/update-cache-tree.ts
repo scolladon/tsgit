@@ -8,6 +8,7 @@ import {
 } from '../../../domain/git-index/cache-tree-update.js';
 import type { CacheTreeEntry, IndexEntry } from '../../../domain/git-index/index-entry.js';
 import { pathBytesOf } from '../../../domain/git-index/index-path-key.js';
+import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import {
   emptyTreeOid,
   FILE_MODE,
@@ -17,6 +18,7 @@ import {
 import { treeEntry } from '../../../domain/objects/tree.js';
 import type { Context } from '../../../ports/context.js';
 import { hasObject } from '../has-object.js';
+import { readObject } from '../read-object.js';
 import { writeTree } from '../write-tree.js';
 import { limiterFor } from './concurrency.js';
 import type { ConcurrencyLimiter } from './concurrency-limiter.js';
@@ -40,6 +42,18 @@ type Ids = (ObjectId | undefined)[];
 /** git answers for the empty tree from a built-in cached object, stored or not. */
 const presentIn = async (ctx: Context, id: ObjectId): Promise<boolean> =>
   id === emptyTreeOid(ctx.hashConfig) || hasObject(ctx, id, { mode: 'recheck' });
+
+/** A root a commit is about to name must be a tree, whatever the carried TREE claims. */
+export const assertIsTree = async (ctx: Context, id: ObjectId): Promise<void> => {
+  if (id === emptyTreeOid(ctx.hashConfig)) return;
+  const { type } = await readObject(ctx, id);
+  if (type !== 'tree') throw unexpectedObjectType('tree', type, id);
+};
+
+const assertReusedRootIsTree = async (ctx: Context, plan: CacheTreePlan): Promise<void> => {
+  const root = (plan.nodes[ROOT] as PlannedNode).reused;
+  if (root !== undefined) await assertIsTree(ctx, root);
+};
 
 /** git existence-checks only the topmost valid node of a reused subtree. */
 const topmostReused = (plan: CacheTreePlan): number[] => {
@@ -232,6 +246,7 @@ export async function updateCacheTree(
 ): Promise<WrittenCacheTree | RepairedCacheTree> {
   const limiter = limiterFor(ctx, 'ioBound');
   const { plan, tree } = await settlePlan(ctx, limiter, entries, carried);
+  if (sink === 'write') await assertReusedRootIsTree(ctx, plan);
   const ids = await buildAll(ctx, limiter, plan, sink);
   if (sink === 'repair') return { cacheTree: toRepairedCacheTree(plan, ids, tree) };
   return { cacheTree: toCacheTreeEntry(plan, ids), rootTree: ids[ROOT] as ObjectId };

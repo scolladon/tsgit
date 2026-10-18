@@ -10,6 +10,7 @@ import {
 } from '../../primitives/internal/index-lock.js';
 import { scanTrackedEntries, verifiedBy } from '../../primitives/internal/scan-tracked-entries.js';
 import {
+  assertIsTree,
   isCacheTreeFullyValid,
   updateCacheTree,
 } from '../../primitives/internal/update-cache-tree.js';
@@ -32,6 +33,7 @@ const settleCacheTree = async (
   const settled = (await isCacheTreeFullyValid(ctx, carried)) ? carried : undefined;
   const verified = verifiedBy(scan);
   if (settled?.id !== undefined) {
+    await assertIsTree(ctx, settled.id);
     if (scan.refreshed.length > 0)
       await lock.commit(entries, 'update', { cacheTree: settled, verified });
     return settled.id;
