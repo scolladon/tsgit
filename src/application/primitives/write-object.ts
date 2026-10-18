@@ -21,7 +21,7 @@ import {
   repoSettingsVerdictSettled,
 } from './internal/repo-settings-gate.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
-import { commonGitDir, looseObjectPath, objectsDir } from './path-layout.js';
+import { commonGitDir, looseObjectPath } from './path-layout.js';
 import { hasDeclaredId } from './validators.js';
 
 interface Serialized {
@@ -62,7 +62,6 @@ const isValidLooseLevel = (level: number | undefined): level is number =>
 
 async function storeLoose(ctx: Context, bytes: Uint8Array, id: ObjectId): Promise<ObjectId> {
   const looseLevel = (await readConfig(ctx)).core?.looseCompression;
-  await ctx.fs.mkdir(objectsDir(commonGitDir(ctx), id.slice(0, 2)));
   const path = looseObjectPath(commonGitDir(ctx), id);
   const compressed = isValidLooseLevel(looseLevel)
     ? await ctx.compressor.deflate(bytes, looseLevel)
