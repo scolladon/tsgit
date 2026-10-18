@@ -1410,6 +1410,48 @@ describe('materializeTree carrying staged changes (headTree)', () => {
     });
   });
 
+  describe('Given the sparse patterns select b only', () => {
+    const sparse = (path: string): boolean => path === 'b';
+
+    describe('When c, outside the patterns, is deleted from the index and unchanged between head and target', () => {
+      it('Then the deletion is kept: no entry for c', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await ctx.fs.rm(`${ctx.layout.workDir}/c`);
+        const currentIndex = indexOf([makeIndexEntry('b', blobs.old as ObjectId)]);
+
+        // Act
+        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree, sparse });
+
+        // Assert
+        expect(result.newIndexEntries.some((e) => e.path === ('c' as FilePath))).toBe(false);
+        expect(await readWork(ctx, 'c')).toBeUndefined();
+      });
+    });
+
+    describe('When n, outside the patterns, is staged although neither head nor target has it', () => {
+      it('Then n stays in the index as skip-worktree and its work file goes', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await writeWork(ctx, 'n', 'staged');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+          makeIndexEntry('n', blobs.staged as ObjectId),
+        ]);
+
+        // Act
+        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree, sparse });
+
+        // Assert
+        const staged = result.newIndexEntries.find((e) => e.path === ('n' as FilePath));
+        expect(staged?.id).toBe(blobs.staged);
+        expect(staged?.flags.skipWorktree).toBe(true);
+        expect(await readWork(ctx, 'n')).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a target that only flips the mode of b to executable', () => {
     describe('When the index still equals head', () => {
       it('Then b takes the target mode in the index', async () => {

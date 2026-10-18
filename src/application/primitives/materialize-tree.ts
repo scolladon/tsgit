@@ -284,14 +284,19 @@ interface CarriedOpts {
   readonly carried: ReadonlyArray<IndexEntry>;
 }
 
-/** git re-evaluates the sparse patterns of every path, so these never stay put. */
+/**
+ * git re-evaluates the sparse patterns of every path the index holds, so these
+ * never stay put; a path absent from the index (a staged deletion) stays absent.
+ */
 const sparseMovers = (
   sparse: SparseMatcher | undefined,
   target: ReadonlyArray<TargetEntry>,
   index: ReadonlyArray<IndexEntry>,
 ): Set<IndexPathKey> => {
   if (sparse === undefined) return new Set();
-  const outside = [...target, ...index].filter((e) => !sparse(e.path));
+  const indexed = new Set(index.map(indexPathKey));
+  const heldByIndex = target.filter((e) => indexed.has(indexPathKey(e)));
+  const outside = [...heldByIndex, ...index].filter((e) => !sparse(e.path));
   const hidden = index.filter((e) => e.flags.skipWorktree);
   return new Set([...outside, ...hidden].map(indexPathKey));
 };
@@ -307,23 +312,41 @@ const carryHeadAgreement = async (
   const stageZero = opts.currentIndex.entries.filter((e) => e.flags.stage === 0);
   const carry = carryStagedChanges(head, allTarget, stageZero);
   const { refused } = carry;
-  const movers = sparseMovers(opts.sparse, allTarget, stageZero);
-  const kept = new Set([...carry.kept].filter((key) => !movers.has(key)));
   if (refused.length > 0) {
     throw checkoutOverwriteDirty({ localChanges: [...refused].sort(comparePaths), untracked: [] });
   }
+  const movers = sparseMovers(opts.sparse, allTarget, stageZero);
+  const kept = new Set([...carry.kept].filter((key) => !movers.has(key)));
   const carried = stageZero.filter((e) => kept.has(indexPathKey(e)));
+  const carriedSet = new Set(carried);
   return {
     opts: {
       ...opts,
       currentIndex: {
         ...opts.currentIndex,
-        entries: opts.currentIndex.entries.filter((e) => !carried.includes(e)),
+        entries: opts.currentIndex.entries.filter((e) => !carriedSet.has(e)),
       },
     },
-    allTarget: allTarget.filter((e) => !kept.has(indexPathKey(e))),
+    allTarget: [
+      ...allTarget.filter((e) => !kept.has(indexPathKey(e))),
+      ...stagedOutsideTarget(stageZero, allTarget, carry.kept, movers),
+    ],
     carried,
   };
+};
+
+/** A staged path the target lacks and the patterns exclude still belongs to the index, as skip-worktree. */
+const stagedOutsideTarget = (
+  stageZero: ReadonlyArray<IndexEntry>,
+  allTarget: ReadonlyArray<TargetEntry>,
+  kept: ReadonlySet<IndexPathKey>,
+  movers: ReadonlySet<IndexPathKey>,
+): IndexEntry[] => {
+  const inTarget = new Set(allTarget.map(indexPathKey));
+  return stageZero.filter((e) => {
+    const key = indexPathKey(e);
+    return kept.has(key) && movers.has(key) && !inTarget.has(key);
+  });
 };
 
 export const materializeTree = async (

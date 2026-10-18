@@ -11,7 +11,7 @@
  *   unique:         replace writers leave the same cache-tree bytes as git
  *   interopSurface: index
  */
-import { mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -509,7 +509,38 @@ const SWITCH_ROWS: ReadonlyArray<SwitchRow> = [
     refuses: false,
     probe: 'c/f',
   },
+  {
+    title: 'an out-of-pattern c/f deleted from the index under a cone on b',
+    prepare: async (dir) => {
+      await coneOnB(dir);
+      git(dir, 'rm', '-q', '--cached', '--sparse', 'c/f');
+    },
+    refuses: false,
+    probe: 'c/f',
+  },
+  {
+    title: 'an out-of-pattern n/f staged under a cone on b',
+    prepare: async (dir) => {
+      await coneOnB(dir);
+      await write(dir, 'n/f', 'new\n');
+      const blob = git(dir, 'hash-object', '-w', 'n/f').trim();
+      await rm(path.join(dir, 'n'), { recursive: true });
+      git(dir, 'update-index', '--add', '--cacheinfo', `100644,${blob},n/f`);
+    },
+    refuses: false,
+    probe: 'n/f',
+  },
 ];
+
+/** The sparse patterns land in the shared config, where tsgit reads them. */
+const coneOnB = async (dir: string): Promise<void> => {
+  git(dir, 'sparse-checkout', 'set', '--cone', 'b');
+  for (const key of ['core.sparseCheckout', 'core.sparseCheckoutCone']) {
+    git(dir, 'config', '--worktree', '--unset', key);
+    git(dir, 'config', key, 'true');
+  }
+  git(dir, 'config', '--unset', 'extensions.worktreeConfig');
+};
 
 const tsgitRefusalOf = async (ctx: Context): Promise<string | undefined> => {
   try {
@@ -553,7 +584,7 @@ const describeSwitchRow = (row: SwitchRow): void => {
       it('Then the staged entries and the status equal git', () => {
         // Arrange + Assert
         for (const args of [
-          ['ls-files', '-s'],
+          ['ls-files', '-s', '-t'],
           ['status', '--porcelain'],
         ]) {
           expect(git(pair.ours, ...args)).toBe(git(pair.peer, ...args));
