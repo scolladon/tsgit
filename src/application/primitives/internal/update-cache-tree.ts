@@ -18,7 +18,7 @@ import {
 import { treeEntry } from '../../../domain/objects/tree.js';
 import type { Context } from '../../../ports/context.js';
 import { hasObject } from '../has-object.js';
-import { readObject } from '../read-object.js';
+import { readDeclaredObjectHeader } from '../read-object.js';
 import { writeTree } from '../write-tree.js';
 import { limiterFor } from './concurrency.js';
 import type { ConcurrencyLimiter } from './concurrency-limiter.js';
@@ -46,7 +46,7 @@ const presentIn = async (ctx: Context, id: ObjectId): Promise<boolean> =>
 /** A root a commit is about to name must be a tree, whatever the carried TREE claims. */
 export const assertIsTree = async (ctx: Context, id: ObjectId): Promise<void> => {
   if (id === emptyTreeOid(ctx.hashConfig)) return;
-  const { type } = await readObject(ctx, id);
+  const { type } = await readDeclaredObjectHeader(ctx, id);
   if (type !== 'tree') throw unexpectedObjectType('tree', type, id);
 };
 
