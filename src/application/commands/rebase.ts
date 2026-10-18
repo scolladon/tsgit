@@ -100,7 +100,7 @@ import {
 } from './internal/rebase-state.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
-import { writeIndexCacheTree } from './internal/write-index-cache-tree.js';
+import { writeContinuedIndex } from './internal/write-index-cache-tree.js';
 import { applyAutostash, createAutostash } from './stash.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
@@ -722,7 +722,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
 
 /** Commit the resolved stop (unless it matches HEAD) and replay the rest of the todo. */
 const continueStop = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
-  const tree = await writeIndexCacheTree(ctx);
+  const tree = await writeContinuedIndex(ctx);
   const stopped = stoppedCommit(state);
   const currentHead = await resolveRef(ctx, HEAD);
   const rc = replayContextOf(state);
@@ -1584,7 +1584,7 @@ const rebaseContinueInteractive = async (
     todo: commitEntries(state.remaining),
   };
   const rewritten = [...(await readRewrittenList(ctx))];
-  const tree = await writeIndexCacheTree(ctx);
+  const tree = await writeContinuedIndex(ctx);
   const currentHead = await resolveRef(ctx, HEAD);
   const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
   // git's `commit_staged_changes` drops AUTO_MERGE once it commits the stop.

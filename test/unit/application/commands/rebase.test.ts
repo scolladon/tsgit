@@ -15,6 +15,7 @@ import {
 } from '../../../../src/application/commands/rebase.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { status } from '../../../../src/application/commands/status.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
@@ -728,6 +729,7 @@ describe('rebaseContinue', () => {
       it('Then the index TREE is fully valid and names the resolution tree', async () => {
         // Arrange
         const ctx = await seedConflict();
+        await status(ctx);
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
         await add(ctx, ['f.txt']);
         const before = carriedCacheTreeOf(

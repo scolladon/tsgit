@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { writeIndexCacheTree } from '../../../../../src/application/commands/internal/write-index-cache-tree.js';
+import {
+  writeContinuedIndex,
+  writeIndexCacheTree,
+} from '../../../../../src/application/commands/internal/write-index-cache-tree.js';
 import {
   invalidateIndexCache,
   readIndex,
@@ -358,6 +361,85 @@ describe('writeIndexCacheTree stat refresh', () => {
           String(p).startsWith(`${ctx.layout.workDir}/`),
         );
         expect(worktreeCalls).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('writeContinuedIndex', () => {
+  const T = 1_800_000_000_000;
+  const at = (offsetSeconds: number): void => {
+    vi.setSystemTime(T + offsetSeconds * 1000);
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A settled repository whose a/f was then re-staged: the TREE chain to the root is invalid. */
+  const seedInvalidated = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    at(0);
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/f`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+    at(2);
+    await add(ctx, ['a/f', 'b/f']);
+    at(3);
+    await writeIndexCacheTree(ctx);
+    at(5);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/f`, 'a2');
+    await add(ctx, ['a/f']);
+    return ctx;
+  };
+
+  const stagedEntry = async (ctx: Context, path: string) => {
+    invalidateIndexCache(ctx);
+    return (await readIndex(ctx)).entries.find((e) => e.path === (path as FilePath));
+  };
+
+  describe('Given an invalid TREE and a clean file touched since it was staged', () => {
+    describe('When the continue pass runs', () => {
+      it('Then the stat is refreshed, TREE stays invalid and the root tree is returned', async () => {
+        // Arrange
+        const ctx = await seedInvalidated();
+        at(6);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+        at(8);
+        const expected = await synthesizeTreeFromIndex(ctx, (await readIndex(ctx)).entries);
+        const sut = writeContinuedIndex;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/b/f`);
+        expect(result).toBe(expected);
+        expect((await stagedEntry(ctx, 'b/f'))?.mtimeSeconds).toBe(Math.floor(stat.mtimeMs / 1000));
+        expect((await carriedOf(ctx))?.entryCount).toBe(-1);
+      });
+    });
+  });
+
+  describe('Given an invalid TREE and nothing touched', () => {
+    describe('When the continue pass runs', () => {
+      it('Then TREE is rebuilt valid and names the returned root', async () => {
+        // Arrange
+        const ctx = await seedInvalidated();
+        at(8);
+        const sut = writeContinuedIndex;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        const carried = await carriedOf(ctx);
+        expect(carried?.entryCount).toBeGreaterThanOrEqual(0);
+        expect(carried?.id).toBe(result);
       });
     });
   });

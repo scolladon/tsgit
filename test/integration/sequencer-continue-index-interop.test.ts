@@ -74,10 +74,11 @@ const buildBase = async (dir: string): Promise<void> => {
 
 const settleStats = async (dir: string): Promise<void> => {
   const past = secondsAgo(PAST_SECONDS);
-  for (const file of git(dir, 'ls-files').split('\n').filter(Boolean)) {
+  for (const file of new Set(git(dir, 'ls-files').split('\n').filter(Boolean))) {
     await utimes(path.join(dir, file), past, past);
   }
-  git(dir, 'update-index', '--refresh');
+  // Unmerged paths make `--refresh` exit 1 after it has refreshed the others.
+  tryRunGit(['-C', dir, 'update-index', '--refresh']);
 };
 
 interface Operation {
@@ -145,6 +146,7 @@ const play = async (
   const ours = createNodeContext({ workDir: pair.ours });
   operation.gitStop(pair.peer);
   await operation.tsgitStop(ours);
+  for (const dir of [pair.peer, pair.ours]) await settleStats(dir);
   const touched = secondsAgo(TOUCH_SECONDS);
   for (const dir of [pair.peer, pair.ours]) {
     await write(dir, 'a/f', RESOLVED);
@@ -211,6 +213,16 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer continue index interop', () => {
 
         afterAll(async () => {
           await outcome.pair.dispose();
+        });
+
+        it('Then TREE bytes equal git', async () => {
+          // Arrange + Act
+          const ours = await extensionOf(outcome.ours, 'TREE');
+          const peer = await extensionOf(outcome.peer, 'TREE');
+
+          // Assert
+          expect(peer).toBeDefined();
+          expect(ours).toEqual(peer);
         });
 
         it('Then the touched entry carries the file mtime, as in git', async () => {
