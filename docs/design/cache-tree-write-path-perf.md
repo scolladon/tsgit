@@ -2,12 +2,13 @@
 
 > Brief: backlog **31.10** (all) + **31.11** (all), one PR. `commit` maintains the `TREE` extension at O(change)
 > the way git's `cache_tree_update` does, writes it into the index, and stops rebuilding every directory tree on
-> every commit. `unpack_trees`-class writers produce git's `TREE` bytes, which closes ADR-964's named divergence.
-> `rm` records `REUC`. Loose object writes drop the per-write fanout `mkdir`. Checkout writes a file in git's
+> every commit (ADR-1007, ADR-1010). Before that update it refreshes entry stats as git's `prepare_index` does
+> (ADR-1008). `unpack_trees`-class writers produce git's `TREE` bytes, which closes ADR-964's named divergence
+> (ADR-1009). `rm` records `REUC` and runs during a pending operation (ADR-1012). Loose object writes drop the per-write fanout `mkdir`. Checkout writes a file in git's
 > syscall shape (`mode` at create, post-write `fstat`, buffered small writes). Literal-path `add` stats each path
 > once and stages through the pool. Status-family joins, the ignore matcher and `ancestorsOf` lose their
 > avoidable allocations. Benches for each.
-> Status: draft → self-reviewed ×3
+> Status: revised against ADR-1007…ADR-1017 (decisions settled, §Decisions) → self-reviewed
 
 <!-- cspell:ignore fanout utime utimes lstat lstats fstat umask REUC UNTR ewah mkstemp oids oid ITA ita bytewise unpack_trees dirmask rawsz ino inode mtime mtimes mktree subtrees subtree's LIFO fsync lutimes rwxr IFGITLINK ISSPARSEDIR mainc stagedc -->
 
@@ -19,12 +20,13 @@
 |---|---|
 | ADR-226 / CLAUDE.md (git-faithfulness) | Every rule below comes from the pinned matrix (§D1) or from git `v2.55.0` source read at the cited function. Where the backlog text disagrees with the pins (it claims `writeObject` deflates before probing; it does not), the pin wins. |
 | ADR-249 (structured data only) | No new option steers rendering. The only new data is `FileSystem.write`'s `mode` option and its returned `FileStat`. |
-| ADR-964 | Chain invalidation for in-place writers stays. Its named divergence (replace writers leave changed chains invalid where git recomputes) is closed here. §D3 supersedes the divergence clause only. |
-| ADR-965 | `IndexLock.commit(entries, kind, options)` stays the single index write path. This design adds one option (`cacheTree`) and changes what `'replace'` does to `TREE`. |
+| ADR-964 / ADR-1009 | Chain invalidation for in-place writers stays. Its named divergence (replace writers leave changed chains invalid where git recomputes) is closed here: ADR-1009 supersedes the divergence clause only (§D3). |
+| ADR-1007 … ADR-1017 | The settled decisions of this design. §Decisions maps each to its section. |
+| ADR-965 | `IndexLock.commit(entries, kind, options)` stays the single index write path. This design adds two options (`cacheTree`, and `verified` for the racy smudge, §D2.5) and changes what `'replace'` does to `TREE`. |
 | ADR-966 | Index entries are bytewise-ordered. The cache-tree update scans contiguous regions of that order (§D2.2). |
 | ADR-623 | `fsck` exit bit 8 = a cache-tree oid that fails to parse. Invariant kept: tsgit never writes a valid `TREE` node whose oid it did not compute, check for existence, or carry unchanged. |
 | ADR-963 | Unknown optional extensions are still dropped on every write. |
-| ADR-511 / 949 | Every index write goes through `makeLock().commit`, which smudges racily-clean entries. The new `commit` index write gets that too. |
+| ADR-511 / 949 | Every index write goes through `makeLock().commit`, which smudges racily-clean entries. The new `commit` index write gets that too, with the refresh's unchanged set passed as `verified` (§D2.5). |
 | ADR-171 | `OPERATION_IN_PROGRESS` is the pending-operation refusal. `add` already excepts merge/cherry-pick/revert/rebase. §D5 gives `rm` the same exceptions. |
 | Port contract `src/ports/file-system.ts` `writeExclusive` | "The adapter MUST ensure parent directories exist ... retries once ... a second ENOENT propagates as FILE_NOT_FOUND." All three adapters honour it today (§D4.1). |
 
@@ -43,6 +45,9 @@ this worktree. Each recipe is in §Pin recipes. Each ran 2× with identical resu
 | Existence | `src/application/primitives/has-object.ts` — `hasObject(ctx, id, { mode: 'quick' \| 'recheck' })` (`'recheck'` = git's `ODB_HAS_OBJECT_RECHECK_PACKED`) | Reused by the cache-tree validity check. |
 | `TREE` codec | `src/domain/git-index/cache-tree.ts` — `serializeCacheTree(root, digestLength)`, `invalidateCacheTree(root, paths)`, `namesEachSubtreeOnce`; parser `index-parser.ts` `parseCacheTree(data, digestLength)`; model `index-entry.ts` `CacheTreeEntry { path, nameBytes?, entryCount, subtreeCount, id?, children }` | Reused. New sibling module (§D2.2). |
 | Carry policy | `src/domain/git-index/carry-extensions.ts` — `carryExtensions(previous, change, kind, settings)`, `withResolveUndo`, `withRestagedPaths`; `diff-index-entries.ts` `diffIndexEntries` | `TREE` for `'replace'` moves out of the pure carry into the lock (§D3.2). |
+| Stat refresh | `src/application/primitives/compare-working-tree-entry.ts` — `compareAndRefresh(ctx, entry, scope)` (L256: one `lstat`, `statOnlyVerdict`, content compare only when the stat is not conclusive or the entry is racy; `refreshed = withStatData(entry, stat)` iff `unchanged` and `shouldRefresh`), `shouldRefresh` (L247: stage 0, not assume-valid / skip-worktree / ITA, content stat differs); `internal/index-entry-from-stat.ts` `withStatData` (L18) | Reused by `commit` (§D2.5). |
+| Status tracked scan | `src/application/commands/status.ts` — `TrackedScan` (L250), `updateIndexIfAble` (L257: writes when `refreshed.length > 0` **or** `hasRacyTimestamp`), `scanTrackedTree` (L274), `scanEntry` (L324: skips skip-worktree), `ScannedEntry` (L340), `scanWorkingTree` (L346: `boundedMapFor(ctx, 'ioBound', …)`, `inIndexOrder` when a filter driver is configured), `trackedScanOf` (L370); `status` runs inside `withFilterProcessPool` (L155) | Scan **extracted** into a primitive shared with `commit` (§D2.5). Status's write trigger unchanged. |
+| Racy smudge | `src/application/primitives/internal/smudge-racily-clean.ts` — `smudgeRacilyClean(ctx, entries, previous, verified = NOTHING_VERIFIED)` (L120), `IsVerified`; `index-lock.ts` `withRefreshedStat` (L229, private), `commitRefresh` | Reused. `commitLocked` gains a `verified` passthrough; `withRefreshedStat` is exported (§D2.5). |
 | Index lock | `src/application/primitives/internal/index-lock.ts` — `IndexLock.commit(entries, kind, options?)`, `CommitOptions { restagedPaths?, resolveUndo? }`, `carriedByRule`, `carriedExtensions` (returns `[]` without a previous index), `commitLocked`, `stageLock` | **Changed** (§D2.4, §D3.2). |
 | `REUC` record | `src/domain/git-index/resolve-undo.ts` `resolveUndoRecordOf(stages)` (L191); used by `add.ts` `resolvedRecords` (L1187) → `CommitOptions.resolveUndo` | Reused by `rm` (§D5). |
 | `rm` | `src/application/commands/rm.ts` `rm(ctx, paths, opts)`: `assertNoPendingOperation(ctx)` with **no** exceptions; `byPath: Map<IndexPathKey, IndexEntry>` keyed by path only (the stages of one path collapse to the last); `lock.commit(…, 'update')` | **Changed** (§D5). |
@@ -118,15 +123,17 @@ recipes. "Rewritten" = `.git/index` got a new inode (lock-file rename). git sour
 
 - **R1** After a successful `commit`, the index carries a `TREE` byte-identical to the one `git commit` writes for
   the same index (§D1.1), and the commit's tree oid is unchanged except where R10 corrects it.
-- **R2** `commit` rewrites the index exactly when git does in the cases tsgit models (§D1.2): when the `TREE` read
-  is not fully valid. It writes **before** the pre-commit hook and the nothing-to-commit/empty-message refusals, so a
-  refused commit still leaves the updated `TREE`. An unmerged index refuses before any write.
+- **R2** `commit` refreshes entry stats the way git's `refresh_cache` does, then rewrites the index exactly when git
+  does (§D1.2, ADR-1008): iff a stat was refreshed or the `TREE` read is not fully valid. A racy timestamp alone does
+  not trigger the write (CW5), unlike `status`. It writes **before** the pre-commit hook and the
+  nothing-to-commit/empty-message refusals, so a refused commit still leaves the updated `TREE`. An unmerged index
+  refuses before any refresh or write.
 - **R3** `commit` does O(change) tree work: a `TREE` node that is valid and whose object exists is reused without
   serialising, hashing, writing or freshening it (git `update_one`).
 - **R4** Every `'replace'` index write (checkout of a branch, `reset --hard`, merge family, stash, pull, clone,
   worktree add) produces git's `TREE` bytes (§D1.3–§D1.4): carried nodes invalidated along changed paths, then
   repaired by hashing (valid iff the object exists), then the writer's in-place re-staged paths invalidated.
-- **R5** In-place writers (`'update'`) are unchanged (ADR-964).
+- **R5** In-place writers (`'update'`) are unchanged (ADR-964, carried forward by ADR-1009).
 - **R6** `rm` of an unmerged path records its stages in `REUC` (git `remove_index_entry_at` → `record_resolve_undo`),
   and `rm` runs during a pending merge/cherry-pick/revert/rebase like git does (§D1.5).
 - **R7** `writeObject` never `mkdir`s the fanout directory before a write. A fanout directory removed concurrently
@@ -135,7 +142,7 @@ recipes. "Rewritten" = `.git/index` got a new inode (lock-file rename). git sour
   platform), writes it, and builds the index entry from the post-write `fstat` (§D1.6, §D6).
 - **R9** Literal-path `add` stats each path once and stages through the bounded pool, in index order (§D7).
 - **R10** `commit` excludes intent-to-add entries from the tree and marks their directory chain invalid, as git does
-  (§D1.1 rows C7/I1). Today tsgit commits them (proven, §D1.1 T2).
+  (§D1.1 rows C7/I1). Today tsgit commits them (proven, §D1.1 T2). User-ratified fold, ADR-1007.
 - **R11** Joins and the ignore matcher return identical results with fewer allocations (§D8–§D9).
 - **R12** Benches show each targeted path (§D10).
 - **R13** SHA-256 repositories: every `TREE` oid uses `ctx.hashConfig.digestLength`.
@@ -193,7 +200,20 @@ written again.
 | CW4 | unmerged entries | `commit` → refused ("Committing is not possible because you have unmerged files") | no | unchanged |
 | C8 | `b` invalid; hook stages `c` | `commit` | the pre-hook write (b valid), then the hook's own write (c invalid). No third write | as C8 |
 
-tsgit has no commit-time stat refresh (CW2). §Decisions DC-2 decides whether this PR adds it.
+tsgit has no commit-time stat refresh today (CW2). ADR-1008 ports it (§D2.5). The rows below pin how git's refresh
+meets racy entries (pin-commit-refresh.zsh, pin-commit-smudge.zsh; 2× each, identical, 2026-10-18 ~11:25 Paris).
+
+| Row | Before | Step | Rewritten? | Reading |
+|---|---|---|---|---|
+| CW5 | fully valid, `.git/index` mtime backdated (every entry racy), no stat moved | `commit --allow-empty` | **no** | refresh content-checks racy entries, finds them unchanged, marks them up to date; `SKIP_IF_UNCHANGED` has no racy term |
+| CW5c | same | `status` | **yes** | `repo_update_index_if_able` writes on `has_racy_timestamp`: status's trigger, not commit's |
+| CW6 | fully valid, `b/f` content changed, not staged | `commit --allow-empty` | **no** | a modified entry is not refreshed (quiet) and changes nothing |
+| CW7 | fully valid, index backdated, `touch b/f` | `commit --allow-empty` | **yes** | `b/f` refreshed (`size` intact); the racy unchanged `a/f` is up to date, so not smudged |
+| CW8 | `core.trustctime=false`; `b/f` racy, same size/mtime/inode, new content; `touch a/f` | `commit --allow-empty` | **yes** | `a/f` refreshed; `b/f` not up to date and racy → smudged, `size: 0` (`do_write_index`, ADR-949) |
+
+The pin `pin-continue-refresh.zsh` (2×, identical) shows `cherry-pick --continue` and `rebase --continue` refresh a
+touched clean file's stat too (`a/f` index mtime moves to the file's). tsgit's continue routes do not refresh:
+`compareAndRefresh`'s `refreshed` is consumed only by `status.ts`, the sole caller of `commitRefresh` (grep). See DC-10.
 
 #### D1.3 `unpack_trees`-class writers (pin-unpack.zsh)
 
@@ -275,7 +295,8 @@ tsgit), `repair` runs over all directories (U19/U20).
 
 tsgit today: `UNTR` is forwarded iff the tracked set did not change, else dropped (`carryUntracked`). U5 is where they
 differ: git updates, tsgit drops. With the config `true`, the next git `status` rebuilds it (U1). With the config unset,
-an `UNTR` created by `git update-index --untracked-cache` stays lost. §Decisions DC-3.
+an `UNTR` created by `git update-index --untracked-cache` stays lost. ADR-1014 keeps the rule and names the
+divergence.
 
 #### D1.6 Checkout file creation (pin-umask.zsh, pin-tsgit-umask.mjs; `entry.c`)
 
@@ -289,16 +310,20 @@ occupant. There is no `chmod`.
 | M1 / T1 | 027 | `-rw-r-----` / `-rwxr-x---` | `644` / `755` (explicit `chmod`) — **divergence** |
 | M2 | 077 | `-rw-------` / `-rwx------` | (not run; same mechanism) |
 
-Creating with git's mode and dropping the `chmod` is both the syscall fix and the faithfulness fix.
+Creating with git's mode and dropping the `chmod` is both the syscall fix and the faithfulness fix (user-ratified fold,
+ADR-1013).
 
 ### D2. `commit` maintains `TREE` (31.10 core)
 
 #### D2.1 Shape
 
 ```
-lock → read index → reject unmerged → carried = parse(TREE)
-  ├─ fullyValid(carried)  → release lock (no write)                      [CW1, CW3]
-  └─ else update(write)   → lock.commit(entries, 'update', { cacheTree })  [C1, C3, C4, C5, C7]
+lock → read index → reject unmerged → refresh stats (§D2.5) → carried = parse(TREE)
+  ├─ nothing refreshed ∧ fullyValid(carried) → release lock (no write)         [CW1, CW3, CW5, CW6]
+  ├─ refreshed ∧ fullyValid(carried)         → lock.commit(refreshedEntries, 'update',
+  │                                              { cacheTree: carried, verified })  [CW2, CW7, CW8]
+  └─ ¬fullyValid(carried)                    → update(write) → lock.commit(refreshedEntries, 'update',
+                                                 { cacheTree, verified })            [C1, C3, C4, C5, C7]
 pre-commit hook
   ├─ hook ran → re-read index → update(write) in memory (no index write)  [C8]
   └─ no hook  → tree = the root oid from the pass above
@@ -306,6 +331,8 @@ parent-tree equality / message hooks / createCommit / ref update          (uncha
 ```
 
 The lock is released before the hook (git commits it: `COMMIT_LOCK`). The hook's own `git add` must be able to take it.
+A fully valid `TREE` needs no update pass when only stats moved: git's `cache_tree_update` over a fully valid tree
+reuses every node, so the bytes are the carried ones (CW2).
 
 #### D2.2 Domain core — `src/domain/git-index/cache-tree-update.ts` (new)
 
@@ -361,7 +388,7 @@ export const updateCacheTree = (
 export const isCacheTreeFullyValid = (ctx: Context, root: CacheTreeEntry | undefined): Promise<boolean>;
 ```
 
-- Reused node: `hasObject(ctx, id, { mode: 'recheck' })`. **No freshen, no `utime`** (git: `odb_has_object`). §DC-4.
+- Reused node: `hasObject(ctx, id, { mode: 'recheck' })`. **No freshen, no `utime`** (git: `odb_has_object`). ADR-1010.
 - Build in `'write'` mode: `writeTree(ctx, treeEntries)` → `writeObject` (probe/freshen/write, unchanged). In
   `'repair'` mode: `serializeAndHash` only, then `hasObject(…, 'recheck')`. Missing → the node and its ancestors become
   `-1`.
@@ -376,10 +403,12 @@ export const isCacheTreeFullyValid = (ctx: Context, root: CacheTreeEntry | undef
 
 - Delete `buildTreeFromIndex`, `insertEntry`, `writeSubtree`, `componentsOf`, `componentKey`, `SubtreeNode`,
   `TreeName`, and the `boundedMapFor` import.
-- New `prepareIndexTree(ctx): Promise<ObjectId | undefined>` (≤20 lines): acquire the lock, `readIndex`,
-  `rejectUnmergedIndex`, parse the carried `TREE` (a parse failure counts as no `TREE`, as `carryTree` does), then the
-  fully-valid / update+write branch of §D2.1, with `finally lock.release()`. It returns the root oid when no hook can
-  change the index.
+- New `prepareIndexTree(ctx): Promise<ObjectId | undefined>` (≤20 lines; split the branch of §D2.1 into a helper):
+  acquire the lock, `readIndex` (under the lock, so `indexMtime` is the racy reference of ADR-949),
+  `rejectUnmergedIndex`, the stat refresh of §D2.5 (P4b), parse the carried `TREE` (a parse failure counts as no
+  `TREE`, as `carryTree` does), then the branch of §D2.1, with `finally lock.release()`. It returns the root oid when
+  no hook can change the index. P4 lands it without the refresh (write iff not fully valid); P4b inserts the refresh
+  and widens the trigger.
 - Move `runPreCommitHook` after `prepareIndexTree` (git order, C8). If the hook ran, re-read the index and call
   `updateCacheTree(…, 'write')` in memory for the tree oid. Whether a hook ran: extend `runPreCommitHook` to return a
   boolean (invoked or not), from the hook runner's "no hook file" outcome. Check its current signature in
@@ -390,7 +419,71 @@ export const isCacheTreeFullyValid = (ctx: Context, root: CacheTreeEntry | undef
 - Refusal order kept: config/pending/hook-config refusals that precede `prepare_index` in git stay before the lock.
   The empty-message and nothing-to-commit refusals now come **after** the index write (C4, C5).
 
-### D3. `unpack_trees`-class writers produce git's `TREE` (closes ADR-964's divergence)
+#### D2.5 `commit` refreshes entry stats (ADR-1008)
+
+git (`builtin/commit.c` `prepare_index` → `refresh_cache(REFRESH_QUIET)` → `read-cache.c` `refresh_index` →
+`refresh_cache_ent`), per entry, against tsgit's `compareAndRefresh` + `shouldRefresh` + status's `scanEntry`:
+
+| Entry | git | tsgit (shared scan) | Same outcome |
+|---|---|---|---|
+| unmerged | not reached: commit refuses first (CW4) | `rejectUnmergedIndex` precedes the refresh | yes |
+| skip-worktree | `ce_mark_uptodate`, no `lstat` (F1: touched, not refreshed, no write) | `scanEntry` skips it | yes |
+| assume-valid (`CE_VALID`) | `ce_mark_uptodate`, no `lstat` (F2) | `lstat`, `shouldRefresh` false | yes (one extra `lstat`, no data change) |
+| intent-to-add | `ie_match_stat` reports it changed: never refreshed (F3: entry mtime stays 0) | `shouldRefresh` false | yes |
+| gitlink | compares the submodule HEAD; stat never filled (F4: touched, no write) | delta never `unchanged` | yes |
+| stat matches, not racy | up to date | `statOnlyVerdict` unchanged, no refresh | yes |
+| stat matches, racy, same content | content check, up to date, not refreshed (CW5) | content compare unchanged, not refreshed, **verified** | yes |
+| stat matches, racy, new content | not up to date; smudged if the index is written (CW8) | `modified`, not verified → `smudgeRacilyClean` zeroes `fileSize` | yes |
+| stat moved, same content | refreshed, `cache_changed` (CW2) | `refreshed = withStatData(entry, stat)` | yes |
+| stat moved, new content | left as is, quiet (CW6) | `modified`, not refreshed | yes |
+
+F1–F4 come from pin-commit-refresh-flags.zsh (2×, identical): a touched entry of that kind keeps its index mtime and,
+with a valid `TREE`, the commit writes nothing. F5 (a plain file) is the control: refreshed and written.
+
+Write trigger: git writes with `COMMIT_LOCK | SKIP_IF_UNCHANGED`, i.e. iff `cache_changed` (a refreshed entry, or the
+cache-tree update). There is **no** `has_racy_timestamp` term: that term belongs to `repo_update_index_if_able`
+(status, CW5c). So commit's trigger is `statRefreshed || !cacheTreeFullyValid`, and status's `updateIndexIfAble`
+keeps its own `refreshed ∨ racy` trigger. The two share the per-entry refresh, not the trigger.
+
+Reuse, not a second comparator:
+
+```ts
+// src/application/primitives/internal/scan-tracked-entries.ts (new; bodies moved from status.ts)
+export interface TrackedScan {
+  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly refreshed: ReadonlyArray<IndexEntry>;
+}
+export const scanTrackedEntries = (
+  ctx: Context, index: GitIndex, stage0: ReadonlyArray<IndexEntry>, onScanned: () => void,
+): Promise<TrackedScan>;
+/** git's CE_UPTODATE: the scan found the path unchanged, by stat or by content. */
+export const verifiedBy = (scan: TrackedScan): IsVerified;
+```
+
+- The bodies of `scanTrackedTree` (minus the tracker), `scanEntry`, `scanWorkingTree`, `trackedScanOf` move verbatim:
+  one `compareAndRefresh` per entry through the `ioBound` pool, clean drivers heard in index order (`inIndexOrder`),
+  the check-in attribute provider built once. `onScanned` replaces the progress tracker, because a primitive cannot
+  import `commands/internal/progress-tracker.ts`. Status passes `tracker.tick`; commit passes a no-op (git's commit
+  refresh is `REFRESH_QUIET`).
+- `commit` wraps `prepareIndexTree` in `withFilterProcessPool` (scopes nest), as `status`/`add`/`checkout` do: a
+  stat-drifted file is content-compared through its clean filter, as in git's refresh.
+- `prepareIndexTree`: `scan = scanTrackedEntries(ctx, index, index.entries, noop)` (no unmerged entry survives the
+  refusal, so every entry is stage 0), `entries = withRefreshedStat(index, scan.refreshed)`, then §D2.1.
+- `index-lock.ts`: export `withRefreshedStat` unchanged. `CommitOptions.verified?: IsVerified` is passed by
+  `commitLocked` to `smudgeRacilyClean`. Without it the smudge re-`lstat`s and re-hashes every racy entry the scan
+  already verified: same bytes, double cost. A refreshed entry is never smudged either way: its stat differs from the
+  index as read, so it is not "carried over" (git: `fill_stat_cache_info` sets `CE_UPTODATE`).
+- `'update'` kind with entries that differ only in stat: `diffIndexEntries` reports no tracked-set change, so `REUC`
+  and `UNTR` are forwarded (E5, U4) and `cacheTree` overrides `TREE`.
+
+Cost: one `lstat` per stage-0, non-skip-worktree entry per commit, which git also pays. On the 500-directory row that
+is 2000 `lstat`s. A micro-measure (2000 `lstat({ bigint: true })` over 500 directories on APFS, pool width 16 and 64,
+3 runs, load 6–12) gave medians of 4.3–6.3 ms. §Evidence's clean status agrees: `lstat` is 13.1% of 52.3 ms ≈ 6.9 ms
+for the same 2000 files. Expected: +5–7 ms per commit on the 22.3 ms add+commit row, which takes back a large share of
+P4's saving. git's 27.3 ms on that row already includes its refresh. `bench:ab` P4→P4b isolates the refresh cost;
+base→P4b shows the net. ADR-1017 does not apply: the refresh is a faithfulness fix and ships whatever it costs.
+
+### D3. `unpack_trees`-class writers produce git's `TREE` (closes ADR-964's divergence, ADR-1009)
 
 #### D3.1 Rule
 
@@ -423,14 +516,16 @@ The exception is the two stash sites that pass `restagedPaths`.
 | `materialize-worktree-from-head.ts` (~L27), `worktree.ts` (~L212) | None (no previous index → full repair). |
 | `pull.ts` (~L446), `internal/pull-into-void.ts` (~L52), `cherry-pick.ts` (~L257), `revert.ts` (~L147), `internal/replay-sequence.ts` (~L188, ~L250), `internal/rebase-merges-steps.ts` (~L154, ~L157) | None. |
 
-#### D3.4 `write_index_as_tree` routes (§Decisions DC-5)
+#### D3.4 `write_index_as_tree` routes (ADR-1011)
 
 git's `write_index_as_tree` (`cache-tree.c`) updates the cache tree and **writes the index** when it was not fully
 valid. The sequencer `--continue` commits (Q1, Q2) reach it and leave a fully valid `TREE` with `REUC` kept. tsgit's
 equivalents build the tree through `synthesizeTreeFromIndex` and never write: `rebase.ts` `continueStop` (~L731) and
-the interactive resume (~L1593), `internal/replay-sequence.ts` finalise (~L403). With DC-5 = fold, these call
-a shared `writeIndexCacheTree(ctx)` (lock → read → fully-valid check → update + write; it lives in
-`internal/update-cache-tree.ts`, and `commit`'s `prepareIndexTree` is built on it). The stash push/apply
+the interactive resume (~L1593), `internal/replay-sequence.ts` finalise (~L403). Per ADR-1011, these call
+a shared `writeIndexCacheTree(ctx)` (lock → read → fully-valid check → update + write iff not fully valid; it lives
+in `internal/update-cache-tree.ts`, and `commit`'s `prepareIndexTree` shares its locked core). Whether these routes
+also run §D2.5's refresh, as git's do (pin-continue-refresh.zsh), is DC-10; the recommended (a) passes the same scan
+and widens the trigger exactly as in `prepareIndexTree`. The stash push/apply
 calls (`stash.ts` ~L364, ~L797) are followed by a replace write that overwrites `TREE` anyway, so they stay as they are.
 
 #### D3.5 Routes that bypass or re-admit the `TREE` invariant
@@ -442,9 +537,9 @@ exists. Every index writer must either keep it (in-place chain invalidation), re
 | Route | Today | After | Pin |
 |---|---|---|---|
 | `add` ×4 sites, `rm`, `mv`, mixed `reset`, `reset -- <p>`, `checkout [<tree>] -- <p>`, `apply-sparse-checkout`, `submodule add` | chain invalidation (`'update'`) | unchanged | sibling §D1.5, U5/U6/U17/U18 |
-| `commit` | no write | update (write) + index write | C1–C9, CW1–CW4 |
+| `commit` | no write | refresh (§D2.5) + update (write) + index write iff refreshed ∨ not fully valid | C1–C9, CW1–CW8 |
 | every `'replace'` site (§D3.3) | chain invalidation only | invalidate → repair → invalidate restaged | U1–U21, R1, S1–S4, Q3 |
-| sequencer `--continue` commits (§D3.4) | no write | update + write (DC-5) | Q1, Q2 |
+| sequencer `--continue` commits (§D3.4) | no write | update + write (ADR-1011); refresh per DC-10 | Q1, Q2 (+ Q1r, Q2r under DC-10 (a)) |
 | `status` refresh (`commitRefresh`) | `TREE` verbatim | unchanged | sibling E1 |
 | a pre-commit hook that writes the index | n/a | its write wins; commit does not rewrite after the hook | C8 |
 | an index from a third party with a `TREE` whose oid is missing | reused blindly by nobody | `hasObject` miss → rebuilt (write) or `-1` (repair) | covered by unit tests (no git pin: `fsck` territory) |
@@ -474,7 +569,7 @@ which is git's single-retry semantics. Expected effect: one `resolveWrite`+`mkdi
 `odb_freshen_object`). The 17.3% `utimeNow` share drops because valid subtrees are no longer written (§D2.3), not
 because freshen changes.
 
-### D5. `rm` records `REUC` and runs during a pending operation
+### D5. `rm` records `REUC` and runs during a pending operation (user-ratified fold, ADR-1012)
 
 - `rm.ts`: `assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] })`, the list `add.ts` (L197)
   uses. **Verify** with pin rows E2c/E2r (rm during cherry-pick/revert) in the part. The recipe is in pin-reuc-untr.zsh.
@@ -487,9 +582,9 @@ because freshen changes.
   worktree file differs (a recipe line in pin-reuc-untr.zsh, run during the part) before deciding whether
   `classifyEntries` needs a stage rule.
 
-### D6. Checkout write path and the `FileSystem.write` port (§Decisions DC-1)
+### D6. Checkout write path and the `FileSystem.write` port (ADR-1013)
 
-#### D6.1 Port (recommended shape, DC-1 option a)
+#### D6.1 Port (ADR-1013 option 1)
 
 ```ts
 // src/ports/file-system.ts
@@ -520,7 +615,7 @@ Windows: Node passes `mode` to `open`. Windows honours only the write bit, and `
   `ctx.fs.write(fullPath, content, { mode: creationModeOf(mode) })` and **no `chmod`**. It returns the `FileStat`.
   `creationModeOf`: `100755` → `0o777`, else `0o666` (git `create_file`). Without a `mode` (buffered writers that are
   not checkout), there is no option, as today.
-- `writeServedBlob` / `writeStreamedBlob`: below `BUFFERED_WRITE_LIMIT = 1 MiB` (a named constant; the located blob's
+- `writeServedBlob` / `writeStreamedBlob`: below `BUFFERED_WRITE_LIMIT = 1 MiB` (ADR-1016; a named constant; the located blob's
   size is known from its header) read whole and call `write`; otherwise `writeStream`. Both take `{ mode }` and return
   the stat. `createEmptyOutput` takes `{ mode }` too, without `chmod`.
 - `writeWorkingTreeEntry` / `writeWorkingTreeEntryStream` / `WorkingTreeWriter.writeBlob` return
@@ -551,7 +646,7 @@ open, write, fstat, close}, the cached realpath aside. Target is git parity (~71
 Expected effect: −2 `lstat`s per path and pooled staging, on `stageLiterals` 2.4% + `lstatOrMissing` 2.5% + the serial
 await chain. **Measured.**
 
-### D8. Merge-joins and the byte-order comparator (benefit unproven: frames < 1%)
+### D8. Merge-joins and the byte-order comparator (benefit unproven: frames < 1%; ADR-1017)
 
 - `computeChangeset`: replace `projectIndex`/`projectTarget`/`allKeys` + `.sort()` with a merge-join over the
   stage-0 index entries and the target entries, both ordered by `compareEntryPath` (bytewise, ADR-966). Verify that
@@ -563,10 +658,11 @@ await chain. **Measured.**
   Map lookup and drop only `unionPaths`.
 - `status.ts` `buildChanges`: join `stagedKindMap` and `workingMap` (both index-ordered) instead of `Set` + `sort`.
   `trackedEntriesOf` keeps `stage0Map` (random access by `buildChangedPath`).
-- Gate: run §D10's status row before and after. Revert the part if it gains nothing measurable (it then counts as a
-  refactor with no perf claim).
+- Gate (ADR-1017): `bench:ab`, 5 rounds, on §D10's status row. Keep what beats noise. A change that only moves output
+  into git's byte-order sorting stays without a gain, because it is a faithfulness fix (the `computeChangeset` order).
+  Drop the rest. The PR reports each piece as kept or dropped, with its numbers.
 
-### D9. Ignore matcher and `ancestorsOf` (benefit unproven: `ancestorsOf` 0.9%)
+### D9. Ignore matcher and `ancestorsOf` (benefit unproven: `ancestorsOf` 0.9%; ADR-1017 gate)
 
 - `lastMatch` scans from the last rule backward and returns the first hit (git `last_matching_pattern_from_list`).
   No object is allocated per intermediate match.
@@ -587,9 +683,12 @@ await chain. **Measured.**
 - `add.bench.ts`: new row "literal add of 200 paths". The factory builds once; each iteration rewrites the 200 files'
   content (part of the sut, as in the harness) and calls `add(paths)`.
 - `checkout.bench.ts`: split the alternation into **root→tip** and **tip→root** rows plus a **mixed** row (add +
-  update + delete in one changeset). The reset strategy is §Decisions DC-6. The mixed fixture is DC-7.
+  update + delete in one changeset). Reset (ADR-1015): a pool of pre-built scratch copies consumed one per iteration
+  if `bench-dsl` can cap iterations, else checkout+reset pairs minus a reset-only row. The mixed fixture is a
+  write-scratch builder (ADR-1015).
 - Every row's before/after goes through `npm run bench:ab -- <base> HEAD 5`, run after the commit, with a +10% bound
-  (memory hint). §Evidence above is the baseline the parts quote.
+  (memory hint). §Evidence above is the baseline the parts quote. The 500-directory commit row is read twice: P3→P4
+  (the cache-tree saving) and P4→P4b (the refresh cost, §D2.5).
 
 ### D11. Edge checklist
 
@@ -619,6 +718,14 @@ await chain. **Measured.**
 - `rm` of an unmerged path whose stages include a gitlink: `resolveUndoRecordOf` already handles the modes.
 - Memory adapter umask constant vs a test that sets `process.umask`: memory ignores the process umask by design. Only
   Node tests assert umask effects.
+- `commit` refresh with a working-tree file missing: `compareAndRefresh` returns `absent`, nothing refreshed, no write
+  from the refresh (git: `lstat` fails, entry left, quiet).
+- `commit` refresh on a stat-drifted file under a clean filter: the filter runs (inside `withFilterProcessPool`), as in
+  git's refresh. A failing driver surfaces as it does in `status` today (same scan code).
+- `commit` refresh under `noVerify`, with a hook, or with `allowEmpty`: the refresh runs in every case (git's
+  `prepare_index` runs before all of them). Only an unmerged index or an earlier refusal skips it.
+- `core.trustctime=false` is not read by tsgit (`grep -rn trustctime src`: no hit), so CW8's exact recipe has no tsgit
+  twin. Its shape is pinned by a unit test with a fixed clock (P4b).
 
 ## Pin recipes
 
@@ -776,6 +883,88 @@ rm f x; umask 077; g checkout -q -- f x; echo "M2 $(stat -f '%Sp %N' f x | paste
 cd /; rm -rf $REPO $HOME
 ```
 
+Refresh pins (§D1.2 CW5–CW8, §D2.5 F1–F5, DC-10). They carry their own scrubbed env (same as `env.zsh`, no fixed dates; dates
+do not reach the index) and detect a rewrite by the index inode:
+
+```sh
+# pin-commit-refresh.zsh: commit's refresh vs racy entries and modified files
+export PATH=$GIT255:/usr/bin:/bin
+unset ${(k)parameters[(I)GIT_*]}
+export GIT_CONFIG_NOSYSTEM=1 HOME=$(mktemp -d) GIT_AUTHOR_NAME=p GIT_AUTHOR_EMAIL=p@x GIT_COMMITTER_NAME=p GIT_COMMITTER_EMAIL=p@x
+g() { git -c commit.gpgsign=false -c init.defaultBranch=main -c maintenance.auto=false -c gc.auto=0 "$@"; }
+ino() { stat -f %i .git/index; }
+sz() { git ls-files --debug b/f | awk '/size:/{print $2}' | head -1; }
+settle() { sleep 1.1; g status >/dev/null; sleep 1.1; }
+w() { mkdir -p ${1:h}; print -r -- "$2" > $1; }
+REPO=$(mktemp -d); cd $REPO; g init -q
+w a/f 1; w b/f 2; g add -A; g commit -q -m one; settle
+i=$(ino); touch -t 202001010000 .git/index; g commit -q --allow-empty -m r; echo "CW5 racy-only commit rewritten=$([[ $(ino) != $i ]] && echo yes || echo no)"
+i=$(ino); g status >/dev/null; echo "CW5c racy-only status rewritten=$([[ $(ino) != $i ]] && echo yes || echo no)"
+settle; i=$(ino); w b/f 3; g commit -q --allow-empty -m m; echo "CW6 modified-unstaged commit rewritten=$([[ $(ino) != $i ]] && echo yes || echo no)"
+g checkout -q -- b/f; settle
+i=$(ino); touch -t 202001010000 .git/index; touch b/f; g commit -q --allow-empty -m t; echo "CW7 racy+stat-moved commit rewritten=$([[ $(ino) != $i ]] && echo yes || echo no) b-size=$(sz)"
+cd /; rm -rf $REPO $HOME
+
+# pin-commit-smudge.zsh: a racy entry whose content changed under an identical stat, written by commit
+export PATH=$GIT255:/usr/bin:/bin
+unset ${(k)parameters[(I)GIT_*]}
+export GIT_CONFIG_NOSYSTEM=1 HOME=$(mktemp -d) GIT_AUTHOR_NAME=p GIT_AUTHOR_EMAIL=p@x GIT_COMMITTER_NAME=p GIT_COMMITTER_EMAIL=p@x
+g() { git -c commit.gpgsign=false -c init.defaultBranch=main -c maintenance.auto=false -c gc.auto=0 -c core.trustctime=false "$@"; }
+ino() { stat -f %i .git/index; }
+sz() { git ls-files --debug $1 | awk '/size:/{print $2}' | head -1; }
+w() { mkdir -p ${1:h}; print -r -- "$2" > $1; }
+REPO=$(mktemp -d); cd $REPO; g init -q
+w a/f 1; w b/f 2; g add -A; g commit -q -m one
+touch -t 203001010000 b/f; g add b/f; g commit -q --allow-empty -m pin  # b/f mtime in the future: racy vs any index
+print -rn -- $'3\n' 1<> b/f; touch -t 203001010000 b/f                  # same size, same mtime, same inode
+i=$(ino); sleep 1.1; touch a/f; g commit -q --allow-empty -m s
+echo "CW8 rewritten=$([[ $(ino) != $i ]] && echo yes || echo no) b-size=$(sz b/f) a-size=$(sz a/f)"
+cd /; rm -rf $REPO $HOME
+
+# pin-continue-refresh.zsh: does a sequencer --continue refresh stats (commit's refresh_cache)?
+export PATH=$GIT255:/usr/bin:/bin
+unset ${(k)parameters[(I)GIT_*]}
+export GIT_CONFIG_NOSYSTEM=1 HOME=$(mktemp -d) GIT_AUTHOR_NAME=p GIT_AUTHOR_EMAIL=p@x GIT_COMMITTER_NAME=p GIT_COMMITTER_EMAIL=p@x GIT_EDITOR=true
+g() { git -c commit.gpgsign=false -c init.defaultBranch=main -c maintenance.auto=false -c gc.auto=0 "$@"; }
+mt() { git ls-files --debug a/f | awk '/mtime:/{print $2}' | head -1; }
+fm() { stat -f %m:%Fm a/f 2>/dev/null | cut -d: -f1; }
+w() { mkdir -p ${1:h}; print -r -- "$2" > $1; }
+for op in cherry-pick rebase; do
+REPO=$(mktemp -d); cd $REPO; g init -q
+w a/f 1; w b/f 2; g add -A; g commit -q -m base
+g checkout -q -b side; w b/f side; g commit -qam side
+g checkout -q main; w b/f main; g commit -qam main
+if [[ $op == cherry-pick ]]; then g cherry-pick side >/dev/null 2>&1; else g checkout -q side; g rebase main >/dev/null 2>&1; fi
+w b/f resolved; g add b/f; sleep 1.1; touch a/f; before=$(mt)
+g $op --continue >/dev/null 2>&1; echo "$op --continue: a/f index-mtime before=$before after=$(mt) file=$(fm)"
+cd /; rm -rf $REPO
+done
+rm -rf $HOME
+
+# pin-commit-refresh-flags.zsh: entries git's commit refresh never refreshes
+export PATH=$GIT255:/usr/bin:/bin
+unset ${(k)parameters[(I)GIT_*]}
+export GIT_CONFIG_NOSYSTEM=1 HOME=$(mktemp -d) GIT_AUTHOR_NAME=p GIT_AUTHOR_EMAIL=p@x GIT_COMMITTER_NAME=p GIT_COMMITTER_EMAIL=p@x
+g() { git -c commit.gpgsign=false -c init.defaultBranch=main -c maintenance.auto=false -c gc.auto=0 -c protocol.file.allow=always "$@"; }
+ino() { stat -f %i .git/index; }
+settle() { sleep 1.1; g status >/dev/null; sleep 1.1; }
+w() { mkdir -p ${1:h}; print -r -- "$2" > $1; }
+mt() { git ls-files --debug $1 | awk '/mtime:/{print $2}' | head -1 | cut -d: -f1; }
+row() { local i=$(ino) n0; g commit -q --allow-empty -m $1-untouched; n0=$([[ $(ino) != $i ]] && echo yes || echo no)
+  i=$(ino); touch $2; g commit -q --allow-empty -m $1; echo "$1 untouched-rewritten=$n0 touched-rewritten=$([[ $(ino) != $i ]] && echo yes || echo no) entry-mtime=$(mt $2) file-mtime=$(stat -f %m $2)"; }
+SUB=$(mktemp -d); (cd $SUB; g init -q; w s 1; g add s; g commit -q -m s)
+REPO=$(mktemp -d); cd $REPO; g init -q
+w a/f 1; w b/f 2; w c/f 3; g add -A; g submodule add -q $SUB sm 2>/dev/null; g commit -q -m one; settle
+g update-index --skip-worktree a/f; settle; row F1-skip-worktree a/f
+g update-index --no-skip-worktree a/f; g update-index --assume-unchanged b/f; settle; row F2-assume-valid b/f
+g update-index --no-assume-unchanged b/f; settle; w n/x 4; g add -N n/x; g commit -q -m ita 2>/dev/null; settle; row F3-ita n/x
+g rm -q --cached n/x; rm -rf n; g commit -q --allow-empty -m c; settle; row F4-gitlink sm
+settle; row F5-control c/f
+cd /; rm -rf $REPO $SUB $HOME
+# The first, untouched commit after `update-index` rewrites because `update-index` invalidated the entry's TREE chain;
+# the touched column is the reading.
+```
+
 tsgit probes (same steps, tsgit for the step under test): `pin-tsgit-ita.mjs` (I1 setup with `git`, then
 `repo.commit`, then `git ls-tree -r --name-only HEAD`), `pin-tsgit-rm.mjs` (E1 setup, then `repo.rm(['a/f'])`, then
 `git ls-files -s` and `--resolve-undo`), `pin-tsgit-umask.mjs` (M1 setup, `process.umask(0o027)`,
@@ -794,37 +983,45 @@ the `check:size`/`check:tarball` headroom (~80–100 B) adds a `chore(size)` com
 | **P1** loose write: no per-write `mkdir` | `perf(write-object): let the exclusive write create the fanout directory` | `src/application/primitives/write-object.ts` `storeLoose` (drop the `ctx.fs.mkdir(objectsDir(…))` line; `objectsDir` import may become unused). Test `test/unit/application/primitives/write-object.test.ts` | RED: (1) an `fs` proxy (spread of the memory adapter) counting `mkdir` → 0 calls across a write of a new object. (2) A fault proxy whose `writeExclusive`, on its first call, `rm`s the fanout directory before delegating (memory adapter: the parent is recreated) → `writeObject` resolves and the object reads back. (3) A proxy whose `writeExclusive` throws `FILE_NOT_FOUND` → propagates with `data.code`/`data.path` asserted. Node retry semantics are already covered by the adapter's `createExclusive` tests; confirm with `grep -n "ENOENT" test/unit/adapters/node/*write-exclusive*` and add the "fanout removed between probe and open" row there if absent. Evidence 3 (prune race) is the motivating repro. The deterministic tests replace it. **Measure**: `storeLoose` share on the add row. |
 | **P2** cache-tree planner (domain) | `feat(cache-tree): plan a cache-tree update over the sorted index` | New `src/domain/git-index/cache-tree-update.ts`: `compareSubtreeNames`, `planCacheTree`, `toCacheTreeEntry`, `isIndexOrdered`; export via `src/domain/git-index/index.ts`. Tests `test/unit/domain/git-index/cache-tree-update.test.ts` + `.properties.test.ts`; arbitraries `test/unit/domain/git-index/arbitraries.ts` | Examples are the §D1.1 rows as data: C1's order `a, b, c, bb, zzz`; root `6/5`; C3 reuse of `a`/`c`/`bb`/`zzz`; C7/I1 ITA chain `-1`; C9 discarded subtree; an all-ITA directory dropped. Properties: (a) every directory present in the entries has exactly one node; (b) `entryCount(root) = #entries`; (c) children strictly ordered by `compareSubtreeNames`; (d) a carried valid node whose region is unchanged is reused (`reused` set), and any node covering a changed path is a build; (e) `serializeCacheTree(toCacheTreeEntry(…))` round-trips through `parseCacheTree`. Pure: no ctx. |
 | **P3** cache-tree driver | `feat(cache-tree): update the cache-tree in write and repair modes` | New `src/application/primitives/internal/update-cache-tree.ts`: `updateCacheTree`, `isCacheTreeFullyValid`. Uses `writeTree` (`src/application/primitives/write-tree.ts`), `serializeAndHash` (`internal/serialize-and-hash.ts`), `hasObject` (`has-object.ts`), `limiterFor` (`internal/concurrency.ts`). Test `test/unit/application/primitives/internal/update-cache-tree.test.ts` (memory adapter) | `'write'`: built trees exist afterwards; a reused node's object gets **no** `utimeNow` call (spy the fs: zero `utimeNow` on reused paths, ≥1 for a rebuilt one that already existed). `'repair'`: a node whose hashed tree is absent → `-1` with ancestors (R1 shape); present → valid (S2 shape); no object is written (count loose files before/after). Missing reused oid → rebuilt (write) / `-1` (repair). Unmerged entry → its chain `-1` (U9). `rootTree` defined under ITA in write mode. Concurrency: a limiter of size 1 completes a 3-level tree (deadlock guard). SHA-256 twin through `hashConfig`. |
-| **P4** `commit` writes `TREE` (+ ITA fix) | `feat(commit): maintain the cache-tree and write it into the index` | `src/application/commands/commit.ts` (§D2.4: delete the trie, add `prepareIndexTree`, move `runPreCommitHook`); `src/application/primitives/internal/index-lock.ts` `CommitOptions.cacheTree`, `carriedExtensions`/`carriedByRule` override; hook runner return value (locate `runPreCommitHook`). Tests `test/unit/application/commands/commit.test.ts`, `commit.properties.test.ts` (keep green: tree oids unchanged for non-ITA indexes), new `test/unit/application/primitives/internal/index-lock-cache-tree.test.ts`; interop **new** `test/integration/commit-cache-tree-interop.test.ts` (helpers `runGit`/`git`/`makePeerPair` from `test/integration/interop-helpers.ts`) | Interop rows = §D1.1 + §D1.2 executed twice (git peer, tsgit peer) on identical content and dates; assert raw `TREE` payload bytes equal, `REUC`/`UNTR` presence equal, and rewritten-or-not (inode) equal for CW1/CW3/C4/C5/C7/CW4. ITA (I1 vs T2): commit tree oid equal to git's. Hook row C8: tsgit's final index `TREE` = git's. The add→commit→add sequence on the 4-file fixture compares the `-1` counts after each step. Unit: `NOTHING_TO_COMMIT` and `EMPTY_COMMIT_MESSAGE` still throw (data asserted) **after** the index was rewritten (read the index back). Unmerged → refusal, index bytes untouched. Run the routes grep from §D3.5. `reports/api.json` if `CommitOptions` (lock) is exported. **Measure**: the 500-dir commit row (P12, landed first per the recommended order). Expected: −30% or more, per §Evidence. |
-| **P5** replace writers repair `TREE` | `feat(index): repair the cache-tree on replace writes as unpack_trees does` | `index-lock.ts` (§D3.2); `src/domain/git-index/carry-extensions.ts` (`carryTree` skips `'replace'`; `withRestagedPaths` scoped to `'update'`); `stash.ts` `resetAfterPush` keep-index `restagedPaths`; verifications in `merge.ts`/`apply-merge-to-worktree.ts` `mergeTreesToTree` (U21) and `checkout.ts` `switchBranch` (U2). New ADR superseding ADR-964's divergence clause. Tests `carry-extensions.test.ts` (replace no longer touches `TREE`), `index-lock-cache-tree.test.ts`; interop `test/integration/index-extensions-interop.test.ts` (tighten every `'replace'` row from "valid nodes carry git's oid" to **byte equality**) | Interop rows U1–U21, R1, S1–S4, Q3 (pin-unpack/pin-repair/pin-merge-mixed/pin-sequencer). Each row runs the same git-made start state through tsgit's writer and git's writer in twin repos and compares `TREE` bytes. U5/U6 stay `'update'` (regression rows). If U21 or U2 fails on verification, the fix joins this part (same invariant). **Measure**: the checkout rows (repair adds hashing; expect a small cost, offset by P8). |
-| **P6** `write_index_as_tree` routes | `fix(sequencer): write the updated cache-tree when continuing a stopped pick` | `rebase.ts` `continueStop` (~L731), interactive resume (~L1593); `internal/replay-sequence.ts` finalise (~L403). Only if DC-5 = fold | Interop Q1/Q2 in `test/integration/index-extensions-interop.test.ts`: `TREE` bytes and `REUC` kept, equal to git's. |
+| **P4** `commit` writes `TREE` (+ ITA fix) | `feat(commit): maintain the cache-tree and write it into the index` | `src/application/commands/commit.ts` (§D2.4: delete the trie, add `prepareIndexTree`, move `runPreCommitHook`); `src/application/primitives/internal/index-lock.ts` `CommitOptions.cacheTree`, `carriedExtensions`/`carriedByRule` override; hook runner return value (locate `runPreCommitHook`). Tests `test/unit/application/commands/commit.test.ts`, `commit.properties.test.ts` (keep green: tree oids unchanged for non-ITA indexes), new `test/unit/application/primitives/internal/index-lock-cache-tree.test.ts`; interop **new** `test/integration/commit-cache-tree-interop.test.ts` (helpers `runGit`/`git`/`makePeerPair` from `test/integration/interop-helpers.ts`) | Interop rows = §D1.1 + §D1.2 executed twice (git peer, tsgit peer) on identical content and dates; assert raw `TREE` payload bytes equal, `REUC`/`UNTR` presence equal, and rewritten-or-not (inode) equal for CW1/CW3/C4/C5/C7/CW4 (CW2 joins in P4b, which adds the refresh). ITA (I1 vs T2): commit tree oid equal to git's. Hook row C8: tsgit's final index `TREE` = git's. The add→commit→add sequence on the 4-file fixture compares the `-1` counts after each step. Unit: `NOTHING_TO_COMMIT` and `EMPTY_COMMIT_MESSAGE` still throw (data asserted) **after** the index was rewritten (read the index back). Unmerged → refusal, index bytes untouched. Run the routes grep from §D3.5. `reports/api.json` if `CommitOptions` (lock) is exported. **Measure**: the 500-dir commit row (P12, landed first per the recommended order), `bench:ab` P3→P4. Expected: −30% or more, per §Evidence. |
+| **P4b** `commit` refreshes stats (ADR-1008) | `feat(commit): refresh index stats before updating the cache-tree, as git does` | **New** `src/application/primitives/internal/scan-tracked-entries.ts`: `TrackedScan`, `scanTrackedEntries(ctx, index, stage0, onScanned)`, `verifiedBy(scan)` (§D2.5). Bodies moved from `src/application/commands/status.ts`: `TrackedScan` (L250), `scanTrackedTree` (L274, minus `createGranularityTracker`), `scanEntry` (L324), `ScannedEntry` (L340), `scanWorkingTree` (L346), `trackedScanOf` (L370). Their imports move with them: `compareAndRefresh` + `WorkingTreeDelta` (`compare-working-tree-entry.ts`), `CleanOrder`/`configuresFilterDriver`/`inIndexOrder` (`internal/clean-order.ts`), `boundedMapFor` (`internal/concurrency.ts`), `AttributeProvider`/`buildCheckinAttributeProvider` (`internal/read-gitattributes.ts`), `IsVerified` (`internal/smudge-racily-clean.ts`), `escapedPathOf` (`src/domain/git-index/index-path-key.ts`). **Changed** `status.ts`: `scanTrackedTree` creates the tracker and calls `scanTrackedEntries(…, tracker.tick)`; `updateIndexIfAble` passes `verifiedBy(scan)` (behaviour unchanged, racy trigger kept). **Changed** `src/application/primitives/internal/index-lock.ts`: export `withRefreshedStat` (L229); `CommitOptions.verified?: IsVerified`, read by `commitLocked` into `smudgeRacilyClean(ctx, entries, previous, options.verified)`. **Changed** `src/application/commands/commit.ts`: `prepareIndexTree` inserts the scan after `rejectUnmergedIndex`, merges with `withRefreshedStat`, writes iff `scan.refreshed.length > 0 \|\| !fullyValid` (fully valid → `cacheTree: carried`), passes `verified`; `commit` wraps the `prepareIndexTree` call in `withFilterProcessPool` (`internal/filter-process-pool.ts`). Tests: new `test/unit/application/primitives/internal/scan-tracked-entries.test.ts` (memory adapter; skip-worktree skipped, refreshed only for drifted stat-same-content entries, `onScanned` called once per scanned entry, `verifiedBy` true only for `unchanged`); `test/unit/application/commands/commit.test.ts`; `test/unit/application/primitives/internal/index-lock.test.ts` (`verified` passthrough); keep green `status.test.ts`, `status-refresh.test.ts`, `status-clean-order.test.ts`, `status-filter-skip.test.ts`, `smudge-racily-clean.test.ts`; interop `test/integration/commit-cache-tree-interop.test.ts` (rows below) with `status-refresh-interop.test.ts`, `status-racy-clean-interop.test.ts`, `index-racy-smudge-interop.test.ts` kept green | RED first, one per guard: (1) CW2: settled commit, `utimes` moves `b/f`'s mtime, same bytes → `commit({ allowEmpty: true })` rewrites the index; `b/f`'s entry stat equals `lstat`; `TREE` bytes unchanged. (2) CW5: index mtime backdated, nothing moved, fully valid `TREE` → index bytes and inode untouched (guards against copying status's racy trigger). (3) CW6: `b/f` content changed, unstaged → no write, entry stat unchanged. (4) CW8 shape on the memory adapter with a fixed clock (ADR-949's repro pattern): a same-size rewrite in the index's tick plus another entry's moved stat → written, the racy modified entry has `fileSize: 0`, the refreshed one keeps its size. (5) skip-worktree entry with a drifted stat is not refreshed (`scanEntry`'s skip, now in the moved code). (6) `verified` passthrough: a racy unchanged entry is read once per commit, not twice (count `fs.read` on its path). (7) Refusal ordering: unmerged index → `MERGE_HAS_CONFLICTS` (`data.count`, `data.paths` asserted), zero `lstat` on worktree paths (no refresh ran). Interop (git peer vs tsgit peer, rewritten-or-not by inode, entry stat vs `lstat`, `TREE` bytes, `git fsck` exit 0): CW1–CW4, C4, C5 re-run under the refresh, plus CW2, CW5, CW6, CW7. CW5 backdates `.git/index` with `utimes` in both peers. `reports/api.json` untouched (all symbols internal). **Measure**: `bench:ab` P4→P4b on the 500-dir commit row = the refresh cost (expected +5–7 ms, §D2.5); base→P4b = the net. |
+| **P5** replace writers repair `TREE` | `feat(index): repair the cache-tree on replace writes as unpack_trees does` | `index-lock.ts` (§D3.2); `src/domain/git-index/carry-extensions.ts` (`carryTree` skips `'replace'`; `withRestagedPaths` scoped to `'update'`); `stash.ts` `resetAfterPush` keep-index `restagedPaths`; verifications in `merge.ts`/`apply-merge-to-worktree.ts` `mergeTreesToTree` (U21) and `checkout.ts` `switchBranch` (U2). ADR-1009 supersedes ADR-964's divergence clause. Tests `carry-extensions.test.ts` (replace no longer touches `TREE`), `index-lock-cache-tree.test.ts`; interop `test/integration/index-extensions-interop.test.ts` (tighten every `'replace'` row from "valid nodes carry git's oid" to **byte equality**) | Interop rows U1–U21, R1, S1–S4, Q3 (pin-unpack/pin-repair/pin-merge-mixed/pin-sequencer). Each row runs the same git-made start state through tsgit's writer and git's writer in twin repos and compares `TREE` bytes. U5/U6 stay `'update'` (regression rows). If U21 or U2 fails on verification, the fix joins this part (same invariant). **Measure**: the checkout rows (repair adds hashing; expect a small cost, offset by P8). |
+| **P6** `write_index_as_tree` routes | `fix(sequencer): write the updated cache-tree when continuing a stopped pick` | `rebase.ts` `continueStop` (~L731), interactive resume (~L1593); `internal/replay-sequence.ts` finalise (~L403). Folded by ADR-1011. Under DC-10 (a), the routes reuse P4b's `scanTrackedEntries` + trigger through `writeIndexCacheTree`, and the part follows P4b | Interop Q1/Q2 in `test/integration/index-extensions-interop.test.ts`: `TREE` bytes and `REUC` kept, equal to git's. Under DC-10 (a), Q1r/Q2r (pin-continue-refresh.zsh): a touched clean file's entry stat equals `lstat` after `--continue`, as with git. |
 | **P7** `rm` records `REUC` | `fix(rm): record resolve-undo and run during a pending merge, as git rm does` | `src/application/commands/rm.ts` (`assertNoPendingOperation` except list; `byPath` stage-preserving; `resolveUndo` option); `src/domain/git-index/resolve-undo.ts` `resolveUndoRecordOf` (reuse). Tests `test/unit/application/commands/rm.test.ts`; interop `test/integration/rm-interop.test.ts` | First RED: the stage-collapse hunch (§D5) on a memory index with an unrelated conflicted path. Interop E2/E3 (+E2c/E2r/E2d once pinned): `git ls-files --resolve-undo` equal, `REUC` bytes equal, `git fsck` exit 0. T3 flips from `OPERATION_IN_PROGRESS` to success. |
-| **P8** `FileSystem.write` mode + stat; checkout write path | `perf(checkout): create files with git's mode and stat the written descriptor` | Port `src/ports/file-system.ts` (`WriteOptions`, `write`/`writeStream` signatures); adapters `src/adapters/node/node-file-system.ts` (`write`, `writeStream`), `src/adapters/memory/memory-file-system.ts` (`write`, `writeStream`, mode store), `src/adapters/browser/browser-file-system.ts` (`write`, `writeStream`); callers `src/application/primitives/internal/write-working-tree-file.ts` (`writeRegularFile`, `createEmptyOutput`, `writeServedBlob`, `writeStreamedBlob`, `writeWorkingTreeEntry*`), `internal/write-converted-entry.ts` (`WorkingTreeWriter` return types), `apply-changeset.ts` (`applyWriteEntry`, `buildIndexEntry`), `internal/index-entry-from-stat.ts`. ADR for the port (DC-1). Tests: adapter contract suites under `test/unit/adapters/{node,memory,browser}/` (find with `grep -rln "writeStream" test/unit/adapters`), `write-working-tree-file.test.ts`, `apply-changeset.test.ts`; interop `test/integration/blob-streaming-checkout-interop.test.ts` (+ a umask row) | Contract rows per adapter: the returned stat's `size`/`isFile` match; Node `mode` → `0o666 & ~umask` / `0o777 & ~umask` (read the current umask; `process.umask(mask)` throws inside worker threads, so the restrictive-umask row lives in the interop test's child process); an existing file keeps its mode (`open` ignores `mode`, so the umask row must start absent); the leaf-symlink refusal is unchanged (`PERMISSION_DENIED`); ENOENT parent → created once. Checkout: no `chmod` call (spy); the index entry stat equals `lstat` afterwards (ino/size/mtime). Interop M1: tsgit checkout under umask 027 → `640`/`750` (POSIX only; skip on Windows by `process.platform`). Windows: no `PathPolicy` flag (§D6.1); the PR must call out the Windows CI legs. `reports/api.json`. **Measure**: checkout rows. Target ~71 µs/file. |
+| **P8** `FileSystem.write` mode + stat; checkout write path | `perf(checkout): create files with git's mode and stat the written descriptor` | Port `src/ports/file-system.ts` (`WriteOptions`, `write`/`writeStream` signatures); adapters `src/adapters/node/node-file-system.ts` (`write`, `writeStream`), `src/adapters/memory/memory-file-system.ts` (`write`, `writeStream`, mode store), `src/adapters/browser/browser-file-system.ts` (`write`, `writeStream`); callers `src/application/primitives/internal/write-working-tree-file.ts` (`writeRegularFile`, `createEmptyOutput`, `writeServedBlob`, `writeStreamedBlob`, `writeWorkingTreeEntry*`), `internal/write-converted-entry.ts` (`WorkingTreeWriter` return types), `apply-changeset.ts` (`applyWriteEntry`, `buildIndexEntry`), `internal/index-entry-from-stat.ts`. ADR-1013 (port shape, umask fold). Tests: adapter contract suites under `test/unit/adapters/{node,memory,browser}/` (find with `grep -rln "writeStream" test/unit/adapters`), `write-working-tree-file.test.ts`, `apply-changeset.test.ts`; interop `test/integration/blob-streaming-checkout-interop.test.ts` (+ a umask row) | Contract rows per adapter: the returned stat's `size`/`isFile` match; Node `mode` → `0o666 & ~umask` / `0o777 & ~umask` (read the current umask; `process.umask(mask)` throws inside worker threads, so the restrictive-umask row lives in the interop test's child process); an existing file keeps its mode (`open` ignores `mode`, so the umask row must start absent); the leaf-symlink refusal is unchanged (`PERMISSION_DENIED`); ENOENT parent → created once. Checkout: no `chmod` call (spy); the index entry stat equals `lstat` afterwards (ino/size/mtime). Interop M1: tsgit checkout under umask 027 → `640`/`750` (POSIX only; skip on Windows by `process.platform`). Windows: no `PathPolicy` flag (§D6.1); the PR must call out the Windows CI legs. `reports/api.json`. **Measure**: checkout rows. Target ~71 µs/file. |
 | **P9** literal `add` single stat + pool | `perf(add): stat each literal path once and stage literals through the pool` | `src/application/commands/add.ts` `allLiteralsAreFiles`, `stageLiterals`, `stageOne`, `stageFromStat`, `freshStatOfSameKind`, `dispatchInCleanOrder`. Tests `test/unit/application/commands/add.test.ts`, `add-clean-order.test.ts` (slow-lstat proxy pattern for order under `safeCrlf: true`) | RED: an `lstat`-counting proxy → 1 call per literal (today 3). Order: outcomes and loose-object creation order under `safeCrlf: true` stay in index order (reuse the slow-proxy test). `PATHSPEC_NO_MATCH` data asserted for a missing literal. `add-interop` stays green. **Measure**: the literal-add row. |
-| **P10** joins + comparator | `perf(status): merge-join the sorted index and tree sequences` | `src/application/primitives/compute-changeset.ts` `computeChangeset`; `src/domain/diff/index-diff.ts` `diffIndexAgainstTreeBy`; `src/application/commands/status.ts` `buildChanges`; comparator `src/domain/git-index/index-writer.ts` `compareEntryPath`/`pathComparatorFor` | **Benefit unproven** (< 1% frames). Properties: join result = the old Map/Set result over arbitrary sorted pairs (`compute-changeset.properties.test.ts`, `index-diff.properties.test.ts`); `computeChangeset` output bytewise-ordered for surrogate vs U+E000+ paths (example + property). Gate: status/checkout rows. If no measurable gain, the orchestrator decides keep (consistency: bytewise order) or drop. |
-| **P11** ignore matcher + `ancestorsOf` | `perf(ignore): scan ignore rules backward and stop at the first match` | `src/domain/ignore/match.ts` `lastMatch`; `src/domain/ignore/matcher-stack.ts` `matchInStackVerbose`; new `src/domain/ignore/ancestors-of.ts` used by `internal/ignore-evaluator.ts` and `is-ignored.ts` (delete both private copies; their existing Stryker comments go with the deleted code) | **Benefit unproven** (0.9%). Property tests of §D9. `is-ignored` provenance (`level`, `ruleIndex`) unchanged. Existing ignore interop stays green. |
-| **P12** benches | `test(bench): price wide commits, literal add, and directional mixed checkouts` | `test/bench/commit.bench.ts`, `test/bench/add.bench.ts`, `test/bench/checkout.bench.ts`; `test/bench/support/write-scratch.ts` (`buildWideCommitScratch`, `buildLiteralAddScratch`, `buildMixedCheckoutScratch` per DC-7) | No per-iteration hooks (memory: vitest bench hooks are dead); setup in the factory; teardown synchronous. Reset strategy per DC-6. Landing this part **first** (before P1) gives the orchestrator before/after rows for every perf part. Recommended order: P12, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11. |
+| **P10** joins + comparator | `perf(status): merge-join the sorted index and tree sequences` | `src/application/primitives/compute-changeset.ts` `computeChangeset`; `src/domain/diff/index-diff.ts` `diffIndexAgainstTreeBy`; `src/application/commands/status.ts` `buildChanges`; comparator `src/domain/git-index/index-writer.ts` `compareEntryPath`/`pathComparatorFor` | **Benefit unproven** (< 1% frames). Properties: join result = the old Map/Set result over arbitrary sorted pairs (`compute-changeset.properties.test.ts`, `index-diff.properties.test.ts`); `computeChangeset` output bytewise-ordered for surrogate vs U+E000+ paths (example + property). Gate: status/checkout rows. ADR-1017: keep only what `bench:ab` (5 rounds) shows above noise, or what moves output into git's byte-order sorting (a faithfulness fix). The PR reports each piece kept or dropped, with numbers. |
+| **P11** ignore matcher + `ancestorsOf` | `perf(ignore): scan ignore rules backward and stop at the first match` | `src/domain/ignore/match.ts` `lastMatch`; `src/domain/ignore/matcher-stack.ts` `matchInStackVerbose`; new `src/domain/ignore/ancestors-of.ts` used by `internal/ignore-evaluator.ts` and `is-ignored.ts` (delete both private copies; their existing Stryker comments go with the deleted code) | **Benefit unproven** (0.9%). Property tests of §D9. `is-ignored` provenance (`level`, `ruleIndex`) unchanged. Existing ignore interop stays green. ADR-1017 gate: kept only on a measured gain. |
+| **P12** benches | `test(bench): price wide commits, literal add, and directional mixed checkouts` | `test/bench/commit.bench.ts`, `test/bench/add.bench.ts`, `test/bench/checkout.bench.ts`; `test/bench/support/write-scratch.ts` (`buildWideCommitScratch`, `buildLiteralAddScratch`, `buildMixedCheckoutScratch`, ADR-1015) | No per-iteration hooks (memory: vitest bench hooks are dead); setup in the factory; teardown synchronous. Reset strategy per ADR-1015 (pre-built copy pool; checkout+reset pairs minus a reset-only row if iterations cannot be capped). Landing this part **first** (before P1) gives the orchestrator before/after rows for every perf part. Order: P12, P1, P2, P3, P4, P4b, P5, P6, P7, P8, P9, P10, P11. |
 
-## Decisions (candidates — none decided here)
+## Decisions
 
-Adopted under ADR-226 without a candidate, because the pins settle them: subtree order, entry counts, ITA
-exclusion and invalidation (R10), the commit write timing (before the hook and the refusals, C4/C5/C8), no write when
-`TREE` is fully valid and nothing else changed (CW1/CW3), the REPAIR rule for replace writers (§D1.4), `REUC` on `rm`
-and `rm` during pending operations (E2/E3/T3), `REUC` kept by commit (E5), the creation mode with umask (M1/M2).
+Adopted under ADR-226 because the pins settle them, recorded in the ADRs below: subtree order, entry counts, the
+commit write timing (before the hook and the refusals, C4/C5/C8), no write when nothing changed (CW1/CW3/CW5/CW6), the
+REPAIR rule for replace writers (§D1.4), `REUC` kept by commit (E5).
+
+| # | Subject | ADR | Chosen |
+|---|---|---|---|
+| — | `commit` maintains `TREE`, writes it before the hook; ITA exclusion (**user-ratified fold**) | ADR-1007 | port `update_one`; ITA left out, chain invalid (§D2, R10) |
+| DC-1 | `FileSystem.write` port shape; checkout creation mode with umask, no `chmod` (**user-ratified fold**) | ADR-1013 | (a) widen `write`/`writeStream`: `options?: { mode }`, resolve `FileStat` (§D6.1) |
+| DC-2 | `commit`'s index-write trigger vs git's refresh | ADR-1008 | (b) port the refresh, reuse `compareAndRefresh`; write iff refreshed ∨ not fully valid (§D2.5, P4b). User-ratified against the designer's (a) |
+| — | Replace writers repair `TREE` | ADR-1009 | git's REPAIR rule; supersedes ADR-964's divergence clause only (§D3) |
+| DC-3 | `UNTR` maintenance | ADR-1014 | (a) keep forward-or-drop; named, bounded divergence (§D1.5) |
+| DC-4 | Freshen on the valid-subtree skip | ADR-1010 | (a) existence check only, no `utime` (§D2.3) |
+| DC-5 | `write_index_as_tree` routes (sequencer `--continue`) | ADR-1011 | (a) fold P6 (§D3.4) |
+| — | `rm` records `REUC`, runs during pending operations (**user-ratified fold**) | ADR-1012 | fold (§D5, P7) |
+| DC-6 | Checkout bench reset strategy | ADR-1015 | (a) pre-built copy pool, falling back to (b) checkout+reset pairs minus a reset-only row (§D10) |
+| DC-7 | Mixed-changeset fixture | ADR-1015 | (a) write-scratch builder (§D10) |
+| DC-8 | Buffered-write threshold | ADR-1016 | (a) `BUFFERED_WRITE_LIMIT = 1 MiB` (§D6.2) |
+| DC-9 | Parts with an unproven benefit (P10, P11) | ADR-1017 | (a) implement, keep only a measured gain or a byte-order fix (§D8, §D9) |
+
+### Decision candidates
+
+One open, surfaced by this revision.
 
 | # | Subject | Options | Recommendation |
 |---|---|---|---|
-| **DC-1** | `FileSystem.write` port shape (mode + post-write stat) | (a) widen `write`/`writeStream`: `options?: { mode }`, resolve `FileStat` (§D6.1); (b) a new optional port method `createFile(path, data, { mode }) → FileStat`, with a fallback to `write`+`chmod`+`lstat` when an adapter lacks it (the `tryLstat` optional-method pattern); (c) keep the port and add `chmod`-free creation only in the Node adapter behind a `PathPolicy` flag | **(a)**: one write surface, every adapter can return a stat, the return widening is source-compatible. (b) duplicates the write contract. (c) leaks platform policy into checkout. Own ADR. |
-| **DC-2** | `commit`'s index-write trigger vs git's refresh | (a) write iff `TREE` is not fully valid; record git's commit-time stat refresh (CW2) as a backlog follow-up; (b) also port the refresh (reuse `compareAndRefresh` + the stat-copy of `commitRefresh`) so `commit` rewrites when stats moved, as git does; (c) always rewrite | **(a)** for this PR (bounded scope; CW2 is a separate faithfulness gap with its own cost: one `lstat` per entry per commit, which git also pays). (c) diverges on CW1/CW3. |
-| **DC-3** | `UNTR` maintenance | (a) keep the current rule (forward iff the tracked set is unchanged, else drop) and record the U5 divergence in an ADR; (b) maintain `UNTR`: parser + serializer + an EWAH writer (`src/domain/storage/ewah.ts` has a reader only) + git's per-directory invalidation (`untracked_cache_invalidate_path`, `…_add_to_index`/`…_remove_from_index`), about two parts; (c) drop `UNTR` on every write | **(a)**: equal under readback when `core.untrackedCache=true` (U1: git rebuilds on the next status). The cost of (b) is a format implementation, not a perf fix. The unset-config loss is named in the ADR. (c) regresses the forward case. |
-| **DC-4** | Freshen on the valid-subtree skip | (a) git's behaviour: `hasObject` only, no `utime` (`update_one` → `odb_has_object`); (b) freshen reused subtrees too (today's observable mtimes); (c) freshen only the root | **(a)**: byte/mtime-faithful to git and the source of the 17.3% saving. (b) keeps a tsgit-only side effect git does not have. |
-| **DC-5** | `write_index_as_tree` routes (sequencer `--continue`) | (a) fold P6 into this PR (Q1/Q2 pinned, same primitive); (b) record as a follow-up; (c) fold only `rebase --continue` | **(a)**: the same invariant and helper. Each route is a few lines once P4 exists. |
-| **DC-6** | Checkout bench reset strategy (no per-iteration hooks) | (a) a pool of K pre-built scratch copies made in the factory; each iteration consumes one (bounded iterations, the reset entirely outside the timer); (b) measure checkout+reset pairs and a reset-only row, then report the difference; (c) keep the alternation, split into two rows that each alternate (each row still pays the opposite direction) | **(a)** if `bench-dsl` can cap iterations per scenario (check tinybench's `iterations`/`time` passthrough in `support/bench-dsl.ts`); else (b). (c) does not isolate a direction. |
-| **DC-7** | Mixed-changeset fixture | (a) a write-scratch builder: base = N files, tip = 1/3 modified + 1/3 deleted + 1/3 new paths, built with tsgit's API in the factory; (b) a new `fixture-generator.ts` strategy (cached, tiered, CI-restored) that rewrites and removes paths across history; (c) git-built via `execFileSync` in the factory | **(a)**: no fixture-cache churn, deterministic, fast to build at the 500-file scale. (b) is the long-term tiered answer (the checkout bench header already names it as a follow-up). |
-| **DC-8** | Buffered-write threshold | (a) `BUFFERED_WRITE_LIMIT = 1 MiB` (backlog figure); (b) reuse `core.bigFileThreshold` (git's streaming switch, default 512 MiB); (c) always buffer except when a stream transform is active | **(a)**: bounds memory per pooled write. (b) would buffer up to 512 MiB × the pool width. git streams everything without a filter, but its syscalls are identical either way, so the threshold is a tsgit memory policy, not observable behaviour. |
-| **DC-9** | Merge-join/matcher parts with an unproven benefit (P10, P11) | (a) implement both, keep only what the bench shows (> noise) or what fixes order consistency (P10's bytewise output); (b) implement unconditionally (user scope "ALL"); (c) defer both | **(a)**: the scope is honoured, measured, and nothing ships on a hunch. |
-
-New ADRs expected from the decisions phase: commit `TREE` maintenance + write timing (adopted, record);
-replace-writer REPAIR superseding ADR-964's divergence (adopted, record); DC-1 port; DC-3 `UNTR`; DC-4 freshen.
+| **DC-10** | Refresh on the sequencer `--continue` routes. ADR-1008 covers `commit`; ADR-1011 folds P6 for `TREE` and `REUC` only. git's `cherry-pick --continue` and `rebase --continue` refresh a touched clean file's stat (pin-continue-refresh.zsh, 2×). tsgit's do not (`compareAndRefresh`'s `refreshed` is consumed only by `status.ts`) | (a) P6 routes run P4b's scan and the same trigger through `writeIndexCacheTree`; interop Q1r/Q2r; (b) P6 writes `TREE` only (write iff not fully valid), refresh-at-continue filed as a follow-up; (c) refresh on `rebase --continue` only | **(a)**: ADR-226 points there, the code is P4b's helper plus a trigger, and P6 already touches each route. Cost: one `lstat` per entry per `--continue`, as git pays. (b) leaves a pinned gap on routes this PR edits. (c) has no basis in the pins: both routes refresh. |
 
 ## Test strategy
 
@@ -833,7 +1030,7 @@ replace-writer REPAIR superseding ADR-964's divergence (adopted, record); DC-1 p
 - **Property siblings**: `cache-tree-update.properties.test.ts` (P2); join equivalence (P10); matcher/ancestors
   equivalence (P11). `cache-tree.properties.test.ts` stays green.
 - **Interop** (scrubbed env, signing off, `interop-helpers.ts`): `commit-cache-tree-interop.test.ts` (P4: TREE byte
-  equality + rewrite parity + ITA tree oid), `index-extensions-interop.test.ts` (P5/P6: replace rows tightened to byte
+  equality + rewrite parity + ITA tree oid; P4b: CW1–CW7 rewrite parity and refreshed stats), `index-extensions-interop.test.ts` (P5/P6: replace rows tightened to byte
   equality, Q1/Q2), `rm-interop.test.ts` (P7), `blob-streaming-checkout-interop.test.ts` (P8 umask row). SHA-256 twin
   for commit and checkout-replace. Every interop row also asserts `git fsck` exit 0.
 - **Mutation**: P2/P3 are the dense logic. Kill tests target the `compareSubtreeNames` length branch, the ITA
@@ -850,22 +1047,27 @@ replace-writer REPAIR superseding ADR-964's divergence (adopted, record); DC-1 p
   pins it.
 - **Commit tree oids change only for ITA indexes** (R10). Any test fixture that committed an ITA entry with tsgit
   changes expectation. Grep `intentToAdd: true` under `test/` during P4.
+- **Commit-time refresh cost.** Every commit now `lstat`s every tracked entry and content-compares stat-drifted or
+  racy ones (§D2.5): about +5–7 ms on the 500-directory row, a large share of P4's saving. git pays the same. P4→P4b
+  makes it visible on its own.
+- **Commit can now run clean filters.** A stat-drifted file under a filter driver is content-compared at commit, as in
+  git's refresh. A failing driver now fails `commit` where it did not before, the same way it fails `status`.
 - **Repair cost on checkout.** Hashing every changed directory makes a 500-directory checkout do about 500 extra
   hash + existence calls. P8 is expected to more than offset it. P5 and P8 are measured separately so a regression is
   attributable.
 - **Writer-site verifications (U2, U21)** may uncover object-set or index-write gaps in `merge`/`checkout`. They are
   in-invariant and fixed in P5, which may grow that part.
 - **Port widening.** Every `FileSystem` implementation outside the repo (user adapters) must now return a stat from
-  `write`/`writeStream`. It is a breaking change for third-party adapters (semver-major signal for the PR). DC-1 (b)
-  is the non-breaking alternative.
+  `write`/`writeStream`. It is a breaking change for third-party adapters (semver-major signal for the PR), accepted
+  in ADR-1013.
 - **Windows.** `mode` at create and `handle.stat()` on Windows are verified only by CI's Windows legs (memory hint).
   The PR body must ask for them.
 - **Size caps.** P2/P3 add domain code. Expect a `chore(size)` bump, attributed.
 
 ## Out of scope
 
-- git's commit-time stat refresh and the index write it triggers (CW2): DC-2 (a) records it as a follow-up.
-- `UNTR` maintenance (DC-3 (a)).
+- `UNTR` maintenance (ADR-1014).
+- `core.trustctime` (not read by tsgit; §D11).
 - Partial commits (`commit <paths>`, `-a`, `--only`): tsgit `CommitOptions` has no such mode. git's `COMMIT_PARTIAL`
   path writes a temporary index and is not modelled.
 - `stash push`'s `iTree` and `stash apply`'s `cTree` `write_index_as_tree` side effect (overwritten by the following
