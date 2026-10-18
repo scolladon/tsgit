@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { compareAbRounds, intersectBenchFiles, planRounds, renderAbTable } from '../../bench-ab.js';
+import {
+  compareAbRounds,
+  intersectBenchFiles,
+  planRounds,
+  renderAbTable,
+  selectBenchFiles,
+} from '../../bench-ab.js';
 import type { RawReport } from '../../bench-to-snapshot.js';
 
 const THRESHOLD_PCT = 10;
@@ -97,6 +103,55 @@ describe('renderAbTable', () => {
 
         // Assert
         expect(table).toContain('add.bench.ts');
+      });
+    });
+  });
+});
+
+describe('selectBenchFiles', () => {
+  const shared = ['test/bench/add.bench.ts', 'test/bench/commit.bench.ts'];
+
+  describe('Given shared bench files and one requested basename', () => {
+    describe('When the driver selects them', () => {
+      it('Then only the requested shared file is kept', () => {
+        // Arrange
+        const sut = selectBenchFiles;
+
+        // Act
+        const result = sut(shared, ['commit.bench.ts']);
+
+        // Assert
+        expect(result).toEqual(['test/bench/commit.bench.ts']);
+      });
+    });
+  });
+
+  describe('Given a requested basename that is not shared', () => {
+    describe('When the driver selects it', () => {
+      it('Then it throws naming the missing file', () => {
+        // Arrange
+        const sut = selectBenchFiles;
+
+        // Act
+        const act = () => sut(shared, ['nope.bench.ts']);
+
+        // Assert
+        expect(act).toThrow(new Error('bench file not shared by both refs: nope.bench.ts'));
+      });
+    });
+  });
+
+  describe('Given nothing requested', () => {
+    describe('When the driver selects', () => {
+      it('Then the shared list comes back unchanged', () => {
+        // Arrange
+        const sut = selectBenchFiles;
+
+        // Act
+        const result = sut(shared, []);
+
+        // Assert
+        expect(result).toEqual(shared);
       });
     });
   });

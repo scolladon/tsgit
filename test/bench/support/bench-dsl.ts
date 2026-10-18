@@ -74,7 +74,23 @@ export interface MeasuredRunOptions extends BenchOptions {
   readonly teardown?: (task: unknown, mode: HookMode) => Promise<void> | void;
 }
 
-const throwingOptions = (teardown?: Teardown): MeasuredRunOptions => ({
+/** Exact call budget: tinybench loops `while (elapsed < time || samples < iterations)`, so `time: 0` runs exactly `warmup + measured` calls. */
+export interface FixedIterations {
+  readonly warmup: number;
+  readonly measured: number;
+}
+
+export const fixedRunOptions = (
+  fixed: FixedIterations,
+): Pick<BenchOptions, 'time' | 'warmupTime' | 'iterations' | 'warmupIterations'> => ({
+  time: 0,
+  warmupTime: 0,
+  iterations: fixed.measured,
+  warmupIterations: fixed.warmup,
+});
+
+const throwingOptions = (teardown?: Teardown, fixed?: FixedIterations): MeasuredRunOptions => ({
+  ...(fixed === undefined ? {} : fixedRunOptions(fixed)),
   throws: true,
   ...(teardown === undefined
     ? {}
@@ -87,14 +103,22 @@ export interface ScenarioHooks {
 }
 
 /** Every bench gets throwing options; the teardown rides on the scenario's LAST bench, so a baseline still measures on an intact scratch. */
-export const hooksFor = (comparison: BenchComparison): ScenarioHooks =>
+export const hooksFor = (comparison: BenchComparison, fixed?: FixedIterations): ScenarioHooks =>
   comparison.baseline === undefined
-    ? { tsgit: throwingOptions(comparison.teardown), baseline: throwingOptions() }
-    : { tsgit: throwingOptions(), baseline: throwingOptions(comparison.teardown) };
+    ? {
+        tsgit: throwingOptions(comparison.teardown, fixed),
+        baseline: throwingOptions(undefined, fixed),
+      }
+    : {
+        tsgit: throwingOptions(undefined, fixed),
+        baseline: throwingOptions(comparison.teardown, fixed),
+      };
 
 export interface BenchScenarioOptions {
   /** Skip the whole scenario (missing fixture, Stryker sandbox, …). */
   readonly skip?: boolean;
+  /** Run exactly this many warmup and measured calls instead of a time budget (a pre-built pool must not run dry). */
+  readonly fixedIterations?: FixedIterations;
 }
 
 /**
@@ -117,7 +141,7 @@ export const benchScenario = (
     // servers / fixtures) on a skipped scenario.
     if (skip) return;
     const comparison = await build();
-    const hooks = hooksFor(comparison);
+    const hooks = hooksFor(comparison, opts.fixedIterations);
     bench('tsgit', comparison.sut, hooks.tsgit);
     if (comparison.baseline !== undefined) {
       bench('isomorphic-git', comparison.baseline, hooks.baseline);
