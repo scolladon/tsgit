@@ -1265,3 +1265,347 @@ describe('materializeTree', () => {
     });
   });
 });
+
+describe('materializeTree carrying staged changes (headTree)', () => {
+  type SeededContext = Awaited<ReturnType<typeof buildSeededContext>>;
+
+  const flatTree = (
+    ctx: SeededContext,
+    files: Readonly<Record<string, ObjectId>>,
+  ): Promise<ObjectId> =>
+    writeTree(
+      ctx,
+      Object.entries(files).map(([name, id]) => treeEntry(FILE_MODE.REGULAR, name as FilePath, id)),
+    );
+
+  const writeWork = (ctx: SeededContext, name: string, body: string): Promise<void> =>
+    ctx.fs.write(`${ctx.layout.workDir}/${name}`, new TextEncoder().encode(body));
+
+  const readWork = async (ctx: SeededContext, name: string): Promise<string | undefined> =>
+    (await ctx.fs.exists(`${ctx.layout.workDir}/${name}`))
+      ? new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/${name}`))
+      : undefined;
+
+  interface Fixture {
+    readonly ctx: SeededContext;
+    readonly blobs: Readonly<Record<string, ObjectId>>;
+    readonly headTree: ObjectId;
+    readonly targetTree: ObjectId;
+  }
+
+  /** head: b=old c=same; target: b=new c=same z=zed. The work tree is checked out at head. */
+  const buildFixture = async (): Promise<Fixture> => {
+    const ctx = await buildSeededContext();
+    const names = ['old', 'new', 'same', 'zed', 'staged'];
+    const blobs: Record<string, ObjectId> = {};
+    for (const name of names) blobs[name] = await writeBlob(ctx, name);
+    const headTree = await flatTree(ctx, { b: blobs.old as ObjectId, c: blobs.same as ObjectId });
+    const targetTree = await flatTree(ctx, {
+      b: blobs.new as ObjectId,
+      c: blobs.same as ObjectId,
+      z: blobs.zed as ObjectId,
+    });
+    await writeWork(ctx, 'b', 'old');
+    await writeWork(ctx, 'c', 'same');
+    return { ctx, blobs, headTree, targetTree };
+  };
+
+  const indexOf = (entries: ReadonlyArray<IndexEntry>): GitIndex => ({
+    ...EMPTY_INDEX,
+    entries,
+  });
+
+  const refusalOf = async (run: () => Promise<unknown>): Promise<TsgitError['data']> => {
+    try {
+      await run();
+    } catch (e) {
+      return (e as TsgitError).data;
+    }
+    return expect.unreachable('expected a refusal');
+  };
+
+  describe('Given c staged to a blob and unchanged between head and target', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then c keeps the staged index entry and its work file', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await writeWork(ctx, 'c', 'staged');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.staged as ObjectId),
+        ]);
+
+        // Act
+        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        const byPath = new Map(result.newIndexEntries.map((e) => [e.path, e.id]));
+        expect(byPath.get('c' as FilePath)).toBe(blobs.staged);
+        expect(byPath.get('b' as FilePath)).toBe(blobs.new);
+        expect(byPath.get('z' as FilePath)).toBe(blobs.zed);
+        expect(await readWork(ctx, 'c')).toBe('staged');
+        expect(await readWork(ctx, 'b')).toBe('new');
+      });
+    });
+
+    describe('When the same switch runs without a head tree', () => {
+      it('Then the staged entry is overwritten by the target', async () => {
+        // Arrange
+        const { ctx, blobs, targetTree } = await buildFixture();
+        await writeWork(ctx, 'c', 'staged');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.staged as ObjectId),
+        ]);
+
+        // Act
+        const result = await materializeTree(ctx, { targetTree, currentIndex, force: true });
+
+        // Assert
+        const byPath = new Map(result.newIndexEntries.map((e) => [e.path, e.id]));
+        expect(byPath.get('c' as FilePath)).toBe(blobs.same);
+      });
+    });
+  });
+
+  describe('Given a new path staged that neither head nor target has', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then the entry and the work file are kept', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await writeWork(ctx, 'n', 'staged');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+          makeIndexEntry('n', blobs.staged as ObjectId),
+        ]);
+
+        // Act
+        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        const byPath = new Map(result.newIndexEntries.map((e) => [e.path, e.id]));
+        expect(byPath.get('n' as FilePath)).toBe(blobs.staged);
+        expect(await readWork(ctx, 'n')).toBe('staged');
+      });
+    });
+  });
+
+  describe('Given c deleted from the index and unchanged between head and target', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then the deletion is kept: no entry, no work file', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await ctx.fs.rm(`${ctx.layout.workDir}/c`);
+        const currentIndex = indexOf([makeIndexEntry('b', blobs.old as ObjectId)]);
+
+        // Act
+        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        expect(result.newIndexEntries.some((e) => e.path === ('c' as FilePath))).toBe(false);
+        expect(await readWork(ctx, 'c')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given b staged to a blob that is neither the head nor the target version', () => {
+    describe('When the branch switch materialises', () => {
+      it.each([
+        ['the work file still holds the staged content', 'staged'],
+        ['the work file already holds the target content', 'new'],
+      ])('Then it refuses with b and touches nothing when %s', async (_title, body) => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await writeWork(ctx, 'b', body);
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.staged as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+
+        // Act
+        const data = await refusalOf(() =>
+          materializeTree(ctx, { targetTree, currentIndex, headTree }),
+        );
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['b'],
+          untracked: [],
+        });
+        expect(await readWork(ctx, 'b')).toBe(body);
+        expect(await readWork(ctx, 'z')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given b staged to the target version', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then it switches', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await writeWork(ctx, 'b', 'new');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.new as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+
+        // Act
+        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        const byPath = new Map(result.newIndexEntries.map((e) => [e.path, e.id]));
+        expect(byPath.get('b' as FilePath)).toBe(blobs.new);
+        expect(byPath.get('z' as FilePath)).toBe(blobs.zed);
+      });
+    });
+  });
+
+  describe('Given b deleted from the index where the target changes b', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then it refuses with b', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        const currentIndex = indexOf([makeIndexEntry('c', blobs.same as ObjectId)]);
+
+        // Act
+        const data = await refusalOf(() =>
+          materializeTree(ctx, { targetTree, currentIndex, headTree }),
+        );
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['b'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given z staged where the target adds a different z', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then it refuses with z and touches nothing', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await writeWork(ctx, 'z', 'staged');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+          makeIndexEntry('z', blobs.staged as ObjectId),
+        ]);
+
+        // Act
+        const data = await refusalOf(() =>
+          materializeTree(ctx, { targetTree, currentIndex, headTree }),
+        );
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['z'],
+          untracked: [],
+        });
+        expect(await readWork(ctx, 'z')).toBe('staged');
+        expect(await readWork(ctx, 'b')).toBe('old');
+      });
+    });
+  });
+
+  describe('Given several paths staged away from head and target', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then every refused path is listed, sorted', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.staged as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+          makeIndexEntry('z', blobs.staged as ObjectId),
+        ]);
+
+        // Act
+        const data = await refusalOf(() =>
+          materializeTree(ctx, { targetTree, currentIndex, headTree }),
+        );
+
+        // Assert
+        expect(data).toMatchObject({ localChanges: ['b', 'z'] });
+      });
+    });
+  });
+
+  describe('Given a sparse switch and c staged inside the pattern', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then c keeps the staged entry', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await writeWork(ctx, 'c', 'staged');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.staged as ObjectId),
+        ]);
+
+        // Act
+        const result = await materializeTree(ctx, {
+          targetTree,
+          currentIndex,
+          headTree,
+          sparse: () => true,
+        });
+
+        // Assert
+        const kept = result.newIndexEntries.find((e) => e.path === ('c' as FilePath));
+        expect(kept?.id).toBe(blobs.staged);
+        expect(await readWork(ctx, 'c')).toBe('staged');
+      });
+    });
+  });
+
+  describe('Given a sparse switch and c outside the pattern, unchanged', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then c becomes skip-worktree at the target version', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+
+        // Act
+        const result = await materializeTree(ctx, {
+          targetTree,
+          currentIndex,
+          headTree,
+          sparse: (path) => path !== 'c',
+        });
+
+        // Assert
+        const moved = result.newIndexEntries.find((e) => e.path === ('c' as FilePath));
+        expect(moved?.id).toBe(blobs.same);
+        expect(moved?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a sparse switch and c skip-worktree in the index, now inside the pattern', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then c is materialised', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await ctx.fs.rm(`${ctx.layout.workDir}/c`);
+        const hidden = makeIndexEntry('c', blobs.same as ObjectId);
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          { ...hidden, flags: { ...hidden.flags, skipWorktree: true } },
+        ]);
+
+        // Act
+        await materializeTree(ctx, { targetTree, currentIndex, headTree, sparse: () => true });
+
+        // Assert
+        expect(await readWork(ctx, 'c')).toBe('same');
+      });
+    });
+  });
+});

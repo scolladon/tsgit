@@ -722,7 +722,8 @@ const checkoutTrackingBranch = async (child: Context, branch: string): Promise<v
     { kind: 'set', section: 'branch', subsection: branch, key: 'remote', value: 'origin' },
     { kind: 'set', section: 'branch', subsection: branch, key: 'merge', value: ref },
   ]);
-  await checkout(child, { rev: branch });
+  // The fresh clone has no index yet; git checks the branch out forced (`checkout -f -B`).
+  await checkout(child, { rev: branch, force: true });
 };
 
 /**

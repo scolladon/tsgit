@@ -23,6 +23,7 @@ import { reset } from '../../src/application/commands/reset.js';
 import { revertRun } from '../../src/application/commands/revert.js';
 import { stashApply, stashPop, stashPush } from '../../src/application/commands/stash.js';
 import { worktreeAdd } from '../../src/application/commands/worktree.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import { parseIndex } from '../../src/domain/git-index/index-parser.js';
 import type { Context } from '../../src/ports/context.js';
 import {
@@ -176,6 +177,12 @@ const stagedBThenStashed = async (dir: string): Promise<void> => {
 const GUARDS: ReadonlyArray<Row> = [
   {
     title: 'checkout other',
+    git: ok('checkout', '-q', 'other'),
+    tsgit: (c) => checkout(c, { rev: 'other' }),
+  },
+  {
+    title: 'checkout other with a staged c/f',
+    prepare: (dir) => restage(dir, 'c/f', 'staged\n'),
     git: ok('checkout', '-q', 'other'),
     tsgit: (c) => checkout(c, { rev: 'other' }),
   },
@@ -390,7 +397,133 @@ const describeRow = (row: Row, format: Format = 'sha1'): void => {
   });
 };
 
+interface SwitchRow {
+  readonly title: string;
+  readonly prepare: (dir: string) => Promise<void>;
+  readonly refuses: boolean;
+  readonly probe: string;
+}
+
+const SWITCH_ROWS: ReadonlyArray<SwitchRow> = [
+  {
+    title: 'c/f edited and staged',
+    prepare: (dir) => restage(dir, 'c/f', 'staged\n'),
+    refuses: false,
+    probe: 'c/f',
+  },
+  {
+    title: 'b/f edited and staged',
+    prepare: (dir) => restage(dir, 'b/f', 'staged\n'),
+    refuses: true,
+    probe: 'b/f',
+  },
+  {
+    title: 'b/f staged, then the work file rewritten to the target content',
+    prepare: async (dir) => {
+      await restage(dir, 'b/f', 'staged\n');
+      await write(dir, 'b/f', 'other\n');
+    },
+    refuses: true,
+    probe: 'b/f',
+  },
+  {
+    title: 'b/f staged with the target content',
+    prepare: (dir) => restage(dir, 'b/f', 'other\n'),
+    refuses: false,
+    probe: 'b/f',
+  },
+  {
+    title: 'a new n/f staged',
+    prepare: (dir) => restage(dir, 'n/f', 'new\n'),
+    refuses: false,
+    probe: 'n/f',
+  },
+  {
+    title: 'c/f removed with git rm',
+    prepare: async (dir) => {
+      git(dir, 'rm', '-q', 'c/f');
+    },
+    refuses: false,
+    probe: 'c/f',
+  },
+  {
+    title: 'a new z/f staged where the target adds z/f',
+    prepare: (dir) => restage(dir, 'z/f', 'staged\n'),
+    refuses: true,
+    probe: 'z/f',
+  },
+  {
+    title: 'c/f edited and unstaged',
+    prepare: (dir) => write(dir, 'c/f', 'wt\n'),
+    refuses: false,
+    probe: 'c/f',
+  },
+];
+
+const tsgitRefusalOf = async (ctx: Context): Promise<string | undefined> => {
+  try {
+    await checkout(ctx, { rev: 'other' });
+  } catch (e) {
+    return (e as TsgitError).data.code;
+  }
+  return undefined;
+};
+
+const workFileOf = (dir: string, file: string): Promise<string | undefined> =>
+  readFile(path.join(dir, file), 'utf8').catch(() => undefined);
+
+const describeSwitchRow = (row: SwitchRow): void => {
+  describe(`Given a git-built repository with ${row.title}`, () => {
+    describe('When checkout other runs in tsgit and in git on a twin', () => {
+      let pair: PeerPair;
+      let peerExit: number;
+      let ourCode: string | undefined;
+
+      beforeAll(async () => {
+        pair = await makePeerPair('cache-tree-repair');
+        for (const dir of [pair.peer, pair.ours]) {
+          await buildUnpackBase(dir, 'sha1');
+          await row.prepare(dir);
+        }
+        peerExit = tryRunGitWithExit(['-C', pair.peer, 'checkout', '-q', 'other']).exitCode;
+        ourCode = await tsgitRefusalOf(contextFor(pair.ours, 'sha1'));
+      }, ROW_TIMEOUT_MS);
+
+      afterAll(async () => {
+        await pair.dispose();
+      });
+
+      it('Then both refuse or both switch', () => {
+        // Arrange + Assert
+        expect(peerExit !== 0).toBe(row.refuses);
+        expect(ourCode).toBe(row.refuses ? 'CHECKOUT_OVERWRITE_DIRTY' : undefined);
+      });
+
+      it('Then the staged entries and the status equal git', () => {
+        // Arrange + Assert
+        for (const args of [
+          ['ls-files', '-s'],
+          ['status', '--porcelain'],
+        ]) {
+          expect(git(pair.ours, ...args)).toBe(git(pair.peer, ...args));
+        }
+      });
+
+      it('Then the probed work file equals git', async () => {
+        // Arrange + Assert
+        expect(await workFileOf(pair.ours, row.probe)).toBe(await workFileOf(pair.peer, row.probe));
+      });
+
+      it('Then git fsck exits 0', () => {
+        // Arrange + Assert
+        expect(tryRunGitWithExit(['-C', pair.ours, 'fsck']).exitCode).toBe(0);
+      });
+    });
+  });
+};
+
 describe.skipIf(!GIT_AVAILABLE)('cache-tree repair interop', () => {
   for (const row of GUARDS) describeRow(row);
   describeRow(GUARDS[0] as Row, 'sha256');
+  for (const row of SWITCH_ROWS) describeSwitchRow(row);
 });

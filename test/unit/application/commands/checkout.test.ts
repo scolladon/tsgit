@@ -2188,3 +2188,53 @@ describe('checkout — directory replaced by a file', () => {
     });
   });
 });
+
+describe('checkout — staged changes on a branch switch', () => {
+  const seedTwoFiles = async () => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'x');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/g`, 'y');
+    await add(ctx, ['f', 'g']);
+    await commit(ctx, { message: 'first', author });
+    await branchCreate(ctx, { name: 'feature' });
+    return ctx;
+  };
+
+  describe('Given an index file that was never written', () => {
+    describe('When checkout switches to the branch HEAD is on', () => {
+      it('Then every tracked file is materialised (initial checkout)', async () => {
+        // Arrange
+        const ctx = await seedTwoFiles();
+        await ctx.fs.rm(`${ctx.layout.gitDir}/index`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/g`);
+
+        // Act
+        await checkout(ctx, { rev: 'main' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('x');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/g`)).toBe('y');
+      });
+    });
+  });
+
+  describe('Given every file removed from an index that still exists', () => {
+    describe('When checkout switches to a branch with the same tree', () => {
+      it('Then the staged deletions are kept', async () => {
+        // Arrange
+        const ctx = await seedTwoFiles();
+        const { rm } = await import('../../../../src/application/commands/rm.js');
+        await rm(ctx, ['f', 'g']);
+
+        // Act
+        await checkout(ctx, { rev: 'feature' });
+
+        // Assert
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/f`)).toBe(false);
+      });
+    });
+  });
+});
