@@ -9,7 +9,7 @@
  * (`git repack -ad`), always with an isolated, scrubbed environment.
  */
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -253,5 +253,114 @@ export const buildStashScratch = async (
   for (let i = 0; i < untracked; i += 1) {
     await writeFile(path.join(cwd, `untracked${i}.txt`), `new ${i}\n`);
   }
+  return scratch;
+};
+
+const WIDE_COMMIT_DIRECTORY_COUNT = 500;
+const WIDE_COMMIT_FILES_PER_DIRECTORY = 4;
+const LITERAL_ADD_FILES_PER_DIRECTORY = 5;
+const CHECKOUT_BRANCH_ROOT = 'root';
+const CHECKOUT_BRANCH_TIP = 'tip';
+const CHECKOUT_BRANCH_MIXED = 'mixed';
+const CHECKOUT_ADDED_FILE_INDEX = WIDE_COMMIT_FILES_PER_DIRECTORY;
+
+/** Repo-relative path of file `fileIndex` under directory `dirIndex` (`dNNN/sub/fK.txt`). */
+export const wideFilePath = (dirIndex: number, fileIndex: number): string =>
+  path.posix.join(`d${dirIndex.toString().padStart(3, '0')}`, 'sub', `f${fileIndex}.txt`);
+
+const ensureSubDirectories = async (cwd: string, directories: number): Promise<void> => {
+  await Promise.all(
+    Array.from({ length: directories }, (_, dir) =>
+      mkdir(path.dirname(path.join(cwd, wideFilePath(dir, 0))), { recursive: true }),
+    ),
+  );
+};
+
+/** Writes `fileIndexes` of every directory in parallel; `payload` makes the content deterministic. */
+const writeWideFiles = async (
+  cwd: string,
+  directories: number,
+  fileIndexes: ReadonlyArray<number>,
+  payload: string,
+): Promise<void> => {
+  await Promise.all(
+    Array.from({ length: directories }, (_, dir) => dir).flatMap((dir) =>
+      fileIndexes.map((file) =>
+        writeFile(path.join(cwd, wideFilePath(dir, file)), `${payload} ${dir}/${file}\n`),
+      ),
+    ),
+  );
+};
+
+const indexRange = (count: number): ReadonlyArray<number> =>
+  Array.from({ length: count }, (_, i) => i);
+
+const commitAll = async ({ repo }: ScratchRepo, message: string): Promise<void> => {
+  await repo.add([], { all: true });
+  await repo.commit({ message, author: SCRATCH_AUTHOR, committer: SCRATCH_AUTHOR });
+};
+
+/** `directories` × `filesPerDirectory` files (dNNN/sub/fK.txt), added and committed once. */
+export const buildWideCommitScratch = async (
+  directories: number,
+  filesPerDirectory: number,
+): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
+  await ensureSubDirectories(scratch.cwd, directories);
+  await writeWideFiles(scratch.cwd, directories, indexRange(filesPerDirectory), 'seed');
+  await commitAll(scratch, 'seed');
+  return scratch;
+};
+
+/** `fileCount` tracked files across nested directories, committed; returns their paths too. */
+export const buildLiteralAddScratch = async (
+  fileCount: number,
+): Promise<ScratchRepo & { readonly paths: ReadonlyArray<string> }> => {
+  const directories = Math.ceil(fileCount / LITERAL_ADD_FILES_PER_DIRECTORY);
+  const scratch = await buildWideCommitScratch(directories, LITERAL_ADD_FILES_PER_DIRECTORY);
+  const paths = indexRange(fileCount).map((i) =>
+    wideFilePath(
+      Math.floor(i / LITERAL_ADD_FILES_PER_DIRECTORY),
+      i % LITERAL_ADD_FILES_PER_DIRECTORY,
+    ),
+  );
+  return Object.assign(scratch, { paths });
+};
+
+const switchTo = async ({ repo }: ScratchRepo, name: string): Promise<void> => {
+  await repo.branch.create({ name });
+  await repo.checkout({ rev: name });
+};
+
+const commitTipBranch = async (scratch: ScratchRepo): Promise<void> => {
+  await switchTo(scratch, CHECKOUT_BRANCH_TIP);
+  await writeWideFiles(scratch.cwd, WIDE_COMMIT_DIRECTORY_COUNT, [0], 'tip');
+  await commitAll(scratch, 'tip');
+  await scratch.repo.checkout({ rev: CHECKOUT_BRANCH_ROOT });
+};
+
+const commitMixedBranch = async (scratch: ScratchRepo): Promise<void> => {
+  const { cwd, repo } = scratch;
+  await switchTo(scratch, CHECKOUT_BRANCH_MIXED);
+  await writeWideFiles(cwd, WIDE_COMMIT_DIRECTORY_COUNT, [0, CHECKOUT_ADDED_FILE_INDEX], 'mixed');
+  await Promise.all(
+    indexRange(WIDE_COMMIT_DIRECTORY_COUNT).map((dir) => rm(path.join(cwd, wideFilePath(dir, 1)))),
+  );
+  await commitAll(scratch, 'mixed');
+  await repo.checkout({ rev: CHECKOUT_BRANCH_ROOT });
+};
+
+/**
+ * 500 dirs × 4 files committed as `root`; branch `tip` rewrites f0 of every dir (500 updates);
+ * branch `mixed` (from root) rewrites f0, deletes f1 and adds f4 in every dir. HEAD left at `root`.
+ */
+export const buildCheckoutScratch = async (): Promise<ScratchRepo> => {
+  const scratch = await buildWideCommitScratch(
+    WIDE_COMMIT_DIRECTORY_COUNT,
+    WIDE_COMMIT_FILES_PER_DIRECTORY,
+  );
+  await switchTo(scratch, CHECKOUT_BRANCH_ROOT);
+  await commitTipBranch(scratch);
+  await commitMixedBranch(scratch);
   return scratch;
 };

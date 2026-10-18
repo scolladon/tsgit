@@ -12,24 +12,24 @@
  * checkout just produced, so `checkDirty` runs and finds nothing dirty —
  * priced as pure overhead on top of the write waves).
  *
- * `multi`-strategy fixtures never reach a genuinely MIXED changeset (add
- * and delete together in one call): every commit only ADDS disjoint paths,
- * so a root→tip checkout is all-add and tip→root is all-delete, whichever
- * two ancestor-related commits are chosen. Pricing a real mixed wave needs
- * a fixture strategy that also removes/rewrites paths across history —
- * tracked as a fixture-generator follow-up, not faked here with a strategy
- * that cannot produce it.
+ * The tiered `multi` fixtures never reach a genuinely MIXED changeset (every
+ * commit only ADDS disjoint paths); the scratch scenarios at the end of the
+ * file price directional root→tip, tip→root and root→mixed (add, update and
+ * delete together) checkouts on a 500-directory repo built by `write-scratch`.
  *
  * Each tier runs on a disposable copy of the cached fixture: `checkout`
  * moves `HEAD`, rewrites the index and rewrites the working tree, and the
  * cache is reused byte-for-byte by every other bench file resolving the
  * same spec — mutating it in place here would corrupt every later reader.
  */
+
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
+import { benchScenario } from './support/bench-dsl.js';
 import type { ScaledFixture } from './support/fixture-generator.js';
 import { copyFixtureToScratch, type FixtureScratch } from './support/fixture-scratch.js';
 import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
+import { buildCheckoutScratch, type ScratchRepo } from './support/write-scratch.js';
 
 interface OpenedCopy {
   readonly repo: Repository;
@@ -98,4 +98,72 @@ await tieredScenario(
     };
     return { sut, teardown };
   },
+);
+
+const POOL_SIZE = 12;
+const FIXED_ITERATIONS = { warmup: 2, measured: 10 } as const;
+
+interface CheckoutPool {
+  readonly next: () => Repository;
+  readonly teardown: () => void;
+}
+
+const openPoolCopy = async (source: ScratchRepo): Promise<OpenedCopy> => {
+  const scratch = await copyFixtureToScratch(source.cwd);
+  return { repo: await openRepository({ cwd: scratch.cwd }), scratch };
+};
+
+/** Builds the source at `startRev`, then `POOL_SIZE` opened copies of it: each checkout call burns one. */
+const buildCheckoutPool = async (startRev: string): Promise<CheckoutPool> => {
+  const source = await buildCheckoutScratch();
+  if (startRev !== 'root') await source.repo.checkout({ rev: startRev, force: true });
+  const copies: OpenedCopy[] = [];
+  for (let i = 0; i < POOL_SIZE; i += 1) copies.push(await openPoolCopy(source));
+  return {
+    next: (): Repository => {
+      const copy = copies.shift();
+      if (copy === undefined) throw new Error('checkout pool exhausted');
+      return copy.repo;
+    },
+    teardown: (): void => {
+      for (const copy of copies) copy.scratch.disposeSync();
+      source.disposeSync();
+    },
+  };
+};
+
+const checkoutScenario = (given: string, whenThen: string, startRev: string, rev: string): void => {
+  benchScenario(
+    given,
+    whenThen,
+    async () => {
+      const pool = await buildCheckoutPool(startRev);
+      return {
+        teardown: pool.teardown,
+        sut: async (): Promise<void> => {
+          await pool.next().checkout({ rev, force: true });
+        },
+      };
+    },
+    { fixedIterations: FIXED_ITERATIONS },
+  );
+};
+
+checkoutScenario(
+  'Given a 500-directory scratch repo at its root commit',
+  'When checkout() moves to the tip with force, Then measure tsgit',
+  'root',
+  'tip',
+);
+checkoutScenario(
+  'Given a 500-directory scratch repo at its tip commit',
+  'When checkout() moves to the root with force, Then measure tsgit',
+  'tip',
+  'root',
+);
+checkoutScenario(
+  'Given a 500-directory scratch repo whose mixed branch adds, updates and deletes files',
+  'When checkout() moves from root to mixed with force, Then measure tsgit',
+  'root',
+  'mixed',
 );
