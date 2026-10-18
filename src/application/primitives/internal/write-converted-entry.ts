@@ -7,6 +7,7 @@ import {
   type ObjectId,
 } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileStat } from '../../../ports/file-system.js';
 import { readBlob } from '../read-blob.js';
 import {
   type Conversion,
@@ -36,13 +37,13 @@ export interface WorkingTreeWriter {
     id: ObjectId,
     mode: FileMode,
     scanner?: LeadingPathScanner,
-  ) => Promise<void>;
+  ) => Promise<FileStat | undefined>;
   readonly writeBytes: (
     path: FilePath,
     bytes: Uint8Array,
     mode: FileMode,
     scanner?: LeadingPathScanner,
-  ) => Promise<void>;
+  ) => Promise<FileStat | undefined>;
 }
 
 const EMPTY_CONTENT = new Uint8Array();
@@ -99,31 +100,28 @@ export const createWorkingTreeWriter = (
     id: ObjectId,
     mode: FileMode,
     scanner?: LeadingPathScanner,
-  ): Promise<void> => {
+  ): Promise<FileStat | undefined> => {
     const conversion = await conversionFor(path);
     if (convertsInCore(conversion)) {
       // A refused read leaves no file: nothing is opened before the blob is in memory.
       const blob = await readBlob(ctx, id);
       const content = await convertInCore(path, id, blob.content, conversion);
-      await writeWorkingTreeEntry(ctx, path, content, mode, scanner);
-      return;
+      return writeWorkingTreeEntry(ctx, path, content, mode, scanner);
     }
     const transform = workingTreeStreamTransform(conversion, id, await scope.settings());
-    await writeWorkingTreeEntryStream(ctx, path, id, mode, scanner, transform);
+    return writeWorkingTreeEntryStream(ctx, path, id, mode, scanner, transform);
   };
 
   const writeBlob: WorkingTreeWriter['writeBlob'] = async (path, id, mode, scanner) => {
-    if (hasEscapedBytes(path)) return;
+    if (hasEscapedBytes(path)) return undefined;
     if (mode === FILE_MODE.GITLINK) {
-      await writeWorkingTreeEntry(ctx, path, EMPTY_CONTENT, mode, scanner);
-      return;
+      return writeWorkingTreeEntry(ctx, path, EMPTY_CONTENT, mode, scanner);
     }
     if (mode === FILE_MODE.SYMLINK) {
       const blob = await readBlob(ctx, id);
-      await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
-      return;
+      return writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
     }
-    await writeConvertibleBlob(path, id, mode, scanner);
+    return writeConvertibleBlob(path, id, mode, scanner);
   };
 
   const convertBytes = async (path: FilePath, bytes: Uint8Array): Promise<Uint8Array> => {
@@ -138,9 +136,9 @@ export const createWorkingTreeWriter = (
   };
 
   const writeBytes: WorkingTreeWriter['writeBytes'] = async (path, bytes, mode, scanner) => {
-    if (hasEscapedBytes(path)) return;
+    if (hasEscapedBytes(path)) return undefined;
     const content = isConvertible(mode) ? await convertBytes(path, bytes) : bytes;
-    await writeWorkingTreeEntry(ctx, path, content, mode, scanner);
+    return writeWorkingTreeEntry(ctx, path, content, mode, scanner);
   };
 
   return { writeBlob, writeBytes };

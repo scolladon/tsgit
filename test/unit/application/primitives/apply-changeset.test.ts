@@ -24,7 +24,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import { type Context, createSession } from '../../../../src/ports/context.js';
-import type { FileStat } from '../../../../src/ports/file-system.js';
+import type { FileStat, WriteOptions } from '../../../../src/ports/file-system.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
 import { buildSeededContext } from './fixtures.js';
 import { createInterleavingFs } from './support/interleaving-fs.js';
@@ -237,10 +237,10 @@ describe('applyChangeset write wave and an object source', () => {
         const ids = [await writeBlob(seeded, enc('zz')), await writeBlob(seeded, enc('mm'))];
         const ctx = await withCorruptAlternate(seeded);
         const order: string[] = [];
-        const realWrite = ctx.fs.writeStream.bind(ctx.fs);
-        vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
+        const realWrite = ctx.fs.write.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'write').mockImplementation(async (path, data, options) => {
           order.push(path);
-          return realWrite(path, chunks);
+          return realWrite(path, data, options);
         });
         const changeset = makeChangeset([
           makeAdd('z', ids[0] as ObjectId),
@@ -291,10 +291,10 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('hello world'));
-        const original = ctx.fs.lstat.bind(ctx.fs);
+        const original = ctx.fs.write.bind(ctx.fs);
         const exactNs = 1792332868089358810n;
-        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path) => {
-          const stat = await original(path);
+        vi.spyOn(ctx.fs, 'write').mockImplementation(async (path, data, options) => {
+          const stat = await original(path, data, options);
           return path === `${WORKDIR}/foo.txt`
             ? { ...stat, ctimeNs: exactNs, mtimeNs: exactNs }
             : stat;
@@ -310,6 +310,46 @@ describe('applyChangeset', () => {
         // Assert
         expect(result.writtenEntries[0]?.mtimeNanoseconds).toBe(89358810);
         expect(result.writtenEntries[0]?.ctimeNanoseconds).toBe(89358810);
+      });
+    });
+  });
+
+  describe('Given an added file', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then no lstat of the written path follows its write and the entry carries the written stat', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('hello world'));
+        const target = `${WORKDIR}/foo.txt`;
+        const calls: string[] = [];
+        const realWrite = ctx.fs.write.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'write').mockImplementation(async (path, data, options) => {
+          calls.push(`write ${path}`);
+          return realWrite(path, data, options);
+        });
+        const realLstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path) => {
+          calls.push(`lstat ${path}`);
+          return realLstat(path);
+        });
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(ctx, {
+          changeset: makeChangeset([makeAdd('foo.txt', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        const afterWrite = calls.slice(calls.indexOf(`write ${target}`) + 1);
+        expect(afterWrite).not.toContain(`lstat ${target}`);
+        const stat = await ctx.fs.lstat(target);
+        const entry = result.writtenEntries[0];
+        expect(entry?.ino).toBe(stat.ino);
+        expect(entry?.fileSize).toBe(stat.size);
+        expect(entry?.mtimeSeconds).toBe(Math.floor(stat.mtimeMs / 1000));
+        expect(entry?.mtimeNanoseconds).toBe(Number((stat.mtimeNs ?? 0n) % 1_000_000_000n));
       });
     });
   });
@@ -331,27 +371,25 @@ describe('applyChangeset', () => {
         expect(result.writtenEntries[0]?.mode).toBe(FILE_MODE.EXECUTABLE);
       });
 
-      it('Then chmods the file to 0o755', async () => {
-        // Arrange — capture the mode argument passed to chmod
+      it('Then creates the file with 0o777 and never chmods', async () => {
+        // Arrange — capture the creation mode passed to write
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('#!/bin/sh\n'));
-        const chmodMode = vi.fn<(path: string, mode: number) => Promise<void>>(
-          async () => undefined,
-        );
-        const wrappedCtx: Context = {
-          ...ctx,
-          fs: { ...ctx.fs, chmod: chmodMode },
-        };
+        const chmodMode = vi.spyOn(ctx.fs, 'chmod');
+        const writeSpy = vi.spyOn(ctx.fs, 'write');
 
         // Act
-        await applyChangeset(wrappedCtx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('run.sh', id, FILE_MODE.EXECUTABLE)]),
           force: false,
           workdir: WORKDIR,
         });
 
         // Assert
-        expect(chmodMode).toHaveBeenCalledWith(`${WORKDIR}/run.sh`, 0o755);
+        expect(writeSpy).toHaveBeenCalledWith(`${WORKDIR}/run.sh`, expect.anything(), {
+          mode: 0o777,
+        });
+        expect(chmodMode).not.toHaveBeenCalled();
       });
     });
   });
@@ -1448,34 +1486,32 @@ describe('applyChangeset', () => {
 
   describe('Given an add entry with regular mode', () => {
     describe('When applyChangeset runs', () => {
-      it('Then chmods the file to 0o644', async () => {
-        // Arrange — capture the mode argument passed to chmod
+      it('Then creates the file with 0o666 and never chmods', async () => {
+        // Arrange — capture the creation mode passed to write
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('plain'));
-        const chmodMode = vi.fn<(path: string, mode: number) => Promise<void>>(
-          async () => undefined,
-        );
-        const wrappedCtx: Context = {
-          ...ctx,
-          fs: { ...ctx.fs, chmod: chmodMode },
-        };
+        const chmodMode = vi.spyOn(ctx.fs, 'chmod');
+        const writeSpy = vi.spyOn(ctx.fs, 'write');
         // Act
-        await applyChangeset(wrappedCtx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('plain.txt', id, FILE_MODE.REGULAR)]),
           force: false,
           workdir: WORKDIR,
         });
 
         // Assert
-        expect(chmodMode).toHaveBeenCalledWith(`${WORKDIR}/plain.txt`, 0o644);
+        expect(writeSpy).toHaveBeenCalledWith(`${WORKDIR}/plain.txt`, expect.anything(), {
+          mode: 0o666,
+        });
+        expect(chmodMode).not.toHaveBeenCalled();
       });
     });
   });
 
-  describe('Given an lstat with sub-second ctime/mtime nanoseconds', () => {
+  describe('Given a written stat with sub-second ctime/mtime nanoseconds', () => {
     describe('When applyChangeset builds the index entry', () => {
       it('Then records seconds floored from ms and nanoseconds taken modulo one billion', async () => {
-        // Arrange — controlled lstat values that distinguish * vs / vs % mutations
+        // Arrange — controlled stat values that distinguish * vs / vs % mutations
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('timed'));
         const fakeStat = (base: FileStat): FileStat => ({
@@ -1489,7 +1525,8 @@ describe('applyChangeset', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            lstat: async (p: string): Promise<FileStat> => fakeStat(await ctx.fs.lstat(p)),
+            write: async (p: string, data: Uint8Array, options?: WriteOptions): Promise<FileStat> =>
+              fakeStat(await ctx.fs.write(p, data, options)),
           },
         };
         // Act
@@ -1509,7 +1546,7 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given an lstat without nanosecond precision', () => {
+  describe('Given a written stat without nanosecond precision', () => {
     describe('When applyChangeset builds the index entry', () => {
       it('Then defaults ctime/mtime nanoseconds to zero', async () => {
         // Arrange — ctimeNs/mtimeNs undefined exercises the `?? 0n` fallback
@@ -1519,8 +1556,16 @@ describe('applyChangeset', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            lstat: async (p: string): Promise<FileStat> => {
-              const { ctimeNs: _ctimeNs, mtimeNs: _mtimeNs, ...rest } = await ctx.fs.lstat(p);
+            write: async (
+              p: string,
+              data: Uint8Array,
+              options?: WriteOptions,
+            ): Promise<FileStat> => {
+              const {
+                ctimeNs: _ctimeNs,
+                mtimeNs: _mtimeNs,
+                ...rest
+              } = await ctx.fs.write(p, data, options);
               return rest;
             },
           },
@@ -1755,18 +1800,16 @@ describe('applyChangeset', () => {
 
   describe('Given an executable (100755) add entry', () => {
     describe('When applyChangeset runs', () => {
-      it('Then routes through stream path and applies 0o755 mode', async () => {
+      it('Then routes through stream path and creates the file with 0o777', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('#!/bin/sh\n'));
         const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
-        const chmodSpy = vi.fn<(path: string, mode: number) => Promise<void>>(
-          async () => undefined,
-        );
-        const wrappedCtx: Context = { ...ctx, fs: { ...ctx.fs, chmod: chmodSpy } };
+        const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const writeSpy = vi.spyOn(ctx.fs, 'write');
         // Act
-        await applyChangeset(wrappedCtx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('exec.sh', id, FILE_MODE.EXECUTABLE)]),
           force: false,
           workdir: WORKDIR,
@@ -1775,7 +1818,10 @@ describe('applyChangeset', () => {
         // Assert
         expect(locateBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
-        expect(chmodSpy).toHaveBeenCalledWith(`${WORKDIR}/exec.sh`, 0o755);
+        expect(chmodSpy).not.toHaveBeenCalled();
+        expect(writeSpy).toHaveBeenCalledWith(`${WORKDIR}/exec.sh`, expect.anything(), {
+          mode: 0o777,
+        });
 
         locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
@@ -3058,11 +3104,11 @@ describe('applyChangeset write order under a long-running filter', () => {
       phases.push('start');
       return realStart(...args);
     });
-    const realWrite = ctx.fs.writeStream.bind(ctx.fs);
-    vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
+    const realWrite = ctx.fs.write.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'write').mockImplementation(async (path, data, options) => {
       phases.push('write');
       written.push(path);
-      return realWrite(path, chunks);
+      return realWrite(path, data, options);
     });
     const changeset = makeChangeset([
       makeAdd('z', ids[0] as ObjectId),
@@ -3585,10 +3631,10 @@ describe('applyChangeset leading-symlink safety', () => {
           await realMkdir(dir);
           events.push(`mkdir ${dir}`);
         });
-        const realWriteStream = ctx.fs.writeStream.bind(ctx.fs);
-        vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (file, chunks) => {
+        const realWrite = ctx.fs.write.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'write').mockImplementation(async (file, data, options) => {
           events.push(`write ${file}`);
-          return realWriteStream(file, chunks);
+          return realWrite(file, data, options);
         });
         const sut = applyChangeset;
 

@@ -28,12 +28,7 @@ import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
-import {
-  FILE_MODE,
-  type FileMode,
-  type FilePath,
-  type ObjectId,
-} from '../../domain/objects/index.js';
+import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
@@ -366,16 +361,6 @@ const checkDirty = async (
   return { localChanges: localChanges.sort(comparePaths), untracked: untracked.sort(comparePaths) };
 };
 
-const buildIndexEntry = async (
-  ctx: Context,
-  absPath: string,
-  relPath: FilePath,
-  id: string,
-  mode: FileMode,
-): Promise<IndexEntry> => {
-  return indexEntryFromStat(await ctx.fs.lstat(absPath), mode, id as IndexEntry['id'], relPath);
-};
-
 const applyDeleteEntry = async (
   ctx: Context,
   workdir: string,
@@ -406,9 +391,10 @@ const applyWriteEntry = async (
 ): Promise<IndexEntry | undefined> => {
   if (entry.id === undefined) return undefined;
   if (isLossy(entry)) return absentLossyEntry(entry, entry.id);
-  const absPath = joinPath(workdir, entry.path);
-  await writer.writeBlob(entry.path, entry.id as IndexEntry['id'], entry.mode, scanner);
-  return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
+  const id = entry.id as IndexEntry['id'];
+  const written = await writer.writeBlob(entry.path, id, entry.mode, scanner);
+  const stat = written ?? (await ctx.fs.lstat(joinPath(workdir, entry.path)));
+  return indexEntryFromStat(stat, entry.mode, id, entry.path);
 };
 
 interface EntryWaves {

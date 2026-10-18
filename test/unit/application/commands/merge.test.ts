@@ -4752,11 +4752,12 @@ describe('writeConflictToTree (direct)', () => {
   // Marker-bytes conflict with ourMode 100755 — exec bit preserved
   describe('Given a content conflict with conflictContent and executable ourMode', () => {
     describe('When writeConflictToTree runs', () => {
-      it('Then the marker file is written with exec mode (chmod 0o755 called)', async () => {
+      it('Then the marker file is written with exec mode (created with 0o777, no chmod)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
         const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const writeSpy = vi.spyOn(ctx.fs, 'write');
         const conflict = conflictOf({
           type: 'content',
           conflictContent: new TextEncoder().encode(
@@ -4768,8 +4769,11 @@ describe('writeConflictToTree (direct)', () => {
         // Act
         await writeConflictToTree(ctx, conflict, await createMergeResultWriter(ctx, [], []));
 
-        // Assert — chmod called with exec permission
-        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+        // Assert — exec creation mode, no chmod
+        expect(chmodSpy).not.toHaveBeenCalled();
+        expect(writeSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, expect.anything(), {
+          mode: 0o777,
+        });
       });
     });
   });
@@ -4782,6 +4786,7 @@ describe('writeConflictToTree (direct)', () => {
         const ctx = createMemoryContext();
         await init(ctx);
         const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const writeSpy = vi.spyOn(ctx.fs, 'write');
         const conflict = conflictOf({
           type: 'content',
           conflictContent: new TextEncoder().encode(
@@ -4796,7 +4801,10 @@ describe('writeConflictToTree (direct)', () => {
         await writeConflictToTree(ctx, conflict, await createMergeResultWriter(ctx, [], []));
 
         // Assert — merged mode wins over ours' stage mode
-        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+        expect(chmodSpy).not.toHaveBeenCalled();
+        expect(writeSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, expect.anything(), {
+          mode: 0o777,
+        });
       });
     });
   });

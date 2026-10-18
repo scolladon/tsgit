@@ -1985,10 +1985,11 @@ describe('writeMarkedConflict (direct)', () => {
   // conflictContent + executable ourMode — exec bit preserved
   describe('Given a content conflict with conflictContent and executable ourMode', () => {
     describe('When writeMarkedConflict runs', () => {
-      it('Then the marker file is written with exec mode (chmod 0o755 called)', async () => {
+      it('Then the marker file is written with exec mode (created with 0o777, no chmod)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const writeSpy = vi.spyOn(ctx.fs, 'write');
         const conflict = conflictOf({
           type: 'content',
           conflictContent: new TextEncoder().encode(
@@ -2001,7 +2002,10 @@ describe('writeMarkedConflict (direct)', () => {
         await writeMarkedConflict(ctx, conflict, await createMergeResultWriter(ctx, [], []));
 
         // Assert
-        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+        expect(chmodSpy).not.toHaveBeenCalled();
+        expect(writeSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, expect.anything(), {
+          mode: 0o777,
+        });
       });
     });
   });
@@ -2013,6 +2017,7 @@ describe('writeMarkedConflict (direct)', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+        const writeSpy = vi.spyOn(ctx.fs, 'write');
         const conflict = conflictOf({
           type: 'content',
           conflictContent: new TextEncoder().encode(
@@ -2027,7 +2032,10 @@ describe('writeMarkedConflict (direct)', () => {
         await writeMarkedConflict(ctx, conflict, await createMergeResultWriter(ctx, [], []));
 
         // Assert — merged mode wins over ours' stage mode
-        expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, 0o755);
+        expect(chmodSpy).not.toHaveBeenCalled();
+        expect(writeSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/p`, expect.anything(), {
+          mode: 0o777,
+        });
       });
     });
   });
@@ -2117,7 +2125,7 @@ describe('applyMergeToWorktree — a clean side the alternate refuses to serve',
         await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('b-original\n'));
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/objects/info/alternates`, `${ALT_OBJECTS}\n`);
         await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
-        const chmod = vi.spyOn(ctx.fs, 'chmod');
+        const write = vi.spyOn(ctx.fs, 'write');
 
         // Act
         let failure: unknown;
@@ -2138,7 +2146,11 @@ describe('applyMergeToWorktree — a clean side the alternate refuses to serve',
         // Assert
         expect((failure as TsgitError).data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
         expect((await ctx.fs.read(`${ctx.layout.workDir}/b`)).length).toBe(0);
-        expect(chmod.mock.calls.map(([path]) => path)).toEqual([`${ctx.layout.workDir}/b`]);
+        expect(
+          write.mock.calls
+            .filter(([, , options]) => options?.mode !== undefined)
+            .map(([path]) => path),
+        ).toEqual([`${ctx.layout.workDir}/b`]);
       });
     });
   });

@@ -821,7 +821,7 @@ describe('stash apply', () => {
           entries: [treeEntry(FILE_MODE.REGULAR, 'packed.txt', absentBlob)],
         });
         await pushHostileUntrackedStash(ctx, untrackedTree);
-        const chmod = vi.spyOn(ctx.fs, 'chmod');
+        const write = vi.spyOn(ctx.fs, 'write');
         // A write through an alternate that cannot load is refused, so the fault is planted after the setup.
         await ctx.fs.write(
           `${alternateObjects}/pack/multi-pack-index`,
@@ -839,9 +839,11 @@ describe('stash apply', () => {
         // Assert
         expect((failure as TsgitError).data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
         expect((await ctx.fs.read(`${ctx.layout.workDir}/packed.txt`)).length).toBe(0);
-        expect(chmod.mock.calls.map(([path]) => path)).toEqual([
-          `${ctx.layout.workDir}/packed.txt`,
-        ]);
+        expect(
+          write.mock.calls
+            .filter(([, , options]) => options?.mode !== undefined)
+            .map(([path]) => path),
+        ).toEqual([`${ctx.layout.workDir}/packed.txt`]);
       });
     });
   });

@@ -17,6 +17,7 @@ import {
   type ObjectId,
 } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileStat, WriteOptions } from '../../../ports/file-system.js';
 import { type BlobSource, locateBlob, NEVER_BUFFER, serveLocatedBlob } from './blob-source.js';
 import { joinPath } from './join-working-tree-path.js';
 import { requireWorkTree } from './repo-state.js';
@@ -24,12 +25,17 @@ import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-l
 
 const decoder = new TextDecoder();
 
-const MODE_REGULAR_PERM = 0o644;
-const MODE_EXEC_PERM = 0o755;
+const CREATE_REGULAR_MODE = 0o666;
+const CREATE_EXEC_MODE = 0o777;
+const BUFFERED_WRITE_LIMIT = 1_048_576;
 const EMPTY_CONTENT = new Uint8Array();
 
-const permFor = (mode: FileMode): number =>
-  mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM;
+/** git opens checkout files 0666 / 0777 and lets the umask trim them; it never chmods. */
+const creationModeOf = (mode: FileMode): number =>
+  mode === FILE_MODE.EXECUTABLE ? CREATE_EXEC_MODE : CREATE_REGULAR_MODE;
+
+const creationOptionsOf = (mode?: FileMode): WriteOptions | undefined =>
+  mode === undefined ? undefined : { mode: creationModeOf(mode) };
 
 /**
  * Remove a working-tree path if it exists, probing with `lstat` (no symlink
@@ -65,22 +71,17 @@ const resolveScanner = (ctx: Context, scanner?: LeadingPathScanner): LeadingPath
  * Low-level regular-file writer and the single owner of the
  * unlink-before-regular-write rule: it `rmIfExists` unconditionally before the
  * write so a kind change (symlink → file) self-heals and the memory adapter
- * never keeps a stale symlink entry. `chmod` runs only when a `mode` is given.
+ * never keeps a stale symlink entry. A given `mode` only sets the creation
+ * permission bits (the umask applies); the file is never chmod-ed.
  */
 export const writeRegularFile = async (
   ctx: Context,
   fullPath: string,
   content: Uint8Array,
   mode?: FileMode,
-): Promise<void> => {
+): Promise<FileStat> => {
   await rmIfExists(ctx, fullPath);
-  await ctx.fs.write(fullPath, content);
-  if (mode !== undefined) {
-    await ctx.fs.chmod(
-      fullPath,
-      mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM,
-    );
-  }
+  return ctx.fs.write(fullPath, content, creationOptionsOf(mode));
 };
 
 export const writeWorkingTreeFile = async (
@@ -115,7 +116,7 @@ export const writeWorkingTreeEntry = async (
   content: Uint8Array,
   mode: FileMode,
   scanner?: LeadingPathScanner,
-): Promise<void> => {
+): Promise<FileStat | undefined> => {
   const activeScanner = resolveScanner(ctx, scanner);
   await activeScanner.unlinkSymlinkedLeadingComponent(path);
   const fullPath = joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path);
@@ -123,13 +124,13 @@ export const writeWorkingTreeEntry = async (
     await rmIfExists(ctx, fullPath);
     await ctx.fs.symlink(decoder.decode(content), fullPath);
     activeScanner.invalidate(path);
-    return;
+    return undefined;
   }
   if (mode === FILE_MODE.GITLINK) {
     await ctx.fs.mkdir(fullPath);
-    return;
+    return undefined;
   }
-  await writeRegularFile(ctx, fullPath, content, mode);
+  return writeRegularFile(ctx, fullPath, content, mode);
 };
 
 const isOperationAborted = (failure: unknown): boolean =>
@@ -163,8 +164,7 @@ const createEmptyOutput = async (
   mode?: FileMode,
 ): Promise<void> => {
   try {
-    await ctx.fs.write(fullPath, EMPTY_CONTENT);
-    if (mode !== undefined) await ctx.fs.chmod(fullPath, permFor(mode));
+    await ctx.fs.write(fullPath, EMPTY_CONTENT, creationOptionsOf(mode));
   } catch (createFailure) {
     const error = createFailure instanceof Error ? createFailure : new Error(String(createFailure));
     error.cause = refusal;
@@ -190,26 +190,69 @@ const openServedBlob = async (
   }
 };
 
+type Drained =
+  | { readonly complete: true; readonly bytes: Uint8Array }
+  | {
+      readonly complete: false;
+      readonly head: ReadonlyArray<Uint8Array>;
+      readonly rest: AsyncIterator<Uint8Array>;
+    };
+
+const concatenated = (chunks: ReadonlyArray<Uint8Array>, total: number): Uint8Array => {
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+};
+
+/** Memory stays bounded by `limit` whatever the inflate ratio: the drain stops at the first chunk crossing it. */
+const drainUpTo = async (chunks: AsyncIterable<Uint8Array>, limit: number): Promise<Drained> => {
+  const iterator = chunks[Symbol.asyncIterator]();
+  const head: Uint8Array[] = [];
+  let total = 0;
+  for (let step = await iterator.next(); !step.done; step = await iterator.next()) {
+    head.push(step.value);
+    total += step.value.length;
+    if (total > limit) return { complete: false, head, rest: iterator };
+  }
+  return { complete: true, bytes: concatenated(head, total) };
+};
+
+const headThenRest = async function* (
+  head: ReadonlyArray<Uint8Array>,
+  rest: AsyncIterator<Uint8Array>,
+): AsyncIterable<Uint8Array> {
+  yield* head;
+  for (let step = await rest.next(); !step.done; step = await rest.next()) yield step.value;
+};
+
 const writeServedBlob = async (
   ctx: Context,
   fullPath: string,
   located: Parameters<typeof serveLocatedBlob>[1],
   mode?: FileMode,
   transform?: ChunkTransform,
-): Promise<void> => {
+): Promise<FileStat> => {
   const source = await openServedBlob(ctx, fullPath, located, mode);
+  if (source.type !== 'blob') {
+    if (source.kind === 'stream') await source.release();
+    throw unexpectedObjectType('blob', source.type, located.id);
+  }
+  const chunks = chunksOf(source);
+  const options = creationOptionsOf(mode);
+  const drained = await drainUpTo(
+    transform === undefined ? chunks : transformedChunks(chunks, transform),
+    BUFFERED_WRITE_LIMIT,
+  );
   try {
-    if (source.type !== 'blob') {
-      if (source.kind === 'stream') await source.release();
-      throw unexpectedObjectType('blob', source.type, located.id);
-    }
-    const chunks = chunksOf(source);
-    await ctx.fs.writeStream(
-      fullPath,
-      transform === undefined ? chunks : transformedChunks(chunks, transform),
-    );
-    if (mode !== undefined) await ctx.fs.chmod(fullPath, permFor(mode));
+    return drained.complete
+      ? await ctx.fs.write(fullPath, drained.bytes, options)
+      : await ctx.fs.writeStream(fullPath, headThenRest(drained.head, drained.rest), options);
   } catch (failure) {
+    if (!drained.complete) await drained.rest.return?.();
     await rmIfExists(ctx, fullPath);
     throw failure;
   }
@@ -227,7 +270,7 @@ export const writeStreamedBlob = async (
   id: ObjectId,
   mode?: FileMode,
   transform?: ChunkTransform,
-): Promise<void> => {
+): Promise<FileStat> => {
   await rmIfExists(ctx, fullPath);
   let located: Awaited<ReturnType<typeof locateBlob>>;
   try {
@@ -238,7 +281,7 @@ export const writeStreamedBlob = async (
     throw refusal;
   }
   if (located === undefined) throw objectNotFound(id);
-  await writeServedBlob(ctx, fullPath, located, mode, transform);
+  return writeServedBlob(ctx, fullPath, located, mode, transform);
 };
 
 /**
@@ -264,7 +307,7 @@ export const writeWorkingTreeFileStream = async (
 
 /**
  * Regular-only streaming sibling of `writeWorkingTreeEntry`. The `mode`
- * parameter drives the chmod bit only (100644 → 0o644, 100755 → 0o755).
+ * parameter drives the creation permission bits only (100644 → 0o666, 100755 → 0o777, umask applied).
  * Symlink and gitlink modes are NOT dispatched here — site A routes them to
  * the buffered `writeWorkingTreeEntry` instead; a symlink/gitlink branch here
  * would be dead code.
@@ -276,9 +319,9 @@ export const writeWorkingTreeEntryStream = async (
   mode: FileMode,
   scanner?: LeadingPathScanner,
   transform?: ChunkTransform,
-): Promise<void> => {
+): Promise<FileStat> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeStreamedBlob(
+  return writeStreamedBlob(
     ctx,
     joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
     id,
