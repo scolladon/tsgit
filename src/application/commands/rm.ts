@@ -30,7 +30,6 @@ import {
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
-import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import {
   compareWorkingTreeEntry,
@@ -44,11 +43,7 @@ import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitat
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
-import {
-  assertNoPendingOperation,
-  assertOperationalRepository,
-  requireWorkTree,
-} from './internal/repo-state.js';
+import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { removeFile } from './internal/working-tree.js';
 
@@ -81,7 +76,6 @@ export const rm = async (
 ): Promise<RmResult> => {
   await assertOperationalRepository(ctx);
   const workDir = requireWorkTree(ctx, 'rm');
-  await assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] });
   if (paths.length === 0) throw emptyPathspec();
   const { matcher, literalSpellings } = resolvePathspec(paths);
   const lock = await acquireIndexLock(ctx);
