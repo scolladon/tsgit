@@ -626,3 +626,9 @@ Review fixes on the same branch grew the measured rows again; raised the same wa
 
 The npm tarball cap moved 1436 → 1439 KiB (measured pack 1 472 330 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+A second review round moved one row past its cap:
+
+| Row | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|---|
+| Chunks: primitives | 107 920 B | 107.9 kB | 108.1 kB | the repair abort's absent-oid set and the pruned walk's entry cap |
