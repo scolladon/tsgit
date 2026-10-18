@@ -272,6 +272,78 @@ describe('planCacheTree', () => {
     });
   });
 
+  describe('Given a valid carried tree whose children are out of subtree order', () => {
+    describe('When planning unchanged entries', () => {
+      it('Then every carried child is still reused and nothing is built', () => {
+        // Arrange
+        const sut = planCacheTree;
+        const carried = node(
+          '',
+          2,
+          [node('bb', 1, [], oid('5')), node('c', 1, [], oid('4'))],
+          oid('9'),
+        );
+
+        // Act
+        const result = sut([entryAt('bb/f'), entryAt('c/f')], carried);
+
+        // Assert
+        expect(result.builds).toEqual([]);
+        expect(nodeNamed(result, 'bb')?.reused).toBe(oid('5'));
+        expect(nodeNamed(result, 'c')?.reused).toBe(oid('4'));
+      });
+    });
+  });
+
+  describe('Given a valid carried root with an invalidated child', () => {
+    describe('When planning unchanged entries', () => {
+      it('Then the invalidated child is mirrored without a reused id', () => {
+        // Arrange
+        const sut = planCacheTree;
+        const carried = node('', 1, [node('c', -1, [])], oid('9'));
+
+        // Act
+        const result = sut([entryAt('c/f')], carried);
+
+        // Assert
+        expect(result.nodes[0]?.reused).toBe(oid('9'));
+        expect(nodeNamed(result, 'c')?.reused).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a carried tree whose root no longer matches the entries', () => {
+    describe('When a directory sorts before every carried child', () => {
+      it('Then that directory is built and the later carried child is reused', () => {
+        // Arrange
+        const sut = planCacheTree;
+        const carried = node('', 1, [node('c', 1, [], oid('4'))], oid('9'));
+
+        // Act
+        const result = sut([entryAt('a/f'), entryAt('c/f')], carried);
+
+        // Assert
+        expect(nodeNamed(result, 'a')?.reused).toBeUndefined();
+        expect(nodeNamed(result, 'c')?.reused).toBe(oid('4'));
+      });
+    });
+
+    describe('When a directory sorts after every carried child', () => {
+      it('Then that directory is built and the earlier carried child is reused', () => {
+        // Arrange
+        const sut = planCacheTree;
+        const carried = node('', 1, [node('a', 1, [], oid('4'))], oid('9'));
+
+        // Act
+        const result = sut([entryAt('a/f'), entryAt('c/f')], carried);
+
+        // Assert
+        expect(nodeNamed(result, 'a')?.reused).toBe(oid('4'));
+        expect(nodeNamed(result, 'c')?.reused).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given an intent-to-add entry next to a file', () => {
     describe('When planning', () => {
       it('Then the directory and the root are invalid and the build leaves the entry out', () => {
