@@ -23,9 +23,14 @@ import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
 import { escapedPathOf, indexPathKey, isLossy } from '../../domain/git-index/index-path-key.js';
+import {
+  type ResolveUndoRecord,
+  resolveUndoRecordOf,
+} from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
+import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import {
   compareWorkingTreeEntry,
@@ -76,7 +81,7 @@ export const rm = async (
 ): Promise<RmResult> => {
   await assertOperationalRepository(ctx);
   const workDir = requireWorkTree(ctx, 'rm');
-  await assertNoPendingOperation(ctx);
+  await assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] });
   if (paths.length === 0) throw emptyPathspec();
   const { matcher, literalSpellings } = resolvePathspec(paths);
   const lock = await acquireIndexLock(ctx);
@@ -90,16 +95,16 @@ export const rm = async (
       }
       throw err;
     });
-    const byPath = new Map<IndexPathKey, IndexEntry>();
-    for (const entry of index.entries) byPath.set(indexPathKey(entry), entry);
+    const byPath = groupByPath(index.entries);
     const removed: FilePath[] = [];
     const removedKeys: IndexPathKey[] = [];
-    const removedEntries: IndexEntry[] = [];
-    for (const [key, entry] of byPath) {
-      if (matchesIndexPath(matcher, entry)) {
-        removed.push(entry.path);
+    const removedGroups: ReadonlyArray<IndexEntry>[] = [];
+    for (const [key, stages] of byPath) {
+      const [first] = stages as readonly [IndexEntry, ...IndexEntry[]];
+      if (matchesIndexPath(matcher, first)) {
+        removed.push(first.path);
         removedKeys.push(key);
-        removedEntries.push(entry);
+        removedGroups.push(stages);
       }
     }
     enforceLiteralMatches(
@@ -108,11 +113,18 @@ export const rm = async (
       opts.recursive === true ? 'recursive' : 'paths-only',
     );
     if (opts.force !== true) {
-      await enforceSafetyValve(ctx, removedEntries, opts.cached === true, index.indexMtime);
+      await enforceSafetyValve(
+        ctx,
+        removedGroups.flat().filter(isStageZero),
+        opts.cached === true,
+        index.indexMtime,
+      );
     }
     for (const key of removedKeys) byPath.delete(key);
     if (!opts.cached) {
-      const workingTreeEntries = removedEntries.filter((entry) => !isLossy(entry));
+      const workingTreeEntries = removedGroups
+        .map(([first]) => first as IndexEntry)
+        .filter((entry) => !isLossy(entry));
       for (const { path } of workingTreeEntries) {
         // FILE_NOT_FOUND is the only tolerable error: working file already gone.
         await removeFile(ctx, path).catch((err: unknown) => {
@@ -127,12 +139,36 @@ export const rm = async (
         survivingDirectoriesOf([]),
       );
     }
-    await lock.commit(Array.from(byPath.values()), 'update');
+    await lock.commit(Array.from(byPath.values()).flat(), 'update', {
+      resolveUndo: resolvedRecordsOf(removedGroups),
+    });
     return { removed };
   } finally {
     await lock.release();
   }
 };
+
+/** Every stage of a path, in index order, so an unmerged path stays whole. */
+const groupByPath = (
+  entries: ReadonlyArray<IndexEntry>,
+): Map<IndexPathKey, ReadonlyArray<IndexEntry>> => {
+  const byPath = new Map<IndexPathKey, IndexEntry[]>();
+  for (const entry of entries) {
+    const key = indexPathKey(entry);
+    const stages = byPath.get(key);
+    if (stages === undefined) byPath.set(key, [entry]);
+    else stages.push(entry);
+  }
+  return byPath;
+};
+
+const isStageZero = (entry: IndexEntry): boolean => entry.flags.stage === 0;
+
+/** The unmerged paths the rm removed, so `git ls-files --resolve-undo` can bring them back. */
+const resolvedRecordsOf = (
+  removedGroups: ReadonlyArray<ReadonlyArray<IndexEntry>>,
+): ReadonlyArray<ResolveUndoRecord> =>
+  removedGroups.filter((stages) => !stages.every(isStageZero)).map(resolveUndoRecordOf);
 
 /** Whether a pathspec may remove the paths beneath a directory (`-r`) or only paths it names. */
 type RemovalReach = 'recursive' | 'paths-only';

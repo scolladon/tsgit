@@ -15,7 +15,7 @@
  *   unique:         rm porcelain index+worktree state matches canonical git rm
  *   interopSurface: rm
  */
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -24,6 +24,7 @@ import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
+  indexExtensionOf,
   lsStage,
   makePeerPair,
   type PeerPair,
@@ -333,6 +334,105 @@ describe.skipIf(!GIT_AVAILABLE)('rm porcelain interop', () => {
         // Assert
         await expect(pathExists(pair.peer, 'd')).resolves.toBe(false);
         await expect(pathExists(pair.ours, 'd')).resolves.toBe(false);
+      });
+    });
+  });
+
+  describe('Given a stopped operation leaving a/f unmerged in both repos', () => {
+    type Operation = 'merge' | 'cherry-pick' | 'revert';
+
+    const put = async (dir: string, file: string, content: string): Promise<void> => {
+      await mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+      await writeFile(path.join(dir, file), content);
+    };
+
+    const commitAll = (dir: string, message: string): void => {
+      runGit(['-C', dir, 'add', '-A'], { env: COMMIT_ENV });
+      runGit(['-C', dir, 'commit', '-q', '-m', message], { env: COMMIT_ENV });
+    };
+
+    const stop = (dir: string, operation: Operation): void => {
+      const args = operation === 'revert' ? ['revert', '--no-edit', 'HEAD~1'] : [operation, 'side'];
+      expect(tryRunGit(['-C', dir, ...args], { env: COMMIT_ENV }).ok).toBe(false);
+    };
+
+    const buildStopped = async (dir: string, operation: Operation): Promise<void> => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      await put(dir, 'a/f', 'base\n');
+      await put(dir, 'h', 'h\n');
+      commitAll(dir, 'base');
+      runGit(['-C', dir, 'checkout', '-q', '-b', 'side']);
+      await put(dir, 'a/f', 'side\n');
+      commitAll(dir, 'side');
+      runGit(['-C', dir, 'checkout', '-q', 'main']);
+      await put(dir, 'a/f', 'main\n');
+      commitAll(dir, 'main');
+      if (operation === 'revert') {
+        await put(dir, 'a/f', 'main2\n');
+        commitAll(dir, 'main2');
+      }
+      stop(dir, operation);
+    };
+
+    const reucOf = async (dir: string): Promise<string> =>
+      Buffer.from((await indexExtensionOf(dir, 'REUC')) ?? []).toString('hex');
+
+    const expectSameState = async (): Promise<void> => {
+      expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+      expect(await reucOf(pair.ours)).toBe(await reucOf(pair.peer));
+      expect(runGit(['-C', pair.ours, 'ls-files', '--resolve-undo'])).toBe(
+        runGit(['-C', pair.peer, 'ls-files', '--resolve-undo']),
+      );
+      expect(tryRunGit(['-C', pair.ours, 'fsck']).ok).toBe(true);
+    };
+
+    describe.each([
+      { operation: 'merge', cached: false },
+      { operation: 'merge', cached: true },
+      { operation: 'cherry-pick', cached: false },
+      { operation: 'revert', cached: false },
+    ] as const)(
+      'When repo.rm and git rm remove a/f ($operation, cached $cached)',
+      ({ operation, cached }) => {
+        it('Then the index, REUC and resolve-undo listing match canonical git', async () => {
+          // Arrange
+          await rm(pair.ours, { recursive: true, force: true });
+          await rm(pair.peer, { recursive: true, force: true });
+          await buildStopped(pair.peer, operation);
+          await buildStopped(pair.ours, operation);
+          await repo.dispose();
+          repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          await repo.rm(['a/f'], cached ? { cached: true } : {});
+          runGit(['-C', pair.peer, 'rm', '-q', ...(cached ? ['--cached'] : []), 'a/f']);
+
+          // Assert
+          await expectSameState();
+        });
+      },
+    );
+
+    describe('When the worktree file of a/f was modified further', () => {
+      it('Then both remove it without refusing and match', async () => {
+        // Arrange
+        await rm(pair.ours, { recursive: true, force: true });
+        await rm(pair.peer, { recursive: true, force: true });
+        await buildStopped(pair.peer, 'merge');
+        await buildStopped(pair.ours, 'merge');
+        for (const dir of [pair.peer, pair.ours]) {
+          const file = path.join(dir, 'a/f');
+          await writeFile(file, `${await readFile(file, 'utf8')}more\n`);
+        }
+        await repo.dispose();
+        repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        await repo.rm(['a/f']);
+        runGit(['-C', pair.peer, 'rm', '-q', 'a/f']);
+
+        // Assert
+        await expectSameState();
       });
     });
   });
