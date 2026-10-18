@@ -919,6 +919,86 @@ describe('commit — hooks', () => {
     });
   });
 
+  describe('Given a staged change and a pre-commit hook that stages another file', () => {
+    const seedStaged = async (onPreCommit: (ctx: Context) => Promise<void>): Promise<Context> => {
+      let ctx!: Context;
+      const runner: HookRunner = {
+        run: async (request) => {
+          if (request.name === 'pre-commit') await onPreCommit(ctx);
+          return { kind: 'ran', exitCode: 0, stdout: '', stderr: '' };
+        },
+      };
+      ctx = createMemoryContext({ hooks: runner });
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/x`, 'x');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top`, 't');
+      await add(ctx, ['a/x', 'top']);
+      await commit(ctx, { message: 'first', author, noVerify: true });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top`, 'changed');
+      await add(ctx, ['top']);
+      return ctx;
+    };
+    const stageHookFile = async (ctx: Context): Promise<void> => {
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/hook`, 'hook');
+      await add(ctx, ['a/hook']);
+    };
+    const rootEntryCountOf = async (ctx: Context): Promise<number | undefined> =>
+      carriedCacheTreeOf((await readIndex(ctx)).extensions, ctx.hashConfig.digestLength)
+        ?.entryCount;
+
+    describe('When commit', () => {
+      it('Then the index is the one the hook wrote and the commit tree holds the hook file', async () => {
+        // Arrange
+        const ctx = await seedStaged(stageHookFile);
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'second', author });
+
+        // Assert
+        expect(await rootEntryCountOf(ctx)).toBe(-1);
+        expect(await committedLeafPathHex(ctx, result.id)).toContain(
+          bytesToHex(new TextEncoder().encode('a/hook')),
+        );
+      });
+    });
+
+    describe('When commit and the hook reads the TREE', () => {
+      it('Then the hook observes the already updated TREE', async () => {
+        // Arrange
+        let seenByHook: number | undefined;
+        const ctx = await seedStaged(async (hookCtx) => {
+          seenByHook = await rootEntryCountOf(hookCtx);
+        });
+        const sut = commit;
+
+        // Act
+        await sut(ctx, { message: 'second', author });
+
+        // Assert
+        expect(seenByHook).toBe(2);
+      });
+    });
+
+    describe('When commit with noVerify', () => {
+      it('Then the hook is not called and the tree comes from the first pass', async () => {
+        // Arrange
+        const ctx = await seedStaged(stageHookFile);
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'second', author, noVerify: true });
+
+        // Assert
+        expect(await committedLeafPathHex(ctx, result.id)).toEqual([
+          bytesToHex(new TextEncoder().encode('a/x')),
+          bytesToHex(new TextEncoder().encode('top')),
+        ]);
+        expect(await rootEntryCountOf(ctx)).toBe(2);
+      });
+    });
+  });
+
   describe('Given a commit-msg hook that rewrites the message', () => {
     describe('When commit', () => {
       it('Then the commit uses the rewritten message', async () => {

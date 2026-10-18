@@ -1,3 +1,4 @@
+import { carriedCacheTreeOf } from '../../domain/git-index/cache-tree-update.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -26,8 +27,10 @@ import {
   assertValidPromisorRemoteConfig,
 } from '../primitives/internal/boolean-config-guard.js';
 import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
+import { updateCacheTree } from '../primitives/internal/update-cache-tree.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { reduceHeads } from '../primitives/merge-base.js';
+import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -55,6 +58,7 @@ import {
 import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { readRevertHead } from './internal/revert-state.js';
 import { signCommitData } from './internal/sign-request.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 import { writeIndexCacheTree } from './internal/write-index-cache-tree.js';
 import { applyMergeAutostash } from './stash.js';
 
@@ -112,12 +116,12 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const { mergeHead, cherryPickHead, revertHead } = markers;
   await assertNoPendingOperation(ctx, { except: allowedPendingOf(markers) });
   const noVerify = opts.noVerify ?? false;
-  // pre-commit runs before the index is read, so a hook that re-stages files
-  // (e.g. a formatter) is reflected in the committed tree.
-  await runPreCommitHook(ctx, noVerify);
-  // git's prepare_index: the index is updated and written before the message, identity and
+  // git's order: the index is updated and written (prepare_index) before the message, identity and
   // emptiness checks, so a commit refused afterwards still leaves the refreshed TREE behind.
-  const treeId = await writeIndexCacheTree(ctx);
+  // pre-commit then runs against that index; a hook that ran may have re-staged files, which git
+  // folds into the commit tree in memory without a second index write.
+  let treeId = await writeIndexCacheTree(ctx);
+  if (await runPreCommitHook(ctx, noVerify)) treeId = await treeAfterHook(ctx);
   // A resolution commit for a pending merge / cherry-pick / revert reuses MERGE_MSG as its draft.
   const resolvingPending =
     mergeHead !== undefined || cherryPickHead !== undefined || revertHead !== undefined;
@@ -184,6 +188,14 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
  * `undefined` falls back to `commit.gpgsign` from config. Returns `undefined`
  * when signing is off, otherwise the resolved armor (or throws).
  */
+/** The tree of the index a pre-commit hook left behind; in memory only, as git's post-hook cache_tree_update. */
+const treeAfterHook = async (ctx: Context): Promise<ObjectId> => {
+  const index = await readIndex(ctx);
+  rejectUnmergedIndex(index.entries);
+  const carried = carriedCacheTreeOf(index.extensions, ctx.hashConfig.digestLength);
+  return (await updateCacheTree(ctx, index.entries, carried, 'write')).rootTree;
+};
+
 const resolveGpgSignature = async (
   ctx: Context,
   config: ParsedConfig,

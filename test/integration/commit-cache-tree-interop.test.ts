@@ -11,7 +11,7 @@
  *   unique:         commit maintains the index TREE, excludes intent-to-add entries and refuses as git does
  *   interopSurface: index
  */
-import { mkdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, stat, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -248,6 +248,16 @@ const withoutIdentity = async (dir: string): Promise<void> => {
   git(dir, 'add', 'b/f');
 };
 
+const HOOK_MODE = 0o755;
+const RESTAGING_HOOK = '#!/bin/sh\necho hook >> c/f\ngit add c/f\n';
+
+const withRestagingHook = async (dir: string): Promise<void> => {
+  await addAfter(['b/f', '22\n'])(dir);
+  const hookPath = path.join(dir, '.git', 'hooks', 'pre-commit');
+  await write(dir, '.git/hooks/pre-commit', RESTAGING_HOOK);
+  await chmod(hookPath, HOOK_MODE);
+};
+
 const ANONYMOUS_ENV = ((): NodeJS.ProcessEnv => {
   const env = runGitEnvWithoutGlobalConfig();
   for (const key of [
@@ -381,6 +391,17 @@ const SETTLED_ROWS: ReadonlyArray<Row> = [
   },
 ];
 
+const HOOK_ROW: Row = {
+  title: 'commit whose pre-commit hook re-stages a file',
+  steps: [
+    withIndexWrite({
+      prepare: withRestagingHook,
+      gitArgs: COMMIT_ONE,
+      tsgit: commitWith('step'),
+    }),
+  ],
+};
+
 const ITA_ROW: Row = {
   title: 'commit with a staged file and an intent-to-add entry',
   fixture: { files: ['a/f', 'b'], committed: true },
@@ -447,4 +468,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit cache-tree interop', () => {
   describeRow(SETTLED_ROWS[0] as Row, 'sha256');
   describeRow(SETTLED_ROWS[1] as Row, 'sha256');
   describeRow(ITA_ROW);
+  describe.skipIf(process.platform === 'win32')('with a pre-commit hook', () => {
+    describeRow(HOOK_ROW);
+  });
 });
