@@ -20,6 +20,7 @@ describe('createNodeContext', () => {
 
         // Assert
         expect(result.windowsPathSyntax).toBe(true);
+        expect(result.windowsIndexPaths).toBe(true);
         expect(gitPathSyntaxOf(result).isAbsolute('C:\\x\\objects')).toBe(true);
       });
     });

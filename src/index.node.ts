@@ -169,6 +169,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     }),
     concurrency: deriveLimits(nativeMachineFacts()),
     windowsPathSyntax: nativePolicy.windowsSyntax,
+    windowsIndexPaths: nativePolicy.windowsSyntax,
     nativeEol: nativeLineEndingFor(process.platform),
     filenameProbe: nodeFilenameProbe,
     makeConfinedFs: (roots: ReadonlyArray<string>): NodeFileSystem =>

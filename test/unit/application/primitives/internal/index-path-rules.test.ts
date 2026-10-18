@@ -18,6 +18,16 @@ describe('indexPathRulesOf', () => {
       host: { windowsPathSyntax: false },
       expected: posixIndexPathRules,
     },
+    {
+      title: 'a host declaring only Windows index paths',
+      host: { windowsIndexPaths: true },
+      expected: windowsIndexPathRules,
+    },
+    {
+      title: 'a host declaring POSIX syntax and no Windows index paths',
+      host: { windowsPathSyntax: false, windowsIndexPaths: false },
+      expected: posixIndexPathRules,
+    },
     { title: 'a host declaring nothing', host: {}, expected: posixIndexPathRules },
   ])('Given $title', ({ host, expected }) => {
     describe('When its index path rules are chosen', () => {

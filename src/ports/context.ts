@@ -357,6 +357,12 @@ export interface Context {
    */
   readonly windowsPathSyntax?: boolean;
   /**
+   * True when the index path rules are git for Windows' (`\` refused in a path) — set by the node
+   * runtime on a Windows host whatever filesystem the caller supplied, since git for Windows
+   * refuses the path at compile level, not by what the disk reads. `windowsPathSyntax` implies it.
+   */
+  readonly windowsIndexPaths?: boolean;
+  /**
    * The host's native line ending (git's `EOL_NATIVE`), supplied by the platform adapter.
    * Absent ⇒ `lf`.
    */
