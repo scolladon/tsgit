@@ -56,7 +56,7 @@ import {
   settleInCleanTurn,
   withCleanOrder,
 } from '../primitives/internal/clean-order.js';
-import { limiterFor } from '../primitives/internal/concurrency.js';
+import { boundedMapFor, limiterFor } from '../primitives/internal/concurrency.js';
 import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limiter.js';
 import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
@@ -556,14 +556,14 @@ const literalStats = async (
   ctx: Context,
   literals: ReadonlyArray<FilePath>,
 ): Promise<LiteralStats | undefined> => {
-  if (literals.length === 0) return undefined;
+  if (literals.length === 0 || literals.some(namesDirectoryOnly)) return undefined;
+  const probed = await boundedMapFor(ctx, 'ioBound', literals, (path) =>
+    lstatOrBeneathFile(ctx, path),
+  );
   const stats = new Map<FilePath, FileStat>();
-  for (const path of literals) {
-    if (namesDirectoryOnly(path)) return undefined;
-    const stat = await lstatOrBeneathFile(ctx, path);
-    if (stat === undefined) return undefined;
-    if (stat.isDirectory && !stat.isSymbolicLink) return undefined;
-    stats.set(path, stat);
+  for (const [index, stat] of probed.entries()) {
+    if (stat === undefined || (stat.isDirectory && !stat.isSymbolicLink)) return undefined;
+    stats.set(literals[index] as FilePath, stat);
   }
   return stats;
 };
