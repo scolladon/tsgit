@@ -1460,13 +1460,16 @@ const readContent = async (
   return readProbedBytes(ctx, joinPath(workDir, path), stat.size);
 };
 
-/** git's `index_core` reads the lstat'd size and no more: a longer file grew or was swapped since the probe. */
+/**
+ * git's `index_core` reads exactly the lstat'd size: a grown file is staged truncated to it,
+ * a shrunk one is a short read that aborts the add.
+ */
 const readProbedBytes = async (
   ctx: Context,
   fullPath: string,
   probedSize: number,
 ): Promise<Uint8Array> => {
   const bytes = await ctx.fs.readSlice(fullPath, 0, probedSize + 1);
-  if (bytes.byteLength > probedSize) throw operationAborted();
-  return bytes;
+  if (bytes.byteLength < probedSize) throw operationAborted();
+  return bytes.subarray(0, probedSize);
 };

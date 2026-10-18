@@ -23,6 +23,7 @@ import type {
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { instrumentedContext, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { asBareContext, seedRepo } from './fixtures.js';
@@ -383,25 +384,33 @@ describe('add', () => {
 
   describe('Given a literal file that holds more bytes than its probed size', () => {
     describe('When add', () => {
-      it('Then it refuses with OPERATION_ABORTED and stages nothing', async () => {
+      it('Then it stages the first probed-size bytes, as git does', async () => {
         // Arrange
         const ctx = await seedFreshRepo({ 'grown.txt': 'abcdef' });
-        const grownPath = `${ctx.layout.workDir}/grown.txt`;
-        const baseLstat = ctx.fs.lstat;
-        const fs = new Proxy(ctx.fs, {
-          get(target, prop, receiver) {
-            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
-            return async (p: string) => {
-              const real = await baseLstat(p);
-              return p === grownPath ? { ...real, size: 3 } : real;
-            };
-          },
-        });
+        const fs = withProbedSize(ctx, 'grown.txt', 3);
+        const sut = add;
+
+        // Act
+        await sut({ ...ctx, fs }, ['grown.txt']);
+
+        // Assert
+        const entry = (await readIndex(ctx)).entries[0];
+        expect(dec((await readBlob(ctx, entry?.id as ObjectId)).content)).toBe('abc');
+      });
+    });
+  });
+
+  describe('Given a literal file that holds fewer bytes than its probed size', () => {
+    describe('When add', () => {
+      it('Then it refuses with OPERATION_ABORTED and stages nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'shrunk.txt': 'abc' });
+        const fs = withProbedSize(ctx, 'shrunk.txt', 6);
         const sut = add;
 
         // Act
         const err = await expectError(
-          () => sut({ ...ctx, fs }, ['grown.txt']),
+          () => sut({ ...ctx, fs }, ['shrunk.txt']),
           'OPERATION_ABORTED',
         );
 
@@ -1134,6 +1143,12 @@ describe('add', () => {
                 }
                 return real;
               };
+            }
+            if (prop === 'readSlice') {
+              return async (path: string, offset: number, length: number) =>
+                path.endsWith('/a.txt')
+                  ? new Uint8Array(MAX_WORKING_TREE_BLOB_BYTES)
+                  : target.readSlice(path, offset, length);
             }
             return Reflect.get(target, prop, receiver);
           },
@@ -3676,6 +3691,12 @@ describe('add renormalize option', () => {
         const baseLstat = ctx.fs.lstat;
         const cappedFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
+            if (prop === 'readSlice') {
+              return async (path: string, offset: number, length: number) =>
+                path.endsWith('/f.txt')
+                  ? new Uint8Array(MAX_WORKING_TREE_BLOB_BYTES)
+                  : target.readSlice(path, offset, length);
+            }
             if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
             return async (path: string) => {
               const real = await baseLstat(path);
@@ -4198,3 +4219,17 @@ describe('add renormalize re-validating index paths', () => {
     });
   });
 });
+
+const withProbedSize = (ctx: Context, name: string, size: number): Context['fs'] => {
+  const target = `${ctx.layout.workDir}/${name}`;
+  const baseLstat = ctx.fs.lstat;
+  return new Proxy(ctx.fs, {
+    get(fsTarget, prop, receiver) {
+      if (prop !== 'lstat') return Reflect.get(fsTarget, prop, receiver);
+      return async (p: string) => {
+        const real = await baseLstat(p);
+        return p === target ? { ...real, size } : real;
+      };
+    },
+  });
+};
