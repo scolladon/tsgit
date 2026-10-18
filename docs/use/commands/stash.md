@@ -95,7 +95,7 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   the untracked tree against git's index-entry name rules before writing the
   first file — a stash carrying a hostile name (a `.git` alias, or a
   traversal) is refused wholesale with `INVALID_INDEX_ENTRY`, and nothing is
-  written to the working tree.
+  written to the working tree. Under a Windows host (node runtime on win32, whatever filesystem the caller passes) an untracked path containing `\` is refused with `INVALID_INDEX_ENTRY` and reason `backslash rejected under Windows path syntax`, as git for Windows does; parsing an index, `write-tree` and `archive` do not refuse it.
 - **The tracked 3-way merge gets the same whole-set, pre-write check,
   separately.** Before any conflict is materialised, every outcome/conflict
   path the tracked merge (base = stash base, ours = current index, theirs =

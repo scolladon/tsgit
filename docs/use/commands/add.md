@@ -96,7 +96,9 @@ Every path this call would stage — literal, glob-matched, or walked in bulk
 aborts the entire call before anything reaches the index — nothing partial
 is staged, matching `git add`'s all-or-nothing index write.
 
-Everything else git accepts is accepted too: a name carrying a backslash, a
+The `.gitmodules` symlink check also covers the aliases git 2.55 refuses (the NTFS spelling after a backslash, the generic 8.3 short name), and a `.git` alias behind a component-leading `\` is admitted on POSIX as git does. Under a Windows host (node runtime on win32, whatever filesystem the caller passes) a path containing `\` is refused with `INVALID_INDEX_ENTRY` and reason `backslash rejected under Windows path syntax`, as git for Windows does; parsing an index, `write-tree` and `archive` do not refuse it.
+
+Everything else git accepts is accepted too on POSIX: a name carrying a backslash, a
 C0/C1 control byte, a BIDI/isolate Unicode control character, or a mid-path
 `:` stages exactly as `git add` stages it (only a *leading* `:` is
 pathspec-magic syntax, refused as such).
