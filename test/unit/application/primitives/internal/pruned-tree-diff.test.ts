@@ -4,6 +4,7 @@ import {
   diffTreesPruned,
   isBelowShared,
 } from '../../../../../src/application/primitives/internal/pruned-tree-diff.js';
+import { readTree } from '../../../../../src/application/primitives/read-tree.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { indexPathKey, keyOfPath } from '../../../../../src/domain/git-index/index-path-key.js';
@@ -273,6 +274,44 @@ describe('diffTreesPruned', () => {
           await writeTree(ctx, [file('a', two)]),
         ];
         controller.abort();
+
+        // Act
+        const sut = diffTreesPruned;
+        const attempt = sut(ctx, oldRoot, newRoot);
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({ data: { code: 'OPERATION_ABORTED' } });
+      });
+    });
+  });
+
+  describe('Given a signal that aborts on the read right after every tree has been loaded', () => {
+    describe('When two trees differing below a subdirectory are compared', () => {
+      it('Then the walk of that subdirectory refuses with OPERATION_ABORTED', async () => {
+        // Arrange
+        const probe = { reads: 0, abortAtRead: Number.POSITIVE_INFINITY };
+        const signal = new AbortController().signal;
+        Object.defineProperty(signal, 'aborted', {
+          get: () => ++probe.reads >= probe.abortAtRead,
+        });
+        const ctx = await buildSeededContext({ signal });
+        const [one, two] = [await blob(ctx, '1'), await blob(ctx, '2')];
+        const [oldDir, newDir] = [
+          await writeTree(ctx, [file('a', one)]),
+          await writeTree(ctx, [file('a', two)]),
+        ];
+        const [oldRoot, newRoot] = [
+          await writeTree(ctx, [dir('d', oldDir)]),
+          await writeTree(ctx, [dir('d', newDir)]),
+        ];
+        const loadAll = async (): Promise<void> => {
+          for (const id of [oldRoot, newRoot, oldDir, newDir]) await readTree(ctx, id);
+        };
+        await loadAll();
+        probe.reads = 0;
+        await loadAll();
+        probe.abortAtRead = probe.reads + 2;
+        probe.reads = 0;
 
         // Act
         const sut = diffTreesPruned;

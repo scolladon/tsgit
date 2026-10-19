@@ -142,6 +142,7 @@ export const diffTreesPruned = async (
 /** Whether `key` sits below one of the shared directories. */
 export const isBelowShared = (sharedDirs: ReadonlySet<string>, key: IndexPathKey): boolean => {
   if (sharedDirs.has(WHOLE_TREE)) return true;
+  // Stryker disable next-line StringLiteral: equivalent — starting at index 0 only adds the one-character prefix key[0], which ends in '/' only when key[0] is '/', a slash the original loop finds at 0 anyway.
   for (let slash = key.indexOf('/'); slash !== -1; slash = key.indexOf('/', slash + 1)) {
     if (sharedDirs.has(key.slice(0, slash + 1))) return true;
   }
