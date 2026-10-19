@@ -37,6 +37,7 @@ export const compareSubtreeNames = (a: Uint8Array, b: Uint8Array): number =>
 
 export const isIndexOrdered = (entries: ReadonlyArray<IndexEntry>): boolean => {
   for (let i = 1; i < entries.length; i++) {
+    // Stryker disable next-line EqualityOperator: equivalent — equal paths only make the check fall to a stable sort that returns the same order
     if (compareEntryPath(entries[i - 1] as IndexEntry, entries[i] as IndexEntry) > 0) return false;
   }
   return true;
@@ -73,6 +74,7 @@ const addNode = (
 ): number => {
   drafts.names.push(name);
   drafts.counts.push(count);
+  // Stryker disable next-line CallExpression: equivalent — reused is only read by index and set by index, a hole reads as undefined
   drafts.reused.push(undefined);
   drafts.previous.push(previous);
   drafts.invalid.push(invalid);
@@ -207,6 +209,7 @@ interface Planning {
 const badEntriesBefore = (entries: ReadonlyArray<IndexEntry>): Uint32Array => {
   const before = new Uint32Array(entries.length + 1);
   entries.forEach((entry, i) => {
+    // Stryker disable next-line ArithmeticOperator: equivalent — the running total is negated modulo 2^32, so a range difference is zero exactly when it was
     before[i + 1] = (before[i] as number) + (isCommittable(entry) ? 0 : 1);
   });
   return before;
