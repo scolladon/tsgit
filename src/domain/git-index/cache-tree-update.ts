@@ -108,7 +108,6 @@ const sharesDirectory = (
   from: number,
   until: number,
 ): boolean => {
-  if (candidate.length < until) return false;
   for (let k = from; k < until; k++) if (candidate[k] !== bytes[k]) return false;
   return true;
 };
