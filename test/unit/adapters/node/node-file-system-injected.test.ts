@@ -6547,6 +6547,31 @@ describe('NodeFileSystem.write / writeStream — open with a creation mode, stat
     });
   });
 
+  describe('Given a regular file at the parent (first open throws ENOTDIR)', () => {
+    describe('When write is called', () => {
+      it('Then the parent mkdir decides the refusal and FILE_EXISTS propagates', async () => {
+        // Arrange
+        const open = vi.fn().mockRejectedValue(enotdir());
+        const mkdir = vi.fn().mockRejectedValue(eexist());
+        const adapter = build({ open, mkdir });
+        const sut = adapter.write.bind(adapter);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/file/a.bin', new Uint8Array([1]));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(dataFor(caught, 'FILE_EXISTS').path).toBe('/root/file/a.bin');
+        expect(mkdir).toHaveBeenCalledWith('/root/file', { recursive: true });
+        expect(open).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
   describe('Given a non-ENOENT failure on the first open (EACCES)', () => {
     describe('When write is called', () => {
       it('Then PERMISSION_DENIED propagates and mkdir is never called', async () => {

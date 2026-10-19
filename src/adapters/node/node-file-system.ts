@@ -1245,12 +1245,14 @@ export class NodeFileSystem implements FileSystem {
   // Opens first and creates the parent only when that reports it absent: a
   // destination directory almost always exists, so the common case costs one
   // open instead of an unconditional `mkdir` walk. A second `ENOENT` after
-  // `mkdir` is a real fault and propagates.
+  // `mkdir` is a real fault and propagates. `ENOTDIR` takes the same route so
+  // the parent `mkdir` keeps deciding the refusal: a file at the parent is
+  // `FILE_EXISTS`, one further up is `NOT_A_DIRECTORY`.
   private async openForWrite(real: string, mode: number): Promise<fsPromises.FileHandle> {
     try {
       return await this.fsOps.open(real, WRITE_CREATE_FLAGS, mode);
     } catch (err) {
-      if (!isErrnoException(err) || err.code !== 'ENOENT') throw err;
+      if (!isErrnoException(err) || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) throw err;
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       return this.fsOps.open(real, WRITE_CREATE_FLAGS, mode);
     }
