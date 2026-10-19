@@ -632,3 +632,10 @@ A second review round moved one row past its cap:
 | Row | measured | old limit | new limit | Attributable to |
 |---|--:|--:|--:|---|
 | Chunks: primitives | 107 920 B | 107.9 kB | 108.1 kB | the repair abort's absent-oid set and the pruned walk's entry cap |
+
+The third review round's repair fix (a parent hashed over a stale child that cannot be rebuilt) moved two rows again:
+
+| Row | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|---|
+| Full library | 399 210 B | 399.1 kB | 399.4 kB | the repair driver's working oid kept apart from the recorded oid |
+| Browser bundle (no-build) | 341 668 B | 341.6 kB | 341.8 kB | the same change, bundled once |
