@@ -1,4 +1,4 @@
-import { type AbsentIds, toRepairedCacheTree } from '../../../domain/git-index/cache-tree-abort.js';
+import { toRepairedCacheTree } from '../../../domain/git-index/cache-tree-abort.js';
 import {
   type CacheTreePlan,
   type PlannedNode,
@@ -194,36 +194,68 @@ const hashLeaf =
       return (await presentIn(ctx, id)) ? id : undefined;
     });
 
+/** The earlier oid a node falls back on, kept only while its object is still stored. */
+type Stale = (id: ObjectId | undefined) => Promise<ObjectId | undefined>;
+
+const noStale: Stale = async () => undefined;
+
+const staleWhenStored = (
+  ctx: Context,
+  limiter: ConcurrencyLimiter,
+  present: Set<ObjectId>,
+): Stale => {
+  const probed = new Map<ObjectId, Promise<boolean>>();
+  const stored = (id: ObjectId): Promise<boolean> => {
+    if (present.has(id)) return Promise.resolve(true);
+    const known = probed.get(id) ?? limiter.run(() => presentIn(ctx, id));
+    probed.set(id, known);
+    return known;
+  };
+  return async (id) => (id !== undefined && (await stored(id)) ? id : undefined);
+};
+
+interface Strategy {
+  readonly leaf: Leaf;
+  readonly stale: Stale;
+}
+
+/** `ids` are the oids the cache-tree records; `working` also holds the stale ones a parent is hashed over. */
+interface Built {
+  readonly ids: Ids;
+  readonly working: Ids;
+}
+
 const buildLevel = async (
   ctx: Context,
   plan: CacheTreePlan,
   layout: Layout,
   level: ReadonlyArray<TreeBuild>,
-  ids: Ids,
-  leaf: Leaf,
+  built: Built,
+  strategy: Strategy,
 ): Promise<void> => {
   await Promise.all(
     level.map(async (build) => {
-      const entries = treeEntriesOf(ctx, plan, build, layout.prefix[build.node] as number, ids);
-      if (entries === undefined) return;
-      ids[build.node] = await leaf(entries);
+      const prefix = layout.prefix[build.node] as number;
+      const entries = treeEntriesOf(ctx, plan, build, prefix, built.working);
+      const hashed = entries === undefined ? undefined : await strategy.leaf(entries);
+      const overStale = build.subtrees.some((child) => built.ids[child] === undefined);
+      built.ids[build.node] = overStale ? undefined : hashed;
+      built.working[build.node] =
+        hashed ?? (await strategy.stale((plan.nodes[build.node] as PlannedNode).previousId));
     }),
   );
 };
 
-const buildAll = async (
-  ctx: Context,
-  limiter: ConcurrencyLimiter,
-  plan: CacheTreePlan,
-  sink: TreeSink,
-): Promise<Ids> => {
-  const leaf = sink === 'write' ? writeLeaf(ctx, limiter) : hashLeaf(ctx, limiter);
-  const ids: Ids = plan.nodes.map((node) => node.reused);
+const buildAll = async (plan: CacheTreePlan, strategy: Strategy, ctx: Context): Promise<Built> => {
+  const built: Built = {
+    ids: plan.nodes.map((node) => node.reused),
+    working: plan.nodes.map((node) => node.reused),
+  };
   const layout = layoutOf(plan);
   for (const level of levelsDeepestFirst(plan, layout)) {
-    await buildLevel(ctx, plan, layout, level, ids, leaf);
+    await buildLevel(ctx, plan, layout, level, built, strategy);
   }
-  return ids;
+  return built;
 };
 
 export function updateCacheTree(
@@ -247,36 +279,17 @@ export async function updateCacheTree(
   const limiter = limiterFor(ctx, 'ioBound');
   const { plan, present } = await settlePlan(ctx, limiter, entries, carried);
   if (sink === 'write') await assertReusedRootIsTree(ctx, plan);
-  const ids = await buildAll(ctx, limiter, plan, sink);
   if (sink === 'repair') {
-    const absent = await absentPreviousIds(ctx, limiter, plan, ids, present);
-    return { cacheTree: toRepairedCacheTree(plan, ids, carried, absent) };
+    const strategy = {
+      leaf: hashLeaf(ctx, limiter),
+      stale: staleWhenStored(ctx, limiter, present),
+    };
+    const { ids, working } = await buildAll(plan, strategy, ctx);
+    return { cacheTree: toRepairedCacheTree(plan, ids, working, carried) };
   }
+  const { ids } = await buildAll(plan, { leaf: writeLeaf(ctx, limiter), stale: noStale }, ctx);
   return { cacheTree: toCacheTreeEntry(plan, ids), rootTree: ids[ROOT] as ObjectId };
 }
-
-/** The earlier oids of the nodes that could not be stored, whose object is not there either. */
-const absentPreviousIds = async (
-  ctx: Context,
-  limiter: ConcurrencyLimiter,
-  plan: CacheTreePlan,
-  ids: Ids,
-  present: Set<ObjectId>,
-): Promise<AbsentIds> => {
-  const earlier = new Set(
-    plan.nodes.flatMap((node, i) =>
-      ids[i] === undefined && node.previousId !== undefined ? [node.previousId] : [],
-    ),
-  );
-  const checked = await Promise.all(
-    [...earlier].map(async (id) => {
-      if (present.has(id)) return undefined;
-      if (await limiter.run(() => presentIn(ctx, id))) return undefined;
-      return id;
-    }),
-  );
-  return new Set(checked.filter((id): id is ObjectId => id !== undefined));
-};
 
 const flatten = (root: CacheTreeEntry): CacheTreeEntry[] => {
   const nodes: CacheTreeEntry[] = [];

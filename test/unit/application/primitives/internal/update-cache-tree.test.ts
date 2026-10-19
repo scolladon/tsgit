@@ -405,6 +405,31 @@ describe('updateCacheTree', () => {
     });
   });
 
+  describe('Given a staged 0/a/s/x with no stored tree and a still stored earlier tree for 0/a/s', () => {
+    describe('When repairing under directories that carry no oid', () => {
+      it('Then 0 and a are hashed over the stored earlier s, and the later invalid c is repaired', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const stored = entriesOf('0/a/s/x', '0/a/s/y', 'b/f', 'c/f');
+        const { cacheTree } = await updateCacheTree(ctx, stored, undefined, 'write');
+        const seed = invalidateCacheTreeKeepingOids(
+          invalidateCacheTree(cacheTree, entriesOf('0/a/n', 'c/f')),
+          entriesOf('0/a/s/x'),
+        );
+        const restaged = [
+          { ...entryAt('0/a/s/x'), id: 'e'.repeat(40) as ObjectId },
+          ...entriesOf('0/a/s/y', 'b/f', 'c/f'),
+        ];
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, restaged, seed, 'repair');
+        // Assert
+        const shape = nodesOf(result.cacheTree).map((node) => `${node.path}:${node.entryCount}`);
+        expect(shape).toEqual([':-1', '0:-1', 'a:-1', 's:-1', 'b:1', 'c:1']);
+      });
+    });
+  });
+
   describe('Given entries whose trees all exist', () => {
     describe('When repairing', () => {
       it('Then the tree is fully valid and the ids equal the written ones', async () => {

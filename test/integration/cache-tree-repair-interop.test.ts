@@ -134,7 +134,16 @@ const buildMixedBase = async (dir: string, format: Format): Promise<void> => {
   await settle(dir);
 };
 
-type AbcLayout = 'plain' | 'withD' | 'withOld' | 'nested';
+type AbcLayout = 'plain' | 'withD' | 'withOld' | 'nested' | 'deep' | 'staleChild';
+
+const FIRST_FILE: Record<AbcLayout, string> = {
+  plain: 'a/x',
+  withD: 'a/x',
+  withOld: 'a/x',
+  nested: 'a/s/x',
+  deep: 'a/s/t/x',
+  staleChild: '0/a/s/x',
+};
 
 const buildAbcBase = async (dir: string, format: Format, layout: AbcLayout): Promise<void> => {
   runGit(['init', '-q', '-b', 'main', `--object-format=${format}`, dir]);
@@ -142,14 +151,15 @@ const buildAbcBase = async (dir: string, format: Format, layout: AbcLayout): Pro
   git(dir, 'config', 'user.email', 'ada@example.com');
   git(dir, 'config', 'gc.auto', '0');
   git(dir, 'config', 'commit.gpgsign', 'false');
-  await write(dir, layout === 'nested' ? 'a/s/x' : 'a/x', 'x\n');
+  await write(dir, FIRST_FILE[layout], 'x\n');
+  if (layout === 'staleChild') await write(dir, '0/a/s/y', 'y\n');
   await write(dir, 'b/f', 'b\n');
   await write(dir, 'c/f', 'c\n');
   if (layout === 'withD') await write(dir, 'd/f', 'd\n');
   if (layout === 'withOld') await write(dir, 'a/old/f', 'o\n');
   commitAll(dir, 'base');
   git(dir, 'checkout', '-q', '-b', 'other');
-  await write(dir, 'b/f', 'other\n');
+  await write(dir, layout === 'staleChild' ? FIRST_FILE[layout] : 'b/f', 'other\n');
   if (layout === 'withD') git(dir, 'rm', '-q', 'd/f');
   if (layout === 'withOld') git(dir, 'rm', '-q', 'a/old/f');
   commitAll(dir, 'other');
@@ -159,7 +169,7 @@ const buildAbcBase = async (dir: string, format: Format, layout: AbcLayout): Pro
 
 interface Row {
   readonly title: string;
-  readonly base?: 'unpack' | 'mixed' | 'abc' | 'abcd' | 'oldDir' | 'nested';
+  readonly base?: 'unpack' | 'mixed' | 'abc' | 'abcd' | 'oldDir' | 'nested' | 'deep' | 'staleChild';
   readonly prepare?: (dir: string) => Promise<void>;
   readonly git: (dir: string) => void;
   readonly tsgit: (ctx: Context) => Promise<unknown>;
@@ -199,14 +209,27 @@ const stagedBThenStashed = async (dir: string): Promise<void> => {
   await dirtyCacheTreeOfC(dir);
 };
 
-/** Stages new content under a/s, stores its trees, then loses the objects of a/s and a. */
-const stagedThenTreesLost = async (dir: string): Promise<void> => {
-  await restage(dir, 'a/s/x', 'y\n');
-  const root = git(dir, 'write-tree').trim();
-  for (const spec of [`${root}:a/s`, `${root}:a`]) {
-    const id = git(dir, 'rev-parse', spec).trim();
-    await rm(path.join(dir, '.git', 'objects', id.slice(0, 2), id.slice(2)));
-  }
+/** Stages new content at `file`, stores its trees, then loses the objects of the listed directories. */
+const stagedThenTreesLost =
+  (file: string, lost: ReadonlyArray<string>) =>
+  async (dir: string): Promise<void> => {
+    await restage(dir, file, 'y\n');
+    const root = git(dir, 'write-tree').trim();
+    for (const spec of lost.map((tree) => (tree === '' ? root : `${root}:${tree}`))) {
+      const id = git(dir, 'rev-parse', spec).trim();
+      await rm(path.join(dir, '.git', 'objects', id.slice(0, 2), id.slice(2)));
+    }
+  };
+
+/** A stored tree beside an one that cannot be rebuilt: the staged y lets the stale s survive its parents. */
+const staleChildBelowInvalidParents = async (dir: string): Promise<void> => {
+  await restage(dir, '0/a/s/y', 'y2\n');
+  git(dir, 'write-tree');
+  await write(dir, '0/a/n', 'n\n');
+  git(dir, 'add', '0/a/n');
+  git(dir, 'rm', '-q', '--cached', '0/a/n');
+  await touchForward(dir, 'c/f');
+  git(dir, 'add', 'c/f');
 };
 
 const GUARDS: ReadonlyArray<Row> = [
@@ -419,7 +442,22 @@ const GUARDS: ReadonlyArray<Row> = [
     title: 'checkout other with the stored trees of a staged a/s and a lost',
     base: 'nested',
     danglingByDesign: true,
-    prepare: stagedThenTreesLost,
+    prepare: stagedThenTreesLost('a/s/x', ['a/s', 'a']),
+    git: ok('checkout', '-q', 'other'),
+    tsgit: (c) => checkout(c, { rev: 'other' }),
+  },
+  {
+    title: 'checkout other with the stored trees of a staged a/s/t, a/s, a and the root lost',
+    base: 'deep',
+    danglingByDesign: true,
+    prepare: stagedThenTreesLost('a/s/t/x', ['a/s/t', 'a/s', 'a', '']),
+    git: ok('checkout', '-q', 'other'),
+    tsgit: (c) => checkout(c, { rev: 'other' }),
+  },
+  {
+    title: 'checkout other where a stale child tree cannot be rebuilt but is still stored',
+    base: 'staleChild',
+    prepare: staleChildBelowInvalidParents,
     git: ok('checkout', '-q', 'other'),
     tsgit: (c) => checkout(c, { rev: 'other' }),
   },
@@ -429,6 +467,8 @@ const buildBase = (row: Row, dir: string, format: Format): Promise<void> => {
   if (row.base === 'mixed') return buildMixedBase(dir, format);
   if (row.base === 'abc') return buildAbcBase(dir, format, 'plain');
   if (row.base === 'abcd') return buildAbcBase(dir, format, 'withD');
+  if (row.base === 'deep') return buildAbcBase(dir, format, 'deep');
+  if (row.base === 'staleChild') return buildAbcBase(dir, format, 'staleChild');
   if (row.base === 'nested') return buildAbcBase(dir, format, 'nested');
   if (row.base === 'oldDir') return buildAbcBase(dir, format, 'withOld');
   return buildUnpackBase(dir, format);

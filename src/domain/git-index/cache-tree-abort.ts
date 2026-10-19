@@ -13,34 +13,14 @@ const SLASH = 0x2f;
 
 type Ids = ReadonlyArray<ObjectId | undefined>;
 
-/** Earlier oids whose object is not stored. */
-export type AbsentIds = ReadonlySet<ObjectId>;
-
-/** git's update_one returns -1 for a subtree it cannot store when it has no stored earlier oid to fall back on. */
-const cannotBeRepaired = (
-  plan: CacheTreePlan,
-  ids: Ids,
-  absent: AbsentIds,
-  node: number,
-): boolean => {
-  if (ids[node] !== undefined) return false;
-  const previous = (plan.nodes[node] as PlannedNode).previousId;
-  return previous === undefined || absent.has(previous);
-};
+/** git's update_one returns -1 for a subtree it cannot store when it has no stored oid to fall back on. */
+const cannotBeRepaired = (working: Ids, node: number): boolean => working[node] === undefined;
 
 /** The nodes whose update_one returns -1: a child does, or a child is unrepairable. */
-export const abortedNodes = (
-  plan: CacheTreePlan,
-  ids: Ids,
-  absent: AbsentIds,
-): ReadonlySet<number> => {
+export const abortedNodes = (plan: CacheTreePlan, working: Ids): ReadonlySet<number> => {
   const aborted = new Set<number>();
   for (const build of plan.builds) {
-    if (
-      build.subtrees.some(
-        (child) => aborted.has(child) || cannotBeRepaired(plan, ids, absent, child),
-      )
-    ) {
+    if (build.subtrees.some((child) => aborted.has(child) || cannotBeRepaired(working, child))) {
       aborted.add(build.node);
     }
   }
@@ -100,10 +80,10 @@ const carriedState = (
 export const toRepairedCacheTree = (
   plan: CacheTreePlan,
   ids: Ids,
+  working: Ids,
   carried: CacheTreeEntry | undefined,
-  absent: AbsentIds,
 ): CacheTreeEntry => {
-  const aborted = abortedNodes(plan, ids, absent);
+  const aborted = abortedNodes(plan, working);
   const nodes = cacheTreeNodesOf(plan, ids);
 
   const stoppedAtChild = (index: number): boolean =>
