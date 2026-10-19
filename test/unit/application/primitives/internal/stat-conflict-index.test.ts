@@ -112,4 +112,66 @@ describe('withConflictStopStats', () => {
       });
     });
   });
+  describe('Given an untouched clean path whose prior entry has the same blob in another mode', () => {
+    describe('When the stop stats are recorded', () => {
+      it('Then the zero-stat entry is kept', async () => {
+        // Arrange
+        const ctx = await seed(['k.txt']);
+        const prior = {
+          ...stage0Entry('k.txt' as FilePath, ID, FILE_MODE.EXECUTABLE),
+          ...PRIOR_STAT,
+        };
+        const entry = stage0Entry('k.txt' as FilePath, ID, FILE_MODE.REGULAR);
+        const sut = withConflictStopStats;
+
+        // Act
+        const [result] = await sut(ctx, [entry], indexOf([prior]), new Set());
+
+        // Assert
+        expect(result).toEqual(entry);
+      });
+    });
+  });
+
+  describe('Given a path the prior index held only as an unmerged stage with the same content', () => {
+    describe('When the stop stats are recorded', () => {
+      it('Then the stage-0 entry is kept, not the unmerged one', async () => {
+        // Arrange
+        const ctx = await seed(['k.txt']);
+        const base = stage0Entry('k.txt' as FilePath, ID, FILE_MODE.REGULAR);
+        const unmerged: IndexEntry = {
+          ...base,
+          ...PRIOR_STAT,
+          flags: { ...base.flags, stage: 2 },
+        };
+        const sut = withConflictStopStats;
+
+        // Act
+        const [result] = await sut(ctx, [base], indexOf([unmerged]), new Set());
+
+        // Assert
+        expect(result).toEqual(base);
+      });
+    });
+  });
+
+  describe('Given a context with no work tree', () => {
+    describe('When the stop stats are recorded', () => {
+      it('Then it refuses with WORK_TREE_REQUIRED for the merge', async () => {
+        // Arrange
+        const base = await seed([]);
+        const { workDir: _workDir, ...bareLayout } = base.layout;
+        const ctx: Context = { ...base, layout: bareLayout };
+        const sut = withConflictStopStats;
+
+        // Act
+        const act = sut(ctx, [], indexOf([]), new Set());
+
+        // Assert
+        await expect(act).rejects.toMatchObject({
+          data: { code: 'WORK_TREE_REQUIRED', operation: 'merge' },
+        });
+      });
+    });
+  });
 });
