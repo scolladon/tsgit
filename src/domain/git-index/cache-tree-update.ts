@@ -53,8 +53,7 @@ export const carriedCacheTreeOf = (
 
 const nameOfCarried = (entry: CacheTreeEntry): Uint8Array => entry.nameBytes ?? encode(entry.path);
 
-const isUsable = (entry: CacheTreeEntry): boolean =>
-  entry.entryCount >= 0 && entry.id !== undefined;
+const isUsable = (entry: CacheTreeEntry): boolean => entry.entryCount >= 0;
 
 interface Drafts {
   readonly names: Uint8Array[];
