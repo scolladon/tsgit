@@ -90,7 +90,11 @@ const contextFor = (dir: string, format: Format): Context =>
 
 const indexPathOf = (dir: string): string => path.join(dir, '.git', 'index');
 
-const inodeOf = async (dir: string): Promise<number> => (await stat(indexPathOf(dir))).ino;
+// The inode alone misses a rewrite on filesystems that recycle a freed inode for the next lock file.
+const identityOf = async (dir: string): Promise<string> => {
+  const { ino, ctimeNs } = await stat(indexPathOf(dir), { bigint: true });
+  return `${ino}:${ctimeNs}`;
+};
 
 const extensionsOf = async (
   dir: string,
@@ -190,8 +194,8 @@ const codeOf = async (attempt: Promise<unknown>): Promise<string | undefined> =>
 
 const playStep = async (pair: PeerPair, format: Format, step: Step): Promise<StepOutcome> => {
   for (const dir of [pair.peer, pair.ours]) await step.prepare?.(dir, format);
-  const peerBefore = await inodeOf(pair.peer);
-  const oursBefore = await inodeOf(pair.ours);
+  const peerBefore = await identityOf(pair.peer);
+  const oursBefore = await identityOf(pair.ours);
   const peerExit = tryRunGitWithExit(['-C', pair.peer, ...step.gitArgs], {
     ...(step.gitEnv === undefined ? {} : { env: step.gitEnv }),
   }).exitCode;
@@ -201,8 +205,8 @@ const playStep = async (pair: PeerPair, format: Format, step: Step): Promise<Ste
     ours: await snapshot(pair.ours, format),
     peerExit,
     oursCode,
-    peerRewritten: (await inodeOf(pair.peer)) !== peerBefore,
-    oursRewritten: (await inodeOf(pair.ours)) !== oursBefore,
+    peerRewritten: (await identityOf(pair.peer)) !== peerBefore,
+    oursRewritten: (await identityOf(pair.ours)) !== oursBefore,
   };
 };
 
