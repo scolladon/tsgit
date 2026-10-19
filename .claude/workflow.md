@@ -152,6 +152,11 @@ New follow-up entries land in **dependency order**: after their prerequisites, b
 their dependents — never just appended. The backlog tick is flip + `· ADRs NNN–NNN ·
 design/<slug>.md` suffix ONLY; the squash commit and PR body are the permanent record.
 
+Every new follow-up (backlog entry or GitHub issue) is **also** inserted at its rank in the
+`## Release order` table at the top of `docs/BACKLOG.md`, and a shipped id is struck there in
+place. `.claude/hooks/check-release-order.sh` (Stop hook) blocks the turn while the table and
+the open work disagree; the end-of-run election reads that table top-down.
+
 ## Worktree layout
 
 This checkout is a normal repo on `main`; feature worktrees are created as siblings

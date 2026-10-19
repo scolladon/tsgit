@@ -41,6 +41,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/stop-quality-check.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-release-order.sh"
           }
         ]
       }

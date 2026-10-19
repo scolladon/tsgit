@@ -18,22 +18,36 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 | **v4.0** — transport + signing + perf | 25–26 | complete |
 | **v5.0** — test base rework + pack storage + repository trust | 27–29 | in progress — 27, 28 and 29.1–29.4 complete; **29.5** (compat-format spike) remains |
 
-## Next up (decided 2026-10-01)
+## Release order (decided 2026-10-19)
 
-1. ~~#302 alternates~~ (shipped in #313)
-2. ~~#309 `emptyTreeOid` / `EMPTY_TREE_OID` runtime export from the node entry~~ (shipped in #314)
-3. Release 5.0.0 — merge release-please PR #299
-4. ~~EOL conversion subsystem (32.6) — ahead of 31.4~~ (shipped in #316)
-5. ~~31.4 run 1 — (a)+(b)+(d-i)~~ (shipped in #317; (c) shipped in #313)
-6. 31.10 / 31.11
-7. #311 + 31.8 paired (follow git 2.56; pin CI git in the same PR)
-8. 31.5 → 31.6 (investigate #310 first)
+Every open item — each `[ ]`/`[~]` entry below and each open GitHub issue — appears **exactly
+once** in this table, in the cut that ships it. Rank rule, highest first: reported user failure ›
+consumer-facing API bug › release › data-integrity › wrong-result › refusal mismatch ›
+performance › message-only › corrupt-input edge. Dependencies override rank: a prerequisite moves
+up, its dependent never moves down.
 
-Fillers: ~~31.7~~ (done in #302), #306, #307, #308.
+**Maintenance:** a follow-up filed during a session is inserted at its rank **before the session
+ends**, never appended. `.claude/hooks/check-release-order.sh` (Stop hook) blocks the turn while
+an open id is missing here or a shipped one is listed without its strike. Shipped items are struck
+(`~~id~~`) in place so each cut keeps its history. The craft end-of-run election reads this
+table top-down and elects the first unblocked item.
 
-Ranked by user impact (reported failure > consumer API bug > release > faithfulness > performance).
+| # | cut | items | why here |
+|---|---|---|---|
+| 1 | **6.0.0 — ship now** | #322 (merged, unreleased, breaking `FileSystem.write`) · #321 · #306 · 32.31 | the breaking commit is already on `main`; #321 is a reported user failure (option: a 5.0.1 hotfix branch carrying #321 alone) |
+| 2 | **fsck + git 2.56** (floats) | #311 + 31.8 paired · 32.18 · 32.19 · 32.26 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
+| 3 | **writers** | 32.11 non-breaking parts (dialect, unmatched glob, `describe`, `name-rev`) · 32.29 · 32.27 · 32.22 · 32.30 · 32.32 · 32.33 · 32.1 rows A6, A21, A22, A23, D5, D15, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` |
+| 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · 32.23 · 32.1 rows A2, A13, A20, B13, B17, C6, C22, D19 | refusal mismatches in `merge` / `rebase` / `push` |
+| 5 | **local perf** | #310 → 31.5 · 31.12 · 32.15 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
+| 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
+| 7 | **subsystems** | 32.7 → 32.1 row B5 · 32.4 → 32.3 row A10 · 31.9 | low-frequency correctness, each its own `feat:`; 32.7 crosses the containment boundary (security review first) |
+| 8 | **magic + byte-path** | 32.11b magic pathspecs (`!` alias kept = `feat`, dropped = the one major) · 32.28 byte-path port (optional port methods = `feat`, required = major) · 32.9 | the only candidates for a 7.0.0; 32.9 needs editor, rerere and signature-verification capabilities first |
+| tail | **fold-ins** | 32.2 · 32.3 remaining rows · 29.5 + #282 → close both with an ADR recording the `compatObjectFormat` divergence | no cut of their own; folded into whichever PR touches the surface |
 
-Latest published release: `@scolladon/tsgit@3.4.0`.
+Perf (cuts 5–6) sits ahead of the subsystems cut by the user decision of 2026-10-01 (31.5/31.6
+ranked above the 32.x subsystems; grafts, global config and `attr.tree` are rare in practice).
+
+Latest published release: `@scolladon/tsgit@5.0.0` (2026-10-12).
 
 Wave 0 of every major (test base, then docs, then features) is non-negotiable. Performance pass closes each major.
 
