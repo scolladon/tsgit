@@ -291,13 +291,10 @@ interface CarriedOpts {
  */
 const sparseMovers = (
   sparse: SparseMatcher | undefined,
-  target: ReadonlyArray<TargetEntry>,
   index: ReadonlyArray<IndexEntry>,
 ): Set<IndexPathKey> => {
   if (sparse === undefined) return new Set();
-  const indexed = new Set(index.map(indexPathKey));
-  const heldByIndex = target.filter((e) => indexed.has(indexPathKey(e)));
-  const outside = [...heldByIndex, ...index].filter((e) => !sparse(e.path));
+  const outside = index.filter((e) => !sparse(e.path));
   const hidden = index.filter((e) => e.flags.skipWorktree);
   return new Set([...outside, ...hidden].map(indexPathKey));
 };
@@ -318,7 +315,9 @@ const agreementWithHead = async (
   const unshared = (e: IndexPath): boolean => !isBelowShared(sharedDirs, indexPathKey(e));
   const carry = carryStagedChanges(
     oldFiles,
+    // Stryker disable next-line MethodExpression: equivalent — the index side below is still filtered, so no key under a shared directory has a staged version, and with no HEAD version either it is neither kept nor refused; the filter only bounds the map size.
     allTarget.filter(unshared),
+    // Stryker disable next-line MethodExpression: equivalent — the target side above is still filtered, so a key under a shared directory has neither a HEAD nor a target version and counts as kept, which `agreed` already says of it; the filter only bounds the map size.
     stageZero.filter(unshared),
   );
   if (carry.refused.length > 0) {
@@ -344,7 +343,7 @@ const carryHeadAgreement = async (
     allTarget,
     stageZero,
   );
-  const movers = sparseMovers(opts.sparse, allTarget, stageZero);
+  const movers = sparseMovers(opts.sparse, stageZero);
   const isKept = (key: IndexPathKey): boolean => agreed(key) && !movers.has(key);
   const carried = new Set(stageZero.filter((e) => isKept(indexPathKey(e))));
   return {
@@ -414,6 +413,7 @@ export const materializeTree = async (
   // Sparse branch-switch: append one synthesised skip-worktree entry per
   // excluded target path so the index keeps every tracked path (git-faithful).
   const newIndexEntries =
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already path-sorted `inScope` (from `mergeNewIndexEntries`, same comparator) into a content-identical list; the guard only skips that redundant work.
     plan.excluded.length === 0 && carried.length === 0
       ? inScope
       : sortIndexEntries([...inScope, ...carried, ...plan.excluded.map(skipWorktreeEntry)]);
