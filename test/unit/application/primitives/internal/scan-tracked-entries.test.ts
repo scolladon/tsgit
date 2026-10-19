@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import {
   scanTrackedEntries,
   verifiedBy,
@@ -98,6 +99,63 @@ describe('scanTrackedEntries', () => {
         expect(result.workingMap.has(B)).toBe(false);
         expect(result.refreshed).toEqual([]);
         expect(onScanned).toHaveBeenCalledTimes(entries.length);
+      });
+    });
+  });
+});
+
+describe('scanTrackedEntries stat cache and clean order', () => {
+  describe('Given a file rewritten to the same size at its recorded mtime', () => {
+    describe('When scanning the tracked entries', () => {
+      it('Then the armed stat cache trusts the stat and reports it unchanged', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        at(0);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${B}`, 'x');
+        at(7);
+        const index = await freshIndex(ctx);
+        const sut = scanTrackedEntries;
+
+        // Act
+        const result = await sut(ctx, index, index.entries, () => {});
+
+        // Assert
+        expect(index.indexMtime).toBeDefined();
+        expect(result.workingMap.get(B)?.status).toBe('unchanged');
+      });
+    });
+  });
+
+  describe('Given a clean driver, an untouched file and a later file rewritten to the same size', () => {
+    describe('When scanning the tracked entries', () => {
+      it('Then the untouched path releases its turn so the later one is cleaned', async () => {
+        // Arrange
+        const base = await seedSettled();
+        const cleaned: string[] = [];
+        const command = {
+          run: async (request: { readonly stdin?: Uint8Array }) => {
+            cleaned.push(new TextDecoder().decode(request.stdin));
+            return { exitCode: 0, stdout: request.stdin ?? new Uint8Array() };
+          },
+        };
+        const ctx: Context = { ...base, command };
+        const workDir = ctx.layout.workDir;
+        await ctx.fs.writeUtf8(`${workDir}/.gitattributes`, '*.txt filter=log\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "log"]\n\tclean = log\n');
+        invalidateConfigCache(ctx);
+        at(5);
+        await ctx.fs.writeUtf8(`${workDir}/${B}`, 'y');
+        at(7);
+        const index = await freshIndex(ctx);
+        const sut = scanTrackedEntries;
+        const watchdog = new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 1_000));
+
+        // Act
+        const result = await Promise.race([sut(ctx, index, index.entries, () => {}), watchdog]);
+
+        // Assert
+        expect(result).not.toBe('hung');
+        expect(cleaned).toEqual(['y']);
       });
     });
   });
