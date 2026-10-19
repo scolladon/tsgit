@@ -197,8 +197,6 @@ const hashLeaf =
 /** The earlier oid a node falls back on, kept only while its object is still stored. */
 type Stale = (id: ObjectId | undefined) => Promise<ObjectId | undefined>;
 
-const noStale: Stale = async () => undefined;
-
 const staleWhenStored = (
   ctx: Context,
   limiter: ConcurrencyLimiter,
@@ -216,7 +214,7 @@ const staleWhenStored = (
 
 interface Strategy {
   readonly leaf: Leaf;
-  readonly stale: Stale;
+  readonly stale?: Stale;
 }
 
 /** `ids` are the oids the cache-tree records; `working` also holds the stale ones a parent is hashed over. */
@@ -241,7 +239,7 @@ const buildLevel = async (
       const overStale = build.subtrees.some((child) => built.ids[child] === undefined);
       built.ids[build.node] = overStale ? undefined : hashed;
       built.working[build.node] =
-        hashed ?? (await strategy.stale((plan.nodes[build.node] as PlannedNode).previousId));
+        hashed ?? (await strategy.stale?.((plan.nodes[build.node] as PlannedNode).previousId));
     }),
   );
 };
@@ -287,7 +285,7 @@ export async function updateCacheTree(
     const { ids, working } = await buildAll(plan, strategy, ctx);
     return { cacheTree: toRepairedCacheTree(plan, ids, working, carried) };
   }
-  const { ids } = await buildAll(plan, { leaf: writeLeaf(ctx, limiter), stale: noStale }, ctx);
+  const { ids } = await buildAll(plan, { leaf: writeLeaf(ctx, limiter) }, ctx);
   return { cacheTree: toCacheTreeEntry(plan, ids), rootTree: ids[ROOT] as ObjectId };
 }
 

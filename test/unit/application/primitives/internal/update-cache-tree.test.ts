@@ -476,8 +476,10 @@ describe('updateCacheTree', () => {
         vi.mocked(hasObject).mockClear();
         const sut = updateCacheTree;
         // Act
-        await sut(ctx, restaged, seed, 'repair');
+        const result = await sut(ctx, restaged, seed, 'repair');
         // Assert
+        const shape = nodesOf(result.cacheTree).map((node) => `${node.path}:${node.entryCount}`);
+        expect(shape).toEqual([':-1', 'a:-1', 's:-1', 'c:2', 's:1']);
         const probesOf = (id: ObjectId | undefined) =>
           vi.mocked(hasObject).mock.calls.filter(([, probed]) => probed === id);
         expect(probesOf(shared)).toHaveLength(1);
