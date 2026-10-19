@@ -6,11 +6,14 @@ vi.mock('../../../../src/domain/git-index/cache-tree.js', () => ({
   invalidateCacheTree: () => {
     throw new RangeError('out of memory');
   },
-  namesEachSubtreeOnce: () => true,
+  parseCarriedCacheTree: () => ({
+    path: '',
+    entryCount: 0,
+    subtreeCount: 0,
+    id: undefined,
+    children: [],
+  }),
   serializeCacheTree: () => new Uint8Array(0),
-}));
-vi.mock('../../../../src/domain/git-index/index-parser.js', () => ({
-  parseCacheTree: () => ({ path: '', entryCount: 0, subtreeCount: 0, id: undefined, children: [] }),
 }));
 
 describe('carryExtensions TREE carry', () => {

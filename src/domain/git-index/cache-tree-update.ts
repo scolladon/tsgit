@@ -1,15 +1,12 @@
-import { errorDataCode } from '../error-data-code.js';
 import { compareBytes, encode } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/index.js';
-import { namesEachSubtreeOnce } from './cache-tree.js';
+import { parseCarriedCacheTree } from './cache-tree.js';
 import type { CacheTreeEntry, IndexEntry, IndexExtension } from './index-entry.js';
-import { parseCacheTree } from './index-parser.js';
 import { indexPathOfBytes, pathBytesOf } from './index-path-key.js';
 import { compareEntryPath, pathComparatorFor } from './index-writer.js';
 
 const SLASH = 0x2f;
 const TREE_SIGNATURE = 'TREE';
-const INVALID_INDEX_ENTRY_CODE = 'INVALID_INDEX_ENTRY';
 const ROOT = 0;
 const NO_CARRIED: ReadonlyArray<CacheTreeEntry> = [];
 
@@ -51,14 +48,7 @@ export const carriedCacheTreeOf = (
   digestLength: 20 | 32,
 ): CacheTreeEntry | undefined => {
   const tree = extensions.find((extension) => extension.signature === TREE_SIGNATURE);
-  if (tree === undefined) return undefined;
-  try {
-    const root = parseCacheTree(tree.data, digestLength);
-    return namesEachSubtreeOnce(root) ? root : undefined;
-  } catch (err) {
-    if (errorDataCode(err) === INVALID_INDEX_ENTRY_CODE) return undefined;
-    throw err;
-  }
+  return tree === undefined ? undefined : parseCarriedCacheTree(tree.data, digestLength);
 };
 
 const nameOfCarried = (entry: CacheTreeEntry): Uint8Array => entry.nameBytes ?? encode(entry.path);
