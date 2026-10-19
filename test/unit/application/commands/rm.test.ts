@@ -1409,3 +1409,20 @@ describe('Given a merge stopped on a conflicted a/f', () => {
     });
   });
 });
+
+describe('Given a merge stopped on a conflicted a/f and a merged b', () => {
+  describe('When rm removes a/f and b together', () => {
+    it('Then REUC records the stages of a/f only', async () => {
+      // Arrange
+      const ctx = await seedMergeConflict();
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['a/f', 'b'], { force: true });
+
+      // Assert
+      expect(result.removed).toEqual(['a/f', 'b']);
+      expect(await recordedStages(ctx)).toEqual([['a/f', [1, 2, 3]]]);
+    });
+  });
+});
