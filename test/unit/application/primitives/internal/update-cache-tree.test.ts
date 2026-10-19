@@ -126,6 +126,25 @@ describe('updateCacheTree', () => {
         expect(childNamed(result.cacheTree, 'c').entryCount).toBe(1);
       });
 
+      it('Then a longer-named later sibling in index order is left invalid too', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const stored = await updateCacheTree(
+          ctx,
+          entriesOf('a/x', 'bb/f', 'c/f'),
+          undefined,
+          'write',
+        );
+        const seed = invalidateCacheTree(stored.cacheTree, entriesOf('a/new/g', 'bb/f'));
+        const entries = entriesOf('a/new/g', 'a/x', 'bb/f', 'c/f');
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, seed, 'repair');
+        // Assert
+        expect(childNamed(result.cacheTree, 'bb').entryCount).toBe(-1);
+        expect(childNamed(result.cacheTree, 'c').entryCount).toBe(1);
+      });
+
       it('Then without a carried tree the later sibling is not repaired either', async () => {
         // Arrange
         const { ctx } = await setup(['b/f']);

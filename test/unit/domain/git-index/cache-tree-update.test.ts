@@ -452,6 +452,93 @@ describe('planCacheTree', () => {
       });
     });
   });
+  describe('Given a valid carried tree whose children are out of subtree order', () => {
+    describe('When planning unchanged entries', () => {
+      it('Then the mirrored children are listed in subtree order', () => {
+        // Arrange
+        const sut = planCacheTree;
+        const carried = node(
+          '',
+          2,
+          [node('bb', 1, [], oid('5')), node('c', 1, [], oid('4'))],
+          oid('9'),
+        );
+
+        // Act
+        const result = sut([entryAt('bb/f'), entryAt('c/f')], carried);
+
+        // Assert
+        expect(namesOf(result, result.nodes[0]?.children ?? [])).toEqual(['c', 'bb']);
+      });
+    });
+  });
+
+  describe('Given a valid carried root with a child invalidated but still holding its oid', () => {
+    describe('When planning unchanged entries', () => {
+      it('Then the child is mirrored without a reused id', () => {
+        // Arrange
+        const sut = planCacheTree;
+        const carried = node('', 1, [node('c', -1, [], oid('4'))], oid('9'));
+
+        // Act
+        const result = sut([entryAt('c/f')], carried);
+
+        // Assert
+        expect(nodeNamed(result, 'c')?.reused).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a carried directory and an unmerged entry sorting before it', () => {
+    describe('When planning', () => {
+      it('Then the directory is valid and reused', () => {
+        // Arrange
+        const sut = planCacheTree;
+        const carried = node('', 2, [node('b', 1, [], oid('3'))], oid('9'));
+
+        // Act
+        const result = sut([entryAt('a', STAGE2), entryAt('b/f')], carried);
+
+        // Assert
+        expect(nodeNamed(result, 'b')?.invalid).toBe(false);
+        expect(nodeNamed(result, 'b')?.reused).toBe(oid('3'));
+      });
+    });
+  });
+
+  describe('Given an empty index', () => {
+    describe('When planning', () => {
+      it('Then the root node has no reused and no previousId keys', () => {
+        // Arrange
+        const sut = planCacheTree;
+
+        // Act
+        const result = sut([], undefined);
+
+        // Assert
+        expect(result.nodes).toStrictEqual([
+          { nameBytes: new Uint8Array(0), entryCount: 0, invalid: false, children: [] },
+        ]);
+      });
+    });
+  });
+
+  describe('Given entries whose directories interleave out of order', () => {
+    describe('When planning', () => {
+      it('Then each directory is one node as in the sorted entries', () => {
+        // Arrange
+        const sut = planCacheTree;
+        const sorted = [entryAt('a/x'), entryAt('a/z'), entryAt('b/y')];
+        const interleaved = [entryAt('a/x'), entryAt('b/y'), entryAt('a/z')];
+
+        // Act
+        const result = sut(interleaved, undefined);
+
+        // Assert
+        expect(result).toEqual(sut(sorted, undefined));
+      });
+    });
+  });
 });
 
 describe('toCacheTreeEntry', () => {
@@ -500,6 +587,25 @@ describe('toCacheTreeEntry', () => {
         ]);
         expect(result.entryCount).toBe(-1);
         expect(result.id).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a plan for one valid-UTF-8 directory', () => {
+    describe('When emitting', () => {
+      it('Then the entries carry exactly their fields and no nameBytes', () => {
+        // Arrange
+        const plan = planCacheTree([entryAt('a/f')], undefined);
+        const sut = toCacheTreeEntry;
+
+        // Act
+        const result = sut(
+          plan,
+          plan.nodes.map(() => oid('1')),
+        );
+
+        // Assert
+        expect(result).toStrictEqual(node('', 1, [node('a', 1, [], oid('1'))], oid('1')));
       });
     });
   });
@@ -577,6 +683,25 @@ describe('carriedCacheTreeOf', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a REUC extension before the TREE extension', () => {
+    describe('When reading the carried tree', () => {
+      it('Then the TREE one is parsed', () => {
+        // Arrange
+        const sut = carriedCacheTreeOf;
+        const extensions = [
+          { signature: 'REUC', data: new Uint8Array(0) },
+          ...extensionOf(carriedFixture()),
+        ];
+
+        // Act
+        const result = sut(extensions, 20);
+
+        // Assert
+        expect(result).toEqual(carriedFixture());
       });
     });
   });
