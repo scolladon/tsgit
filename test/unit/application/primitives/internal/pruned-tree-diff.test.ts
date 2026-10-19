@@ -236,6 +236,31 @@ describe('diffTreesPruned', () => {
     });
   });
 
+  describe('Given a new tree that fans out past the entry cap', () => {
+    describe('When it is compared with an empty tree', () => {
+      it('Then it refuses with TREE_ENTRY_LIMIT_EXCEEDED carrying the count and the cap', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leaf = await writeTree(ctx, [file('f', await blob(ctx, '1'))]);
+        const fanOut = async (child: ObjectId) =>
+          writeTree(ctx, [dir('x', child), dir('y', child)]);
+        let bomb = leaf;
+        for (let level = 0; level < 4; level += 1) bomb = await fanOut(bomb);
+        const empty = await writeTree(ctx, []);
+        const cap = 10;
+
+        // Act
+        const sut = diffTreesPruned;
+        const attempt = sut(ctx, empty, bomb, cap);
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({
+          data: { code: 'TREE_ENTRY_LIMIT_EXCEEDED', count: 12, limit: cap },
+        });
+      });
+    });
+  });
+
   describe('Given an aborted signal', () => {
     describe('When two different trees are compared', () => {
       it('Then it refuses with OPERATION_ABORTED', async () => {
