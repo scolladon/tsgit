@@ -1469,7 +1469,7 @@ const readProbedBytes = async (
   fullPath: string,
   probedSize: number,
 ): Promise<Uint8Array> => {
-  const bytes = await ctx.fs.readSlice(fullPath, 0, probedSize + 1);
+  const bytes = await ctx.fs.readSlice(fullPath, 0, probedSize);
   if (bytes.byteLength < probedSize) throw operationAborted();
-  return bytes.subarray(0, probedSize);
+  return bytes;
 };
