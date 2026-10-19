@@ -127,6 +127,7 @@ Worktree bytes go through git's check-in conversion before they are hashed, so t
 - **`ident`.** `$Id: <hex> $` collapses to `$Id$` on the way in.
 - **Symlinks and gitlinks** are never converted.
 - **Unchanged paths** short-circuit on the index stat and never convert.
+- **Literal staging.** Each literal path is stat-ed once and staged through the concurrency pool. The staging read is bounded by the probed size, as git's `index_core`: a file that grew since the probe is staged truncated to the probed size, and one that shrank is refused.
 - **Tracked first.** Whichever way paths are given, tracked paths are staged first in index order, then untracked ones (index order for literals, walk order for bulk mode), so notices and the first refusal land in git's order.
 
 ### `core.safecrlf`

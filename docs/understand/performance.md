@@ -104,6 +104,20 @@ Recorded on one developer machine, Node 22, via `npm run bench:ab main vs branch
 
 Warm rows (a cache-hot read of the same object) are unchanged by this slice — the sync fast path only pays off on the cold, syscall-bound path these rows measure.
 
+### Index and write-path costs (local measurement)
+
+Recorded on one developer machine via `npm run bench:ab`, 5 rounds — directional, same caveats as above.
+
+| Scenario | Before | After |
+|---|---|---|
+| 500-dir `add` + `commit`, cache-tree reuse | 21.05 ms | 14.01 ms |
+| Same row after the git-faithful commit stat refresh (one `lstat` per entry) | 14.01 ms | +6.6 ms (net about -3% against the start) |
+| Literal `add` of 200 paths | 36.08 ms | 19.12 ms |
+
+- `commit` carries valid `TREE` subtrees from the previous index, so the tree write is O(change).
+- `checkout` write path: 4-14% faster on most rows. The changeset merge-join is 11-15% faster on the 500-dir rows.
+- Loose object writes no longer `mkdir` the fanout directory on every write (git's order). A freshly initialised repository's first writes cost about 10% more.
+
 ### Pack-first reads, lazy `.idx`, and pack windows
 
 Buffered reads (`readObject`, `readBlob`, tree and commit reads) now check the pack registry before the loose store (see the [upgrade note](../get-started/upgrade-to-v5.md#object-reads)), which turns the loose-only cold path's `stat midx · stat chain · readdir fanout` into `readdir pack · readdir fanout` — one shared pack-directory listing feeds both the multi-pack-index probe and the pack scan. `.idx` files load lazily, one pack at a time in candidate order, stopping at the first hit: with many packs and no multi-pack-index, a hit in the first pack now reads exactly one `.idx` file, where it used to read every pack's index (49 files) and `stat` every candidate path (53) before answering.

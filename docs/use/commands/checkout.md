@@ -44,6 +44,8 @@ interface CheckoutPathsOptions {
 - **`-` is `@{-1}`.** A lone `-` as `rev` names the branch the previous switch left, and the reflog entry echoes it as spelt.
 - **A switch target must peel to a commit.** A tag peels to the commit it names; a tree refuses `CHECKOUT_NON_COMMIT`. A `rev` no revision answers matches nothing as a pathspec (`PATHSPEC_NO_MATCH`), or, under `createBranch`, refuses `CHECKOUT_START_POINT_NOT_COMMIT`.
 - **Dirty-tree guard.** Switch mode refuses to overwrite tracked modifications or to clobber untracked paths that would collide. Use `force: true` to override. The "is something already here?" probe does not follow symbolic links, so a **dangling** symlink at a target path counts as occupying it and refuses, rather than being silently replaced.
+- **Staged changes are carried, as git's two-way merge does.** Without `force`, a switch keeps staged edits, new files and deletions on paths the switch does not change. When the target would overwrite a staged change it refuses `CHECKOUT_OVERWRITE_DIRTY` with `localChanges`. `force` keeps overwriting. Staged changes on sparse-excluded paths are kept.
+- **File modes and index stats.** Files are created with git's mode (`0666` / `0777` under the process umask, no `chmod`), and each index entry is built from the written file's stat. The index `TREE` extension is repaired as git's `unpack_trees` does.
 - **Writes never follow a symlink.** A write never goes through a symlink in its leading path: links are written first, and leading directories are created one component at a time. An add beyond an untracked symlink is refused naming the link.
 - **Lossy entries stay off disk.** An entry whose name is not valid UTF-8 is never written or unlinked; it reads as deleted in [`status`](status.md), as git does on macOS.
 - **Pruning.** Directories a checkout leaves empty are removed, as git does.
@@ -78,7 +80,7 @@ await repo.checkout({ rev: 'main', force: true });
 
 ## Throws
 
-- `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree.
+- `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree, or whose target would overwrite a staged change (`localChanges`).
 - `CHECKOUT_NON_COMMIT` — switch mode where `rev` names a tree.
 - `CHECKOUT_START_POINT_NOT_COMMIT` — `createBranch` whose start point names no revision; `revision` and `branch` carry both.
 - `BRANCH_EXISTS` — `createBranch.name` is already a branch.

@@ -40,6 +40,12 @@ Like `git rm`, `rm` refuses to destroy un-recoverable changes (validated up fron
 A path whose working file is already gone is never refused. `cached` keeps the
 working file in every case; `force` overrides the valve entirely.
 
+## Merges in progress and resolve-undo
+
+- `rm` runs during a pending merge, cherry-pick, revert or rebase; it no longer refuses `OPERATION_IN_PROGRESS`.
+- Removing an unmerged path records resolve-undo (`REUC`) data for it, as git does.
+- Other conflicted paths keep all their stages.
+
 ## Byte-exact paths and the work tree
 
 - A literal pathspec never selects a lossy twin: an entry whose name is not valid UTF-8 is matched only by a pathspec that decodes to the same bytes, never by its U+FFFD view alone.
