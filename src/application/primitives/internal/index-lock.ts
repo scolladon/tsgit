@@ -256,6 +256,7 @@ const carriedExtensions = async (
   );
 };
 
+/** `extensions` never holds a `TREE`: `carriedByRule` drops it whenever a tree is written. */
 const withComputedTree = (
   extensions: ReadonlyArray<IndexExtension>,
   cacheTree: CacheTreeEntry | undefined,
@@ -263,7 +264,7 @@ const withComputedTree = (
 ): ReadonlyArray<IndexExtension> => {
   if (cacheTree === undefined) return extensions;
   const tree = { signature: TREE_SIGNATURE, data: serializeCacheTree(cacheTree, digestLength) };
-  return [tree, ...extensions.filter((extension) => extension.signature !== TREE_SIGNATURE)];
+  return [tree, ...extensions];
 };
 
 /** git's unpack_trees: invalidate the changed paths, repair against the new entries, then invalidate the restaged ones. */
