@@ -796,6 +796,48 @@ describe('isCacheTreeFullyValid', () => {
     });
   });
 
+  describe('Given a node with a negative count whose stored object still exists', () => {
+    describe('When checking it is fully valid', () => {
+      it('Then it is not valid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { cacheTree } = await updateCacheTree(
+          ctx,
+          entriesOf('a/f', 'top'),
+          undefined,
+          'write',
+        );
+        const negative = { ...cacheTree, entryCount: -1 };
+        const sut = isCacheTreeFullyValid;
+        // Act
+        const result = await sut(ctx, negative);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a node with a valid count and no object id', () => {
+    describe('When checking it is fully valid', () => {
+      it('Then it is not valid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { cacheTree } = await updateCacheTree(
+          ctx,
+          entriesOf('a/f', 'top'),
+          undefined,
+          'write',
+        );
+        const { id: _id, ...withoutId } = cacheTree;
+        const sut = isCacheTreeFullyValid;
+        // Act
+        const result = await sut(ctx, withoutId);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('Given a node whose object is missing', () => {
     describe('When checking it is fully valid', () => {
       it('Then it is not valid', async () => {
