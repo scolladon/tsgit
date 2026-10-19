@@ -64,6 +64,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { renormalizeAttributeLookup } from './internal/renormalize-attributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { withConflictStopStats } from './internal/stat-conflict-index.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -448,6 +449,7 @@ const materialiseConflict = async (
     readonly conflicts: ReadonlyArray<MergeConflict>;
   },
   changed: ReadonlySet<FilePath>,
+  currentIndex: GitIndex,
 ): Promise<ApplyMergeResult> => {
   // Whole-set path gate, hoisted above the write wave: a hostile name
   // anywhere in the batch refuses before the FIRST byte is written, not
@@ -462,7 +464,12 @@ const materialiseConflict = async (
   return {
     kind: 'conflict',
     conflicts: merged.conflicts,
-    indexEntries: buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs),
+    indexEntries: await withConflictStopStats(
+      ctx,
+      buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs),
+      currentIndex,
+      changed,
+    ),
   };
 };
 
@@ -534,7 +541,7 @@ export const applyMergeToWorktree = async (
     await writeAutoMerge(ctx, mergedTree);
     return { kind: 'clean', mergedTree, result };
   }
-  return materialiseConflict(ctx, merged, changed);
+  return materialiseConflict(ctx, merged, changed, input.currentIndex);
 };
 
 export type MergeTreesResult =

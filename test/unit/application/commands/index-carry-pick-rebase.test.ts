@@ -144,7 +144,7 @@ afterEach(() => {
 describe('cherry-pick carries index extensions', () => {
   describe('Given a commit on another branch that applies cleanly', () => {
     describe('When cherry-pick picks it', () => {
-      it('Then REUC, UNTR and the unknown extension are dropped and only the changed chains are invalid', async () => {
+      it('Then REUC, UNTR and the unknown extension are dropped and the repaired TREE is fully valid', async () => {
         // Arrange
         const { ctx, other } = await forkedRepo(OTHER_CHANGE);
         await carryAllExtensions(ctx);
@@ -155,7 +155,7 @@ describe('cherry-pick carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });
@@ -194,7 +194,7 @@ describe('cherry-pick carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });
@@ -203,7 +203,7 @@ describe('cherry-pick carries index extensions', () => {
 describe('revert carries index extensions', () => {
   describe('Given a commit on the current branch', () => {
     describe('When revert undoes it cleanly', () => {
-      it('Then REUC and the unknown extension are dropped, UNTR is kept as the tracked set is unchanged and only the changed chains are invalid', async () => {
+      it('Then REUC and the unknown extension are dropped, UNTR is kept as the tracked set is unchanged and the repaired TREE is fully valid', async () => {
         // Arrange
         const { ctx } = await forkedRepo(OTHER_CHANGE);
         await write(ctx, 'x/y', 'main\n');
@@ -216,7 +216,7 @@ describe('revert carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });
@@ -225,7 +225,7 @@ describe('revert carries index extensions', () => {
 describe('rebase carries index extensions', () => {
   describe('Given a branch whose commit replays cleanly onto a moved upstream', () => {
     describe('When rebase replays it', () => {
-      it('Then REUC and the unknown extension are dropped and only the changed chains are invalid', async () => {
+      it('Then REUC and the unknown extension are dropped and the repaired TREE is fully valid', async () => {
         // Arrange
         const { ctx } = await forkedRepo(OTHER_CHANGE);
         await write(ctx, 'b', 'b2\n');
@@ -240,14 +240,14 @@ describe('rebase carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });
 
   describe('Given a branch holding a merge commit', () => {
     describe('When rebase --rebase-merges recreates the merge', () => {
-      it('Then REUC and the unknown extension are dropped and only the changed chains are invalid', async () => {
+      it('Then REUC and the unknown extension are dropped and the repaired TREE is fully valid', async () => {
         // Arrange
         const { ctx } = await forkedRepo({ 'z/w': 'w\n' });
         await write(ctx, 'b', 'b2\n');
@@ -266,7 +266,7 @@ describe('rebase carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });

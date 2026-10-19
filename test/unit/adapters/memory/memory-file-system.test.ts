@@ -2541,3 +2541,43 @@ describe('MemoryFileSystem lstatIfReachable', () => {
     });
   });
 });
+
+describe('MemoryFileSystem write / writeStream — resolves the written stat', () => {
+  const MEMORY_FILE_MODE = 0o100644;
+
+  describe('Given a memory fs', () => {
+    describe('When write is called', () => {
+      it('Then the result is what lstat reports for the written path', async () => {
+        // Arrange
+        const sut = new MemoryFileSystem({ rootDir: '/r' });
+
+        // Act
+        const result = await sut.write('/r/a', new Uint8Array([1, 2, 3]));
+
+        // Assert
+        expect(result).toEqual(await sut.lstat('/r/a'));
+        expect(result.size).toBe(3);
+        expect(result.isFile).toBe(true);
+      });
+    });
+
+    describe('When writeStream is called with two chunks and a creation mode', () => {
+      it('Then the result is the lstat of the concatenated file and the mode is not modelled', async () => {
+        // Arrange
+        const sut = new MemoryFileSystem({ rootDir: '/r' });
+        async function* source() {
+          yield new Uint8Array([1, 2]);
+          yield new Uint8Array([3]);
+        }
+
+        // Act
+        const result = await sut.writeStream('/r/a', source(), { mode: 0o777 });
+
+        // Assert
+        expect(result).toEqual(await sut.lstat('/r/a'));
+        expect(result.size).toBe(3);
+        expect(result.mode).toBe(MEMORY_FILE_MODE);
+      });
+    });
+  });
+});

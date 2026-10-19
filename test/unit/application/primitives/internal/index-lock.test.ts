@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { init } from '../../../../../src/application/commands/init.js';
@@ -7,11 +7,13 @@ import {
   acquireOptionalIndexLock,
   type IndexLock,
 } from '../../../../../src/application/primitives/internal/index-lock.js';
+import { updateCacheTree } from '../../../../../src/application/primitives/internal/update-cache-tree.js';
 import {
   invalidateIndexCache,
   readIndex,
 } from '../../../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
+import { serializeCacheTree } from '../../../../../src/domain/git-index/cache-tree.js';
 import {
   type CacheTreeEntry,
   type IndexEntry,
@@ -117,6 +119,174 @@ describe('IndexLock.commit', () => {
         expect([...written.keys()].sort()).toEqual(['TREE', 'UNTR']);
         const tree = parseCacheTree(written.get('TREE') as Uint8Array, SHA1_DIGEST);
         expect([tree.entryCount, tree.children[0]?.entryCount]).toEqual([-1, -1]);
+      });
+    });
+  });
+
+  describe('Given a seeded index whose tree objects exist for the entries about to be written', () => {
+    const treesStoredFor = async (ctx: Context, entries: ReadonlyArray<IndexEntry>) =>
+      (await updateCacheTree(ctx, entries, undefined, 'write')).cacheTree;
+
+    describe('When committing entries with d/c changed as a replace', () => {
+      it('Then TREE is fully valid with the hashes of the stored trees', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const entries = await withNestedIdChanged(ctx);
+        const stored = await treesStoredFor(ctx, entries);
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'replace');
+
+        // Assert
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA1_DIGEST,
+        );
+        expect(tree).toEqual(stored);
+        expect(tree.entryCount).toBe(2);
+      });
+    });
+
+    describe('When committing the same entries as a replace restaging d/c', () => {
+      it('Then d and the root are invalid after the repair', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const entries = (await readIndex(ctx)).entries;
+        await treesStoredFor(ctx, entries);
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'replace', { restagedPaths: [{ path: NESTED_PATH }] });
+
+        // Assert
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA1_DIGEST,
+        );
+        expect(summary(tree)).toEqual([
+          ['', -1],
+          ['d', -1],
+        ]);
+      });
+    });
+
+    describe('When committing as a replace over an index without extensions', () => {
+      it('Then TREE is emitted fully repaired', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        await withIndexExtensions(ctx, []);
+        const entries = (await readIndex(ctx)).entries;
+        const stored = await treesStoredFor(ctx, entries);
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'replace');
+
+        // Assert
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA1_DIGEST,
+        );
+        expect(tree).toEqual(stored);
+      });
+    });
+
+    describe('When committing as a replace over an unparseable TREE', () => {
+      it('Then TREE is rebuilt in full without refusing', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        await withIndexExtensions(ctx, [{ signature: 'TREE', data: Uint8Array.of(0xff, 0xff) }]);
+        const entries = (await readIndex(ctx)).entries;
+        const stored = await treesStoredFor(ctx, entries);
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'replace');
+
+        // Assert
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA1_DIGEST,
+        );
+        expect(tree).toEqual(stored);
+      });
+    });
+
+    describe('When committing as a replace with d/c unmerged', () => {
+      it('Then d and the root are invalid', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const all = (await readIndex(ctx)).entries;
+        await treesStoredFor(ctx, all);
+        const entries = all.map(
+          (entry): IndexEntry =>
+            entry.path === NESTED_PATH
+              ? { ...entry, flags: { ...entry.flags, stage: 2 as const } }
+              : entry,
+        );
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'replace');
+
+        // Assert
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA1_DIGEST,
+        );
+        expect(summary(tree)).toEqual([
+          ['', -1],
+          ['d', -1],
+        ]);
+      });
+    });
+
+    describe('When committing as a replace while the d tree object is missing', () => {
+      it('Then d is invalid and the root keeps the count it carried', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const entries = (await readIndex(ctx)).entries;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'replace');
+
+        // Assert
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA1_DIGEST,
+        );
+        expect(summary(tree)).toEqual([
+          ['', 2],
+          ['d', -1],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repository with stored trees', () => {
+    describe('When committing as a replace', () => {
+      it('Then TREE is fully valid with width-32 hashes', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await init(ctx, { objectFormat: 'sha256' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'a\n');
+        await add(ctx, ['a' as FilePath]);
+        const entries = (await readIndex(ctx)).entries;
+        const stored = (await updateCacheTree(ctx, entries, undefined, 'write')).cacheTree;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'replace');
+
+        // Assert
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA256_DIGEST,
+        );
+        expect(tree).toEqual(stored);
+        expect(tree.id).toHaveLength(64);
       });
     });
   });
@@ -312,6 +482,7 @@ describe('IndexLock.commit', () => {
         // Arrange
         const ctx = await restagedRepo();
         const entries = (await readIndex(ctx)).entries;
+        await updateCacheTree(ctx, entries, undefined, 'write');
         const sut = await acquireIndexLock(ctx);
 
         // Act
@@ -890,6 +1061,118 @@ describe('IndexLock.commit once spent', () => {
 
         // Assert
         expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(settled);
+      });
+    });
+  });
+});
+
+describe('IndexLock.commit with a computed cache-tree', () => {
+  const computed = treeOf(OTHER_ID);
+
+  describe('Given an index carrying TREE, REUC and UNTR', () => {
+    describe('When committing unchanged entries with a cacheTree option', () => {
+      it('Then TREE is the computed tree and REUC and UNTR are kept', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const entries = (await readIndex(ctx)).entries;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'update', { cacheTree: computed });
+
+        // Assert
+        const written = await indexExtensionsOf(ctx);
+        expect([...written.keys()]).toEqual(['TREE', 'REUC', 'UNTR']);
+        expect(written.get('TREE')).toEqual(serializeCacheTree(computed, SHA1_DIGEST));
+        expect(written.get('REUC')).toEqual(resolveUndoExtension('r', OTHER_ID, SHA1_DIGEST).data);
+        expect(written.get('UNTR')).toEqual(UNTR_EXTENSION.data);
+      });
+    });
+  });
+
+  describe('Given an index carrying no extensions', () => {
+    describe('When committing with a cacheTree option', () => {
+      it('Then TREE is the only extension', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'a\n');
+        await add(ctx, ['a' as FilePath]);
+        const entries = (await readIndex(ctx)).entries;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'update', { cacheTree: computed });
+
+        // Assert
+        const written = await indexExtensionsOf(ctx);
+        expect([...written.keys()]).toEqual(['TREE']);
+        expect(written.get('TREE')).toEqual(serializeCacheTree(computed, SHA1_DIGEST));
+      });
+    });
+  });
+});
+
+describe('IndexLock.commit verified paths', () => {
+  const TICK_MS = 1_700_000_000_100;
+  const TRACKED = 'f.txt' as FilePath;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(TICK_MS);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const racyRewrittenRepo = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${TRACKED}`, 'm1\n');
+    await add(ctx, [TRACKED]);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${TRACKED}`, 'm2\n');
+    invalidateIndexCache(ctx);
+    return ctx;
+  };
+
+  const committedSize = async (ctx: Context, verified?: (path: FilePath) => boolean) => {
+    const entries = (await readIndex(ctx)).entries;
+    const lock = await acquireIndexLock(ctx);
+    await lock.commit(entries, 'update', verified === undefined ? {} : { verified });
+    invalidateIndexCache(ctx);
+    return (await readIndex(ctx)).entries[0]?.fileSize;
+  };
+
+  describe('Given a racy entry rewritten with the same stat', () => {
+    describe('When committing without a verified set', () => {
+      it('Then the entry is smudged to size 0', async () => {
+        // Arrange
+        const ctx = await racyRewrittenRepo();
+
+        // Act
+        const result = await committedSize(ctx);
+
+        // Assert
+        expect(result).toBe(0);
+      });
+    });
+
+    describe('When committing with the path verified', () => {
+      it('Then the entry is not re-read and keeps its size', async () => {
+        // Arrange
+        const ctx = await racyRewrittenRepo();
+        const read = vi.spyOn(ctx.fs, 'read');
+
+        // Act
+        const result = await committedSize(ctx, (path) => path === TRACKED);
+
+        // Assert
+        expect(result).toBe(3);
+        expect(read.mock.calls.map(([path]) => String(path))).not.toContain(
+          `${ctx.layout.workDir}/${TRACKED}`,
+        );
       });
     });
   });

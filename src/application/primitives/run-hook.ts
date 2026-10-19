@@ -80,22 +80,35 @@ const invokeHook = async (
   return runner.run(request);
 };
 
+/** Whether a hook file actually ran (git's `invoked_hook`). */
+export type HookOutcome = 'ran' | 'skipped';
+
 /**
- * Run a blocking git hook through `ctx.hooks`. A no-op when no `HookRunner` is
- * wired (browser, or opted out), when the hook file is absent / not executable
- * (`skipped`), or when the hook exits 0. Throws `HOOK_FAILED` on a non-zero
- * exit — the caller's signal to abort the operation.
+ * Run a blocking git hook through `ctx.hooks`, reporting whether a hook file
+ * ran. `skipped` when no `HookRunner` is wired (browser, or opted out) or the
+ * hook file is absent / not executable; `ran` on exit 0. Throws `HOOK_FAILED`
+ * on a non-zero exit — the caller's signal to abort the operation.
  */
+export const runBlockingHook = async (
+  ctx: Context,
+  name: HookName,
+  input: HookInput = {},
+): Promise<HookOutcome> => {
+  const result = await invokeHook(ctx, name, input);
+  if (result === undefined || result.kind === 'skipped') return 'skipped';
+  if (result.exitCode !== 0) {
+    throw hookFailed(name, result.exitCode, result.stderr);
+  }
+  return 'ran';
+};
+
+/** As `runBlockingHook`, for callers that do not care whether the hook ran. */
 export const runHook = async (
   ctx: Context,
   name: HookName,
   input: HookInput = {},
 ): Promise<void> => {
-  const result = await invokeHook(ctx, name, input);
-  if (result === undefined || result.kind === 'skipped') return;
-  if (result.exitCode !== 0) {
-    throw hookFailed(name, result.exitCode, result.stderr);
-  }
+  await runBlockingHook(ctx, name, input);
 };
 
 /**

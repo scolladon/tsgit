@@ -716,7 +716,7 @@ describe('reset', () => {
   describe('Given a hard reset to an empty-tree commit on an empty repo (written=0, deleted=0)', () => {
     describe('When reset', () => {
       it('Then the index commit is skipped and no index file is written', async () => {
-        // Arrange — a fresh repo with a single empty-tree commit. The hard reset
+        // Arrange — a repo with a single empty-tree commit and no index file. The hard reset
         // computes written=0 and deleted=0, so the genuine code skips lock.commit
         // and the index file is never created. Kills `ConditionalExpression ->
         // true`, `result.written >= 0` and `result.deleted >= 0`: each turns the
@@ -724,6 +724,9 @@ describe('reset', () => {
         const ctx = createMemoryContext();
         await init(ctx);
         const empty = await commit(ctx, { message: 'empty', author });
+        // commit writes the (empty) index with its TREE, as git does; drop it so
+        // the reset is the only thing that could create one.
+        await ctx.fs.rm(`${ctx.layout.gitDir}/index`);
 
         // Act
         await reset(ctx, { mode: 'hard', rev: empty.id });

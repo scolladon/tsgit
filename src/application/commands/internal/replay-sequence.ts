@@ -57,7 +57,7 @@ import {
   writeSequencerOpts,
   writeSequencerTodo,
 } from './sequencer-state.js';
-import { rejectUnmergedIndex } from './unmerged-index.js';
+import { writeIndexCacheTree } from './write-index-cache-tree.js';
 
 /** The literal `HEAD`: a replay refuses a detached HEAD, so it always names the branch. */
 export const HEAD: RefName = 'HEAD' as RefName;
@@ -398,9 +398,7 @@ export const finaliseResolvedReplay = async (
   ourId: ObjectId,
   { allowEmpty, commit }: { allowEmpty: boolean; commit: (tree: ObjectId) => Promise<ObjectId> },
 ): Promise<Finalised> => {
-  const index = await readIndex(ctx);
-  rejectUnmergedIndex(index.entries);
-  const indexTree = await synthesizeTreeFromIndex(ctx, index.entries);
+  const indexTree = await writeIndexCacheTree(ctx);
   if (indexTree === (await treeOf(ctx, ourId)) && !allowEmpty) return { empty: true };
   const created = await commit(indexTree);
   await command.clearStopHead(ctx);

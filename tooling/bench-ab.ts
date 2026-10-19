@@ -16,7 +16,10 @@
  * runs second, and each side is reduced by its fastest round via
  * `bestOfRounds` before the two are compared.
  *
- *   npm run bench:ab -- <base-ref> [head-ref] [rounds]
+ *   npm run bench:ab -- <base-ref> [head-ref] [rounds] [bench-file…]
+ *
+ * Trailing bench-file basenames (`commit.bench.ts`) scope the run to those
+ * files; each must exist in both refs. Rounds must be given to pass files.
  */
 import { execFileSync } from 'node:child_process';
 import { copyFile, mkdtemp, readdir, readFile, rm, symlink } from 'node:fs/promises';
@@ -61,6 +64,20 @@ export const intersectBenchFiles = (
 ): readonly string[] => {
   const headSet = new Set(headFiles);
   return baseFiles.filter((file) => headSet.has(file));
+};
+
+/** Keeps the shared files whose basename was requested; no request keeps them all. */
+export const selectBenchFiles = (
+  shared: readonly string[],
+  requested: readonly string[],
+): readonly string[] => {
+  if (requested.length === 0) return shared;
+  const sharedNames = new Set(shared.map((file) => path.basename(file)));
+  const missing = requested.find((name) => !sharedNames.has(name));
+  if (missing !== undefined) {
+    throw new Error(`bench file not shared by both refs: ${missing}`);
+  }
+  return shared.filter((file) => requested.includes(path.basename(file)));
 };
 
 /**
@@ -186,6 +203,7 @@ interface Args {
   readonly baseRef: string;
   readonly headRef: string;
   readonly rounds: number;
+  readonly files: readonly string[];
 }
 
 const parseArgs = (argv: readonly string[]): Args => {
@@ -193,13 +211,13 @@ const parseArgs = (argv: readonly string[]): Args => {
   const headRef = argv[3] ?? 'HEAD';
   const rounds = argv[4] !== undefined ? Number(argv[4]) : DEFAULT_ROUNDS;
   if (baseRef === undefined || !Number.isInteger(rounds) || rounds < 1) {
-    throw new Error('usage: bench-ab <base-ref> [head-ref] [rounds]');
+    throw new Error('usage: bench-ab <base-ref> [head-ref] [rounds] [bench-file…]');
   }
-  return { baseRef, headRef, rounds };
+  return { baseRef, headRef, rounds, files: argv.slice(5) };
 };
 
 const main = async (): Promise<void> => {
-  const { baseRef, headRef, rounds } = parseArgs(process.argv);
+  const { baseRef, headRef, rounds, files: requestedFiles } = parseArgs(process.argv);
 
   const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-ab-reports-'));
   const worktrees: Record<Side, string> = {
@@ -210,9 +228,12 @@ const main = async (): Promise<void> => {
   try {
     for (const dir of Object.values(worktrees)) preWarmFixtures(dir);
 
-    const files = intersectBenchFiles(
-      await listBenchFiles(worktrees.base),
-      await listBenchFiles(worktrees.head),
+    const files = selectBenchFiles(
+      intersectBenchFiles(
+        await listBenchFiles(worktrees.base),
+        await listBenchFiles(worktrees.head),
+      ),
+      requestedFiles,
     );
     if (files.length === 0) {
       throw new Error('no bench files shared between base and head — nothing to compare');

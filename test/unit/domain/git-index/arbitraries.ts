@@ -11,6 +11,7 @@ import {
   indexPathOfBytes,
   pathBytesOf,
 } from '../../../../src/domain/git-index/index-path-key.js';
+import { compareEntryPath } from '../../../../src/domain/git-index/index-writer.js';
 import type { ResolveUndoRecord } from '../../../../src/domain/git-index/resolve-undo.js';
 import {
   bytesEqual,
@@ -349,4 +350,32 @@ export function encodeResolveUndo(records: ReadonlyArray<ResolveUndoRecord>): Ui
       ];
     }),
   );
+}
+
+const DIRECTORY_NAMES: ReadonlyArray<string> = ['a', 'b', 'bb', 'c', 'x'];
+const LEAF_NAMES: ReadonlyArray<string> = ['f', 'g'];
+
+/**
+ * Stage-0 entries in index byte order over a small directory alphabet. Leaf names never
+ * collide with directory names, so no path is both a file and a directory.
+ */
+export function arbSortedStage0Entries(): fc.Arbitrary<ReadonlyArray<IndexEntry>> {
+  const arbPath = fc
+    .tuple(
+      fc.array(fc.constantFrom(...DIRECTORY_NAMES), { maxLength: 3 }),
+      fc.constantFrom(...LEAF_NAMES),
+    )
+    .map(([directories, leaf]) => [...directories, leaf].join('/'));
+  return fc
+    .tuple(fc.uniqueArray(arbPath, { maxLength: 12 }), arbObjectId(), arbStatData())
+    .map(([paths, id, stat]) =>
+      paths
+        .map((path) => ({
+          ...stat,
+          id,
+          flags: { assumeValid: false, stage: 0 as const, skipWorktree: false, intentToAdd: false },
+          path: FilePath.from(path),
+        }))
+        .sort(compareEntryPath),
+    );
 }

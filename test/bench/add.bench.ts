@@ -14,6 +14,7 @@ import {
   buildAddManyScratch,
   buildAddScratch,
   buildCommitScratch,
+  buildLiteralAddScratch,
   buildManyLooseObjectsScratch,
   type ScratchRepo,
 } from './support/write-scratch.js';
@@ -152,6 +153,27 @@ benchScenario(
         const name = `new-${counter}.txt`;
         await writeFile(path.join(scratch.cwd, name), `new ${counter}\n`);
         await scratch.repo.add([name]);
+      },
+    };
+  },
+);
+
+benchScenario(
+  'Given a committed scratch repo with 200 tracked files across nested directories',
+  'When add() stages the 200 rewritten files by literal path, Then measure tsgit',
+  async () => {
+    const scratch = await buildLiteralAddScratch(MANY_FILE_COUNT);
+    let counter = 0;
+    return {
+      teardown: (): void => scratch.disposeSync(),
+      sut: async (): Promise<void> => {
+        counter += 1;
+        await Promise.all(
+          scratch.paths.map((file) =>
+            writeFile(path.join(scratch.cwd, file), `rewrite ${counter} ${file}\n`),
+          ),
+        );
+        await scratch.repo.add(scratch.paths);
       },
     };
   },

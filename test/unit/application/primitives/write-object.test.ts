@@ -144,6 +144,76 @@ describe('writeObject', () => {
     });
   });
 
+  describe('Given a fs counting mkdir calls', () => {
+    describe('When writeObject stores a brand-new blob', () => {
+      it('Then no fanout mkdir is issued', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const mkdir = vi.fn(ctx.fs.mkdir);
+        const counting = { ...ctx, fs: { ...ctx.fs, mkdir } };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([41]), id: '' as ObjectId };
+        // Act
+        await writeObject(counting, blob);
+        // Assert
+        expect(mkdir).toHaveBeenCalledTimes(0);
+      });
+    });
+  });
+
+  describe('Given a fs whose fanout directory vanishes before the exclusive write', () => {
+    describe('When writeObject is called', () => {
+      it('Then the blob is still stored and readable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        let first = true;
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            writeExclusive: async (path: string, data: Uint8Array) => {
+              if (first) {
+                first = false;
+                await ctx.fs.rmRecursive(path.slice(0, path.lastIndexOf('/')));
+              }
+              return ctx.fs.writeExclusive(path, data);
+            },
+          },
+        };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([42]), id: '' as ObjectId };
+        // Act
+        const id = await writeObject(wrapped, blob);
+        // Assert
+        expect((await readObject(ctx, id)).type).toBe('blob');
+      });
+    });
+  });
+
+  describe('Given writeExclusive throws FILE_NOT_FOUND', () => {
+    describe('When writeObject is called', () => {
+      it('Then the error propagates with its code and path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            writeExclusive: async () => {
+              throw new TsgitError({ code: 'FILE_NOT_FOUND', path: '/x' });
+            },
+          },
+        };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([43]), id: '' as ObjectId };
+        // Act + Assert
+        try {
+          await writeObject(wrapped, blob);
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data).toEqual({ code: 'FILE_NOT_FOUND', path: '/x' });
+        }
+      });
+    });
+  });
+
   describe('Given writeExclusive throws a non-FILE_EXISTS TsgitError', () => {
     describe('When writeObject is called', () => {
       it('Then propagates the original error', async () => {

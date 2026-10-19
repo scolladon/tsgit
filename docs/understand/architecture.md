@@ -21,6 +21,10 @@ Dependencies flow one way, inward. The domain core has zero `import` statements 
 | **Ports** | `src/ports/` | Interfaces only: `FileSystem`, `HashService`, `Compressor`, `HttpTransport`, `SshTransport`, `ProgressReporter`, `HookRunner`, `PromisorRemote`, plus a `Context` record aggregating them all. |
 | **Adapters** | `src/adapters/` | Platform implementations: `Node.js` (real filesystem with realpath-based path containment), `Browser` (OPFS + SubtleCrypto + fetch), `Memory` (first-class test fixture with defensive copying). |
 
+### `FileSystem` write contract (adapter authors)
+
+`write(path, data, options?)` and `writeStream(path, source, options?)` take `WriteOptions { mode?: number }` and **resolve the written file's `FileStat`**. This is a breaking change for third-party `FileSystem` adapters: a write that resolves `void` no longer satisfies the port, and the stat must describe the file as written, since index entries are built from it.
+
 ## Tiered API
 
 | Tier | Purpose | Entry point |

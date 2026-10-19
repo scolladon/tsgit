@@ -81,7 +81,9 @@ const writeCtxBinary = async (
   ctx: ReturnType<typeof createMemoryContext>,
   rel: string,
   buf: Uint8Array,
-): Promise<void> => ctx.fs.write(`${ctx.layout.workDir}/${rel}`, buf);
+): Promise<void> => {
+  await ctx.fs.write(`${ctx.layout.workDir}/${rel}`, buf);
+};
 
 const gitCommit = (dir: string, message: string): void => {
   runGit(['-C', dir, 'commit', '-q', '-m', message], { env: gitDeterministicEnv() });

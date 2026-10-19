@@ -8,9 +8,12 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-dirc
  */
+import { errorDataCode } from '../error-data-code.js';
 import { decodeEscapingInvalid, encode, hexToBytes } from '../objects/encoding.js';
+import type { ObjectId } from '../objects/index.js';
 import { invalidIndexEntry } from './error.js';
 import type { CacheTreeEntry } from './index-entry.js';
+import { parseCacheTree } from './index-parser.js';
 import { type IndexPath, indexPathKey } from './index-path-key.js';
 
 const NUL = 0;
@@ -90,6 +93,22 @@ export function namesEachSubtreeOnce(entry: CacheTreeEntry): boolean {
   return entry.children.every(namesEachSubtreeOnce);
 }
 
+const INVALID_INDEX_ENTRY_CODE = 'INVALID_INDEX_ENTRY';
+
+/** The cache-tree a `TREE` payload carries, or undefined when it is unparseable or names a subtree twice. */
+export function parseCarriedCacheTree(
+  data: Uint8Array,
+  digestLength: 20 | 32,
+): CacheTreeEntry | undefined {
+  try {
+    const root = parseCacheTree(data, digestLength);
+    return namesEachSubtreeOnce(root) ? root : undefined;
+  } catch (err) {
+    if (errorDataCode(err) === INVALID_INDEX_ENTRY_CODE) return undefined;
+    throw err;
+  }
+}
+
 type Pending = ReadonlyArray<string>;
 
 const componentKeysOf = (entry: IndexPath): Pending => indexPathKey(entry).split('/');
@@ -109,10 +128,17 @@ function reachesLeaf(group: ReadonlyArray<Pending>, depth: number): boolean {
   return group.some((item) => item.length === depth + 1);
 }
 
+/** What an invalidated node keeps of its oid: git keeps the stale one, the written TREE never does. */
+type Retain = (entry: CacheTreeEntry) => { readonly id?: ObjectId };
+
+const dropOid: Retain = () => ({});
+const keepOid: Retain = (entry) => (entry.id === undefined ? {} : { id: entry.id });
+
 function rebuildChildren(
   entry: CacheTreeEntry,
   groups: Map<string, Pending[]>,
   depth: number,
+  retain: Retain,
 ): ReadonlyArray<CacheTreeEntry> {
   const children: CacheTreeEntry[] = [];
   for (const child of entry.children) {
@@ -120,7 +146,8 @@ function rebuildChildren(
     const group = key === undefined ? undefined : groups.get(key);
     if (key !== undefined) groups.delete(key);
     if (group === undefined) children.push(child);
-    else if (!reachesLeaf(group, depth)) children.push(invalidateNode(child, group, depth + 1));
+    else if (!reachesLeaf(group, depth))
+      children.push(invalidateNode(child, group, depth + 1, retain));
   }
   return children;
 }
@@ -129,21 +156,33 @@ function invalidateNode(
   entry: CacheTreeEntry,
   pending: ReadonlyArray<Pending>,
   depth: number,
+  retain: Retain,
 ): CacheTreeEntry {
-  const children = rebuildChildren(entry, groupByComponent(pending, depth), depth);
+  const children = rebuildChildren(entry, groupByComponent(pending, depth), depth, retain);
   return {
     path: entry.path,
     ...(entry.nameBytes === undefined ? {} : { nameBytes: entry.nameBytes }),
+    ...retain(entry),
     entryCount: -1,
     subtreeCount: entry.subtreeCount - (entry.children.length - children.length),
     children,
   };
 }
 
-export function invalidateCacheTree(
+const invalidated = (
   root: CacheTreeEntry,
   paths: ReadonlyArray<IndexPath>,
-): CacheTreeEntry {
-  if (paths.length === 0) return root;
-  return invalidateNode(root, paths.map(componentKeysOf), 0);
-}
+  retain: Retain,
+): CacheTreeEntry =>
+  paths.length === 0 ? root : invalidateNode(root, paths.map(componentKeysOf), 0, retain);
+
+export const invalidateCacheTree = (
+  root: CacheTreeEntry,
+  paths: ReadonlyArray<IndexPath>,
+): CacheTreeEntry => invalidated(root, paths, dropOid);
+
+/** In memory git only zeroes the count: the oid of an invalidated node stays readable. */
+export const invalidateCacheTreeKeepingOids = (
+  root: CacheTreeEntry,
+  paths: ReadonlyArray<IndexPath>,
+): CacheTreeEntry => invalidated(root, paths, keepOid);

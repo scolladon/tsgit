@@ -24,6 +24,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { carriedCacheTreeOf } from '../../../../src/domain/git-index/cache-tree-update.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
@@ -288,6 +289,34 @@ const makeCleanRootPick = async (
 describe('cherryPick continue and abort — HEAD through a chain of symbolic refs', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe('Given a conflict resolved with `add` whose TREE chain is invalid', () => {
+    describe('When continued', () => {
+      it('Then the index TREE is fully valid and names the resolution tree', async () => {
+        // Arrange
+        const { ctx } = await seedConflictPick();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nBOTH\n');
+        await add(ctx, ['f.txt']);
+        const before = carriedCacheTreeOf(
+          (await readIndex(ctx)).extensions,
+          ctx.hashConfig.digestLength,
+        );
+
+        // Act
+        const result = await cherryPickContinue(ctx);
+
+        // Assert
+        const created = result.kind === 'picked' ? result.commits[0]?.created : undefined;
+        const after = carriedCacheTreeOf(
+          (await readIndex(ctx)).extensions,
+          ctx.hashConfig.digestLength,
+        );
+        expect(before?.entryCount).toBe(-1);
+        expect(after?.entryCount).toBeGreaterThanOrEqual(0);
+        expect(after?.id).toBe((await readCommit(ctx, created as ObjectId)).tree);
+      });
+    });
   });
 
   describe('Given a resolved conflict and HEAD -> refs/heads/s -> refs/heads/main', () => {

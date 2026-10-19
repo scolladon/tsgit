@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { hooksFor, onMeasuredRun } from '../../../test/bench/support/bench-dsl.ts';
+import { fixedRunOptions, hooksFor, onMeasuredRun } from '../../../test/bench/support/bench-dsl.ts';
 
 const noop = (): void => undefined;
 // The hook never reads its task argument, so no tinybench task is built for it.
@@ -114,6 +114,46 @@ describe('hooksFor', () => {
         expect(result.tsgit?.throws).toBe(true);
         expect(result.baseline?.throws).toBe(true);
         expect(result.tsgit?.teardown).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('fixedRunOptions', () => {
+  describe('Given a fixed iteration budget', () => {
+    describe('When the run options are built', () => {
+      it('Then time is zeroed so exactly warmup plus measured calls run', () => {
+        // Arrange
+        const sut = fixedRunOptions;
+
+        // Act
+        const result = sut({ warmup: 2, measured: 10 });
+
+        // Assert
+        expect(result).toEqual({ time: 0, warmupTime: 0, iterations: 10, warmupIterations: 2 });
+      });
+    });
+  });
+});
+
+describe('hooksFor with fixed iterations', () => {
+  describe('Given a baseline, a teardown and a fixed budget', () => {
+    describe('When hooksFor routes it', () => {
+      it('Then both benches carry the budget and throws, and the teardown rides on the baseline', async () => {
+        // Arrange
+        const teardown = vi.fn();
+        const sut = hooksFor;
+
+        // Act
+        const result = sut({ sut: noop, baseline: noop, teardown }, { warmup: 1, measured: 3 });
+        await result.baseline?.teardown?.(noTask, 'run');
+
+        // Assert
+        const budget = { time: 0, warmupTime: 0, iterations: 3, warmupIterations: 1 };
+        expect(result.tsgit).toMatchObject({ ...budget, throws: true });
+        expect(result.baseline).toMatchObject({ ...budget, throws: true });
+        expect(result.tsgit?.teardown).toBeUndefined();
+        expect(teardown).toHaveBeenCalledTimes(1);
       });
     });
   });

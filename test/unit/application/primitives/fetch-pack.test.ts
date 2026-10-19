@@ -2247,14 +2247,14 @@ describe('pack quarantine', () => {
         const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'x'.repeat(20_000));
         const chunkSizes: number[] = [];
         const ctx = withFsPatch(baseCtx, {
-          writeStream: async (path: string, source: AsyncIterable<Uint8Array>): Promise<void> => {
+          writeStream: async (path: string, source: AsyncIterable<Uint8Array>) => {
             async function* tap(): AsyncGenerator<Uint8Array> {
               for await (const chunk of source) {
                 chunkSizes.push(chunk.byteLength);
                 yield chunk;
               }
             }
-            await baseCtx.fs.writeStream(path, tap());
+            return baseCtx.fs.writeStream(path, tap());
           },
         });
         // Highly repetitive content deflates to far fewer bytes than its

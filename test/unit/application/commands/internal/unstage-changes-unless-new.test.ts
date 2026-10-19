@@ -118,7 +118,7 @@ describe('unstageChangesUnlessNew', () => {
 
   describe('Given a path new to the merged index', () => {
     describe('When the changes are unstaged', () => {
-      it('Then the new path stays staged and is reported as restaged', () => {
+      it('Then the new path stays staged and is not reported as restaged', () => {
         // Arrange
         const before = [entry('u', '3')];
         const merged = [entry('n', '4'), entry('u', '3')];
@@ -128,7 +128,7 @@ describe('unstageChangesUnlessNew', () => {
         const result = sut(merged, before);
 
         // Assert
-        expect(result.restagedPaths.map(({ path }) => path)).toEqual(['n']);
+        expect(result.restagedPaths).toEqual([]);
       });
     });
   });
@@ -170,7 +170,7 @@ describe('unstageChangesUnlessNew', () => {
 
   describe('Given a new path sorting after, and a deleted path sorting after, the surviving ones', () => {
     describe('When the changes are unstaged', () => {
-      it('Then every entry comes back once, in path order, with the new path reported first', () => {
+      it('Then every entry comes back once, in path order, and only the restored paths are reported', () => {
         // Arrange
         const before = [entry('a', '1'), entry('b', '2'), entry('z', '3')];
         const merged = [entry('a', '1'), entry('y', '4')];
@@ -181,7 +181,7 @@ describe('unstageChangesUnlessNew', () => {
 
         // Assert
         expect(paths(result.entries)).toEqual(['a', 'b', 'y', 'z']);
-        expect(result.restagedPaths.map(({ path }) => path)).toEqual(['y', 'b', 'z']);
+        expect(result.restagedPaths.map(({ path }) => path)).toEqual(['b', 'z']);
       });
     });
   });
@@ -221,7 +221,7 @@ describe('unstageChangesUnlessNew', () => {
         ]);
       });
 
-      it('Then the restaged paths list the lossy path with its bytes before the restored one', () => {
+      it('Then the restaged paths list the restored path only, not the lossy one kept staged', () => {
         // Arrange
         const before = [entry('\uFFFD.txt', 'u')];
         const merged = [lossy('\uFFFD.txt', [0xff, 0x2e, 0x74, 0x78, 0x74], 'l')];
@@ -231,10 +231,7 @@ describe('unstageChangesUnlessNew', () => {
         const result = sut(merged, before);
 
         // Assert
-        expect(result.restagedPaths).toEqual([
-          { path: '\uFFFD.txt', pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74) },
-          { path: '\uFFFD.txt' },
-        ]);
+        expect(result.restagedPaths).toEqual([{ path: '\uFFFD.txt' }]);
       });
     });
   });

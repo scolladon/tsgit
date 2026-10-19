@@ -53,6 +53,26 @@ export const entry = (
   dev: BigInt(dev),
 });
 
+/** A handle that accepts every write and reports an empty regular file; for `open` overrides. */
+export const fakeWriteHandle = () => ({
+  writeFile: vi.fn().mockResolvedValue(undefined),
+  write: vi.fn().mockImplementation(async (chunk: Uint8Array) => ({ bytesWritten: chunk.length })),
+  stat: vi.fn().mockResolvedValue({
+    ctimeMs: BigInt(0),
+    mtimeMs: BigInt(0),
+    dev: BigInt(0),
+    ino: BigInt(0),
+    mode: BigInt(0o100644),
+    uid: BigInt(0),
+    gid: BigInt(0),
+    size: BigInt(0),
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  }),
+  close: vi.fn().mockResolvedValue(undefined),
+});
+
 /**
  * Builds a fake `FsOperations` whose every method rejects with ENOENT by
  * default. Tests override only the methods they exercise — keeps each

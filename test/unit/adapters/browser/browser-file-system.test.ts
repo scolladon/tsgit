@@ -888,3 +888,58 @@ describe('BrowserFileSystem rmdir', () => {
     });
   });
 });
+
+describe('BrowserFileSystem write / writeStream — resolves the written stat', () => {
+  const LAST_MODIFIED = 1_700_000_000_000;
+
+  // A root holding one file whose size follows what was written to it.
+  const rootWithFile = (): FileSystemDirectoryHandle => {
+    let size = 0;
+    const fileHandle = {
+      createWritable: async () => ({
+        write: async (chunk: Uint8Array) => {
+          size += chunk.length;
+        },
+        close: async () => undefined,
+      }),
+      getFile: async () => ({ size, lastModified: LAST_MODIFIED }),
+    };
+    return { getFileHandle: async () => fileHandle } as unknown as FileSystemDirectoryHandle;
+  };
+
+  describe('Given a root-level file', () => {
+    describe('When write is called', () => {
+      it('Then the result is what lstat reports for the written path', async () => {
+        // Arrange
+        const sut = new BrowserFileSystem(rootWithFile());
+
+        // Act
+        const result = await sut.write('f', new Uint8Array([1, 2, 3]), { mode: 0o777 });
+
+        // Assert
+        expect(result).toEqual(await sut.lstat('f'));
+        expect(result.size).toBe(3);
+        expect(result.isFile).toBe(true);
+        expect(result.mtimeMs).toBe(LAST_MODIFIED);
+      });
+    });
+
+    describe('When writeStream is called with two chunks', () => {
+      it('Then the result is the lstat of the written path', async () => {
+        // Arrange
+        const sut = new BrowserFileSystem(rootWithFile());
+        async function* source() {
+          yield new Uint8Array([1, 2]);
+          yield new Uint8Array([3]);
+        }
+
+        // Act
+        const result = await sut.writeStream('f', source());
+
+        // Assert
+        expect(result).toEqual(await sut.lstat('f'));
+        expect(result.size).toBe(3);
+      });
+    });
+  });
+});

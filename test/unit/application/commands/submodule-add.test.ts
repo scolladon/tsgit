@@ -276,6 +276,16 @@ describe('Given a superproject and a submodule remote', () => {
       expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/libs/sub/lib.txt`)).toBe('lib dev\n');
     });
 
+    it('Then the checkout is forced over an untracked file already in the path', async () => {
+      // Arrange
+      const { ctx } = await seedSuper();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/libs/sub/lib.txt`, 'local\n');
+      // Act
+      await submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', branch: 'dev' });
+      // Assert
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/libs/sub/lib.txt`)).toBe('lib dev\n');
+    });
+
     it('Then the module keeps both local branches with the tracking-branch reflog', async () => {
       // Arrange
       const { ctx } = await seedSuper();

@@ -42,6 +42,8 @@ interface AuthorIdentity {
 - **Hooks (Node only):** in git's order — `pre-commit` runs before the index is read (so a re-staging hook is honoured); then the message round-trips through `.git/COMMIT_EDITMSG` via `prepare-commit-msg` (args `<editmsg-path> <source>`, where `source` is `message` for a non-empty `message`, else `squash` when `SQUASH_MSG` exists, else `merge` when resolving a merge / cherry-pick / revert, as git's `-m`, `SQUASH_MSG` and `MERGE_MSG` drafts do) and `commit-msg`; either may rewrite it. `post-commit` runs after the commit lands (informational — its exit code is ignored). A non-zero exit from a blocking hook throws `HOOK_FAILED`. `noVerify` skips `pre-commit` + `commit-msg` only — `prepare-commit-msg` still runs, as in git.
 - **Merge follow-up:** if `.git/MERGE_HEAD` exists, the commit's parents are HEAD followed by each `MERGE_HEAD` line (reduced by `reduce_heads` unless `MERGE_MODE` reads `no-ff`), and the merge-state files (`MERGE_HEAD`, `MERGE_MSG`, `ORIG_HEAD`) are cleared atomically.
 - **Message normalization:** the message is run through git's `stripspace` (the `whitespace` cleanup mode `git commit -m` uses) — per-line trailing whitespace is stripped, runs of blank lines collapse to one, leading/trailing blank lines are dropped, and a single trailing newline is guaranteed. This makes commit-object SHAs byte-identical to canonical git. Leading whitespace on a content line is preserved (git keeps it), and only ASCII whitespace is treated as blank. The low-level `repo.primitives.createCommit` is the verbatim escape hatch — it does **not** normalize.
+- **Index write and `TREE`:** the index is rewritten with a git-identical `TREE` (cache-tree) extension; valid subtrees carried from the previous index are reused, so the tree write costs O(change) rather than O(index). Entry stats are refreshed as git's commit does, and the index is rewritten when a stat moved or `TREE` was not fully valid. The write happens before the `pre-commit` hook and before the `NOTHING_TO_COMMIT` / empty-message refusals, so a refused commit still leaves the updated `TREE` on disk.
+- **Intent-to-add entries** (`add -N`) are excluded from the committed tree.
 - **Raw path bytes:** tree entry names are built from the index entries' raw path bytes, so a non-UTF-8 name round-trips byte-exact into the tree (and the commit oid matches git's).
 - **Reproducible hashes:** because `timestamp` is caller-provided, repeated calls with identical inputs produce identical commit oids.
 
@@ -68,6 +70,8 @@ await repo.commit({ message: 'resolve conflict' });
 ## Throws
 
 - `NOTHING_TO_COMMIT` — index matches HEAD's tree (no changes to commit).
+- `RESOURCE_LOCKED` — `.git/index.lock` is held by another writer (`resource: 'index'`).
+- `UNEXPECTED_OBJECT_TYPE` — the object a carried `TREE` root names is not a tree.
 - `HOOK_FAILED` — `pre-commit` or `commit-msg` returned non-zero exit (when hooks are enabled).
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `AUTHOR_UNCONFIGURED` — no `user.name` / `user.email` in config and no caller-supplied identity.

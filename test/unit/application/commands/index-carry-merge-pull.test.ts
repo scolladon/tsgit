@@ -146,7 +146,7 @@ afterEach(() => {
 describe('merge carries index extensions', () => {
   describe('Given a branch strictly ahead of the current one', () => {
     describe('When merge fast-forwards', () => {
-      it('Then REUC, UNTR and the unknown extension are dropped and only the changed chains are invalid', async () => {
+      it('Then REUC, UNTR and the unknown extension are dropped and the repaired TREE is fully valid', async () => {
         // Arrange
         const { ctx } = await forkedRepo(OTHER_CHANGE);
         await carryAllExtensions(ctx);
@@ -157,14 +157,14 @@ describe('merge carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });
 
   describe('Given diverged branches that merge cleanly', () => {
     describe('When merge creates the merge commit', () => {
-      it('Then REUC, UNTR and the unknown extension are dropped and only the changed chains are invalid', async () => {
+      it('Then REUC, UNTR and the unknown extension are dropped and the repaired TREE is fully valid', async () => {
         // Arrange
         const { ctx } = await forkedRepo(OTHER_CHANGE);
         await write(ctx, 'b', 'b2\n');
@@ -177,7 +177,7 @@ describe('merge carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });
@@ -254,7 +254,7 @@ const remoteAdvertising = (id: ObjectId, packBytes: Uint8Array): HttpTransport =
 describe('pull carries index extensions', () => {
   describe('Given a fetch that moves the checked-out branch ahead', () => {
     describe('When pull fast-forwards the index and work tree', () => {
-      it('Then REUC, UNTR and the unknown extension are dropped and only the changed chains are invalid', async () => {
+      it('Then REUC, UNTR and the unknown extension are dropped and the repaired TREE is fully valid', async () => {
         // Arrange
         const { ctx, other } = await forkedRepo(OTHER_CHANGE);
         await updateConfigEntries(ctx, [
@@ -275,7 +275,7 @@ describe('pull carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });

@@ -1,0 +1,1837 @@
+# Plan — cache-tree at O(change), loose-write robustness, checkout write path, literal `add`, status-family joins
+
+> Source: design doc `docs/design/cache-tree-write-path-perf.md` (a3b72d87) · ADRs 1007, 1008, 1009, 1010,
+> 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018
+> The plan is the implementation script AND the knowledge handoff. Part agents start
+> with zero context: whatever a part block omits is paid later as agent rediscovery.
+> `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
+
+<!-- cspell:ignore fanout utime utimes lstat lstats fstat umask REUC UNTR oids oid ITA bytewise unpack_trees ino inode mtime mtimes subtrees subtree's lutimes rwxr mainc stagedc noop cachetree Paris TOCTOU ENOENT EISDIR ELOOP NOFOLLOW tinybench numRuns backticked pgrep unpushed respawn -->
+
+## Sizing rules
+
+- Every part costs a full agent lifecycle (spin-up, zero-context rebuild, gate) — it
+  must earn it. No standalone test-only parts for FEATURE code: coverage/interop/property
+  tests fold into the implementation part whose code they exercise. EXCEPTION:
+  test-infra-only and docs-only parts (tooling config, test helpers, fixtures,
+  harness/ADV/property suites, docs/prose) with no `src/` delta ARE standalone — they
+  have no implementation part to fold into.
+- A part that would be a pure test pass over already-landed code merges into its
+  neighbour.
+- A part should land in ~100 tool calls. More than ~5 RED→GREEN cycles, or more than 6
+  files in its `### Context` block, is two parts. What counts is a backticked path:
+  backtick the files the part CREATES or EDITS, and write read-only reference paths in
+  plain text.
+
+## How this plan maps the design
+
+The design's thirteen parts (P1–P12 plus P4b) became 22 because `plan-lint` caps a part at six edited files and
+several design parts edit more (the port widening alone touches the port, three adapters, the
+validator wrapper and the tests that implement the port). Every part is still one atomic,
+green, conventional commit. Order (requirement: benches first, P4b right after P4):
+
+| Part | Design id | Commit subject | Kind | Est. |
+|---|---|---|---|---|
+| 1 | P12 (infra) | `test(bench): let bench:ab scope bench files and benches cap their iterations` | test-infra | ~800 s |
+| 2 | P12 | `test(bench): price wide commits, literal add, and directional mixed checkouts` | test-infra | ~1500 s |
+| 3 | P1 | `perf(write-object): let the exclusive write create the fanout directory` | perf | ~500 s |
+| 4 | P2 | `feat(cache-tree): plan a cache-tree update over the sorted index` | feat | ~2000 s |
+| 5 | P3 | `feat(cache-tree): update the cache-tree in write and repair modes` | feat | ~2000 s |
+| 6 | P4 | `feat(commit): maintain the cache-tree and write it into the index` | feat + perf | ~2500 s |
+| 7 | P4 (hook) | `fix(commit): run pre-commit after the index write and rebuild the tree when it ran` | fix | ~1200 s |
+| 8 | P4b (scan) | `refactor(status): share the tracked-entry scan and let index writes take its verified set` | refactor | ~1200 s |
+| 9 | P4b | `feat(commit): refresh index stats before updating the cache-tree, as git does` | feat | ~1800 s |
+| 10 | P5 (lock) | `feat(index): repair the cache-tree on replace writes as unpack_trees does` | feat | ~1800 s |
+| 11 | P5 (sites) | `fix(stash): invalidate the kept index paths after a keep-index reset, as git does` | fix + interop | ~2200 s |
+| 12 | P6 | `fix(sequencer): write the updated cache-tree when continuing a stopped pick` | fix | ~1500 s |
+| 13 | P7 | `fix(rm): record resolve-undo and run during a pending merge, as git rm does` | fix | ~1200 s |
+| 14 | P8 (Node) | `perf(node-fs): open writes with a creation mode and return the written stat` | perf | ~1500 s |
+| 15 | P8 (memory, browser) | `feat(fs): return the written stat from the memory and browser adapters` | feat | ~800 s |
+| 16 | P8 (port) | `feat(fs): take a creation mode in FileSystem.write and return the written stat` | feat (breaking port) | ~900 s |
+| 17 | P8 (checkout) | `perf(checkout): create files with git's mode and stat the written descriptor` | perf + fix | ~2000 s |
+| 18 | P9 | `perf(add): stat each literal path once and stage literals through the pool` | perf | ~1200 s |
+| 19 | P10 (changeset) | `perf(checkout): merge-join the index and target tree into a byte-ordered changeset` | perf (ADR-1017) | ~900 s |
+| 20 | P10 (status) | `perf(status): merge-join the sorted index and tree sequences` | perf (ADR-1017) | ~1000 s |
+| 21 | P11 (matcher) | `perf(ignore): scan ignore rules backward and stop at the first match` | perf (ADR-1017) | ~800 s |
+| 22 | P11 (ancestors) | `perf(ignore): walk ancestor directories without split and join` | perf (ADR-1017) | ~700 s |
+
+Parts 1–2 are test-infra (no `src/` delta), the one standalone test-only shape the sizing rules allow.
+Files shared by several parts, and why they stay separate (plan-lint's locality warnings):
+
+- `reports/api.json` (Parts 6, 13, 16): regenerated by each part whose public JSDoc or types change; merging would
+  merge unrelated features.
+- commit.ts and commit.test.ts (Parts 6, 7, 9): the cache-tree write, the hook reorder and the refresh are three
+  pinned behaviours (C1–C9, C8, CW2–CW8); together they exceed one part's six-file and five-cycle budget.
+- index-lock.ts and index-lock.test.ts (Parts 5, 8, 10): three independent lock options (`cacheTree`, `verified`,
+  the replace repair), each consumed by a different later part.
+- status.ts (Parts 8, 20): a behaviour-preserving extraction vs an ADR-1017 keep-on-gain join that may be dropped.
+- index-carry-stash.test.ts (Parts 10, 11): expectation flips from the lock repair vs the keep-index fix.
+- write-working-tree-file.test.ts (Parts 15, 17): a compile-neutral test-double adjustment that lets the port
+  widen, vs the checkout write-path tests.
+
+ADR-1014 (UNTR keeps its forward-or-drop rule) needs no part: every write here keeps the existing UNTR carry.
+The plan's own open choices are listed as PC-1…PC-10 under Decision candidates (the design's DC-1…DC-10 are
+settled by the ADRs).
+
+## Public-vs-internal, decided up front
+
+| New symbol | Verdict | Gates (pre-paid in the owning part) |
+|---|---|---|
+| `compareSubtreeNames`, `planCacheTree`, `toCacheTreeEntry`, `isIndexOrdered`, `carriedCacheTreeOf`, `CacheTreePlan`, `PlannedNode`, `TreeBuild` (Part 4) | internal | none. Imported by module path (as carry-extensions imports cache-tree). No `src/domain/git-index/index.ts` barrel entry: that barrel is not on the package surface (`src/index.ts` exports no `domain/git-index`), so an entry would be dead surface |
+| `updateCacheTree`, `isCacheTreeFullyValid`, `TreeSink`, `CacheTreeResult` (Part 5) | internal | none |
+| `CommitOptions.cacheTree`, `CommitOptions.verified` on the index lock (Parts 5, 8) | internal (index-lock is under `primitives/internal`) | none |
+| `writeIndexCacheTree` (Part 6) | internal (`commands/internal`) | none |
+| `runBlockingHook`, `HookOutcome` (Part 7); `runPreCommitHook` return type | internal | none |
+| `scanTrackedEntries`, `verifiedBy`, `TrackedScan`; exported `withRefreshedStat` (Part 8) | internal | none |
+| `ancestorsOf` in `src/domain/ignore/ancestors-of.ts` (Part 22) | internal | none |
+| `WriteOptions` + widened `FileSystem.write` / `writeStream` (Part 16) | **public** (`FileSystem` is re-exported through `src/ports/index.ts` → `src/public-types.ts`) | `src/ports/index.ts` type export; `reports/api.json` regenerated in-part; PR flags it as a breaking port change for third-party adapters (ADR-1013) and asks for the Windows CI legs |
+| JSDoc of the public `commit` (Part 6) and `rm` (Part 13, only if its JSDoc names the pending-operation refusal) | public text | `reports/api.json` regenerated in the same commit (typedoc embeds the JSDoc; staleness is a prepush gate, not a validate gate) |
+
+api.json command (every part that regenerates it):
+`npx typedoc --json reports/api.json --disableSources --out reports/api-tmp && rm -rf reports/api-tmp`
+
+## Repo-wide facts every part needs
+
+- **Worktree only.** All commands run from the worktree root (`tsgit-cache-tree-write-path-perf`), branch
+  `feat/cache-tree-write-path-perf`. Never touch another checkout. Commit only your own files.
+- **Implementers have no serena/graft.** Everything below is located by path and symbol; use `grep -n` and
+  `sed -n` ranges to read. Line numbers are as of `5ae8a9e3` and drift by a few lines after earlier parts.
+- **Tests:** `describe('Given …')` > `describe('When …')` > `it('Then …')` (the two-level
+  `describe('Given …, When …')` shortcut is allowed for one expectation). AAA comments, `sut`, refusals asserted
+  field by field (`try { … expect.unreachable() } catch (e) { expect((e as TsgitError).data).toEqual(…) }`).
+  Memory-adapter contexts: `createMemoryContext()` from `src/adapters/memory/memory-adapter.ts`. Node contexts in
+  interop tests: `createNodeContext({ workDir, algorithm? })` from `src/adapters/node/node-adapter.ts`.
+- **Interop harness** (`test/integration/interop-helpers.ts`): `makePeerPair(slug)` → `{ peer, ours }` twin dirs,
+  `git(dir, ...args)` (throws on failure), `tryRunGit([...])`, `runGit([...])`, `GIT_AVAILABLE`,
+  `disableAutoMaintenance(dir)`. The canonical twin pattern to copy is
+  `test/integration/index-extensions-interop.test.ts` (`buildBase`, `contextFor`, `extensionsOf`, `play`,
+  `describeRow`, `secondsAgo`, `touchForward`). Each repo sets `user.name`, `user.email`, `gc.auto=0`,
+  `maintenance.auto=false`, `commit.gpgsign=false`. Every interop row also asserts `git fsck` exits 0.
+  **Interop runs with git 2.55 first on PATH**: `PATH=<git-2.55-bin>:$PATH` (`<git-2.55-bin>` = the local
+  2.55.0 install's `bin`; local `git` is 2.56 and must not run interop).
+- **Rewritten-or-not** = the inode of `<repo>/.git/index` changed (`(await stat(p)).ino`); the lock publishes by
+  rename, so a write always moves the inode.
+- **Pins** are the design's §Pin recipes (`docs/design/cache-tree-write-path-perf.md` L331–567, named
+  `pin-*.zsh`). All were re-run 3× by the orchestrator: stable, data equal to the design's tables. A part that
+  needs a not-yet-run pin row (D11 identity/lock rows, E2c/E2r/E2d) runs it in a `mktemp -d` throwaway with
+  the design's §Pinning harness (L101–120), never in the worktree.
+- **No suppression comments, no provenance refs** (no ADR/backlog/part numbers) in `src/` or `test/`. Existing
+  `Stryker disable` comments in touched files stay as they are unless their code is deleted.
+- **Part gate** (manifest `gates.part`), run from the worktree root; zsh word-splits lists with `${=var}`;
+  wireit may cache `check:types` / `check:spelling`, so run `rm -rf .wireit` first or use the bare bypasses
+  `npx tsc --noEmit -p tsconfig.json` and `npx cspell --no-progress <files>`:
+  `npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling`
+- **Phase gate** (orchestrator, end of phase): `PATH=<git-2.55-bin>:$PATH npm run validate`.
+- **Size caps:** `check:size` / `check:tarball` have ~80–100 B headroom. Parts flagged "size" below are expected
+  to cross it; the **orchestrator** adds one attributed `chore(size)` commit at the phase gate
+  (`docs/design/bundle-size-optimization.md`). Parts do not bump caps themselves.
+
+## Measurement protocol (orchestrator, after each perf commit)
+
+The part agent never runs benches. After a part flagged **Measure** commits, the orchestrator:
+
+1. Quiet-machine check: `uptime` (1-minute load under ~4) and `pgrep -fl "stryker|vitest"` empty (other
+   sessions count). Wait or defer otherwise.
+2. Runs, from the worktree root, `REGRESSION_THRESHOLD=10 npm run bench:ab -- <base> HEAD 5 <bench files…>`.
+   `tooling/bench-ab.ts` takes `<base-ref> [head-ref] [rounds]`; Part 1 adds trailing bench-file basenames
+   (e.g. `commit.bench.ts`) that scope the run to those files. Without them it runs all ~38 bench files per
+   round, which is too slow for per-part use. `<base>` is `HEAD~1` unless the part says otherwise.
+3. Reads the named rows of the printed table (`Scenario | Base (ms) | Current (ms) | Delta | Verdict`). A row
+   flagged `regression` (> +10 %) on a part that expects a gain is a blocker: report
+   `{ unit, reason, ≤3 options }`. A part that expects a cost (Part 9) records the number.
+4. Records every row's numbers for the PR body.
+
+ADR-1017 parts (19–22) are **keep only on a measured gain**: no row beats noise (delta better than −10 % on the
+named rows, the same bound `bench:ab` flags regressions with) → the orchestrator drops the commit. Each of those
+parts is the branch tip when it is measured, so the drop is `git reset --hard HEAD~1` (unpushed). Part 19
+instead keeps its byte-order fix through its documented fallback. The PR lists each of 19–22 as kept or
+dropped, with numbers.
+
+## Part 1 — bench tooling: scoped `bench:ab` runs and capped bench iterations
+
+### Context
+
+Test-infra only (no src/ delta). Two tooling gaps block the per-part measurement protocol and ADR-1015's
+copy-pool reset.
+
+Files (create or edit):
+- `tooling/bench-ab.ts` — add a bench-file filter.
+- `tooling/test/unit/bench-ab.test.ts` — tests for the filter.
+- `test/bench/support/bench-dsl.ts` — add a fixed-iteration option.
+- `tooling/test/unit/bench-dsl.test.ts` — tests for it.
+
+Current shape of tooling/bench-ab.ts (read L100–253):
+~~~ts
+export const intersectBenchFiles = (baseFiles: readonly string[], headFiles: readonly string[]): readonly string[];
+export const planRounds = (rounds: number): readonly RoundStep[];
+const listBenchFiles = async (worktreeDir: string): Promise<readonly string[]>;   // 'test/bench/<name>.bench.ts', sorted
+const parseArgs = (argv: readonly string[]): Args;   // argv[2] base, argv[3] head ?? 'HEAD', argv[4] rounds ?? 3
+// main(): files = intersectBenchFiles(base, head); throws 'no bench files shared …' when empty
+~~~
+Change: `Args` gains `files: readonly string[]` = `argv.slice(5)` (basenames ending `.bench.ts`). New exported
+pure helper `selectBenchFiles(shared: readonly string[], requested: readonly string[]): readonly string[]`:
+empty `requested` → `shared` unchanged; otherwise the `shared` entries whose basename is requested, in `shared`
+order; a requested basename absent from `shared` throws `Error('bench file not shared by both refs: <name>')`.
+`main()` applies it right after `intersectBenchFiles`. Update the usage string and the file's header comment
+(`npm run bench:ab -- <base-ref> [head-ref] [rounds] [bench-file…]`). Validation for a non-integer rounds value
+when files follow stays as it is (rounds must be given explicitly to pass files).
+
+Current shape of test/bench/support/bench-dsl.ts:
+~~~ts
+export interface MeasuredRunOptions extends BenchOptions { readonly throws: true; readonly teardown?: … }
+const throwingOptions = (teardown?: Teardown): MeasuredRunOptions;
+export const hooksFor = (comparison: BenchComparison): ScenarioHooks;
+export interface BenchScenarioOptions { readonly skip?: boolean }
+export const benchScenario = (given, whenThen, build, opts: BenchScenarioOptions = {}): void;
+~~~
+Change: `BenchScenarioOptions.fixedIterations?: FixedIterations` with
+`export interface FixedIterations { readonly warmup: number; readonly measured: number }` and a pure exported
+`fixedRunOptions(fixed: FixedIterations): Pick<BenchOptions, 'time' | 'warmupTime' | 'iterations' | 'warmupIterations'>`
+returning `{ time: 0, warmupTime: 0, iterations: fixed.measured, warmupIterations: fixed.warmup }`.
+`benchScenario` spreads it into both benches' options when given (thread it through `hooksFor` or a sibling
+helper; keep `throws: true` and the teardown routing unchanged). Why exact: tinybench 2.9.0 (node_modules/tinybench)
+loops `while (elapsed < time || samples < iterations)` for both phases, so `time: 0` + `warmupTime: 0` runs
+exactly `warmupIterations + iterations` calls — the bound a pre-built copy pool needs (ADR-1015 option a).
+
+### TDD steps
+
+1. RED `tooling/test/unit/bench-ab.test.ts` — `describe('selectBenchFiles')` > Given shared
+   `['test/bench/add.bench.ts','test/bench/commit.bench.ts']`, When `['commit.bench.ts']` is requested, Then
+   `['test/bench/commit.bench.ts']`. Fails: `selectBenchFiles` is not exported (calling `undefined` throws a
+   TypeError).
+2. RED — When `['nope.bench.ts']` is requested, Then it throws with the message
+   `bench file not shared by both refs: nope.bench.ts` (assert the string). Fails for the same reason.
+3. GREEN — implement `selectBenchFiles`, the `files` field in `parseArgs`, and wire it into `main`.
+4. GUARD — When nothing is requested, Then the shared list comes back unchanged (passes: the empty branch
+   returns `shared`).
+5. RED `tooling/test/unit/bench-dsl.test.ts` — `describe('fixedRunOptions')` > Given `{ warmup: 2, measured: 10 }`
+   Then `{ time: 0, warmupTime: 0, iterations: 10, warmupIterations: 2 }`. Fails: not exported.
+6. RED — Given a comparison and `fixedIterations`, When the scenario options are built (`hooksFor` or the
+   sibling helper you add), Then both benches' options carry the four fields AND `throws: true`, and the teardown
+   still rides on the last bench. Fails: no such option. GREEN: `fixedRunOptions` + threading.
+7. GUARD — the existing `onMeasuredRun` / `hooksFor` tests (callers that pass no option are unchanged).
+8. REFACTOR — each function under 20 lines.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run tooling/test/unit/bench-ab.test.ts tooling/test/unit/bench-dsl.test.ts && npm run check:types && ./node_modules/.bin/biome check tooling/bench-ab.ts tooling/test/unit/bench-ab.test.ts test/bench/support/bench-dsl.ts tooling/test/unit/bench-dsl.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`test(bench): let bench:ab scope bench files and benches cap their iterations`
+
+## Part 2 — benches: wide commit, literal add of 200 paths, directional and mixed checkouts
+
+### Context
+
+Test-infra only (no src/ delta). Lands before any perf part so every perf part has before/after rows
+(design §D10, ADR-1015). Vitest bench hooks are dead: all setup happens in the `benchScenario` build factory,
+teardown is synchronous (`removeSync` / `disposeSync`).
+
+Files (create or edit):
+- `test/bench/support/write-scratch.ts` — three builders.
+- `test/bench/commit.bench.ts` — one new scenario.
+- `test/bench/add.bench.ts` — one new scenario.
+- `test/bench/checkout.bench.ts` — three new scenarios (the existing tiered alternation scenarios stay: they
+  carry CI baseline history; see Decision candidates PC-6).
+
+Read-only references: test/bench/support/bench-dsl.ts (`benchScenario`, Part 1's `fixedIterations`),
+test/bench/support/fixture-scratch.ts (`copyFixtureToScratch(sourceCwd)` → `{ cwd, dispose, disposeSync }`,
+`removeSync`), existing builders in write-scratch.ts (`newScratch()` = mkdtemp + `openRepository` + `init`,
+`SCRATCH_AUTHOR`, `disposeScratchSync`).
+
+Builders to add to test/bench/support/write-scratch.ts (all via the library API, deterministic content):
+~~~ts
+/** `directories` × `filesPerDirectory` files (dNNN/sub/fK.txt), added and committed once. */
+export const buildWideCommitScratch = (directories: number, filesPerDirectory: number): Promise<ScratchRepo>;
+/** `fileCount` tracked files across nested directories, committed; returns their paths too. */
+export const buildLiteralAddScratch = (fileCount: number): Promise<ScratchRepo & { readonly paths: ReadonlyArray<string> }>;
+/** 500 dirs × 4 files committed as `root`; branch `tip` rewrites f0 of every dir (500 updates);
+ *  branch `mixed` (from root) rewrites f0, deletes f1 and adds f4 in every dir. HEAD left at `root`. */
+export const buildCheckoutScratch = (): Promise<ScratchRepo>;
+~~~
+Write files in parallel (`Promise.all`) as `buildAddManyScratch` does.
+
+Scenario titles (exact — they are the `bench:ab` row keys later parts name):
+- commit: `benchScenario('Given a committed scratch repo of 500 directories with 4 files each', 'When add() and commit() record one rewritten file per iteration, Then measure tsgit', …)`.
+  Factory builds once; `sut` rewrites `d<i mod 500>/sub/f0.txt` with an iteration counter, `repo.add([path])`,
+  `repo.commit({ message, author: SCRATCH_AUTHOR, committer: SCRATCH_AUTHOR })`. State moves forward; no reset.
+- add: `benchScenario('Given a committed scratch repo with 200 tracked files across nested directories', 'When add() stages the 200 rewritten files by literal path, Then measure tsgit', …)`.
+  `sut` rewrites the 200 files' content (counter) then `repo.add(paths)`.
+- checkout, each with `{ fixedIterations: { warmup: 2, measured: 10 } }` and a pool of 12 opened copies built in
+  the factory (`copyFixtureToScratch(source.cwd)` + `openRepository({ cwd })`; for the root→tip and mixed rows
+  the source stays at `root`; for tip→root the factory first checks out `tip` with `force: true` on the source
+  before copying). `sut` pops the next copy (throw `Error('checkout pool exhausted')` when empty — a clear failure
+  if tinybench ever runs more calls than capped) and runs `repo.checkout({ rev, force: true })`. Teardown
+  `disposeSync`s every copy and the source.
+  - `'Given a 500-directory scratch repo at its root commit', 'When checkout() moves to the tip with force, Then measure tsgit'`
+  - `'Given a 500-directory scratch repo at its tip commit', 'When checkout() moves to the root with force, Then measure tsgit'`
+  - `'Given a 500-directory scratch repo whose mixed branch adds, updates and deletes files', 'When checkout() moves from root to mixed with force, Then measure tsgit'`
+- Update checkout.bench.ts's header comment: the mixed changeset now exists (the "tracked as a follow-up"
+  paragraph is answered by the write-scratch builder).
+
+### TDD steps
+
+Bench files have no unit tests (they are the harness). The verification is executing them:
+1. GUARD the new builders by running the three files once:
+   `npx vitest bench --run --config vitest.bench.config.ts test/bench/commit.bench.ts test/bench/add.bench.ts test/bench/checkout.bench.ts > <scratchpad>/bench-smoke.txt 2>&1`
+   (output can exceed 100 lines — grep the file for the five new titles and for `Error`). Each new row must
+   report samples; the checkout rows must not report `checkout pool exhausted`.
+2. REFACTOR: builders under 20 lines each (extract the per-directory writers); no magic numbers (named
+   constants for 500, 4, 200, pool size).
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest bench --run --config vitest.bench.config.ts test/bench/commit.bench.ts test/bench/add.bench.ts test/bench/checkout.bench.ts > "$TMPDIR/bench-smoke.txt" 2>&1 && grep -c "measure tsgit" "$TMPDIR/bench-smoke.txt" && npm run check:types && ./node_modules/.bin/biome check test/bench/support/write-scratch.ts test/bench/commit.bench.ts test/bench/add.bench.ts test/bench/checkout.bench.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`test(bench): price wide commits, literal add, and directional mixed checkouts`
+
+#### Orchestrator note
+
+Record this commit's sha as `BENCH_BASE`: Part 9's net measurement compares against it.
+
+## Part 3 — loose write: no per-write fanout `mkdir`
+
+### Context
+
+Design §D4.1, R7. git's `create_tmpfile` opens first and `mkdir`s the fanout only on ENOENT, once. All three
+adapters' `writeExclusive` already honour the port contract (src/ports/file-system.ts `writeExclusive` doc:
+"MUST ensure parent directories exist … retries once … a second ENOENT propagates as FILE_NOT_FOUND"): Node
+`createExclusive` (src/adapters/node/node-file-system.ts ~L1228), memory `ensureParentDirs`, browser
+`walkToParent(…, true)`.
+
+Files (edit):
+- `src/application/primitives/write-object.ts` — `storeLoose`: delete
+  `await ctx.fs.mkdir(objectsDir(commonGitDir(ctx), id.slice(0, 2)));` (L65) and drop `objectsDir` from the
+  path-layout import (L24; it has no other use in the file).
+- `test/unit/application/primitives/write-object.test.ts` — new describes next to
+  `'Given writeExclusive throws a non-FILE_EXISTS TsgitError'` (L147; copy its `buildSeededContext` + fs-spread
+  proxy pattern from ./fixtures.js).
+
+Current signature (unchanged): `async function storeLoose(ctx: Context, bytes: Uint8Array, id: ObjectId): Promise<ObjectId>`.
+
+Node retry coverage already exists: test/unit/adapters/node/node-file-system-injected.test.ts
+`'NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (DI)'` (~L6252: parent missing → retry in
+order; second ENOENT → FILE_NOT_FOUND after exactly one retry). No new Node test.
+
+### TDD steps
+
+1. RED — Given a seeded context whose fs counts `mkdir` calls (spread `ctx.fs`, wrap `mkdir`), When `writeObject`
+   stores a brand-new blob, Then `mkdir` was called 0 times. Fails today: `storeLoose` calls `mkdir` once.
+2. GREEN — delete the `mkdir` line and the unused import.
+3. GUARD — Given a fs whose `writeExclusive`, on its first call, removes the fanout directory
+   (`ctx.fs.rmRecursive` or `rm` of the parent of the target path) before delegating, When `writeObject` writes,
+   Then it resolves and `readObject` returns the blob. Passes: memory `writeExclusive` recreates parents.
+4. GUARD — Given a fs whose `writeExclusive` throws `new TsgitError({ code: 'FILE_NOT_FOUND', path: '/x' })`, When
+   `writeObject` writes, Then the error propagates with `data.code === 'FILE_NOT_FOUND'` and `data.path === '/x'`.
+   Passes: only FILE_EXISTS is caught.
+5. REFACTOR — none expected.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/application/primitives/write-object.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/write-object.ts test/unit/application/primitives/write-object.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`perf(write-object): let the exclusive write create the fanout directory`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 add.bench.ts` — rows
+`Given a committed scratch repo with 200 tracked files across nested directories, When add() stages the 200 rewritten files by literal path, Then measure tsgit`
+and `… When writeObject() stores a brand-new blob, Then measure tsgit`. Expect a small gain (`storeLoose` 6.9 %
+of the 200-path add). Benefit measured, not assumed; a flat result is acceptable (R7 is a robustness fix).
+
+## Part 4 — cache-tree planner (domain)
+
+### Context
+
+Design §D2.2, ADR-1007 (subtree order, entry counts, ITA rule), ADR-966 (bytewise index order). Pure: no ctx,
+no I/O. Internal (see public-vs-internal table).
+
+Files (create or edit):
+- `src/domain/git-index/cache-tree-update.ts` — new module.
+- `test/unit/domain/git-index/cache-tree-update.test.ts` — examples.
+- `test/unit/domain/git-index/cache-tree-update.properties.test.ts` — properties.
+- `test/unit/domain/git-index/arbitraries.ts` — add an arbitrary of bytewise-sorted stage-0 entry lists over a
+  small directory alphabet (reuse `arbIndexEntry`/`arbFilePath`; sort with `compareEntryPath`; dedupe by path).
+
+Read-only references: src/domain/git-index/cache-tree.ts (`serializeCacheTree(root, digestLength)`,
+`namesEachSubtreeOnce(entry)`, `invalidateCacheTree(root, paths)`, `keyOfChild` naming rule: `nameBytes` when
+present else `path`), src/domain/git-index/index-parser.ts (`parseCacheTree(data, digestLength)`),
+src/domain/git-index/index-entry.ts (`CacheTreeEntry { path; nameBytes?; entryCount; subtreeCount; id?; children }`,
+`IndexEntry.flags { stage, intentToAdd, skipWorktree, … }`), src/domain/git-index/index-path-key.ts
+(`pathBytesOf(entry)`, `indexPathOfBytes(bytes)` → `{ path, pathBytes? }`), src/domain/git-index/index-writer.ts
+(`compareEntryPath`, `pathComparatorFor`), src/domain/git-index/carry-extensions.ts (`carryTree`: the parse +
+`namesEachSubtreeOnce` + catch `INVALID_INDEX_ENTRY` pattern to reuse for `carriedCacheTreeOf`),
+.claude/workflow/property-testing.md (lenses, `numRuns` tiers 200/100/50).
+
+API to create in src/domain/git-index/cache-tree-update.ts:
+~~~ts
+/** git's subtree_name_cmp: shorter name first, then bytes. */
+export const compareSubtreeNames = (a: Uint8Array, b: Uint8Array): number;
+export const isIndexOrdered = (entries: ReadonlyArray<IndexEntry>): boolean;   // linear, compareEntryPath
+/** The TREE a previous index carries, or undefined when absent, unparseable or naming a subtree twice. */
+export const carriedCacheTreeOf = (extensions: ReadonlyArray<IndexExtension>, digestLength: 20 | 32): CacheTreeEntry | undefined;
+export interface PlannedNode {
+  readonly nameBytes: Uint8Array;
+  readonly entryCount: number;              // index entries the directory covers, recursively
+  readonly reused?: ObjectId;               // carried valid oid; existence checked by the driver
+  readonly invalid: boolean;                // holds an ITA or unmerged entry, itself or below
+  readonly children: ReadonlyArray<number>; // node indices, ordered by compareSubtreeNames
+}
+export interface TreeBuild {
+  readonly node: number;
+  readonly files: ReadonlyArray<IndexEntry>;   // stage-0, non-ITA leaves directly in this directory
+  readonly subtrees: ReadonlyArray<number>;    // child node indices
+}
+export interface CacheTreePlan {
+  readonly nodes: ReadonlyArray<PlannedNode>;  // nodes[0] = root (empty name)
+  readonly builds: ReadonlyArray<TreeBuild>;   // post-order: children before parents
+}
+export const planCacheTree = (entries: ReadonlyArray<IndexEntry>, carried: CacheTreeEntry | undefined): CacheTreePlan;
+export const toCacheTreeEntry = (plan: CacheTreePlan, ids: ReadonlyArray<ObjectId | undefined>): CacheTreeEntry;
+~~~
+
+Rules (git `cache-tree.c` `update_one`, pinned by design §D1.1):
+- Regions: a directory's entries are one contiguous run of the bytewise-sorted index, found by prefix comparison
+  on the precomputed path bytes (`pathBytesOf` once per entry, not per level). One `indexOf(0x2f)` per entry per
+  level; no `Map`s, no `split`, no `[head, ...rest]`. Iterative (explicit stack) — no recursion depth limit.
+- Unsorted input (an index written by an older tsgit): `planCacheTree` sorts a copy with `pathComparatorFor`
+  when `!isIndexOrdered(entries)`.
+- `entryCount` = number of index entries the directory covers (all of them, ITA and unmerged included).
+- ITA entry (`flags.intentToAdd`): left out of `files`; marks its directory and every ancestor `invalid`.
+  Unmerged entry (`flags.stage !== 0`): left out of `files`; marks the chain `invalid` (replace writers, U9/U21).
+- Reuse: a carried node at the same position (matched by name bytes: `nameBytes ?? utf8(path)`) with
+  `entryCount >= 0`, an `id`, and `entryCount` equal to the region's count → `reused = id`, no build, and its
+  subtree is not scanned further (Decision candidates PC-8: a count mismatch rebuilds; git trusts the carried
+  count, identical for every TREE git or tsgit writes). A node that is `invalid` is never reused.
+- A carried subtree absent from the entries disappears (`discard_unused_subtrees`); a new directory gets a fresh
+  node at its `compareSubtreeNames` position.
+- `builds` lists every non-reused node in post-order; a parent's build lists all its children in `subtrees`.
+- `toCacheTreeEntry`: per node, `entryCount` = `-1` and no `id` when `invalid` or `ids[node]` is undefined,
+  else the count and `ids[node]`; `subtreeCount = children.length`; children in `compareSubtreeNames` order;
+  `path`/`nameBytes` via `indexPathOfBytes(nameBytes)` so a non-UTF-8 or BOM name keeps its bytes. Root: empty
+  name.
+- An empty index plans a single root build with no files and no subtrees.
+
+### TDD steps
+
+Examples are design §D1.1 rows as data (fixture `a/x/f b/f c/f top bb/f zzz/f`, stage-0 entries built with
+`STAGE0_FLAGS`; oids are fixed fake hex strings).
+1. RED `compareSubtreeNames` — Given names `bb` and `c`, Then `c` sorts first (length rule); Given `ab`/`aa`, Then
+   bytes decide. Fails: module absent. GREEN: create the module with `compareSubtreeNames`, `isIndexOrdered`.
+2. RED `planCacheTree` over C1 with no carried tree — Then root `entryCount` 6, children named in order
+   `a, b, c, bb, zzz`, `a` has child `x`, every node is a build, builds in post-order (`x` before `a`, root last).
+   GREEN: region scan + node creation.
+3. RED C3 reuse — carried tree = C1's (all valid, fake oids), entries with `b/f` changed (same paths) but carried
+   `b` and root invalid (`entryCount -1`) — Then `a`, `x`, `c`, `bb`, `zzz` are `reused` with their carried oids
+   and only `b` and root are builds. Plus a count-mismatch case (carried `c` count 2, region 1) → `c` is a build.
+   GREEN: reuse rule.
+4. RED ITA (C7/I1) — entries `a/f`, ITA `a/n`, `b` — Then `a` and root are `invalid`, `a`'s build files hold
+   only `a/f`; an all-ITA directory `n/x` → node `n` invalid with an empty `files` list. Unmerged `b/f` stage 2
+   → chain invalid. GREEN: exclusion + chain marking.
+5. RED C9 + `toCacheTreeEntry` + `carriedCacheTreeOf` — carried C1 tree, entries without `zzz/f` → no `zzz` node;
+   `toCacheTreeEntry(plan, ids)` gives root `5/4`; unsorted input gives the same plan as sorted;
+   `carriedCacheTreeOf` returns undefined for a garbage TREE payload and for a TREE naming `a` twice, and the
+   parsed tree otherwise (SHA-256 width too). GREEN: discard + emit + carried parse.
+6. Properties (`cache-tree-update.properties.test.ts`, sorted-entry arbitrary from `arbitraries.ts`, `numRuns` per
+   property-testing.md): (a) every directory present in the entries has exactly one node; (b) root `entryCount`
+   = number of entries; (c) children strictly ordered by `compareSubtreeNames`; (d) with the plan of the same
+   entries as the carried tree (all nodes given fake ids), re-planning reuses every node and builds nothing; a
+   node covering a changed path (carried invalidated with `invalidateCacheTree`) is a build; (e)
+   `parseCacheTree(serializeCacheTree(toCacheTreeEntry(plan, ids)))` round-trips. These pass once steps 1–5 are
+   green (GUARD entries; a failing property is a real defect to fix).
+7. REFACTOR — functions under 20 lines, no nesting > 2 (extract the region scanner and the reuse matcher).
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/domain/git-index/cache-tree-update.test.ts test/unit/domain/git-index/cache-tree-update.properties.test.ts test/unit/domain/git-index/cache-tree.properties.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/git-index/cache-tree-update.ts test/unit/domain/git-index/cache-tree-update.test.ts test/unit/domain/git-index/cache-tree-update.properties.test.ts test/unit/domain/git-index/arbitraries.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`feat(cache-tree): plan a cache-tree update over the sorted index`
+
+#### Flags
+
+Size: adds domain code; expect the orchestrator's phase-gate `chore(size)`.
+
+## Part 5 — cache-tree driver; the index lock accepts a computed cache-tree
+
+### Context
+
+Design §D2.3, §D2.4 (lock option), ADR-1010 (a reused node is checked for existence only — no freshen, no
+`utime`), R13 (digest width). Internal.
+
+Files (create or edit):
+- `src/application/primitives/internal/update-cache-tree.ts` — new driver.
+- `test/unit/application/primitives/internal/update-cache-tree.test.ts` — memory adapter.
+- `src/application/primitives/internal/index-lock.ts` — `CommitOptions.cacheTree`.
+- `test/unit/application/primitives/internal/index-lock.test.ts` — new describe for the option (all lock tests
+  of this plan live in this file; there is no separate lock test file).
+
+Read-only references and exact signatures:
+~~~ts
+// src/application/primitives/write-tree.ts
+export async function writeTree(ctx: Context, entries: ReadonlyArray<TreeEntry>): Promise<ObjectId>;   // → writeObject (probe, freshen on hit, write)
+// src/application/primitives/internal/serialize-and-hash.ts
+export const serializeAndHash = async (ctx: Context, object: GitObject): Promise<{ readonly bytes: Uint8Array; readonly id: ObjectId }>;
+// src/application/primitives/has-object.ts
+export const hasObject = async (ctx: Context, id: ObjectId, options: HasObjectOptions = { mode: 'quick' }): Promise<boolean>;
+// src/application/primitives/internal/concurrency.ts
+export const limiterFor = (ctx: Context, bucket: Bucket): ConcurrencyLimiter;   // .run<T>(task: () => Promise<T>)
+// src/domain/objects/tree.ts: treeEntry(mode, name: string | Uint8Array, id); src/domain/objects/object-id.ts: emptyTreeOid(config)
+// src/application/primitives/internal/index-lock.ts (current)
+export interface CommitOptions { readonly restagedPaths?: ReadonlyArray<IndexPath>; readonly resolveUndo?: ReadonlyArray<ResolveUndoRecord> }
+const commitLocked = async (ctx, sites, state, entries, kind, options): Promise<void>;
+//   previous = readPreviousIndex; smudged = smudgeRacilyClean(ctx, entries, previous);
+//   extensions = carriedExtensions(ctx, previous, smudged, kind, options); writeLocked(...)
+~~~
+
+Driver API (src/application/primitives/internal/update-cache-tree.ts). Overloads instead of an optional
+root (types over runtime checks):
+~~~ts
+export type TreeSink = 'write' | 'repair';
+export interface WrittenCacheTree { readonly cacheTree: CacheTreeEntry; readonly rootTree: ObjectId }
+export interface RepairedCacheTree { readonly cacheTree: CacheTreeEntry }
+export function updateCacheTree(ctx: Context, entries: ReadonlyArray<IndexEntry>, carried: CacheTreeEntry | undefined, sink: 'write'): Promise<WrittenCacheTree>;
+export function updateCacheTree(ctx: Context, entries: ReadonlyArray<IndexEntry>, carried: CacheTreeEntry | undefined, sink: 'repair'): Promise<RepairedCacheTree>;
+export const isCacheTreeFullyValid = (ctx: Context, root: CacheTreeEntry | undefined): Promise<boolean>;  // every node entryCount >= 0 and hasObject(recheck)
+~~~
+Rules:
+- Plan with `planCacheTree(entries, carried)` (Part 4). For each `reused` node: `hasObject(ctx, id, { mode: 'recheck' })`;
+  missing → that node becomes a build (git: rebuild on `odb_has_object` false). Never `writeObject`/`freshenObject`
+  on a reused node.
+- Build: tree entries = the build's files (`treeEntry(entry.mode, name bytes-or-string, entry.id)`) plus each child
+  subtree (`treeEntry('40000', childName, childId)`), skipping a child that is `invalid` because of ITA and whose
+  id is `emptyTreeOid(ctx.hashConfig)` (git drops an all-ITA subtree from its parent's tree object). Ordering is
+  the serializer's job. `'write'`: `writeTree(ctx, treeEntries)`. `'repair'`: `serializeAndHash` of the tree,
+  then `hasObject(…, { mode: 'recheck' })`; absent → no id (node `-1`) and every ancestor `-1` (an ancestor
+  whose child has no id cannot be hashed: mark it `-1` without hashing).
+- `'write'` mode: an `invalid` node is still written (its oid feeds its parent and, for the root, the commit), but
+  `toCacheTreeEntry` emits it `-1`. `rootTree` is the root's written oid.
+- Concurrency: ONE `limiterFor(ctx, 'ioBound')` per call wraps only each leaf `writeTree` / hash call, never a
+  recursion step; process builds depth by depth (deepest first). A parent never holds a slot while awaiting
+  children, so a limiter of size 1 cannot deadlock.
+- Lock option: `CommitOptions.cacheTree?: CacheTreeEntry`. In `commitLocked`, after `carriedExtensions`, a private
+  helper replaces (or inserts first) the `TREE` extension with `serializeCacheTree(options.cacheTree,
+  ctx.hashConfig.digestLength)`; REUC and UNTR stay as the normal carry produced them; order stays TREE, REUC,
+  UNTR. Applies also when `previous` is undefined or has no extensions (the early `[]` returns).
+- Test concurrency override: `{ ...ctx, config: { ...ctx.config, parallelism: { io: 1 } } }` (shape from
+  src/ports/context.ts `parallelism?: number | { cpu?; io? }`).
+
+### TDD steps
+
+1. RED `updateCacheTree` write — Given a memory repo and entries for `a/x/f b/f top` with no carried tree, When
+   `'write'`, Then `cacheTree` is fully valid, root `3/2`, every node's oid exists (`hasObject`), and `rootTree`
+   equals the root id. Fails: module absent. GREEN: driver over `planCacheTree` + `writeTree`.
+2. RED reuse without freshen — carried = step 1's tree, one file changed and its chain invalidated with
+   `invalidateCacheTree`; spy `ctx.fs.utimeNow` — Then zero `utimeNow` calls on the reused trees' loose paths and
+   the reused nodes keep their oids; a carried valid node whose object is missing (pick an oid that does not
+   exist) is rebuilt (its object exists afterwards). GREEN: existence check + rebuild.
+3. RED repair — Given entries whose `c` tree object does not exist (staged content never written as a tree) and
+   whose other trees exist, When `'repair'`, Then `c` and root are `-1`, the others valid; count loose objects
+   before/after: none written. Present everywhere → fully valid (S2 shape). An unmerged entry's chain is `-1`
+   (U9). GREEN: repair sink.
+4. RED ITA + concurrency + SHA-256 — `'write'` with ITA `a/n`: `rootTree` defined, root and `a` `-1`; an all-ITA
+   dir is absent from the root tree object (read it back). Limiter of size 1 completes a 3-level tree. A
+   SHA-256 memory context produces 32-byte ids. `isCacheTreeFullyValid`: false for a `-1` node, false for a
+   missing oid, true otherwise. GREEN: ITA skip, depth-ordered builds.
+5. RED lock option (index-lock.test.ts, new `describe('Given an index carrying TREE, REUC and UNTR')` using the
+   file's existing seeding helpers — `seededRepo`, `indexExtensionsOf`, `SHA1_DIGEST`) — When
+   `commit(entries, 'update', { cacheTree })` with stat-only entry changes, Then TREE bytes equal
+   `serializeCacheTree(cacheTree, 20)` and REUC/UNTR are kept. Fails: the option is ignored, the carried TREE
+   is written. Second case: no previous extensions → TREE alone. GREEN: the override helper.
+6. REFACTOR — functions under 20 lines; the depth loop and the per-build entry assembly extracted.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/application/primitives/internal/update-cache-tree.test.ts test/unit/application/primitives/internal/index-lock.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/internal/update-cache-tree.ts test/unit/application/primitives/internal/update-cache-tree.test.ts src/application/primitives/internal/index-lock.ts test/unit/application/primitives/internal/index-lock.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`feat(cache-tree): update the cache-tree in write and repair modes`
+
+#### Flags
+
+Size: adds application code; phase-gate `chore(size)` expected.
+
+## Part 6 — `commit` maintains `TREE` and writes it into the index (+ ITA exclusion)
+
+### Context
+
+Design §D2.1, §D2.4, §D11, R1/R3/R10, ADR-1007, ADR-1010. In this part the pre-commit hook still runs BEFORE the
+index pass (Part 7 moves it), and there is no stat refresh yet (Part 9). Trigger here: write iff the carried
+TREE is not fully valid.
+
+Files (create or edit):
+- `src/application/commands/internal/write-index-cache-tree.ts` — new. Lives in commands/internal (not in
+  primitives as the design says) because it calls `rejectUnmergedIndex` from
+  src/application/commands/internal/unmerged-index.ts and the dependency rule forbids primitives → commands
+  (Decision candidates PC-1).
+- `test/unit/application/commands/internal/write-index-cache-tree.test.ts` — new, memory adapter.
+- `src/application/commands/commit.ts` — use it; delete the trie.
+- `test/unit/application/commands/commit.test.ts` — refusal-ordering and index-written tests.
+- `test/integration/commit-cache-tree-interop.test.ts` — new interop file.
+- `reports/api.json` — regenerate: the public `commit` JSDoc changes (it says "writes a tree from the index").
+
+New module API:
+~~~ts
+/** git's prepare_index for a plain commit: lock, read, refuse unmerged, update TREE, write iff it changed. */
+export const writeIndexCacheTree = (ctx: Context): Promise<ObjectId>;   // the commit's root tree
+~~~
+Body (each helper ≤ 20 lines): `acquireIndexLock(ctx)` (src/application/primitives/internal/index-lock.ts) →
+`readIndex(ctx)` under the lock → `rejectUnmergedIndex(index.entries)` → `carried =
+carriedCacheTreeOf(index.extensions, ctx.hashConfig.digestLength)` → if `await isCacheTreeFullyValid(ctx, carried)`
+return `carried.id` (no write) → else `const { cacheTree, rootTree } = await updateCacheTree(ctx, index.entries,
+carried, 'write')`, `lock.commit(index.entries, 'update', { cacheTree })`, return `rootTree`; `finally
+lock.release()` (idempotent after commit).
+
+commit.ts today (L102–185, read it whole): order is settings → worktree → gpgsign check → promisor check →
+pending markers → `runPreCommitHook` → message drafts + `resolveCommitMessage` (throws EMPTY_COMMIT_MESSAGE via
+`sanitizeMessage`) → config identity → `readIndex` → `rejectUnmergedIndex` → `buildTreeFromIndex` → head/parents
+→ nothing-to-commit → message hooks → createCommit → ref. New order:
+settings → worktree → gpgsign → promisor → markers/pending → `runPreCommitHook` (moves in Part 7) →
+`treeId = await writeIndexCacheTree(ctx)` → message resolution (now after the write: C5) → identity (see the pin
+below) → head/parents → nothing-to-commit (after the write: C4) → unchanged tail.
+Delete: `buildTreeFromIndex`, `insertEntry`, `writeSubtree`, `componentsOf`, `componentKey`, `SubtreeNode`,
+`TreeName`, and the now-unused imports (`boundedMapFor`, `writeTree`, `treeEntry`, `indexPathOfBytes`,
+`splitAtSlash`, `decodeEscapingInvalid`, `TreeEntry`, `readIndex`, `rejectUnmergedIndex` if unused — let biome
+tell you).
+
+Pins to run in this part (mktemp throwaway, §Pinning harness, git 2.55) before deciding two orderings:
+- Lock refusal: `touch .git/index.lock; g commit --allow-empty -m x` → record exit code and message. tsgit now
+  refuses with `RESOURCE_LOCKED` (from `acquireIndexLock`) where it used to ignore the lock; that is git's
+  refusal. Add the row to the interop file.
+- Identity: over an invalid TREE (`touch b/f; g add b/f` after a commit),
+  `env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL g -c user.useConfigOnly=true commit -m x`
+  → did the index inode change before the identity death? If yes, keep the identity block after
+  `writeIndexCacheTree` (its current relative position); if no, hoist the identity block (config read,
+  `assertNoValuelessConfig`, `resolveAuthor`, `resolveCommitter`) above `writeIndexCacheTree`. Pin it as an
+  interop row either way.
+
+Routes grep (design §D3.5): `grep -rn "serializeIndex(" src` and `grep -rn "fs.write(.*index" src`; any hit
+outside src/application/primitives/internal/index-lock.ts is an index writer that bypasses the lock → escalate
+`{ unit: Part 6, reason, options }`. Also `grep -rln "intentToAdd: true" test` (two files today:
+test/unit/application/primitives/compare-working-tree-entry.test.ts, test/unit/domain/git-index/index-writer.test.ts;
+neither commits) — any commit-of-ITA expectation changes with R10.
+
+Interop file shape (copy the twin pattern from test/integration/index-extensions-interop.test.ts): fixture
+`a/x/f b/f c/f top bb/f zzz/f` built by git in both twins; each row runs the step with `git` in `peer` and with
+tsgit `commit(ctx, { message, author, committer, allowEmpty? })` in `ours` (fixed identity
+`{ name, email, timestamp: 1_700_000_000, timezoneOffset: '+0000' }`), then compares the raw TREE payload bytes
+(`readIndex(contextFor(dir)).extensions`), REUC/UNTR presence, rewritten-or-not (inode), `git fsck` exit 0.
+
+### TDD steps
+
+1. RED `write-index-cache-tree.test.ts` — Given a memory repo with three files added and no TREE in the index,
+   When `writeIndexCacheTree`, Then the index on disk carries a fully valid TREE whose root equals the returned
+   oid and equals `synthesizeTreeFromIndex(ctx, entries)` for the same entries. Fails: module absent. GREEN
+   (minimal): lock, read, `updateCacheTree(…, 'write')`, always write.
+2. RED — Given a fully valid TREE whose objects exist, When `writeIndexCacheTree`, Then nothing is written (the
+   index bytes are unchanged and the memory fs saw no `write` to the lock path) and the carried root is returned.
+   Fails: step 1's minimal GREEN always writes. GREEN: the fully-valid branch.
+3. RED — Given an unmerged index, Then `MERGE_HAS_CONFLICTS` with `data.count`/`data.paths` asserted and the index
+   bytes untouched (fails: no refusal yet). GUARD: Given an ITA entry, Then the returned tree excludes it and the
+   TREE chain is `-1` (the planner and driver already do this). GREEN: the refusal.
+4. RED `commit.test.ts` — Given staged changes and an empty message without `allowEmptyMessage`, When `commit`,
+   Then `EMPTY_COMMIT_MESSAGE` (data asserted) AND the index now carries the updated TREE (read it back). Fails:
+   the message refusal fires before any index work and `commit` never writes the index. Same for
+   `NOTHING_TO_COMMIT` after a stat-only re-add (C4).
+5. RED interop `commit-cache-tree-interop.test.ts`, written now, before `commit` is rewired — rows C1, C3, C4, C5,
+   C7, I1 (tsgit commit tree oid equals git's: ITA excluded; today tsgit includes it, design T2), C9, CW1, CW3,
+   CW4, the add→commit→add sequence on a 4-file fixture comparing `-1` counts after each step, the lock-refusal
+   row, the identity row, and a SHA-256 twin of C1 and C3. Pins: pin-commit.zsh (C1–C9), pin-commit-write.zsh
+   (CW1–CW4), pin-ita.zsh (I1), the two D11 pins above. Fails: tsgit `commit` writes no TREE (C1, C3, C4, C5,
+   C7, C9) and commits the ITA entry (I1). CW1/CW3/CW4 pass already (no write either way): they are GUARDs.
+6. GREEN — rewire `commit` (new order, `writeIndexCacheTree`, delete the trie). Steps 4–5 go green.
+7. GUARD — `commit.properties.test.ts` (non-ITA tree oids unchanged) and `commit-interop.test.ts`.
+8. REFACTOR — helpers ≤ 20 lines. Update the `commit` JSDoc (index lock taken, TREE updated and written when it
+   changed, refusals after the write) and regenerate `reports/api.json`.
+
+### Gate
+
+~~~
+rm -rf .wireit
+PATH=<git-2.55-bin>:$PATH npx vitest run test/unit/application/commands/internal/write-index-cache-tree.test.ts test/unit/application/commands/commit.test.ts test/unit/application/commands/commit.properties.test.ts test/integration/commit-cache-tree-interop.test.ts test/integration/commit-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/internal/write-index-cache-tree.ts test/unit/application/commands/internal/write-index-cache-tree.test.ts src/application/commands/commit.ts test/unit/application/commands/commit.test.ts test/integration/commit-cache-tree-interop.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`feat(commit): maintain the cache-tree and write it into the index`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 commit.bench.ts` — row
+`Given a committed scratch repo of 500 directories with 4 files each, When add() and commit() record one rewritten file per iteration, Then measure tsgit`.
+Expect −30 % or better (design §Evidence: ≥35 % of commit is O(all trees) work a valid TREE skips).
+
+#### Flags
+
+api.json regenerated in-commit. Size: the trie deletion offsets part of Parts 4–5.
+
+## Part 7 — pre-commit runs after the index write; the tree is rebuilt when the hook ran
+
+### Context
+
+Design §D2.1 (hook branch), §D2.4, pin C8 (pin-commit.zsh): git writes the index in `prepare_index`, releases
+the lock, runs pre-commit; if a hook was invoked it re-reads the index and runs `cache_tree_update` in memory
+only — no second write by commit. The hook's own `git add` writes the index itself.
+
+Files (edit):
+- `src/application/primitives/run-hook.ts` — add `runBlockingHook`.
+- `src/application/commands/internal/commit-hooks.ts` — `runPreCommitHook` returns whether the hook ran.
+- `test/unit/application/commands/internal/commit-hooks.test.ts` — outcomes (covers `runBlockingHook` too).
+- `src/application/commands/commit.ts` — move the hook; rebuild after it.
+- `test/unit/application/commands/commit.test.ts` — hook-ordering tests (`MemoryHookRunner` from
+  src/adapters/memory/memory-hook-runner.ts is already imported there).
+- `test/integration/commit-cache-tree-interop.test.ts` — C8 row.
+
+Current signatures:
+~~~ts
+// src/application/primitives/run-hook.ts
+const invokeHook = async (ctx, name: HookName, input: HookInput): Promise<HookResult | undefined>;  // undefined = no runner
+export const runHook = async (ctx: Context, name: HookName, input: HookInput = {}): Promise<void>;  // throws hookFailed on non-zero exit
+// src/ports/hook-runner.ts: HookResult = { kind: 'skipped' } | { kind: 'ran'; exitCode; stderr; … }
+// src/application/commands/internal/commit-hooks.ts
+export const runPreCommitHook = async (ctx: Context, noVerify: boolean): Promise<void>;
+~~~
+New:
+~~~ts
+export type HookOutcome = 'ran' | 'skipped';
+/** As runHook, reporting whether a hook file ran (git's invoked_hook). */
+export const runBlockingHook = async (ctx: Context, name: HookName, input: HookInput = {}): Promise<HookOutcome>;
+// runHook becomes: await runBlockingHook(ctx, name, input);   (behaviour unchanged)
+export const runPreCommitHook = async (ctx: Context, noVerify: boolean): Promise<boolean>;  // true iff it ran
+~~~
+No runner (`ctx.hooks` undefined) or `skipped` → `'skipped'`; ran with exit 0 → `'ran'`; non-zero → throws as now.
+
+commit.ts change: `let treeId = await writeIndexCacheTree(ctx); if (await runPreCommitHook(ctx, noVerify)) treeId = await treeAfterHook(ctx);`
+with a private `treeAfterHook(ctx)`: `readIndex` → `rejectUnmergedIndex` → `carriedCacheTreeOf` →
+`(await updateCacheTree(ctx, index.entries, carried, 'write')).rootTree`. No lock, no index write. Delete the
+"pre-commit runs before the index is read" comment; replace with one line on git's order (why, not what).
+
+### TDD steps
+
+1. RED `commit-hooks.test.ts` — Given a `MemoryHookRunner` with an executable `pre-commit` exiting 0, When
+   `runPreCommitHook(ctx, false)`, Then `true`; Given no hook file (runner reports `skipped`), Then `false`; Given
+   no runner, Then `false`; Given `noVerify`, Then `false` and the runner is not called. Fails: it resolves
+   `undefined`. GREEN: `runBlockingHook` + the boolean. Update the three existing `resolves.toBeUndefined()`
+   expectations (L49, L67, L90) to the booleans.
+2. RED `commit.test.ts` — Given a pre-commit hook whose callback stages a new file with `add`, and a staged change
+   that leaves the TREE not fully valid, When `commit`, Then the index on disk is the one the hook's `add` wrote
+   (the hook path's chain is `-1` in TREE) and the commit's tree contains the hook's file. Fails: today the hook
+   runs first and commit's own write afterwards leaves that chain valid.
+3. RED — Given a hook that runs, When the index pass needed a write, Then the hook observes the updated index (its
+   callback reads the TREE and finds it fully valid). Fails: the hook runs before the write today.
+4. RED interop C8 (pin-commit.zsh C8: hook `echo hook >> c/f; git add c/f`, `b/f` changed and staged) — final index
+   TREE bytes equal git's and `HEAD:c` equals git's. `createNodeContext` wires the Node hook runner; write
+   `.git/hooks/pre-commit` with mode 0o755 in both twins (skip on `process.platform === 'win32'`). Fails like
+   step 2.
+5. GREEN — reorder `commit` (`writeIndexCacheTree`, then the hook, then `treeAfterHook` when it ran).
+6. GUARD — `noVerify` commit: no hook call, the tree comes from the pre-hook pass.
+7. REFACTOR — touched helpers ≤ 20 lines.
+
+### Gate
+
+~~~
+rm -rf .wireit
+PATH=<git-2.55-bin>:$PATH npx vitest run test/unit/application/commands/internal/commit-hooks.test.ts test/unit/application/commands/commit.test.ts test/unit/application/primitives/run-hook.test.ts test/integration/commit-cache-tree-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/run-hook.ts src/application/commands/internal/commit-hooks.ts test/unit/application/commands/internal/commit-hooks.test.ts src/application/commands/commit.ts test/unit/application/commands/commit.test.ts test/integration/commit-cache-tree-interop.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`fix(commit): run pre-commit after the index write and rebuild the tree when it ran`
+
+## Part 8 — shared tracked-entry scan; index writes take a verified set
+
+### Context
+
+Design §D2.5 ("Reuse, not a second comparator"), ADR-1008. Behaviour-preserving extraction plus two internal
+capabilities Part 9 consumes. `status` keeps its own trigger (`refreshed.length > 0 || racy`, pin CW5c).
+
+Files (create or edit):
+- `src/application/primitives/internal/scan-tracked-entries.ts` — new; bodies moved verbatim from status.ts.
+- `test/unit/application/primitives/internal/scan-tracked-entries.test.ts` — new, memory adapter.
+- `src/application/commands/status.ts` — call the primitive.
+- `src/application/primitives/internal/index-lock.ts` — export `withRefreshedStat`; `CommitOptions.verified`.
+- `test/unit/application/primitives/internal/index-lock.test.ts` — `verified` passthrough.
+
+Move from src/application/commands/status.ts (current lines): `TrackedScan` (L250), `scanEntry` (L324),
+`ScannedEntry` (L340), `scanWorkingTree` (L346), `trackedScanOf` (L370), and the body of `scanTrackedTree`
+(L274) minus `createGranularityTracker` (a primitive may not import commands/internal/progress-tracker.ts).
+Their imports move with them: `compareAndRefresh`, `WorkingTreeDelta` (src/application/primitives/compare-working-tree-entry.ts),
+`CleanOrder`, `configuresFilterDriver`, `inIndexOrder` (internal/clean-order.ts), `boundedMapFor`
+(internal/concurrency.ts), `AttributeProvider`, `buildCheckinAttributeProvider` (internal/read-gitattributes.ts),
+`escapedPathOf` (src/domain/git-index/index-path-key.ts). Drop from status.ts any import left unused.
+
+New API:
+~~~ts
+export interface TrackedScan {
+  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly refreshed: ReadonlyArray<IndexEntry>;
+}
+/** One compareAndRefresh per stage-0, non-skip-worktree entry through the ioBound pool; clean drivers hear paths in index order. */
+export const scanTrackedEntries = (ctx: Context, index: GitIndex, stage0: ReadonlyArray<IndexEntry>, onScanned: () => void): Promise<TrackedScan>;
+/** git's CE_UPTODATE: the scan found the path unchanged, by stat or by content. */
+export const verifiedBy = (scan: TrackedScan): IsVerified;   // (path) => scan.workingMap.get(path)?.status === 'unchanged'
+~~~
+`onScanned` is called once per entry of `stage0`, skip-worktree entries included (today's `tracker.tick()` sits
+after `scanEntry` returns, whatever it returns). status.ts: `scanTrackedTree` creates the tracker and calls
+`scanTrackedEntries(ctx, index, tracked.grouped.staged, () => tracker.tick())`; `updateIndexIfAble` passes
+`verifiedBy(scan)` to `lock.commitRefresh` instead of its inline lambda (same predicate).
+
+index-lock.ts: `export const withRefreshedStat = (read: GitIndex, refreshed: ReadonlyArray<IndexEntry>): ReadonlyArray<IndexEntry>`
+(body unchanged, L227). `CommitOptions.verified?: IsVerified` (type from internal/smudge-racily-clean.ts); in
+`commitLocked`: `smudgeRacilyClean(ctx, entries, previous, options.verified)` (the 4th param defaults to
+`NOTHING_VERIFIED` when undefined).
+
+### TDD steps
+
+1. RED `scan-tracked-entries.test.ts` — Given a memory repo with a committed file whose working copy kept its
+   bytes but got a newer mtime, When `scanTrackedEntries`, Then `refreshed` holds exactly that entry with the new
+   stat and `workingMap` reports it `unchanged`. Fails: module absent. GREEN: move the code verbatim.
+2. GUARD — a skip-worktree entry with a drifted stat is absent from `workingMap` and `refreshed`; `onScanned` is
+   called once per stage0 entry (count equals `stage0.length`); `verifiedBy` is true only for `unchanged` paths.
+   Passes: the moved code already does this (written after step 1's GREEN, it pins the move).
+3. RED `index-lock.test.ts` — Given an index whose entry is racy (index mtime equal to the entry mtime) with
+   unchanged content, When `commit(entries, 'update', { verified: () => true })`, Then `fs.read` on that path is
+   called 0 times (spy). Fails: `verified` is ignored and the smudge re-reads the racy entry once. GREEN: pass it
+   through; export `withRefreshedStat`.
+4. GUARD — `status.test.ts`, `status-refresh.test.ts`, `status-clean-order.test.ts`, `status-filter-skip.test.ts`,
+   `smudge-racily-clean.test.ts` (verbatim move, same predicate).
+5. REFACTOR — status.ts loses the moved helpers and their imports; nothing else.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/application/primitives/internal/scan-tracked-entries.test.ts test/unit/application/primitives/internal/index-lock.test.ts test/unit/application/commands/status.test.ts test/unit/application/commands/status-refresh.test.ts test/unit/application/commands/status-clean-order.test.ts test/unit/application/commands/status-filter-skip.test.ts test/unit/application/primitives/internal/smudge-racily-clean.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/internal/scan-tracked-entries.ts test/unit/application/primitives/internal/scan-tracked-entries.test.ts src/application/commands/status.ts src/application/primitives/internal/index-lock.ts test/unit/application/primitives/internal/index-lock.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`refactor(status): share the tracked-entry scan and let index writes take its verified set`
+
+#### Measure (orchestrator)
+
+Regression guard only: `REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 status.bench.ts` — every
+`status.bench.ts` row within ±10 %.
+
+## Part 9 — `commit` refreshes entry stats before updating the cache-tree
+
+### Context
+
+Design §D2.5 (per-entry table, trigger, cost), ADR-1008, pins CW1–CW8 and F1–F5 (pin-commit-write.zsh,
+pin-commit-refresh.zsh, pin-commit-smudge.zsh, pin-commit-refresh-flags.zsh). Trigger becomes
+`scan.refreshed.length > 0 || !fullyValid` — **no racy term** (that is status's, CW5c). Applies to every
+`writeIndexCacheTree` caller (commit now; the sequencer routes in Part 12, ADR-1018).
+
+Files (edit):
+- `src/application/commands/internal/write-index-cache-tree.ts` — insert the scan and widen the trigger.
+- `test/unit/application/commands/internal/write-index-cache-tree.test.ts` — the refresh guards.
+- `test/unit/application/commands/commit.test.ts` — the end-to-end refresh rows.
+- `test/integration/commit-cache-tree-interop.test.ts` — CW2, CW5, CW6, CW7; CW1, CW3, C4, C5 re-run under the
+  refresh.
+
+New body of `writeIndexCacheTree` (helpers ≤ 20 lines), wrapped in `withFilterProcessPool(ctx, …)`
+(src/application/primitives/internal/filter-process-pool.ts — scopes nest; a stat-drifted file under a clean
+filter is content-compared through it, as git's refresh does):
+~~~
+lock → readIndex → rejectUnmergedIndex (before any lstat)
+scan = await scanTrackedEntries(ctx, index, index.entries, () => undefined)   // every entry is stage 0 here
+entries = withRefreshedStat(index, scan.refreshed)
+carried = carriedCacheTreeOf(index.extensions, digestLength); fullyValid = await isCacheTreeFullyValid(ctx, carried)
+├─ fullyValid ∧ no refresh  → release, return carried.id                            [CW1 CW3 CW5 CW6]
+├─ fullyValid ∧ refreshed   → lock.commit(entries, 'update', { cacheTree: carried, verified: verifiedBy(scan) })  [CW2 CW7 CW8]
+└─ ¬fullyValid              → updateCacheTree(entries, carried, 'write'); lock.commit(entries, 'update', { cacheTree, verified })
+~~~
+The no-op callback is a named constant (`QUIET_SCAN = () => undefined`: git's commit refresh is `REFRESH_QUIET`).
+`core.trustctime` is not read by tsgit (CW8's exact recipe has no tsgit twin); its shape is a unit test with a
+fixed clock.
+
+### TDD steps
+
+1. RED CW2 (`write-index-cache-tree.test.ts`) — Given a settled memory repo with a fully valid TREE and `b/f`'s
+   mtime moved with the same bytes, When `writeIndexCacheTree`, Then the index is rewritten, `b/f`'s entry stat
+   equals `lstat`, TREE bytes unchanged. Fails: no refresh, fully valid → no write.
+2. RED interop CW2 and CW7 in `commit-cache-tree-interop.test.ts` (pin-commit-write.zsh CW2,
+   pin-commit-refresh.zsh CW7; backdate `.git/index` with `utimes` in both twins for CW7): rewritten-or-not equal
+   to git, entry stat equals `lstat` in both twins, TREE bytes equal, `git fsck` 0. Settle without `sleep`:
+   `utimes` worktree files into the past and run `git update-index --refresh` in both twins (`secondsAgo`
+   pattern). Fails: tsgit does not rewrite.
+3. GREEN — scan + `withRefreshedStat` + widened trigger + `verified`, inside `withFilterProcessPool`.
+4. GUARD — CW5 (index backdated, every entry racy, nothing moved, fully valid TREE → index untouched: no racy term),
+   CW6 (`b/f` content changed, unstaged → no write, stat unchanged), as unit tests AND interop rows; CW1, CW3,
+   C4, C5 interop rows re-run under the refresh.
+5. GUARD CW8 shape — memory adapter, fixed clock (the repro pattern in smudge-racily-clean.test.ts): a same-size
+   rewrite inside the index's mtime tick plus another entry's moved stat → written; the racy modified entry has
+   `fileSize: 0`; the refreshed one keeps its size. Passes after step 3: the scan reports the entry modified, so
+   it is not verified, and the lock's smudge zeroes it.
+6. GUARD — a skip-worktree entry with a drifted stat is not refreshed; a racy unchanged entry is read once per
+   commit (the scan's content compare; `fs.read` count on its path = 1); an unmerged index refuses
+   `MERGE_HAS_CONFLICTS` (data asserted) with zero `lstat` calls on worktree paths; `commit({ allowEmpty: true })`
+   in `commit.test.ts` rewrites the index with the refreshed stat.
+7. GUARD — `status-refresh-interop.test.ts`, `status-racy-clean-interop.test.ts`, `index-racy-smudge-interop.test.ts`.
+8. REFACTOR — `writeIndexCacheTree` helpers ≤ 20 lines.
+
+### Gate
+
+~~~
+rm -rf .wireit
+PATH=<git-2.55-bin>:$PATH npx vitest run test/unit/application/commands/internal/write-index-cache-tree.test.ts test/unit/application/commands/commit.test.ts test/integration/commit-cache-tree-interop.test.ts test/integration/status-refresh-interop.test.ts test/integration/status-racy-clean-interop.test.ts test/integration/index-racy-smudge-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/internal/write-index-cache-tree.ts test/unit/application/commands/internal/write-index-cache-tree.test.ts test/unit/application/commands/commit.test.ts test/integration/commit-cache-tree-interop.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`feat(commit): refresh index stats before updating the cache-tree, as git does`
+
+#### Measure (orchestrator)
+
+Two runs on the commit row (`Given a committed scratch repo of 500 directories with 4 files each, When add() and commit() record one rewritten file per iteration, Then measure tsgit`):
+- `REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 commit.bench.ts` = the refresh cost (expected +5–7 ms,
+  design §D2.5). A `regression` verdict here is expected and is NOT a blocker: ADR-1008 ships the refresh
+  whatever it costs. Record it.
+- `REGRESSION_THRESHOLD=10 npm run bench:ab -- <BENCH_BASE> HEAD 5 commit.bench.ts` (BENCH_BASE = Part 2's sha) =
+  the net. Expected still a gain.
+
+## Part 10 — replace writers repair `TREE` inside the lock
+
+### Context
+
+Design §D1.3–§D1.4 rule, §D3.1–§D3.2, ADR-1009 (supersedes ADR-964's divergence clause only; `'update'` writers
+unchanged, incl. mixed reset U5/U6):
+~~~
+TREE_after = invalidate( repair( invalidate(TREE_before, changedPaths), entries ), restagedPaths )
+~~~
+Every `'replace'` writer gets it with no per-site code. Implementation choice (Decision candidates PC-2): the lock
+computes the repaired TREE and overrides the carried one with Part 5's override helper, so
+src/domain/git-index/carry-extensions.ts stays untouched (its `'replace'` TREE output is discarded by the
+override).
+
+Files (edit):
+- `src/application/primitives/internal/index-lock.ts` — replace branch.
+- `test/unit/application/primitives/internal/index-lock.test.ts` — repair cases; two existing expectations flip.
+- `test/unit/application/commands/index-carry-reset-checkout.test.ts` — expectation flips.
+- `test/unit/application/commands/index-carry-merge-pull.test.ts` — expectation flips.
+- `test/unit/application/commands/index-carry-stash.test.ts` — expectation flips.
+- `test/unit/application/commands/index-carry-pick-rebase.test.ts` — expectation flips.
+
+Current lock code (index-lock.ts ~L192–220): `carriedByRule` returns `[]` when `previous` is undefined or has no
+extensions, else `carryExtensions(previous.extensions, withRestagedPaths(diffIndexEntries(previous.entries,
+entries), restagedPaths), kind, settings)`; `carriedExtensions` returns `[]` without a previous index, else
+`withResolveUndo(…)`. Change for `kind === 'replace'` (in `commitLocked`, after `smudged` and the carry):
+~~~
+prev      = previous && carriedCacheTreeOf(previous.extensions, digestLength)   // unparseable/duplicate → undefined → full repair
+changed   = previous ? diffIndexEntries(previous.entries, smudged).changedPaths : []
+seed      = prev && invalidateCacheTree(prev, changed)
+repaired  = (await updateCacheTree(ctx, smudged, seed, 'repair')).cacheTree
+final     = invalidateCacheTree(repaired, options.restagedPaths ?? [])
+→ override TREE with final (also when there is no previous index: clone, worktree add — U19/U20)
+~~~
+`'update'` is untouched. A `cacheTree` option on a `'replace'` write is not used by any caller; reject the
+combination at the type level if cheap (overload) or document that `cacheTree` wins.
+
+Existing expectations that flip (cite the pin row in each updated test title or comment-free assertion):
+index-lock.test.ts ~L105 ("TREE is invalidated along d/c" on a replace → the repaired d is valid when its tree
+object exists) and ~L310 ("replace restaging b" → root `-1` stays, d/e/x valid: unchanged result — GUARD);
+index-carry-reset-checkout.test.ts ~L180 (hard reset) and ~L197 (checkout: "root and x invalid" → fully valid,
+pin U1/U4); the merge/pull, stash and pick/rebase files' replace rows likewise (pins U7–U16). Read each file's
+helpers (`withIndexExtensions`, `indexExtensionsOf`, `cacheTreeExtension` in
+test/unit/application/primitives/helpers/index-extensions.ts) before editing.
+
+### TDD steps
+
+1. RED index-lock.test.ts — Given a seeded index with a valid TREE, When `commit(entries with d/c changed,
+   'replace')` and the new `d` tree object exists, Then TREE is fully valid with `d`'s oid equal to the hash of
+   the new `d` tree. Fails: today the chain is `-1`. GREEN (minimal): the replace branch for a present, parseable
+   previous TREE.
+2. RED — no previous index (or previous without extensions) + `'replace'` → TREE emitted, fully repaired (U19).
+   Fails: no TREE today. Previous TREE unparseable → full repair, no refusal (fails today: TREE dropped). GREEN:
+   an absent or unparseable previous TREE seeds a full repair.
+3. GUARD — a staged entry whose directory tree object does not exist → that node and root `-1` (R1): passes today
+   by chain invalidation and after by the missing-object rule. Restaged after repair: existing ~L310 test.
+   Unmerged entries in a replace write (merge conflict) → their chains `-1`, other dirs valid (U9).
+4. Expectation flips in the four index-carry files (they turn red at step 1's GREEN; update each to git's
+   repaired TREE per its pin row). SHA-256: one lock case with a 32-byte digest.
+5. REFACTOR — `commitLocked` ≤ 20 lines: extract `repairedCacheTree(ctx, previous, smudged, restaged)`.
+
+Blast-radius sweep: `npx vitest run test/unit/application > "$TMPDIR/p10-sweep.txt" 2>&1; grep -E "FAIL|✗" "$TMPDIR/p10-sweep.txt" | head -40`
+— anything beyond the six files above that encodes chain-invalid replace TREE → escalate (do not exceed six files).
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/application/primitives/internal/index-lock.test.ts test/unit/application/commands/index-carry-reset-checkout.test.ts test/unit/application/commands/index-carry-merge-pull.test.ts test/unit/application/commands/index-carry-stash.test.ts test/unit/application/commands/index-carry-pick-rebase.test.ts test/unit/domain/git-index/carry-extensions.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/internal/index-lock.ts test/unit/application/primitives/internal/index-lock.test.ts test/unit/application/commands/index-carry-reset-checkout.test.ts test/unit/application/commands/index-carry-merge-pull.test.ts test/unit/application/commands/index-carry-stash.test.ts test/unit/application/commands/index-carry-pick-rebase.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`feat(index): repair the cache-tree on replace writes as unpack_trees does`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 checkout.bench.ts` — rows
+`Given a 500-directory scratch repo at its root commit, When checkout() moves to the tip with force, Then measure tsgit`,
+`… at its tip commit, When checkout() moves to the root …`, `… whose mixed branch adds, updates and deletes files, When checkout() moves from root to mixed …`.
+Expect a small cost (≈500 extra hash + existence calls; git pays the same). A `regression` verdict is recorded,
+not a blocker; Part 17 is expected to offset it.
+
+#### Flags
+
+Size: likely.
+
+## Part 11 — replace-writer interop at byte equality; stash `--keep-index`; merge object set
+
+### Context
+
+Design §D3.3 site table, pins pin-unpack.zsh (U0–U20), pin-repair.zsh (R1, S1–S4), pin-merge-mixed.zsh (U21),
+pin-sequencer.zsh (Q3). Part 10 made the lock repair; this part proves byte equality against git for every
+replace writer and fixes the sites the proof exposes.
+
+Files (create or edit):
+- `test/integration/cache-tree-repair-interop.test.ts` — new; the pin fixture and rows.
+- `test/integration/index-extensions-interop.test.ts` — tighten every `carry: 'replace'` row in `REPLACE_ROWS`
+  (~L344) from `tree: 'git-oids'` to `tree: 'bytes'` (`expectTree` already implements `'bytes'`).
+- `src/application/commands/stash.ts` — `resetAfterPush` (~L577): when `opts.keepIndex === true`, pass
+  `restagedPaths` = the paths where `iTree` and `base.bTree` differ:
+  `lock.commit(result.newIndexEntries, 'replace', { restagedPaths })` (Q3: git resets to HEAD, primed, then
+  restores the index paths in place → their chains `-1`). Compute the differing paths from
+  `flattenEscapedTree(ctx, iTree)` vs `flattenEscapedTree(ctx, base.bTree)` (src/application/primitives/flatten-tree.ts;
+  both `FlatTree`-like Maps keyed by escaped path; differ = present in one only, or id/mode differ), mapped to
+  `IndexPath` with `indexPathOfEscaped`.
+- `test/unit/application/commands/index-carry-stash.test.ts` — Q3 unit case.
+- `src/application/primitives/apply-merge-to-worktree.ts` — only if U21 fails: a conflicted merge must write the
+  merged trees of its cleanly merged directories (merge-ort does; REPAIR then finds them). Locate where the
+  conflicted result's index entries are produced near `mergeTreesToTree` (~L550) and write those subtrees with
+  `writeTree`.
+- (Conditional, counts toward six) src/application/commands/checkout.ts is NOT expected: `switchBranch` (~L216)
+  always commits `'replace'` (~L266), so U2 (`checkout -b same`) is expected to pass. If it does not, escalate
+  rather than exceed six files.
+
+Interop fixture (pin-unpack.zsh): `a/x/f b/f c/f top` committed `base`; branch `other` changes b/f and adds z/f;
+`main` changes a/x/f (tag `mainc`). Every row starts from `fresh()`: `checkout -f main; reset --hard mainc;
+stash clear; settle; touch c/f; add c/f` (root and `c` invalid). Settle without sleep (`utimes` + `git update-index
+--refresh`). Run the step with git in `peer` and tsgit in `ours` (`checkout`, `reset`, `mergeRun`, `cherryPickRun`,
+`revertRun`, `rebaseRun`, `stashPush`, `stashPop`, `stashApply`, `clone`, `worktreeAdd` — import paths as in
+index-extensions-interop.test.ts L20–33; find `clone`/`worktree` exports in src/application/commands/index.ts; for
+U19/U20 copy the local-path clone and worktree setup of an existing interop file — `grep -ln "clone(" test/integration/*.ts`).
+Assert TREE bytes equal, `git fsck` 0. SHA-256 twin for U1.
+
+### TDD steps
+
+1. GUARD rows (pass since Part 10): U1, U2, U3, U4, U5 (`'update'`: unchanged TREE), U6 (chain), U6k, U7, U8, U9,
+   U10, U11, U12, U13, U15, U16, U17, U18, U19, U20, R1, S1, S2, S3, S4; the tightened `'bytes'` rows in
+   index-extensions-interop. Any failure is a real gap: fix it here if it is the same invariant and fits the
+   six-file budget, else escalate.
+2. RED Q3 (pin-sequencer.zsh Q3: staged `b/f`, worktree `c/f`, stat-only re-add of `a/f`, `stash push
+   --keep-index`) — git: `<root>:-1/3 a valid b:-1/0 c valid`; tsgit today: fully valid (no restaged paths). Unit
+   twin in index-carry-stash.test.ts first (memory), then the interop row. GREEN: `restagedPaths` in
+   `resetAfterPush`.
+3. RED-or-GUARD U21 (pin-merge-mixed.zsh: conflicted `b/f` + cleanly merged `d/`) — git:
+   `<root>:-1/2 b:-1/0 d:2/0:<oid>`. If tsgit gives `d:-1`, the merged `d` tree was never written: GREEN in
+   apply-merge-to-worktree.ts. If it passes, record GUARD and leave apply-merge-to-worktree.ts untouched.
+4. REFACTOR — the differing-paths helper ≤ 20 lines in stash.ts (or its internal module if one fits).
+
+### Gate
+
+~~~
+rm -rf .wireit
+PATH=<git-2.55-bin>:$PATH npx vitest run test/integration/cache-tree-repair-interop.test.ts test/integration/index-extensions-interop.test.ts test/unit/application/commands/index-carry-stash.test.ts test/unit/application/commands/stash.test.ts && npm run check:types && ./node_modules/.bin/biome check test/integration/cache-tree-repair-interop.test.ts test/integration/index-extensions-interop.test.ts src/application/commands/stash.ts test/unit/application/commands/index-carry-stash.test.ts && npm run check:spelling
+~~~
+(add src/application/primitives/apply-merge-to-worktree.ts and its touched test to the lists if step 3 edits it)
+
+### Commit
+
+`fix(stash): invalidate the kept index paths after a keep-index reset, as git does`
+
+## Part 11b — branch switch carries staged changes as git's two-way merge does
+
+Added during implementation (user-ratified fold of a pre-existing data-loss defect found by Part 11's R1 row).
+Not a perf part; no Measure step.
+
+### Context
+
+- **Defect (pinned 3/3, git 2.55 vs the branch-base build):** a non-forced `checkout <branch>` ignores the index.
+  `materializeTree` (`src/application/primitives/materialize-tree.ts`) diffs the current index against the target
+  tree (`computeChangeset(plan.indexForDiff, plan.target)`) and writes every difference, so a staged change is
+  overwritten. Only unstaged work-tree changes are protected (by `applyChangeset`'s dirty probe, which throws
+  `checkoutOverwriteDirty` → `CHECKOUT_OVERWRITE_DIRTY { localChanges, untracked }`, defined in the domain commands error module).
+- **git's rule** (git's unpack-trees.c, its two-way merge, per path, with `old` = HEAD's tree entry, `new` = target entry,
+  `index` = current stage-0 entry; equality = same oid and mode, "absent" counts as a value):
+  - `old == new`: keep the index entry as it is (present, changed or absent) and leave the work tree alone.
+  - `old != new` and (`index == old` or `index == new`): take `new` (today's behaviour).
+  - `old != new` and `index` differs from both: refuse, path in `localChanges`. The index decides, even when the work
+    file already equals `new`.
+- **Pinned matrix** (fixture: `a/x/f b/f c/f top` on main; `other` changes `b/f` and adds `z/f`; then the setup
+  below, then `checkout other`, no force):
+
+  | Row | Setup | git 2.55 | tsgit today |
+  |---|---|---|---|
+  | R1 | `c/f` edited + staged | switches; `c/f` keeps the staged blob and content (`M  c/f`) | staged blob and content lost |
+  | R1b | `b/f` edited + staged | refuses rc=1, `localChanges: [b/f]`, nothing changed | overwrites |
+  | R1b' | as R1b, then the work file rewritten to `other`'s content | refuses, `[b/f]` | overwrites |
+  | R1c | `b/f` staged with `other`'s content | switches | switches |
+  | R1d | new `n/f` staged | switches; `n/f` kept (`A  n/f`) | `n/f` deleted from index and work tree |
+  | R1e | `git rm c/f` (staged delete) | switches; deletion kept (`D  c/f`) | deletion undone |
+  | R1f | new `z/f` staged (target adds `z/f`) | refuses, `[z/f]` | overwrites |
+  | R1g | `c/f` edited, unstaged | switches; edit kept | switches; edit kept |
+
+  Pin scripts (orchestrator scratch, recipe reproducible from the table): fixture as above; tsgit side calls
+  `repo.checkout({ rev: 'other' })` and reports `e.data.code`.
+- **Where:** `switchBranch` (`src/application/commands/checkout.ts`) already resolves `oldOid` (HEAD commit) and reads
+  the target tree under the index lock, then calls `materializeTree(ctx, { targetTree, currentIndex, force, … })`.
+  Add an optional `headTree?: ObjectId` to `MaterializeTreeOpts` (absent ⇒ today's behaviour, so every other caller —
+  reset, merge, stash, sparse — is untouched), passed only by the non-forced branch switch. In `materializeTree`,
+  before `computeChangeset`, collect HEAD's entries (`collectTargetEntries(ctx, headTree)`), then: refuse with
+  `checkoutOverwriteDirty({ localChanges, untracked: [] })` when any path hits the refuse rule (collect all, sorted
+  as the existing refusal sorts); otherwise drop `old == new` paths from the changeset AND keep their current index
+  entries in the merged index (they must not be replaced by the target's). Unborn HEAD (no `oldOid`) ⇒ no `headTree`.
+  The refusal must happen before any work-tree write.
+- **Force** (`checkout -f`) keeps today's behaviour (git's `reset_tree` path): pass no `headTree`.
+
+### TDD steps
+
+1. RED unit (`test/unit/application/primitives/materialize-tree.test.ts`, memory adapter): R1, R1d, R1e keep the
+   index entry and work file; R1b, R1b', R1f throw `CHECKOUT_OVERWRITE_DIRTY` with `localChanges` asserted and the
+   work tree and index untouched; R1c switches. Each guard of the refuse rule (`index == old`, `index == new`)
+   isolated in its own test.
+2. RED interop (`test/integration/cache-tree-repair-interop.test.ts`, git 2.55): row R1 (TREE bytes, `ls-files -s`,
+   work-file content equal to git's) plus the matrix rows as `ls-files -s` + status + refusal-code equality.
+3. GREEN in `materialize-tree.ts` + `checkout.ts`. GUARD: `checkout -f` still overwrites a staged change.
+
+### Gate
+
+`rm -rf .wireit && PATH=<git-2.55-bin>:$PATH npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling`
+
+Also run the existing checkout unit and integration suites (they are not part of the declared file set).
+
+### Commit
+
+`fix(checkout): keep staged changes on a branch switch and refuse the ones the target would overwrite`
+
+## Part 12 — sequencer `--continue` writes the updated cache-tree and refreshes stats
+
+### Context
+
+Design §D3.4, ADR-1011 (fold), ADR-1018 (the continue routes reuse commit's scan and trigger: DC-10 (a)),
+pins pin-sequencer.zsh Q1/Q2 and pin-continue-refresh.zsh (Q1r/Q2r). git's `write_index_as_tree` updates the
+cache tree and writes the index when it was not fully valid; its continue commits refresh like `commit`.
+
+Files (create or edit):
+- `src/application/commands/rebase.ts` — `continueStop` (~L726) and the interactive resume (~L1580–1593).
+- `src/application/commands/internal/replay-sequence.ts` — `finaliseResolvedReplay` (~L397).
+- `test/unit/application/commands/rebase.test.ts` — continue writes TREE.
+- `test/unit/application/commands/cherry-pick.test.ts` — continue writes TREE.
+- `test/integration/sequencer-continue-index-interop.test.ts` — new.
+
+Each route today does:
+~~~ts
+const index = await readIndex(ctx);
+rejectUnmergedIndex(index.entries);
+const tree = await synthesizeTreeFromIndex(ctx, index.entries);
+~~~
+Replace the three lines with `const tree = await writeIndexCacheTree(ctx);` (Part 6/9 module: lock, read, refuse
+unmerged, refresh, update, write iff refreshed or not fully valid). Drop imports left unused. Neither route holds
+an index lock at that point (rebase: before `commitResolution`; cherry-pick/revert: `finaliseResolvedReplay` is
+called from `finaliseStoppedReplay` before any lock) — confirm with `grep -n "acquireIndexLock" src/application/commands/cherry-pick.ts src/application/commands/revert.ts src/application/commands/rebase.ts`.
+`revertContinue` shares `finaliseResolvedReplay`, so revert gets the same behaviour (git's sequencer is shared).
+
+Depth cap: `synthesizeTreeFromIndex` enforced `core.maxTreeDepth`; the cache-tree path does not (it is iterative,
+and git has none — design §D11). Decision candidates PC-4 recommends dropping it on these routes as on `commit`.
+Check `grep -rn "maxTreeDepth\|TREE_TOO_DEEP" test/unit/application/commands/rebase*.test.ts test/unit/application/commands/cherry-pick.test.ts test/unit/application/commands/revert.test.ts` — no hits today; a hit is an escalation.
+
+### TDD steps
+
+1. RED `rebase.test.ts` — Given a rebase stopped on a conflict, resolved and added (TREE chain `-1` after the add),
+   When `rebaseContinue` completes, Then the index TREE is fully valid and REUC is kept. Fails: the continue route
+   never writes the index.
+2. RED `cherry-pick.test.ts` — same for `cherryPickContinue` (Q1 shape). Fails likewise.
+3. RED interop `sequencer-continue-index-interop.test.ts` (pin-sequencer.zsh fixture `a/f b/f c/f`; `side` and
+   `main` both change `a/f`) — Q1 (`cherry-pick side`, resolve, add, `--continue`), Q2 (`rebase main` from
+   `side`): TREE bytes and REUC bytes equal git's, `git fsck` 0. Q1r/Q2r (pin-continue-refresh.zsh: before
+   `--continue`, move `a/f`'s mtime forward with `utimes`): after `--continue`, `a/f`'s index mtime equals the
+   file's in both twins. A revert-continue row mirroring Q1 (shared sequencer code). Fails: no write, no refresh.
+4. GREEN — the three routes call `writeIndexCacheTree`.
+5. GUARD — `rebase-interop`, `cherry-pick-interop`, `rebase-stop-messages-interop`, `revert.test.ts`.
+6. REFACTOR — none expected.
+
+### Gate
+
+~~~
+rm -rf .wireit
+PATH=<git-2.55-bin>:$PATH npx vitest run test/unit/application/commands/rebase.test.ts test/unit/application/commands/cherry-pick.test.ts test/unit/application/commands/revert.test.ts test/integration/sequencer-continue-index-interop.test.ts test/integration/rebase-interop.test.ts test/integration/cherry-pick-interop.test.ts test/integration/rebase-stop-messages-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/rebase.ts src/application/commands/internal/replay-sequence.ts test/unit/application/commands/rebase.test.ts test/unit/application/commands/cherry-pick.test.ts test/integration/sequencer-continue-index-interop.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`fix(sequencer): write the updated cache-tree when continuing a stopped pick`
+
+#### Flags
+
+Size: small.
+
+## Part 13 — `rm` records `REUC` and runs during a pending operation
+
+### Context
+
+Design §D5, R6, ADR-1012, pins pin-reuc-untr.zsh E2/E3 and T3 (pin-tsgit-rm.mjs). Rows E2c/E2r/E2d are not
+yet pinned: run them in this part (mktemp, §Pinning harness, git 2.55) — E2c: conflicted a/f from `g
+cherry-pick side`, `g rm a/f`; E2r: from `g revert` of a conflicting commit; E2d: conflicted `a/f` whose worktree
+file was further modified, plain `g rm a/f` → exit code + message.
+
+Files (edit):
+- `src/application/commands/rm.ts` — pending-operation exceptions, stage-preserving grouping, `resolveUndo`.
+- `test/unit/application/commands/rm.test.ts` — unit cases.
+- `test/integration/rm-interop.test.ts` — E2, E3, E2c, E2r, E2d rows.
+- `reports/api.json` — only if `rm`'s exported JSDoc mentions the pending-operation refusal and you update it.
+
+Current code (rm.ts L72–135):
+~~~ts
+await assertNoPendingOperation(ctx);                          // no exceptions
+const byPath = new Map<IndexPathKey, IndexEntry>();           // stages 1/2/3 of one path collapse to the last
+for (const entry of index.entries) byPath.set(indexPathKey(entry), entry);
+…
+await lock.commit(Array.from(byPath.values()), 'update');
+~~~
+Changes:
+- `assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] })` with the import from
+  src/domain/sequencer/operation-labels.ts (exactly as add.ts L46/L197).
+- `byPath: Map<IndexPathKey, ReadonlyArray<IndexEntry>>` (insertion order = index order); matching works per path;
+  `removed` lists each path once; written entries = the surviving groups flattened in order.
+- Removed unmerged paths → `resolveUndoRecordOf(stages)` (src/domain/git-index/resolve-undo.ts L191) →
+  `lock.commit(…, 'update', { resolveUndo })`; `--cached` records too (E3). Model on add.ts `resolvedRecords`
+  (~L1187).
+- Safety valve (`enforceSafetyValve` / `classifyEntries`) receives stage-0 entries only, unless E2d shows git
+  refuses an unmerged path with a modified worktree file — then add the stage rule E2d pins.
+
+### TDD steps
+
+1. RED (stage collapse) — Given a memory index with an unrelated conflicted path `c` (stages 1/2/3, no pending
+   marker: build the index directly with `serializeIndexFixtureAsync`) and a clean `b`, When `rm(['b'])`, Then
+   `c`'s three stages survive. Fails: the path-keyed Map keeps only stage 3. GREEN: grouping.
+2. RED — Given a merge stopped on conflicted `a/f`, When `rm(['a/f'])`, Then it succeeds (no
+   `OPERATION_IN_PROGRESS`), `a/f` is gone from the index, and REUC holds stages 1/2/3 with their modes and oids.
+   Same with `{ cached: true }` (E3). Fails: refused today (T3).
+3. RED interop `rm-interop.test.ts` — E2, E3 (+ E2c, E2r, E2d per the pins you ran): `git ls-files
+   --resolve-undo` equal, REUC bytes equal, `git ls-files -s` equal, `git fsck` 0. Fails: tsgit refuses.
+4. GREEN — pending-operation exceptions + `resolveUndo` (+ the E2d stage rule if its pin requires one).
+5. GUARD — existing rm tests (literal and recursive refusals, safety valve on stage 0).
+6. REFACTOR — extract `groupByPath` and `resolvedRecordsOf` (≤ 20 lines each).
+
+### Gate
+
+~~~
+rm -rf .wireit
+PATH=<git-2.55-bin>:$PATH npx vitest run test/unit/application/commands/rm.test.ts test/integration/rm-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/rm.ts test/unit/application/commands/rm.test.ts test/integration/rm-interop.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`fix(rm): record resolve-undo and run during a pending merge, as git rm does`
+
+## Part 14 — Node adapter: `write` / `writeStream` open with a creation mode and return the written stat
+
+### Context
+
+Design §D6.1 (Node row), ADR-1013. The class methods widen before the port does (a method with an extra
+optional parameter returning `Promise<FileStat>` is assignable to the port's current `(path, data) =>
+Promise<void>`), so this part compiles alone. Windows: `open` honours only the write bit, and both `0o666` and
+`0o777` keep it — no `PathPolicy` capability flag (unlike `honoursRenameKinds`). Only CI's Windows legs prove it;
+the PR must ask for them.
+
+Files (edit):
+- `src/adapters/node/node-file-system.ts` — `write` (L1196), `writeStream` (L1205).
+- `test/unit/adapters/node/node-file-system-injected.test.ts` — DI rows (add a describe modelled on
+  `'NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (DI)'` ~L6252).
+- `test/integration/posix-only/node-fs-mode-bits.test.ts` — real-fs mode rows (posix-integration project runs in
+  forks, where `process.umask(mask)` works; restore the previous mask in `finally`).
+
+Current code:
+~~~ts
+write = async (path: string, data: Uint8Array): Promise<void> => {
+  const real = await this.resolveWrite(path);
+  await this.assertWritableLeaf(real, path);
+  await runFs(async () => {
+    await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+    await this.fsOps.writeFile(real, data, { flag: WRITE_CREATE_FLAGS });
+  }, path);
+};
+writeStream = async (path, source): Promise<void> => { …same prologue…; mkdir -p; pipeline(source, fs.createWriteStream(real, { flags: WRITE_CREATE_FLAGS })) };
+private async createExclusive(real, data)   // open first; mkdir -p + one retry only on ENOENT — the pattern to copy
+~~~
+New (same prologue `resolveWrite` → `assertWritableLeaf`):
+~~~ts
+write = async (path: string, data: Uint8Array, options?: WriteOptions): Promise<FileStat>
+writeStream = async (path: string, source: AsyncIterable<Uint8Array>, options?: WriteOptions): Promise<FileStat>
+~~~
+- Until Part 16 adds `WriteOptions` to the port, type the parameter inline as
+  `options?: { readonly mode?: number }` (structurally identical; Part 16 may leave it).
+- `openForWrite(real, mode)`: `this.fsOps.open(real, WRITE_CREATE_FLAGS, mode ?? DEFAULT_CREATE_MODE)` with
+  `DEFAULT_CREATE_MODE = 0o666` (Node's own `writeFile` default); on ENOENT `mkdir -p` the parent and retry once
+  (a second ENOENT propagates through `runFs` as FILE_NOT_FOUND). Removes today's unconditional `mkdir`.
+- `write`: open → `handle.writeFile(data)` (writes all bytes) → `mapStat(await handle.stat({ bigint: true }))`
+  (the existing bigint→FileStat mapper used by `stat`/`lstat`, ~L1310) → `handle.close()` in `finally`.
+- `writeStream`: same handle; `for await (const chunk of source) await handle.write(chunk)` looping until each
+  chunk is fully written (`bytesWritten`), then stat, close in `finally`. Drop `pipeline`/`createWriteStream`
+  imports if unused.
+- Error mapping unchanged: leaf symlink → ELOOP under `O_NOFOLLOW` → PERMISSION_DENIED via `runFs`; directory
+  leaf → EISDIR → PERMISSION_DENIED.
+- `mode` applies only on create; `O_TRUNC` on an existing file keeps its mode (POSIX `open` semantics).
+
+### TDD steps
+
+1. RED injected — Given a fake `open` that succeeds, When `write`, Then `mkdir` is never called and `open` got
+   `(real, WRITE_CREATE_FLAGS, 0o666)`; with `{ mode: 0o777 }` it got `0o777`. Fails: today `mkdir` runs first
+   and `writeFile` is used. GREEN (minimal): `openForWrite` without the retry.
+2. RED injected — first `open` throws ENOENT → order `open, mkdir(parent, recursive), open`; a second ENOENT →
+   FILE_NOT_FOUND after exactly one retry (`data.code`, `data.path`). Fails: no retry yet. GREEN: the retry.
+   GUARD: EACCES → PERMISSION_DENIED and no `mkdir` (passes: only ENOENT retries).
+3. RED — `write` resolves the post-write stat: `size === data.length`, `isFile`, `mtimeNs` defined (fake handle
+   `stat` returns a bigint stat). Same for `writeStream` over three chunks (bytes on disk concatenated in order).
+   Fails: resolves `undefined`.
+4. RED posix-only real fs — `process.umask(0o027)`: `write(p, bytes, { mode: 0o666 })` → `stat.mode & 0o777 ===
+   0o640`; `{ mode: 0o777 }` → `0o750`; an existing file keeps its mode after a `{ mode: 0o777 }` rewrite; a
+   symlink leaf still refuses PERMISSION_DENIED.
+5. REFACTOR — shared `openForWrite` + `closeAfter(handle, body)`; each ≤ 20 lines.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/adapters/node/node-file-system-injected.test.ts test/unit/adapters/node/node-file-system.test.ts test/integration/posix-only/node-fs-mode-bits.test.ts && npm run check:types && ./node_modules/.bin/biome check src/adapters/node/node-file-system.ts test/unit/adapters/node/node-file-system-injected.test.ts test/integration/posix-only/node-fs-mode-bits.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`perf(node-fs): open writes with a creation mode and return the written stat`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 checkout.bench.ts commit.bench.ts add.bench.ts` —
+the three checkout rows, the commit row, the 200-path add row. The index lock and checkout writes go through
+`write`: expect a small gain (one `mkdir` fewer per write); any `regression` is a blocker.
+
+#### Flags
+
+Size: small growth possible.
+
+## Part 15 — memory and browser adapters return the written stat
+
+### Context
+
+Design §D6.1 (memory, browser rows), ADR-1013. Correction to the design: the memory adapter does NOT model
+permission bits — its `chmod` is a refusal-only no-op ("Modes are not modelled", memory-file-system.ts ~L443;
+every stat reports `MEMORY_FILE_MODE = 0o100644`). So memory, like browser, accepts `mode` and ignores it
+(Decision candidates PC-7). Also pre-adjusts two test doubles so Part 16's return-type widening compiles.
+
+Files (edit):
+- `src/adapters/memory/memory-file-system.ts` — `write` (L130), `writeStream` (L142).
+- `test/unit/adapters/memory/memory-file-system.test.ts`
+- `src/adapters/browser/browser-file-system.ts` — `write` (L65), `writeStream` (L72).
+- `test/unit/adapters/browser/browser-file-system.test.ts`
+- `test/unit/application/primitives/fetch-pack.test.ts` — ~L2250 double: drop the `: Promise<void>` annotation and
+  `return baseCtx.fs.writeStream(path, tap())` (compiles before and after Part 16).
+- `test/unit/application/primitives/internal/write-working-tree-file.test.ts` — ~L1133 double:
+  `return seeded.fs.write(path, new Uint8Array(0))` instead of `await` without return (same reason).
+
+New signatures (inline option type until Part 16, as in Part 14):
+`write = async (path, data, _options?: { readonly mode?: number }): Promise<FileStat>` — memory returns the stat
+its `lstat` would report for the written path (`makeStatRecord` from the stored bytes and `touch` timestamps);
+browser returns the same synthesis its `lstat` (L134) performs. `writeStream` delegates to `write` on both.
+
+### TDD steps
+
+1. RED memory — Given a memory fs, When `write('/r/a', bytes)`, Then the result equals `await lstat('/r/a')`
+   (size, isFile, mtimeMs). Fails: resolves `undefined`. GREEN.
+2. RED memory `writeStream` (two chunks) → same equality; `{ mode: 0o777 }` accepted, stat mode still
+   `0o100644`.
+3. RED browser — same two rows with the file's existing OPFS fakes. GREEN.
+4. GUARD — the two pre-adjusted doubles' tests still pass (behaviour unchanged).
+5. REFACTOR — none.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/adapters/memory/memory-file-system.test.ts test/unit/adapters/browser/browser-file-system.test.ts test/unit/application/primitives/fetch-pack.test.ts test/unit/application/primitives/internal/write-working-tree-file.test.ts && npm run check:types && ./node_modules/.bin/biome check src/adapters/memory/memory-file-system.ts test/unit/adapters/memory/memory-file-system.test.ts src/adapters/browser/browser-file-system.ts test/unit/adapters/browser/browser-file-system.test.ts test/unit/application/primitives/fetch-pack.test.ts test/unit/application/primitives/internal/write-working-tree-file.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`feat(fs): return the written stat from the memory and browser adapters`
+
+## Part 16 — the `FileSystem` port takes a creation mode and returns the written stat
+
+### Context
+
+Design §D6.1 (port), ADR-1013 option 1. **Public** surface change (breaking for third-party adapters).
+
+Files (edit):
+- `src/ports/file-system.ts` — `WriteOptions`; `write` / `writeStream` signatures.
+- `src/ports/index.ts` — `export type { DirEntry, FileStat, FileSystem, WriteOptions } from './file-system.js';`
+  (L16; src/public-types.ts re-exports ports/index.ts with `export type *`).
+- `src/repository/wrap-fs-validator.ts` — forward the option (L180–186).
+- `test/unit/repository/wrap-fs-validator.test.ts` — forwarding test.
+- `test/unit/ports/file-system.test.ts` — the `requiredOnlyFs` literal's `write`/`writeStream` return `stubStat`
+  (L34–35); keep its compile-time purpose.
+- `reports/api.json` — regenerate.
+
+Port today (L64, L73):
+~~~ts
+readonly write: (path: string, data: Uint8Array) => Promise<void>;
+readonly writeStream: (path: string, source: AsyncIterable<Uint8Array>) => Promise<void>;
+~~~
+New:
+~~~ts
+/** Creation options for a regular-file write. */
+export interface WriteOptions {
+  /** Permission bits used when the write creates the file (git's 0o666 or 0o777); the platform applies the
+   *  process umask. Ignored when the file exists, and by adapters without permission bits. */
+  readonly mode?: number;
+}
+readonly write: (path: string, data: Uint8Array, options?: WriteOptions) => Promise<FileStat>;
+readonly writeStream: (path: string, source: AsyncIterable<Uint8Array>, options?: WriteOptions) => Promise<FileStat>;
+~~~
+Doc comments: the resolved `FileStat` is the post-write stat of the written file (Node: `fstat` of the open
+descriptor). Wrapper: `write: (p, d, options) => { guard(p); return fs.write(p, d, options); }`, same for
+`writeStream`. Swap the inline option types of Parts 14–15 for `WriteOptions` in the three adapters — that adds
+three more files: do it ONLY if each is a one-token type swap; they are type-identical, so leaving the inline
+type is also correct (prefer leaving them and noting it; the six-file cap wins).
+
+Compile sweep: `npm run check:types` must be clean. Parts 14–15 widened every implementation and pre-adjusted
+the known doubles; any remaining error is a `FileSystem` literal whose `write`/`writeStream` returns void — fix
+inline if it is in this part's files, else escalate.
+
+### TDD steps
+
+1. RED wrap-fs-validator.test.ts — Given a stub inner fs, When the wrapped `write(p, d, { mode: 0o777 })` and
+   `writeStream(p, src, { mode: 0o666 })` run on an in-root path, Then the inner methods were called with the
+   option object, and the wrapped call resolves the inner stat. Fails: the wrapper drops the third argument.
+   GREEN: port + wrapper.
+2. GUARD — an out-of-root path still refuses before reaching the inner fs (existing tests).
+3. GUARD — `test/unit/ports/file-system.test.ts` type-checks with the stat-returning literal.
+4. REFACTOR — regenerate `reports/api.json`; confirm `git diff --no-ext-diff --stat reports/api.json` is non-empty.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/repository/wrap-fs-validator.test.ts test/unit/repository/wrap-fs-validator.properties.test.ts test/unit/ports/file-system.test.ts && npm run check:types && ./node_modules/.bin/biome check src/ports/file-system.ts src/ports/index.ts src/repository/wrap-fs-validator.ts test/unit/repository/wrap-fs-validator.test.ts test/unit/ports/file-system.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`feat(fs): take a creation mode in FileSystem.write and return the written stat`
+
+#### Flags
+
+api.json regenerated in-commit. PR body: breaking port change (third-party adapters must return a stat) and a
+request for the Windows CI legs (`mode` at create, `handle.stat()`).
+
+## Part 17 — checkout creates files with git's mode, buffers small writes, builds entries from the written stat
+
+### Context
+
+Design §D6.2, §D1.6 (pin-umask.zsh M1/M2, pin-tsgit-umask.mjs T1), R8, ADR-1013 (umask fold: no `chmod`),
+ADR-1016 (`BUFFERED_WRITE_LIMIT = 1 MiB`). git: `open(path, O_WRONLY|O_CREAT|O_EXCL, (mode & 0100) ? 0777 :
+0666)`, write, `fstat`, close; no `chmod`.
+
+Files (create or edit):
+- `src/application/primitives/internal/write-working-tree-file.ts`
+- `src/application/primitives/internal/write-converted-entry.ts`
+- `src/application/primitives/apply-changeset.ts`
+- `test/unit/application/primitives/internal/write-working-tree-file.test.ts`
+- `test/unit/application/primitives/apply-changeset.test.ts`
+- `test/integration/posix-only/checkout-umask-interop.test.ts` — new (posix-integration project; forks, so
+  `process.umask` works; restore it in `finally`).
+
+Current code to change (write-working-tree-file.ts):
+~~~ts
+const MODE_REGULAR_PERM = 0o644; const MODE_EXEC_PERM = 0o755;
+const permFor = (mode: FileMode): number;
+export const writeRegularFile = async (ctx, fullPath: string, content: Uint8Array, mode?: FileMode): Promise<void>;   // rmIfExists → fs.write → fs.chmod
+export const writeWorkingTreeEntry = async (ctx, path, content, mode, scanner?): Promise<void>;
+const createEmptyOutput = async (ctx, fullPath, refusal, mode?): Promise<void>;          // write + chmod
+const writeServedBlob = async (ctx, fullPath, located, mode?, transform?): Promise<void>;  // fs.writeStream + chmod; rmIfExists on failure
+export const writeStreamedBlob = async (ctx, fullPath, id, mode?, transform?): Promise<void>;
+export const writeWorkingTreeEntryStream = async (ctx, path, id, mode, scanner?, transform?): Promise<void>;
+// write-converted-entry.ts
+export interface WorkingTreeWriter { readonly writeBlob: (path, id, mode, scanner?) => Promise<void>; readonly writeBytes: (…) => Promise<void> }
+// apply-changeset.ts
+const buildIndexEntry = async (ctx, absPath, relPath, id: string, mode): Promise<IndexEntry>;   // ctx.fs.lstat(absPath); NOTE Number(stat.ctimeNs ?? 0n) % 1e9 loses precision above 2^53
+const applyWriteEntry = async (ctx, workdir, entry, scanner, writer): Promise<IndexEntry | undefined>;
+~~~
+Changes:
+- `creationModeOf(mode: FileMode): number` → `FILE_MODE.EXECUTABLE` ? `0o777` : `0o666` (named constants
+  `CREATE_EXEC_MODE`, `CREATE_REGULAR_MODE`); delete `MODE_REGULAR_PERM`, `MODE_EXEC_PERM`, `permFor`, and every
+  `chmod` in this file. `writeRegularFile(…, mode?)` → `rmIfExists` (git's checkout_entry lstat + unlink, kept)
+  → `ctx.fs.write(fullPath, content, mode === undefined ? undefined : { mode: creationModeOf(mode) })` and returns
+  the `FileStat`. Without a `mode` (non-checkout buffered writers) no option, as today.
+- Small-write buffering (Decision candidates PC-9): in `writeServedBlob`, after `openServedBlob` (unchanged: a
+  refused loose header still leaves the empty file, git's `odb_read_stream_open` shape), drain the (optionally
+  transformed) chunk stream into memory up to `BUFFERED_WRITE_LIMIT = 1_048_576` bytes. Stream ended within the
+  limit → one `ctx.fs.write(fullPath, bytes, { mode })`; otherwise → `ctx.fs.writeStream(fullPath, head chunks
+  then the rest, { mode })`. A failure while draining happens before any file exists → nothing to remove, the
+  same end state as today's "a failure while serving leaves nothing". Memory is bounded by the limit whatever the
+  inflate ratio. `createEmptyOutput` passes `{ mode }` and no `chmod`.
+- `writeWorkingTreeEntry`, `writeWorkingTreeEntryStream`, `writeStreamedBlob`, `WorkingTreeWriter.writeBlob` /
+  `writeBytes` return `Promise<FileStat | undefined>` (`undefined` for symlink, gitlink and lossy paths, which
+  keep their `lstat`). Callers that ignore the value need no change.
+- `applyWriteEntry`: `const stat = await writer.writeBlob(…)`; entry = `indexEntryFromStat(stat, entry.mode,
+  id, entry.path)` (src/application/primitives/internal/index-entry-from-stat.ts) when `stat` is defined, else the
+  `lstat` fallback through the same mapper. Delete `buildIndexEntry`'s hand-rolled field copy.
+
+### TDD steps
+
+1. RED interop `checkout-umask-interop.test.ts` (pin-umask.zsh M1/M2 + pin-tsgit-umask.mjs T1): `f` (100644) and
+   `x` (100755) committed by git; remove both; `process.umask(0o027)`; git peer `checkout -- f x`; tsgit
+   `checkout(ctx, { paths: ['f', 'x'] })`; Then `statSync(…).mode & 0o777` is `0o640`/`0o750` in both twins; M2
+   with `0o077` → `0o600`/`0o700`. Fails: tsgit `chmod`s to `644`/`755`.
+2. RED `write-working-tree-file.test.ts` — Given a memory context with a `chmod` spy, When `writeWorkingTreeEntry`
+   writes a `100755` blob, Then `chmod` is never called and `fs.write` received `{ mode: 0o777 }` (`0o666` for
+   `100644`). Fails: no option today, and `chmod(0o755)` runs.
+3. GREEN — `creationModeOf`, no `chmod` anywhere in the file; steps 1–2 go green.
+4. RED — Given a blob under 1 MiB, When `writeStreamedBlob`, Then `fs.writeStream` is not called and `fs.write` is
+   called once with the full bytes. Fails: every blob streams today. GREEN: bounded drain (`drainUpTo`). GUARD: a
+   blob over 1 MiB still uses `writeStream`. Update the ~L1133 double's test, whose small delta base no longer
+   streams.
+5. RED `apply-changeset.test.ts` — Given a checkout of an added file, When `applyChangeset` runs, Then no `lstat`
+   on the written path happens after its write (spy order) and the entry's stat fields equal `lstat` afterwards
+   (ino, size, mtime seconds and ns). Fails: `buildIndexEntry` lstats. GREEN: return the stat through the writer
+   chain; build the entry with `indexEntryFromStat`.
+6. GUARD — `blob-streaming-checkout-interop.test.ts` (empty file on a refused loose header, nothing on a serve
+   failure) and `write-converted-entry.test.ts`.
+7. REFACTOR — `writeServedBlob` ≤ 20 lines with `drainUpTo(stream, limit)` returning
+   `{ complete: true, bytes } | { complete: false, head, rest }`.
+
+### Gate
+
+~~~
+rm -rf .wireit
+PATH=<git-2.55-bin>:$PATH npx vitest run test/unit/application/primitives/internal/write-working-tree-file.test.ts test/unit/application/primitives/apply-changeset.test.ts test/unit/application/primitives/internal/write-converted-entry.test.ts test/integration/posix-only/checkout-umask-interop.test.ts test/integration/blob-streaming-checkout-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/internal/write-working-tree-file.ts src/application/primitives/internal/write-converted-entry.ts src/application/primitives/apply-changeset.ts test/unit/application/primitives/internal/write-working-tree-file.test.ts test/unit/application/primitives/apply-changeset.test.ts test/integration/posix-only/checkout-umask-interop.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`perf(checkout): create files with git's mode and stat the written descriptor`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 checkout.bench.ts` — the three checkout rows, plus a
+`<sha of Part 13> HEAD` run for the whole port series (Parts 14–17). Target: git parity, ~71 µs per added file
+(design §Evidence: 95.3 vs 71.3 µs). Expect a clear gain on root→tip and mixed.
+
+#### Flags
+
+Size: likely. PR body: Windows CI legs (checkout `mode` at create).
+
+## Part 18 — literal-path `add`: one `lstat` per path, staged through the pool
+
+### Context
+
+Design §D7, R9. git's `add_file_to_index` `lstat`s once. Today a literal path costs three `lstat`s:
+`allLiteralsAreFiles` (via `lstatOrBeneathFile`), `stageOne` (`lstatOrMissing`), `stageFromStat` →
+`freshStatOfSameKind`. Decision candidates PC-3 covers the TOCTOU window; this part implements its recommended
+option (a).
+
+Files (edit):
+- `src/application/commands/add.ts`
+- `test/unit/application/commands/add.test.ts`
+- `test/unit/application/commands/add-clean-order.test.ts` — slow-`lstat` proxy pattern for order under
+  `safeCrlf: true`.
+
+Current signatures (add.ts):
+~~~ts
+const dispatchPathspec = async (ctx, paths, scope): Promise<AddResult>;   // L216: allLiteralsAreFiles → addLiteralOnly | addByPathspec
+const allLiteralsAreFiles = async (ctx: Context, literals: ReadonlyArray<FilePath>): Promise<boolean>;   // L520
+const addLiteralOnly = async (ctx, resolved: ResolvedPathspec, scope: ConversionScope): Promise<AddResult>;   // L232
+const stageLiterals = async (staging: Staging, validated: ReadonlyArray<FilePath>): Promise<{ newEntries; added; modified; eolNotices; restagedPaths; inserted }>;  // L308, sequential for … await stageOne
+const stageOne = async (ctx, path, scope, previous, indexMtime, guard): Promise<StagedBlob | 'missing'>;   // L1224
+const stageFromStat = async (ctx, path, kind: EntryKind, scope, previous, indexMtime, guard): Promise<StagedBlob>;   // L1250
+const freshStatOfSameKind = async (ctx, path, kind: EntryKind): Promise<FileStat>;   // L1289
+const dispatchInCleanOrder = (ctx, walk: AsyncIterable<WalkWorkingTreeEntry>, stage, span: OrderSpan): Promise<ReadonlyArray<StagedEntry>>;   // L636
+const trackedFirst = (paths, existing): FilePath[];   // L296
+~~~
+Changes:
+- `allLiteralsAreFiles` → `literalStats(ctx, literals): Promise<ReadonlyMap<FilePath, FileStat> | undefined>`
+  (undefined = route to the walk, same conditions as today's `false`). `dispatchPathspec` passes the map to
+  `addLiteralOnly` → `stageLiterals`.
+- `stageFromStat` takes the fresh stat directly for literal callers: split into
+  `stageFromFreshStat(ctx, path, fresh: FileStat, …)` (the body after `freshStatOfSameKind`) and keep
+  `stageFromStat(… kind …)` = `freshStatOfSameKind` then `stageFromFreshStat` for the walk.
+- `stageLiterals` stages through `dispatchInCleanOrder` in `trackedFirst` order with `span = safeCrlf === true ?
+  'write' : 'clean'` (the walk's rule); adapt the input as an async iterable of the ordered paths (or extract a
+  generic dispatcher over `T` if `dispatchInCleanOrder` is walk-typed — keep one implementation). Fold the
+  bookkeeping (`newEntries`, `added`, `modified`, `restagedPaths`, `inserted`, `eolNotices`) over the ordered
+  outcomes after the pool, so the result order is unchanged. First failure in order refuses (as the walk does).
+- `PATHSPEC_NO_MATCH`: a literal that vanished before the probe already routes to the walk (unchanged).
+
+### TDD steps
+
+1. RED add.test.ts — Given a memory context whose `lstat` counts calls per path, When `add(['a', 'd/b'])` of two
+   modified tracked files, Then each path was `lstat`ed exactly once. Fails: 3 per path today. GREEN: stat map +
+   `stageFromFreshStat`.
+2. RED add-clean-order.test.ts — Given `safeCrlf: true` and a slow-`lstat`/slow-read proxy (copy the file's
+   existing pattern), When literals are staged, Then loose objects are created in index order and the outcome
+   lists (`added`, `modified`) are in index order; with `safeCrlf` unset, staging overlaps (the proxy observes
+   two reads in flight). Fails: sequential staging never overlaps. GREEN: pool dispatch.
+3. GUARD — `PATHSPEC_NO_MATCH` for a missing literal (`data.code`, `data.path` asserted); a literal beneath a
+   file still routes to the walk; `add-interop.test.ts` and `add-unmerged-interop.test.ts` stay green.
+4. REFACTOR — `stageLiterals` ≤ 20 lines with the fold extracted.
+
+### Gate
+
+~~~
+rm -rf .wireit
+PATH=<git-2.55-bin>:$PATH npx vitest run test/unit/application/commands/add.test.ts test/unit/application/commands/add-clean-order.test.ts test/integration/add-interop.test.ts test/integration/add-unmerged-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/add.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-clean-order.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`perf(add): stat each literal path once and stage literals through the pool`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 add.bench.ts` — row
+`Given a committed scratch repo with 200 tracked files across nested directories, When add() stages the 200 rewritten files by literal path, Then measure tsgit`.
+Expect a gain (−2 `lstat`s per path plus pooled staging).
+
+## Part 19 — `computeChangeset` merge-join and git's byte order (ADR-1017: keep on gain; byte-order fix always)
+
+### Context
+
+Design §D8 (first bullet), ADR-1017. Benefit unproven (frames under 1 %). Today:
+~~~ts
+// src/application/primitives/compute-changeset.ts L111
+export const computeChangeset = (currentIndex: GitIndex, targetTree: ReadonlyArray<TargetEntry>): Changeset;
+//   projectIndex (stage-0 Map by IndexPathKey) + projectTarget (Map) + allKeys Set + [...allKeys].sort()  ← UTF-16 order, not git's
+~~~
+
+Files (create or edit):
+- `src/application/primitives/compute-changeset.ts` — merge-join.
+- `test/unit/application/primitives/compute-changeset.test.ts` — byte-order examples.
+- `test/unit/application/primitives/compute-changeset.properties.test.ts` — new.
+
+Join: walk the stage-0 index entries and the target entries, both ordered by `compareEntryPath`
+(src/domain/git-index/index-writer.ts, bytewise, ADR-966), emitting `classify(index?, target?)` in that order.
+The index is bytewise-ordered (ADR-966); the target comes from `materializeTree`'s flattened tree — verify its
+order, and keep a linear order check per input with a sorted-copy fallback (`pathComparatorFor`), as Part 4 does.
+
+### TDD steps
+
+1. RED compute-changeset.test.ts — Given an index and target holding a surrogate-pair path (U+1F600) and a U+E000
+   path, When `computeChangeset`, Then entries come in UTF-8 byte order (U+E000 first; UTF-16 `sort()` puts the
+   surrogate first). Fails: `.sort()` on keys. GREEN: merge-join.
+2. GUARD properties — over arbitrary sorted index/target pairs, the join's entries and stats equal a reference
+   (Map union + `compareEntryPath` sort) implemented in the test; unsorted target input gives the same result.
+3. GUARD — existing compute-changeset and apply-changeset tests.
+4. REFACTOR — join helper ≤ 20 lines.
+
+Fallback (no gain, orchestrator): drop this commit (`git reset --hard HEAD~1`), then respawn this part with only
+steps 1 and its minimal GREEN — replace `[...allKeys].sort()` by a sort with a bytewise key comparator — committed
+as `fix(checkout): order the changeset by git's byte order`. ADR-1017 keeps a byte-order fix without a gain.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/application/primitives/compute-changeset.test.ts test/unit/application/primitives/compute-changeset.properties.test.ts test/unit/application/primitives/apply-changeset.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/compute-changeset.ts test/unit/application/primitives/compute-changeset.test.ts test/unit/application/primitives/compute-changeset.properties.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`perf(checkout): merge-join the index and target tree into a byte-ordered changeset`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 checkout.bench.ts` — the three checkout rows. Keep iff
+a row improves by more than 10 %; else apply the fallback above.
+
+## Part 20 — status-family joins (ADR-1017: keep on gain)
+
+### Context
+
+Design §D8 (second and third bullets). Today:
+~~~ts
+// src/domain/diff/index-diff.ts
+function stage0IndexMap(index: GitIndex, keyOf: KeyOf): Map<FilePath, IndexEntry>;   // L29
+function unionPaths(…);                                                               // L77
+function diffIndexAgainstTreeBy(index, tree, keyOf);                                  // L102: indexMap + allPaths union
+// src/application/commands/status.ts
+const buildChanges = (stagedKindMap, workingMap, headTree, stage0Map) => …;          // ~L423: Set union + sort
+~~~
+
+Files (create or edit):
+- `src/domain/diff/index-diff.ts`
+- `test/unit/domain/diff/index-diff.properties.test.ts` — new.
+- `src/application/commands/status.ts` — `buildChanges` only.
+- `test/unit/domain/diff/index-diff.test.ts` — only if an example is needed for the fallback branch.
+
+Rules: `diffIndexAgainstTreeBy` joins `index.entries` (stage 0) with `FlatTree.entries`. `FlatTree.entries` is a
+`Map`: first prove its iteration order is bytewise (read src/application/primitives/internal/flatten-raw.ts
+`flattenRawTreeEscaped` — a depth-first tree walk emits full paths in byte order when tree entries are in git
+tree order; a dir/ vs `dir-x` edge is where tree order and path order differ — check it). If not provably
+bytewise, keep the Map lookup and drop only `unionPaths`. `buildChanges`: `stagedKindMap` and `workingMap` are
+both built in index order — join them instead of `Set` + `sort`; `trackedEntriesOf` keeps `stage0Map`.
+
+### TDD steps
+
+1. GUARD properties `index-diff.properties.test.ts` — over arbitrary indexes and flat trees (reuse
+   test/unit/domain/diff/arbitraries.ts), the joined diff equals the old Map/union result computed by a reference
+   in the test. Write it first against today's code (it passes: it is the oracle), then GREEN the join; the
+   property keeps passing.
+2. GUARD — a `dir/` vs `dir-x` example (tree order ≠ path order) in index-diff.test.ts if step 1's analysis says
+   the join must handle it.
+3. GUARD — status suites (`status.test.ts`, `status-refresh.test.ts`) and `status-interop` files stay green with
+   `buildChanges` joined.
+4. REFACTOR — each join ≤ 20 lines.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/domain/diff/index-diff.test.ts test/unit/domain/diff/index-diff.properties.test.ts test/unit/application/commands/status.test.ts test/unit/application/commands/status-refresh.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/diff/index-diff.ts test/unit/domain/diff/index-diff.properties.test.ts src/application/commands/status.ts test/unit/domain/diff/index-diff.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`perf(status): merge-join the sorted index and tree sequences`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 status.bench.ts status-dirty.bench.ts` — every row of
+both files. Keep iff a row improves by more than 10 %; else drop the commit (`git reset --hard HEAD~1`, branch
+tip) and record the numbers.
+
+## Part 21 — ignore matcher scans backward (ADR-1017: keep on gain)
+
+### Context
+
+Design §D9 (first two bullets). git's `last_matching_pattern_from_list` scans from the last rule backward.
+Today:
+~~~ts
+// src/domain/ignore/match.ts L16 — forward scan, one object per matching rule
+const lastMatch = (rules: IgnoreRuleset, path: FilePath, isDir: boolean): { rule: IgnoreRule; index: number } | undefined;
+// src/domain/ignore/matcher-stack.ts L64 — forward over levels, object per hit
+export const matchInStackVerbose = (stack: ReadonlyArray<IgnoreLevel>, path: FilePath, isDir: boolean): VerboseMatch;
+~~~
+Levels are pushed root-first and non-ancestor levels are skipped by `relativize`, so "first hit scanning from
+the end" = "last match wins".
+
+Files (edit):
+- `src/domain/ignore/match.ts`
+- `src/domain/ignore/matcher-stack.ts`
+- `test/unit/domain/ignore/matcher-stack.properties.test.ts` — equivalence property.
+- `test/unit/domain/ignore/match.test.ts` — only if an example is needed.
+
+### TDD steps
+
+1. GUARD property — `matchInStackVerbose` equals a reference forward scan (today's algorithm, copied into the test
+   as the oracle) over arbitrary stacks (rulesets from test/unit/domain/ignore/arbitraries.ts). Passes against
+   today's code; GREEN: backward scans; the property keeps passing.
+2. GUARD — `is-ignored` provenance (`level`, `ruleIndex`) unchanged: test/unit/application/primitives/is-ignored.test.ts.
+3. GUARD — existing ignore interop stays green.
+4. REFACTOR — none.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/domain/ignore/match.test.ts test/unit/domain/ignore/matcher-stack.test.ts test/unit/domain/ignore/matcher-stack.properties.test.ts test/unit/application/primitives/is-ignored.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/ignore/match.ts src/domain/ignore/matcher-stack.ts test/unit/domain/ignore/matcher-stack.properties.test.ts test/unit/domain/ignore/match.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`perf(ignore): scan ignore rules backward and stop at the first match`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 status.bench.ts status-dirty.bench.ts`. Keep iff a row
+improves by more than 10 %; else drop (branch tip).
+
+## Part 22 — one `ancestorsOf`, O(depth) (ADR-1017: keep on gain)
+
+### Context
+
+Design §D9 (third and fourth bullets). Two private copies build `segments.slice(0, i).join('/')` per depth
+(O(depth²)): src/application/primitives/internal/ignore-evaluator.ts L81 and src/application/primitives/is-ignored.ts
+L44. Both carry `Stryker disable` comments that go away with the deleted code (do not re-add any).
+
+Files (create or edit):
+- `src/domain/ignore/ancestors-of.ts` — new: `export const ancestorsOf = (path: FilePath): ReadonlyArray<string>`
+  walking `indexOf('/')` and emitting `path.slice(0, i)` (root-first, the path itself excluded, a/b/c.txt →
+  `['a', 'a/b']`).
+- `test/unit/domain/ignore/ancestors-of.test.ts` — examples (no slash → `[]`, depth 3).
+- `test/unit/domain/ignore/ancestors-of.properties.test.ts` — equals the old split/join definition (copied into
+  the test as the oracle) over arbitrary paths.
+- `src/application/primitives/internal/ignore-evaluator.ts` — delete the copy, import.
+- `src/application/primitives/is-ignored.ts` — delete the copy, import.
+
+### TDD steps
+
+1. RED ancestors-of.test.ts — `ancestorsOf('a/b/c.txt')` → `['a', 'a/b']`; `ancestorsOf('top')` → `[]`. Fails:
+   module absent. GREEN: create it.
+2. GUARD property — equals the split/join oracle.
+3. GREEN wiring — both callers import it; GUARD `is-ignored.test.ts`, the ignore-evaluator's suites and status
+   suites stay green.
+4. REFACTOR — none.
+
+### Gate
+
+~~~
+rm -rf .wireit
+npx vitest run test/unit/domain/ignore/ancestors-of.test.ts test/unit/domain/ignore/ancestors-of.properties.test.ts test/unit/application/primitives/is-ignored.test.ts test/unit/application/commands/status.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/ignore/ancestors-of.ts test/unit/domain/ignore/ancestors-of.test.ts test/unit/domain/ignore/ancestors-of.properties.test.ts src/application/primitives/internal/ignore-evaluator.ts src/application/primitives/is-ignored.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`perf(ignore): walk ancestor directories without split and join`
+
+#### Measure (orchestrator)
+
+`REGRESSION_THRESHOLD=10 npm run bench:ab -- HEAD~1 HEAD 5 status.bench.ts status-dirty.bench.ts`. Keep iff a row
+improves by more than 10 %; else drop (branch tip).
+
+## Decision candidates
+
+Load-bearing choices the design and ADRs did not settle (named PC-n to keep them apart from the design's DC-n). The plan proceeds with each recommendation; a different
+choice changes only the named part.
+
+| # | Subject | Options | Recommendation |
+|---|---|---|---|
+| PC-1 | Home of the shared locked core (`writeIndexCacheTree`) | (a) src/application/commands/internal/write-index-cache-tree.ts; (b) src/application/primitives/internal/update-cache-tree.ts as the design says, with the unmerged refusal injected as a callback; (c) move `rejectUnmergedIndex` into primitives | **(a)**: the core needs `rejectUnmergedIndex` (commands/internal) and all three callers (commit, rebase, replay-sequence) are commands; (b) adds a callback parameter for one caller shape; (c) moves a command-level refusal down a tier. Parts 6, 9, 12 |
+| PC-2 | How replace writes get git's TREE | (a) the lock overrides the carried TREE with the repaired one (carry-extensions untouched); (b) the design's change: `carryTree` skips `'replace'`, the lock fills it | **(a)**: two fewer edited files in Part 10, same bytes; the cost is one discarded `carryTree` computation per replace write. Part 10 |
+| PC-3 | Literal `add` reuses the pre-lock probe stat as the fresh stat | (a) reuse it (design; git `lstat`s once); (b) keep one `lstat` under the lock (−1 `lstat` instead of −2); (c) move the probe under the lock (restructure `dispatchPathspec`) | **(a)**: the under-lock re-`lstat` only narrows a TOCTOU window the read that follows it still has (same class the walk accepts with its readdir reference). Security review should confirm. Part 18 |
+| PC-4 | `core.maxTreeDepth` on the sequencer continue routes | (a) drop it there, as `commit` has none (the planner is iterative; git has no cap); (b) keep a slash-count guard before `writeIndexCacheTree` on those routes | **(a)**: the cap existed to refuse before a recursion crash the new path cannot have; no test pins it on these routes (grep). Part 12 |
+| PC-5 | `bench:ab` scoping | (a) trailing bench-file basenames after `rounds`; (b) an env var; (c) no tooling change, run every bench file | **(a)**: explicit on the command line, unit-testable as a pure helper; (c) costs ~38 files × 10 runs per measured part. Part 1 |
+| PC-6 | Checkout bench rows | (a) keep the tiered alternation rows, add root→tip, tip→root and mixed rows; (b) replace the alternation rows (the design's "split") | **(a)**: the alternation rows carry CI history; the new rows give the directional and mixed numbers ADR-1015 asks for. Part 2 |
+| PC-7 | Memory adapter and `mode` | (a) accept and ignore, as its `chmod` does (modes are not modelled); (b) start modelling permission bits (`mode & ~0o022`), as the design assumed | **(a)**: the design's premise ("where its chmod records permission bits") is false — memory-file-system.ts `chmod` records nothing and every stat reports `0o100644`; modelling bits is new scope. Part 15 |
+| PC-8 | A carried valid node whose `entryCount` differs from its region | (a) rebuild it; (b) trust the carried count, as git's `update_one` does | **(a)**: identical bytes for every TREE git or tsgit writes (a valid node's count always equals its region); differs only on a corrupt third-party TREE, where trusting it would skip entries. Part 4 |
+| PC-9 | How checkout buffers writes under 1 MiB (ADR-1016) | (a) drain the served stream up to 1 MiB, then fall back to streaming; (b) `serveLocatedBlob` with `maxBufferedBytes = 1 MiB` | **(a)**: needs no size header, bounds memory by inflated bytes, keeps today's refusal shapes; (b) gates on compressed bytes (inflated size unbounded) and moves mid-inflate failures into the empty-file refusal path. Part 17 |
+| PC-10 | Whether a hook ran | (a) new `runBlockingHook` returning `'ran' \| 'skipped'`, `runHook` delegates; (b) change `runHook` to return a boolean (6 callers ignore it) | **(a)**: keeps `runHook`'s command shape and its tests untouched. Part 7 |
+
+## Out-of-scope observations
+
+- apply-changeset.ts `buildIndexEntry` computes `Number(stat.ctimeNs ?? 0n) % 1_000_000_000`, which loses precision
+  for nanosecond timestamps above 2^53; `indexEntryFromStat` uses bigint arithmetic. Part 17 replaces the former
+  with the latter as part of the design's factoring. How to prove it is a live defect: a unit test feeding a stat
+  with `ctimeNs = 1_700_000_000_123_456_789n` and asserting `ctimeNanoseconds === 123_456_789`.

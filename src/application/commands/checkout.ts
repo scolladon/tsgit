@@ -7,6 +7,7 @@ import {
   revparseUnresolved,
 } from '../../domain/commands/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
+import type { GitIndex } from '../../domain/git-index/index.js';
 import { escapedPathOf, type IndexPath } from '../../domain/git-index/index-path-key.js';
 import {
   FILE_MODE,
@@ -24,6 +25,7 @@ import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import type { HeadState } from '../primitives/internal/repo-state.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
+import { indexPath } from '../primitives/path-layout.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
@@ -213,6 +215,22 @@ const moveHead = (ctx: Context, move: HeadMove): Promise<void> => {
   return getRefStore(ctx).applyRefUpdates([update]);
 };
 
+/**
+ * git's two-way merge compares against HEAD's tree. A forced switch resets instead, and an index
+ * that was never written is an initial checkout: its absent paths are not staged deletions.
+ */
+const headTreeOption = async (
+  ctx: Context,
+  opts: CheckoutSwitchOptions,
+  currentIndex: GitIndex,
+  oldOid: ObjectId,
+): Promise<{ readonly headTree?: ObjectId }> => {
+  if (opts.force === true) return {};
+  const unborn =
+    currentIndex.entries.length === 0 && !(await ctx.fs.exists(indexPath(ctx.layout.gitDir)));
+  return unborn ? {} : { headTree: (await readTree(ctx, oldOid)).id };
+};
+
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const priorHead = await readHeadRaw(ctx);
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
@@ -255,6 +273,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
       currentIndex,
       force: opts.force ?? false,
       checkoutMetadata: await checkoutMetadataFor(ctx, branchName, oid),
+      ...(await headTreeOption(ctx, opts, currentIndex, oldOid)),
       // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });

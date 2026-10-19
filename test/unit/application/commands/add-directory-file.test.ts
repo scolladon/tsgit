@@ -1045,3 +1045,24 @@ describe('add — a directory replaced a tracked file or symlink', () => {
     });
   });
 });
+
+describe('Given an existing file and a regular file named with a trailing slash', () => {
+  describe('When add names both', () => {
+    it('Then it refuses the trailing-slash pathspec and stages neither', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { workingTree: { f: 'f', g: 'g' } });
+      const sut = add;
+
+      // Act
+      const outcome = await sut(ctx, ['g', 'f/']).then(
+        () => undefined,
+        (err: TsgitError) => err.data,
+      );
+
+      // Assert
+      expect(outcome).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'f/' });
+      expect(await indexPaths(ctx)).toEqual([]);
+    });
+  });
+});

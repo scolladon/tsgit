@@ -128,34 +128,38 @@ describe('write-working-tree-file', () => {
 
     describe('Given an executable mode', () => {
       describe('When a regular file is written', () => {
-        it('Then it chmods the file to 0o755', async () => {
+        it('Then it creates the file with 0o777 and never chmods', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const fullPath = `${ctx.layout.workDir}/x.sh`;
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
 
           // Act
           await writeRegularFile(ctx, fullPath, encode('exec'), FILE_MODE.EXECUTABLE);
 
           // Assert
-          expect(chmodSpy).toHaveBeenCalledWith(fullPath, 0o755);
+          expect(writeSpy).toHaveBeenCalledWith(fullPath, encode('exec'), { mode: 0o777 });
+          expect(chmodSpy).not.toHaveBeenCalled();
         });
       });
     });
 
     describe('Given a regular mode', () => {
       describe('When a regular file is written', () => {
-        it('Then it chmods the file to 0o644', async () => {
+        it('Then it creates the file with 0o666 and never chmods', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const fullPath = `${ctx.layout.workDir}/r.txt`;
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
 
           // Act
           await writeRegularFile(ctx, fullPath, encode('regular'), FILE_MODE.REGULAR);
 
           // Assert
-          expect(chmodSpy).toHaveBeenCalledWith(fullPath, 0o644);
+          expect(writeSpy).toHaveBeenCalledWith(fullPath, encode('regular'), { mode: 0o666 });
+          expect(chmodSpy).not.toHaveBeenCalled();
         });
       });
     });
@@ -518,34 +522,42 @@ describe('write-working-tree-file', () => {
   describe('writeWorkingTreeEntry — chmod', () => {
     describe('Given an executable mode', () => {
       describe('When writeWorkingTreeEntry writes a regular payload', () => {
-        it('Then it chmods the file to 0o755', async () => {
+        it('Then it creates the file with 0o777 and never chmods', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
           const content = new TextEncoder().encode('exec-content');
 
           // Act
           await writeWorkingTreeEntry(ctx, 'x.sh' as FilePath, content, FILE_MODE.EXECUTABLE);
 
           // Assert
-          expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/x.sh`, 0o755);
+          expect(writeSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/x.sh`, content, {
+            mode: 0o777,
+          });
+          expect(chmodSpy).not.toHaveBeenCalled();
         });
       });
     });
 
     describe('Given a regular mode', () => {
       describe('When writeWorkingTreeEntry writes a regular payload', () => {
-        it('Then it chmods the file to 0o644', async () => {
+        it('Then it creates the file with 0o666 and never chmods', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
           const content = new TextEncoder().encode('regular-content');
 
           // Act
           await writeWorkingTreeEntry(ctx, 'r.txt' as FilePath, content, FILE_MODE.REGULAR);
 
           // Assert
-          expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/r.txt`, 0o644);
+          expect(writeSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/r.txt`, content, {
+            mode: 0o666,
+          });
+          expect(chmodSpy).not.toHaveBeenCalled();
         });
       });
     });
@@ -604,7 +616,7 @@ describe('write-working-tree-file', () => {
     });
     describe('Given a path currently occupied by a symlink', () => {
       describe('When writeWorkingTreeFileStream runs', () => {
-        it('Then the occupant is removed before the stream is written', async () => {
+        it('Then the occupant is removed before the file is written', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const fullPath = `${ctx.layout.workDir}/r.txt`;
@@ -618,9 +630,9 @@ describe('write-working-tree-file', () => {
           // Assert
           const log = calls();
           const rmIndex = log.findIndex((c) => c.method === 'rm');
-          const writeStreamIndex = log.findIndex((c) => c.method === 'writeStream');
+          const writeIndex = log.findIndex((c) => c.method === 'write');
           expect(rmIndex).toBeGreaterThanOrEqual(0);
-          expect(rmIndex).toBeLessThan(writeStreamIndex);
+          expect(rmIndex).toBeLessThan(writeIndex);
         });
       });
     });
@@ -629,10 +641,11 @@ describe('write-working-tree-file', () => {
   describe('writeWorkingTreeEntryStream', () => {
     describe('Given a regular mode and a loose blob', () => {
       describe('When writeWorkingTreeEntryStream writes the blob', () => {
-        it('Then the file byte-equals the blob and chmod is called with 0o644', async () => {
+        it('Then the file byte-equals the blob, is created with 0o666 and never chmods', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
           const id = await writeRawObjectBytes(ctx, 'blob', encode('hello'));
 
           // Act
@@ -641,17 +654,21 @@ describe('write-working-tree-file', () => {
           // Assert
           const result = await ctx.fs.read(`${ctx.layout.workDir}/r.txt`);
           expect(decode(result)).toBe('hello');
-          expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/r.txt`, 0o644);
+          expect(chmodSpy).not.toHaveBeenCalled();
+          expect(writeSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/r.txt`, encode('hello'), {
+            mode: 0o666,
+          });
         });
       });
     });
 
     describe('Given an executable mode and a loose blob', () => {
       describe('When writeWorkingTreeEntryStream writes the blob', () => {
-        it('Then the file byte-equals the blob and chmod is called with 0o755', async () => {
+        it('Then the file byte-equals the blob, is created with 0o777 and never chmods', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
           const id = await writeRawObjectBytes(ctx, 'blob', encode('exec'));
 
           // Act
@@ -660,7 +677,10 @@ describe('write-working-tree-file', () => {
           // Assert
           const result = await ctx.fs.read(`${ctx.layout.workDir}/x.sh`);
           expect(decode(result)).toBe('exec');
-          expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/x.sh`, 0o755);
+          expect(chmodSpy).not.toHaveBeenCalled();
+          expect(writeSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/x.sh`, encode('exec'), {
+            mode: 0o777,
+          });
         });
       });
     });
@@ -755,11 +775,12 @@ describe('write-working-tree-file', () => {
 
     describe('Given the locate is refused by an unreadable alternate and an executable mode', () => {
       describe('When the blob is written', () => {
-        it('Then an empty 0o755 file is left and the refusal is thrown', async () => {
+        it('Then an empty file is created with 0o777, never chmod-ed, and the refusal is thrown', async () => {
           // Arrange
           const ctx = await unreadableAlternateContext();
           const fullPath = `${ctx.layout.workDir}/x.sh`;
           const chmod = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
 
           // Act
           const failure = await rejection(
@@ -769,25 +790,26 @@ describe('write-working-tree-file', () => {
           // Assert
           expect((failure as TsgitError).data).toMatchObject(REFUSAL);
           expect((await ctx.fs.read(fullPath)).length).toBe(0);
-          expect(chmod).toHaveBeenCalledWith(fullPath, 0o755);
+          expect(chmod).not.toHaveBeenCalled();
+          expect(writeSpy).toHaveBeenCalledWith(fullPath, new Uint8Array(), { mode: 0o777 });
         });
       });
     });
 
     describe('Given the locate is refused and a regular mode', () => {
       describe('When the blob is written', () => {
-        it('Then an empty 0o644 file is left', async () => {
+        it('Then an empty file is created with 0o666', async () => {
           // Arrange
           const ctx = await unreadableAlternateContext();
           const fullPath = `${ctx.layout.workDir}/r.txt`;
-          const chmod = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
 
           // Act
           await rejection(writeStreamedBlob(ctx, fullPath, MISSING_ID, FILE_MODE.REGULAR));
 
           // Assert
           expect((await ctx.fs.read(fullPath)).length).toBe(0);
-          expect(chmod).toHaveBeenCalledWith(fullPath, 0o644);
+          expect(writeSpy).toHaveBeenCalledWith(fullPath, new Uint8Array(), { mode: 0o666 });
         });
       });
     });
@@ -1118,26 +1140,15 @@ describe('write-working-tree-file', () => {
 
     describe('Given a packed delta blob that reconstructs to nothing', () => {
       describe('When the blob is written', () => {
-        it('Then the file is empty and no empty chunk is handed to the file system', async () => {
+        it('Then the file is empty and the file system receives one empty buffered write', async () => {
           // Arrange
-          const seeded = await buildSeededContext();
-          const [, id] = await writeSyntheticPack(seeded, 'empty', [
+          const ctx = await buildSeededContext();
+          const [, id] = await writeSyntheticPack(ctx, 'empty', [
             { kind: 'base', type: 'blob', content: encode('the delta base') },
             { kind: 'ofs-delta', baseIndex: 0, targetContent: new Uint8Array(0) },
           ]);
-          const chunks: Uint8Array[] = [];
-          const ctx: Context = {
-            ...seeded,
-            fs: {
-              ...seeded.fs,
-              writeStream: async (path, source) => {
-                const collected: Uint8Array[] = [];
-                for await (const chunk of source) collected.push(chunk);
-                chunks.push(...collected);
-                await seeded.fs.write(path, new Uint8Array(0));
-              },
-            },
-          };
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
+          const streamSpy = vi.spyOn(ctx.fs, 'writeStream');
           const fullPath = `${ctx.layout.workDir}/e.txt`;
           const sut = writeStreamedBlob;
 
@@ -1145,27 +1156,140 @@ describe('write-working-tree-file', () => {
           await sut(ctx, fullPath, id as ObjectId, FILE_MODE.REGULAR);
 
           // Assert
-          expect(chunks).toEqual([]);
+          expect(streamSpy).not.toHaveBeenCalled();
+          expect(writeSpy).toHaveBeenCalledWith(fullPath, new Uint8Array(0), { mode: 0o666 });
           expect((await ctx.fs.read(fullPath)).byteLength).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a blob of exactly the buffered-write limit', () => {
+      describe('When the blob is written', () => {
+        it('Then it is written in one buffered call', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = new Uint8Array(1_048_576).fill(97);
+          const id = await writeRawObjectBytes(ctx, 'blob', content);
+          const fullPath = `${ctx.layout.workDir}/limit.bin`;
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
+          const streamSpy = vi.spyOn(ctx.fs, 'writeStream');
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id, FILE_MODE.REGULAR);
+
+          // Assert
+          expect(streamSpy).not.toHaveBeenCalled();
+          expect(writeSpy).toHaveBeenCalledTimes(1);
+          expect((await ctx.fs.read(fullPath)).byteLength).toBe(1_048_576);
+        });
+      });
+    });
+
+    describe('Given a blob one byte over the buffered-write limit', () => {
+      describe('When the blob is written', () => {
+        it('Then it streams with the creation mode and every byte lands in order', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = new Uint8Array(1_048_577).map((_, i) => i % 251);
+          const id = await writeRawObjectBytes(ctx, 'blob', content);
+          const fullPath = `${ctx.layout.workDir}/big.bin`;
+          const streamSpy = vi.spyOn(ctx.fs, 'writeStream');
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id, FILE_MODE.EXECUTABLE);
+
+          // Assert
+          expect(streamSpy).toHaveBeenCalledWith(fullPath, expect.anything(), { mode: 0o777 });
+          expect(await ctx.fs.read(fullPath)).toEqual(content);
+        });
+      });
+    });
+
+    describe('Given a blob several inflate chunks over the buffered-write limit', () => {
+      describe('When the blob is written', () => {
+        it('Then the chunks after the limit-crossing one still land in order', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = new Uint8Array(1_048_576 + 100_000).map((_, i) => i % 251);
+          const id = await writeRawObjectBytes(ctx, 'blob', content);
+          const fullPath = `${ctx.layout.workDir}/tail.bin`;
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id);
+
+          // Assert
+          expect(await ctx.fs.read(fullPath)).toEqual(content);
+        });
+      });
+    });
+
+    describe('Given a blob over the buffered-write limit and a file system whose stream write fails', () => {
+      describe('When the blob is written', () => {
+        it('Then the failure is rethrown, the partial file is gone and the inflate source is cancelled', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', new Uint8Array(1_048_577).fill(97));
+          const fullPath = `${ctx.layout.workDir}/fail.bin`;
+          const failure = new Error('disk full');
+          let cancelled = false;
+          const createInflateStream = ctx.compressor.createInflateStream.bind(ctx.compressor);
+          vi.spyOn(ctx.compressor, 'createInflateStream').mockImplementation(() => {
+            const inner = createInflateStream();
+            const reader = inner.readable.getReader();
+            const readable = new ReadableStream<Uint8Array>({
+              pull: async (controller) => {
+                const step = await reader.read();
+                if (step.done) controller.close();
+                else controller.enqueue(step.value);
+              },
+              cancel: (reason) => {
+                cancelled = true;
+                return reader.cancel(reason);
+              },
+            });
+            return { writable: inner.writable, readable };
+          });
+          vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
+            await ctx.fs.write(path, encode('partial'));
+            for await (const _chunk of chunks) throw failure;
+            throw new Error('the stream was expected to yield');
+          });
+          const sut = writeStreamedBlob;
+
+          // Act
+          const thrown = await rejection(sut(ctx, fullPath, id, FILE_MODE.REGULAR));
+
+          // Assert
+          expect(thrown).toBe(failure);
+          expect((thrown as Error).message).toBe('disk full');
+          expect(await ctx.fs.exists(fullPath)).toBe(false);
+          expect(cancelled).toBe(true);
         });
       });
     });
 
     describe('Given a small loose blob and an executable mode', () => {
       describe('When the blob is written', () => {
-        it('Then the bytes land with 0o755', async () => {
+        it('Then the bytes land in one buffered write created with 0o777', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const id = await writeRawObjectBytes(ctx, 'blob', encode('#!/bin/sh'));
           const fullPath = `${ctx.layout.workDir}/ok.sh`;
           const chmod = vi.spyOn(ctx.fs, 'chmod');
+          const writeSpy = vi.spyOn(ctx.fs, 'write');
+          const streamSpy = vi.spyOn(ctx.fs, 'writeStream');
 
           // Act
           await writeStreamedBlob(ctx, fullPath, id, FILE_MODE.EXECUTABLE);
 
           // Assert
           expect(decode(await ctx.fs.read(fullPath))).toBe('#!/bin/sh');
-          expect(chmod).toHaveBeenCalledWith(fullPath, 0o755);
+          expect(chmod).not.toHaveBeenCalled();
+          expect(streamSpy).not.toHaveBeenCalled();
+          expect(writeSpy).toHaveBeenCalledWith(fullPath, encode('#!/bin/sh'), { mode: 0o777 });
         });
       });
     });

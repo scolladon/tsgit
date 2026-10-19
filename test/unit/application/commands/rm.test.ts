@@ -9,6 +9,7 @@ import { acquireIndexLock } from '../../../../src/application/primitives/interna
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
@@ -20,6 +21,8 @@ import type {
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
+import { indexExtensionsOf } from '../primitives/helpers/index-extensions.js';
+import { seedIndex, stagesOf } from './add-index-fixtures.js';
 import { asBareContext, seedRepo } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -1331,6 +1334,95 @@ describe('rm of a lossy entry and its U+FFFD twin both committed in HEAD', () =>
         expect((await readIndex(ctx)).entries).toEqual([]);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/${LOSSY_VIEW}`)).toBe(false);
       });
+    });
+  });
+});
+
+const SHA1_DIGEST = 20;
+
+const CONFLICT_ROWS = [
+  { path: 'a/f', text: 'f-base', stage: 1 },
+  { path: 'a/f', text: 'f-ours', stage: 2 },
+  { path: 'a/f', text: 'f-theirs', stage: 3 },
+] as const;
+
+const seedMergeConflict = async (): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await seedRepo(ctx, { workingTree: { 'a/f': 'merged', b: 'b' } });
+  await seedIndex(ctx, [...CONFLICT_ROWS, { path: 'b', text: 'b' }]);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'a'.repeat(40)}\n`);
+  return ctx;
+};
+
+const recordedStages = async (
+  ctx: Context,
+): Promise<ReadonlyArray<readonly [string, ReadonlyArray<number>]>> => {
+  const reuc = (await indexExtensionsOf(ctx)).get('REUC');
+  if (reuc === undefined) return [];
+  const records = parseResolveUndo(reuc, SHA1_DIGEST) ?? [];
+  return records.map((record) => [record.path, record.stages.map(({ stage }) => stage)]);
+};
+
+describe('Given an unrelated conflicted path c and a clean b', () => {
+  describe('When rm removes b', () => {
+    it('Then the three stages of c survive', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { workingTree: { b: 'b', c: 'merged' } });
+      await seedIndex(ctx, [
+        { path: 'b', text: 'b' },
+        { path: 'c', text: 'c-base', stage: 1 },
+        { path: 'c', text: 'c-ours', stage: 2 },
+        { path: 'c', text: 'c-theirs', stage: 3 },
+      ]);
+      const before = (await stagesOf(ctx)).filter((line) => line.startsWith('c@'));
+      const sut = rm;
+
+      // Act
+      await sut(ctx, ['b'], { force: true });
+      const result = await stagesOf(ctx);
+
+      // Assert
+      expect(before).toHaveLength(3);
+      expect(result).toEqual(before);
+    });
+  });
+});
+
+describe('Given a merge stopped on a conflicted a/f', () => {
+  describe.each([
+    { title: 'rm', opts: {} },
+    { title: 'rm --cached', opts: { cached: true } },
+  ])('When $title removes a/f', ({ opts }) => {
+    it('Then a/f leaves the index and REUC records its stages 1, 2 and 3', async () => {
+      // Arrange
+      const ctx = await seedMergeConflict();
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['a/f'], opts);
+
+      // Assert
+      expect(result.removed).toEqual(['a/f']);
+      expect((await stagesOf(ctx)).map((line) => line.split(':')[0])).toEqual(['b@0']);
+      expect(await recordedStages(ctx)).toEqual([['a/f', [1, 2, 3]]]);
+    });
+  });
+});
+
+describe('Given a merge stopped on a conflicted a/f and a merged b', () => {
+  describe('When rm removes a/f and b together', () => {
+    it('Then REUC records the stages of a/f only', async () => {
+      // Arrange
+      const ctx = await seedMergeConflict();
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['a/f', 'b'], { force: true });
+
+      // Assert
+      expect(result.removed).toEqual(['a/f', 'b']);
+      expect(await recordedStages(ctx)).toEqual([['a/f', [1, 2, 3]]]);
     });
   });
 });

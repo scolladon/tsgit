@@ -598,3 +598,44 @@ every other row is unchanged.
 
 The npm tarball cap moved 1424 → 1425 KiB (measured pack 1 458 653 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — cache-tree at O(change) and the checkout write path
+
+Measured with `npx size-limit --json` on a clean build of the branch at `0dc6b37d`. Each failing row
+is raised to its measurement plus about 100 B; every other row is unchanged.
+
+| Row | main | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|---|
+| Full library | — | 397 867 B | 394.8 kB | 398.0 kB | the cache-tree planner and its write/repair driver, commit's index pass with the stat refresh, the two-way carry of a branch switch, the conflict-stop stats and `rm`'s resolve-undo |
+| Browser bundle (no-build) | — | 340 458 B | 337.8 kB | 340.6 kB | the same change, bundled once |
+| Chunks: domain | — | 125 758 B | 124.7 kB | 125.9 kB | the cache-tree planner (subtree order, carried-tree reuse, intent-to-add and unmerged invalidation) |
+| Chunks: primitives | — | 107 189 B | 106.5 kB | 107.3 kB | the cache-tree driver, the shared tracked-entry scan, the two-way carry and the conflict-stop stats |
+
+The npm tarball cap moved 1425 → 1436 KiB (measured pack 1 469 515 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.
+
+Review fixes on the same branch grew the measured rows again; raised the same way:
+
+| Row | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|---|
+| Full library | 398 981 B | 398.0 kB | 399.1 kB | the repair abort (`update_one`), the empty-tree presence rule, the tree-type check of a reused root, the pruned HEAD/target walk of a branch switch and the bounded literal read |
+| Browser bundle (no-build) | 341 421 B | 340.6 kB | 341.6 kB | the same fixes, bundled once |
+| Chunks: domain | 126 098 B | 125.9 kB | 126.2 kB | the repair abort and the oid-keeping invalidation |
+| Chunks: primitives | 107 802 B | 107.3 kB | 107.9 kB | the pruned tree walk, the sparse carry and the root type check |
+| Command (add) | 4 418 B | 4.4 kB | 4.6 kB | the bounded literal read and the pooled literal stats |
+
+The npm tarball cap moved 1436 → 1439 KiB (measured pack 1 472 330 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.
+
+A second review round moved one row past its cap:
+
+| Row | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|---|
+| Chunks: primitives | 107 920 B | 107.9 kB | 108.1 kB | the repair abort's absent-oid set and the pruned walk's entry cap |
+
+The third review round's repair fix (a parent hashed over a stale child that cannot be rebuilt) moved two rows again:
+
+| Row | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|---|
+| Full library | 399 210 B | 399.1 kB | 399.4 kB | the repair driver's working oid kept apart from the recorded oid |
+| Browser bundle (no-build) | 341 668 B | 341.6 kB | 341.8 kB | the same change, bundled once |

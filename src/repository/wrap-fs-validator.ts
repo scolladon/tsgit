@@ -177,13 +177,13 @@ export const wrapFsValidator = (
       readGuard(p);
       return fs.readUtf8(p);
     },
-    write: (p, d) => {
+    write: (p, d, options) => {
       guard(p);
-      return fs.write(p, d);
+      return fs.write(p, d, options);
     },
-    writeStream: (p, source) => {
+    writeStream: (p, source, options) => {
       guard(p);
-      return fs.writeStream(p, source);
+      return fs.writeStream(p, source, options);
     },
     writeExclusive: (p, d) => {
       guard(p);

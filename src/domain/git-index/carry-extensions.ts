@@ -1,8 +1,6 @@
-import { errorDataCode } from '../error-data-code.js';
-import { invalidateCacheTree, namesEachSubtreeOnce, serializeCacheTree } from './cache-tree.js';
+import { invalidateCacheTree, parseCarriedCacheTree, serializeCacheTree } from './cache-tree.js';
 import type { IndexChange } from './diff-index-entries.js';
 import type { IndexExtension } from './index-entry.js';
-import { parseCacheTree } from './index-parser.js';
 import { type IndexPath, indexPathKey } from './index-path-key.js';
 import { pathComparatorFor } from './index-writer.js';
 import {
@@ -34,8 +32,6 @@ const findExtension = (
   signature: string,
 ): IndexExtension | undefined => previous.find((extension) => extension.signature === signature);
 
-const INVALID_INDEX_ENTRY_CODE = 'INVALID_INDEX_ENTRY';
-
 const carryTree = (
   tree: IndexExtension | undefined,
   change: IndexChange,
@@ -43,15 +39,10 @@ const carryTree = (
   digestLength: 20 | 32,
 ): IndexExtension | undefined => {
   if (tree === undefined || kind === 'refresh' || change.changedPaths.length === 0) return tree;
-  try {
-    const root = parseCacheTree(tree.data, digestLength);
-    if (!namesEachSubtreeOnce(root)) return undefined;
-    const invalidated = invalidateCacheTree(root, change.changedPaths);
-    return { signature: TREE_SIGNATURE, data: serializeCacheTree(invalidated, digestLength) };
-  } catch (err) {
-    if (errorDataCode(err) === INVALID_INDEX_ENTRY_CODE) return undefined;
-    throw err;
-  }
+  const root = parseCarriedCacheTree(tree.data, digestLength);
+  if (root === undefined) return undefined;
+  const invalidated = invalidateCacheTree(root, change.changedPaths);
+  return { signature: TREE_SIGNATURE, data: serializeCacheTree(invalidated, digestLength) };
 };
 
 const carryUnmerged = (

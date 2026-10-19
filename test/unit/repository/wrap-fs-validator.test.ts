@@ -1055,3 +1055,43 @@ describe('wrapFsValidator — the optional tryReadUtf8 probe', () => {
     });
   });
 });
+
+describe('wrapFsValidator — write creation options', () => {
+  const innerStat = { size: 7 } as unknown as FileStat;
+
+  describe('Given an in-root path and a creation mode', () => {
+    describe('When write is called', () => {
+      it('Then the inner write receives the options and its stat is resolved', async () => {
+        // Arrange
+        const inner = stubFs();
+        const write = vi.fn(async () => innerStat);
+        const sut = wrapFsValidator({ ...inner, write }, ['/repo']);
+        const data = new Uint8Array([1]);
+
+        // Act
+        const result = await sut.write('/repo/a', data, { mode: 0o777 });
+
+        // Assert
+        expect(write).toHaveBeenCalledExactlyOnceWith('/repo/a', data, { mode: 0o777 });
+        expect(result).toBe(innerStat);
+      });
+    });
+
+    describe('When writeStream is called', () => {
+      it('Then the inner writeStream receives the options and its stat is resolved', async () => {
+        // Arrange
+        const inner = stubFs();
+        const writeStream = vi.fn(async () => innerStat);
+        const sut = wrapFsValidator({ ...inner, writeStream }, ['/repo']);
+        const source = (async function* () {})();
+
+        // Act
+        const result = await sut.writeStream('/repo/a', source, { mode: 0o666 });
+
+        // Assert
+        expect(writeStream).toHaveBeenCalledExactlyOnceWith('/repo/a', source, { mode: 0o666 });
+        expect(result).toBe(innerStat);
+      });
+    });
+  });
+});

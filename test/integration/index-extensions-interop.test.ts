@@ -4,8 +4,8 @@
  * tsgit writer and, on a twin repository built identically, by canonical git.
  * `ZZZZ` is dropped whenever git writes, `REUC` follows the writer class,
  * `UNTR` follows the tracked-set rule, and `TREE` is byte-equal to git's for
- * `add`, valid-node-equal for the other in-place writers, and carries only
- * oids git agrees with for the writers that rebuild the index.
+ * `add` and for every writer that rebuilds the index, and valid-node-equal for
+ * the other in-place writers.
  *
  * @proves
  *   surface:        index
@@ -47,7 +47,7 @@ import {
 
 type Format = 'sha1' | 'sha256';
 type Carry = 'update' | 'replace';
-type TreeCheck = 'bytes' | 'valid-nodes' | 'git-oids';
+type TreeCheck = 'bytes' | 'valid-nodes';
 
 const DIGEST_LENGTH: Record<Format, 20 | 32> = { sha1: 20, sha256: 32 };
 const FILES = ['a', 'b', 'd/c', 'd/e/f', 'x/y', 'm'] as const;
@@ -174,9 +174,6 @@ const treeNodes = (
 
 const trackedPaths = (dir: string): string =>
   [...new Set(git(dir, 'ls-files').split('\n'))].sort().join('\n');
-
-const gitOid = (dir: string, directory: string): string =>
-  git(dir, 'rev-parse', directory === '' ? 'HEAD^{tree}' : `HEAD:${directory}`).trim();
 
 interface Row {
   readonly title: string;
@@ -352,35 +349,35 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'reset --hard',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     git: ok('reset', '-q', '--hard'),
     tsgit: (ctx) => reset(ctx, { mode: 'hard', rev: 'HEAD' }),
   },
   {
     title: 'reset --hard HEAD~1',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     git: ok('reset', '-q', '--hard', 'HEAD~1'),
     tsgit: (ctx) => reset(ctx, { mode: 'hard', rev: 'HEAD~1' }),
   },
   {
     title: 'checkout other',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     git: ok('checkout', '-q', 'other'),
     tsgit: (ctx) => checkout(ctx, { rev: 'other' }),
   },
   {
     title: 'merge clean (clean)',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     git: ok('merge', '--no-edit', '-q', 'clean'),
     tsgit: (ctx) => mergeRun(ctx, { rev: 'clean' }),
   },
   {
     title: 'merge clash (conflicted)',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     conflicted: true,
     git: lenient('merge', '--no-edit', 'clash'),
     tsgit: (ctx) => mergeRun(ctx, { rev: 'clash' }),
@@ -388,14 +385,14 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'cherry-pick clean',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     git: ok('cherry-pick', 'clean'),
     tsgit: (ctx) => cherryPickRun(ctx, { commits: ['clean'] }),
   },
   {
     title: 'revert HEAD~2 (conflicted)',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     conflicted: true,
     git: lenient('revert', '--no-edit', 'HEAD~2'),
     tsgit: (ctx) => revertRun(ctx, { commits: ['HEAD~2'] }),
@@ -403,14 +400,14 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'rebase --onto clean HEAD~1 (clean)',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     git: ok('rebase', '-q', '--onto', 'clean', 'HEAD~1'),
     tsgit: (ctx) => rebaseRun(ctx, { upstream: 'HEAD~1', onto: 'clean' }),
   },
   {
     title: 'stash push',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     prepare: dirtyDC,
     git: ok('stash', 'push', '-q'),
     tsgit: (ctx) => stashPush(ctx, {}),
@@ -418,7 +415,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'stash push -u',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'bytes',
     prepare: dirtyDC,
     git: ok('stash', 'push', '-q', '-u'),
     tsgit: (ctx) => stashPush(ctx, { includeUntracked: true }),
@@ -426,7 +423,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'stash pop --index',
     carry: 'replace',
-    tree: 'valid-nodes',
+    tree: 'bytes',
     prepare: stashedDC,
     git: ok('stash', 'pop', '-q', '--index'),
     tsgit: (ctx) => stashPop(ctx, { restoreIndex: true }),
@@ -434,7 +431,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'stash apply',
     carry: 'replace',
-    tree: 'valid-nodes',
+    tree: 'bytes',
     prepare: stashedDC,
     git: ok('stash', 'apply', '-q'),
     tsgit: (ctx) => stashApply(ctx, {}),
@@ -442,7 +439,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'stash apply (the stash also added a new file)',
     carry: 'replace',
-    tree: 'valid-nodes',
+    tree: 'bytes',
     prepare: stashedDCWithNewFile,
     git: ok('stash', 'apply', '-q'),
     tsgit: (ctx) => stashApply(ctx, {}),
@@ -498,19 +495,7 @@ const expectTree = (row: Row, outcome: Outcome): void => {
     expect(outcome.ours.get('TREE')).toEqual(outcome.peer.get('TREE'));
     return;
   }
-  if (row.tree === 'valid-nodes') {
-    expect(treeNodes(outcome.ours, outcome.format)).toEqual(
-      treeNodes(outcome.peer, outcome.format),
-    );
-    return;
-  }
-  const peerNodes = new Map(treeNodes(outcome.peer, outcome.format));
-  if (peerNodes.size > 0) expect(outcome.ours.has('TREE')).toBe(true);
-  for (const [directory, oid] of treeNodes(outcome.ours, outcome.format)) {
-    expect([directory, oid]).toEqual([directory, gitOid(outcome.oursDir, directory)]);
-    if (row.tree === 'git-oids')
-      expect([directory, oid]).toEqual([directory, peerNodes.get(directory)]);
-  }
+  expect(treeNodes(outcome.ours, outcome.format)).toEqual(treeNodes(outcome.peer, outcome.format));
 };
 
 const describeRow = (row: Row, format: Format = 'sha1'): void => {

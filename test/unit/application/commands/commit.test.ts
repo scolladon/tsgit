@@ -5,13 +5,16 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
+import { carriedCacheTreeOf } from '../../../../src/domain/git-index/cache-tree-update.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
@@ -27,6 +30,7 @@ import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { gpgSignerStub, stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
+import { seedIndex } from './add-index-fixtures.js';
 import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -256,6 +260,50 @@ describe('commit', () => {
     });
   });
 
+  describe('Given a commit that is refused after the index pass', () => {
+    const carriedRootOf = async (ctx: Context) =>
+      carriedCacheTreeOf((await readIndex(ctx)).extensions, ctx.hashConfig.digestLength);
+
+    describe('When the message is empty without allowEmptyMessage', () => {
+      it('Then it throws EMPTY_COMMIT_MESSAGE and the index carries the updated TREE', async () => {
+        // Arrange
+        const ctx = await seed({ 'a/x': 'x', top: 't' });
+        const sut = commit;
+
+        // Act
+        const attempt = sut(ctx, { message: '', author });
+
+        // Assert
+        await expectError(() => attempt, 'EMPTY_COMMIT_MESSAGE');
+        const carried = await carriedRootOf(ctx);
+        expect(carried?.entryCount).toBe(2);
+        expect(carried?.id).toBe(
+          await synthesizeTreeFromIndex(ctx, (await readIndex(ctx)).entries),
+        );
+      });
+    });
+
+    describe('When a stat-only re-add leaves nothing to commit', () => {
+      it('Then it throws NOTHING_TO_COMMIT and the index carries a fully valid TREE', async () => {
+        // Arrange
+        const ctx = await seed({ 'a/x': 'x', top: 't' });
+        await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top`, 't');
+        await add(ctx, ['top']);
+        const sut = commit;
+
+        // Act
+        const attempt = sut(ctx, { message: 'second', author });
+
+        // Assert
+        await expectError(() => attempt, 'NOTHING_TO_COMMIT');
+        const carried = await carriedRootOf(ctx);
+        expect(carried?.entryCount).toBe(2);
+        expect(carried?.children.map((child) => child.entryCount)).toEqual([1]);
+      });
+    });
+  });
+
   describe('Given a guard condition that must refuse the commit before it writes anything', () => {
     describe('When commit runs', () => {
       it.each([
@@ -325,6 +373,37 @@ describe('commit', () => {
         expect(result.tree).toBe(first.tree);
         expect(result.id).not.toBe(first.id);
         expect(result.parents).toEqual([first.id]);
+      });
+    });
+  });
+
+  describe('Given allowEmpty=true and a tracked file rewritten with the same bytes', () => {
+    describe('When commit runs', () => {
+      it('Then the index is rewritten with the refreshed stat', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(1_800_000_000_000);
+          const ctx = await seed();
+          await commit(ctx, { message: 'first', author });
+          const path = `${ctx.layout.workDir}/a.txt`;
+          const content = await ctx.fs.readUtf8(path);
+          vi.setSystemTime(1_800_000_010_000);
+          await ctx.fs.writeUtf8(path, content);
+          vi.setSystemTime(1_800_000_020_000);
+          const sut = commit;
+
+          // Act
+          await sut(ctx, { message: 'second', author, allowEmpty: true });
+
+          // Assert
+          const entry = (await readIndex(ctx)).entries.find(
+            (e) => e.path === ('a.txt' as FilePath),
+          );
+          expect(entry?.mtimeSeconds).toBe(1_800_000_010);
+        } finally {
+          vi.useRealTimers();
+        }
       });
     });
   });
@@ -868,6 +947,123 @@ describe('commit — hooks', () => {
 
         // Assert — aborted before the branch ref was created.
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a pre-commit hook that leaves the index unmerged', () => {
+    describe('When commit', () => {
+      it('Then it refuses with MERGE_HAS_CONFLICTS and HEAD does not move', async () => {
+        // Arrange
+        let ctx!: Context;
+        const runner: HookRunner = {
+          run: async (request) => {
+            if (request.name === 'pre-commit') {
+              await seedIndex(ctx, [
+                { path: 'a.txt', text: 'base', stage: 1 },
+                { path: 'a.txt', text: 'ours', stage: 2 },
+              ]);
+            }
+            return { kind: 'ran', exitCode: 0, stdout: '', stderr: '' };
+          },
+        };
+        ctx = createMemoryContext({ hooks: runner });
+        await seedHooked(ctx);
+        const first = await commit(ctx, { message: 'first', author, noVerify: true });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'changed');
+        await add(ctx, ['a.txt']);
+        const sut = commit;
+
+        // Act
+        const error = await expectError(
+          () => sut(ctx, { message: 'second', author }),
+          'MERGE_HAS_CONFLICTS',
+        );
+
+        // Assert
+        expect(error.data).toEqual({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['a.txt'] });
+        const head = await getRefStore(ctx).resolveDirect('refs/heads/main' as RefName);
+        expect(head).toEqual({ kind: 'direct', id: first.id });
+      });
+    });
+  });
+
+  describe('Given a staged change and a pre-commit hook that stages another file', () => {
+    const seedStaged = async (onPreCommit: (ctx: Context) => Promise<void>): Promise<Context> => {
+      let ctx!: Context;
+      const runner: HookRunner = {
+        run: async (request) => {
+          if (request.name === 'pre-commit') await onPreCommit(ctx);
+          return { kind: 'ran', exitCode: 0, stdout: '', stderr: '' };
+        },
+      };
+      ctx = createMemoryContext({ hooks: runner });
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/x`, 'x');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top`, 't');
+      await add(ctx, ['a/x', 'top']);
+      await commit(ctx, { message: 'first', author, noVerify: true });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top`, 'changed');
+      await add(ctx, ['top']);
+      return ctx;
+    };
+    const stageHookFile = async (ctx: Context): Promise<void> => {
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/hook`, 'hook');
+      await add(ctx, ['a/hook']);
+    };
+    const rootEntryCountOf = async (ctx: Context): Promise<number | undefined> =>
+      carriedCacheTreeOf((await readIndex(ctx)).extensions, ctx.hashConfig.digestLength)
+        ?.entryCount;
+
+    describe('When commit', () => {
+      it('Then the index is the one the hook wrote and the commit tree holds the hook file', async () => {
+        // Arrange
+        const ctx = await seedStaged(stageHookFile);
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'second', author });
+
+        // Assert
+        expect(await rootEntryCountOf(ctx)).toBe(-1);
+        expect(await committedLeafPathHex(ctx, result.id)).toContain(
+          bytesToHex(new TextEncoder().encode('a/hook')),
+        );
+      });
+    });
+
+    describe('When commit and the hook reads the TREE', () => {
+      it('Then the hook observes the already updated TREE', async () => {
+        // Arrange
+        let seenByHook: number | undefined;
+        const ctx = await seedStaged(async (hookCtx) => {
+          seenByHook = await rootEntryCountOf(hookCtx);
+        });
+        const sut = commit;
+
+        // Act
+        await sut(ctx, { message: 'second', author });
+
+        // Assert
+        expect(seenByHook).toBe(2);
+      });
+    });
+
+    describe('When commit with noVerify', () => {
+      it('Then the hook is not called and the tree comes from the first pass', async () => {
+        // Arrange
+        const ctx = await seedStaged(stageHookFile);
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'second', author, noVerify: true });
+
+        // Assert
+        expect(await committedLeafPathHex(ctx, result.id)).toEqual([
+          bytesToHex(new TextEncoder().encode('a/x')),
+          bytesToHex(new TextEncoder().encode('top')),
+        ]);
+        expect(await rootEntryCountOf(ctx)).toBe(2);
       });
     });
   });

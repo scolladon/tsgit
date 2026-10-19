@@ -54,11 +54,9 @@ import {
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { mergeBasesOf } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
-import { readIndex } from '../primitives/read-index.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook, runInformationalHook } from '../primitives/run-hook.js';
-import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
 import { configuredAutostash } from './internal/autostash-config.js';
@@ -102,7 +100,7 @@ import {
 } from './internal/rebase-state.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
-import { rejectUnmergedIndex } from './internal/unmerged-index.js';
+import { writeContinuedIndex } from './internal/write-index-cache-tree.js';
 import { applyAutostash, createAutostash } from './stash.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
@@ -724,11 +722,9 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
 
 /** Commit the resolved stop (unless it matches HEAD) and replay the rest of the todo. */
 const continueStop = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
-  const index = await readIndex(ctx);
-  rejectUnmergedIndex(index.entries);
+  const tree = await writeContinuedIndex(ctx);
   const stopped = stoppedCommit(state);
   const currentHead = await resolveRef(ctx, HEAD);
-  const tree = await synthesizeTreeFromIndex(ctx, index.entries);
   const rc = replayContextOf(state);
   const rewrittenBefore = await readRewrittenList(ctx);
   const mergeHead = await readMergeHead(ctx);
@@ -1588,9 +1584,7 @@ const rebaseContinueInteractive = async (
     todo: commitEntries(state.remaining),
   };
   const rewritten = [...(await readRewrittenList(ctx))];
-  const index = await readIndex(ctx);
-  rejectUnmergedIndex(index.entries);
-  const tree = await synthesizeTreeFromIndex(ctx, index.entries);
+  const tree = await writeContinuedIndex(ctx);
   const currentHead = await resolveRef(ctx, HEAD);
   const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
   // git's `commit_staged_changes` drops AUTO_MERGE once it commits the stop.

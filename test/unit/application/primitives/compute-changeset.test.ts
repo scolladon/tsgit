@@ -259,4 +259,22 @@ describe('computeChangeset', () => {
       });
     });
   });
+
+  describe('Given an index and a target holding a surrogate-pair path and a U+E000 path', () => {
+    describe('When computeChangeset runs', () => {
+      it('Then entries come in UTF-8 byte order', () => {
+        // Arrange
+        const astral = '\u{1F600}.txt';
+        const privateUse = '\uE000.txt';
+        const index = makeIndex([makeEntry(privateUse, OID_A), makeEntry(astral, OID_A)]);
+        const target = [makeTreeEntry(privateUse, OID_A), makeTreeEntry(astral, OID_A)];
+
+        // Act
+        const result = computeChangeset(index, target);
+
+        // Assert
+        expect(result.entries.map((e) => e.path)).toEqual([privateUse, astral]);
+      });
+    });
+  });
 });

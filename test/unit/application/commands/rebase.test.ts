@@ -18,6 +18,7 @@ import { rm } from '../../../../src/application/commands/rm.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
@@ -25,6 +26,7 @@ import { updateRef } from '../../../../src/application/primitives/update-ref.js'
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { carriedCacheTreeOf } from '../../../../src/domain/git-index/cache-tree-update.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
@@ -717,6 +719,34 @@ describe('rebaseContinue', () => {
         expect(tip.parents.length).toBe(1); // single-parent on the replayed base
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head).toContain('rebase (continue): t2');
+      });
+    });
+  });
+
+  describe('Given a conflict resolved with `add` whose TREE chain is invalid', () => {
+    describe('When continued', () => {
+      it('Then the index TREE is fully valid and names the resolution tree', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
+        await add(ctx, ['f.txt']);
+        const before = carriedCacheTreeOf(
+          (await readIndex(ctx)).extensions,
+          ctx.hashConfig.digestLength,
+        );
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName));
+        const after = carriedCacheTreeOf(
+          (await readIndex(ctx)).extensions,
+          ctx.hashConfig.digestLength,
+        );
+        expect(before?.entryCount).toBe(-1);
+        expect(after?.entryCount).toBeGreaterThanOrEqual(0);
+        expect(after?.id).toBe(tip.tree);
       });
     });
   });

@@ -26,6 +26,9 @@
  *  as clean would survive the reset, AND the donor stats would be stale
  *  relative to the actual disk state.
  */
+
+import { checkoutOverwriteDirty } from '../../domain/commands/error.js';
+import { comparePaths } from '../../domain/diff/index.js';
 import { type GitIndex, type IndexEntry, skipWorktreeEntry } from '../../domain/git-index/index.js';
 import {
   escapedPathOf,
@@ -53,12 +56,14 @@ import {
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { indexRuleEntries } from './internal/index-rule-entries.js';
+import { diffTreesPruned, isBelowShared } from './internal/pruned-tree-diff.js';
 import {
   type AttributeDirection,
   attributeBlobLookup,
   isAttributesPath,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { carryStagedChanges } from './internal/two-way-carry.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
 
 export interface MaterializeTreeOpts {
@@ -93,6 +98,12 @@ export interface MaterializeTreeOpts {
    * classifies as `add`, never `noop`.
    */
   readonly sparse?: SparseMatcher;
+  /**
+   * The tree HEAD points at, set only by a non-forced branch switch. It turns the
+   * index→target diff into git's two-way merge: a path HEAD and the target agree on keeps
+   * its index entry and work file, and a path the index changed to a third version refuses.
+   */
+  readonly headTree?: ObjectId;
 }
 
 export interface MaterializeTreeResult {
@@ -267,11 +278,110 @@ const checkoutDirection = (
   return { kind: 'worktree-first', index: attributeBlobLookup([...kept, ...plan.target]) };
 };
 
-export const materializeTree = async (
+interface CarriedOpts {
+  readonly opts: MaterializeTreeOpts;
+  readonly allTarget: ReadonlyArray<TargetEntry>;
+  /** Stage-0 entries git keeps untouched. */
+  readonly carried: ReadonlyArray<IndexEntry>;
+}
+
+/**
+ * git re-evaluates the sparse patterns of every path the index holds, so these
+ * never stay put; a path absent from the index (a staged deletion) stays absent.
+ */
+const sparseMovers = (
+  sparse: SparseMatcher | undefined,
+  index: ReadonlyArray<IndexEntry>,
+): Set<IndexPathKey> => {
+  if (sparse === undefined) return new Set();
+  const outside = index.filter((e) => !sparse(e.path));
+  const hidden = index.filter((e) => e.flags.skipWorktree);
+  return new Set([...outside, ...hidden].map(indexPathKey));
+};
+
+interface HeadAgreement {
+  /** Paths whose index entry (or absence) the switch leaves alone. */
+  readonly agreed: (key: IndexPathKey) => boolean;
+}
+
+/** Applies git's two-way rule over HEAD, the target and the index, or refuses. */
+const agreementWithHead = async (
+  ctx: Context,
+  opts: MaterializeTreeOpts & { readonly headTree: ObjectId },
+  allTarget: ReadonlyArray<TargetEntry>,
+  stageZero: ReadonlyArray<IndexEntry>,
+): Promise<HeadAgreement> => {
+  const { oldFiles, sharedDirs } = await diffTreesPruned(ctx, opts.headTree, opts.targetTree);
+  const unshared = (e: IndexPath): boolean => !isBelowShared(sharedDirs, indexPathKey(e));
+  const carry = carryStagedChanges(
+    oldFiles,
+    // Stryker disable next-line MethodExpression: equivalent — the index side below is still filtered, so no key under a shared directory has a staged version, and with no HEAD version either it is neither kept nor refused; the filter only bounds the map size.
+    allTarget.filter(unshared),
+    // Stryker disable next-line MethodExpression: equivalent — the target side above is still filtered, so a key under a shared directory has neither a HEAD nor a target version and counts as kept, which `agreed` already says of it; the filter only bounds the map size.
+    stageZero.filter(unshared),
+  );
+  if (carry.refused.length > 0) {
+    throw checkoutOverwriteDirty({
+      localChanges: [...carry.refused].sort(comparePaths),
+      untracked: [],
+    });
+  }
+  return { agreed: (key) => carry.kept.has(key) || isBelowShared(sharedDirs, key) };
+};
+
+/** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
+const carryHeadAgreement = async (
   ctx: Context,
   opts: MaterializeTreeOpts,
+  allTarget: ReadonlyArray<TargetEntry>,
+): Promise<CarriedOpts> => {
+  if (opts.headTree === undefined) return { opts, allTarget, carried: [] };
+  const stageZero = opts.currentIndex.entries.filter((e) => e.flags.stage === 0);
+  const { agreed } = await agreementWithHead(
+    ctx,
+    { ...opts, headTree: opts.headTree },
+    allTarget,
+    stageZero,
+  );
+  const movers = sparseMovers(opts.sparse, stageZero);
+  const isKept = (key: IndexPathKey): boolean => agreed(key) && !movers.has(key);
+  const carried = new Set(stageZero.filter((e) => isKept(indexPathKey(e))));
+  return {
+    opts: {
+      ...opts,
+      currentIndex: {
+        ...opts.currentIndex,
+        entries: opts.currentIndex.entries.filter((e) => !carried.has(e)),
+      },
+    },
+    allTarget: [
+      ...allTarget.filter((e) => !isKept(indexPathKey(e))),
+      ...stagedOutsideTarget(stageZero, allTarget, agreed, movers),
+    ],
+    carried: [...carried],
+  };
+};
+
+/** A staged path the target lacks and the patterns exclude still belongs to the index, as skip-worktree. */
+const stagedOutsideTarget = (
+  stageZero: ReadonlyArray<IndexEntry>,
+  allTarget: ReadonlyArray<TargetEntry>,
+  agreed: (key: IndexPathKey) => boolean,
+  movers: ReadonlySet<IndexPathKey>,
+): IndexEntry[] => {
+  const inTarget = new Set(allTarget.map(indexPathKey));
+  return stageZero.filter((e) => {
+    const key = indexPathKey(e);
+    return movers.has(key) && agreed(key) && !inTarget.has(key);
+  });
+};
+
+export const materializeTree = async (
+  ctx: Context,
+  options: MaterializeTreeOpts,
 ): Promise<MaterializeTreeResult> => {
-  const allTarget = await collectTargetEntries(ctx, opts.targetTree);
+  const fullTarget = await collectTargetEntries(ctx, options.targetTree);
+  const { opts, allTarget, carried } = await carryHeadAgreement(ctx, options, fullTarget);
   const plan = planMaterialize(allTarget, opts);
   // Excluded entries skip the changeset, yet git verifies every path it adds to the index.
   const pathRules = indexPathRulesOf(ctx);
@@ -303,10 +413,10 @@ export const materializeTree = async (
   // Sparse branch-switch: append one synthesised skip-worktree entry per
   // excluded target path so the index keeps every tracked path (git-faithful).
   const newIndexEntries =
-    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already-path-sorted `inScope` (from `mergeNewIndexEntries`) into a content-identical list when `excluded` is empty; the guard only skips that redundant work.
-    plan.excluded.length === 0
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already path-sorted `inScope` (from `mergeNewIndexEntries`, same comparator) into a content-identical list; the guard only skips that redundant work.
+    plan.excluded.length === 0 && carried.length === 0
       ? inScope
-      : sortIndexEntries([...inScope, ...plan.excluded.map(skipWorktreeEntry)]);
+      : sortIndexEntries([...inScope, ...carried, ...plan.excluded.map(skipWorktreeEntry)]);
 
   return {
     newIndexEntries,

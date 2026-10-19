@@ -1,11 +1,11 @@
 import type { Context } from '../../../ports/context.js';
-import { runHook } from '../../primitives/run-hook.js';
+import { runBlockingHook, runHook } from '../../primitives/run-hook.js';
 import { sanitizeMessage } from './commit-message.js';
 
-/** Fire the `pre-commit` hook unless verification is disabled (`--no-verify`). */
-export const runPreCommitHook = async (ctx: Context, noVerify: boolean): Promise<void> => {
-  if (noVerify) return;
-  await runHook(ctx, 'pre-commit');
+/** Fire the `pre-commit` hook unless verification is disabled (`--no-verify`); true iff a hook ran. */
+export const runPreCommitHook = async (ctx: Context, noVerify: boolean): Promise<boolean> => {
+  if (noVerify) return false;
+  return (await runBlockingHook(ctx, 'pre-commit')) === 'ran';
 };
 
 /** git's `prepare-commit-msg` message source (the hook's 2nd argument): `message`

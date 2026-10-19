@@ -151,10 +151,10 @@ describe('Given a tracked modified b.txt that cannot be read and untracked a.txt
       );
       const unreadable = new Proxy(ctx.fs, {
         get(target, prop, receiver) {
-          if (prop !== 'read') return Reflect.get(target, prop, receiver);
-          return async (path: string) => {
+          if (prop !== 'readSlice') return Reflect.get(target, prop, receiver);
+          return async (path: string, offset: number, length: number) => {
             if (path.endsWith('/b.txt')) throw new Error('unreadable b.txt');
-            return target.read(path);
+            return target.readSlice(path, offset, length);
           };
         },
       });
@@ -330,6 +330,64 @@ describe('Given core.safecrlf warn, core.autocrlf true, a deferred first write',
 
       // Assert
       expect(events.indexOf('start 1')).toBeLessThan(events.indexOf('end 0'));
+      expect(result.eolNotices).toEqual([{ path: 'b2', loss: 'lf-to-crlf', crlf: 0, loneLf: 2 }]);
+    });
+  });
+});
+
+/** As `seedTrio`, but b2 converts to its own blob: a write that dedupes onto another's must not hide the overlap. */
+const seedDistinctTrio = async (safecrlf: string): Promise<Context> => {
+  const base = createMemoryContext();
+  await seedRepo(base, { workingTree: { a1: 'x\r\ny\r\n', b2: 'p\nq\n', c3: 'z\r\nw\r\n' } });
+  await base.fs.writeUtf8(
+    `${base.layout.gitDir}/config`,
+    `[core]\n\tautocrlf = true\n\tsafecrlf = ${safecrlf}\n`,
+  );
+  return withSlowLstat(base, '/a1');
+};
+
+describe('Given core.safecrlf true, core.autocrlf true and literals a1 (slow stat), b2, c3', () => {
+  describe('When add names them out of order', () => {
+    it('Then the refusal is b2 and the loose-object write spy saw a1 only', async () => {
+      // Arrange
+      const { ctx, events, written } = withWriteLog(await seedDistinctTrio('true'), 0);
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, ['c3', 'b2', 'a1']);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'b2',
+        loss: 'lf-to-crlf',
+        crlf: 0,
+        loneLf: 2,
+      });
+      expect(events).toEqual(['start 0', 'end 0']);
+      expect(written).toHaveLength(1);
+    });
+  });
+});
+
+describe('Given core.safecrlf warn, core.autocrlf true, literals and a deferred first write', () => {
+  describe('When add names them out of order', () => {
+    it('Then the next write starts while the first is pending and the outcome is in index order', async () => {
+      // Arrange
+      const { ctx, events } = withWriteLog(await seedDistinctTrio('warn'), WATCHDOG_MS);
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['c3', 'b2', 'a1']);
+
+      // Assert
+      expect(events.indexOf('start 1')).toBeLessThan(events.indexOf('end 0'));
+      expect(result.added).toEqual(['a1', 'b2', 'c3']);
       expect(result.eolNotices).toEqual([{ path: 'b2', loss: 'lf-to-crlf', crlf: 0, loneLf: 2 }]);
     });
   });

@@ -46,7 +46,7 @@ describe('commands/internal commit-hooks runPreCommitHook', () => {
         });
 
         // Act & Assert
-        await expect(runPreCommitHook(ctx, true)).resolves.toBeUndefined();
+        await expect(runPreCommitHook(ctx, true)).resolves.toBe(false);
       });
     });
   });
@@ -82,12 +82,58 @@ describe('commands/internal commit-hooks runPreCommitHook', () => {
 
   describe('Given noVerify false and no hook', () => {
     describe('When runPreCommitHook', () => {
-      it('Then it resolves', async () => {
+      it('Then it reports the hook did not run', async () => {
         // Arrange
         const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
 
         // Act & Assert
-        await expect(runPreCommitHook(ctx, false)).resolves.toBeUndefined();
+        await expect(runPreCommitHook(ctx, false)).resolves.toBe(false);
+      });
+    });
+  });
+
+  describe('Given noVerify true', () => {
+    describe('When runPreCommitHook', () => {
+      it('Then the runner is not called', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner({
+          'pre-commit': { kind: 'ran', exitCode: 0, stdout: '', stderr: '' },
+        });
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await runPreCommitHook(ctx, true);
+
+        // Assert
+        expect(runner.calls).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a pre-commit hook that exits 0', () => {
+    describe('When runPreCommitHook', () => {
+      it('Then it reports the hook ran', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          hooks: new MemoryHookRunner({
+            'pre-commit': { kind: 'ran', exitCode: 0, stdout: '', stderr: '' },
+          }),
+        });
+
+        // Act & Assert
+        await expect(runPreCommitHook(ctx, false)).resolves.toBe(true);
+      });
+    });
+  });
+
+  describe('Given no hook runner', () => {
+    describe('When runPreCommitHook', () => {
+      it('Then it reports the hook did not run', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act & Assert
+        await expect(runPreCommitHook(ctx, false)).resolves.toBe(false);
       });
     });
   });

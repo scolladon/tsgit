@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import {
   invalidateCacheTree,
+  invalidateCacheTreeKeepingOids,
   namesEachSubtreeOnce,
   serializeCacheTree,
 } from '../../../../src/domain/git-index/cache-tree.js';
@@ -145,6 +146,38 @@ describe('invalidateCacheTree', () => {
         expect(result.children[0]).not.toHaveProperty('id');
         expect(result.children[0]?.children[0]).toBe(root.children[0]?.children[0]);
         expect(result.children[1]).toBe(root.children[1]);
+      });
+    });
+
+    describe('When invalidateCacheTreeKeepingOids(["d/c"])', () => {
+      it('Then root and d are -1 yet keep the oid they held', () => {
+        // Arrange
+        const root = baseTree();
+        const sut = invalidateCacheTreeKeepingOids;
+
+        // Act
+        const result = sut(root, fp('d/c'));
+
+        // Assert
+        expect(result.entryCount).toBe(-1);
+        expect(result.id).toBe(root.id);
+        expect(result.children[0]?.entryCount).toBe(-1);
+        expect(result.children[0]?.id).toBe(root.children[0]?.id);
+        expect(result.children[1]).toBe(root.children[1]);
+      });
+
+      it('Then a node that held no oid still has none', () => {
+        // Arrange
+        const base = baseTree();
+        const bare = { path: 'x', entryCount: -1, subtreeCount: 0, children: [] };
+        const root = { ...base, children: [base.children[0] as CacheTreeEntry, bare] };
+        const sut = invalidateCacheTreeKeepingOids;
+
+        // Act
+        const result = sut(root, fp('x/n'));
+
+        // Assert
+        expect(result.children[1]).not.toHaveProperty('id');
       });
     });
 
