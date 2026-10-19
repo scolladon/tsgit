@@ -459,6 +459,57 @@ describe('updateCacheTree', () => {
     });
   });
 
+  describe('Given a/s and c/s that share one stored tree, with a/s restaged to a tree that is not stored', () => {
+    describe('When repairing', () => {
+      it('Then the shared tree is probed once and the rebuilt c is probed once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const stored = entriesOf('a/s/x', 'c/s/x', 'c/y');
+        const { cacheTree } = await updateCacheTree(ctx, stored, undefined, 'write');
+        const shared = childNamed(childNamed(cacheTree, 'a'), 's').id;
+        const rebuiltC = childNamed(cacheTree, 'c').id;
+        const seed = invalidateCacheTreeKeepingOids(cacheTree, entriesOf('a/s/x', 'c/y'));
+        const restaged = [
+          { ...entryAt('a/s/x'), id: 'e'.repeat(40) as ObjectId },
+          ...entriesOf('c/s/x', 'c/y'),
+        ];
+        vi.mocked(hasObject).mockClear();
+        const sut = updateCacheTree;
+        // Act
+        await sut(ctx, restaged, seed, 'repair');
+        // Assert
+        const probesOf = (id: ObjectId | undefined) =>
+          vi.mocked(hasObject).mock.calls.filter(([, probed]) => probed === id);
+        expect(probesOf(shared)).toHaveLength(1);
+        expect(probesOf(rebuiltC)).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a/s and c/s that share one stored tree, both restaged to trees that are not stored', () => {
+    describe('When repairing', () => {
+      it('Then the shared earlier tree both fall back on is probed once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const stored = entriesOf('a/s/x', 'c/s/x');
+        const { cacheTree } = await updateCacheTree(ctx, stored, undefined, 'write');
+        const shared = childNamed(childNamed(cacheTree, 'a'), 's').id;
+        const seed = invalidateCacheTreeKeepingOids(cacheTree, entriesOf('a/s/x', 'c/s/x'));
+        const restaged = ['a/s/x', 'c/s/x'].map((path) => ({
+          ...entryAt(path),
+          id: 'e'.repeat(40) as ObjectId,
+        }));
+        vi.mocked(hasObject).mockClear();
+        const sut = updateCacheTree;
+        // Act
+        await sut(ctx, restaged, seed, 'repair');
+        // Assert
+        const probes = vi.mocked(hasObject).mock.calls.filter(([, probed]) => probed === shared);
+        expect(probes).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given entries whose trees all exist', () => {
     describe('When repairing', () => {
       it('Then the tree is fully valid and the ids equal the written ones', async () => {
