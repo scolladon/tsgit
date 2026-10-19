@@ -1207,6 +1207,25 @@ describe('write-working-tree-file', () => {
       });
     });
 
+    describe('Given a blob several inflate chunks over the buffered-write limit', () => {
+      describe('When the blob is written', () => {
+        it('Then the chunks after the limit-crossing one still land in order', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = new Uint8Array(1_048_576 + 100_000).map((_, i) => i % 251);
+          const id = await writeRawObjectBytes(ctx, 'blob', content);
+          const fullPath = `${ctx.layout.workDir}/tail.bin`;
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id);
+
+          // Assert
+          expect(await ctx.fs.read(fullPath)).toEqual(content);
+        });
+      });
+    });
+
     describe('Given a blob over the buffered-write limit and a file system whose stream write fails', () => {
       describe('When the blob is written', () => {
         it('Then the failure is rethrown, the partial file is gone and the inflate source is cancelled', async () => {
