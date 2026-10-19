@@ -416,6 +416,25 @@ describe('stash carries index extensions', () => {
     });
   });
 
+  describe('Given a staged edit and an index carrying extensions', () => {
+    describe('When stash push resets the index to HEAD without keeping it', () => {
+      it('Then no cache-tree chain is invalid', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'staged\n');
+        await add(ctx, ['x/y']);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPush;
+        await sut(ctx, {});
+
+        // Assert
+        expect(await chains(ctx)).toEqual(ALL_VALID);
+      });
+    });
+  });
+
   describe('Given a staged new file and an index carrying extensions', () => {
     describe('When stash push --keep-index keeps the new file staged', () => {
       it('Then the cache-tree is invalid along the new path and valid elsewhere', async () => {
@@ -431,6 +450,52 @@ describe('stash carries index extensions', () => {
 
         // Assert
         expect(await chains(ctx)).toEqual([false, false, false, true]);
+      });
+    });
+  });
+
+  describe('Given a staged deletion and an index carrying extensions', () => {
+    describe('When stash push --keep-index keeps the deletion staged', () => {
+      it('Then the cache-tree is invalid along the deleted path and valid elsewhere', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await rm(ctx, ['d/c']);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPush;
+        await sut(ctx, { keepIndex: true });
+
+        // Assert
+        expect(await chains(ctx)).toEqual([false, false, true, true]);
+      });
+    });
+  });
+
+  describe('Given a staged mode change with the same blob and an index carrying extensions', () => {
+    describe('When stash push --keep-index keeps the mode change staged', () => {
+      it('Then the cache-tree is invalid along the mode-changed path only', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        const baseLstat = ctx.fs.lstat;
+        const execFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const real = await baseLstat(path);
+              return path.endsWith('/x/y') ? { ...real, mode: real.mode | 0o111 } : real;
+            };
+          },
+        });
+        await add({ ...ctx, fs: execFs }, ['x/y']);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPush;
+        await sut(ctx, { keepIndex: true });
+
+        // Assert
+        expect(await chains(ctx)).toEqual([false, true, true, false]);
       });
     });
   });
