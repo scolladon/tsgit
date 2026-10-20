@@ -1191,6 +1191,9 @@ const CASES: ReadonlyArray<LapCase> = [
     columnToRow: [0, 1, 2, 3],
     rowToColumn: [0, 1, 2, 3],
   },
+  // The four rows below are pinned to git's own solver (linear-assignment.c of git
+  // 2.55.0, compiled against a stub compat header), not to this port: each once sent
+  // the augmenting walk to j = -1, where it never returned.
   {
     n: 7,
     cost: [
