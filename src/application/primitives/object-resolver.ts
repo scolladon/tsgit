@@ -930,7 +930,7 @@ async function collectDeltaChain(
 }
 
 /** An OFS_DELTA's base offset is a distance BACK from the entry's own offset
- *  — never forward, and never off the front of the pack. Exported so
+ *  — never forward, never itself, and never off the front of the pack. Exported so
  *  `readObjectMetadata`'s header-only base-type walk (read-object.ts) reuses
  *  the same arithmetic rather than re-deriving it. */
 export function ofsDeltaBaseOffset(
@@ -939,7 +939,7 @@ export function ofsDeltaBaseOffset(
   baseDistance: number,
 ): number {
   const baseOffset = entryOffset - baseDistance;
-  if (baseOffset < 0) {
+  if (baseDistance === 0 || baseOffset < 0) {
     throw objectNotFound(targetId);
   }
   return baseOffset;

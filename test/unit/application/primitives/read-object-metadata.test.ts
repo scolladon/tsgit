@@ -393,6 +393,39 @@ describe('readObjectMetadata', () => {
     });
   });
 
+  describe('Given an OFS_DELTA whose base distance is zero (it names its own offset)', () => {
+    describe('When readObjectMetadata is called on it', () => {
+      it('Then throws OBJECT_NOT_FOUND for the delta id instead of walking until the depth cap', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'meta-zero-distance', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('zero-distance base') },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 0,
+            targetContent: new TextEncoder().encode('zero-distance target'),
+            distanceOverride: 0,
+          },
+        ]);
+        const deltaId = ids[1] as ObjectId;
+
+        // Act
+        try {
+          await readObjectMetadata(ctx, deltaId);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code !== 'OBJECT_NOT_FOUND') {
+            expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+          }
+          expect(data.id).toBe(deltaId);
+        }
+      });
+    });
+  });
+
   describe('Given an absent oid', () => {
     describe('When readObjectMetadata is called', () => {
       it('Then throws OBJECT_NOT_FOUND', async () => {

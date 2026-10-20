@@ -251,6 +251,23 @@ async function typeFromEntry(
   }
 }
 
+type PackEntryHeader = ReturnType<typeof parsePackEntryHeader>;
+
+/** One OFS_DELTA hop: the base entry in the same pack, or the degrade when the
+ *  distance names the entry itself or reaches before the pack body. */
+function followOfsBase(
+  ctx: Context,
+  id: ObjectId,
+  hit: PackLookupHit,
+  header: Extract<PackEntryHeader, { readonly type: typeof PACK_ENTRY_TYPE.OFS_DELTA }>,
+): PackLookupHit | TypedOrUntyped {
+  const baseOffset = hit.offset - header.baseDistance;
+  if (header.baseDistance === 0 || baseOffset < 0) {
+    return untypedFault(ctx, id, 'OFS_DELTA base offset out of range');
+  }
+  return { pack: hit.pack, offset: baseOffset };
+}
+
 async function walkDeltaChain(
   ctx: Context,
   registry: PackRegistry,
@@ -263,9 +280,9 @@ async function walkDeltaChain(
     const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
-      const baseOffset = currentHit.offset - header.baseDistance;
-      if (baseOffset < 0) return untypedFault(ctx, id, 'OFS_DELTA base offset out of range');
-      currentHit = { pack: currentHit.pack, offset: baseOffset };
+      const next = followOfsBase(ctx, id, currentHit, header);
+      if ('kind' in next) return next;
+      currentHit = next;
       continue;
     }
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) {

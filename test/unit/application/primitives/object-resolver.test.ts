@@ -4644,6 +4644,40 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given an OFS_DELTA whose base distance is zero (it names its own offset)', () => {
+      describe('When resolveObject runs', () => {
+        it('Then throws OBJECT_NOT_FOUND for the delta id instead of revisiting the entry', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await writeSyntheticPack(ctx, 'ofs-zero-distance', [
+            { kind: 'base', type: 'blob', content: ENC.encode('zero-distance base') },
+            {
+              kind: 'ofs-delta',
+              baseIndex: 0,
+              targetContent: ENC.encode('zero-distance target'),
+              distanceOverride: 0,
+            },
+          ]);
+          const deltaId = ids[1] as ObjectId;
+          const registry = await createPackRegistry(ctx);
+
+          // Act
+          try {
+            await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId, false);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_NOT_FOUND');
+            if (data.code !== 'OBJECT_NOT_FOUND') {
+              expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+            }
+            expect(data.id).toBe(deltaId);
+          }
+        });
+      });
+    });
+
     describe('Given an OFS_DELTA whose base distance lands exactly on offset 0', () => {
       describe('When resolveObject runs', () => {
         it('Then the chain proceeds past the negative guard and throws INVALID_PACK_INDEX (kills the nextOffset<0 equality operator)', async () => {

@@ -5259,6 +5259,40 @@ describe('Given a packed OFS_DELTA whose base distance points before the pack bo
   });
 });
 
+describe('Given a packed OFS_DELTA whose base distance is zero (it names its own offset), with a stale loose garbled copy at the same id', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then resolves with dangling/unknown and logs the out-of-range reason', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'zero-distance', [
+        { kind: 'base', type: 'blob', content: enc.encode('zero-distance base') },
+        {
+          kind: 'ofs-delta',
+          baseIndex: 0,
+          targetContent: enc.encode('zero-distance target'),
+          distanceOverride: 0,
+        },
+      ]);
+      const deltaId = ids[1] as ObjectId;
+      await writeGarbageLooseObject(ctx, deltaId, GARBAGE_BYTES);
+      const { ctx: logged, calls } = withWarnLog(ctx);
+
+      // Act
+      const result = await fsck(logged, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === deltaId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      const warned = calls.find((c) => c.context?.objectId === deltaId);
+      expect(warned?.message).toBe('fsck: stored type probe degraded');
+      expect(warned?.context?.reason).toBe('OFS_DELTA base offset out of range');
+    });
+  });
+});
+
 describe('Given a packed OFS_DELTA whose base distance lands exactly on offset 0, with a stale loose garbled copy at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then the guard does not trip — kills the baseOffset<=0 mutant, which would degrade here', async () => {
