@@ -49,7 +49,12 @@ import {
   writeLooseWithDeclaredSize,
   writeRawObjectBytes,
 } from './fixtures.js';
-import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
+import {
+  buildSyntheticPack,
+  type EntrySpec,
+  syntheticBlobId,
+  writeSyntheticPack,
+} from './pack-fixture.js';
 
 vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../src/domain/storage/index.js')>();
@@ -4601,6 +4606,163 @@ describe('object-resolver', () => {
         expect((coldCaught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
         expect(warmResult.type).toBe('blob');
         expect((warmResult as Blob).content).toEqual(bTipContent);
+      });
+    });
+  });
+
+  describe('REF_DELTA cycle guard', () => {
+    const T = ENC.encode('cycle self content');
+    const X = ENC.encode('cycle content X');
+    const Y = ENC.encode('cycle content Y');
+    const Z = ENC.encode('cycle content Z, an offset delta');
+
+    async function installPack(ctx: Context, name: string, entries: ReadonlyArray<EntrySpec>) {
+      const built = await buildSyntheticPack(ctx, entries);
+      const base = `${ctx.layout.gitDir}/objects/pack/pack-${name}`;
+      await ctx.fs.write(`${base}.pack`, built.packBytes);
+      await ctx.fs.write(`${base}.idx`, built.idxBytes);
+      return built;
+    }
+
+    async function twoCycle(ctx: Context): Promise<ReadonlyArray<EntrySpec>> {
+      return [
+        {
+          kind: 'ref-delta',
+          baseId: await syntheticBlobId(ctx, Y),
+          baseUncompressed: Y,
+          targetContent: X,
+        },
+        {
+          kind: 'ref-delta',
+          baseId: await syntheticBlobId(ctx, X),
+          baseUncompressed: X,
+          targetContent: Y,
+        },
+      ];
+    }
+
+    async function expectCycleRefusal(ctx: Context, id: string, offset: number) {
+      const registry = await createPackRegistry(ctx);
+      try {
+        await resolveObject(ctx, soleSourceStore(ctx, registry), id as ObjectId, false);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.offset).toBe(offset);
+        expect(data.reason).toBe('delta base cycle');
+      }
+    }
+
+    describe('Given a REF_DELTA whose base is its own id', () => {
+      describe('When resolveObject runs', () => {
+        it('Then throws INVALID_PACK_ENTRY with the cycle reason at the entry offset', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { ids, offsets } = await installPack(ctx, 'ref-self', [
+            {
+              kind: 'ref-delta',
+              baseId: await syntheticBlobId(ctx, T),
+              baseUncompressed: T,
+              targetContent: T,
+            },
+          ]);
+
+          // Act / Assert
+          await expectCycleRefusal(ctx, ids[0] as string, offsets[0] as number);
+        });
+      });
+    });
+
+    describe('Given two REF_DELTA entries that name each other as base', () => {
+      describe('When resolveObject runs on the first', () => {
+        it('Then throws INVALID_PACK_ENTRY with the cycle reason at the first entry offset', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { ids, offsets } = await installPack(ctx, 'ref-two', await twoCycle(ctx));
+
+          // Act / Assert
+          await expectCycleRefusal(ctx, ids[0] as string, offsets[0] as number);
+        });
+      });
+    });
+
+    describe('Given a REF_DELTA cycle entered after an OFS_DELTA run', () => {
+      describe('When resolveObject runs on the OFS_DELTA', () => {
+        it('Then throws INVALID_PACK_ENTRY with the cycle reason at the first entry offset', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const entries: ReadonlyArray<EntrySpec> = [
+            ...(await twoCycle(ctx)),
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: Z },
+          ];
+          const { ids, offsets } = await installPack(ctx, 'ref-after-ofs', entries);
+
+          // Act / Assert
+          await expectCycleRefusal(ctx, ids[2] as string, offsets[0] as number);
+        });
+      });
+    });
+
+    describe('Given a base object duplicated in two packs and a REF_DELTA onto it in a third', () => {
+      describe('When resolveObject runs on the delta', () => {
+        it('Then resolves to the delta target content', async () => {
+          // Arrange
+          const B = ENC.encode('duplicated base content');
+          const ctx = await buildSeededContext();
+          const [baseId] = await writeSyntheticPack(ctx, 'ref-dup-a', [
+            { kind: 'base', type: 'blob', content: B },
+          ]);
+          await writeSyntheticPack(ctx, 'ref-dup-b', [{ kind: 'base', type: 'blob', content: B }]);
+          const [deltaId] = await writeSyntheticPack(ctx, 'ref-dup-c', [
+            { kind: 'ref-delta', baseId: baseId as string, baseUncompressed: B, targetContent: T },
+          ]);
+          const registry = await createPackRegistry(ctx);
+
+          // Act
+          const result = await resolveObject(
+            ctx,
+            soleSourceStore(ctx, registry),
+            deltaId as ObjectId,
+            false,
+          );
+
+          // Assert
+          expect((result as Blob).content).toEqual(T);
+        });
+      });
+    });
+
+    describe('Given a two-hop REF_DELTA chain', () => {
+      describe('When the tip is resolved twice concurrently on the same context', () => {
+        it('Then both reads resolve to the tip content', async () => {
+          // Arrange
+          const B = ENC.encode('two-hop base content');
+          const ctx = await buildSeededContext();
+          const [baseId] = await writeSyntheticPack(ctx, 'ref-hop-base', [
+            { kind: 'base', type: 'blob', content: B },
+          ]);
+          const [r1Id] = await writeSyntheticPack(ctx, 'ref-hop-r1', [
+            { kind: 'ref-delta', baseId: baseId as string, baseUncompressed: B, targetContent: X },
+          ]);
+          const [r2Id] = await writeSyntheticPack(ctx, 'ref-hop-r2', [
+            { kind: 'ref-delta', baseId: r1Id as string, baseUncompressed: X, targetContent: Y },
+          ]);
+          const registry = await createPackRegistry(ctx);
+          const store = soleSourceStore(ctx, registry);
+
+          // Act
+          const results = await Promise.all([
+            resolveObject(ctx, store, r2Id as ObjectId, false),
+            resolveObject(ctx, store, r2Id as ObjectId, false),
+          ]);
+
+          // Assert
+          expect(results.map((r) => (r as Blob).content)).toEqual([Y, Y]);
+        });
       });
     });
   });

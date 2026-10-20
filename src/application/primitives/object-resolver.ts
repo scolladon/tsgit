@@ -305,6 +305,7 @@ export async function resolveObjectContentWithDepth(
   maxBytes: number | undefined,
   externalDepth: number,
   mode: LooseReadMode = 'buffered',
+  refBases?: Set<ObjectId>,
 ): Promise<ObjectContent & { chainDepth: number; declaredSize: number }> {
   // An already-aborted read honours the abort before paying any scan I/O.
   checkAborted(ctx);
@@ -327,6 +328,7 @@ export async function resolveObjectContentWithDepth(
     maxBytes,
     externalDepth,
     mode,
+    refBases,
   );
   if (first !== undefined) return first;
 
@@ -337,7 +339,7 @@ export async function resolveObjectContentWithDepth(
   // store since the last scan. `retryOnceAfterRescan` single-flights the
   // re-scan across concurrent misses and honours an abort raised during it.
   const retried = await retryOnceAfterRescan(ctx, store, id, () =>
-    tryResolveViaSources(ctx, store, id, verifyHash, maxBytes, externalDepth, mode),
+    tryResolveViaSources(ctx, store, id, verifyHash, maxBytes, externalDepth, mode, refBases),
   );
   if (retried !== undefined) return retried;
   throw objectNotFound(id);
@@ -382,6 +384,7 @@ async function tryResolveViaSources(
   maxBytes: number | undefined,
   externalDepth: number,
   mode: LooseReadMode,
+  refBases: Set<ObjectId> | undefined,
 ): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
   for (const source of store.sources) {
     const found = await tryResolveViaSource(
@@ -393,6 +396,7 @@ async function tryResolveViaSources(
       maxBytes,
       externalDepth,
       mode,
+      refBases,
     );
     if (found !== undefined) return found;
   }
@@ -408,6 +412,7 @@ async function tryResolveViaSource(
   maxBytes: number | undefined,
   externalDepth: number,
   mode: LooseReadMode,
+  refBases: Set<ObjectId> | undefined,
 ): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
   const hit = await source.registry.lookup(id);
   if (hit === undefined) {
@@ -422,6 +427,7 @@ async function tryResolveViaSource(
     id,
     maxBytes,
     externalDepth,
+    refBases,
   );
   checkAborted(ctx);
   await verifyObjectContent(ctx, id, resolved.type, resolved.content, verifyHash);
@@ -829,6 +835,7 @@ async function collectDeltaChain(
   targetId: ObjectId,
   maxBytes: number | undefined,
   externalDepth: number,
+  refBases: Set<ObjectId> | undefined,
 ): Promise<Phase1Result> {
   const deltas: DeltaStep[] = [];
   let currentHit: PackLookupHit = hit;
@@ -897,6 +904,7 @@ async function collectDeltaChain(
     }
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) {
       const refDeltaBaseId = header.baseId;
+      const walked = enterRefBase(refBases, refDeltaBaseId, currentHit.offset);
       deltas.push({
         instructions,
         resolvedBaseId: refDeltaBaseId,
@@ -916,6 +924,7 @@ async function collectDeltaChain(
         refDeltaBaseId,
         maxBytes,
         externalDepth + depth,
+        walked,
       );
       return {
         deltas,
@@ -945,6 +954,23 @@ export function ofsDeltaBaseOffset(
   return baseOffset;
 }
 
+const DELTA_BASE_CYCLE_REASON = 'delta base cycle';
+
+/** Records a REF_DELTA hop's base id in the walk's memory and refuses a repeat.
+ *  A delta cycle must contain a REF hop (an OFS run is strictly decreasing), so
+ *  REF base ids alone detect it. The set is per read and never shared. Exported
+ *  so `readObjectMetadata`'s header-only walk reuses it. */
+export function enterRefBase(
+  walked: Set<ObjectId> | undefined,
+  baseId: ObjectId,
+  entryOffset: number,
+): Set<ObjectId> {
+  if (walked?.has(baseId)) {
+    throw invalidPackEntry(entryOffset, DELTA_BASE_CYCLE_REASON);
+  }
+  return (walked ?? new Set<ObjectId>()).add(baseId);
+}
+
 export async function resolvePackChain(
   ctx: Context,
   store: ObjectStore,
@@ -961,6 +987,7 @@ export async function resolvePackChain(
     targetId,
     maxBytes,
     0,
+    undefined,
   );
   return { type, content };
 }
@@ -981,6 +1008,7 @@ async function resolvePackChainWithDepth(
   targetId: ObjectId,
   maxBytes: number | undefined,
   externalDepth: number,
+  refBases: Set<ObjectId> | undefined,
 ): Promise<ObjectContent & { chainDepth: number }> {
   const phase1 = await collectDeltaChain(
     ctx,
@@ -990,6 +1018,7 @@ async function resolvePackChainWithDepth(
     targetId,
     maxBytes,
     externalDepth,
+    refBases,
   );
 
   // Bounds how many bytes THIS chain read may insert into the shared
@@ -1123,6 +1152,7 @@ async function resolveBaseForRefDelta(
   baseId: ObjectId,
   maxBytes: number | undefined,
   externalDepth: number,
+  refBases: Set<ObjectId>,
 ): Promise<{ content: Uint8Array; type: PackEntryHeader['type']; chainDepth: number }> {
   // Resolve the base object (may recurse into another chain) and read its
   // type + content straight from the cache — no header to strip.
@@ -1161,6 +1191,8 @@ async function resolveBaseForRefDelta(
     false,
     maxBytes,
     externalDepth,
+    'buffered',
+    refBases,
   );
   return {
     content: resolved.content,

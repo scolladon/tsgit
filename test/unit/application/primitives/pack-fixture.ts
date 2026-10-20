@@ -414,6 +414,11 @@ function resolvedTypeOf(entries: ReadonlyArray<EntrySpec>, index: number): BaseE
   return 'blob';
 }
 
+/** The id a REF entry with this `targetContent` will get (REF entries resolve as blobs). */
+export async function syntheticBlobId(ctx: Context, content: Uint8Array): Promise<string> {
+  return ctx.hash.hashHex(prependObjectHeader(content, 'blob'));
+}
+
 function prependObjectHeader(content: Uint8Array, type: string): Uint8Array {
   const headerStr = `${type} ${content.length}\0`;
   const headerBytes = new TextEncoder().encode(headerStr);
