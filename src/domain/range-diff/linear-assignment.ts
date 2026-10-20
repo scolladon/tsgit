@@ -285,7 +285,7 @@ const augmentOne = (s: Lap, i1: number): void => {
     const j1 = col[k]!;
     s.v[j1] = i32(s.v[j1]! + (d[j1]! - path.min));
   }
-  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — `search.j` is assigned on the first expansion pass, which runs from `k = 1` to `columnCount - 1` and so executes for every `columnCount >= 2` (smaller sizes return before augmentation), so `path.j` is never negative and the guard cannot fire.
+  // Stryker disable next-line BlockStatement: equivalent — `search.j` is assigned on the first expansion pass, which runs from `k = 1` to `columnCount - 1` and so executes for every `columnCount >= 2` (smaller sizes return before augmentation), so `path.j` is never negative and the guard cannot fire.
   if (path.j < 0) throw new Error('negative j');
   let j = path.j;
   let i: number;
