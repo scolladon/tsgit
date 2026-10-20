@@ -5442,9 +5442,8 @@ async function installBuiltPack(
   name: string,
   built: { readonly packBytes: Uint8Array; readonly idxBytes: Uint8Array },
 ): Promise<void> {
-  const base = `${ctx.layout.gitDir}/objects/pack/pack-${name}`;
-  await ctx.fs.write(`${base}.pack`, built.packBytes);
-  await ctx.fs.write(`${base}.idx`, built.idxBytes);
+  await ctx.fs.write(packFilePath(ctx, name), built.packBytes);
+  await ctx.fs.write(idxFilePath(ctx, name), built.idxBytes);
 }
 
 describe('Given a packed REF_DELTA whose base is its own id and no loose copy', () => {
