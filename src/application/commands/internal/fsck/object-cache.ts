@@ -268,6 +268,25 @@ function followOfsBase(
   return { pack: hit.pack, offset: baseOffset };
 }
 
+type RefStep = { readonly hit: PackLookupHit; readonly walked: Set<ObjectId> } | TypedOrUntyped;
+
+/** One REF_DELTA hop: the base's claimed entry, or the degrade when the base
+ *  was already visited (a cycle) or no accessible pack claims it. */
+async function followRefBase(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+  baseId: ObjectId,
+  walked: Set<ObjectId> | undefined,
+): Promise<RefStep> {
+  if (walked?.has(baseId)) return untypedFault(ctx, id, 'delta chain cycle');
+  const hit = await registry.lookup(baseId);
+  if (hit === undefined) {
+    return untypedFault(ctx, id, 'REF_DELTA base not claimed by any accessible pack');
+  }
+  return { hit, walked: (walked ?? new Set<ObjectId>()).add(baseId) };
+}
+
 async function walkDeltaChain(
   ctx: Context,
   registry: PackRegistry,
@@ -275,6 +294,7 @@ async function walkDeltaChain(
   hit: PackLookupHit,
 ): Promise<TypedOrUntyped> {
   let currentHit = hit;
+  let walked: Set<ObjectId> | undefined;
   for (let depth = 0; depth <= MAX_DELTA_CHAIN_DEPTH; depth += 1) {
     const chunk = await currentHit.pack.readSlice(currentHit.offset, ENTRY_HEADER_PROBE_BYTES);
     const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
@@ -286,11 +306,10 @@ async function walkDeltaChain(
       continue;
     }
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) {
-      const nextHit = await registry.lookup(header.baseId);
-      if (nextHit === undefined) {
-        return untypedFault(ctx, id, 'REF_DELTA base not claimed by any accessible pack');
-      }
-      currentHit = nextHit;
+      const next = await followRefBase(ctx, registry, id, header.baseId, walked);
+      if ('kind' in next) return next;
+      currentHit = next.hit;
+      walked = next.walked;
       continue;
     }
 

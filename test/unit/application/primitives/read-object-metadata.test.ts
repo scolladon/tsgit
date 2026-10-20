@@ -25,7 +25,12 @@ import type { Context } from '../../../../src/ports/context.js';
 import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
 import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
 import type { EntrySpec } from './pack-fixture.js';
-import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from './pack-fixture.js';
+import {
+  buildSyntheticPack,
+  corruptIdxOffset,
+  syntheticBlobId,
+  writeSyntheticPack,
+} from './pack-fixture.js';
 
 /** git's zlib stored-block encoding of an empty block: BFINAL=0, BTYPE=00
  *  (stored), byte-aligned; LEN=0x0000 then its one's-complement NLEN=0xFFFF.
@@ -422,6 +427,81 @@ describe('readObjectMetadata', () => {
           }
           expect(data.id).toBe(deltaId);
         }
+      });
+    });
+  });
+
+  describe('REF_DELTA cycle guard', () => {
+    const SELF = new TextEncoder().encode('meta cycle self content');
+    const X = new TextEncoder().encode('meta cycle content X');
+    const Y = new TextEncoder().encode('meta cycle content Y');
+
+    async function installPack(ctx: Context, name: string, entries: ReadonlyArray<EntrySpec>) {
+      const built = await buildSyntheticPack(ctx, entries);
+      const base = `${ctx.layout.gitDir}/objects/pack/pack-${name}`;
+      await ctx.fs.write(`${base}.pack`, built.packBytes);
+      await ctx.fs.write(`${base}.idx`, built.idxBytes);
+      return built;
+    }
+
+    async function expectCycleRefusal(ctx: Context, id: string, offset: number) {
+      try {
+        await readObjectMetadata(ctx, id as ObjectId);
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.offset).toBe(offset);
+        expect(data.reason).toBe('delta base cycle');
+      }
+    }
+
+    describe('Given a REF_DELTA whose base is its own id', () => {
+      describe('When readObjectMetadata is called on it', () => {
+        it('Then throws INVALID_PACK_ENTRY with the cycle reason at the entry offset', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { ids, offsets } = await installPack(ctx, 'meta-ref-self', [
+            {
+              kind: 'ref-delta',
+              baseId: await syntheticBlobId(ctx, SELF),
+              baseUncompressed: SELF,
+              targetContent: SELF,
+            },
+          ]);
+
+          // Act / Assert
+          await expectCycleRefusal(ctx, ids[0] as string, offsets[0] as number);
+        });
+      });
+    });
+
+    describe('Given two REF_DELTA entries that name each other as base', () => {
+      describe('When readObjectMetadata is called on the first', () => {
+        it('Then throws INVALID_PACK_ENTRY with the cycle reason at the first entry offset', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { ids, offsets } = await installPack(ctx, 'meta-ref-two-cycle', [
+            {
+              kind: 'ref-delta',
+              baseId: await syntheticBlobId(ctx, Y),
+              baseUncompressed: Y,
+              targetContent: X,
+            },
+            {
+              kind: 'ref-delta',
+              baseId: await syntheticBlobId(ctx, X),
+              baseUncompressed: X,
+              targetContent: Y,
+            },
+          ]);
+
+          // Act / Assert
+          await expectCycleRefusal(ctx, ids[0] as string, offsets[0] as number);
+        });
       });
     });
   });

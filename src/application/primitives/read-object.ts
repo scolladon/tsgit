@@ -17,6 +17,7 @@ import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.
 import { looseLocationOf, type SourceLocation } from './internal/source-location.js';
 import {
   assertChainDepthWithinCap,
+  enterRefBase,
   isBase,
   LOOSE_HEADER_WINDOW,
   looseHeaderTooLong,
@@ -560,7 +561,11 @@ async function walkDeltaBaseType(
   let currentHit = hit;
   let currentHeader = header;
   let depth = 1;
+  let walked: Set<ObjectId> | undefined;
   for (;;) {
+    if (currentHeader.type === PACK_ENTRY_TYPE.REF_DELTA) {
+      walked = enterRefBase(walked, currentHeader.baseId, currentHit.offset);
+    }
     const nextHit = await nextDeltaHit(registry, currentHit, currentHeader, targetId);
     const { header: nextHeader } = await readEntryHeaderAt(ctx, nextHit);
     if (!isDeltaHeader(nextHeader)) {

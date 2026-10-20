@@ -56,6 +56,7 @@ import {
   corruptIdxOffset,
   type EntrySpec,
   restampPackHeader,
+  syntheticBlobId,
   writeSyntheticBitmap,
   writeSyntheticPack,
   writeSyntheticPackIn,
@@ -5289,6 +5290,83 @@ describe('Given a packed OFS_DELTA whose base distance is zero (it names its own
       const warned = calls.find((c) => c.context?.objectId === deltaId);
       expect(warned?.message).toBe('fsck: stored type probe degraded');
       expect(warned?.context?.reason).toBe('OFS_DELTA base offset out of range');
+    });
+  });
+});
+
+describe('REF_DELTA cycle guard', () => {
+  const SELF = enc.encode('fsck cycle self content');
+  const X = enc.encode('fsck cycle content X');
+  const Y = enc.encode('fsck cycle content Y');
+
+  describe('Given a packed REF_DELTA whose base is its own id', () => {
+    describe('When fsck runs with connectivityOnly: true', () => {
+      it('Then the entry is dangling/unknown and the degrade reason is the cycle', async () => {
+        // Arrange
+        const ctx = await initBareCtx();
+        const ids = await writeSyntheticPack(ctx, 'fsck-ref-self', [
+          {
+            kind: 'ref-delta',
+            baseId: await syntheticBlobId(ctx, SELF),
+            baseUncompressed: SELF,
+            targetContent: SELF,
+          },
+        ]);
+        await writeGarbageLooseObject(ctx, ids[0] as ObjectId, GARBAGE_BYTES);
+        const { ctx: logged, calls } = withWarnLog(ctx);
+
+        // Act
+        const result = await fsck(logged, { connectivityOnly: true });
+
+        // Assert
+        const dangling = result.findings.find(
+          (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === ids[0],
+        );
+        expect((dangling as { objectType: string }).objectType).toBe('unknown');
+        const warned = calls.find((c) => c.context?.objectId === ids[0]);
+        expect(warned?.message).toBe('fsck: stored type probe degraded');
+        expect(warned?.context?.reason).toBe('delta chain cycle');
+      });
+    });
+  });
+
+  describe('Given two packed REF_DELTA entries that name each other as base', () => {
+    describe('When fsck runs with connectivityOnly: true', () => {
+      it('Then both entries are dangling/unknown with the cycle reason', async () => {
+        // Arrange
+        const ctx = await initBareCtx();
+        const ids = await writeSyntheticPack(ctx, 'fsck-ref-two-cycle', [
+          {
+            kind: 'ref-delta',
+            baseId: await syntheticBlobId(ctx, Y),
+            baseUncompressed: Y,
+            targetContent: X,
+          },
+          {
+            kind: 'ref-delta',
+            baseId: await syntheticBlobId(ctx, X),
+            baseUncompressed: X,
+            targetContent: Y,
+          },
+        ]);
+        for (const id of ids) {
+          await writeGarbageLooseObject(ctx, id as ObjectId, GARBAGE_BYTES);
+        }
+        const { ctx: logged, calls } = withWarnLog(ctx);
+
+        // Act
+        const result = await fsck(logged, { connectivityOnly: true });
+
+        // Assert
+        for (const id of ids) {
+          const dangling = result.findings.find(
+            (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+          );
+          expect((dangling as { objectType: string }).objectType).toBe('unknown');
+          const warned = calls.find((c) => c.context?.objectId === id);
+          expect(warned?.context?.reason).toBe('delta chain cycle');
+        }
+      });
     });
   });
 });
