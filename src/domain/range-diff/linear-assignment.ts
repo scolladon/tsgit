@@ -299,6 +299,7 @@ const augmentOne = (s: Lap, i1: number): void => {
     const j1 = col[k]!;
     s.v[j1] = i32(s.v[j1]! + (d[j1]! - path.min));
   }
+  // Stryker disable next-line CallExpression: equivalent — the call mirrors git's `BUG("negative j")` and cannot fire: `search.j` is a real column after the first expansion pass (every `columnCount >= 2`), and smaller sizes return before augmentation.
   assertColumnIndex(path.j);
   let j = path.j;
   let i: number;
