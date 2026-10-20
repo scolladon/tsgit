@@ -110,9 +110,9 @@ above the 23.9 MiB demand curve), the instrumented hit count came back short: 13
 that should have been hits were misses. Root cause: pass 1 inserts **every** base object,
 not only the ones later found to have children, and fixture C carries 4 794 total base
 objects — more than the 4 096 entry cap. The entry cap was evicting still-needed roots
-purely from count pressure, at a budget far under the byte ceiling — exactly the failure
-mode the earlier parsed-commit memo record described (count-pressure eviction below the byte
-ceiling), but triggered by a **real repository's** base-object
+purely from count pressure, at a budget far under the byte ceiling — the same ~4 096-entry LRU cliff
+the parsed-commit memo hit — there from its byte cap, here from the entry cap at a budget far
+under the byte ceiling — but triggered by a **real repository's** base-object
 count, not only a crafted adversarial pack.
 
 Fixed by raising `INDEX_PASS_BASE_CACHE_MAX_ENTRIES` to 65 536 (matching the sibling
