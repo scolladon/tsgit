@@ -311,7 +311,7 @@ export function probeDeltaBaseCache(
 /**
  * Fixed per-entry overhead the raw content length alone doesn't account for:
  * the `${instanceKey}:${offset}` key string, the LRU's own node object, and the
- * `{ type, content, chainDepth }` wrapper. Its presence alone keeps the
+ * `{ type, content }` wrapper. Its presence alone keeps the
  * result positive — `LruCache.set` requires a positive `byteSize`, and a
  * genuinely empty reconstructed intermediate (an empty blob mid-chain) is
  * still worth caching — so no separate floor is needed on top of it.
@@ -361,12 +361,7 @@ export function cacheDeltaBase(
   key: string,
   type: PackEntryHeader['type'],
   content: Uint8Array,
-  chainDepth: number,
 ): boolean {
   if (!deltaBaseCachingEnabled(ctx)) return false;
-  return registry.deltaBaseCache.set(
-    key,
-    { type, content, chainDepth },
-    deltaBaseCacheEntrySize(content),
-  );
+  return registry.deltaBaseCache.set(key, { type, content }, deltaBaseCacheEntrySize(content));
 }

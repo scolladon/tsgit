@@ -1371,7 +1371,7 @@ describe('object-resolver', () => {
       describe('When resolveObjectContentWithDepth would otherwise proceed to resolve the pack chain', () => {
         it('Then it throws OPERATION_ABORTED before resolving the chain — collectDeltaChain never even reads the offset table', async () => {
           // Arrange — offsetTable() is the very FIRST thing
-          // resolvePackChainWithDepth's collectDeltaChain does, ahead of
+          // resolvePackChain's collectDeltaChain does, ahead of
           // even that function's OWN internal checkAborted (inside its
           // probe loop) — so "never called" proves THIS checkAborted, not
           // the inner one, is what caught the abort.

@@ -209,15 +209,6 @@ export interface PackLookupHit {
 export interface DeltaBaseCacheEntry {
   readonly type: PackEntryHeader['type'];
   readonly content: Uint8Array;
-  /**
-   * How many MORE delta applications lie between this entry and the true
-   * base of its chain (0 for the base itself). A probe hit short-circuits
-   * the walk that would otherwise have counted those levels one at a time —
-   * without this, a warm cache lets a chain deeper than
-   * `MAX_DELTA_CHAIN_DEPTH` succeed by resuming from a shallower point that
-   * hides how much chain lies beneath it.
-   */
-  readonly chainDepth: number;
 }
 
 /**

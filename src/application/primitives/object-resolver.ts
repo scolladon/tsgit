@@ -285,13 +285,11 @@ export async function inflateLooseBuffered(
  * Depth-aware object-content resolution — the single entry point for every
  * caller. Buffered reads answer from the pack before loose, mirroring git's
  * own `do_oid_object_info_extended`: the arms are empty-tree / deltaCache hit
- * (neither ever walks a delta chain, so each reports depth 0) / a pack hit
- * (`resolvePackChain`, surfacing the chain's true depth back out) / a pack
- * miss falling to `resolveLooseArm` (also depth 0). `resolveObject` (below)
+ * (neither ever walks a delta chain) / a pack hit (`resolvePackChain`) / a pack
+ * miss falling to `resolveLooseArm`. `resolveObject` (below)
  * and `readRawObject` (read-object.ts) call it on the hottest read path;
  * `resolveBaseForRefDelta` calls it with the REF bases the walk already
- * entered (`refBases`), and the base's own true depth comes back out for the
- * caching loop to record accurately.
+ * entered (`refBases`).
  */
 export async function resolveObjectContentWithDepth(
   ctx: Context,
@@ -301,7 +299,7 @@ export async function resolveObjectContentWithDepth(
   maxBytes: number | undefined,
   mode: LooseReadMode = 'buffered',
   refBases?: Set<ObjectId>,
-): Promise<ObjectContent & { chainDepth: number; declaredSize: number }> {
+): Promise<ObjectContent & { declaredSize: number }> {
   // An already-aborted read honours the abort before paying any scan I/O.
   checkAborted(ctx);
   // Git dies during object-store setup, ahead of every read — a structurally
@@ -309,7 +307,7 @@ export async function resolveObjectContentWithDepth(
   // gate sits before the empty-tree short-circuit and the deltaCache probe.
   await store.primary.registry.assertLoadable();
   if (id === emptyTreeOid(ctx.hashConfig)) {
-    return { type: 'tree', content: EMPTY_TREE_CONTENT, chainDepth: 0, declaredSize: 0 };
+    return { type: 'tree', content: EMPTY_TREE_CONTENT, declaredSize: 0 };
   }
   const cached = await tryDeltaCacheHit(ctx, id, verifyHash, maxBytes);
   if (cached !== undefined) return cached;
@@ -331,15 +329,14 @@ export async function resolveObjectContentWithDepth(
   throw objectNotFound(id);
 }
 
-/** The deltaCache fast path: neither hop walks a delta chain, so a hit always
- *  reports depth 0. Extracted so the entry point above stays a short list of
+/** The deltaCache fast path: neither hop walks a delta chain. Extracted so the entry point above stays a short list of
  *  short-circuits, one per storage form. */
 async function tryDeltaCacheHit(
   ctx: Context,
   id: ObjectId,
   verifyHash: boolean,
   maxBytes: number | undefined,
-): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
+): Promise<(ObjectContent & { declaredSize: number }) | undefined> {
   const cached = ctx.deltaCache.get(id);
   if (cached === undefined) return undefined;
   enforceCachedCap(id, cached, maxBytes);
@@ -347,7 +344,6 @@ async function tryDeltaCacheHit(
   return {
     type: cached.type,
     content: cached.content,
-    chainDepth: 0,
     declaredSize: cached.content.byteLength,
   };
 }
@@ -370,7 +366,7 @@ async function tryResolveViaSources(
   maxBytes: number | undefined,
   mode: LooseReadMode,
   refBases: Set<ObjectId> | undefined,
-): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
+): Promise<(ObjectContent & { declaredSize: number }) | undefined> {
   for (const source of store.sources) {
     const found = await tryResolveViaSource(
       ctx,
@@ -396,26 +392,23 @@ async function tryResolveViaSource(
   maxBytes: number | undefined,
   mode: LooseReadMode,
   refBases: Set<ObjectId> | undefined,
-): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
+): Promise<(ObjectContent & { declaredSize: number }) | undefined> {
   const hit = await source.registry.lookup(id);
   if (hit === undefined) {
     return resolveLooseArm(ctx, looseCacheLocation(store, source), id, maxBytes, verifyHash, mode);
   }
   checkAborted(ctx);
-  const resolved = await resolvePackChainWithDepth(ctx, store, source, hit, id, maxBytes, refBases);
+  const resolved = await resolvePackChain(ctx, store, source, hit, id, maxBytes, refBases);
   checkAborted(ctx);
   await verifyObjectContent(ctx, id, resolved.type, resolved.content, verifyHash);
   return sizedByContent(resolved);
 }
 
 /** A pack-resolved object, its declared size being its resolved bytes' length. */
-function sizedByContent(
-  resolved: ObjectContent & { chainDepth: number },
-): ObjectContent & { chainDepth: number; declaredSize: number } {
+function sizedByContent(resolved: ObjectContent): ObjectContent & { declaredSize: number } {
   return {
     type: resolved.type,
     content: resolved.content,
-    chainDepth: resolved.chainDepth,
     declaredSize: resolved.content.byteLength,
   };
 }
@@ -469,7 +462,7 @@ function resolveStreamedContent(split: LooseObjectSplit): LooseServable {
  * `undefined` for `id`. Reports `undefined` — never throws — when the loose
  * store ALSO misses: that is the full-miss signal `tryResolveViaRegistry`'s
  * caller retries once after a re-scan, not a refusal in its own right. A
- * loose hit never walks a delta chain, so it always reports depth 0.
+ * loose hit never walks a delta chain.
  */
 export async function resolveLooseArm(
   ctx: Context,
@@ -478,7 +471,7 @@ export async function resolveLooseArm(
   maxBytes: number | undefined,
   verifyHash: boolean,
   mode: LooseReadMode,
-): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
+): Promise<(ObjectContent & { declaredSize: number }) | undefined> {
   const split = await tryLoose(ctx, location, id, mode);
   if (split === undefined) {
     return undefined;
@@ -494,7 +487,6 @@ export async function resolveLooseArm(
   return {
     type: split.type,
     content,
-    chainDepth: 0,
     declaredSize: split.declaredSize,
   };
 }
@@ -732,29 +724,6 @@ interface Phase1Result {
    * or a loose object — no single `(pack, offset)` applies).
    */
   readonly baseOffset: number | undefined;
-  /**
-   * How deep the resumed base itself already sat below whatever chain
-   * reached it first — 0 for a freshly-read base entry, or `cached.chainDepth`
-   * when this level came from a delta-base cache hit (see
-   * `collectDeltaChain`'s probe). The caching loop in `resolvePackChain` adds
-   * this onto every level IT re-caches — without it, a chain resumed from a
-   * cache hit would recount its own newly-walked levels as if the resumed
-   * base sat at depth zero, undercounting by exactly the depth the cache hit
-   * skipped.
-   *
-   * For a REF_DELTA's resolved base, this is the base object's OWN true
-   * chain depth — `resolveBaseForRefDelta` surfaces
-   * `deltas.length + baseChainDepth` from the inner `resolvePackChain` that
-   * reconstructed it.
-   *
-   * One honest residual: a base served from the id-keyed `ctx.deltaCache`
-   * (see `resolveBaseForRefDelta`'s own cache check) reports depth 0 even
-   * when the object was originally delta-resolved — that cache stores
-   * type+content only, never the depth they were reconstructed at.
-   * Consequence: a chain reports a shallower depth warm than cold once an
-   * inner object populates that cache first.
-   */
-  readonly baseChainDepth: number;
 }
 
 /**
@@ -811,7 +780,6 @@ async function collectDeltaChain(
         baseContent: cached.content,
         baseType: cached.type,
         baseOffset: undefined,
-        baseChainDepth: cached.chainDepth,
       };
     }
     const nextOffset = nextOffsetForEntry(table, currentHit.offset);
@@ -830,7 +798,6 @@ async function collectDeltaChain(
         baseContent: inflated,
         baseType: header.type,
         baseOffset: currentHit.offset,
-        baseChainDepth: 0,
       };
     }
     depth += 1;
@@ -873,7 +840,6 @@ async function collectDeltaChain(
         baseContent: base.content,
         baseType: base.type,
         baseOffset: undefined,
-        baseChainDepth: base.chainDepth,
       };
     }
     throw objectNotFound(targetId);
@@ -920,34 +886,8 @@ export async function resolvePackChain(
   hit: PackLookupHit,
   targetId: ObjectId,
   maxBytes: number | undefined,
+  refBases?: Set<ObjectId>,
 ): Promise<ObjectContent> {
-  const { type, content } = await resolvePackChainWithDepth(
-    ctx,
-    store,
-    source,
-    hit,
-    targetId,
-    maxBytes,
-    undefined,
-  );
-  return { type, content };
-}
-
-/**
- * Depth-reporting core `resolvePackChain` delegates to. Surfaces the
- * reconstructed object's own true chain depth
- * (`deltas.length + baseChainDepth`) back to `resolveObjectContentWithDepth` —
- * the only other caller, used from `resolveBaseForRefDelta`.
- */
-async function resolvePackChainWithDepth(
-  ctx: Context,
-  store: ObjectStore,
-  source: ObjectSource,
-  hit: PackLookupHit,
-  targetId: ObjectId,
-  maxBytes: number | undefined,
-  refBases: Set<ObjectId> | undefined,
-): Promise<ObjectContent & { chainDepth: number }> {
   const phase1 = await collectDeltaChain(ctx, store, source, hit, targetId, maxBytes, refBases);
 
   // Bounds how many bytes THIS chain read may insert into the shared
@@ -960,10 +900,10 @@ async function resolvePackChainWithDepth(
   const { registry } = source;
   const chainBudget = registry.deltaBaseCache.maxSize * DELTA_BASE_CHAIN_INSERT_FRACTION;
   let inserted = 0;
-  const insertLevel = (key: string, content: Uint8Array, chainDepth: number): void => {
+  const insertLevel = (key: string, content: Uint8Array): void => {
     const size = deltaBaseCacheEntrySize(content);
     if (inserted + size > chainBudget) return;
-    if (cacheDeltaBase(ctx, registry, key, phase1.baseType, content, chainDepth)) inserted += size;
+    if (cacheDeltaBase(ctx, registry, key, phase1.baseType, content)) inserted += size;
   };
 
   // Apply deltas bottom-up. A REF_DELTA terminator's base was cached (by id)
@@ -980,23 +920,13 @@ async function resolvePackChainWithDepth(
   // above (only `DeltaStep`s did), so its key is built fresh here — the one
   // key this function still computes rather than reuses.
   if (phase1.deltas.length > 0 && phase1.baseOffset !== undefined) {
-    insertLevel(deltaBaseCacheKey(hit.pack.instanceKey, phase1.baseOffset), current, 0);
+    insertLevel(deltaBaseCacheKey(hit.pack.instanceKey, phase1.baseOffset), current);
   }
   for (let i = phase1.deltas.length - 1; i >= 0; i -= 1) {
     const step = phase1.deltas[i];
     if (step === undefined) break;
     current = applyDelta(current, step.instructions);
-    // How many delta applications lie between THIS level and the true base:
-    // 1 for the level closest to the base (i === deltas.length - 1), up to
-    // deltas.length for the target's own level (i === 0) — PLUS whatever
-    // depth the resumed base itself already carried (`baseChainDepth`,
-    // nonzero exactly when `phase1` resumed from a delta-base cache hit).
-    // Omitting that term would recount every level THIS walk re-caches as if
-    // the resumed base sat at depth zero, undercounting by exactly the depth
-    // the cache hit skipped — the gap a chain of successive warm reads
-    // compounds across.
-    const chainDepth = phase1.deltas.length - i + phase1.baseChainDepth;
-    insertLevel(step.probeKey, current, chainDepth);
+    insertLevel(step.probeKey, current);
   }
   // Post-apply cap on the reconstructed object (delta resolution is the only
   // place a payload can grow beyond what the base entry declared). The check
@@ -1007,7 +937,7 @@ async function resolvePackChainWithDepth(
   // Cache the final reconstructed object under targetId for future lookups.
   const type = packTypeName(phase1.baseType, targetId);
   cacheEntry(ctx.deltaCache, targetId, { type, content: current });
-  return { type, content: current, chainDepth: phase1.deltas.length + phase1.baseChainDepth };
+  return { type, content: current };
 }
 
 function packTypeName(type: PackEntryHeader['type'], targetId: ObjectId): ObjectType {
@@ -1081,24 +1011,20 @@ async function resolveBaseForRefDelta(
   baseId: ObjectId,
   maxBytes: number | undefined,
   refBases: Set<ObjectId>,
-): Promise<{ content: Uint8Array; type: PackEntryHeader['type']; chainDepth: number }> {
+): Promise<{ content: Uint8Array; type: PackEntryHeader['type'] }> {
   // Resolve the base object (may recurse into another chain) and read its
   // type + content straight from the cache — no header to strip.
   const cached = ctx.deltaCache.get(baseId);
-  // Stryker disable next-line BlockStatement: equivalent — a perf-only shortcut: skipping this early return falls through to resolveObjectContentWithDepth(baseId, ...), whose OWN ctx.deltaCache.get(baseId) hit (the same cache, same key) applies the identical enforceCachedCap and returns the identical content with chainDepth 0 via verifyObjectContent(verifyHash=false) — byte-for-byte the same result, one extra function-call hop (object-resolver.test.ts's full suite passes unmutated).
+  // Stryker disable next-line BlockStatement: equivalent — a perf-only shortcut: skipping this early return falls through to resolveObjectContentWithDepth(baseId, ...), whose OWN ctx.deltaCache.get(baseId) hit (the same cache, same key) applies the identical enforceCachedCap and returns the identical content via verifyObjectContent(verifyHash=false) — byte-for-byte the same result, one extra function-call hop (object-resolver.test.ts's full suite passes unmutated).
   if (cached !== undefined) {
     // Cache stores type+content only. An earlier uncapped read may have
     // admitted an oversized object; enforce the cap here before returning
-    // content that bypasses the regular read path. This id-keyed cache
-    // holds content only, never the depth it was reconstructed at, so a
-    // base served from here is honestly reported at depth 0 even when it
-    // was originally delta-resolved.
+    // content that bypasses the regular read path.
     enforceCachedCap(baseId, cached, maxBytes);
-    return { content: cached.content, type: objectTypeToPackType(cached.type), chainDepth: 0 };
+    return { content: cached.content, type: objectTypeToPackType(cached.type) };
   }
-  // Depth-aware content-only resolution (not the public `resolveObject`): the
-  // base is applied to a delta, never returned to a caller as a parsed
-  // object, and this walk needs the base's own true chain depth back out.
+  // Content-only resolution (not the public `resolveObject`): the base is
+  // applied to a delta, never returned to a caller as a parsed object.
   // Deliberately skips the parse/re-serialize round-trip `resolveObject` +
   // `serializeObject` used to impose: delta application binds the base's
   // TRUE raw content, matching git — a base that would not survive that
@@ -1119,7 +1045,6 @@ async function resolveBaseForRefDelta(
   return {
     content: resolved.content,
     type: objectTypeToPackType(resolved.type),
-    chainDepth: resolved.chainDepth,
   };
 }
 

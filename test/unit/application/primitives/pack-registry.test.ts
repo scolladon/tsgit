@@ -7555,7 +7555,7 @@ describe('PackRegistry.reprepare', () => {
         await pack!.readSlice(PACK_HEADER_SIZE, 4); // warms the handle + window cache
         registry.deltaBaseCache.set(
           'warm-key',
-          { type: 3, content: new Uint8Array([1, 2, 3]), chainDepth: 0 },
+          { type: 3, content: new Uint8Array([1, 2, 3]) },
           32,
         );
         const opensBeforeReprepare = ledger.opens();
