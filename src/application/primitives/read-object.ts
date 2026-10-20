@@ -225,7 +225,6 @@ export async function readRawObject(
       id,
       verifyHash,
       options?.maxBytes,
-      0,
     );
     return { type, content };
   });
@@ -510,7 +509,6 @@ async function metadataAfterFullMiss(
     id,
     false,
     undefined,
-    0,
     'streamed',
   );
   return { type, uncompressedSize: content.length, content };

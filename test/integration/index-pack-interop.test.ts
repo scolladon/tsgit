@@ -715,12 +715,8 @@ describe.skipIf(!GIT_AVAILABLE)('index-pack interop', () => {
       it(
         'Then both accept — no depth cap on either indexer',
         async () => {
-          // Arrange — no depth cap is deliberate (the indexer's own concern
-          // only): tsgit's object RESOLVER separately refuses chains past
-          // `MAX_DELTA_CHAIN_DEPTH = 50` (`object-resolver.ts`,
-          // `fsck/object-cache.ts`) when later READING such a pack back —
-          // a pre-existing gap this design leaves open rather than closing
-          // with a refusal git itself does not make at index time.
+          // Arrange — no depth cap on either indexer, matching git, which
+          // makes no such refusal at index time.
           const ctx = createMemoryContext();
           const built = await buildSyntheticPack(ctx, buildOfsChain(depth));
           const dir = await withCraftedPack(built.packBytes);

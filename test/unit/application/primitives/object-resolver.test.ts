@@ -1209,7 +1209,6 @@ describe('object-resolver', () => {
             fakeId,
             false,
             undefined,
-            0,
           );
 
           // Assert
@@ -1246,7 +1245,6 @@ describe('object-resolver', () => {
             fakeId,
             true,
             undefined,
-            0,
           );
 
           // Assert
@@ -1276,7 +1274,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
 
           // Assert
@@ -1313,7 +1310,6 @@ describe('object-resolver', () => {
               fakeId,
               false,
               undefined,
-              0,
             );
             // Assert
             expect.unreachable();
@@ -1357,7 +1353,6 @@ describe('object-resolver', () => {
               fakeId,
               false,
               undefined,
-              0,
             );
             expect.unreachable();
           } catch (error) {
@@ -1407,7 +1402,6 @@ describe('object-resolver', () => {
               id as ObjectId,
               false,
               undefined,
-              0,
             );
             expect.unreachable();
           } catch (error) {
@@ -1466,7 +1460,6 @@ describe('object-resolver', () => {
               id as ObjectId,
               true,
               undefined,
-              0,
             );
             expect.unreachable();
           } catch (error) {
@@ -1516,7 +1509,6 @@ describe('object-resolver', () => {
               id,
               true,
               undefined,
-              0,
             );
             expect.unreachable();
           } catch (error) {
@@ -1573,7 +1565,6 @@ describe('object-resolver', () => {
               id,
               false,
               undefined,
-              0,
             );
             expect.unreachable();
           } catch (error) {
@@ -1687,7 +1678,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -1713,7 +1703,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
           'streamed',
         );
 
@@ -1748,7 +1737,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
           expect.unreachable();
         } catch (error) {
@@ -1782,7 +1770,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
           'streamed',
         );
 
@@ -1812,7 +1799,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -1842,7 +1828,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -1874,7 +1859,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
           expect.unreachable();
         } catch (error) {
@@ -1907,7 +1891,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
           expect.unreachable();
         } catch (error) {
@@ -1960,7 +1943,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
           expect.unreachable();
         } catch (error) {
@@ -2016,7 +1998,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -2051,7 +2032,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
           expect.unreachable();
         } catch (error) {
@@ -2104,7 +2084,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
           expect.unreachable();
         } catch (error) {
@@ -2136,7 +2115,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -2165,7 +2143,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
             'streamed',
           );
           expect.unreachable();
@@ -2197,7 +2174,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
           'streamed',
         );
 
@@ -2223,7 +2199,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -2250,7 +2225,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
           // Assert
           expect.unreachable();
@@ -2304,7 +2278,6 @@ describe('object-resolver', () => {
             id,
             false,
             undefined,
-            0,
           );
           expect.unreachable();
         } catch (error) {
@@ -2346,7 +2319,6 @@ describe('object-resolver', () => {
             id,
             true,
             undefined,
-            0,
           );
           // Assert
           expect.unreachable();
@@ -2377,7 +2349,6 @@ describe('object-resolver', () => {
           id,
           false,
           undefined,
-          0,
         );
 
         // Act
@@ -2388,7 +2359,6 @@ describe('object-resolver', () => {
             id,
             true,
             undefined,
-            0,
           );
           // Assert
           expect.unreachable();
@@ -2413,7 +2383,6 @@ describe('object-resolver', () => {
           EMPTY_TREE_OID,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -2440,7 +2409,6 @@ describe('object-resolver', () => {
           fakeId,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -2467,7 +2435,6 @@ describe('object-resolver', () => {
           id as ObjectId,
           false,
           undefined,
-          0,
         );
 
         // Assert
@@ -2990,7 +2957,6 @@ describe('object-resolver', () => {
             tip1Id,
             false,
             undefined,
-            0,
           );
 
           // Act
@@ -3000,7 +2966,6 @@ describe('object-resolver', () => {
             tip2Id,
             false,
             undefined,
-            0,
           );
 
           // Assert — the propagated 'tree' type, not a re-derived/defaulted one.
