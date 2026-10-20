@@ -179,7 +179,7 @@ findings.filter(f => f.type === 'tagged')
 | `pack-index-checksum-mismatch` | `pack` | A pack's `.idx` trailing checksum disagrees with its bytes. Full mode. Exit bit 4. |
 | `pack-checksum-mismatch` | `pack` | A pack's trailing checksum disagrees with the bytes before it. Full mode. Exit bit 4. |
 | `pack-crc-mismatch` | `pack`, `id`, `offset` | A pack entry's raw bytes disagree with the CRC-32 its `.idx` records; `offset` is the entry's byte offset. Full mode. Exit bit 4. |
-| `pack-entry-unpackable` | `pack`, `id`, `offset` | A packed entry that cannot be unpacked (git's `cannot unpack`). Full mode. |
+| `pack-entry-unpackable` | `pack`, `id`, `offset` | A packed entry that cannot be unpacked (git's `cannot unpack`). Full mode. A `REF_DELTA` cycle and a zero-distance `OFS_DELTA` base are reported this way. |
 | `pack-entry-corrupt` | `pack`, `id` | A packed entry whose content does not hash to its indexed id. Full mode. |
 | `commit-graph-invalid` | `artefact`, plus the verdict's `check` and its fields | `git commit-graph verify` over each object source's commit-graph file (or its chain) reported a disagreement while `core.commitGraph` is on. `check` names it: `checksum`, `load-failure`, `oid-order`, `fanout`, `graph-unparsable`, `extra-edges-out-of-bounds`, `invalid-parent-position`, `odb-unparsable`, `root-tree`, `parent`, `parents-too-long`, `parents-terminate-early`, `generation`, `commit-date`, `mixed-generations`, `chain-unopenable`, `layer-load-failure`, `chain-line-not-hash`, `chain-too-small`, `chain-no-base-chunk`, `chain-base-chunk-too-small`, `chain-mismatch`, `chain-layer-missing`, `chain-incomplete` or `chain-unloaded`. Exit bit 16. |
 
