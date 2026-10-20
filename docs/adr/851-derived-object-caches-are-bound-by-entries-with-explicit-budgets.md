@@ -11,7 +11,9 @@ supersedes:
 ---
 # 851 — Derived object caches are bound by entries, on explicit budgets
 
-- **Status:** accepted
+> Superseded by [ADR-869](869-cache-byte-valves-are-width-aware-and-charged-at-measured-cost.md): the default valve numbers (16 MiB parsed-memo valve, 8 MiB FlatTree valve at every hash width) and the memo's 256 B fixed-overhead charge; the entry-bound principle stands.
+
+- **Status:** superseded by ADR-869
 - **Date:** 2026-09-11
 - **Design:** docs/design/session-caches-per-command-floor.md (D2, DC-2) · **Supersedes/Refines:** supersedes ADR-726 and ADR-727 in scope
 
@@ -84,12 +86,14 @@ from 2 MiB to 24 MiB at the defaults; the family total is stated in ADR-852, whi
 delta-base cache's own budget.
 
 Carried forward from ADR-726: the `(rootTreeOid, maxDepth)` cache key, gitlink preservation in
-cached trees, and the floor-at-1 sizer. Superseded from ADR-726: the 1/16 sizing, and its
+cached trees, and the floor-at-1 sizer.
+Superseded from ADR-726: the 1/16 sizing, and its
 "an over-cap tree simply never caches; that drop is documented" disposition — the drop is now
 reported by `set` (ADR-853) and the default budget is sized so a realistic HEAD does not hit it.
 
 Carried forward from ADR-727: the per-session memo itself, its population on parse, and
-deep-readonly `CommitData` making shared parsed objects safe. Superseded from ADR-727: the byte
+deep-readonly `CommitData` making shared parsed objects safe.
+Superseded from ADR-727: the byte
 cap as the primary bound and the fraction of the delta-cache budget it rode on.
 
 The module's fraction-sweep table is replaced by the entry-bound rationale and a pointer to the

@@ -7,6 +7,8 @@ supersedes:
 ---
 # 857 — `reflog expire` follows git's reachability rule
 
+> Superseded by [ADR-865](865-reflog-expire-defaults-follow-gits-binary-not-its-documentation.md): the 90-day total and 30-day unreachable default clocks it carried forward from ADR-064 — git's binary runs 30 days total and 90 days unreachable; the reachability rule stands.
+
 > **Correction (2026-09-13).** This record's first draft stated that the mark walk is bounded at
 > `expire_total` outright — "an old commit is reachable only if it is itself on the frontier" — and
 > that `HEAD` marks from "every tip". Both misread `reflog.c`. The bound is laziness that git drops
@@ -18,7 +20,7 @@ supersedes:
 > `never`/`now` or a parentless frontier commit. The Context and Decision above are corrected; the
 > decision itself — follow git's model — is unchanged.
 
-- **Status:** accepted
+- **Status:** superseded by ADR-865
 - **Date:** 2026-09-11
 - **Design:** docs/design/session-caches-per-command-floor.md (D8, DC-7) · **Supersedes/Refines:** supersedes ADR-064 in scope
 
@@ -103,7 +105,8 @@ instead of a full one — falls out of the faithful shape rather than being engi
 
 Carried forward from ADR-064: the one-command discriminated `action` shape, the `show` /
 `exists` / `delete` / `expire` split, approxidate cutoff parsing with the 90-day and 30-day
-defaults, and `delete --rewrite`'s old-to-new chain repair. Superseded from ADR-064: the expire
+defaults, and `delete --rewrite`'s old-to-new chain repair.
+Superseded from ADR-064: the expire
 reachability rule quoted above, the all-tips reachable set, and the claim that `expire` is fully
 faithful.
 

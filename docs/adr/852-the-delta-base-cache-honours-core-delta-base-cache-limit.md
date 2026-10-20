@@ -8,7 +8,9 @@ supersedes:
 ---
 # 852 — The delta-base cache honours `core.deltaBaseCacheLimit`, at git's default
 
-- **Status:** accepted
+> Superseded by [ADR-869](869-cache-byte-valves-are-width-aware-and-charged-at-measured-cost.md): the documented ~136 MiB cache family total; the delta-base cache's own sizing stands.
+
+- **Status:** superseded by ADR-869
 - **Date:** 2026-09-11
 - **Design:** docs/design/session-caches-per-command-floor.md (D2, DC-2) · **Supersedes/Refines:** supersedes ADR-736 in scope
 
@@ -79,6 +81,7 @@ new decision beyond picking the gate.
 Carried forward from ADR-736: the delta-base cache is a **separate, additive** budget and not a
 fraction of any sibling; `DELTA_BASE_CACHE_MAX_ENTRIES` still bounds entry count independently of
 bytes; and `deltaBaseCacheEntrySize` keeps its fixed overhead term for the key string, the LRU
-node and the entry wrapper. Superseded from ADR-736: the default sizing rule
+node and the entry wrapper.
+Superseded from ADR-736: the default sizing rule
 (`ctx.deltaCache.maxSize`), the claim that `deltaCacheMaxBytes` is the one knob scaling this
 particular cache, and the documented ~34 MiB family total.

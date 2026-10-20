@@ -75,3 +75,10 @@ git reverts the initialiser those rows fail first, which is how the revisit trig
 
 ADR-857 stated its default clocks as 90 days total and 30 days unreachable; its correction note
 points here.
+
+Superseded from ADR-064: the 90-day total and 30-day unreachable expire defaults.
+Carried forward from ADR-064: the one-command discriminated `action` shape, the `show` / `exists` /
+`delete` / `expire` split, approxidate cutoff parsing, and `delete --rewrite`.
+
+Superseded from ADR-857: the 90-day and 30-day expire defaults it carried forward from ADR-064.
+Carried forward from ADR-857: git's reachability rule for `expire`.
