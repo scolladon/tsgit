@@ -416,3 +416,75 @@ nothing on OFS-only chains (DC-2 a), so no regression is expected; the plan runs
 - **Rewriting ADRs 771/786/471 and the prose in `delta-writing-packer.md` §9 / DC-5 and
   `streaming-index-pass.md` §1f / §8 row l**: the ADR phase records the superseding decision; the
   documentation phase updates those files and the three user docs named in Context.
+
+## Addendum — scope added at the validation checkpoint
+
+Three items the run surfaced outside its perimeter. The user chose to land them in this PR
+rather than file them. None needs a new decision: A1 restores git's behaviour, A2 and A3 are
+hygiene.
+
+### A1 — `computeAssignment` never returns on a range-diff-shaped matrix (R-A1)
+
+**Evidence.** The validation gate sat for 5 h 36 min inside
+`test/unit/domain/range-diff/linear-assignment.properties.test.ts` ("Then it returns a consistent
+matching"): the vitest fork was spinning in `augmentOne`'s path walk with `path.j = -1`, a promise
+microtask loop the test timeout cannot interrupt. The drawn matrix (n = 7: five old commits, two
+new, no exact pairs; generator costs `[9,2,21,4,1,22,28,28,13,28,0,19,7,21]`) replayed through
+`computeAssignment` never returns. An instrumented copy throws after 10⁶ iterations of
+`do { i = pred[j] … } while (i1 !== i)` with `pred = [4,0,4,4,4,4,4]` and
+`rowToColumn = [0,3,6,5,2,2,4]` — rows 4 and 5 both own column 2. git 2.55.0's
+`linear-assignment.c`, compiled against a stub `git-compat-util.h`, returns
+`column2row = [4,0,5,1,6,3,2]` on the same input. Frequency: 60 hangs per 2 000 000 draws of that
+five-by-two shape, none in 10⁶ unconstrained draws — rare, deterministic, reachable from
+`rangeDiff`.
+
+**Cause.** git declares `j` once per augmentation (`j = -1` before `do { … } while (low == up)`),
+every `j = col[k]` in the column-expansion loop and in the row-scan loop writes that one variable,
+and `goto update` walks from whatever `j` last held — including when the "unassigned column in the
+active set" check fires after an expansion loop that ran zero times (`up === column_count`). The
+port returns `lastJ` from `expandMinColumns`, re-initialised to `-1` on every call, and `scanRows`
+never exports its `j`; a zero-iteration expansion therefore hands `-1` to the walk. The Stryker
+note on that initializer ("a correct run never triggers" it) is wrong: this matrix does.
+
+**Fix.** Mirror git's variable lifetime: one `j` per `augmentOne`, carried on the `Search` state
+through `findAugmentingPath`, `expandMinColumns` and `scanRows`, written at exactly git's
+`j = col[k]` sites and returned as the path endpoint on every exit. Keep git's
+`if (j < 0) BUG("negative j")` as `throw new Error('negative j')` — the domain's precedent for an
+impossible state is a plain `Error` (`src/domain/archive/tar.ts`). Once `j` is threaded the guard
+is unreachable for `n ≥ 2` (the first expansion loop always runs), so its mutant is marked
+equivalent with that proof; the `lastJ` note goes with the initializer.
+
+**Pins.** Four matrices with the assignment git's C produces, added to
+`linear-assignment.characterization.test.ts` (expected values from git, not from the port):
+
+| costs, column-major `cost[i + 7j]` | git `column2row` | git `row2column` |
+|---|---|---|
+| `9,4,28,28,7,2,2, 2,1,28,0,21,21,21, (21,22,13,19,9,0,0)×5` | `4,0,5,1,6,3,2` | `1,3,6,5,0,2,4` |
+| `11,11,10,23,22,4,4, 4,29,0,16,2,25,25, (25,0,12,28,11,0,0)×5` | `0,5,4,1,3,6,2` | `0,3,6,4,2,1,5` |
+| `6,23,10,20,5,2,2, 2,20,1,3,30,26,26, (26,3,12,14,6,0,0)×5` | `0,5,4,1,6,3,2` | `0,3,6,5,2,1,4` |
+| `4,4,11,1,30,1,1, 1,10,20,10,13,1,1, (1,28,29,24,4,0,0)×5` | `6,1,4,0,5,3,2` | `3,1,6,5,2,4,0` |
+
+The property test is unchanged: its 500 runs now terminate. `docs/use/commands/range-diff.md`'s
+statement that git's solver may leave a commit unpaired on an unstructured matrix stays true.
+
+### A2 — pre-existing adr-lint findings (R-A2)
+
+`adr-lint docs/adr --manifest .claude/workflow.md` on `main` reports 6 superseded ADRs without the
+`- **Status:** superseded by ADR-M` line (064→865, 373→906, 851→869, 852→869, 857→865, 863→907),
+13 missing `Superseded from ADR-N` / `Carried forward from ADR-N` anchors (851 from 726 and 727;
+852 from 736; 857 from 064; 859 from 637; 865 and 869 both lines from their two predecessors) and
+31 citations of superseded ADRs outside the exempt directories. ADR-771 (status line and
+blockquote) and ADR-1019 (anchor lines) are the formats to mirror. Every citation moves to the
+superseding ADR with its sentence kept true, the route `docs/design/bench-snapshot-summary-adr-lint.md`
+D7 chose: the waiver token silences a whole file and this repository has no waiver contract. Docs
+only; the gate is a clean lint.
+
+### A3 — rename `resolveObjectContentWithDepth` to `resolveObjectContent` (R-A3)
+
+PC-7 kept the name because `docs/perf/baseline.json` keys profile frames by function name. The
+symbol is internal (not barrel-exported, absent from `reports/api.json`), and nothing reads the
+baseline mechanically: `tooling/profile.ts` writes it, `bench-ab` and `bench-check` read
+`hot-paths.json`. The rename therefore updates the frame key in `baseline.json` and `baseline.md`
+in place — the measurements are the same function's — rather than regenerating the artifact on a
+loaded machine. Source, tests, the resolver's Stryker proof comments and the `internals.md` entry
+follow.
