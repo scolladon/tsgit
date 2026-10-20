@@ -1242,6 +1242,16 @@ const CASES: ReadonlyArray<LapCase> = [
     columnToRow: [0, 2, 1, 3],
     rowToColumn: [0, 2, 1, 3],
   },
+  // Reduced costs at INT_MAX are the only way into the two-smallest reset git keeps
+  // (`u2` seeds at INT_MAX, so any cheaper column claims `j2` first): row 1 costs
+  // INT_MAX in both columns while row 0 pulls both column minima to 0. git's
+  // assignment, from its C with wrapping arithmetic.
+  {
+    n: 2,
+    cost: [0, 0, 2147483647, 2147483647],
+    columnToRow: [1, 0],
+    rowToColumn: [1, 0],
+  },
 ];
 
 describe('computeAssignment characterization', () => {
