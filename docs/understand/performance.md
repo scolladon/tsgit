@@ -57,7 +57,7 @@ For context, two other libraries are sometimes weighed against tsgit — but nei
 |---|---|
 | Pack-index lookup | Fanout binary search — O(log n) within fanout buckets of bounded size. |
 | Pack offset table (successor lookup, every packed-object read) | A usable `.rev` gathers the pack's sorted entry-offset order in O(n) instead of sorting it (O(n log n)); absent, unreadable, or refused, it falls back to the sort — same answer, different cost. |
-| Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). A deep-delta-chain scenario benchmarks this cache under cold (empty LRU, full chain replay) and warm (cache primed) regimes — see [ADR-1026](../adr/1026-the-deep-chain-bench-fixture-keeps-gits-default-depth.md). An offset-keyed delta-base cache for mid-chain intermediates sits alongside it as a separate budget, sized from `core.deltaBaseCacheLimit` (git's own dial for this cache) at git's 96 MiB default rather than from `deltaCacheMaxBytes` — see [ADR-852](../adr/852-the-delta-base-cache-honours-core-delta-base-cache-limit.md) — for the full ≈ 158 MiB default total across every cache in this family (up from ~34 MiB; table below). |
+| Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). A deep-delta-chain scenario benchmarks this cache under cold (empty LRU, full chain replay) and warm (cache primed) regimes — see [ADR-1026](../adr/1026-the-deep-chain-bench-fixture-keeps-gits-default-depth.md). An offset-keyed delta-base cache for mid-chain intermediates sits alongside it as a separate budget, sized from `core.deltaBaseCacheLimit` (git's own dial for this cache) at git's 96 MiB default rather than from `deltaCacheMaxBytes` — see [ADR-869](../adr/869-cache-byte-valves-are-width-aware-and-charged-at-measured-cost.md) — for the full ≈ 158 MiB default total across every cache in this family (up from ~34 MiB; table below). |
 | Parsing | Zero-copy `DataView` over inflated buffers. No intermediate string allocations on the binary path. |
 | Inflate | `node:zlib` (Node) / `DecompressionStream` (Browser). Streaming where possible. |
 | Working-tree comparison (`status`) | Stat-cache fast path: `mtime/ctime/size/ino` match the index's recorded stat fields → no re-hash. |
@@ -66,7 +66,7 @@ For context, two other libraries are sometimes weighed against tsgit — but nei
 
 ### Cache-family footprint
 
-Four caches share one `Context`'s lifetime; each is sized independently since [ADR-851](../adr/851-derived-object-caches-are-bound-by-entries-with-explicit-budgets.md) / [ADR-852](../adr/852-the-delta-base-cache-honours-core-delta-base-cache-limit.md), and each derived valve is charged at measured cost and carries a hash-width surcharge since [ADR-869](../adr/869-cache-byte-valves-are-width-aware-and-charged-at-measured-cost.md), so the combined ceiling a `Context` can retain is larger than `deltaCacheMaxBytes` alone suggests:
+Four caches share one `Context`'s lifetime; each is sized independently since [ADR-869](../adr/869-cache-byte-valves-are-width-aware-and-charged-at-measured-cost.md), so the combined ceiling a `Context` can retain is larger than `deltaCacheMaxBytes` alone suggests:
 
 | Dial | `ctx.deltaCache` (loose bytes) | parsed-object memo valve | FlatTree cache | delta-base cache | **Total** |
 |---|---|---|---|---|---|

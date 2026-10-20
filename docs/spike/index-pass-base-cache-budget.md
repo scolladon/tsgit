@@ -111,7 +111,7 @@ that should have been hits were misses. Root cause: pass 1 inserts **every** bas
 not only the ones later found to have children, and fixture C carries 4 794 total base
 objects — more than the 4 096 entry cap. The entry cap was evicting still-needed roots
 purely from count pressure, at a budget far under the byte ceiling — exactly the failure
-mode ADR-727's amendment describes, but triggered by a **real repository's** base-object
+mode ADR-869 carries forward from the earlier parsed-commit memo record, but triggered by a **real repository's** base-object
 count, not only a crafted adversarial pack.
 
 Fixed by raising `INDEX_PASS_BASE_CACHE_MAX_ENTRIES` to 65 536 (matching the sibling

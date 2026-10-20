@@ -6,7 +6,7 @@
 > over-refused verbs. The question here is whether tsgit's existing gate tiers already reproduce
 > git's split closely enough that "this `[core]` class is validated by tier X" needs no exemption
 > list at all — and, if not, what layer shape does.
-> Surfaced by: 31.2 design review · relates to ADR-637 (`core.maxTreeDepth`), ADR-850, ADR-852, ADR-858
+> Surfaced by: 31.2 design review · relates to ADR-859 (`core.maxTreeDepth`), ADR-850, ADR-869, ADR-858
 > Status: findings complete. Three candidate mechanisms, one recommended. **No ADR is authored here;
 > the decision candidates are listed in §9 for the session.**
 
@@ -41,7 +41,7 @@
 
 ## 1. Question
 
-Backlog 31.2 makes the delta-base cache honour `core.deltaBaseCacheLimit` (ADR-852, ADR-858). A
+Backlog 31.2 makes the delta-base cache honour `core.deltaBaseCacheLimit` (ADR-869, ADR-858). A
 malformed value must be refused the way git refuses it. The design's NDC-2 offers (a) eager at the
 operational gate + lazy twin, (b) lazy only, (c) eager with a different ordering, and records a
 pinned divergence for each. The user asked whether a *layer* could carry this instead of a
@@ -384,7 +384,7 @@ argue about — see §9 DC-C.
   tsgit tier; gives every Tier-2 store/index/graph primitive the refusal git's plumbing has, for
   free; re-verification when git changes is `git grep -l prepare_repo_settings builtin/` and the
   key list of `repo-settings.c`, both greppable.
-- Cons: touches ~12 source files instead of 5; re-opens ADR-637's placement of
+- Cons: touches ~12 source files instead of 5; re-opens ADR-859's placement of
   `core.maxTreeDepth` (DC-B); the refusal fires at first store/index/graph touch rather than at
   the gate, so the implementation must assert per verb that the first touch precedes the first
   write (true for every verb read in this spike, and the transcribed prologues make it trivially
@@ -472,7 +472,7 @@ property; with it the residual is the 5-command ordering split only.
 | # | Choice | Alternatives (≤3) | Recommendation |
 |---|---|---|---|
 | DC-A | Mechanism for the repo-settings class | M1 eager gate · **M2 class-declared tier at the store/index/graph boundary + transcribed explicit calls** · M3 lazy only | M2 |
-| DC-B | Whether `core.maxTreeDepth` moves with it (re-opens ADR-637's placement, keeps its grammar and lazy twin) | move now, in 31.2 · leave, class of one · move in a follow-up | move now — §5.1 shows it is the same class, §6 shows its current placement carries the same drift, and the unit ordering tests it would touch pin a minority-set measurement |
+| DC-B | Whether `core.maxTreeDepth` moves with it (re-opens ADR-859's placement, keeps its grammar and lazy twin) | move now, in 31.2 · leave, class of one · move in a follow-up | move now — §5.1 shows it is the same class, §6 shows its current placement carries the same drift, and the unit ordering tests it would touch pin a minority-set measurement |
 | DC-C | Group-5 verbs (`reflog` show, `branch.create`, `branch.delete`, lightweight `tag.create`, `tag.delete`, `submodule.init/.sync`), where git reaches the store for a check or a display tsgit does differently | transcribe the explicit call (refusal parity) · record as residual (structural honesty) · close the underlying gap where one exists (`branch.create` does not verify its start point is a commit — `git branch x <tree-oid>` refuses, tsgit does not; a real missing refusal, surfaced here, not this item's scope) | transcribe the call now; raise the `branch.create` verification gap with the session rather than filing it silently |
 
 ## 10. Repro

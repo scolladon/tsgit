@@ -60,7 +60,7 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-044 — CI matrix inclusion of `windows-latest`](../adr/044-ci-matrix-windows-inclusion.md)
 - [ADR-045 — Separator normalisation policy](../adr/045-separator-normalisation-policy.md)
 - [ADR-046 — `PathPolicy` abstraction](../adr/046-path-policy-abstraction.md)
-- [ADR-047 — FS operations dependency injection](../adr/047-fs-operations-dependency-injection.md) — constructor signature superseded by [ADR-883](../adr/883-node-file-system-takes-its-injectable-operations-in-one-options-object.md)
+- [ADR-883 — Node file system takes its injectable operations in one options object](../adr/883-node-file-system-takes-its-injectable-operations-in-one-options-object.md)
 - [ADR-048 — Platform-segregated test folders](../adr/048-platform-segregated-test-folders.md)
 - [ADR-077 — Linear (non-backtracking) glob matcher](../adr/077-linear-glob-matcher.md)
 
@@ -83,7 +83,7 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-061 — Reflog identity resolution](../adr/061-reflog-identity.md)
 - [ADR-062 — Approxidate parser subset](../adr/062-approxidate-subset.md)
 - [ADR-063 — `core.logAllRefUpdates` gate logic](../adr/063-log-all-ref-updates.md)
-- [ADR-064 — Reflog command shape](../adr/064-reflog-command-shape.md) (command shape only — its reachability claim is superseded by [ADR-857](../adr/857-reflog-expire-follows-git-reachability-rule.md))
+- [ADR-865 — Reflog expire defaults follow git's binary, not its documentation](../adr/865-reflog-expire-defaults-follow-gits-binary-not-its-documentation.md) (carries forward the reachability rule and the command shape)
 
 ## Hooks (Phase 17.2)
 
@@ -228,4 +228,4 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.
 - **Touching the working-tree path?** Read ADR-018 through ADR-028 — the merge / checkout / reset family is the most subtle subsystem.
 - **Touching pathspec / ignore?** Read ADR-037, ADR-038, ADR-039, ADR-077 first.
-- **Writing tests?** Read ADR-041, ADR-047 (with ADR-883 for the constructor shape), ADR-048 — the testing-strategy choices that the rest of the suite follows.
+- **Writing tests?** Read ADR-041, ADR-883 (the `FsOperations` injection), ADR-048 — the testing-strategy choices that the rest of the suite follows.
