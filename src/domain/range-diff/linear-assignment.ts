@@ -271,6 +271,11 @@ const findAugmentingPath = (s: Lap, d: number[], pred: number[], col: number[]):
   }
 };
 
+/** git's `BUG("negative j")`: an augmenting path must end on a real column. */
+export const assertColumnIndex = (j: number): void => {
+  if (j < 0) throw new Error(`negative j: ${j}`);
+};
+
 const augmentOne = (s: Lap, i1: number): void => {
   // Stryker disable next-line ArrayDeclaration: equivalent — `d` is written at every index `0..columnCount-1` by the init loop below and never read at index `columnCount`, so the preallocated length is inert.
   const d = new Array<number>(s.columnCount);
@@ -290,8 +295,7 @@ const augmentOne = (s: Lap, i1: number): void => {
     const j1 = col[k]!;
     s.v[j1] = i32(s.v[j1]! + (d[j1]! - path.min));
   }
-  // Stryker disable next-line BlockStatement,StringLiteral: equivalent — `search.j` is assigned on the first expansion pass, which runs from `k = 1` to `columnCount - 1` and so executes for every `columnCount >= 2` (smaller sizes return before augmentation), so `path.j` is never negative and the guard cannot fire.
-  if (path.j < 0) throw new Error('negative j');
+  assertColumnIndex(path.j);
   let j = path.j;
   let i: number;
   do {

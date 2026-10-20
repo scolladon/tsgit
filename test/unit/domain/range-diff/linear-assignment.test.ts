@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertColumnIndex,
   COST_MAX,
   computeAssignment,
 } from '../../../../src/domain/range-diff/linear-assignment.js';
@@ -231,6 +232,34 @@ describe('computeAssignment', () => {
       // Assert
       expect(result.columnToRow).toEqual([4, 1, 2, 5, 0, 3]);
       expect(result.rowToColumn).toEqual([4, 1, 2, 5, 0, 3]);
+    });
+  });
+});
+
+describe('assertColumnIndex', () => {
+  describe('Given a negative column index, When asserted', () => {
+    it("Then it throws git's negative-j error naming the index", () => {
+      // Arrange
+      const sut = assertColumnIndex;
+
+      // Act
+      const act = () => sut(-1);
+
+      // Assert
+      expect(act).toThrow('negative j: -1');
+    });
+  });
+
+  describe('Given a column index of zero, When asserted', () => {
+    it('Then it returns without throwing', () => {
+      // Arrange
+      const sut = assertColumnIndex;
+
+      // Act
+      const act = () => sut(0);
+
+      // Assert
+      expect(act).not.toThrow();
     });
   });
 });
