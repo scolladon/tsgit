@@ -41,7 +41,7 @@ Hash verification is **off by default** (`verifyHash: false`) — matching canon
 
 ## A loose header whose size lies
 
-A loose blob whose header size disagrees with its body still streams, and streams the bytes that are actually there — the claim bounds nothing, matching git's streaming tier, which is what git uses for every user-facing blob read ([ADR-863](../../adr/863-a-size-lying-loose-header-serves-a-blobs-bytes-and-refuses-other-types.md)). Under `verifyHash: true` the digest is taken over the header **as stored**, so such a blob refuses `OBJECT_HASH_MISMATCH` at end-of-stream where an honest one passes. A size-lying loose commit, tree or tag is a different matter — [`readObject`](read-object.md) refuses it `INVALID_OBJECT_HEADER`; reaching one through `streamBlob` refuses on type first, below.
+A loose blob whose header size disagrees with its body still streams, and streams the bytes that are actually there — the claim bounds nothing, matching git's streaming tier, which is what git uses for every user-facing blob read ([ADR-907](../../adr/907-whole-object-loose-reads-bound-the-inflate-to-the-size-claim.md)). Under `verifyHash: true` the digest is taken over the header **as stored**, so such a blob refuses `OBJECT_HASH_MISMATCH` at end-of-stream where an honest one passes. A size-lying loose commit, tree or tag is a different matter — [`readObject`](read-object.md) refuses it `INVALID_OBJECT_HEADER`; reaching one through `streamBlob` refuses on type first, below.
 
 ## A non-blob id refuses at the `await`
 
