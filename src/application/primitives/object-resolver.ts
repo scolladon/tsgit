@@ -28,9 +28,7 @@ import {
   parseObjectContent,
   serializeHeader,
 } from '../../domain/objects/index.js';
-import { MAX_DELTA_CHAIN_DEPTH } from '../../domain/storage/delta.js';
 import {
-  deltaChainTooDeep,
   invalidPackEntry,
   invalidPackIndex,
   PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON,
@@ -795,16 +793,6 @@ interface Phase1Result {
   readonly baseChainDepth: number;
 }
 
-/** Extracted so both the per-level walk and a cache-hit resumption share one
- *  throw site rather than duplicating the branch inline. Also reused by
- *  `readObjectMetadata`'s header-only base-type walk (read-object.ts), so a
- *  third delta-chain walker cannot drift from the cap the other two enforce. */
-export function assertChainDepthWithinCap(depth: number): void {
-  if (depth > MAX_DELTA_CHAIN_DEPTH) {
-    throw deltaChainTooDeep(depth);
-  }
-}
-
 /**
  * git's uniform `unpack_entry_data` check (`stream.total_out != size`),
  * applied on the READ path to an entry's already-inflated bytes: a zlib
@@ -855,13 +843,6 @@ async function collectDeltaChain(
     // whole rest of the walk exactly as reaching a real base entry would.
     const cached = probeDeltaBaseCache(ctx, source.registry, probeKey, targetId, maxBytes);
     if (cached !== undefined) {
-      // The hit resumes from partway down the chain — depth so far (levels
-      // actually walked) plus whatever the cached entry itself still has
-      // beneath it, so a chain deeper than MAX_DELTA_CHAIN_DEPTH still
-      // throws even though this walk never touched its lower levels.
-      // `externalDepth` adds whatever depth a REF_DELTA hop already
-      // accumulated before this walk even started.
-      assertChainDepthWithinCap(externalDepth + depth + cached.chainDepth);
       return {
         deltas,
         baseContent: cached.content,
@@ -890,7 +871,6 @@ async function collectDeltaChain(
       };
     }
     depth += 1;
-    assertChainDepthWithinCap(externalDepth + depth);
     const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
     assertInflatedSizeMatches(currentHit.offset, header.size, instructions.byteLength);
     // Stryker disable next-line CallExpression: equivalent — this pre-apply cap is a documented perf-only optimisation (see enforcePackDeltaPreApplyCap's own docstring): removing the call leaves the POST-apply cap in resolvePackChainWithDepth (current.length > maxBytes) to throw the identical OBJECT_TOO_LARGE, just after the wasted apply+allocation instead of before it (full covering set — object-resolver, read-object, stream-blob, blob-source, fsck, pack-registry — passes unmutated).

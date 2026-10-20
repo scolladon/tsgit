@@ -22,7 +22,6 @@ import {
 } from '../../../../../../src/domain/objects/error.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
 import {
-  deltaChainTooDeep,
   invalidDelta,
   invalidMultiPackIndex,
   invalidPackEntry,
@@ -148,7 +147,6 @@ describe.each([
   ['an inflate failure', decompressFailed('invalid stored block lengths')],
   ['a damaged pack entry', invalidPackEntry(12, 'bad entry')],
   ['a broken delta', invalidDelta('bad delta')],
-  ['a delta chain too deep', deltaChainTooDeep(51)],
   ['a bad pack header', invalidPackHeader('bad')],
   ['a bad pack index', invalidPackIndex('bad')],
   ['a bad multi-pack-index', invalidMultiPackIndex('pack-int-id', 'bad')],

@@ -52,6 +52,8 @@ import {
 import {
   buildSyntheticPack,
   type EntrySpec,
+  ofsChainSpecs,
+  refChainSpecs,
   syntheticBlobId,
   writeSyntheticPack,
 } from './pack-fixture.js';
@@ -3428,32 +3430,6 @@ describe('object-resolver', () => {
     });
   });
 
-  describe('Given an OFS_DELTA chain of exactly length 50 (at cap)', () => {
-    describe('When resolveObject is called', () => {
-      it('Then reconstructs without throwing DELTA_CHAIN_TOO_DEEP', async () => {
-        // Arrange — base + 50 chained OFS deltas. Depth walker hits exactly
-        // MAX_DELTA_CHAIN_DEPTH=50, but the guard uses `>`, not `>=`, so this must
-        // succeed. Kills the `depth >= MAX_DELTA_CHAIN_DEPTH` mutant.
-        const ctx = await buildSeededContext();
-        const baseContent = new TextEncoder().encode('x');
-        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
-        for (let i = 0; i < 50; i += 1) {
-          const target = new TextEncoder().encode(`t-${i}`);
-          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
-        }
-        const ids = await writeSyntheticPack(ctx, 'at-cap', entries);
-        const tipId = ids.at(-1)! as ObjectId;
-        const registry = await createPackRegistry(ctx);
-
-        // Act
-        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, false);
-
-        // Assert
-        expect(result.type).toBe('blob');
-      });
-    });
-  });
-
   describe('Given a REF_DELTA whose base is a commit', () => {
     describe('When resolveObject is called', () => {
       it('Then objectTypeToPackType returns the commit constant', async () => {
@@ -4052,159 +4028,57 @@ describe('object-resolver', () => {
 
   describe('Given an OFS_DELTA chain of length 51', () => {
     describe('When resolveObject is called', () => {
-      it('Then throws DELTA_CHAIN_TOO_DEEP', async () => {
-        // Arrange — base + 51 chained OFS deltas, each delta reconstructs unique bytes
-        // so every entry has a distinct id (prevents pack-lookup collisions).
+      it('Then resolves with the tip bytes', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const baseContent = new TextEncoder().encode('base');
-        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
-        for (let i = 0; i < 51; i += 1) {
-          const target = new TextEncoder().encode(`target-${i}`);
-          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
-        }
+        const { entries, tipContent } = ofsChainSpecs(51, 'long-chain');
         const ids = await writeSyntheticPack(ctx, 'long-chain', entries);
-        const tipId = ids.at(-1)! as ObjectId;
         const registry = await createPackRegistry(ctx);
 
         // Act
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, false);
-          throw new Error('should not reach here');
-        } catch (error) {
-          if (!(error instanceof TsgitError)) throw error;
-          // Assert
-          expect(error.data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-        }
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          ids.at(-1) as ObjectId,
+          false,
+        );
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(tipContent);
       });
     });
   });
 
   describe('Given an OFS_DELTA chain of length 51, with a lower object already warming the delta-base cache', () => {
     describe('When resolveObject reads the tip', () => {
-      it('Then it still throws DELTA_CHAIN_TOO_DEEP — the cache hit must not hide the depth beneath it', async () => {
-        // Arrange — same 51-deep chain as the cold case above, but position 25
-        // is resolved FIRST: that populates the delta-base cache for every
-        // offset from position 25 down to the true base. Resolving the tip
-        // afterwards walks only 26 levels (51 down to 25) before hitting that
-        // cache — a naive cache hit would stop counting there and let a chain
-        // that is truly 51 deep report as 26.
+      it('Then resolves with the tip bytes', async () => {
+        // Arrange — position 25 is resolved first, so the tip walk resumes from its cache entry.
         const ctx = await buildSeededContext();
-        const baseContent = new TextEncoder().encode('base');
-        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
-        for (let i = 0; i < 51; i += 1) {
-          const target = new TextEncoder().encode(`target-${i}`);
-          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
-        }
+        const { entries, tipContent } = ofsChainSpecs(51, 'long-chain-warm');
         const ids = await writeSyntheticPack(ctx, 'long-chain-warm', entries);
-        const lowerId = ids[25]! as ObjectId;
-        const tipId = ids.at(-1)! as ObjectId;
         const registry = await createPackRegistry(ctx);
-
-        // Act — warm the cache with the lower object first.
-        await resolveObject(ctx, soleSourceStore(ctx, registry), lowerId, false);
-        let caught: unknown;
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, false);
-        } catch (error) {
-          caught = error;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-      });
-    });
-  });
-
-  describe('Given an OFS_DELTA chain of length 60, warmed bottom-up in five successive 10-level steps', () => {
-    describe('When resolveObject finally reads the tip', () => {
-      it('Then it still throws DELTA_CHAIN_TOO_DEEP — a resumed cache hit must carry its OWN depth into every level it re-caches, not just the level it resumed at', async () => {
-        // Arrange — a 60-deep OFS chain (10 over the cap). Each of the five
-        // warm-up reads is, on its own, well within MAX_DELTA_CHAIN_DEPTH —
-        // resolving position 20 after position 10 only ever walks 10 fresh
-        // levels before hitting the position-10 cache entry. Only the
-        // COMPOUNDED total (10 → 20 → 30 → 40 → 50 → 60) exceeds the cap. A
-        // cache-hit resumption that drops its own resumed depth would let
-        // every successive warm step re-anchor its own re-cached levels at
-        // depth zero instead of inheriting what came before, letting the
-        // truly-60-deep tip slip through as if it were only 10 deep.
-        const ctx = await buildSeededContext();
-        const baseContent = new TextEncoder().encode('base');
-        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
-        for (let i = 0; i < 60; i += 1) {
-          const target = new TextEncoder().encode(`target-${i}`);
-          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
-        }
-        const ids = await writeSyntheticPack(ctx, 'long-chain-successive-warm', entries);
-        const registry = await createPackRegistry(ctx);
-
-        // Act — warm the cache bottom-up in five 10-level steps, then read the tip.
-        for (const position of [10, 20, 30, 40, 50]) {
-          await resolveObject(
-            ctx,
-            soleSourceStore(ctx, registry),
-            ids[position] as ObjectId,
-            false,
-          );
-        }
-        let caught: unknown;
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), ids.at(-1) as ObjectId, false);
-        } catch (error) {
-          caught = error;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-      });
-    });
-  });
-
-  describe('Given a 45-level OFS_DELTA chain fully resolved cold, caching every intermediate level along the way', () => {
-    describe('When the shallowest delta (one level off the base) is resolved next', () => {
-      it("Then it succeeds — a re-cached intermediate level must carry ITS OWN true depth, not the target level's", async () => {
-        // Arrange — resolving the tip caches every one of the 45
-        // intermediate levels under its own pack offset. The level closest
-        // to the base (one hop off it) is genuinely depth 1; a caching loop
-        // that mislabels it with (something related to) the target's own
-        // depth instead would make a later direct read of THIS shallow
-        // level wrongly appear to have accumulated the full chain's depth.
-        const ctx = await buildSeededContext();
-        const baseContent = new TextEncoder().encode('base');
-        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
-        for (let i = 0; i < 45; i += 1) {
-          const target = new TextEncoder().encode(`shallow-after-deep-${i}`);
-          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
-        }
-        const ids = await writeSyntheticPack(ctx, 'shallow-after-deep', entries);
-        const registry = await createPackRegistry(ctx);
-        await resolveObject(ctx, soleSourceStore(ctx, registry), ids.at(-1) as ObjectId, false);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), ids[25] as ObjectId, false);
 
         // Act
         const result = await resolveObject(
           ctx,
           soleSourceStore(ctx, registry),
-          ids[1] as ObjectId,
+          ids.at(-1) as ObjectId,
           false,
         );
 
         // Assert
         expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(tipContent);
       });
     });
   });
 
   describe('Given a pack whose chain crosses a REF_DELTA hop into a second chain', () => {
-    describe('When the cumulative depth exceeds MAX_DELTA_CHAIN_DEPTH even though each segment is within it', () => {
-      it('Then the read refuses with the DELTA_CHAIN_TOO_DEEP error data', async () => {
-        // Arrange — pack A: base + 30 OFS deltas (depth 30, within the 50
-        // cap on its own). Pack B: a REF_DELTA into A's tip, plus 25 more
-        // OFS deltas on top (a further 26-level segment, also within the
-        // cap on its own). Neither segment alone crosses
-        // MAX_DELTA_CHAIN_DEPTH, but resolving B's tip must walk BOTH to
-        // reconstruct it — a true depth the old REF_DELTA arm's hardcoded
-        // `baseChainDepth: 0` never counted.
+    describe('When resolveObject reads the tip of the second chain', () => {
+      it('Then resolves with the tip bytes', async () => {
+        // Arrange — pack A: base + 30 OFS deltas. Pack B: a REF_DELTA into A's tip plus 25 OFS deltas.
         const ctx = await buildSeededContext();
         let aContent = ENC.encode('a-base');
         const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
@@ -4213,12 +4087,10 @@ describe('object-resolver', () => {
           aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
         }
         const aIds = await writeSyntheticPack(ctx, 'ref-hop-a', aEntries);
-        const aTipId = aIds.at(-1)!;
-
         const bEntries: EntrySpec[] = [
           {
             kind: 'ref-delta',
-            baseId: aTipId,
+            baseId: aIds.at(-1)!,
             baseUncompressed: aContent,
             targetContent: ENC.encode('b-0'),
           },
@@ -4231,39 +4103,27 @@ describe('object-resolver', () => {
           });
         }
         const bIds = await writeSyntheticPack(ctx, 'ref-hop-b', bEntries);
-        const bTipId = bIds.at(-1)! as ObjectId;
         const registry = await createPackRegistry(ctx);
 
         // Act
-        let caught: unknown;
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
-        } catch (error) {
-          caught = error;
-        }
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          bIds.at(-1) as ObjectId,
+          false,
+        );
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
-          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
-        }
-        expect(data.depth).toBe(51);
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(ENC.encode('b-25'));
       });
     });
   });
 
-  describe('Given nested REF_DELTA hops whose combined depth exceeds the cap', () => {
+  describe('Given 55 one-entry packs chained by REF_DELTA hops', () => {
     describe('When resolveObject reads the final hop', () => {
-      it('Then refuses with DELTA_CHAIN_TOO_DEEP rather than recursing past the cap', async () => {
-        // Arrange — 55 packs, each holding exactly one entry: pack 0 a real
-        // base blob, every later pack a single REF_DELTA whose base is the
-        // previous pack's object. Each pack's own segment is depth 1 —
-        // trivially within the 50 cap — but reconstructing the LAST pack's
-        // entry recurses through every earlier hop, so the true cumulative
-        // depth (54) exceeds the cap. Pins that `externalDepth` bounds the
-        // recursion itself, not just a single hop's local walk.
+      it('Then resolves with the final hop bytes', async () => {
+        // Arrange — pack 0 holds a base blob, every later pack a single REF_DELTA onto the previous pack's object.
         const ctx = await buildSeededContext();
         const HOP_COUNT = 55;
         const baseContent = ENC.encode('hop-base');
@@ -4288,324 +4148,64 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        let caught: unknown;
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), previousId as ObjectId, false);
-        } catch (error) {
-          caught = error;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
-          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
-        }
-        expect(data.depth).toBe(51);
-      });
-    });
-  });
-
-  describe('Given a chain that stays within the cap across a REF hop', () => {
-    describe('When resolveObject is called', () => {
-      it('Then it still resolves — no over-refusal regression', async () => {
-        // Arrange — pack A: base + 10 OFS deltas (depth 10). Pack B: a
-        // REF_DELTA into A's tip, plus 10 more OFS deltas on top. True
-        // combined depth is 21 (10 + 1 REF hop + 10) — comfortably within
-        // the 50 cap — so the fix's depth threading must not over-refuse.
-        const ctx = await buildSeededContext();
-        let aContent = ENC.encode('within-a-base');
-        const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
-        for (let i = 0; i < 10; i += 1) {
-          aContent = ENC.encode(`within-a-${i}`);
-          aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
-        }
-        const aIds = await writeSyntheticPack(ctx, 'within-cap-a', aEntries);
-        const aTipId = aIds.at(-1)!;
-
-        const bEntries: EntrySpec[] = [
-          {
-            kind: 'ref-delta',
-            baseId: aTipId,
-            baseUncompressed: aContent,
-            targetContent: ENC.encode('within-b-0'),
-          },
-        ];
-        let bTipContent = ENC.encode('within-b-0');
-        for (let i = 0; i < 10; i += 1) {
-          bTipContent = ENC.encode(`within-b-${i + 1}`);
-          bEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: bTipContent });
-        }
-        const bIds = await writeSyntheticPack(ctx, 'within-cap-b', bEntries);
-        const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = await createPackRegistry(ctx);
-
-        // Act
-        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          previousId as ObjectId,
+          false,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
-        expect((result as Blob).content).toEqual(bTipContent);
+        expect((result as Blob).content).toEqual(previousContent);
       });
     });
   });
 
-  describe('Given a REF_DELTA hop whose offset-keyed cache entry was populated by an earlier cold read', () => {
-    describe('When a later read resumes from that cache entry across the hop', () => {
-      it('Then the true cumulative depth is still enforced on resumption, not just the walked levels', async () => {
-        // Arrange — pack A: base + 20 OFS deltas (A's tip is depth 20).
-        // Pack B: a REF_DELTA into A's tip (entry 0), plus 35 more OFS
-        // deltas on top. First resolve B's entry 0 directly — this warms
-        // the offset-keyed delta-base cache for entry 0 with its TRUE
-        // depth (21: the REF hop itself plus A's own 20-deep chain), not
-        // the old code's hardcoded `baseChainDepth: 0`. Then resolve B's
-        // tip (35 levels above entry 0): the walk resumes from that cached
-        // entry, and 35 (walked) + 21 (cached) = 56 must still refuse, even
-        // though the cache hit sits entirely below the REF hop.
+  describe('Given an OFS_DELTA chain of 5000 levels', () => {
+    describe('When resolveObject reads the tip', () => {
+      it('Then resolves with the tip bytes', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        let aContent = ENC.encode('cache-a-base');
-        const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
-        for (let i = 0; i < 20; i += 1) {
-          aContent = ENC.encode(`cache-a-${i}`);
-          aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
-        }
-        const aIds = await writeSyntheticPack(ctx, 'cache-hop-a', aEntries);
-        const aTipId = aIds.at(-1)!;
-
-        const bEntries: EntrySpec[] = [
-          {
-            kind: 'ref-delta',
-            baseId: aTipId,
-            baseUncompressed: aContent,
-            targetContent: ENC.encode('cache-b-0'),
-          },
-        ];
-        let bContent = ENC.encode('cache-b-0');
-        for (let i = 0; i < 35; i += 1) {
-          bContent = ENC.encode(`cache-b-${i + 1}`);
-          bEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: bContent });
-        }
-        const bIds = await writeSyntheticPack(ctx, 'cache-hop-b', bEntries);
-        const bEntry0Id = bIds[0]! as ObjectId;
-        const bTipId = bIds.at(-1)! as ObjectId;
+        const { entries, tipContent } = ofsChainSpecs(5_000, 'deep-ofs');
+        const ids = await writeSyntheticPack(ctx, 'deep-ofs', entries);
         const registry = await createPackRegistry(ctx);
 
-        // Act — cold read warms the offset-keyed cache at entry 0's position.
-        await resolveObject(ctx, soleSourceStore(ctx, registry), bEntry0Id, false);
-        let caught: unknown;
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
-        } catch (error) {
-          caught = error;
-        }
+        // Act
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          ids.at(-1) as ObjectId,
+          false,
+        );
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
-          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
-        }
-        expect(data.depth).toBe(56);
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(tipContent);
       });
     });
   });
 
-  describe('Given a REF_DELTA base whose OWN chain resumed from a warm intermediate cache entry (nonzero baseChainDepth)', () => {
-    describe('When the REF hop base is resolved for the first time via the hop itself, then enough further levels are stacked to exceed the cap only under its TRUE combined depth', () => {
-      it('Then the cross-hop read still refuses with DELTA_CHAIN_TOO_DEEP — a resumed base must report its walked-plus-resumed depth, not just the levels it walked', async () => {
-        // Arrange — pack A: base + 20 OFS deltas (positions 1..20). Position
-        // 10 is warmed FIRST (cold, baseChainDepth 0, depth 10 cached) —
-        // this is an INTERMEDIATE position, never the tip. Pack B's
-        // REF_DELTA then targets A's tip (position 20) for the FIRST time:
-        // resolving it resumes from position 10's cache (baseChainDepth 10,
-        // 10 freshly-walked levels), so A's tip's true depth is 20 — but
-        // this is the very return value under test. 35 more OFS levels on
-        // top of B's REF hop push the TRUE total (20 + 35 = 55) over the
-        // cap; a return value that drops the resumed baseChainDepth instead
-        // of adding it would report A's tip at depth 0, letting B's tip
-        // wrongly resolve at an apparent depth of 35.
+  describe('Given a REF_DELTA chain of 5000 levels in one pack', () => {
+    describe('When resolveObject reads the tip', () => {
+      it('Then resolves with the tip bytes', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        let aContent = ENC.encode('hop-resume-a-base');
-        const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
-        for (let i = 0; i < 20; i += 1) {
-          aContent = ENC.encode(`hop-resume-a-${i}`);
-          aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
-        }
-        const aIds = await writeSyntheticPack(ctx, 'hop-resume-a', aEntries);
-        const aPosition10Id = aIds[10]! as ObjectId;
-        const aTipId = aIds.at(-1)!;
-
-        const bEntries: EntrySpec[] = [
-          {
-            kind: 'ref-delta',
-            baseId: aTipId,
-            baseUncompressed: aContent,
-            targetContent: ENC.encode('hop-resume-b-0'),
-          },
-        ];
-        let bContent = ENC.encode('hop-resume-b-0');
-        for (let i = 0; i < 35; i += 1) {
-          bContent = ENC.encode(`hop-resume-b-${i + 1}`);
-          bEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: bContent });
-        }
-        const bIds = await writeSyntheticPack(ctx, 'hop-resume-b', bEntries);
-        const bTipId = bIds.at(-1)! as ObjectId;
+        const { entries, tipContent } = await refChainSpecs(ctx, 5_000, 'deep-ref');
+        const ids = await writeSyntheticPack(ctx, 'deep-ref', entries);
         const registry = await createPackRegistry(ctx);
 
-        // Act — warm A's position 10 (intermediate, not the tip), then
-        // resolve B's tip, which resolves A's tip for the first time as its
-        // REF_DELTA base.
-        await resolveObject(ctx, soleSourceStore(ctx, registry), aPosition10Id, false);
-        let caught: unknown;
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
-        } catch (error) {
-          caught = error;
-        }
+        // Act
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          ids.at(-1) as ObjectId,
+          false,
+        );
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
-          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
-        }
-      });
-    });
-  });
-
-  describe('Given a REF_DELTA entry whose OWN resolved chain depth (a resumed base plus itself) was cached, then extended further', () => {
-    describe('When the extended tip resumes from that offset-keyed cache entry', () => {
-      it('Then the true cumulative depth is still enforced — the cached REF-hop entry must report walked-plus-resumed depth on its OWN base, not just its own single hop', async () => {
-        // Arrange — pack A: base + 11 OFS deltas; warm position 1 (cold,
-        // depth 1), then resolve the tip (position 11), which resumes from
-        // position 1 (10 fresh levels + baseChainDepth 1 = true depth 11).
-        // Pack B: entry 0 is a REF_DELTA into A's tip; entries 1..40 stack
-        // 40 more OFS levels on top. Resolving entry 0 DIRECTLY caches ITS
-        // OWN offset-keyed entry using A's returned chainDepth as its base
-        // — if that return drops the resumed depth instead of adding it,
-        // entry 0's own cached depth undercounts by exactly A's
-        // baseChainDepth. Resolving B's tip afterwards then resumes from
-        // entry 0's (possibly undercounted) cache entry.
-        const ctx = await buildSeededContext();
-        let aContent = ENC.encode('return-a-base');
-        const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
-        for (let i = 0; i < 11; i += 1) {
-          aContent = ENC.encode(`return-a-${i}`);
-          aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
-        }
-        const aIds = await writeSyntheticPack(ctx, 'return-a', aEntries);
-        const aPosition1Id = aIds[1]! as ObjectId;
-        const aTipId = aIds.at(-1)!;
-
-        const bEntries: EntrySpec[] = [
-          {
-            kind: 'ref-delta',
-            baseId: aTipId,
-            baseUncompressed: aContent,
-            targetContent: ENC.encode('return-b-0'),
-          },
-        ];
-        let bContent = ENC.encode('return-b-0');
-        for (let i = 0; i < 40; i += 1) {
-          bContent = ENC.encode(`return-b-${i + 1}`);
-          bEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: bContent });
-        }
-        const bIds = await writeSyntheticPack(ctx, 'return-b', bEntries);
-        const bEntry0Id = bIds[0]! as ObjectId;
-        const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = await createPackRegistry(ctx);
-
-        // Act — warm A's position 1 (intermediate, not the tip): A's tip is
-        // resolved for the first time below, as bEntry0's own REF_DELTA
-        // base, so it goes through the full resolvePackChainWithDepth
-        // return path rather than an id-keyed bytes-cache shortcut.
-        await resolveObject(ctx, soleSourceStore(ctx, registry), aPosition1Id, false);
-        await resolveObject(ctx, soleSourceStore(ctx, registry), bEntry0Id, false);
-        let caught: unknown;
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
-        } catch (error) {
-          caught = error;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
-          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
-        }
-      });
-    });
-  });
-
-  describe('Given a REF_DELTA chain whose true cumulative depth exceeds the cap when resolved cold', () => {
-    describe('When the REF hop base is resolved directly first — warming the id-keyed delta cache — and the same tip is resolved again', () => {
-      it('Then the cold read refuses but the warm read admits the identical chain, since the id-keyed cache reports depth 0', async () => {
-        // Arrange — the same two-pack REF_DELTA fixture as the cross-hop
-        // refusal test above: pack A (base + 30 OFS deltas, tip depth 30)
-        // and pack B (a REF_DELTA into A's tip, plus 25 more OFS deltas).
-        // The true combined depth exceeds MAX_DELTA_CHAIN_DEPTH, so a cold
-        // read of B's tip refuses. Resolving A's tip DIRECTLY afterwards
-        // populates the id-keyed `ctx.deltaCache` for it — a cache that
-        // reports depth 0 for any hit, per the documented residual in
-        // `resolveBaseForRefDelta` and `Phase1Result.baseChainDepth`. A
-        // second read of the SAME tip then resumes the REF hop from that
-        // warm entry and — despite the chain's true length being unchanged
-        // — succeeds, because the id-keyed hit undercounts. The cap still
-        // bounded the recursion and I/O each read performed; it did not
-        // bound the reconstructed chain's true length once warm.
-        const ctx = await buildSeededContext();
-        let aContent = ENC.encode('cache-consequence-a-base');
-        const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
-        for (let i = 0; i < 30; i += 1) {
-          aContent = ENC.encode(`cache-consequence-a-${i}`);
-          aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
-        }
-        const aIds = await writeSyntheticPack(ctx, 'cache-consequence-a', aEntries);
-        const aTipId = aIds.at(-1)! as ObjectId;
-
-        const bEntries: EntrySpec[] = [
-          {
-            kind: 'ref-delta',
-            baseId: aTipId,
-            baseUncompressed: aContent,
-            targetContent: ENC.encode('cache-consequence-b-0'),
-          },
-        ];
-        let bTipContent = ENC.encode('cache-consequence-b-0');
-        for (let i = 0; i < 25; i += 1) {
-          bTipContent = ENC.encode(`cache-consequence-b-${i + 1}`);
-          bEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: bTipContent });
-        }
-        const bIds = await writeSyntheticPack(ctx, 'cache-consequence-b', bEntries);
-        const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = await createPackRegistry(ctx);
-
-        // Act — cold read of the tip: nothing has warmed A's id-cache yet.
-        let coldCaught: unknown;
-        try {
-          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
-        } catch (error) {
-          coldCaught = error;
-        }
-
-        // Resolve A's tip directly — populates the id-keyed ctx.deltaCache
-        // for aTipId with its raw bytes; that cache reports chainDepth 0.
-        await resolveObject(ctx, soleSourceStore(ctx, registry), aTipId, false);
-
-        // A second read of the SAME tip resumes the REF hop from that warm
-        // cache entry instead of walking pack A's chain again.
-        const warmResult = await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
-
-        // Assert
-        expect(coldCaught).toBeInstanceOf(TsgitError);
-        expect((coldCaught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-        expect(warmResult.type).toBe('blob');
-        expect((warmResult as Blob).content).toEqual(bTipContent);
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(tipContent);
       });
     });
   });
