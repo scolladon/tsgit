@@ -5,7 +5,9 @@ subjects:
 ---
 # 771 — Both delta-chain readers accept git's full depth
 
-- **Status:** accepted
+> Superseded by [ADR-1019](1019-readers-accept-any-delta-depth-two-guards-terminate-the-walk.md): the reader cap at git's default depth and the writer clamp at 50 that served it — readers accept any depth; the writer's ceiling is re-decided by ADR-1023.
+
+- **Status:** superseded by ADR-1019
 - **Date:** 2026-08-31
 - **Design:** docs/design/delta-writing-packer.md (DC-5, section 9)
 
