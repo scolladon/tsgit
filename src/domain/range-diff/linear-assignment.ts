@@ -271,7 +271,11 @@ const findAugmentingPath = (s: Lap, d: number[], pred: number[], col: number[]):
   }
 };
 
-/** git's `BUG("negative j")`: an augmenting path must end on a real column. */
+/**
+ * git's `BUG("negative j")`: an augmenting path must end on a real column.
+ *
+ * @internal — exported for direct unit testing.
+ */
 export const assertColumnIndex = (j: number): void => {
   if (j < 0) throw new Error(`negative j: ${j}`);
 };
