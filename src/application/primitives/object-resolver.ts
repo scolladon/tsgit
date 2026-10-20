@@ -803,7 +803,7 @@ async function collectDeltaChain(
     depth += 1;
     const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
     assertInflatedSizeMatches(currentHit.offset, header.size, instructions.byteLength);
-    // Stryker disable next-line CallExpression: equivalent — this pre-apply cap is a documented perf-only optimisation (see enforcePackDeltaPreApplyCap's own docstring): removing the call leaves the POST-apply cap in resolvePackChainWithDepth (current.length > maxBytes) to throw the identical OBJECT_TOO_LARGE, just after the wasted apply+allocation instead of before it (full covering set — object-resolver, read-object, stream-blob, blob-source, fsck, pack-registry — passes unmutated).
+    // Stryker disable next-line CallExpression: equivalent — this pre-apply cap is a documented perf-only optimisation (see enforcePackDeltaPreApplyCap's own docstring): removing the call leaves the POST-apply cap in resolvePackChain (current.length > maxBytes) to throw the identical OBJECT_TOO_LARGE, just after the wasted apply+allocation instead of before it (full covering set — object-resolver, read-object, stream-blob, blob-source, fsck, pack-registry — passes unmutated).
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
