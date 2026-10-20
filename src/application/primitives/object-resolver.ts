@@ -282,8 +282,8 @@ export async function inflateLooseBuffered(
 }
 
 /**
- * Depth-aware object-content resolution — the single entry point for every
- * caller. Buffered reads answer from the pack before loose, mirroring git's
+ * Object-content resolution — the single entry point for every caller.
+ * Buffered reads answer from the pack before loose, mirroring git's
  * own `do_oid_object_info_extended`: the arms are empty-tree / deltaCache hit
  * (neither ever walks a delta chain) / a pack hit (`resolvePackChain`) / a pack
  * miss falling to `resolveLooseArm`. `resolveObject` (below)
@@ -329,8 +329,9 @@ export async function resolveObjectContentWithDepth(
   throw objectNotFound(id);
 }
 
-/** The deltaCache fast path: neither hop walks a delta chain. Extracted so the entry point above stays a short list of
- *  short-circuits, one per storage form. */
+/** The deltaCache fast path: neither hop walks a delta chain. Extracted so
+ *  the entry point above stays a short list of short-circuits, one per
+ *  storage form. */
 async function tryDeltaCacheHit(
   ctx: Context,
   id: ObjectId,
