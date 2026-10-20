@@ -177,6 +177,7 @@ const augmentingRowReduction = (s: Lap, freeRow: number[], freeCountIn: number):
 interface Search {
   low: number;
   up: number;
+  j: number;
 }
 
 interface PathResult {
@@ -187,22 +188,15 @@ interface PathResult {
 
 /**
  * Move every still-unscanned column whose distance `d` is `<= min` into the
- * active set `[search.low, search.up)`, returning the prevailing `min` and the
- * last column index touched (git leaves `j` at this value when the immediately
- * following unassigned-column check fires).
+ * active set `[search.low, search.up)`, returning the prevailing `min`. The last
+ * column touched is left in `search.j`, as git leaves `j` when the immediately
+ * following unassigned-column check fires.
  */
-const expandMinColumns = (
-  s: Lap,
-  d: number[],
-  col: number[],
-  search: Search,
-): { readonly min: number; readonly lastJ: number } => {
+const expandMinColumns = (s: Lap, d: number[], col: number[], search: Search): number => {
   let min = d[col[search.up++]!]!;
-  // Stryker disable next-line UnaryOperator: equivalent — the loop overwrites `lastJ` with a real column (`>= 0`) on its first pass, so the initializer survives only when the loop runs zero times; but then `lastJ` is returned as `path.j` and would index `pred[-1]`/`columnToRow[-1]` (`undefined`) in `augmentOne`, hanging the augmenting walk a correct run never triggers — so the init is never observed.
-  let lastJ = -1;
   for (let k = search.up; k < s.columnCount; k++) {
     const j = col[k]!;
-    lastJ = j;
+    search.j = j;
     const c = d[j]!;
     if (c <= min) {
       if (c < min) {
@@ -213,7 +207,7 @@ const expandMinColumns = (
       col[search.up++] = j;
     }
   }
-  return { min, lastJ };
+  return min;
 };
 
 const hasUnassignedColumn = (s: Lap, col: number[], search: Search): boolean => {
@@ -243,6 +237,7 @@ const scanRows = (
     // Stryker disable next-line EqualityOperator: equivalent — at `k === columnCount` `col[k]` is `undefined`, so `c` is `i32(NaN) === 0` and the guard `c < d[undefined]` is `0 < undefined` (false); the trailing iteration relaxes nothing.
     for (let k = search.up; k < s.columnCount; k++) {
       const j = col[k]!;
+      search.j = j;
       const c = i32(costAt(s, j, i) - s.v[j]! - u1);
       if (c < d[j]!) {
         d[j] = c;
@@ -259,15 +254,15 @@ const scanRows = (
 };
 
 const findAugmentingPath = (s: Lap, d: number[], pred: number[], col: number[]): PathResult => {
-  const search: Search = { low: 0, up: 0 };
+  const search: Search = { low: 0, up: 0, j: -1 };
   // Endless by construction: git's `do … while (low === up)` only ever leaves via
   // one of the two "found an unassigned column" gotos, modelled here as returns.
   for (;;) {
     const last = search.low;
-    const { min, lastJ } = expandMinColumns(s, d, col, search);
-    if (hasUnassignedColumn(s, col, search)) return { j: lastJ, last, min };
+    const min = expandMinColumns(s, d, col, search);
+    if (hasUnassignedColumn(s, col, search)) return { j: search.j, last, min };
     const found = scanRows(s, d, pred, col, search, min);
-    if (found >= 0) return { j: found, last, min };
+    if (found >= 0) return { j: search.j, last, min };
   }
 };
 
@@ -290,6 +285,8 @@ const augmentOne = (s: Lap, i1: number): void => {
     const j1 = col[k]!;
     s.v[j1] = i32(s.v[j1]! + (d[j1]! - path.min));
   }
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — `search.j` is assigned on the first expansion pass, which runs from `k = 1` to `columnCount - 1` and so executes for every `columnCount >= 2` (smaller sizes return before augmentation), so `path.j` is never negative and the guard cannot fire.
+  if (path.j < 0) throw new Error('negative j');
   let j = path.j;
   let i: number;
   do {
