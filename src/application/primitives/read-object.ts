@@ -16,7 +16,6 @@ import type { PromisorRemote } from '../../ports/promisor.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
 import { looseLocationOf, type SourceLocation } from './internal/source-location.js';
 import {
-  assertChainDepthWithinCap,
   enterRefBase,
   isBase,
   LOOSE_HEADER_WINDOW,
@@ -547,7 +546,7 @@ async function readEntryHeaderAt(
 /**
  * Walks base links through entry HEADERS only, never inflating a base — the
  * type comes from the base entry's own header once the walk reaches it.
- * Reuses `ofsDeltaBaseOffset` and `assertChainDepthWithinCap` so this third
+ * Reuses `ofsDeltaBaseOffset` and `enterRefBase` so this third
  * delta-chain walker cannot drift from the two `collectDeltaChain` already
  * uses to resolve full bytes.
  */
@@ -560,7 +559,6 @@ async function walkDeltaBaseType(
 ): Promise<ObjectType> {
   let currentHit = hit;
   let currentHeader = header;
-  let depth = 1;
   let walked: Set<ObjectId> | undefined;
   for (;;) {
     if (currentHeader.type === PACK_ENTRY_TYPE.REF_DELTA) {
@@ -571,8 +569,6 @@ async function walkDeltaBaseType(
     if (!isDeltaHeader(nextHeader)) {
       return packEntryTypeToObjectType(nextHeader.type);
     }
-    depth += 1;
-    assertChainDepthWithinCap(depth);
     currentHit = nextHit;
     currentHeader = nextHeader;
   }

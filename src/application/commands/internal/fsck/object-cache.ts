@@ -8,7 +8,6 @@ import type {
   TreeEntry,
 } from '../../../../domain/objects/index.js';
 import { invalidObjectHeader, parseHeader } from '../../../../domain/objects/index.js';
-import { MAX_DELTA_CHAIN_DEPTH } from '../../../../domain/storage/delta.js';
 import {
   PACK_ENTRY_TYPE,
   packEntryTypeToObjectType,
@@ -295,7 +294,7 @@ async function walkDeltaChain(
 ): Promise<TypedOrUntyped> {
   let currentHit = hit;
   let walked: Set<ObjectId> | undefined;
-  for (let depth = 0; depth <= MAX_DELTA_CHAIN_DEPTH; depth += 1) {
+  for (;;) {
     const chunk = await currentHit.pack.readSlice(currentHit.offset, ENTRY_HEADER_PROBE_BYTES);
     const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
 
@@ -315,7 +314,6 @@ async function walkDeltaChain(
 
     return { kind: 'typed', objectType: packEntryTypeToObjectType(header.type) };
   }
-  return untypedFault(ctx, id, 'delta chain exceeds max depth');
 }
 
 /**

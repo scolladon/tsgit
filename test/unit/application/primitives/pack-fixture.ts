@@ -419,6 +419,47 @@ export async function syntheticBlobId(ctx: Context, content: Uint8Array): Promis
   return ctx.hash.hashHex(prependObjectHeader(content, 'blob'));
 }
 
+export interface ChainSpec {
+  readonly entries: ReadonlyArray<EntrySpec>;
+  readonly tipContent: Uint8Array;
+}
+
+const CHAIN_ENCODER = new TextEncoder();
+
+/** A blob base followed by `depth` OFS deltas, each targeting the previous entry. */
+export function ofsChainSpecs(depth: number, label: string): ChainSpec {
+  const base = CHAIN_ENCODER.encode(`${label}-base`);
+  const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: base }];
+  let tipContent = base;
+  for (let i = 0; i < depth; i += 1) {
+    tipContent = CHAIN_ENCODER.encode(`${label}-${i}`);
+    entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: tipContent });
+  }
+  return { entries, tipContent };
+}
+
+/** Same contents as `ofsChainSpecs`, but every delta names its base by id. */
+export async function refChainSpecs(
+  ctx: Context,
+  depth: number,
+  label: string,
+): Promise<ChainSpec> {
+  const base = CHAIN_ENCODER.encode(`${label}-base`);
+  const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: base }];
+  let previous = base;
+  for (let i = 0; i < depth; i += 1) {
+    const targetContent = CHAIN_ENCODER.encode(`${label}-${i}`);
+    entries.push({
+      kind: 'ref-delta',
+      baseId: await syntheticBlobId(ctx, previous),
+      baseUncompressed: previous,
+      targetContent,
+    });
+    previous = targetContent;
+  }
+  return { entries, tipContent: previous };
+}
+
 function prependObjectHeader(content: Uint8Array, type: string): Uint8Array {
   const headerStr = `${type} ${content.length}\0`;
   const headerBytes = new TextEncoder().encode(headerStr);

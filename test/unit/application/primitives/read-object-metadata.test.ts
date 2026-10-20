@@ -28,6 +28,8 @@ import type { EntrySpec } from './pack-fixture.js';
 import {
   buildSyntheticPack,
   corruptIdxOffset,
+  ofsChainSpecs,
+  refChainSpecs,
   syntheticBlobId,
   writeSyntheticPack,
 } from './pack-fixture.js';
@@ -369,64 +371,54 @@ describe('readObjectMetadata', () => {
 
   describe('Given an OFS_DELTA chain of length 51', () => {
     describe('When readObjectMetadata is called on the tip', () => {
-      it('Then throws DELTA_CHAIN_TOO_DEEP with the accumulated depth', async () => {
-        // Arrange — base + 51 chained OFS deltas, each reconstructing unique
-        // bytes so every entry has a distinct id (avoids pack-lookup collisions).
+      it('Then reports the base type and the tip size', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const baseContent = new TextEncoder().encode('base');
-        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
-        for (let i = 0; i < 51; i += 1) {
-          const target = new TextEncoder().encode(`target-${i}`);
-          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
-        }
+        const { entries, tipContent } = ofsChainSpecs(51, 'meta-long-chain');
         const ids = await writeSyntheticPack(ctx, 'meta-long-chain', entries);
-        const tipId = ids[ids.length - 1] as ObjectId;
 
         // Act
-        try {
-          await readObjectMetadata(ctx, tipId);
-          expect.unreachable();
-        } catch (error) {
-          // Assert
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
-          if (data.code === 'DELTA_CHAIN_TOO_DEEP') {
-            expect(data.depth).toBe(51);
-          }
-        }
+        const result = await readObjectMetadata(ctx, ids.at(-1) as ObjectId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.uncompressedSize).toBe(tipContent.length);
       });
     });
   });
 
-  describe('Given an OFS_DELTA whose base distance is zero (it names its own offset)', () => {
-    describe('When readObjectMetadata is called on it', () => {
-      it('Then throws OBJECT_NOT_FOUND for the delta id instead of walking until the depth cap', async () => {
+  describe('Given an OFS_DELTA chain of 5000 hops', () => {
+    describe('When readObjectMetadata is called on the tip', () => {
+      it('Then reports the base type and the tip size', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const ids = await writeSyntheticPack(ctx, 'meta-zero-distance', [
-          { kind: 'base', type: 'blob', content: new TextEncoder().encode('zero-distance base') },
-          {
-            kind: 'ofs-delta',
-            baseIndex: 0,
-            targetContent: new TextEncoder().encode('zero-distance target'),
-            distanceOverride: 0,
-          },
-        ]);
-        const deltaId = ids[1] as ObjectId;
+        const { entries, tipContent } = ofsChainSpecs(5_000, 'meta-deep-ofs');
+        const ids = await writeSyntheticPack(ctx, 'meta-deep-ofs', entries);
 
         // Act
-        try {
-          await readObjectMetadata(ctx, deltaId);
-          expect.unreachable();
-        } catch (error) {
-          // Assert
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('OBJECT_NOT_FOUND');
-          if (data.code !== 'OBJECT_NOT_FOUND') {
-            expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
-          }
-          expect(data.id).toBe(deltaId);
-        }
+        const result = await readObjectMetadata(ctx, ids.at(-1) as ObjectId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.uncompressedSize).toBe(tipContent.length);
+      });
+    });
+  });
+
+  describe('Given a REF_DELTA chain of 5000 hops in one pack', () => {
+    describe('When readObjectMetadata is called on the tip', () => {
+      it('Then reports the base type and the tip size', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { entries, tipContent } = await refChainSpecs(ctx, 5_000, 'meta-deep-ref');
+        const ids = await writeSyntheticPack(ctx, 'meta-deep-ref', entries);
+
+        // Act
+        const result = await readObjectMetadata(ctx, ids.at(-1) as ObjectId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.uncompressedSize).toBe(tipContent.length);
       });
     });
   });
