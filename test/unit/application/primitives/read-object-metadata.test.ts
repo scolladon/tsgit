@@ -377,8 +377,10 @@ describe('readObjectMetadata', () => {
         const { entries, tipContent } = ofsChainSpecs(51, 'meta-long-chain');
         const ids = await writeSyntheticPack(ctx, 'meta-long-chain', entries);
 
+        const sut = readObjectMetadata;
+
         // Act
-        const result = await readObjectMetadata(ctx, ids.at(-1) as ObjectId);
+        const result = await sut(ctx, ids.at(-1) as ObjectId);
 
         // Assert
         expect(result.type).toBe('blob');
@@ -395,8 +397,10 @@ describe('readObjectMetadata', () => {
         const { entries, tipContent } = ofsChainSpecs(5_000, 'meta-deep-ofs');
         const ids = await writeSyntheticPack(ctx, 'meta-deep-ofs', entries);
 
+        const sut = readObjectMetadata;
+
         // Act
-        const result = await readObjectMetadata(ctx, ids.at(-1) as ObjectId);
+        const result = await sut(ctx, ids.at(-1) as ObjectId);
 
         // Assert
         expect(result.type).toBe('blob');
@@ -413,8 +417,10 @@ describe('readObjectMetadata', () => {
         const { entries, tipContent } = await refChainSpecs(ctx, 5_000, 'meta-deep-ref');
         const ids = await writeSyntheticPack(ctx, 'meta-deep-ref', entries);
 
+        const sut = readObjectMetadata;
+
         // Act
-        const result = await readObjectMetadata(ctx, ids.at(-1) as ObjectId);
+        const result = await sut(ctx, ids.at(-1) as ObjectId);
 
         // Assert
         expect(result.type).toBe('blob');
@@ -423,10 +429,80 @@ describe('readObjectMetadata', () => {
     });
   });
 
+  describe('Given an OFS_DELTA whose base distance is zero (it names its own offset)', () => {
+    describe('When readObjectMetadata is called on it', () => {
+      it('Then throws OBJECT_NOT_FOUND for the delta id instead of revisiting the entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'meta-zero-distance', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('zero-distance base') },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 0,
+            targetContent: new TextEncoder().encode('zero-distance target'),
+            distanceOverride: 0,
+          },
+        ]);
+        const deltaId = ids[1] as ObjectId;
+        const sut = readObjectMetadata;
+
+        // Act
+        try {
+          await sut(ctx, deltaId);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code !== 'OBJECT_NOT_FOUND') {
+            expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+          }
+          expect(data.id).toBe(deltaId);
+        }
+      });
+    });
+  });
+
+  describe('Given an OFS_DELTA run that crosses a REF_DELTA hop into a second pack, 56 hops in all', () => {
+    describe('When readObjectMetadata is called on the tip', () => {
+      it('Then reports the base type and the tip size', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = ofsChainSpecs(30, 'meta-mixed-a');
+        const firstIds = await writeSyntheticPack(ctx, 'meta-mixed-a', first.entries);
+        const second: EntrySpec[] = [
+          {
+            kind: 'ref-delta',
+            baseId: firstIds.at(-1) as string,
+            baseUncompressed: first.tipContent,
+            targetContent: new TextEncoder().encode('meta-mixed-b-0'),
+          },
+        ];
+        for (let level = 1; level <= 25; level += 1) {
+          second.push({
+            kind: 'ofs-delta',
+            baseIndex: level - 1,
+            targetContent: new TextEncoder().encode(`meta-mixed-b-${level}`),
+          });
+        }
+        const ids = await writeSyntheticPack(ctx, 'meta-mixed-b', second);
+        const sut = readObjectMetadata;
+
+        // Act
+        const result = await sut(ctx, ids.at(-1) as ObjectId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.uncompressedSize).toBe('meta-mixed-b-25'.length);
+      });
+    });
+  });
+
   describe('REF_DELTA cycle guard', () => {
     const SELF = new TextEncoder().encode('meta cycle self content');
     const X = new TextEncoder().encode('meta cycle content X');
     const Y = new TextEncoder().encode('meta cycle content Y');
+    const Z = new TextEncoder().encode('meta cycle content Z, an offset delta');
 
     async function installPack(ctx: Context, name: string, entries: ReadonlyArray<EntrySpec>) {
       const built = await buildSyntheticPack(ctx, entries);
@@ -436,9 +512,9 @@ describe('readObjectMetadata', () => {
       return built;
     }
 
-    async function expectCycleRefusal(ctx: Context, id: string, offset: number) {
+    async function expectCycleRefusal(act: Promise<unknown>, offset: number) {
       try {
-        await readObjectMetadata(ctx, id as ObjectId);
+        await act;
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -464,9 +540,10 @@ describe('readObjectMetadata', () => {
               targetContent: SELF,
             },
           ]);
+          const sut = readObjectMetadata;
 
           // Act / Assert
-          await expectCycleRefusal(ctx, ids[0] as string, offsets[0] as number);
+          await expectCycleRefusal(sut(ctx, ids[0] as ObjectId), offsets[0] as number);
         });
       });
     });
@@ -490,9 +567,38 @@ describe('readObjectMetadata', () => {
               targetContent: Y,
             },
           ]);
+          const sut = readObjectMetadata;
 
           // Act / Assert
-          await expectCycleRefusal(ctx, ids[0] as string, offsets[0] as number);
+          await expectCycleRefusal(sut(ctx, ids[0] as ObjectId), offsets[0] as number);
+        });
+      });
+    });
+
+    describe('Given a REF_DELTA cycle entered after an OFS_DELTA run', () => {
+      describe('When readObjectMetadata is called on the OFS_DELTA', () => {
+        it('Then throws INVALID_PACK_ENTRY with the cycle reason at the first entry offset', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { ids, offsets } = await installPack(ctx, 'meta-ref-after-ofs', [
+            {
+              kind: 'ref-delta',
+              baseId: await syntheticBlobId(ctx, Y),
+              baseUncompressed: Y,
+              targetContent: X,
+            },
+            {
+              kind: 'ref-delta',
+              baseId: await syntheticBlobId(ctx, X),
+              baseUncompressed: X,
+              targetContent: Y,
+            },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: Z },
+          ]);
+          const sut = readObjectMetadata;
+
+          // Act / Assert
+          await expectCycleRefusal(sut(ctx, ids[2] as ObjectId), offsets[0] as number);
         });
       });
     });

@@ -5103,8 +5103,10 @@ describe('Given an OFS_DELTA chain of 51 hops, tip corrupt', () => {
       const tipId = ids.at(-1) as ObjectId;
       await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'depth-cap-over'));
 
+      const sut = fsck;
+
       // Act
-      const result = await fsck(ctx, { connectivityOnly: true });
+      const result = await sut(ctx, { connectivityOnly: true });
 
       // Assert
       const dangling = result.findings.find(
@@ -5126,8 +5128,10 @@ describe('Given a REF_DELTA chain of 51 hops, tip corrupt', () => {
       const tipId = ids.at(-1) as ObjectId;
       await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'ref-depth'));
 
+      const sut = fsck;
+
       // Act
-      const result = await fsck(ctx, { connectivityOnly: true });
+      const result = await sut(ctx, { connectivityOnly: true });
 
       // Assert
       const dangling = result.findings.find(
@@ -5251,8 +5255,10 @@ describe('Given a packed OFS_DELTA whose base distance is zero (it names its own
       await writeGarbageLooseObject(ctx, deltaId, GARBAGE_BYTES);
       const { ctx: logged, calls } = withWarnLog(ctx);
 
+      const sut = fsck;
+
       // Act
-      const result = await fsck(logged, { connectivityOnly: true });
+      const result = await sut(logged, { connectivityOnly: true });
 
       // Assert
       const dangling = result.findings.find(
@@ -5288,8 +5294,10 @@ describe('REF_DELTA cycle guard', () => {
         await writeGarbageLooseObject(ctx, ids[0] as ObjectId, GARBAGE_BYTES);
         const { ctx: logged, calls } = withWarnLog(ctx);
 
+        const sut = fsck;
+
         // Act
-        const result = await fsck(logged, { connectivityOnly: true });
+        const result = await sut(logged, { connectivityOnly: true });
 
         // Assert
         const dangling = result.findings.find(
@@ -5327,8 +5335,10 @@ describe('REF_DELTA cycle guard', () => {
         }
         const { ctx: logged, calls } = withWarnLog(ctx);
 
+        const sut = fsck;
+
         // Act
-        const result = await fsck(logged, { connectivityOnly: true });
+        const result = await sut(logged, { connectivityOnly: true });
 
         // Assert
         for (const id of ids) {
@@ -5340,6 +5350,159 @@ describe('REF_DELTA cycle guard', () => {
           expect(warned?.context?.reason).toBe('delta chain cycle');
         }
       });
+    });
+  });
+});
+
+describe('Given a packed REF_DELTA cycle entered after an OFS_DELTA run, with stale loose garbled copies', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then the OFS_DELTA entry is dangling/unknown with the cycle reason', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const X = enc.encode('fsck after-ofs content X');
+      const Y = enc.encode('fsck after-ofs content Y');
+      const ids = await writeSyntheticPack(ctx, 'fsck-ref-after-ofs', [
+        {
+          kind: 'ref-delta',
+          baseId: await syntheticBlobId(ctx, Y),
+          baseUncompressed: Y,
+          targetContent: X,
+        },
+        {
+          kind: 'ref-delta',
+          baseId: await syntheticBlobId(ctx, X),
+          baseUncompressed: X,
+          targetContent: Y,
+        },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: enc.encode('fsck after-ofs content Z') },
+      ]);
+      for (const id of ids) {
+        await writeGarbageLooseObject(ctx, id as ObjectId, GARBAGE_BYTES);
+      }
+      const ofsId = ids[2] as ObjectId;
+      const { ctx: logged, calls } = withWarnLog(ctx);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(logged, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === ofsId,
+      );
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      const warned = calls.find((c) => c.context?.objectId === ofsId);
+      expect(warned?.context?.reason).toBe('delta chain cycle');
+    });
+  });
+});
+
+describe('Given an OFS_DELTA run that crosses a REF_DELTA hop into a second pack, 56 hops in all, tip corrupt', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'blob'", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const first = ofsChainSpecs(30, 'fsck-mixed-a');
+      const firstIds = await writeSyntheticPack(ctx, 'fsck-mixed-a', first.entries);
+      const second: EntrySpec[] = [
+        {
+          kind: 'ref-delta',
+          baseId: firstIds.at(-1) as string,
+          baseUncompressed: first.tipContent,
+          targetContent: enc.encode('fsck-mixed-b-0'),
+        },
+      ];
+      for (let level = 1; level <= 25; level += 1) {
+        second.push({
+          kind: 'ofs-delta',
+          baseIndex: level - 1,
+          targetContent: enc.encode(`fsck-mixed-b-${level}`),
+        });
+      }
+      const ids = await writeSyntheticPack(ctx, 'fsck-mixed-b', second);
+      const tipId = ids.at(-1) as ObjectId;
+      await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'fsck-mixed-b'));
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === tipId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+    });
+  });
+});
+
+async function installBuiltPack(
+  ctx: Context,
+  name: string,
+  built: { readonly packBytes: Uint8Array; readonly idxBytes: Uint8Array },
+): Promise<void> {
+  const base = `${ctx.layout.gitDir}/objects/pack/pack-${name}`;
+  await ctx.fs.write(`${base}.pack`, built.packBytes);
+  await ctx.fs.write(`${base}.idx`, built.idxBytes);
+}
+
+describe('Given a packed REF_DELTA whose base is its own id and no loose copy', () => {
+  describe('When fsck runs in full mode', () => {
+    it('Then reports the entry as pack-entry-unpackable at its offset', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const SELF = enc.encode('fsck full-mode cycle self content');
+      const built = await buildSyntheticPack(ctx, [
+        {
+          kind: 'ref-delta',
+          baseId: await syntheticBlobId(ctx, SELF),
+          baseUncompressed: SELF,
+          targetContent: SELF,
+        },
+      ]);
+      await installBuiltPack(ctx, 'fsck-full-ref-self', built);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const unpackable = result.findings.find(
+        (f) => f.type === 'pack-entry-unpackable' && f.id === built.ids[0],
+      );
+      expect(unpackable).toBeDefined();
+      expect((unpackable as { offset: number }).offset).toBe(built.offsets[0]);
+    });
+  });
+});
+
+describe('Given a packed OFS_DELTA whose base distance is zero and no loose copy', () => {
+  describe('When fsck runs in full mode', () => {
+    it('Then reports the entry as pack-entry-unpackable at its offset', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const built = await buildSyntheticPack(ctx, [
+        { kind: 'base', type: 'blob', content: enc.encode('full-mode zero-distance base') },
+        {
+          kind: 'ofs-delta',
+          baseIndex: 0,
+          targetContent: enc.encode('full-mode zero-distance target'),
+          distanceOverride: 0,
+        },
+      ]);
+      await installBuiltPack(ctx, 'fsck-full-zero-distance', built);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const unpackable = result.findings.find(
+        (f) => f.type === 'pack-entry-unpackable' && f.id === built.ids[1],
+      );
+      expect(unpackable).toBeDefined();
+      expect((unpackable as { offset: number }).offset).toBe(built.offsets[1]);
     });
   });
 });

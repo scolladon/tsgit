@@ -4206,10 +4206,9 @@ describe('object-resolver', () => {
       ];
     }
 
-    async function expectCycleRefusal(ctx: Context, id: string, offset: number) {
-      const registry = await createPackRegistry(ctx);
+    async function expectCycleRefusal(act: Promise<unknown>, offset: number) {
       try {
-        await resolveObject(ctx, soleSourceStore(ctx, registry), id as ObjectId, false);
+        await act;
         expect.unreachable();
       } catch (error) {
         const data = (error as TsgitError).data;
@@ -4235,9 +4234,14 @@ describe('object-resolver', () => {
               targetContent: T,
             },
           ]);
+          const registry = await createPackRegistry(ctx);
+          const sut = resolveObject;
 
           // Act / Assert
-          await expectCycleRefusal(ctx, ids[0] as string, offsets[0] as number);
+          await expectCycleRefusal(
+            sut(ctx, soleSourceStore(ctx, registry), ids[0] as ObjectId, false),
+            offsets[0] as number,
+          );
         });
       });
     });
@@ -4248,9 +4252,14 @@ describe('object-resolver', () => {
           // Arrange
           const ctx = await buildSeededContext();
           const { ids, offsets } = await installPack(ctx, 'ref-two', await twoCycle(ctx));
+          const registry = await createPackRegistry(ctx);
+          const sut = resolveObject;
 
           // Act / Assert
-          await expectCycleRefusal(ctx, ids[0] as string, offsets[0] as number);
+          await expectCycleRefusal(
+            sut(ctx, soleSourceStore(ctx, registry), ids[0] as ObjectId, false),
+            offsets[0] as number,
+          );
         });
       });
     });
@@ -4265,9 +4274,43 @@ describe('object-resolver', () => {
             { kind: 'ofs-delta', baseIndex: 0, targetContent: Z },
           ];
           const { ids, offsets } = await installPack(ctx, 'ref-after-ofs', entries);
+          const registry = await createPackRegistry(ctx);
+          const sut = resolveObject;
 
           // Act / Assert
-          await expectCycleRefusal(ctx, ids[2] as string, offsets[0] as number);
+          await expectCycleRefusal(
+            sut(ctx, soleSourceStore(ctx, registry), ids[2] as ObjectId, false),
+            offsets[0] as number,
+          );
+        });
+      });
+    });
+
+    describe('Given a REF_DELTA whose base is a loose blob that overruns its header claim', () => {
+      describe('When resolveObject runs on the delta', () => {
+        it('Then applies the delta to the claimed prefix the buffered loose read serves', async () => {
+          // Arrange
+          const body = ENC.encode('hello world!'); // 12 bytes behind a claim of 5
+          const claimedPrefix = body.subarray(0, 5);
+          const ctx = await buildSeededContext();
+          const baseId = await writeRawObjectBytes(ctx, 'blob', body);
+          await writeLooseWithDeclaredSize(ctx, baseId, 'blob', 5, body);
+          const [deltaId] = await writeSyntheticPack(ctx, 'ref-loose-truncated-base', [
+            {
+              kind: 'ref-delta',
+              baseId: baseId as string,
+              baseUncompressed: claimedPrefix,
+              targetContent: T,
+            },
+          ]);
+          const registry = await createPackRegistry(ctx);
+          const sut = resolveObject;
+
+          // Act
+          const result = await sut(ctx, soleSourceStore(ctx, registry), deltaId as ObjectId, false);
+
+          // Assert
+          expect((result as Blob).content).toEqual(T);
         });
       });
     });
@@ -4286,14 +4329,10 @@ describe('object-resolver', () => {
             { kind: 'ref-delta', baseId: baseId as string, baseUncompressed: B, targetContent: T },
           ]);
           const registry = await createPackRegistry(ctx);
+          const sut = resolveObject;
 
           // Act
-          const result = await resolveObject(
-            ctx,
-            soleSourceStore(ctx, registry),
-            deltaId as ObjectId,
-            false,
-          );
+          const result = await sut(ctx, soleSourceStore(ctx, registry), deltaId as ObjectId, false);
 
           // Assert
           expect((result as Blob).content).toEqual(T);
@@ -4317,12 +4356,13 @@ describe('object-resolver', () => {
             { kind: 'ref-delta', baseId: r1Id as string, baseUncompressed: X, targetContent: Y },
           ]);
           const registry = await createPackRegistry(ctx);
+          const sut = resolveObject;
           const store = soleSourceStore(ctx, registry);
 
           // Act
           const results = await Promise.all([
-            resolveObject(ctx, store, r2Id as ObjectId, false),
-            resolveObject(ctx, store, r2Id as ObjectId, false),
+            sut(ctx, store, r2Id as ObjectId, false),
+            sut(ctx, store, r2Id as ObjectId, false),
           ]);
 
           // Assert
@@ -4387,10 +4427,11 @@ describe('object-resolver', () => {
           ]);
           const deltaId = ids[1] as ObjectId;
           const registry = await createPackRegistry(ctx);
+          const sut = resolveObject;
 
           // Act
           try {
-            await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId, false);
+            await sut(ctx, soleSourceStore(ctx, registry), deltaId, false);
             // Assert
             expect.unreachable();
           } catch (error) {
