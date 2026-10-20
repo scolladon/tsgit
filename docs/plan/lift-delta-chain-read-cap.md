@@ -682,6 +682,203 @@ npx vitest run test/unit/domain/error.test.ts test/unit/domain/storage/error.tes
 
 `fix(pack)!: remove the DELTA_CHAIN_TOO_DEEP error, which no read raises`
 
+## Part 10 — carry git's augmentation column across the search so `computeAssignment` always returns
+
+### Context
+
+Design Addendum A1. One source file, one test file.
+
+Files (edit):
+- `src/domain/range-diff/linear-assignment.ts` — `interface Search` (L177, `{ low, up }`);
+  `expandMinColumns` (L194–216, returns `{ min, lastJ }`; `lastJ` is initialised `-1` at L202 under
+  the Stryker note at L201); `hasUnassignedColumn` (L219); `scanRows` (L231–256, `const j = col[k]!`
+  in its inner loop); `findAugmentingPath` (L261–270, returns `{ j: lastJ, last, min }` at L268 and
+  `{ j: found, last, min }`); `augmentOne` (L274–307, the `do { i = pred[j]! … } while (i1 !== i)`
+  walk).
+- `test/unit/domain/range-diff/linear-assignment.characterization.test.ts` — `CASES` (L19 on):
+  append the four `n: 7` rows of the addendum table; the expected arrays are git's, never the
+  port's.
+
+git reference: `linear-assignment.c` at git v2.55.0 (`curl -sSL
+https://raw.githubusercontent.com/git/git/v2.55.0/linear-assignment.c`), the block from
+`/* augmentation */` to the end. Its shape: `j = -1;` once per free row, then
+`do { last = low; min = d[col[up++]]; for (k = up; k < column_count; k++) { j = col[k]; … }
+for (k = low; k < up; k++) if (column2row[col[k]] == -1) goto update; do { … for (k = up;
+k < column_count; k++) { j = col[k]; … if (c == min) { if (column2row[j] == -1) goto update; … } } }
+while (low != up); } while (low == up); update: … do { if (j < 0) BUG("negative j: %d", j);
+i = pred[j]; column2row[j] = i; SWAP(j, row2column[i]); } while (i1 != i);`.
+
+Shape of the fix: add `j: number` to `Search`, initialised `-1` where `findAugmentingPath` builds
+the state (once per `augmentOne`); `expandMinColumns` writes `search.j = j` where it wrote
+`lastJ = j` and returns `min` alone; `scanRows` writes `search.j = j` at its `const j = col[k]!`
+and keeps returning `found`; `findAugmentingPath` returns `{ j: search.j, last, min }` on both
+exits; `augmentOne` throws `new Error('negative j')` before the walk when `path.j < 0`. The guard
+is git's `BUG` and unreachable once `j` is carried (for `n ≥ 2` the first expansion loop runs `k`
+from 1 to `columnCount − 1` and assigns it; `n < 2` returns before augmentation): mark its mutant
+`// Stryker disable next-line <mutators Stryker names>: equivalent — <that proof>`. Delete the L201
+note with the `lastJ` initializer. Today, with `up === columnCount` at loop entry, the expansion
+runs zero times and `lastJ` stays `-1`.
+
+### TDD steps
+
+1. RED — add the four characterization rows; run
+   `perl -e 'alarm 90; exec @ARGV' -- npx vitest run test/unit/domain/range-diff/linear-assignment.characterization.test.ts`
+   (macOS has no `timeout(1)`): the alarm kills the run — the first new row never returns.
+2. GREEN — carry `j` as above; the four rows pass and every pre-existing row still matches. A
+   changed pre-existing row means the threading diverged from git: stop and report.
+3. REFACTOR — the `negative j` guard with its equivalence mark; remove the stale `lastJ` note;
+   `biome check --write` on both files.
+4. GUARD — gate green; run the properties file three times (fresh seeds each run).
+
+### Gate
+
+~~~
+npx vitest run test/unit/domain/range-diff/ && npm run check:types && ./node_modules/.bin/biome check src/domain/range-diff/linear-assignment.ts test/unit/domain/range-diff/linear-assignment.characterization.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`fix(range-diff): carry git's augmentation column across the search so the solver always returns`
+
+## Part 11 — clear the adr-lint status lines and anchors (C1, C2)
+
+### Context
+
+Design Addendum A2; precedent `docs/design/bench-snapshot-summary-adr-lint.md` D7 (re-point,
+never waive). Lint: `node "$CRAFT_ROOT/engine/bin/adr-lint.js" docs/adr --manifest
+.claude/workflow.md` (exit 2 with findings, 0 clean); 51 lines on `main`, none introduced by
+Parts 1–9: 6 C1, 13 C2, 31 C3 (`DECISION-CITE-FOUND`). This part clears C1 and C2; Parts 12
+and 13 clear C3, split by audience so each stays under the file ceiling.
+
+- C1, six status lines — in the superseded ADR add `- **Status:** superseded by ADR-M` (replace
+  the status value, keep the rest of the header) and the blockquote under the title, in the form
+  ADR-771 uses at its L8–10: 064→865, 373→906, 851→869, 852→869, 857→865, 863→907.
+- C2, thirteen anchors in the superseding ADR, in ADR-1019's form (its L52 and L55: a column-zero
+  line starting `Superseded from ADR-N: ` or `Carried forward from ADR-N: `, then one sentence
+  naming what moved): 851 ← 726, 727; 852 ← 736; 857 ← 064; 859 ← 637 (`Superseded from`);
+  865 ← 064, 857 and 869 ← 851, 852 (both lines each). Read each predecessor to write a true
+  sentence. ADR files are `docs/adr/<number>-*.md`.
+
+Never re-sort `cspell.json`; reword instead of adding words.
+
+### TDD steps
+
+1. RED — the lint exits 2 and its C1/C2 lines (`missing required line`, `missing a line
+   starting`) number 19.
+2. GREEN — apply C1 and C2; only `DECISION-CITE-FOUND` lines remain (31).
+3. GUARD — gate green (the lint still exits 2 here on C3 alone; the gate below checks C1/C2 are
+   gone).
+
+### Gate
+
+~~~
+test "$(node "$CRAFT_ROOT/engine/bin/adr-lint.js" docs/adr --manifest .claude/workflow.md 2>&1 | grep -cE 'missing (required|a) line')" = 0 && npm run check:spelling && npm run docs:check
+~~~
+
+### Commit
+
+`docs(adr): add the status lines and anchors adr-lint requires`
+
+## Part 12 — re-point superseded-ADR citations in the user docs (C3, part one)
+
+### Context
+
+Design Addendum A2, same lint and precedent as Part 11. Re-point each literal `ADR-NNN` of a
+superseded ADR at its superseding ADR and adjust the sentence so it stays true (the successor
+carries the addendum forward). The successor of 047/191/637/726/727/736/964 is the one each
+ADR's own `- **Status:** superseded by ADR-M` line names; 064→865, 851→869, 852→869, 857→865,
+863→907. The sweep matches the literal, so no superseded number may remain.
+
+Files (edit): `docs/use/commands/cat-file.md` (863), `docs/use/commands/reflog.md` (064, 857),
+`docs/use/primitives/cat-file-batch.md` (863), `docs/use/primitives/internals.md` (726, 736,
+851 ×3, 852 ×2), `docs/use/primitives/stream-blob.md` (863), `docs/get-started/node.md` (851).
+
+### TDD steps
+
+1. RED — `DECISION-CITE-FOUND` lines for these six files number 12.
+2. GREEN — re-point them; the lint reports none for these files.
+3. GUARD — gate green.
+
+### Gate
+
+~~~
+test "$(node "$CRAFT_ROOT/engine/bin/adr-lint.js" docs/adr --manifest .claude/workflow.md 2>&1 | grep -cE 'DECISION-CITE-FOUND\((docs/use|docs/get-started)/')" = 0 && npm run check:spelling && npm run docs:check
+~~~
+
+### Commit
+
+`docs(use): cite the superseding ADRs`
+
+## Part 13 — re-point superseded-ADR citations in the contributor and record docs (C3, part two)
+
+### Context
+
+Design Addendum A2, same rule as Part 12. A shipped backlog entry or a spike note still cites
+the decision now in force: re-point, and when the sentence described the old decision's text,
+say the successor carries it (D7's route).
+
+Files (edit): `CONTRIBUTING.md` (047), `docs/BACKLOG.md` (047, 191, 637, 964),
+`docs/understand/design-decisions.md` (047 ×2, 064, 857), `docs/understand/performance.md`
+(851, 852 ×2), `docs/spike/config-validation-tier.md` (637 ×3, 852 ×2),
+`docs/spike/index-pass-base-cache-budget.md` (727).
+
+### TDD steps
+
+1. RED — `DECISION-CITE-FOUND` lines for these six files number 19.
+2. GREEN — re-point them; the lint exits 0 with no finding at all.
+3. GUARD — gate green.
+
+### Gate
+
+~~~
+node "$CRAFT_ROOT/engine/bin/adr-lint.js" docs/adr --manifest .claude/workflow.md && npm run check:spelling && npm run docs:check
+~~~
+
+### Commit
+
+`docs: cite the superseding ADRs in the contributor and record pages`
+
+## Part 14 — rename `resolveObjectContentWithDepth` to `resolveObjectContent`
+
+### Context
+
+Design Addendum A3. Internal symbol: not in the primitives barrel, absent from the API report,
+so no API change and no `docs:json` run. One mechanical rename; eleven files change in one
+commit, listed by the grep rather than here so the part stays one action.
+
+Authority: `grep -rn resolveObjectContentWithDepth src test docs/use docs/perf` — five modules
+under src/application/primitives (the resolver itself with its export, doc comment, recursive
+calls and Stryker proof comments; read-object; and three internals), three unit suites, and
+the three documentation artefacts below.
+
+Files (hand edit after the mechanical pass): `src/application/primitives/object-resolver.ts`
+(re-read every proof comment that names the function), `docs/use/primitives/internals.md` (the
+`### resolveObjectContentWithDepth` heading, and delete the clause "the name predates the cap
+removal and is kept because the perf baseline keys profile frames by it"),
+`docs/perf/baseline.json` (9 `"frame"` values) and `docs/perf/baseline.md` (9 cells).
+
+Mechanical pass: `grep -rl resolveObjectContentWithDepth src test docs/use docs/perf | xargs
+sed -i '' 's/resolveObjectContentWithDepth/resolveObjectContent/g'`, then read every hunk. Leave the
+design, plan and ADR directories alone (history). `git diff --stat` must list exactly
+eleven files.
+
+### TDD steps
+
+1. GUARD — `grep -rnw resolveObjectContent src test` returns nothing: the new name is free.
+2. REFACTOR — rename; `npx tsc --noEmit -p tsconfig.typecheck.json` clean;
+   `grep -rn resolveObjectContentWithDepth src test docs/use docs/perf` returns nothing.
+3. GUARD — gate green.
+
+### Gate
+
+~~~
+npx vitest run test/unit/application/primitives/object-resolver.test.ts test/unit/application/commands && npm run check:types && ./node_modules/.bin/biome check src/application/primitives test/unit/application/primitives/object-resolver.test.ts && npm run check:spelling
+~~~
+
+### Commit
+
+`refactor(object-resolver): rename resolveObjectContentWithDepth to resolveObjectContent`
+
 ## Verification (orchestrator, not parts)
 
 - Phase gate: `npm run validate` after Part 9 (size rows: see Repo-wide facts).
