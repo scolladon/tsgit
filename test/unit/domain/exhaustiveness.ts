@@ -59,7 +59,6 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'TREE_ENTRY_TYPE_MISMATCH':
     case 'TREE_DEPTH_EXCEEDED':
     case 'TREE_ENTRY_LIMIT_EXCEEDED':
-    case 'DELTA_CHAIN_TOO_DEEP':
     case 'REF_NOT_FOUND':
     case 'REF_CHAIN_TOO_DEEP':
     case 'REF_CYCLE_DETECTED':

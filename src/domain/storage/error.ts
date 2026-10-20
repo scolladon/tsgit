@@ -49,7 +49,6 @@ export type StorageError =
       readonly reason: string;
     }
   | { readonly code: 'INVALID_DELTA'; readonly reason: string }
-  | { readonly code: 'DELTA_CHAIN_TOO_DEEP'; readonly depth: number }
   | {
       readonly code: 'INVALID_MULTI_PACK_INDEX';
       readonly reason: string;
