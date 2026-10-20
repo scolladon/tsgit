@@ -45,6 +45,10 @@ interface Lap {
 /** Truncate to a 32-bit signed integer, mirroring C `int` arithmetic. */
 const i32 = (x: number): number => x | 0;
 
+// git seeds the second-smallest reduced cost at INT_MAX; COST_MAX is only range-diff's
+// forbidden-cell cost, and a seed there mis-ranks any cell costlier than that.
+const INT_MAX = 2147483647;
+
 /** COST(column, row) = cost[column + columnCount * row]. */
 const costAt = (s: Lap, column: number, row: number): number =>
   s.cost[column + s.columnCount * row]!;
@@ -106,7 +110,7 @@ const findTwoSmallest = (s: Lap, i: number): TwoSmallest => {
   let j1 = 0;
   let u1 = i32(costAt(s, j1, i) - s.v[j1]!);
   let j2 = -1;
-  let u2 = COST_MAX;
+  let u2 = INT_MAX;
   for (let j = 1; j < s.columnCount; j++) {
     const c = i32(costAt(s, j, i) - s.v[j]!);
     if (u2 > c) {

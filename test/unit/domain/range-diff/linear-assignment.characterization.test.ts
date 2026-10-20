@@ -1227,6 +1227,18 @@ const CASES: ReadonlyArray<LapCase> = [
     columnToRow: [6, 1, 4, 0, 5, 3, 2],
     rowToColumn: [3, 1, 6, 5, 2, 4, 0],
   },
+  // Cell costs above COST_MAX (patches longer than 65 536 lines): git seeds its
+  // second-smallest search at INT_MAX, so the assignment below is git's, not a
+  // solver that stops at COST_MAX.
+  {
+    n: 4,
+    cost: [
+      156212, 254472, 254472, 254472, 154058, 205339, 205339, 205339, 294411, 80797, 80797, 80797,
+      8908, 0, 0, 0,
+    ],
+    columnToRow: [0, 2, 1, 3],
+    rowToColumn: [0, 2, 1, 3],
+  },
 ];
 
 describe('computeAssignment characterization', () => {
