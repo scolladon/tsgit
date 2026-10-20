@@ -4,7 +4,7 @@
     "log": {
       "hotShares": [
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.18,
           "ticks": 198
         },
@@ -120,7 +120,7 @@
     "log-commit-graph": {
       "hotShares": [
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.18,
           "ticks": 207
         },
@@ -478,7 +478,7 @@
           "ticks": 265
         },
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.23,
           "ticks": 249
         },
@@ -519,7 +519,7 @@
           "ticks": 196
         },
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.08,
           "ticks": 136
         },
@@ -685,7 +685,7 @@
           "ticks": 157
         },
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.06,
           "ticks": 134
         },
@@ -957,7 +957,7 @@
           "ticks": 168
         },
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.09,
           "ticks": 77
         },
@@ -1068,7 +1068,7 @@
           "ticks": 96
         },
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.03,
           "ticks": 72
         },
@@ -1199,7 +1199,7 @@
           "ticks": 73
         },
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.03,
           "ticks": 72
         },
@@ -1325,7 +1325,7 @@
           "ticks": 9
         },
         {
-          "frame": "resolveObjectContentWithDepth",
+          "frame": "resolveObjectContent",
           "self": 0.01,
           "ticks": 8
         },

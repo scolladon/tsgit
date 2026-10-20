@@ -5,7 +5,7 @@
  * fanout dir (`objects/xx`, ≤256 of them) is `readdir`'d lazily at most
  * once per session, then membership is a `Set` lookup. A miss short-
  * circuits the caller with NO filesystem call. The store split this cache
- * now serves: buffered reads (`resolveObjectContentWithDepth`) consult packs
+ * now serves: buffered reads (`resolveObjectContent`) consult packs
  * FIRST and fall to this cache only on a pack miss; `openBlobSource`'s
  * streamed blob reads and `hasObject`'s fallback still consult it as their
  * loose-first arm. Either way, a membership HIT routes through `ctx.fs.read`

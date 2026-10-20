@@ -19,11 +19,11 @@ import type { DeltaBaseCacheEntry, PackRegistry } from '../pack-registry.js';
 
 /**
  * Parsed-commit-and-tag memo. `resolveObject` re-parses on every read
- * even when `resolveObjectContentWithDepth` already served the content from
+ * even when `resolveObjectContent` already served the content from
  * `ctx.deltaCache` — the memo skips that redundant re-parse for the two
  * object types whose parse cost is non-trivial (blob/tree already return
  * near-raw data from `parseObjectContent`). It sits strictly AFTER
- * `resolveObjectContentWithDepth`, so every verifyHash/maxBytes check that call already
+ * `resolveObjectContent`, so every verifyHash/maxBytes check that call already
  * performs still fires on every read: the memo only ever skips
  * reconstructing an object the bytes already proved identical, never a
  * safety check.

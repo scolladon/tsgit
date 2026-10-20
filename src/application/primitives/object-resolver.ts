@@ -291,7 +291,7 @@ export async function inflateLooseBuffered(
  * `resolveBaseForRefDelta` calls it with the REF bases the walk already
  * entered (`refBases`).
  */
-export async function resolveObjectContentWithDepth(
+export async function resolveObjectContent(
   ctx: Context,
   store: ObjectStore,
   id: ObjectId,
@@ -353,7 +353,7 @@ async function tryDeltaCacheHit(
  * One resolution attempt against the CURRENT generation, source by source in
  * git's order (the primary first, then each alternate): a pack hit resolves
  * its delta chain, a loose hit resolves its bytes, and no source claiming `id`
- * reports `undefined` — the full-miss signal `resolveObjectContentWithDepth`
+ * reports `undefined` — the full-miss signal `resolveObjectContent`
  * retries once after a re-scan. An alternate's registry is loaded only when
  * the walk reaches it, so a primary hit never trips over a broken alternate.
  * Any OTHER error (a corrupt entry, a hash mismatch, an oversize object)
@@ -518,20 +518,13 @@ export async function resolveObject(
   maxBytes?: number,
   mode: LooseReadMode = 'buffered',
 ): Promise<GitObject> {
-  const { type, content } = await resolveObjectContentWithDepth(
-    ctx,
-    store,
-    id,
-    verifyHash,
-    maxBytes,
-    mode,
-  );
+  const { type, content } = await resolveObjectContent(ctx, store, id, verifyHash, maxBytes, mode);
   return parseResolvedObject(ctx, id, type, content);
 }
 
 /** Like `resolveObject`, but also surfaces the resolved content's declared
  *  size — the stored header claim for a loose object, the content length for
- *  every other storage form (see `resolveObjectContentWithDepth`). */
+ *  every other storage form (see `resolveObjectContent`). */
 export async function resolveObjectWithSize(
   ctx: Context,
   store: ObjectStore,
@@ -540,7 +533,7 @@ export async function resolveObjectWithSize(
   maxBytes?: number,
   mode: LooseReadMode = 'buffered',
 ): Promise<{ readonly object: GitObject; readonly size: number }> {
-  const { type, content, declaredSize } = await resolveObjectContentWithDepth(
+  const { type, content, declaredSize } = await resolveObjectContent(
     ctx,
     store,
     id,
@@ -669,7 +662,7 @@ export async function looseCompressedBytes(
  * Verifies `content` hashes to `id` under git's canonical
  * `<type> <size>\0<content>` scheme, via the incremental hasher — no
  * header-prefixed buffer is ever materialised. Shared by every arm of
- * `resolveObjectContentWithDepth` and by `blob-source.ts`'s buffered arms, so
+ * `resolveObjectContent` and by `blob-source.ts`'s buffered arms, so
  * no caller keeps a private copy of this hash-and-compare.
  *
  * The unverified branch skips the hash entirely (the sync fast path for a
@@ -908,7 +901,7 @@ export async function resolvePackChain(
   };
 
   // Apply deltas bottom-up. A REF_DELTA terminator's base was cached (by id)
-  // inside `resolveObjectContentWithDepth`'s own loose/pack arms as it was
+  // inside `resolveObjectContent`'s own loose/pack arms as it was
   // resolved; every OFS/REF level here is cached too, now by (pack, offset) —
   // the fix for the gap the old comment documented: mid-chain intermediates
   // have no known ObjectId, so a REF's own id-keyed cache could only ever
@@ -1016,7 +1009,7 @@ async function resolveBaseForRefDelta(
   // Resolve the base object (may recurse into another chain) and read its
   // type + content straight from the cache — no header to strip.
   const cached = ctx.deltaCache.get(baseId);
-  // Stryker disable next-line BlockStatement: equivalent — a perf-only shortcut: skipping this early return falls through to resolveObjectContentWithDepth(baseId, ...), whose OWN ctx.deltaCache.get(baseId) hit (the same cache, same key) applies the identical enforceCachedCap and returns the identical content via verifyObjectContent(verifyHash=false) — byte-for-byte the same result, one extra function-call hop (object-resolver.test.ts's full suite passes unmutated).
+  // Stryker disable next-line BlockStatement: equivalent — a perf-only shortcut: skipping this early return falls through to resolveObjectContent(baseId, ...), whose OWN ctx.deltaCache.get(baseId) hit (the same cache, same key) applies the identical enforceCachedCap and returns the identical content via verifyObjectContent(verifyHash=false) — byte-for-byte the same result, one extra function-call hop (object-resolver.test.ts's full suite passes unmutated).
   if (cached !== undefined) {
     // Cache stores type+content only. An earlier uncapped read may have
     // admitted an oversized object; enforce the cap here before returning
@@ -1031,10 +1024,10 @@ async function resolveBaseForRefDelta(
   // TRUE raw content, matching git — a base that would not survive that
   // round-trip now deltas correctly against its real bytes, and a
   // structurally malformed base no longer surfaces a parse error here
-  // (also git's behaviour). `resolveObjectContentWithDepth`'s own arms
+  // (also git's behaviour). `resolveObjectContent`'s own arms
   // (loose read, pack chain reconstruction) already cache the resolved
   // content under `baseId` — re-caching them here would be redundant.
-  const resolved = await resolveObjectContentWithDepth(
+  const resolved = await resolveObjectContent(
     ctx,
     { ...store, sources: [source] },
     baseId,

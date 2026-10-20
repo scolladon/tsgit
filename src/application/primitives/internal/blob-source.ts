@@ -198,7 +198,7 @@ const gateOf = (maxBufferedBytes: number, options: OpenBlobSourceOptions): Buffe
 async function openLoadableStore(ctx: Context): Promise<ObjectStore> {
   checkAborted(ctx);
   const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
-  // Same store-setup gate as resolveObjectContentWithDepth: a structurally
+  // Same store-setup gate as resolveObjectContent: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
   await store.primary.registry.assertLoadable();
@@ -216,7 +216,7 @@ async function locateWithRescan(
   const first = await locate(ctx, store, id);
   if (first !== undefined || missRescan === 'spent') return first;
   // Full miss: as of the CURRENT generation, no source claims `id`. Mirrors
-  // `resolveObjectContentWithDepth`'s own retry — `retryOnceAfterRescan`
+  // `resolveObjectContent`'s own retry — `retryOnceAfterRescan`
   // single-flights the re-scan across concurrent misses and honours an abort
   // raised during it.
   return retryOnceAfterRescan(ctx, store, id, () => locate(ctx, store, id));
@@ -392,7 +392,7 @@ async function probeStoredType(ctx: Context, id: ObjectId): Promise<ObjectType |
 }
 
 /**
- * Same order as resolveObjectContentWithDepth: the store-setup gate runs
+ * Same order as resolveObjectContent: the store-setup gate runs
  * before the virtual tree short-circuit.
  */
 async function verifiedEmptyTree(registry: PackRegistry): Promise<VerifiedObject> {

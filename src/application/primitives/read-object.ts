@@ -24,7 +24,7 @@ import {
   readEntryHeaderWithChunk,
   resolveLooseArm,
   resolveObject,
-  resolveObjectContentWithDepth,
+  resolveObjectContent,
   resolveObjectWithSize,
 } from './object-resolver.js';
 import {
@@ -219,7 +219,7 @@ export async function readRawObject(
   const verifyHash = options?.verifyHash ?? false;
   const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
   return withLazyFetchRetry(ctx, id, store.primary.registry, async () => {
-    const { type, content } = await resolveObjectContentWithDepth(
+    const { type, content } = await resolveObjectContent(
       ctx,
       store,
       id,
@@ -503,7 +503,7 @@ async function metadataAfterFullMiss(
   store: ObjectStore,
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
-  const { type, content } = await resolveObjectContentWithDepth(
+  const { type, content } = await resolveObjectContent(
     ctx,
     store,
     id,
@@ -581,7 +581,7 @@ async function walkDeltaBaseType(
  * calls `reprepare_packed_git`; only the CONTENT-resolving path
  * (`oid_object_info_extended` / `do_oid_object_info_extended`) retries after
  * a re-scan, which `resolveBaseForRefDelta` (object-resolver.ts) already
- * gets via `resolveObjectContentWithDepth`. A base the registry cannot find
+ * gets via `resolveObjectContent`. A base the registry cannot find
  * here is a corrupt pack — this throws OBJECT_NOT_FOUND for the base id,
  * fail-loud like every other read here, and retried by the same
  * `withLazyFetchRetry` a missing REF_DELTA base already gets via

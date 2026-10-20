@@ -5204,7 +5204,7 @@ describe('Given a packed OFS_DELTA whose base distance points before the pack bo
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then resolves with dangling/'unknown' and logs the out-of-range reason — pack-first buffered reads hit the bad offset directly, so the stale loose copy is shadowed and the store-fault route into fsck's own recovery walk still fires the degrade warn", async () => {
       // Arrange — pack-first buffered reads mean the INITIAL read consults
-      // the pack before ever touching loose: `resolveObjectContentWithDepth`'s
+      // the pack before ever touching loose: `resolveObjectContent`'s
       // own OFS_DELTA base-offset guard trips on this id directly, so this
       // stale loose garbled copy is now unreachable (shadowed). The store
       // fault still routes into fsck's own header-only recovery walk

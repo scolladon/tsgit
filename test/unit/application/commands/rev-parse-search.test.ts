@@ -386,13 +386,11 @@ const abortableSearch = (ctx: Context, around: Matching) => {
     if (controller.signal.aborted) readsAfterAbort.push(rest[1]);
     return resolve(context, ...rest);
   });
-  const resolveContent = objectResolverModule.resolveObjectContentWithDepth;
-  vi.spyOn(objectResolverModule, 'resolveObjectContentWithDepth').mockImplementation(
-    (context, ...rest) => {
-      if (controller.signal.aborted) readsAfterAbort.push(rest[1]);
-      return resolveContent(context, ...rest);
-    },
-  );
+  const resolveContent = objectResolverModule.resolveObjectContent;
+  vi.spyOn(objectResolverModule, 'resolveObjectContent').mockImplementation((context, ...rest) => {
+    if (controller.signal.aborted) readsAfterAbort.push(rest[1]);
+    return resolveContent(context, ...rest);
+  });
   return { ctx: { ...ctx, signal: controller.signal }, readsAfterAbort };
 };
 

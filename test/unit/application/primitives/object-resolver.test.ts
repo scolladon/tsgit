@@ -10,7 +10,7 @@ import {
   MAX_SINGLE_PASS_COMPRESSED_BYTES,
   readEntryHeaderWithChunk,
   resolveObject,
-  resolveObjectContentWithDepth,
+  resolveObjectContent,
   resolveObjectWithSize,
   SINGLE_PASS_INFLATE_CAP,
 } from '../../../../src/application/primitives/object-resolver.js';
@@ -1191,7 +1191,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a delta-cache hit', () => {
-      describe('When resolveObjectContentWithDepth is called with verifyHash=false', () => {
+      describe('When resolveObjectContent is called with verifyHash=false', () => {
         it('Then no hash is computed', async () => {
           // Arrange — the sync fast path must not pay for a hash it never uses.
           const ctx = await buildSeededContext();
@@ -1203,7 +1203,7 @@ describe('object-resolver', () => {
           const createHasherSpy = vi.spyOn(ctx.hash, 'createHasher');
 
           // Act
-          const result = await resolveObjectContentWithDepth(
+          const result = await resolveObjectContent(
             ctx,
             soleSourceStore(ctx, registry),
             fakeId,
@@ -1221,7 +1221,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a delta-cache hit with verifyHash true', () => {
-      describe('When resolveObjectContentWithDepth is called', () => {
+      describe('When resolveObjectContent is called', () => {
         it('Then the hasher receives the canonical header then the content, in that order', async () => {
           // Arrange — the order is the mutant kill: a swapped or dropped
           // update call would still hash *something*, but not the canonical
@@ -1239,13 +1239,7 @@ describe('object-resolver', () => {
           });
 
           // Act
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            fakeId,
-            true,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), fakeId, true, undefined);
 
           // Assert
           expect(updateSpy.mock.calls).toHaveLength(2);
@@ -1268,13 +1262,7 @@ describe('object-resolver', () => {
           const registry = await createPackRegistry(ctx);
 
           // Act
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            id,
-            false,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
 
           // Assert
           expect(ctx.deltaCache.currentSize).toBe(
@@ -1285,7 +1273,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a delta-cache hit and a signal that aborts before the read returns', () => {
-      describe('When resolveObjectContentWithDepth is called with verifyHash=false', () => {
+      describe('When resolveObjectContent is called with verifyHash=false', () => {
         it('Then it rejects with OPERATION_ABORTED', async () => {
           // Arrange — verifyHash=false means the cache-hit arm no longer awaits
           // a hash, so it must poll for abort explicitly at the same point
@@ -1304,7 +1292,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObjectContentWithDepth(
+            await resolveObjectContent(
               ctx,
               soleSourceStore(ctx, registry),
               fakeId,
@@ -1322,7 +1310,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a signal that aborts while probing loose-object presence (a miss)', () => {
-      describe('When resolveObjectContentWithDepth would otherwise proceed to the pack registry', () => {
+      describe('When resolveObjectContent would otherwise proceed to the pack registry', () => {
         it('Then it throws OPERATION_ABORTED before ever calling registry.lookup', async () => {
           // Arrange — abort from inside the loose-presence probe's own
           // readdir call, so the abort lands strictly between the loose
@@ -1347,7 +1335,7 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(
+            await resolveObjectContent(
               abortingCtx,
               soleSourceStore(abortingCtx, registry),
               fakeId,
@@ -1368,7 +1356,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a signal that aborts during the pack registry lookup itself', () => {
-      describe('When resolveObjectContentWithDepth would otherwise proceed to resolve the pack chain', () => {
+      describe('When resolveObjectContent would otherwise proceed to resolve the pack chain', () => {
         it('Then it throws OPERATION_ABORTED before resolving the chain — collectDeltaChain never even reads the offset table', async () => {
           // Arrange — offsetTable() is the very FIRST thing
           // resolvePackChain's collectDeltaChain does, ahead of
@@ -1396,7 +1384,7 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(
+            await resolveObjectContent(
               ctx,
               soleSourceStore(ctx, registry),
               id as ObjectId,
@@ -1417,7 +1405,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a signal that aborts while reading the pack chain bytes, with hash verification requested', () => {
-      describe('When resolveObjectContentWithDepth would otherwise proceed to verifyObjectContent', () => {
+      describe('When resolveObjectContent would otherwise proceed to verifyObjectContent', () => {
         it('Then it throws OPERATION_ABORTED before ever hashing the resolved content', async () => {
           // Arrange — verifyHash=true so verifyObjectContent's OWN checkAborted
           // sits AFTER its digestHex call, not before; with verifyHash=false
@@ -1454,7 +1442,7 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(
+            await resolveObjectContent(
               ctx,
               soleSourceStore(ctx, registry),
               id as ObjectId,
@@ -1476,7 +1464,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a loose object and a signal that aborts once its hash has been computed', () => {
-      describe('When resolveObjectContentWithDepth is called with verifyHash=true', () => {
+      describe('When resolveObjectContent is called with verifyHash=true', () => {
         it('Then it rejects with OPERATION_ABORTED even though the computed hash matches', async () => {
           // Arrange — the hash matches (real bytes, real id), so nothing
           // BUT this checkAborted stands between a successful hashHex and a
@@ -1503,13 +1491,7 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(
-              ctx,
-              soleSourceStore(ctx, registry),
-              id,
-              true,
-              undefined,
-            );
+            await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, true, undefined);
             expect.unreachable();
           } catch (error) {
             caught = error;
@@ -1523,7 +1505,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a signal that aborts while reading the FIRST level of a multi-level OFS_DELTA chain', () => {
-      describe('When resolveObjectContentWithDepth would otherwise keep walking toward the base', () => {
+      describe('When resolveObjectContent would otherwise keep walking toward the base', () => {
         it('Then it stops after that one level — the walk never reads a second level', async () => {
           // Arrange — collectDeltaChain's own per-level checkAborted (at the
           // TOP of its loop) is what must stop the walk before a second
@@ -1559,13 +1541,7 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(
-              ctx,
-              soleSourceStore(ctx, registry),
-              id,
-              false,
-              undefined,
-            );
+            await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
             expect.unreachable();
           } catch (error) {
             caught = error;
@@ -1662,7 +1638,7 @@ describe('object-resolver', () => {
   });
 
   describe("Given a loose blob whose body overruns its header claim while staying inside git's 32-byte header window", () => {
-    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+    describe('When resolveObjectContent is called (the default buffered read)', () => {
       it('Then it truncates the content to the claim, reports the claim as declaredSize, and never caches the object', async () => {
         // Arrange
         const content = ENC.encode('hello world!'); // 12 bytes
@@ -1672,7 +1648,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           id,
@@ -1687,7 +1663,7 @@ describe('object-resolver', () => {
       });
     });
 
-    describe('When resolveObjectContentWithDepth is called with the streamed read mode', () => {
+    describe('When resolveObjectContent is called with the streamed read mode', () => {
       it("Then it serves the real body — git's streaming tier ignores the claim", async () => {
         // Arrange
         const content = ENC.encode('hello world!'); // 12 bytes
@@ -1697,7 +1673,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           id,
@@ -1715,7 +1691,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a loose blob whose body overruns its header claim past the 32-byte header window', () => {
-    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+    describe('When resolveObjectContent is called (the default buffered read)', () => {
       it('Then it throws INVALID_OBJECT_HEADER naming the claim, from the single-pass inflate call bounded at SINGLE_PASS_INFLATE_CAP', async () => {
         // Arrange — this object's compressed size sits under
         // MAX_SINGLE_PASS_COMPRESSED_BYTES, so the single-pass arm answers
@@ -1731,13 +1707,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            id,
-            false,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1753,7 +1723,7 @@ describe('object-resolver', () => {
       });
     });
 
-    describe('When resolveObjectContentWithDepth is called with the streamed read mode', () => {
+    describe('When resolveObjectContent is called with the streamed read mode', () => {
       it("Then it serves the real body — git's streaming tier ignores the claim", async () => {
         // Arrange
         const claim = 40;
@@ -1764,7 +1734,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           id,
@@ -1782,7 +1752,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a loose object whose compressed size sits at or under the single-pass threshold', () => {
-    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+    describe('When resolveObjectContent is called (the default buffered read)', () => {
       it('Then the compressor inflates exactly once, and inflateHead is never called', async () => {
         // Arrange
         const content = ENC.encode('single-pass loose read content');
@@ -1793,13 +1763,7 @@ describe('object-resolver', () => {
         const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
 
         // Act
-        await resolveObjectContentWithDepth(
-          ctx,
-          soleSourceStore(ctx, registry),
-          id,
-          false,
-          undefined,
-        );
+        await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
 
         // Assert
         expect(inflateSpy.mock.calls.length).toBe(1);
@@ -1809,7 +1773,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a loose object whose compressed size sits above the single-pass threshold', () => {
-    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+    describe('When resolveObjectContent is called (the default buffered read)', () => {
       it('Then it still probes the header through inflateHead before the bounded inflate', async () => {
         // Arrange — incompressible bytes sized so the deflated file exceeds
         // MAX_SINGLE_PASS_COMPRESSED_BYTES: the hostile-sized arm must keep
@@ -1822,7 +1786,7 @@ describe('object-resolver', () => {
         const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           id,
@@ -1839,7 +1803,7 @@ describe('object-resolver', () => {
   });
 
   describe("Given a loose header whose NUL terminator sits exactly at git's 32-byte window boundary", () => {
-    describe('When resolveObjectContentWithDepth is called for a header that fits the window (NUL at byte 32)', () => {
+    describe('When resolveObjectContent is called for a header that fits the window (NUL at byte 32)', () => {
       it("Then the window guard lets it through — parseHeader's own size round-trip is what refuses it", async () => {
         // Arrange — 'blob ' (5) + 26 nines + NUL = 32 bytes, the longest a
         // header can be while still fitting git's hdr[32]. A 26-digit claim
@@ -1853,13 +1817,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            id,
-            false,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1872,7 +1830,7 @@ describe('object-resolver', () => {
       });
     });
 
-    describe('When resolveObjectContentWithDepth is called for a header one byte past the window (NUL at byte 33)', () => {
+    describe('When resolveObjectContent is called for a header one byte past the window (NUL at byte 33)', () => {
       it('Then it refuses header-too-long before parseHeader ever runs', async () => {
         // Arrange — one more digit than the accepted row above: git's
         // hdr[32] buffer could never hold this header's NUL, regardless of
@@ -1885,13 +1843,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            id,
-            false,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1937,7 +1889,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
+          await resolveObjectContent(
             cappedCtx,
             soleSourceStore(cappedCtx, registry),
             id,
@@ -1958,7 +1910,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a loose object whose compressed size sits EXACTLY at the single-pass threshold', () => {
-    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+    describe('When resolveObjectContent is called (the default buffered read)', () => {
       it('Then the compressor inflates exactly once, and inflateHead is never called (the boundary is inclusive)', async () => {
         // Arrange — a stub compressor answers deterministically regardless of
         // the on-disk bytes' real validity: only the FILE's byte length
@@ -1992,7 +1944,7 @@ describe('object-resolver', () => {
         const inflateHeadSpy = vi.spyOn(stubCtx.compressor, 'inflateHead');
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           stubCtx,
           soleSourceStore(stubCtx, registry),
           id,
@@ -2009,7 +1961,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a hostile-sized loose blob whose body overruns its header claim', () => {
-    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+    describe('When resolveObjectContent is called (the default buffered read)', () => {
       it("Then it throws INVALID_OBJECT_HEADER naming the claim, remapped from the compressor's own cap-exceeded refusal", async () => {
         // Arrange — content sized past MAX_SINGLE_PASS_COMPRESSED_BYTES once
         // deflated keeps this on the hostile-sized arm (inflateLooseHeadProbed),
@@ -2026,13 +1978,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            id,
-            false,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -2078,7 +2024,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
+          await resolveObjectContent(
             cappedCtx,
             soleSourceStore(cappedCtx, registry),
             id,
@@ -2099,7 +2045,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a loose blob whose body underruns its header claim', () => {
-    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+    describe('When resolveObjectContent is called (the default buffered read)', () => {
       it('Then it serves the real (shorter) body, reports the claim as declaredSize, and never caches the object', async () => {
         // Arrange
         const content = ENC.encode('short'); // 5 bytes
@@ -2109,7 +2055,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           id,
@@ -2126,7 +2072,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a loose commit whose header size claim disagrees with its body length, read streamed', () => {
-    describe('When resolveObjectContentWithDepth is called with the streamed read mode', () => {
+    describe('When resolveObjectContent is called with the streamed read mode', () => {
       it('Then it still throws INVALID_OBJECT_HEADER — only a blob takes the streaming contract', async () => {
         // Arrange
         const content = ENC.encode('commit body'); // 11 bytes
@@ -2137,7 +2083,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
+          await resolveObjectContent(
             ctx,
             soleSourceStore(ctx, registry),
             id,
@@ -2159,7 +2105,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given an honest loose blob (no size-lying header), read streamed', () => {
-    describe('When resolveObjectContentWithDepth is called with the streamed read mode', () => {
+    describe('When resolveObjectContent is called with the streamed read mode', () => {
       it('Then it caches the object under its id', async () => {
         // Arrange
         const content = ENC.encode('hello world, streamed and honest!');
@@ -2168,7 +2114,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        await resolveObjectContentWithDepth(
+        await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           id,
@@ -2184,7 +2130,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given an honest loose blob (no size-lying header)', () => {
-    describe('When resolveObjectContentWithDepth is called', () => {
+    describe('When resolveObjectContent is called', () => {
       it('Then it caches the object under its id', async () => {
         // Arrange
         const content = ENC.encode('hello world!');
@@ -2193,13 +2139,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        await resolveObjectContentWithDepth(
-          ctx,
-          soleSourceStore(ctx, registry),
-          id,
-          false,
-          undefined,
-        );
+        await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
 
         // Assert
         expect(ctx.deltaCache.has(id)).toBe(true);
@@ -2208,7 +2148,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a loose commit whose header size claim disagrees with its body length', () => {
-    describe('When resolveObjectContentWithDepth is called', () => {
+    describe('When resolveObjectContent is called', () => {
       it('Then it throws INVALID_OBJECT_HEADER with the verbatim size-mismatch reason', async () => {
         // Arrange
         const content = ENC.encode('commit body');
@@ -2219,13 +2159,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            id,
-            false,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -2242,7 +2176,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a signal that aborts right after a loose read resolves, with a size-lying commit header', () => {
-    describe('When resolveObjectContentWithDepth is called', () => {
+    describe('When resolveObjectContent is called', () => {
       it('Then it throws OPERATION_ABORTED, not the size-mismatch the lying header would otherwise trigger', async () => {
         // Arrange — this small object's single-pass buffered read makes its
         // one call through this spied `inflate`: the abort fires during that
@@ -2272,7 +2206,7 @@ describe('object-resolver', () => {
         // Act
         let caught: unknown;
         try {
-          await resolveObjectContentWithDepth(
+          await resolveObjectContent(
             abortingCtx,
             soleSourceStore(abortingCtx, registry),
             id,
@@ -2292,7 +2226,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a loose blob whose header size claim disagrees with its body length, read with verifyHash true', () => {
-    describe('When resolveObjectContentWithDepth is called', () => {
+    describe('When resolveObjectContent is called', () => {
       it('Then it throws OBJECT_HASH_MISMATCH hashing the stored (lying) header', async () => {
         // Arrange
         const content = ENC.encode('hello world!');
@@ -2313,13 +2247,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            id,
-            true,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, true, undefined);
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -2335,7 +2263,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a lying loose blob read once without verifyHash, then read again with verifyHash true', () => {
-    describe('When the second resolveObjectContentWithDepth call runs', () => {
+    describe('When the second resolveObjectContent call runs', () => {
       it('Then it still refuses OBJECT_HASH_MISMATCH — the unverified read never cached it', async () => {
         // Arrange
         const content = ENC.encode('hello world!');
@@ -2343,23 +2271,11 @@ describe('object-resolver', () => {
         const id = await writeRawObjectBytes(ctx, 'blob', content);
         await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
         const registry = await createPackRegistry(ctx);
-        await resolveObjectContentWithDepth(
-          ctx,
-          soleSourceStore(ctx, registry),
-          id,
-          false,
-          undefined,
-        );
+        await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, false, undefined);
 
         // Act
         try {
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            id,
-            true,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), id, true, undefined);
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -2370,14 +2286,14 @@ describe('object-resolver', () => {
   });
 
   describe('Given the empty tree oid', () => {
-    describe('When resolveObjectContentWithDepth is called', () => {
+    describe('When resolveObjectContent is called', () => {
       it('Then declaredSize equals the (zero) content length', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           EMPTY_TREE_OID,
@@ -2393,7 +2309,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a delta-cache hit', () => {
-    describe('When resolveObjectContentWithDepth resolves it', () => {
+    describe('When resolveObjectContent resolves it', () => {
       it('Then declaredSize equals the cached content length', async () => {
         // Arrange
         const ctx = await buildSeededContext();
@@ -2403,7 +2319,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           fakeId,
@@ -2418,7 +2334,7 @@ describe('object-resolver', () => {
   });
 
   describe('Given a synthetic pack with a base blob', () => {
-    describe('When resolveObjectContentWithDepth resolves it', () => {
+    describe('When resolveObjectContent resolves it', () => {
       it('Then declaredSize equals the reconstructed content length', async () => {
         // Arrange
         const ctx = await buildSeededContext();
@@ -2429,7 +2345,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(
+        const result = await resolveObjectContent(
           ctx,
           soleSourceStore(ctx, registry),
           id as ObjectId,
@@ -2936,7 +2852,7 @@ describe('object-resolver', () => {
         it('Then the cached type is reused without re-deriving it', async () => {
           // Arrange — base type 'tree' (not 'blob'): a hit that re-derived
           // (or defaulted) the type instead of reusing the cached one would
-          // fail this. resolveObjectContentWithDepth is used so the reconstructed
+          // fail this. resolveObjectContent is used so the reconstructed
           // target need not be a structurally valid tree body.
           const ctx = await buildSeededContext();
           const midContent = ENC.encode('tree-typed mid content');
@@ -2951,16 +2867,10 @@ describe('object-resolver', () => {
           const tip1Id = ids[2]! as ObjectId;
           const tip2Id = ids[3]! as ObjectId;
           const registry = await createPackRegistry(ctx);
-          await resolveObjectContentWithDepth(
-            ctx,
-            soleSourceStore(ctx, registry),
-            tip1Id,
-            false,
-            undefined,
-          );
+          await resolveObjectContent(ctx, soleSourceStore(ctx, registry), tip1Id, false, undefined);
 
           // Act
-          const result = await resolveObjectContentWithDepth(
+          const result = await resolveObjectContent(
             ctx,
             soleSourceStore(ctx, registry),
             tip2Id,
