@@ -659,3 +659,13 @@ reader and the three refusal sites naming their id), `Chunks: domain` +30 B (the
 
 The npm tarball cap moved 1439 → 1440 KiB (1 472 909 → 1 474 199 B measured); its attribution
 lives in `tooling/verify-tarball.sh`'s cap block.
+
+The review fixes of the same change crossed three of these rows again, measured the same way on
+a clean build; each is raised once more to the next 0.1 kB. The tarball cap holds (1 474 411 B
+measured against 1 440 KiB).
+
+| Row | before the fixes | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 341 961 | 342 003 | +42 | 342.0 kB | 342.1 kB | every layer below |
+| Full library | 399 490 | 399 645 | +155 | 399.5 kB | 399.7 kB | every layer below |
+| Chunks: primitives | 108 066 | 108 128 | +62 | 108.1 kB | 108.2 kB | the local header peek (`peekDeclaredObjectHeader`, no fetch, no rescan), the peeled want's kind carried out of the tag-chain resolver so the closure probes a want once, and the header-only blob hop in `peel` |
