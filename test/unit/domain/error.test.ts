@@ -519,6 +519,21 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given LOOSE_OBJECT_CORRUPT', () => {
+      describe('When reading message', () => {
+        it("Then reads as git's corrupt loose object line", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'LOOSE_OBJECT_CORRUPT',
+            id: 'abc123' as never,
+          });
+
+          // Assert
+          expect(result.message).toBe('LOOSE_OBJECT_CORRUPT: corrupt loose object abc123');
+        });
+      });
+    });
+
     describe('Given TREE_UNREADABLE', () => {
       describe('When reading message', () => {
         it("Then reads as git's death reading the tree", () => {

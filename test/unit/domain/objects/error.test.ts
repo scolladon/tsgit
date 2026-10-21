@@ -9,6 +9,7 @@ import {
   invalidTag,
   invalidTreeEntry,
   isObjectNotFound,
+  looseObjectCorrupt,
   MAX_OBJECT_ID_IN_ERROR,
   objectNotFound,
   objectTooLarge,
@@ -181,6 +182,19 @@ describe('error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'TREE_UNREADABLE', id });
+        });
+      });
+    });
+
+    describe('Given looseObjectCorrupt(id)', () => {
+      describe('When checking error.data', () => {
+        it('Then code and id are set', () => {
+          // Arrange & Act
+          const id = 'a'.repeat(40) as ObjectId;
+          const result = looseObjectCorrupt(id);
+
+          // Assert
+          expect(result.data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id });
         });
       });
     });
