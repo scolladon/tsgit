@@ -37,6 +37,8 @@
 5. A liar held only by an alternate: the borrower's gc succeeds.
 6. The pack builders size an entry from the bytes the buffered tier yields. They never size it
    from the claim, and never take the streamed tier's real bytes.
+7. A blob the closure receives as a want (an index entry, a ref target, a tag target) is typed
+   from its header alone and never inflated; only tags and commits are read (ADR-1032, G11).
 
 ## Design
 
@@ -64,6 +66,7 @@ F1 = fatal: loose object 7df3ad74663b645d0dfdadc2b343438b2350430c (stored in .gi
 | G8 | reachable overrun held in an alternate | borrower `gc` exit 0 (`repack -l` never reads it) | — |
 | G9 | reachable overrun: `bundle create --all` / `push` to a local bare | exit 1. Bundle: `E1 F1 error: pack-objects died`. Push: `E1 F1` then `remote rejected … (unpacker error)` | — |
 | G10 | two reachable past-window liars | exit 1, one `E1`/`F1` pair naming one of them | — |
+| G11 | overrun liar held ONLY by an alternate, named by the borrower's index or by a ref (not reached through a tree) | borrower `gc` exit 0: `parse_object` types a blob want header-only and `repack -l` never packs it | liar untouched. tsgit before P6 refused `LOOSE_OBJECT_CORRUPT` at root resolution; reached through a tree alone it already succeeded |
 
 The streamed and header tiers are unchanged. ADR-907 already pins them: `cat-file -s` → 5,
 `cat-file -p` / `show` → 200 real bytes, `rev-list --objects --all` exit 0.
@@ -94,6 +97,7 @@ buffered `readRawObject`.
 | P3 | `src/application/commands/internal/gc-pipeline.ts` · `writeRepack`, `buildAndWriteNormalPack`, `buildAndWritePromisorPack`, `buildAndWriteCruftPack` | Per **ADR-1027** (D5 folded in): split each into build and install. Every pack (cruft, promisor, normal) is built, or staged outside the registered pack set, before any is installed, so a G2 refusal leaves no registered pack and no `.mtimes`. The staging mechanism (all in memory, or each written into the quarantine and installed at the end) is the plan's call, bounded by `bench:memory` |
 | P4 | `gc-pipeline.ts` · `verifyPacked` | Per **ADR-1027**: verify only objects in a pack this run wrote: normal ∪ promisor ∪ survivors **only when** a fresh cruft pack was written (a reused or no-op cruft pack is excluded). Fixes G3 |
 | P5 (**ADR-1031**) | `gc-pipeline.ts` · `verifyPacked` | On `OBJECT_HASH_MISMATCH` alone, accept when the id's still-present loose copy reads through the buffered tier as `'truncate'` and equals the packed bytes. Honest objects pay nothing extra. Brings G5/G6 to git's exit 0 |
+| P6 (**ADR-1032**) | `src/application/primitives/internal/object-emit.ts` · `resolveTagChain`; `src/application/primitives/internal/closure-engine.ts` · `resolveWant` | A want whose header says `blob` is queued as a pending blob with no content read; tags and commits keep their reads. Found when the G11 interop row went red in implementation; `push` and `bundle create` share the helper and align too |
 
 No change to `maintenance.ts`: `failureOr` already copies `error.data` into `tasksFailed`.
 
