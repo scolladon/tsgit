@@ -664,15 +664,15 @@ object`), tsgit refuses — same outcome, different site; index→missing blob: 
 read <oid>` exit 128, tsgit `OBJECT_NOT_FOUND` — match.
 
 Edits:
-- `object-emit.ts` `resolveTagChain`: at the top of each loop iteration read
-  `readDeclaredObjectHeader(ctx, current)` (import from `../read-object.js`). When its `type` is
+- `src/application/primitives/internal/object-emit.ts` `resolveTagChain`: at the top of each loop iteration read
+  `readDeclaredObjectHeader(ctx, current)` (import from ../read-object.js). When its `type` is
   `'blob'`: `if (!assignObjectType(ctx, table, current, 'blob')) throw objectNotFound(current);
   return current;` — the same `undefined → objectNotFound` contract `parseTypedObject` has. Any
   other type keeps today's `parseTypedObject` hop. Import `assignObjectType` from
-  `./object-type-table.js` (closure-engine.ts already imports it from there). Doc comment: git's
+  ./object-type-table.js (closure-engine.ts already imports it from there). Doc comment: git's
   `parse_object` types a blob through `oid_object_info`, header only, never the body.
-- `closure-engine.ts` `resolveWant`: after `peeled`, read
-  `const { type } = await readDeclaredObjectHeader(ctx, peeled)` (import from `../read-object.js`,
+- `src/application/primitives/internal/closure-engine.ts` `resolveWant`: after `peeled`, read
+  `const { type } = await readDeclaredObjectHeader(ctx, peeled)` (import from ../read-object.js,
   where `readObject` already comes from). When `type === 'blob'`: push
   `{ id: peeled, type: 'blob' }` to `resolving.pending` and return `undefined`, with no content
   read. Otherwise keep today's `readObject(ctx, peeled)` branch unchanged (a commit seeds the walk
@@ -680,13 +680,13 @@ Edits:
   header probes (one per function); a commit want pays one header probe before the full read it
   already paid; no want pays more inflates than today.
 - No other file. Callers of `resolveTagChain` take the change as is:
-  `internal/bitmap-binding.ts` L251, `enumerate-bundle-objects.ts` L102,
-  `enumerate-push-objects.ts` L48 — git's rev-list behaves the same for `bundle create` and `push`.
+  internal/bitmap-binding.ts L251, enumerate-bundle-objects.ts L102,
+  enumerate-push-objects.ts L48 — git's rev-list behaves the same for `bundle create` and `push`.
 
 Tests in `test/unit/application/primitives/internal/closure-engine.test.ts` (imports already
 present: `computeClosure`, `createObjectTypeTable`, `* as readObjectModule`, `buildSeededContext`,
 `writeBlob`/`writeTree`/`writeCommit`/`writeTag`, `vi`; add `writeSelfHashedLooseWithDeclaredSize`
-from `../fixtures.js`, the Part 4 helper). The liar is `writeSelfHashedLooseWithDeclaredSize(ctx,
+from ../fixtures.js, the Part 4 helper). The liar is `writeSelfHashedLooseWithDeclaredSize(ctx,
 'blob', 5, Uint8Array.from({ length: 200 }, (_, i) => i))`, written right after the context is
 built. `sut = computeClosure`, walk tier, `objects: true`.
 - `Given a blob want whose loose body overruns its size claim past the header window` >
