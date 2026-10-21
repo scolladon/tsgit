@@ -954,6 +954,46 @@ const GC_RESIDENCY_AUTHOR = {
   timezoneOffset: '+0000',
 };
 
+type BenchRepository = Awaited<ReturnType<OpenRepository>>;
+
+const seedReachableCommit = async (repo: BenchRepository, cwd: string): Promise<void> => {
+  for (let i = 0; i < GC_RESIDENCY_LOOSE_OBJECT_COUNT; i += 1) {
+    await writeFile(path.join(cwd, `f${i.toString().padStart(6, '0')}.txt`), `payload ${i}\n`);
+  }
+  await repo.add([], { all: true });
+  await repo.commit({
+    message: 'seed',
+    author: GC_RESIDENCY_AUTHOR,
+    committer: GC_RESIDENCY_AUTHOR,
+  });
+};
+
+/** Loose blobs no ref, index or reflog reaches, written just now so gc keeps them as cruft. */
+const seedUnreachableBlobs = async (repo: BenchRepository): Promise<void> => {
+  const encoder = new TextEncoder();
+  for (let i = 0; i < GC_RESIDENCY_LOOSE_OBJECT_COUNT; i += 1) {
+    await repo.primitives.writeObject({
+      type: 'blob',
+      id: '' as ObjectId,
+      content: encoder.encode(`unreachable ${i}\n`),
+    });
+  }
+};
+
+const assertCruftFixture = (result: {
+  readonly cruftObjectsAdded: number;
+  readonly cruftPackId: string | undefined;
+}): void => {
+  if (
+    result.cruftObjectsAdded < GC_RESIDENCY_LOOSE_OBJECT_COUNT ||
+    result.cruftPackId === undefined
+  ) {
+    throw new Error(
+      `cruft fixture invalid: cruftObjectsAdded=${result.cruftObjectsAdded}, cruftPackId=${result.cruftPackId}`,
+    );
+  }
+};
+
 /**
  * Peak RSS for `maintenance({tasks:['gc']})` over freshly seeded reachable
  * loose objects — this branch's absolute number. `fileCount` committed
@@ -987,15 +1027,7 @@ const runGcResidencyWorkload = async (
     const repo = await openRepository({ cwd });
     try {
       await repo.init();
-      for (let i = 0; i < GC_RESIDENCY_LOOSE_OBJECT_COUNT; i += 1) {
-        await writeFile(path.join(cwd, `f${i.toString().padStart(6, '0')}.txt`), `payload ${i}\n`);
-      }
-      await repo.add([], { all: true });
-      await repo.commit({
-        message: 'seed',
-        author: GC_RESIDENCY_AUTHOR,
-        committer: GC_RESIDENCY_AUTHOR,
-      });
+      await seedReachableCommit(repo, cwd);
       await repo.maintenance({ tasks: ['gc'] });
       peak = maxSample(peak, sampleMemory());
     } finally {
@@ -1008,6 +1040,48 @@ const runGcResidencyWorkload = async (
   const after = gcBaseline(gc);
   return toReport(
     `gc-residency-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-loose-objects`,
+    before,
+    peak,
+    after,
+  );
+};
+
+/**
+ * Same plumbing as `runGcResidencyWorkload`, over a repository that also holds
+ * as many unreachable, unexpired loose blobs: gc must write a cruft pack beside
+ * the normal one. The first row has no cruft, so it cannot see the bytes gc
+ * holds while it builds every pack before installing any. The fixture is
+ * asserted before the report is returned.
+ */
+const runGcCruftResidencyWorkload = async (
+  gc: () => void,
+  openRepository: OpenRepository,
+): Promise<WorkloadReport> => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-gc-cruft-residency-'));
+  const before = gcBaseline(gc);
+  let peak = before;
+  const poll = setInterval(() => {
+    peak = maxSample(peak, sampleMemory());
+  }, PEAK_POLL_INTERVAL_MS);
+  try {
+    const repo = await openRepository({ cwd });
+    try {
+      await repo.init();
+      await seedReachableCommit(repo, cwd);
+      await seedUnreachableBlobs(repo);
+      const result = await repo.maintenance({ tasks: ['gc'] });
+      assertCruftFixture(result);
+      peak = maxSample(peak, sampleMemory());
+    } finally {
+      await repo.dispose();
+    }
+  } finally {
+    clearInterval(poll);
+    await rm(cwd, { recursive: true, force: true });
+  }
+  const after = gcBaseline(gc);
+  return toReport(
+    `gc-residency-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-loose-objects-with-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-unexpired-cruft`,
     before,
     peak,
     after,
@@ -1057,6 +1131,7 @@ const main = async (): Promise<void> => {
     reports.push(...(await runCloneWorkload(gc, openRepository)));
     reports.push(...(await runIndexPassResidencyWorkload()));
     reports.push(await runGcResidencyWorkload(gc, openRepository));
+    reports.push(await runGcCruftResidencyWorkload(gc, openRepository));
     reports.push(await runRenameHydrationWorkload(gc, openRepository));
     reports.push(await runRenameBreakRewriteWorkload(gc, openRepository));
     if (process.env.TSGIT_BENCH_LARGE !== undefined) {
