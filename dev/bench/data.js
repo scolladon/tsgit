@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792568590539,
+  "lastUpdate": 1792605603508,
   "repoUrl": "https://github.com/scolladon/tsgit",
   "entries": {
     "tsgit benchmarks": [
@@ -29747,6 +29747,966 @@ window.BENCHMARK_DATA = {
           {
             "name": "test/bench/whitespace-digest.bench.ts > Given one 70,000-byte line, When digestNormalizedLine folds it under mode 'none', Then measure tsgit > tsgit",
             "value": 0.303885999999693,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "colladonsebastien@gmail.com",
+            "name": "Sebastien",
+            "username": "scolladon"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8dd442eef3fa3f7092314b835c469b9e4d7f466d",
+          "message": "chore(main): release 6.0.0 (#315)",
+          "timestamp": "2026-10-21T19:33:24+02:00",
+          "tree_id": "f49de66e9e872fd26063c8e00b7b9c3352f3292c",
+          "url": "https://github.com/scolladon/tsgit/commit/8dd442eef3fa3f7092314b835c469b9e4d7f466d"
+        },
+        "date": 1792605602171,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 64 KiB highly compressible zlib member, When the bundled decoder (inflateZlibMember) decodes it, Then measure tsgit > tsgit",
+            "value": 0.2130210000000261,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 64 KiB highly compressible zlib member, When native DecompressionStream decodes it, Then measure tsgit > tsgit",
+            "value": 0.2987755000000334,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 1 MiB highly compressible zlib member, When the bundled decoder (inflateZlibMember) decodes it, Then measure tsgit > tsgit",
+            "value": 3.154669500000182,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 1 MiB highly compressible zlib member, When native DecompressionStream decodes it, Then measure tsgit > tsgit",
+            "value": 2.0564994999999726,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 8 MiB highly compressible zlib member, When the bundled decoder (inflateZlibMember) decodes it, Then measure tsgit > tsgit",
+            "value": 25.776988999999958,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 8 MiB highly compressible zlib member, When native DecompressionStream decodes it, Then measure tsgit > tsgit",
+            "value": 26.519248000000516,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 64 KiB incompressible zlib member, When the bundled decoder (inflateZlibMember) decodes it, Then measure tsgit > tsgit",
+            "value": 0.06680099999994127,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 64 KiB incompressible zlib member, When native DecompressionStream decodes it, Then measure tsgit > tsgit",
+            "value": 0.2750100000002931,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 1 MiB incompressible zlib member, When the bundled decoder (inflateZlibMember) decodes it, Then measure tsgit > tsgit",
+            "value": 1.0954510000001392,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 1 MiB incompressible zlib member, When native DecompressionStream decodes it, Then measure tsgit > tsgit",
+            "value": 2.284827999999834,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 8 MiB incompressible zlib member, When the bundled decoder (inflateZlibMember) decodes it, Then measure tsgit > tsgit",
+            "value": 9.095428000000538,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/adapter-inflate.bench.ts > Given a 8 MiB incompressible zlib member, When native DecompressionStream decodes it, Then measure tsgit > tsgit",
+            "value": 29.730892999999924,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/add.bench.ts > Given a freshly built scratch repo with two unstaged files, When add() stages them all, Then measure tsgit > tsgit",
+            "value": 3.6271450000003824,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/add.bench.ts > Given a freshly built scratch repo with 200 unstaged files across nested directories, When add() stages them all, Then measure tsgit > tsgit",
+            "value": 48.066601999998966,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/add.bench.ts > Given a scratch repo that never saw the object being written, When writeObject() stores a brand-new blob, Then measure tsgit > tsgit",
+            "value": 0.12830399999984365,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/add.bench.ts > Given a scratch repo that already holds the object being written, When writeObject() re-writes the present blob, Then measure tsgit > tsgit",
+            "value": 0.06684099999984028,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/add.bench.ts > Given a scratch repo whose committed file is unchanged on disk, When add() re-stages the unchanged file, Then measure tsgit > tsgit",
+            "value": 1.0738295000001017,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/add.bench.ts > Given a scratch repo with 10 000 committed files, When add() re-stages one modified tracked file, Then measure tsgit > tsgit",
+            "value": 24.59469899999931,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/add.bench.ts > Given a scratch repo with 10 000 committed files, When add() stages one new file, Then measure tsgit > tsgit",
+            "value": 26.654406999999992,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/add.bench.ts > Given a committed scratch repo with 200 tracked files across nested directories, When add() stages the 200 rewritten files by literal path, Then measure tsgit > tsgit",
+            "value": 39.487952499999665,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/alternates.bench.ts > Given a --shared borrower repository opened per call, When readBlob() reads a blob owned by the lender, Then measure tsgit > tsgit",
+            "value": 0.878989499999534,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/alternates.bench.ts > Given a --shared borrower repository opened once, When catFile() reads the HEAD commit, Then measure tsgit > tsgit",
+            "value": 0.03378100000008999,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/alternates.bench.ts > Given a --shared borrower repository opened once and every commit lent, When log() walks every commit, Then measure tsgit > tsgit",
+            "value": 0.3710190000001603,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/blame.bench.ts > Given a deep-ancestry-small deep-ancestry repo (50 commits), When blame() walks stable.txt, Then it stays O(path-depth) instead of flattening every tree > tsgit",
+            "value": 0.42425900000034744,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/blame.bench.ts > Given a deep-ancestry-medium deep-ancestry repo (500 commits), When blame() walks stable.txt, Then it stays O(path-depth) instead of flattening every tree > tsgit",
+            "value": 2.676916500000061,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/blame.bench.ts > Given churn.txt changing across 50 commits (3 lines each) over 5000 lines, When blame() walks every hop end-to-end, Then measure tsgit > tsgit",
+            "value": 69.9654559999999,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/branch-list.bench.ts > Given a repository with 1000 loose branches, When branch.list() lists 1000 loose branches, Then measure tsgit > tsgit",
+            "value": 33.68202199999996,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/cat-file.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When catFile() reads the HEAD commit, Then measure tsgit > tsgit",
+            "value": 0.01275900000018737,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/checkout.bench.ts > Given a small repo (50 commits, 200 blobs), When checkout() alternates tip and root with force, Then measure tsgit > tsgit",
+            "value": 37.57958799999324,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/checkout.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When checkout() alternates tip and root with force, Then measure tsgit > tsgit",
+            "value": 2427.449622500004,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/checkout.bench.ts > Given a small repo (50 commits, 200 blobs), When checkout() alternates tip and root without force, Then measure tsgit > tsgit",
+            "value": 32.78322300000582,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/checkout.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When checkout() alternates tip and root without force, Then measure tsgit > tsgit",
+            "value": 2906.7055124999897,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/checkout.bench.ts > Given a 500-directory scratch repo at its root commit, When checkout() moves to the tip with force, Then measure tsgit > tsgit",
+            "value": 211.37399700000242,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/checkout.bench.ts > Given a 500-directory scratch repo at its tip commit, When checkout() moves to the root with force, Then measure tsgit > tsgit",
+            "value": 210.74632900000142,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/checkout.bench.ts > Given a 500-directory scratch repo whose mixed branch adds, updates and deletes files, When checkout() moves from root to mixed with force, Then measure tsgit > tsgit",
+            "value": 405.75336299999617,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/clone-small-repo.bench.ts > Given a local git-http-backend serving a 5-commit repo, When clone() fetches the full pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 31.40897799999948,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/clone-small-repo.bench.ts > Given a local git-http-backend serving a 5-commit repo, When clone() fetches the full pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 32.292769000000135,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/closure-wide-tree.bench.ts > Given a wide tree of 40 directories × 50 files across a 100-commit history rewriting one file per commit, When computeClosure({ objects: true, tier: 'walk' }) walks the full objects closure, Then measure tsgit > tsgit",
+            "value": 13.998401000000285,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/closure-wide-tree.bench.ts > Given a wide tree of 40 directories × 50 files across a 300-commit history rewriting one file per commit, When computeClosure({ objects: true, tier: 'walk' }) walks the full objects closure, Then measure tsgit > tsgit",
+            "value": 39.885119999999915,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/closure.bench.ts > Given a 500-commit repository with a healthy bitmap, When revList() walks the commits-only closure at its own default tier, Then measure tsgit > tsgit",
+            "value": 1.5248410000003787,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/closure.bench.ts > Given a 500-commit repository with a healthy bitmap, When packObjects() answers the objects closure from its default bitmap tier, deltifies and writes the pack, Then measure tsgit > tsgit",
+            "value": 53.92067749999978,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/closure.bench.ts > Given a 500-commit repository with a healthy bitmap, When computeClosure({ objects: true, tier: 'walk' }) walks the full objects closure, Then measure tsgit > tsgit",
+            "value": 3.2881420000003345,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/closure.bench.ts > Given a 500-commit repository with a healthy bitmap, When computeClosure({ objects: true, tier: 'bitmap' }) answers the full objects closure from the bitmap, Then measure tsgit > tsgit",
+            "value": 0.601277499999469,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/closure.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When revList() excludes HEAD~1 from HEAD, Then measure tsgit > tsgit",
+            "value": 0.17601049999984753,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/closure.bench.ts > Given a medium-commit-graph repo (5000 commits, 20000 blobs), When revList() excludes HEAD~1 from HEAD, Then measure tsgit > tsgit",
+            "value": 0.15333099999952537,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/commit.bench.ts > Given a freshly built scratch repo with one staged file, When commit() records it, Then measure tsgit > tsgit",
+            "value": 8.901302000000214,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/commit.bench.ts > Given a committed scratch repo of 500 directories with 4 files each, When add() and commit() record one rewritten file per iteration, Then measure tsgit > tsgit",
+            "value": 39.65473999999995,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/delta-chain-read.bench.ts > Given a delta-chain repo (300 commits, deep delta chains), When readBlob() reads a deep-chain leaf from a cold pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 1.2219274999997651,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/delta-chain-read.bench.ts > Given a delta-chain repo (300 commits, deep delta chains), When readBlob() reads a deep-chain leaf from a cold pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 1.2726190000003044,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/delta-chain-read.bench.ts > Given a delta-chain repo (300 commits, deep delta chains), When readBlob() reads a deep-chain leaf from a warm pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.0009519999994154205,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/delta-chain-read.bench.ts > Given a delta-chain repo (300 commits, deep delta chains), When readBlob() reads a deep-chain leaf from a warm pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 1.2258569999999054,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/delta-chain-read.bench.ts > Given a delta-chain repo (300 commits, deep delta chains), When readBlob() reads 8 tips sharing deep OFS ancestor levels in one registry generation, Then measure tsgit > tsgit",
+            "value": 1.0770119999997405,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/deltify.bench.ts > Given 3000 mutually-unrelated blobs (barely-deltifiable, xorshift-unique content), When deltifyEntries runs the window search, Then measure tsgit > tsgit",
+            "value": 2377.758885000001,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/deltify.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When buildPack() assembles commits without deltas, Then measure tsgit > tsgit",
+            "value": 20.617334999995364,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/describe.bench.ts > Given a small repo (50 commits, 200 blobs), When describe() resolves a near tag, Then the walk stops at the covered path > tsgit",
+            "value": 0.5894790000002104,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/describe.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When describe() resolves a near tag, Then the walk stops at the covered path > tsgit",
+            "value": 0.5410400000000664,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-recursive.bench.ts > Given a small repo (50 commits, 200 blobs), When diff() compares HEAD~1 against HEAD recursively, Then measure tsgit > tsgit",
+            "value": 0.43701899999996385,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-recursive.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When diff() compares HEAD~1 against HEAD recursively, Then measure tsgit > tsgit",
+            "value": 0.4900689999994938,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-recursive.bench.ts > Given a small repo (50 commits, 200 blobs), When diff() compares the empty tree against HEAD recursively (the merge-join walks the whole tree), Then measure tsgit > tsgit",
+            "value": 0.38437900000008085,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-recursive.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When diff() compares the empty tree against HEAD recursively (the merge-join walks the whole tree), Then measure tsgit > tsgit",
+            "value": 13.180294000000686,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-recursive.bench.ts > Given a small repo (50 commits, 200 blobs), When diff() compares HEAD against a sibling tree with one blob modified per shard directory, Then the cursor merge-join descends every directory pair instead of expanding an added subtree > tsgit",
+            "value": 0.31349749999981213,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-recursive.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When diff() compares HEAD against a sibling tree with one blob modified per shard directory, Then the cursor merge-join descends every directory pair instead of expanding an added subtree > tsgit",
+            "value": 2.631918499999756,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a common repo (50 files, 3 renamed and edited), loose (as committed), When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit > tsgit",
+            "value": 0.7765510000001541,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a common repo (50 files, 3 renamed and edited), packed via `git repack -ad`, When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit > tsgit",
+            "value": 0.5265840000001845,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a wide repo (300 files, every one moved and edited), loose (as committed), When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit > tsgit",
+            "value": 85.36025949999976,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a wide repo (300 files, every one moved and edited), packed via `git repack -ad`, When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit > tsgit",
+            "value": 84.5491105000001,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a hostile repo (300 distinct 1 MiB deletes, one 6-byte add), loose (as committed), When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit > tsgit",
+            "value": 77.0120909999996,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a hostile repo (300 distinct 1 MiB deletes, one 6-byte add), packed via `git repack -ad`, When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit > tsgit",
+            "value": 80.14806950000093,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a hostile-basename repo (300 distinct 1 MiB deletes, each with a same-basename 6-byte add), loose (as committed), When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit > tsgit",
+            "value": 148.8768154999998,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a hostile-basename repo (300 distinct 1 MiB deletes, each with a same-basename 6-byte add), packed via `git repack -ad`, When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit > tsgit",
+            "value": 143.91831150000053,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a rewrite repo (100 × 256 KiB files rewritten in full), loose (as committed), When diff() compares HEAD~1 against HEAD recursively with detectRenames:true and breakRewrites set (-M -B), Then measure tsgit > tsgit",
+            "value": 736.1790634999998,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-renames.bench.ts > Given a rewrite repo (100 × 256 KiB files rewritten in full), packed via `git repack -ad`, When diff() compares HEAD~1 against HEAD recursively with detectRenames:true and breakRewrites set (-M -B), Then measure tsgit > tsgit",
+            "value": 736.0388839999996,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-whitespace.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When diff() compares HEAD~1 against HEAD recursively with ignoreWhitespace:'all' over add-only changes (non-regression watch — never reaches the whitespace drop-pass predicate), Then measure tsgit > tsgit",
+            "value": 0.58610200000021,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-whitespace.bench.ts > Given a scratch repo of 2,500 whitespace-only-modified file pairs, loose (as committed), When diff() compares HEAD~1 against HEAD recursively with ignoreWhitespace:'all', Then measure tsgit > tsgit",
+            "value": 117.94738400000006,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff-whitespace.bench.ts > Given a scratch repo of 2,500 whitespace-only-modified file pairs, packed via `git repack -ad`, When diff() compares HEAD~1 against HEAD recursively with ignoreWhitespace:'all', Then measure tsgit > tsgit",
+            "value": 73.80506049999985,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/diff.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When diff() compares HEAD~1 against HEAD, Then measure tsgit > tsgit",
+            "value": 0.5984120000002804,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/fetch-pack.bench.ts > Given a pack with 8 independent 200-deep OFS delta chains, When fetchPack receives and indexes it in two passes, Then measure tsgit > tsgit",
+            "value": 59.6528629999998,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/fsck-artefacts.bench.ts > Given a many-object pack (8000 objects) with no .rev and no .bitmap, When fsck() audits the repository, Then measure tsgit > tsgit",
+            "value": 266.19884,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/fsck-artefacts.bench.ts > Given the same many-object pack carrying a healthy .rev and .bitmap, When fsck() audits the repository, Then measure tsgit > tsgit",
+            "value": 257.5859825000007,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/line-diff.bench.ts > Given 200 lines with 3 lines edited, When diffLines compares them, Then measure tsgit > tsgit",
+            "value": 0.07854799999995521,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/line-diff.bench.ts > Given 5000 lines with 20 scattered edits, When diffLines compares them, Then measure tsgit > tsgit",
+            "value": 2.3071689999999307,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/line-diff.bench.ts > Given 5000 lines with 20 scattered edits, When computeHunks builds a 3-line-context patch from them, Then measure tsgit > tsgit",
+            "value": 3.993747000000212,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/line-diff.bench.ts > Given 5000 lines with 20 scattered edits, pre-split, When diffPresplitLines compares blame's already-split pair, Then measure tsgit > tsgit",
+            "value": 1.755576999999903,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/line-diff.bench.ts > Given a 300-line base with ours and theirs editing disjoint regions, When mergeContent three-way-merges them, Then measure tsgit > tsgit",
+            "value": 0.1378380000001016,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/line-diff.bench.ts > Given 50000 lines with 1% of lines rewritten, When diffLines compares them, Then measure tsgit > tsgit",
+            "value": 12.032562000000325,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/log.bench.ts > Given a small repo (50 commits, 200 blobs), When log() walks every commit, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.35115899999982503,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/log.bench.ts > Given a small repo (50 commits, 200 blobs), When log() walks every commit, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 7.732351999999992,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/log.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When log() walks every commit, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 18.166850000000068,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/log.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When log() walks every commit, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 667.8933430000006,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/log.bench.ts > Given a medium-commit-graph repo (5000 commits, 20000 blobs), When log() walks every commit via a written commit-graph, Then measure tsgit > tsgit",
+            "value": 18.766991999998936,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/loose-read.bench.ts > Given a fresh repository opened per call (cold LRU cache), When readBlob() reads a blob, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.5992479999995339,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/loose-read.bench.ts > Given a fresh repository opened per call (cold LRU cache), When readBlob() reads a blob, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 0.2727260000001479,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/loose-read.bench.ts > Given a repository handle opened once and reused across calls, When readBlob() reads a blob on the open handle, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.00102100000003702,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/loose-read.bench.ts > Given a repository handle opened once and reused across calls, When readBlob() reads a blob on the open handle, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 0.24160950000032244,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/maintenance.bench.ts > Given a medium-commit-graph repo (5000 commits, 20000 blobs), When maintenance({tasks:['commit-graph']}) writes the graph, Then measure tsgit > tsgit",
+            "value": 0.5902200000000448,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/maintenance.bench.ts > Given a freshly built scratch repo with 3000 reachable loose objects, When maintenance({tasks:['gc']}) repacks them, Then measure tsgit > tsgit",
+            "value": 1274.605716,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/maintenance.bench.ts > Given 3000 unreachable loose objects already folded into an existing cruft pack, When maintenance({tasks:['gc']}) repeats, Then measure tsgit > tsgit",
+            "value": 8.414660500002356,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/maintenance.bench.ts > Given a delta-chain repo (300 commits, deep delta chains), When maintenance({tasks:['gc']}) repeats over an already-consolidated repository, Then measure tsgit and report the size-trade ratio > tsgit",
+            "value": 167.1408164999957,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/merge.bench.ts > Given two branches diverging by one disjoint-file commit each, When merge.run() creates a non-fast-forward merge, Then measure tsgit > tsgit",
+            "value": 41.609614500000134,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a single-pack repo (1 commits, 1 blobs), When readBlob() resolves the only pack (P = 1, no midx), Then measure tsgit > tsgit",
+            "value": 0.000901999999769032,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a loose-only repo (1 commits, 1 blobs), When readBlob() resolves a loose object with no packs (the assertLoadable gate, isolated), Then measure tsgit > tsgit",
+            "value": 0.0009909999998853891,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a many-pack repo (48 commits, 48 blobs), When readBlob() hits the first pack with a midx present, Then measure tsgit > tsgit",
+            "value": 0.0009519999994154205,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a many-pack repo (48 commits, 48 blobs), When readBlob() hits the last pack with a midx present, Then measure tsgit > tsgit",
+            "value": 0.0009709999994811369,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a many-pack-no-midx repo (48 commits, 48 blobs), When readBlob() hits the first pack with no midx, Then measure tsgit > tsgit",
+            "value": 0.0009419999996680417,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a many-pack-no-midx repo (48 commits, 48 blobs), When readBlob() hits the last pack with no midx, Then measure tsgit > tsgit",
+            "value": 0.0009609999997337582,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a many-pack repo (48 commits, 48 blobs), When a cold open reads one blob with a midx present, Then measure tsgit > tsgit",
+            "value": 1.186789499999577,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a many-pack-no-midx repo (48 commits, 48 blobs), When a cold open reads one blob with no midx, Then measure tsgit > tsgit",
+            "value": 1.4899015000000873,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a loose-only repo (1 commits, 1 blobs), When a cold open reads one loose blob with no packs, Then measure tsgit > tsgit",
+            "value": 0.49230699999952776,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/midx-lookup.bench.ts > Given a loose-only repo (1 commits, 1 blobs), When a cold open streams one loose blob with no packs, Then measure tsgit > tsgit",
+            "value": 0.6290590000007796,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/name-rev.bench.ts > Given a small repo (50 commits, 200 blobs), When name-rev() names a commit a day newer than the deep history, Then the walk stops at the date cutoff > tsgit",
+            "value": 0.5210660000002463,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/name-rev.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When name-rev() names a commit a day newer than the deep history, Then the walk stops at the date cutoff > tsgit",
+            "value": 0.5037799999995514,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/name-rev.bench.ts > Given an in-process repository with 200 commits and 200 lightweight tags spread over the history, When name-rev() names a commit under 200 tags all within the cutoff slop, Then measure tsgit > tsgit",
+            "value": 17.676101000000017,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/node-compressor.bench.ts > Given an incompressible payload below threshold (8 KiB), When NodeCompressor.deflate() dispatches, Then measure tsgit > tsgit",
+            "value": 0.05836799999997311,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/node-compressor.bench.ts > Given a deflated incompressible payload below threshold (8 KiB), When NodeCompressor.inflate() runs (always synchronous), Then measure tsgit > tsgit",
+            "value": 0.004566999999951804,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/node-compressor.bench.ts > Given an incompressible payload just above threshold (17 KiB), When NodeCompressor.deflate() dispatches, Then measure tsgit > tsgit",
+            "value": 0.23358199999984208,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/node-compressor.bench.ts > Given a deflated incompressible payload just above threshold (17 KiB), When NodeCompressor.inflate() runs (always synchronous), Then measure tsgit > tsgit",
+            "value": 0.0097539999997025,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/node-compressor.bench.ts > Given an incompressible payload well above threshold (256 KiB), When NodeCompressor.deflate() dispatches, Then measure tsgit > tsgit",
+            "value": 5.527740500000164,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/node-compressor.bench.ts > Given a deflated incompressible payload well above threshold (256 KiB), When NodeCompressor.inflate() runs (always synchronous), Then measure tsgit > tsgit",
+            "value": 0.0700459999998202,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/node-compressor.bench.ts > Given an incompressible payload far above threshold (1 MiB), When NodeCompressor.deflate() dispatches, Then measure tsgit > tsgit",
+            "value": 22.089879999999994,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/node-compressor.bench.ts > Given a deflated incompressible payload far above threshold (1 MiB), When NodeCompressor.inflate() runs (always synchronous), Then measure tsgit > tsgit",
+            "value": 0.2691560000002937,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-offset-table.bench.ts > Given a many-object pack (8000 objects) with a healthy .rev present, When buildOffsetTable() runs on every registered pack, Then measure tsgit > tsgit",
+            "value": 0.4841300000002775,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-offset-table.bench.ts > Given the same many-object pack with its .rev deleted, When buildOffsetTable() runs on every registered pack, Then measure tsgit > tsgit",
+            "value": 1.0137525000000096,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-offset-table.bench.ts > Given many small packs (64 packs, 4 objects each) with a healthy .rev in every pack, When buildOffsetTable() runs on every registered pack, Then measure tsgit > tsgit",
+            "value": 4.984630000000834,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-offset-table.bench.ts > Given the same many-small-packs repository with every .rev deleted, When buildOffsetTable() runs on every registered pack, Then measure tsgit > tsgit",
+            "value": 3.7842520000003788,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-read.bench.ts > Given a small repo (50 commits, 200 blobs), When readBlob() reads from a cold pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.7527750000003834,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-read.bench.ts > Given a small repo (50 commits, 200 blobs), When readBlob() reads from a cold pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 0.9864270000007309,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-read.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When readBlob() reads from a cold pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.9196869999996125,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-read.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When readBlob() reads from a cold pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 69.37287949999973,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-read.bench.ts > Given a small repo (50 commits, 200 blobs), When readBlob() reads from a warm pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.0010610000008455245,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-read.bench.ts > Given a small repo (50 commits, 200 blobs), When readBlob() reads from a warm pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 0.9645239999999831,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-read.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When readBlob() reads from a warm pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.001111999999920954,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/pack-read.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When readBlob() reads from a warm pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 69.18654750000042,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/rev-parse.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When revParse() resolves HEAD, Then measure tsgit > tsgit",
+            "value": 0.1502010000001519,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/rev-parse.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When revParse() resolves an abbreviated oid, Then measure tsgit > tsgit",
+            "value": 0.13248999999996158,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/show.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When show() resolves HEAD, Then measure tsgit > tsgit",
+            "value": 0.25165899999979047,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/stash.bench.ts > Given a scratch repo with 50 modified tracked files and 20 untracked files, When stash push with untracked and stash pop round-trip, Then measure tsgit > tsgit",
+            "value": 46.05804799999987,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status-dirty.bench.ts > Given a 50-commit working tree with 25 modified files, When status() scans it, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.9734669999998005,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status-dirty.bench.ts > Given a 50-commit working tree with 25 modified files, When status() scans it, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 8.522773499999857,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a small repo (50 commits, 200 blobs), When status() scans the settled clean tree, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 2.1292799999973795,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a small repo (50 commits, 200 blobs), When status() scans the settled clean tree, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 14.79095800000141,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When status() scans the settled clean tree, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 164.53110900000138,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When status() scans the settled clean tree, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 1591.818153500004,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a small repo (50 commits, 200 blobs), When status() scans the stat-invalid clean tree without refresh, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 5.11377899999934,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a small repo (50 commits, 200 blobs), When status() scans the stat-invalid clean tree without refresh, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 47.301216000007116,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When status() scans the stat-invalid clean tree without refresh, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 506.3606170000021,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When status() scans the stat-invalid clean tree without refresh, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 4738.324685,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/tag-list.bench.ts > Given a repository with 2000 packed tags, When tag.list() lists 2000 packed tags, Then measure tsgit > tsgit",
+            "value": 0.45446500000070955,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/tag-list.bench.ts > Given a repository with 10000 packed tags, When tag.list() lists 10000 packed tags, Then measure tsgit > tsgit",
+            "value": 1.855427000000418,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/whitespace-digest.bench.ts > Given 5000 short lines, When digestNormalizedLine folds each line under mode 'all', Then measure tsgit > tsgit",
+            "value": 1.7713545000000295,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/whitespace-digest.bench.ts > Given one 70,000-byte line, When digestNormalizedLine folds it under mode 'all', Then measure tsgit > tsgit",
+            "value": 0.1845180000000255,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/whitespace-digest.bench.ts > Given 5000 short lines, When digestNormalizedLine folds each line under mode 'change', Then measure tsgit > tsgit",
+            "value": 1.3944919999999001,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/whitespace-digest.bench.ts > Given one 70,000-byte line, When digestNormalizedLine folds it under mode 'change', Then measure tsgit > tsgit",
+            "value": 0.3258209999999053,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/whitespace-digest.bench.ts > Given 5000 short lines, When digestNormalizedLine folds each line under mode 'at-eol', Then measure tsgit > tsgit",
+            "value": 1.461591999999655,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/whitespace-digest.bench.ts > Given one 70,000-byte line, When digestNormalizedLine folds it under mode 'at-eol', Then measure tsgit > tsgit",
+            "value": 0.325970999999754,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/whitespace-digest.bench.ts > Given 5000 short lines, When digestNormalizedLine folds each line under mode 'none', Then measure tsgit > tsgit",
+            "value": 1.444115999999667,
+            "unit": "ms",
+            "extra": "v24.21.0"
+          },
+          {
+            "name": "test/bench/whitespace-digest.bench.ts > Given one 70,000-byte line, When digestNormalizedLine folds it under mode 'none', Then measure tsgit > tsgit",
+            "value": 0.3275229999999283,
             "unit": "ms",
             "extra": "v24.21.0"
           }
