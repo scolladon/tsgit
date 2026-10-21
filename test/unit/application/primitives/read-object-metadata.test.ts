@@ -2,6 +2,7 @@ import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import {
   getPackRegistry,
+  peekDeclaredObjectHeader,
   readDeclaredObjectHeader,
   readDeclaredObjectSize,
   readObjectMetadata,
@@ -1301,6 +1302,72 @@ describe('readDeclaredObjectHeader', () => {
         // Assert
         expect(base).toEqual({ type: 'blob', declaredSize: 4 });
         expect(delta).toEqual({ type: 'blob', declaredSize: 8 });
+      });
+    });
+  });
+});
+
+describe('peekDeclaredObjectHeader', () => {
+  describe('Given a loose blob', () => {
+    describe('When peekDeclaredObjectHeader is called', () => {
+      it('Then returns its type and declared size', async () => {
+        // Arrange
+        const content = ENC.encode('loose');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        const sut = peekDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', declaredSize: content.length });
+      });
+    });
+  });
+
+  describe('Given a packed blob', () => {
+    describe('When peekDeclaredObjectHeader is called', () => {
+      it('Then returns the pack entry header', async () => {
+        // Arrange
+        const content = ENC.encode('packed');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'peek-base', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const sut = peekDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, ids[0] as ObjectId);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', declaredSize: content.length });
+      });
+    });
+  });
+
+  describe('Given an id held nowhere and a promisor', () => {
+    describe('When peekDeclaredObjectHeader is called', () => {
+      it('Then answers undefined and never asks the promisor', async () => {
+        // Arrange
+        let fetches = 0;
+        const base = await buildSeededContext();
+        const ctx = {
+          ...base,
+          promisor: {
+            fetch: async (oids: readonly ObjectId[]) => {
+              fetches += 1;
+              return { attempted: true, requested: oids.length, fetched: 0 };
+            },
+          },
+        } as unknown as Context;
+        const sut = peekDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, 'e'.repeat(40) as ObjectId);
+
+        // Assert
+        expect({ result, fetches }).toEqual({ result: undefined, fetches: 0 });
       });
     });
   });

@@ -62,7 +62,7 @@ import {
   resolveLimitOptions,
 } from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
-import { type EmitState, isBlobByHeader, resolveTagChain, tryEmit } from './object-emit.js';
+import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
 import { assignObjectType, type ObjectTypeTable } from './object-type-table.js';
 import { loadPackBitmapArtefact } from './pack-bitmap-binding.js';
 import { descendTreePath } from './resolve-tree-path.js';
@@ -334,13 +334,13 @@ async function resolveWant(
   const peeled = await resolveTagChain(ctx, request.objectTypes, wantId, (tagId) =>
     resolving.pending.push({ id: tagId, type: 'tag' }),
   );
-  if (await isBlobByHeader(ctx, peeled)) {
-    resolving.pending.push({ id: peeled, type: 'blob' });
+  if (peeled.kind === 'blob') {
+    resolving.pending.push({ id: peeled.id, type: 'blob' });
     return undefined;
   }
-  const obj = await readObject(ctx, peeled);
+  const obj = await readObject(ctx, peeled.id);
   if (obj.type !== 'commit') {
-    resolving.pending.push({ id: peeled, type: obj.type });
+    resolving.pending.push({ id: peeled.id, type: obj.type });
     return undefined;
   }
   resolving.commitSeeds.push(obj);

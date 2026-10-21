@@ -248,7 +248,7 @@ async function fill(
   const commitSeeds: ObjectId[] = [];
 
   for (const tip of tips) {
-    const peeled = await resolveTagChain(ctx, request.objectTypes, tip, (tagId) =>
+    const { id: peeled } = await resolveTagChain(ctx, request.objectTypes, tip, (tagId) =>
       markPosition(artefact, extended, state, tagId),
     );
     const obj = await readObject(ctx, peeled);

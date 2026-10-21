@@ -331,6 +331,20 @@ export async function readDeclaredObjectHeader(
   );
 }
 
+/**
+ * The header the local stores hold for `id`, or `undefined` on a miss: one
+ * pass, no promisor fetch, no rescan. git's `parse_object` types a want
+ * through `oid_object_info` from what the stores hold; the content read that
+ * follows owns the promisor fetch, the rescan and the final not-found.
+ */
+export async function peekDeclaredObjectHeader(
+  ctx: Context,
+  id: ObjectId,
+): Promise<DeclaredObjectHeader | undefined> {
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return lookupDeclaredHeaderOnce(ctx, store, id);
+}
+
 export interface DeclaredObjectHeader {
   readonly type: ObjectType;
   readonly declaredSize: number;
@@ -341,6 +355,16 @@ async function resolveDeclaredHeader(
   store: ObjectStore,
   id: ObjectId,
 ): Promise<DeclaredObjectHeader> {
+  const header = await lookupDeclaredHeaderOnce(ctx, store, id);
+  if (header === undefined) throw objectNotFound(id);
+  return header;
+}
+
+async function lookupDeclaredHeaderOnce(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+): Promise<DeclaredObjectHeader | undefined> {
   for (const source of store.sources) {
     const hit = await source.registry.lookup(id);
     if (hit !== undefined) {
@@ -350,7 +374,7 @@ async function resolveDeclaredHeader(
     const looseHeader = await readLooseDeclaredHeader(ctx, id, looseCacheLocation(store, source));
     if (looseHeader !== undefined) return looseHeader;
   }
-  throw objectNotFound(id);
+  return undefined;
 }
 
 /**

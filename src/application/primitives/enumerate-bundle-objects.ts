@@ -99,7 +99,7 @@ const seedInOrder = async (
       if (commit !== undefined) seeds.push(commit);
       continue;
     }
-    seeds.push(await resolveTagChain(ctx, objectTypes, tip.id, IGNORE_TAG));
+    seeds.push((await resolveTagChain(ctx, objectTypes, tip.id, IGNORE_TAG)).id);
   }
   return seeds;
 };

@@ -28,7 +28,7 @@ import * as readObjectModule from '../../../../../src/application/primitives/rea
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
-import { invalidWalkInput } from '../../../../../src/domain/error.js';
+import { invalidWalkInput, permissionDenied } from '../../../../../src/domain/error.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type {
   AuthorIdentity,
@@ -532,12 +532,13 @@ describe('computeClosure', () => {
     });
   });
 
-  describe('Given an honest blob want', () => {
-    describe('When computeClosure walks it', () => {
-      it('Then neither readObject nor readRawObject is called with its id', async () => {
+  describe('Given a blob want', () => {
+    describe('When computeClosure types it', () => {
+      it('Then its header is peeked exactly once and its body never read', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'honest');
+        const peekSpy = vi.spyOn(readObjectModule, 'peekDeclaredObjectHeader');
         const readSpy = vi.spyOn(readObjectModule, 'readObject');
         const rawSpy = vi.spyOn(readObjectModule, 'readRawObject');
         const sut = computeClosure;
@@ -546,8 +547,73 @@ describe('computeClosure', () => {
         await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
 
         // Assert
+        expect(peekSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(1);
         expect(readSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(0);
         expect(rawSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a want whose header peek fails with a fault other than a miss', () => {
+    describe('When computeClosure resolves it', () => {
+      it('Then that fault propagates and the body is never read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'unreadable');
+        vi.spyOn(readObjectModule, 'peekDeclaredObjectHeader').mockRejectedValueOnce(
+          permissionDenied('objects/xx'),
+        );
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+        const sut = computeClosure;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: 'objects/xx',
+        });
+        expect(readSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a want missing everywhere in a partial clone', () => {
+    describe('When computeClosure resolves it', () => {
+      it('Then the promisor is asked once and the miss is refused', async () => {
+        // Arrange
+        const missing = 'f'.repeat(40) as ObjectId;
+        let fetches = 0;
+        const ctx = {
+          ...createMemoryContext({}),
+          promisor: {
+            fetch: async (oids: readonly ObjectId[]) => {
+              fetches += 1;
+              return { attempted: true, requested: oids.length, fetched: 0 };
+            },
+          },
+        } as unknown as Context;
+        const sut = computeClosure;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { tier: 'walk', wants: [missing], not: [], objects: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, fetches }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: missing },
+          fetches: 1,
+        });
       });
     });
   });
