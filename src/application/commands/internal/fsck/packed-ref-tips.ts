@@ -27,6 +27,7 @@ async function tipOf(ctx: Context, ref: RefName): Promise<ObjectId | undefined> 
 const LOOSE_UNREADABLE_CODES: ReadonlySet<string | undefined> = new Set([
   'DECOMPRESS_FAILED',
   'INVALID_OBJECT_HEADER',
+  'LOOSE_OBJECT_CORRUPT',
 ]);
 
 /** git's die for an object it cannot read: a pack claiming it is

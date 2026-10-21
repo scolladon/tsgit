@@ -17,6 +17,7 @@ import {
   invalidObjectHeader,
   invalidTag,
   invalidTreeEntry,
+  looseObjectCorrupt,
   objectHashMismatch,
   objectNotFound,
 } from '../../../../../../src/domain/objects/error.js';
@@ -190,6 +191,7 @@ const looseTip = async (): Promise<{ readonly ctx: Context; readonly id: ObjectI
 describe.each([
   ['an inflate failure', decompressFailed('incorrect header check')],
   ['a bad object header', invalidObjectHeader('bad')],
+  ['a corrupt loose object', looseObjectCorrupt('a'.repeat(40) as ObjectId)],
 ])('Given a loose ref tip no pack claims whose read fails with %s', (_label, fault) => {
   describe('When ref tips are checked', () => {
     it('Then it refuses as git dies on the corrupt loose object', async () => {
