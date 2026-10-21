@@ -34,7 +34,7 @@ table top-down and elects the first unblocked item.
 
 | # | cut | items | why here |
 |---|---|---|---|
-| 1 | **6.0.0 — ship now** | #322 (merged, unreleased, breaking `FileSystem.write`) · ~~#321~~ · #306 · 32.31 | the breaking commit is already on `main`; #321 is a reported user failure (option: a 5.0.1 hotfix branch carrying #321 alone) |
+| 1 | **6.0.0 — ship now** | #322 (merged, unreleased, breaking `FileSystem.write`) · ~~#321~~ · #306 · 32.31 | the breaking commit is already on `main`; ~~#321~~ was a reported user failure, shipped (option: a 5.0.1 hotfix branch carrying ~~#321~~ alone, still open) |
 | 2 | **fsck + git 2.56** (floats) | #311 + 31.8 paired · 32.18 · 32.19 · 32.26 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
 | 3 | **writers** | 32.11 non-breaking parts (dialect, unmatched glob, `describe`, `name-rev`) · 32.29 · 32.27 · 32.22 · 32.30 · 32.32 · 32.33 · 32.1 rows A6, A21, A22, A23, D5, D15, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · 32.23 · 32.1 rows A2, A13, A20, B13, B17, C6, C22, D19 | refusal mismatches in `merge` / `rebase` / `push` |
