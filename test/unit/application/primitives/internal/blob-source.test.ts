@@ -433,6 +433,34 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe('Given an honest loose blob streamed through the claim-checked arm', () => {
+    describe("When openBlobSource is called with looseMode 'buffered' and its last chunk brings the total to exactly the claim", () => {
+      it('Then the stream completes without refusal', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('loose streamed gate test content that matches its claim'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        const result = await openBlobSource(ctx, id, compressedLen - 1, {
+          looseMode: 'buffered',
+          order: 'in-core',
+        });
+
+        // Assert
+        expect(result.kind).toBe('stream');
+        if (result.kind === 'stream') {
+          expect(await collect(result.stream)).toEqual(blob.content);
+        }
+      });
+    });
+  });
+
   describe('Given a loose blob resolved on the stream arm whose header size claim disagrees with its body length', () => {
     describe('When openBlobSource is called with the default (streamed) looseMode at a gate under the compressed length', () => {
       it("Then the stream serves the real body — git's streaming tier ignores the claim", async () => {
