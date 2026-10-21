@@ -1242,7 +1242,7 @@ async function writeRepack(
 ): Promise<RepackOutputs> {
   const staged = await buildRepack(run, plan, existing);
   const outputs = await installRepack(run, plan, existing, staged);
-  await verifyPacked(run.ctx, plan);
+  await verifyPacked(run.ctx, verifyTargetsOf(plan, staged));
   return outputs;
 }
 
@@ -1279,16 +1279,20 @@ async function installRepack(
   return { normalPack, promisorPackId, cruftOutcome };
 }
 
-async function verifyPacked(ctx: Context, plan: RepackPlan): Promise<void> {
-  refreshPackRegistry(ctx);
-  const verifyTargets = [
+/** The objects this run packed and must read back. Survivors join only for a
+ *  fresh cruft pack: a reused, deleted or loosened (`gc.cruftPacks=false`) set
+ *  was not packed by this run, and git never reads what it did not pack. */
+function verifyTargetsOf(plan: RepackPlan, staged: StagedRepack): ReadonlyArray<ObjectId> {
+  return [
     ...plan.toNormalPack.map((object) => object.id),
     ...plan.toPromisorPack,
-    ...plan.survivors,
+    ...(staged.cruft.kind === 'fresh' ? plan.survivors : []),
   ];
-  await boundedMapFor(ctx, 'ioBound', verifyTargets, (id) =>
-    readObject(ctx, id, { verifyHash: true }),
-  );
+}
+
+async function verifyPacked(ctx: Context, targets: ReadonlyArray<ObjectId>): Promise<void> {
+  refreshPackRegistry(ctx);
+  await boundedMapFor(ctx, 'ioBound', targets, (id) => readObject(ctx, id, { verifyHash: true }));
 }
 
 /**

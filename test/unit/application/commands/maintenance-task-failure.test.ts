@@ -16,6 +16,7 @@ import {
   looseObjectPath,
   packsDir,
 } from '../../../../src/application/primitives/path-layout.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { errorDataCode } from '../../../../src/domain/error-data-code.js';
 import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -445,6 +446,63 @@ describe('maintenance task failure', () => {
             tasksFailed: result.tasksFailed,
             census: await packDirNames(ctx),
           }).toEqual({ tasksFailed: liarRefusal(liarId), census: before });
+        });
+      });
+    });
+
+    const appendConfig = async (ctx: Context, text: string): Promise<void> => {
+      const path = `${ctx.layout.gitDir}/config`;
+      await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}${text}`);
+    };
+
+    const readsOf = (
+      spy: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
+      id: ObjectId,
+    ) => spy.mock.calls.filter((call) => call[1] === id);
+
+    describe('Given an unreachable unexpired liar and cruft packs off', () => {
+      describe('When the gc task runs', () => {
+        it('Then the liar stays loose, unread, with one pack written and no task failure', async () => {
+          // Arrange
+          const { ctx, liarId } = await liarRepo(false);
+          await appendConfig(ctx, '\n[gc]\n\tcruftPacks = false\n');
+          const before = await ctx.fs.read(looseObjectPath(commonGitDir(ctx), liarId));
+          const readSpy = vi.spyOn(readObjectMod, 'readObject');
+          const sut = maintenance;
+
+          // Act
+          const result = await sut(ctx, { tasks: ['gc'] });
+
+          // Assert
+          expect({
+            tasksFailed: result.tasksFailed,
+            ranGc: result.tasksRun.includes('gc'),
+            liar: await ctx.fs.read(looseObjectPath(commonGitDir(ctx), liarId)),
+            packs: (await packDirNames(ctx)).filter((name) => name.endsWith('.pack')).length,
+            liarReads: readsOf(readSpy, liarId).length,
+          }).toEqual({ tasksFailed: [], ranGc: true, liar: before, packs: 1, liarReads: 0 });
+        });
+      });
+    });
+
+    describe('Given an unreachable expired liar', () => {
+      describe('When the gc task runs', () => {
+        it('Then the liar is pruned without being read', async () => {
+          // Arrange
+          const { ctx, liarId } = await liarRepo(false);
+          await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+          const readSpy = vi.spyOn(readObjectMod, 'readObject');
+          const sut = maintenance;
+
+          // Act
+          const result = await sut(ctx, { tasks: ['gc'] });
+
+          // Assert
+          expect({
+            tasksFailed: result.tasksFailed,
+            liarExists: await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), liarId)),
+            liarReads: readsOf(readSpy, liarId).length,
+          }).toEqual({ tasksFailed: [], liarExists: false, liarReads: 0 });
         });
       });
     });
