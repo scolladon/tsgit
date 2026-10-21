@@ -41,7 +41,8 @@ export const isBlobByHeader = async (ctx: Context, id: ObjectId): Promise<boolea
   (await peekDeclaredObjectHeader(ctx, id))?.type === 'blob';
 
 /** The terminal object of a tag chain; `kind` is `'blob'` when its header
- *  typed it without a body read, `'other'` when the loop parsed it. */
+ *  typed it without a body read, `'other'` otherwise — a parsed non-tag
+ *  terminal, or the unparsed id where the hop cap stopped the walk. */
 export type PeeledWant = { readonly id: ObjectId; readonly kind: 'blob' | 'other' };
 
 /**
