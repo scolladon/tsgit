@@ -639,3 +639,23 @@ The third review round's repair fix (a parent hashed over a stale child that can
 |---|--:|--:|--:|---|
 | Full library | 399 210 B | 399.1 kB | 399.4 kB | the repair driver's working oid kept apart from the recorded oid |
 | Browser bundle (no-build) | 341 668 B | 341.6 kB | 341.8 kB | the same change, bundled once |
+
+## Size-limit raise — gc refuses a size-lying loose blob as git does
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`),
+gzip bytes, against `main` at the same toolchain. Each failing row is raised to the measurement
+rounded up to the next 0.1 kB (≤100 B headroom); every other row is unchanged.
+
+| Row | main | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 341 632 | 341 961 | +329 | 341.8 kB | 342.0 kB | every layer below — the bundle inlines all of them |
+| Full library | 399 126 | 399 490 | +364 | 399.4 kB | 399.5 kB | every layer below |
+| Chunks: commands-internal | 81 856 | 82 088 | +232 | 82 kB | 82.1 kB | gc's build-then-install staging of every pack, the verify of only the packs a run wrote with the in-window truncation acceptance, and the three fsck code sets admitting `LOOSE_OBJECT_CORRUPT` |
+
+Rows that grew without crossing their cap: `Chunks: primitives` +125 B (the loose-truncation
+predicate, the header-only typing of a blob want, the read-mode threading of the pack-building
+reader and the three refusal sites naming their id), `Chunks: domain` +30 B (the
+`LOOSE_OBJECT_CORRUPT` member, its factory and its message), `Chunks: repository` −7 B.
+
+The npm tarball cap moved 1439 → 1440 KiB (1 472 909 → 1 474 199 B measured); its attribution
+lives in `tooling/verify-tarball.sh`'s cap block.
