@@ -119,6 +119,8 @@ interface MaintenanceResult {
   computing them instead, with `TREE_UNREADABLE` (`data.id`, git's
   `fatal: unable to read tree (<id>)`); the lines logged are the same.
 
+  A ref naming a blob contributes no root and the blob's body is never read.
+
 ### `gc` — the object lifecycle
 
 1. **Reachability.** Roots are every resolvable ref plus `HEAD`, the index,
@@ -199,6 +201,22 @@ interface MaintenanceResult {
 8. **Refs, reflogs and the index are never touched.** `gc` packs objects
    only — no `pack-refs`, no `reflog expire`. Pack a repository's refs with
    [`packRefs`](pack-refs.md) as a separate, explicit call.
+9. **A size-lying loose object the run must read fails the task.** A loose
+   blob whose body overruns its header's size claim past git's 32-byte header
+   window, reachable or unreachable and unexpired with cruft packs on, fails
+   `gc` with `LOOSE_OBJECT_CORRUPT { id }`. Every pack is built before any is
+   installed, so the refusal lands before a pack is registered and the store
+   is left untouched: no new pack, no `.mtimes`, every loose file in place.
+   git also dies (`fatal: failed to run repack`, exit 128) but leaves a
+   `tmp_pack_*` file behind; tsgit leaves none, a recorded divergence.
+   - With `gc.cruftPacks=false`, or when the liar is expired, the object is
+     never read: the task succeeds, the liar stays loose or is pruned.
+   - A body that overruns the claim while still inside the window is packed as
+     its claimed prefix (claims 5, body 10 gives a 5-byte entry) and the loose
+     copy is pruned, as git does. `git fsck` flags that entry afterwards.
+   - The post-write verify covers only the packs this run wrote.
+   - A liar that only an alternate holds is never read: the borrower's `gc`
+     succeeds.
 
 `MaintenanceResult`'s gc fields:
 
@@ -312,6 +330,10 @@ const declined = await repo.maintenance({ tasks: ['gc'], auto: true });
 const { tasksFailed } = await repo.maintenance({ tasks: ['gc', 'commit-graph'] });
 for (const { task, data } of tasksFailed) {
   if (data.code === 'BAD_TREE_OBJECT') console.error(`fatal: bad tree object ${data.id}`);
+  if (data.code === 'LOOSE_OBJECT_CORRUPT') {
+    console.error(`error: corrupt loose object '${data.id}'`);
+    console.error(`fatal: loose object ${data.id} (stored in .git/objects/${data.id.slice(0, 2)}/${data.id.slice(2)}) is corrupt`);
+  }
   console.error(`error: task '${task}' failed`);
 }
 
