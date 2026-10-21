@@ -5,6 +5,7 @@ import {
   readDeclaredObjectHeader,
   readDeclaredObjectSize,
   readObjectMetadata,
+  readObjectMetadataWithContent,
 } from '../../../../src/application/primitives/read-object.js';
 import { decompressFailed, notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -23,7 +24,12 @@ import {
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
-import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
+import {
+  buildSeededContext,
+  writeLooseWithDeclaredSize,
+  writeRawObjectBytes,
+  writeSelfHashedLooseWithDeclaredSize,
+} from './fixtures.js';
 import type { EntrySpec } from './pack-fixture.js';
 import {
   buildSyntheticPack,
@@ -640,6 +646,76 @@ describe('readObjectMetadata', () => {
 
         // Assert
         expect(result).toEqual({ type: 'blob', uncompressedSize: 3 });
+      });
+    });
+  });
+});
+
+describe('readObjectMetadataWithContent', () => {
+  const CLAIM = 5;
+  const OVERRUN = Uint8Array.from({ length: 200 }, (_, i) => i);
+  const IN_WINDOW = Uint8Array.from({ length: 10 }, (_, i) => i + 1);
+
+  describe('Given a loose blob whose body overruns its claim past the header window', () => {
+    describe('When readObjectMetadataWithContent reads it', () => {
+      it('Then it refuses with LOOSE_OBJECT_CORRUPT naming the blob', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeSelfHashedLooseWithDeclaredSize(ctx, 'blob', CLAIM, OVERRUN);
+        const sut = readObjectMetadataWithContent;
+
+        // Act
+        try {
+          await sut(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data as { code: string; id: string };
+          expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+          expect(data.id).toBe(id);
+        }
+      });
+    });
+  });
+
+  describe('Given a loose blob whose body overruns its claim inside the header window', () => {
+    describe('When readObjectMetadataWithContent reads it', () => {
+      it('Then it serves the claimed prefix and sizes it by those bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeSelfHashedLooseWithDeclaredSize(ctx, 'blob', CLAIM, IN_WINDOW);
+        const sut = readObjectMetadataWithContent;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result.uncompressedSize).toBe(CLAIM);
+        expect(result.content?.length).toBe(CLAIM);
+        expect(Array.from(result.content ?? [])).toEqual(Array.from(IN_WINDOW.slice(0, CLAIM)));
+      });
+    });
+  });
+
+  describe('Given an in-window liar that appears after its id missed', () => {
+    describe('When readObjectMetadataWithContent reads it', () => {
+      it('Then the full-miss route sizes it by the claimed prefix', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const bytes = new Uint8Array([...serializeHeader('blob', CLAIM), ...IN_WINDOW]);
+        const planted = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        await readObjectMetadataWithContent(ctx, planted).catch(() => undefined);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(planted)}`,
+          await ctx.compressor.deflate(bytes),
+        );
+        const sut = readObjectMetadataWithContent;
+
+        // Act
+        const result = await sut(ctx, planted);
+
+        // Assert
+        expect(result.uncompressedSize).toBe(CLAIM);
       });
     });
   });
