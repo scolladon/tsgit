@@ -37,7 +37,7 @@ export const tryEmit = (state: EmitState, id: ObjectId): boolean => {
  * rather than refusing: the content read that follows owns the promisor
  * fetch, the delta-cache answer, the rescan and the final not-found.
  */
-const isBlobByHeader = async (ctx: Context, id: ObjectId): Promise<boolean> =>
+export const isBlobByHeader = async (ctx: Context, id: ObjectId): Promise<boolean> =>
   (await peekDeclaredObjectHeader(ctx, id))?.type === 'blob';
 
 /** The terminal object of a tag chain; `kind` is `'blob'` when its header

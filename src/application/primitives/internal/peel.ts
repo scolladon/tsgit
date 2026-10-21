@@ -1,7 +1,9 @@
 import { objectNotFound } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { isBlobByHeader } from './object-emit.js';
 import {
+  assignObjectType,
   type ObjectTypeTable,
   type PeelHopObject,
   parseTypedPeelHop,
@@ -27,7 +29,7 @@ export const peel = async (
   target: PeelTarget,
   name?: string,
 ): Promise<ObjectId> => {
-  const read = (oid: ObjectId) => parseTypedPeelHop(ctx, table, oid);
+  const read = (oid: ObjectId) => readHop(ctx, table, oid);
   const nextHop = (obj: PeelHopObject | undefined) => hopToward(obj, target);
   const walk = await walkPeelChain({ id, result: await read(id) }, read, nextHop);
   if (walk.end !== 'reached') throw objectNotFound(id);
@@ -36,6 +38,19 @@ export const peel = async (
   if (reached.type === target) return walk.id;
   if (name !== undefined) reportPeelMismatch(ctx, name, target, reached.type);
   throw objectNotFound(walk.id);
+};
+
+/**
+ * One hop's object. git's `peel_object` types a blob through `oid_object_info`,
+ * never its body, so a blob answers from its header alone.
+ */
+const readHop = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  oid: ObjectId,
+): Promise<PeelHopObject | undefined> => {
+  if (!(await isBlobByHeader(ctx, oid))) return parseTypedPeelHop(ctx, table, oid);
+  return assignObjectType(ctx, table, oid, 'blob') ? { type: 'blob' } : undefined;
 };
 
 /** A tag hops to its target and a commit to its root tree, until `target` is reached. */
