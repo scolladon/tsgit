@@ -2350,17 +2350,21 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying lo
   interface LiarBaseOptions {
     readonly reachable: boolean;
     readonly prepack: boolean;
+    readonly declaredSize?: number;
+    readonly body?: Buffer;
   }
 
   const buildLiarBase = async ({
     reachable,
     prepack,
+    declaredSize = DECLARED_SIZE,
+    body = OVERRUN_BODY,
   }: LiarBaseOptions): Promise<{ readonly dir: string; readonly liarId: string }> => {
     const dir = await initRepo('liar');
     bases.push(dir);
     await addCommit(dir, 'c0');
     if (prepack) git(dir, 'repack', '-d', '-q');
-    const liarId = await forgeOwnHash(dir, DECLARED_SIZE, OVERRUN_BODY);
+    const liarId = await forgeOwnHash(dir, declaredSize, body);
     if (reachable) {
       git(dir, 'update-index', '--add', '--cacheinfo', `100644,${liarId},liar.bin`);
       execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'liar'], {
@@ -2487,6 +2491,41 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying lo
           }
           await disposeTwin(twin);
         });
+      });
+    });
+  });
+
+  const IN_WINDOW_BODY = Buffer.from('0123456789');
+
+  describe.each([
+    ['reachable', true],
+    ['unreachable and unexpired', false],
+  ] as const)('Given a %s in-window size-lying loose blob', (_label, reachable) => {
+    describe('When both tools run the gc task', () => {
+      it('Then both pack the truncation, drop the loose copy and fsck flags it', async () => {
+        // Arrange
+        const { dir: baseDir, liarId } = await buildLiarBase({
+          reachable,
+          prepack: false,
+          body: IN_WINDOW_BODY,
+        });
+        const twin = await makeTwin(baseDir, 'liar');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
+
+        // Act
+        const { result } = await runOursGc(twin.oursDir);
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(result.tasksFailed).toEqual([]);
+        for (const dir of [twin.peerDir, twin.oursDir]) {
+          expect(git(dir, 'cat-file', '-s', liarId).trim()).toBe('5');
+          await expect(readFile(looseGitPath(dir, liarId))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+          expect(tryRunGitWithExit(['-C', dir, 'fsck']).exitCode).toBe(4);
+        }
+        await disposeTwin(twin);
       });
     });
   });

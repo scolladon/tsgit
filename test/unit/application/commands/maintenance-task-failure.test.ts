@@ -18,6 +18,7 @@ import {
 } from '../../../../src/application/primitives/path-layout.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { permissionDenied } from '../../../../src/domain/error.js';
 import { errorDataCode } from '../../../../src/domain/error-data-code.js';
 import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -297,15 +298,10 @@ describe('maintenance task failure', () => {
       readonly liarId: ObjectId;
     }
 
-    const liarRepo = async (reachable: boolean): Promise<Liar> => {
+    const liarRepo = async (reachable: boolean, body: Uint8Array = OVERRUN_BODY): Promise<Liar> => {
       const ctx = createMemoryContext();
       await init(ctx);
-      const liarId = await writeSelfHashedLooseWithDeclaredSize(
-        ctx,
-        'blob',
-        DECLARED_SIZE,
-        OVERRUN_BODY,
-      );
+      const liarId = await writeSelfHashedLooseWithDeclaredSize(ctx, 'blob', DECLARED_SIZE, body);
       const hello = await writeObject(ctx, {
         type: 'blob',
         id: '' as ObjectId,
@@ -503,6 +499,81 @@ describe('maintenance task failure', () => {
             liarExists: await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), liarId)),
             liarReads: readsOf(readSpy, liarId).length,
           }).toEqual({ tasksFailed: [], liarExists: false, liarReads: 0 });
+        });
+      });
+    });
+
+    describe('in-window truncation', () => {
+      const IN_WINDOW_BODY = new TextEncoder().encode('0123456789');
+      const CLAIMED_PREFIX = IN_WINDOW_BODY.subarray(0, DECLARED_SIZE);
+
+      describe('Given a reachable in-window liar', () => {
+        describe('When the gc task runs', () => {
+          it('Then no task fails, the loose copy is pruned and the pack serves the truncation', async () => {
+            // Arrange
+            const { ctx, liarId } = await liarRepo(true, IN_WINDOW_BODY);
+            const sut = maintenance;
+
+            // Act
+            const result = await sut(ctx, { tasks: ['gc'] });
+
+            // Assert
+            expect({
+              tasksFailed: result.tasksFailed,
+              liarExists: await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), liarId)),
+              served: (await readObjectMod.readRawObject(ctx, liarId)).content,
+            }).toEqual({ tasksFailed: [], liarExists: false, served: CLAIMED_PREFIX });
+          });
+        });
+      });
+
+      describe('Given an unreachable unexpired in-window liar and cruft packs on', () => {
+        describe('When the gc task runs', () => {
+          it('Then no task fails, a cruft pack is written and the truncation is served', async () => {
+            // Arrange
+            const { ctx, liarId } = await liarRepo(false, IN_WINDOW_BODY);
+            const sut = maintenance;
+
+            // Act
+            const result = await sut(ctx, { tasks: ['gc'] });
+
+            // Assert
+            expect({
+              tasksFailed: result.tasksFailed,
+              cruftWritten: result.cruftPackId !== undefined,
+              liarExists: await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), liarId)),
+              served: (await readObjectMod.readRawObject(ctx, liarId)).content,
+            }).toEqual({
+              tasksFailed: [],
+              cruftWritten: true,
+              liarExists: false,
+              served: CLAIMED_PREFIX,
+            });
+          });
+        });
+      });
+
+      describe('Given a reachable in-window liar and a verify read that fails for another reason', () => {
+        describe('When the gc task runs', () => {
+          it('Then the task fails with that reason', async () => {
+            // Arrange
+            const { ctx, liarId } = await liarRepo(true, IN_WINDOW_BODY);
+            const original = readObjectMod.readObject;
+            vi.spyOn(readObjectMod, 'readObject').mockImplementation(async (c, id, options) => {
+              if (id === liarId && options?.verifyHash === true) {
+                vi.mocked(readObjectMod.readObject).mockImplementation(original);
+                throw permissionDenied(looseObjectPath(commonGitDir(ctx), liarId));
+              }
+              return original(c, id, options);
+            });
+            const sut = maintenance;
+
+            // Act
+            const result = await sut(ctx, { tasks: ['gc'] });
+
+            // Assert
+            expect(result.tasksFailed[0]?.code).toBe('PERMISSION_DENIED');
+          });
         });
       });
     });

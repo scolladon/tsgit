@@ -38,6 +38,7 @@ import {
   readGcExpiryCutoff,
 } from '../../primitives/internal/gc-config-guard.js';
 import { forgetLooseOidPrefix, probeLooseOid } from '../../primitives/internal/loose-oid-cache.js';
+import { isLooseTruncationOf } from '../../primitives/internal/loose-truncation.js';
 import { forgetParsedObjectMemo } from '../../primitives/internal/object-caches.js';
 import { createObjectTypeTable } from '../../primitives/internal/object-type-table.js';
 import {
@@ -57,7 +58,12 @@ import {
   multiPackIndexPath,
   packsDir,
 } from '../../primitives/path-layout.js';
-import { getPackRegistry, readObject, refreshPackRegistry } from '../../primitives/read-object.js';
+import {
+  getPackRegistry,
+  readObject,
+  readRawObject,
+  refreshPackRegistry,
+} from '../../primitives/read-object.js';
 import { writeLooseObject } from '../../primitives/write-object.js';
 import type { MaintenanceResult } from '../maintenance.js';
 import { collectRetentionRoots } from './fsck/roots.js';
@@ -1292,7 +1298,24 @@ function verifyTargetsOf(plan: RepackPlan, staged: StagedRepack): ReadonlyArray<
 
 async function verifyPacked(ctx: Context, targets: ReadonlyArray<ObjectId>): Promise<void> {
   refreshPackRegistry(ctx);
-  await boundedMapFor(ctx, 'ioBound', targets, (id) => readObject(ctx, id, { verifyHash: true }));
+  await boundedMapFor(ctx, 'ioBound', targets, (id) => verifyPackedObject(ctx, id));
+}
+
+/**
+ * git's pack-objects never re-hashes what it copies, so a window truncation it
+ * packed exits 0 and `git fsck` flags the entry later. The hash mismatch is
+ * accepted only when the still-present loose copy is that truncation and the
+ * packed bytes are exactly its claimed prefix; `pruneLooseAfterRepack` then
+ * unlinks the loose copy, as git's prune does. Every other fault propagates.
+ */
+async function verifyPackedObject(ctx: Context, id: ObjectId): Promise<void> {
+  try {
+    await readObject(ctx, id, { verifyHash: true });
+  } catch (error) {
+    if (errorDataCode(error) !== 'OBJECT_HASH_MISMATCH') throw error;
+    const packed = (await readRawObject(ctx, id)).content;
+    if (!(await isLooseTruncationOf(ctx, id, packed))) throw error;
+  }
 }
 
 /**
