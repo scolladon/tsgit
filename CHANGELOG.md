@@ -1,5 +1,59 @@
 # Changelog
 
+## [6.0.0](https://github.com/scolladon/tsgit/compare/v5.0.0...v6.0.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gc:** refuse a size-lying loose object before any durable write, as git's gc does ([#324](https://github.com/scolladon/tsgit/issues/324))
+* **pack:** read delta chains of any depth, as git does, and remove DELTA_CHAIN_TOO_DEEP ([#323](https://github.com/scolladon/tsgit/issues/323))
+* **file-system:** take a creation mode on write and resolve the written stat
+
+### Features
+
+* **add:** record resolve-undo for the conflicts add resolves ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **commit:** refresh index stats, exclude intent-to-add entries and write the index before the pre-commit hook like git ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **eol:** line-ending conversion — core.autocrlf, core.eol, core.safecrlf, text/eol/ident attributes and renormalize ([5a1ebe0](https://github.com/scolladon/tsgit/commit/5a1ebe055e89e5a16f84b4b206069843ccd2a76c))
+* **file-system:** take a creation mode on write and resolve the written stat ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **rm:** record resolve-undo and run during a pending operation like git ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **status:** refresh the index under the optional lock and keep its extensions ([#317](https://github.com/scolladon/tsgit/issues/317)) ([7337e22](https://github.com/scolladon/tsgit/commit/7337e22ef50d1a5ab7282d42b714c92e49d8a9e7))
+
+
+### Bug Fixes
+
+* **add:** drop the entries a replaced directory or file leaves behind ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **add:** keep every stage of the unmerged paths add does not stage ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **add:** stage an unmerged path an exact exclusion names when another element covers it ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **add:** stage the removal of a path beneath a regular file ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **checkout:** carry working-tree changes across a branch switch like git's two-way merge ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **checkout:** create files with git's mode under the process umask ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **checkout:** verify sparse-excluded entries before any write ([c648b61](https://github.com/scolladon/tsgit/commit/c648b61f71d61da5477eb6361794d03348e61cd2))
+* **gc:** refuse a size-lying loose object before any durable write, as git's gc does ([#324](https://github.com/scolladon/tsgit/issues/324)) ([df1a629](https://github.com/scolladon/tsgit/commit/df1a62900ecebedad345c1c1f07abbabbcc026f2))
+* **index:** keep index entry paths byte-exact through every write ([#318](https://github.com/scolladon/tsgit/issues/318)) ([0f8d0b1](https://github.com/scolladon/tsgit/commit/0f8d0b169790a373cded6a821b79b15c6e742a4b))
+* **index:** repair the cache-tree on every unpack_trees-class writer like git ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **pack:** read delta chains of any depth, as git does, and remove DELTA_CHAIN_TOO_DEEP ([#323](https://github.com/scolladon/tsgit/issues/323)) ([ce45279](https://github.com/scolladon/tsgit/commit/ce45279ee247dbf5f5b71ff20ec3f8b98ecfe4bd))
+* **path-validator:** refuse every backslash on index write under windows path syntax like git for windows ([c648b61](https://github.com/scolladon/tsgit/commit/c648b61f71d61da5477eb6361794d03348e61cd2))
+* **repository:** apply git for windows' index path rules on a windows host whatever the filesystem ([c648b61](https://github.com/scolladon/tsgit/commit/c648b61f71d61da5477eb6361794d03348e61cd2))
+* **sequencer:** write the updated cache-tree and refresh stats on continue like git ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **verify-path:** admit a .git alias behind a component-leading backslash like git ([c648b61](https://github.com/scolladon/tsgit/commit/c648b61f71d61da5477eb6361794d03348e61cd2))
+* **verify-path:** refuse .gitmodules symlink aliases behind a backslash like git ([c648b61](https://github.com/scolladon/tsgit/commit/c648b61f71d61da5477eb6361794d03348e61cd2))
+
+
+### Performance
+
+* **add:** stat each literal path once and stage literals through the shared pool ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **commit:** maintain the cache-tree at O(change) and reuse valid nodes without freshening like git ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+* **object:** drop the per-write fanout mkdir ([bfbca75](https://github.com/scolladon/tsgit/commit/bfbca7589d4b5789c9c7021742c871795e7b21bb))
+
+
+### Documentation
+
+* **backlog:** mark [#309](https://github.com/scolladon/tsgit/issues/309) shipped in [#314](https://github.com/scolladon/tsgit/issues/314) ([15d5df6](https://github.com/scolladon/tsgit/commit/15d5df65d17ef3bcc0682c5d2b8712d8c51f579d))
+* **backlog:** mark 31.4 run 1 shipped in [#317](https://github.com/scolladon/tsgit/issues/317) ([732b617](https://github.com/scolladon/tsgit/commit/732b617254dfb9abaa8c0e49a75756b385d2d68f))
+* **backlog:** mark 32.6 shipped in [#316](https://github.com/scolladon/tsgit/issues/316) ([c38b045](https://github.com/scolladon/tsgit/commit/c38b045a1e3687265d6acfd5e1c289ed42f00902))
+* **backlog:** strike [#321](https://github.com/scolladon/tsgit/issues/321) in the release-order prose ([eba4e3f](https://github.com/scolladon/tsgit/commit/eba4e3f53cc078f9d687bb7b9c750fe400ee7eb7))
+* **backlog:** strike 32.31, delivered by [#318](https://github.com/scolladon/tsgit/issues/318) ([#325](https://github.com/scolladon/tsgit/issues/325)) ([b7651d2](https://github.com/scolladon/tsgit/commit/b7651d2eb9024dcca8bfbda0516fcd63f4f620da))
+
 ## [5.0.0](https://github.com/scolladon/tsgit/compare/v4.0.0...v5.0.0) (2026-10-12)
 
 
