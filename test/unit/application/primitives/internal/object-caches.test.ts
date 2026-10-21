@@ -70,7 +70,7 @@ describe('probeDeltaBaseCache', () => {
         const key = deltaBaseCacheKey('pack-a', 10);
         registry.deltaBaseCache.set(
           key,
-          { type: PACK_ENTRY_TYPE.BLOB, content: new Uint8Array(5), chainDepth: 0 },
+          { type: PACK_ENTRY_TYPE.BLOB, content: new Uint8Array(5) },
           205,
         );
         const disabledCtx = {
@@ -95,11 +95,7 @@ describe('probeDeltaBaseCache', () => {
         const registry = await createPackRegistry(ctx);
         const key = deltaBaseCacheKey('pack-a', 10);
         const content = new Uint8Array(50);
-        registry.deltaBaseCache.set(
-          key,
-          { type: PACK_ENTRY_TYPE.BLOB, content, chainDepth: 0 },
-          250,
-        );
+        registry.deltaBaseCache.set(key, { type: PACK_ENTRY_TYPE.BLOB, content }, 250);
 
         // Act
         let caught: unknown;
@@ -133,7 +129,7 @@ describe('cacheDeltaBase', () => {
         const content = new Uint8Array(5);
 
         // Act
-        const result = cacheDeltaBase(ctx, registry, key, PACK_ENTRY_TYPE.BLOB, content, 0);
+        const result = cacheDeltaBase(ctx, registry, key, PACK_ENTRY_TYPE.BLOB, content);
 
         // Assert
         expect(result).toBe(true);
@@ -152,14 +148,7 @@ describe('cacheDeltaBase', () => {
         const key = deltaBaseCacheKey('pack-a', 10);
 
         // Act
-        const result = cacheDeltaBase(
-          ctx,
-          registry,
-          key,
-          PACK_ENTRY_TYPE.BLOB,
-          new Uint8Array(5),
-          0,
-        );
+        const result = cacheDeltaBase(ctx, registry, key, PACK_ENTRY_TYPE.BLOB, new Uint8Array(5));
 
         // Assert
         expect(result).toBe(false);
@@ -187,7 +176,6 @@ describe('cacheDeltaBase', () => {
           key,
           PACK_ENTRY_TYPE.BLOB,
           new Uint8Array(5),
-          0,
         );
 
         // Assert

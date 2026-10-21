@@ -1191,6 +1191,67 @@ const CASES: ReadonlyArray<LapCase> = [
     columnToRow: [0, 1, 2, 3],
     rowToColumn: [0, 1, 2, 3],
   },
+  // The four rows below are pinned to git's own solver (linear-assignment.c of git
+  // 2.55.0, compiled against a stub compat header), not to this port: each once sent
+  // the augmenting walk to j = -1, where it never returned.
+  {
+    n: 7,
+    cost: [
+      9, 4, 28, 28, 7, 2, 2, 2, 1, 28, 0, 21, 21, 21, 21, 22, 13, 19, 9, 0, 0, 21, 22, 13, 19, 9, 0,
+      0, 21, 22, 13, 19, 9, 0, 0, 21, 22, 13, 19, 9, 0, 0, 21, 22, 13, 19, 9, 0, 0,
+    ],
+    columnToRow: [4, 0, 5, 1, 6, 3, 2],
+    rowToColumn: [1, 3, 6, 5, 0, 2, 4],
+  },
+  {
+    n: 7,
+    cost: [
+      11, 11, 10, 23, 22, 4, 4, 4, 29, 0, 16, 2, 25, 25, 25, 0, 12, 28, 11, 0, 0, 25, 0, 12, 28, 11,
+      0, 0, 25, 0, 12, 28, 11, 0, 0, 25, 0, 12, 28, 11, 0, 0, 25, 0, 12, 28, 11, 0, 0,
+    ],
+    columnToRow: [0, 5, 4, 1, 3, 6, 2],
+    rowToColumn: [0, 3, 6, 4, 2, 1, 5],
+  },
+  {
+    n: 7,
+    cost: [
+      6, 23, 10, 20, 5, 2, 2, 2, 20, 1, 3, 30, 26, 26, 26, 3, 12, 14, 6, 0, 0, 26, 3, 12, 14, 6, 0,
+      0, 26, 3, 12, 14, 6, 0, 0, 26, 3, 12, 14, 6, 0, 0, 26, 3, 12, 14, 6, 0, 0,
+    ],
+    columnToRow: [0, 5, 4, 1, 6, 3, 2],
+    rowToColumn: [0, 3, 6, 5, 2, 1, 4],
+  },
+  {
+    n: 7,
+    cost: [
+      4, 4, 11, 1, 30, 1, 1, 1, 10, 20, 10, 13, 1, 1, 1, 28, 29, 24, 4, 0, 0, 1, 28, 29, 24, 4, 0,
+      0, 1, 28, 29, 24, 4, 0, 0, 1, 28, 29, 24, 4, 0, 0, 1, 28, 29, 24, 4, 0, 0,
+    ],
+    columnToRow: [6, 1, 4, 0, 5, 3, 2],
+    rowToColumn: [3, 1, 6, 5, 2, 4, 0],
+  },
+  // Cell costs above COST_MAX (patches longer than 65 536 lines): git seeds its
+  // second-smallest search at INT_MAX, so the assignment below is git's, not a
+  // solver that stops at COST_MAX.
+  {
+    n: 4,
+    cost: [
+      156212, 254472, 254472, 254472, 154058, 205339, 205339, 205339, 294411, 80797, 80797, 80797,
+      8908, 0, 0, 0,
+    ],
+    columnToRow: [0, 2, 1, 3],
+    rowToColumn: [0, 2, 1, 3],
+  },
+  // Reduced costs at INT_MAX are the only way into the two-smallest reset git keeps
+  // (`u2` seeds at INT_MAX, so any cheaper column claims `j2` first): row 1 costs
+  // INT_MAX in both columns while row 0 pulls both column minima to 0. git's
+  // assignment, from its C with wrapping arithmetic.
+  {
+    n: 2,
+    cost: [0, 0, 2147483647, 2147483647],
+    columnToRow: [1, 0],
+    rowToColumn: [1, 0],
+  },
 ];
 
 describe('computeAssignment characterization', () => {

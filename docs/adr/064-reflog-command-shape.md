@@ -7,10 +7,14 @@
 > The one-command discriminated `action` shape, the `show`/`exists`/`delete`/`expire` split,
 > approxidate cutoff parsing with its 90-day and 30-day defaults, and `delete --rewrite` are all
 > carried forward.
+>
+> **Superseded by [ADR-865](865-reflog-expire-defaults-follow-gits-binary-not-its-documentation.md)** for those 90-day and 30-day defaults: git's binary runs 30 days
+> total and 90 days unreachable.
 
 ## Status
 
 - **Status:** superseded by ADR-857
+- **Status:** superseded by ADR-865
 
 Accepted at `1e5f20b`; the expire reachability rule is superseded, the command shape is
 carried forward.

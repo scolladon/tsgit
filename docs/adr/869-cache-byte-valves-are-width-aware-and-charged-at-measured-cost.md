@@ -100,3 +100,11 @@ DC-O1 covers the parsed memo only.
 
 ADR-851's principle is untouched: budgets in the consumer's unit, byte caps as valves that bind
 only for atypical entries, the ordering pinned by a test.
+
+Superseded from ADR-851: the default valve numbers (a 16 MiB parsed-memo valve and an 8 MiB
+FlatTree valve at every hash width) and the memo's 256 B fixed-overhead charge.
+Carried forward from ADR-851: bounding the derived caches by entries on explicit budgets, with byte
+caps as valves.
+
+Superseded from ADR-852: the documented ~136 MiB cache family total.
+Carried forward from ADR-852: the delta-base cache's own sizing at `core.deltaBaseCacheLimit`.

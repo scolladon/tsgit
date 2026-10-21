@@ -5,7 +5,6 @@
  * Kept out of `delta-encode.ts` so the codec and the policy stay one
  * concern each.
  */
-import { MAX_DELTA_CHAIN_DEPTH } from './delta.js';
 import type { BasePackEntryType } from './pack-entry.js';
 
 /** The widest `encodeOfsDistance` output the reader will accept:
@@ -14,6 +13,8 @@ import type { BasePackEntryType } from './pack-entry.js';
 export const MAX_OFS_OVERHEAD_BYTES = 5;
 export const DEFAULT_PACK_WINDOW = 10;
 export const DEFAULT_PACK_DEPTH = 50;
+/** git pack-objects' own ceiling: a `pack.depth` above it is forced to it. */
+const MAX_PACK_DEPTH = 4095;
 
 /** A recency-absent object: every such object ties on this term and falls
  *  to `id`. */
@@ -86,7 +87,8 @@ export function attemptsDelta(policy: DeltaPolicy, size: number): boolean {
  * selection policy. `window` or `depth` at `0` or `-1` disables delta
  * emission entirely — git's own switch, not a tsgit escape hatch. There is
  * no clamp-to-1: clamping a legal `0` up to `1` would silently re-enable a
- * feature the caller turned off.
+ * feature the caller turned off. `depth` above git's 4095 ceiling is clamped
+ * to it, silently, as git does.
  */
 export function resolveDeltaPolicy(
   config: {
@@ -101,7 +103,7 @@ export function resolveDeltaPolicy(
   return {
     enabled: window > 0 && depth > 0,
     window,
-    maxDepth: Math.min(depth, MAX_DELTA_CHAIN_DEPTH),
+    maxDepth: Math.min(depth, MAX_PACK_DEPTH),
     windowMemoryBudget: config.windowMemory ?? 0,
     bigFileThreshold,
   };

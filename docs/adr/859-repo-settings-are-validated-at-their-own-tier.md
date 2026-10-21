@@ -94,6 +94,7 @@ the operational gate, which is where git validates them. Only the repo-settings 
 Carried forward from ADR-637: `core.maxTreeDepth` as the cap's identity, honoured unclamped with a
 2048 default, the `slashCount > cap` predicate, one shared source feeding every site, the reuse of
 `CONFIG_BAD_NUMERIC_VALUE` with no new public surface, the local-only `readConfig` scope divergence
-and its documentation, and the lazy twin at the tree-walk boundary. Superseded from ADR-637: the
+and its documentation, and the lazy twin at the tree-walk boundary.
+Superseded from ADR-637: the
 refusal's placement at the eager operational gate, and the ordering claim — with the unit tests
 that pinned the minority-set measurement rewritten against the probed majority.

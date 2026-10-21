@@ -285,11 +285,11 @@ history — that corpus is this project's own evolving history and its object
 count grows between runs, so its ratio is comparable within a run but its
 raw byte counts are not comparable across runs. The trade is
 accepted, not gated — `packBytesBefore`/`packBytesAfter` make it observable
-per call. `pack.depth` above 50 is honoured only up to 50: tsgit's readers
-refuse a chain deeper than that, so the writer never produces one they
-couldn't read back, which is strictly weaker compression at that setting,
-never an error, an unreadable pack, or a difference in which objects are
-stored (see [ADR-771](../../adr/771-both-readers-accept-gits-full-delta-depth.md)).
+per call. `pack.depth` is honoured up to git's own ceiling of 4095 and
+clamped silently above it, as `git pack-objects` does; tsgit's readers
+accept any chain depth git reads (see
+[ADR-1019](../../adr/1019-readers-accept-any-delta-depth-two-guards-terminate-the-walk.md)
+and [ADR-1023](../../adr/1023-the-writer-clamps-pack-depth-at-gits-4095-ceiling.md)).
 `*.keep` a pack to opt it out of consolidation entirely if even the reduced
 cost is unacceptable for that content.
 
@@ -342,4 +342,5 @@ await repo.maintenance({ tasks: ['bogus' as never] }); // throws INVALID_OPTION
   [732](../../adr/732-gc-consolidates-existing-packs.md),
   [733](../../adr/733-gc-repacks-promisor-objects-separately.md),
   [767](../../adr/767-delta-emission-is-opt-in-per-caller.md),
-  [771](../../adr/771-both-readers-accept-gits-full-delta-depth.md)
+  [1019](../../adr/1019-readers-accept-any-delta-depth-two-guards-terminate-the-walk.md),
+  [1023](../../adr/1023-the-writer-clamps-pack-depth-at-gits-4095-ceiling.md)

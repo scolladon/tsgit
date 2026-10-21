@@ -1318,7 +1318,7 @@ async function pruneLooseAfterRepack(
 function forgetDestroyed(ctx: Context, doomed: ReadonlySet<ObjectId>): void {
   for (const id of doomed) {
     ctx.deltaCache.delete(id);
-    // Stryker disable next-line CallExpression: equivalent — `resolveObject` (object-resolver.ts) always calls `resolveObjectBytesWithDepth` first, which independently re-verifies existence via the just-cleared `ctx.deltaCache`, the (now-unlinked) loose file, and the (already-refreshed) pack registry, throwing `objectNotFound` before this memo is ever consulted; content-addressing also means any surviving entry could never disagree with a fresh parse of the same oid.
+    // Stryker disable next-line CallExpression: equivalent — `resolveObject` (object-resolver.ts) always calls `resolveObjectContent` first, which independently re-verifies existence via the just-cleared `ctx.deltaCache`, the (now-unlinked) loose file, and the (already-refreshed) pack registry, throwing `objectNotFound` before this memo is ever consulted; content-addressing also means any surviving entry could never disagree with a fresh parse of the same oid.
     forgetParsedObjectMemo(ctx, id);
   }
 }

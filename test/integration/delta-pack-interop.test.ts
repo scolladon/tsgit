@@ -453,6 +453,38 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
   });
 
   // -------------------------------------------------------------------------
+  // X3b — pack.depth above the default is honoured and git accepts the chains
+  // -------------------------------------------------------------------------
+
+  describe('Given pack.depth = 100, When tsgit gc runs on the text-churn corpus', () => {
+    it('Then chains deeper than 50 are written, and git fsck and index-pack --strict accept the pack', async () => {
+      // Arrange
+      const dir = await tmp('x3b-depth-100');
+      await cp(churnRepo, dir, { recursive: true });
+      git(dir, 'config', 'pack.depth', '100');
+      const ctx = trackedNodeContext(dir);
+
+      // Act
+      await maintenance(ctx, { tasks: ['gc'] });
+      await disposePackRegistry(ctx);
+      const { packPath, idxPath } = await solePackIdx(dir);
+      const { histogram } = parseChainDepths(git(dir, 'verify-pack', '-v', idxPath));
+      const scratch = await tmp('x3b-scratch');
+      const scratchPack = path.join(scratch, 'donor.pack');
+      await cp(packPath, scratchPack);
+      const fsckResult = tryRunGitWithExit(['-C', dir, 'fsck', '--full']);
+      const indexPackResult = tryRunGitWithExit(['index-pack', '--strict', scratchPack]);
+
+      // Assert
+      const maxChain = Math.max(...histogram.keys());
+      expect(maxChain).toBeGreaterThan(50);
+      expect(maxChain).toBeLessThanOrEqual(100);
+      expect(fsckResult.exitCode).toBe(0);
+      expect(indexPackResult.exitCode).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // X4 — batch-check | batch full pipe
   // -------------------------------------------------------------------------
 

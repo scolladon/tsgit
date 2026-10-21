@@ -16,7 +16,7 @@ import type { PromisorRemote } from '../../ports/promisor.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
 import { looseLocationOf, type SourceLocation } from './internal/source-location.js';
 import {
-  assertChainDepthWithinCap,
+  enterRefBase,
   isBase,
   LOOSE_HEADER_WINDOW,
   looseHeaderTooLong,
@@ -24,7 +24,7 @@ import {
   readEntryHeaderWithChunk,
   resolveLooseArm,
   resolveObject,
-  resolveObjectContentWithDepth,
+  resolveObjectContent,
   resolveObjectWithSize,
 } from './object-resolver.js';
 import {
@@ -219,13 +219,12 @@ export async function readRawObject(
   const verifyHash = options?.verifyHash ?? false;
   const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
   return withLazyFetchRetry(ctx, id, store.primary.registry, async () => {
-    const { type, content } = await resolveObjectContentWithDepth(
+    const { type, content } = await resolveObjectContent(
       ctx,
       store,
       id,
       verifyHash,
       options?.maxBytes,
-      0,
     );
     return { type, content };
   });
@@ -504,13 +503,12 @@ async function metadataAfterFullMiss(
   store: ObjectStore,
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
-  const { type, content } = await resolveObjectContentWithDepth(
+  const { type, content } = await resolveObjectContent(
     ctx,
     store,
     id,
     false,
     undefined,
-    0,
     'streamed',
   );
   return { type, uncompressedSize: content.length, content };
@@ -546,7 +544,7 @@ async function readEntryHeaderAt(
 /**
  * Walks base links through entry HEADERS only, never inflating a base — the
  * type comes from the base entry's own header once the walk reaches it.
- * Reuses `ofsDeltaBaseOffset` and `assertChainDepthWithinCap` so this third
+ * Reuses `ofsDeltaBaseOffset` and `enterRefBase` so this third
  * delta-chain walker cannot drift from the two `collectDeltaChain` already
  * uses to resolve full bytes.
  */
@@ -559,15 +557,16 @@ async function walkDeltaBaseType(
 ): Promise<ObjectType> {
   let currentHit = hit;
   let currentHeader = header;
-  let depth = 1;
+  let walked: Set<ObjectId> | undefined;
   for (;;) {
+    if (currentHeader.type === PACK_ENTRY_TYPE.REF_DELTA) {
+      walked = enterRefBase(walked, currentHeader.baseId, currentHit.offset);
+    }
     const nextHit = await nextDeltaHit(registry, currentHit, currentHeader, targetId);
     const { header: nextHeader } = await readEntryHeaderAt(ctx, nextHit);
     if (!isDeltaHeader(nextHeader)) {
       return packEntryTypeToObjectType(nextHeader.type);
     }
-    depth += 1;
-    assertChainDepthWithinCap(depth);
     currentHit = nextHit;
     currentHeader = nextHeader;
   }
@@ -582,7 +581,7 @@ async function walkDeltaBaseType(
  * calls `reprepare_packed_git`; only the CONTENT-resolving path
  * (`oid_object_info_extended` / `do_oid_object_info_extended`) retries after
  * a re-scan, which `resolveBaseForRefDelta` (object-resolver.ts) already
- * gets via `resolveObjectContentWithDepth`. A base the registry cannot find
+ * gets via `resolveObjectContent`. A base the registry cannot find
  * here is a corrupt pack — this throws OBJECT_NOT_FOUND for the base id,
  * fail-loud like every other read here, and retried by the same
  * `withLazyFetchRetry` a missing REF_DELTA base already gets via

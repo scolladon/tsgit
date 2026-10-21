@@ -543,18 +543,6 @@ describe('domain error — AdapterError', () => {
       });
     });
 
-    describe('Given DELTA_CHAIN_TOO_DEEP', () => {
-      describe('When reading message', () => {
-        it('Then contains depth', () => {
-          // Arrange & Act
-          const result = new TsgitErrorClass({ code: 'DELTA_CHAIN_TOO_DEEP', depth: 51 });
-
-          // Assert
-          expect(result.message).toContain('delta chain too deep: 51');
-        });
-      });
-    });
-
     describe('Given INVALID_DIFF_INPUT', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with reason', () => {

@@ -8,7 +8,6 @@ import type {
   TreeEntry,
 } from '../../../../domain/objects/index.js';
 import { invalidObjectHeader, parseHeader } from '../../../../domain/objects/index.js';
-import { MAX_DELTA_CHAIN_DEPTH } from '../../../../domain/storage/delta.js';
 import {
   PACK_ENTRY_TYPE,
   packEntryTypeToObjectType,
@@ -251,6 +250,42 @@ async function typeFromEntry(
   }
 }
 
+type PackEntryHeader = ReturnType<typeof parsePackEntryHeader>;
+
+/** One OFS_DELTA hop: the base entry in the same pack, or the degrade when the
+ *  distance names the entry itself or reaches before the pack body. */
+function followOfsBase(
+  ctx: Context,
+  id: ObjectId,
+  hit: PackLookupHit,
+  header: Extract<PackEntryHeader, { readonly type: typeof PACK_ENTRY_TYPE.OFS_DELTA }>,
+): PackLookupHit | TypedOrUntyped {
+  const baseOffset = hit.offset - header.baseDistance;
+  if (header.baseDistance === 0 || baseOffset < 0) {
+    return untypedFault(ctx, id, 'OFS_DELTA base offset out of range');
+  }
+  return { pack: hit.pack, offset: baseOffset };
+}
+
+type RefStep = { readonly hit: PackLookupHit; readonly walked: Set<ObjectId> } | TypedOrUntyped;
+
+/** One REF_DELTA hop: the base's claimed entry, or the degrade when the base
+ *  was already visited (a cycle) or no accessible pack claims it. */
+async function followRefBase(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+  baseId: ObjectId,
+  walked: Set<ObjectId> | undefined,
+): Promise<RefStep> {
+  if (walked?.has(baseId)) return untypedFault(ctx, id, 'delta chain cycle');
+  const hit = await registry.lookup(baseId);
+  if (hit === undefined) {
+    return untypedFault(ctx, id, 'REF_DELTA base not claimed by any accessible pack');
+  }
+  return { hit, walked: (walked ?? new Set<ObjectId>()).add(baseId) };
+}
+
 async function walkDeltaChain(
   ctx: Context,
   registry: PackRegistry,
@@ -258,28 +293,27 @@ async function walkDeltaChain(
   hit: PackLookupHit,
 ): Promise<TypedOrUntyped> {
   let currentHit = hit;
-  for (let depth = 0; depth <= MAX_DELTA_CHAIN_DEPTH; depth += 1) {
+  let walked: Set<ObjectId> | undefined;
+  for (;;) {
     const chunk = await currentHit.pack.readSlice(currentHit.offset, ENTRY_HEADER_PROBE_BYTES);
     const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
-      const baseOffset = currentHit.offset - header.baseDistance;
-      if (baseOffset < 0) return untypedFault(ctx, id, 'OFS_DELTA base offset out of range');
-      currentHit = { pack: currentHit.pack, offset: baseOffset };
+      const next = followOfsBase(ctx, id, currentHit, header);
+      if ('kind' in next) return next;
+      currentHit = next;
       continue;
     }
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) {
-      const nextHit = await registry.lookup(header.baseId);
-      if (nextHit === undefined) {
-        return untypedFault(ctx, id, 'REF_DELTA base not claimed by any accessible pack');
-      }
-      currentHit = nextHit;
+      const next = await followRefBase(ctx, registry, id, header.baseId, walked);
+      if ('kind' in next) return next;
+      currentHit = next.hit;
+      walked = next.walked;
       continue;
     }
 
     return { kind: 'typed', objectType: packEntryTypeToObjectType(header.type) };
   }
-  return untypedFault(ctx, id, 'delta chain exceeds max depth');
 }
 
 /**

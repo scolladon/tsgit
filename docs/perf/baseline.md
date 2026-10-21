@@ -6,7 +6,7 @@ totalTicks: 1073
 
 | frame | self |
 | --- | --- |
-| resolveObjectContentWithDepth | 0.18 |
+| resolveObjectContent | 0.18 |
 | commitDateWalk | 0.11 |
 | readObject | 0.1 |
 | log | 0.08 |
@@ -37,7 +37,7 @@ totalTicks: 1165
 
 | frame | self |
 | --- | --- |
-| resolveObjectContentWithDepth | 0.18 |
+| resolveObjectContent | 0.18 |
 | <anonymous> | 0.12 |
 | commitDateWalk | 0.1 |
 | resolveHeapEntry | 0.09 |
@@ -132,7 +132,7 @@ totalTicks: 1062
 | --- | --- |
 | resolveObject$1 | 0.3 |
 | readBlob | 0.25 |
-| resolveObjectContentWithDepth | 0.23 |
+| resolveObjectContent | 0.23 |
 | assertLoadable | 0.1 |
 | tryDeltaCacheHit$1 | 0.05 |
 | withLazyFetchRetry | 0.03 |
@@ -148,7 +148,7 @@ totalTicks: 1647
 | frame | self |
 | --- | --- |
 | resolveRead | 0.12 |
-| resolveObjectContentWithDepth | 0.08 |
+| resolveObjectContent | 0.08 |
 | <anonymous> | 0.08 |
 | buildNameMap | 0.07 |
 | walkRefDir | 0.06 |
@@ -189,7 +189,7 @@ totalTicks: 2124
 | <anonymous> | 0.1 |
 | resolveDirect | 0.09 |
 | walkRefDir | 0.07 |
-| resolveObjectContentWithDepth | 0.06 |
+| resolveObjectContent | 0.06 |
 | readRegularLeaf | 0.05 |
 | seedRef | 0.05 |
 | readObject | 0.05 |
@@ -259,7 +259,7 @@ totalTicks: 888
 | --- | --- |
 | lstat | 0.22 |
 | resolveRead | 0.19 |
-| resolveObjectContentWithDepth | 0.09 |
+| resolveObjectContent | 0.09 |
 | catFileBatch | 0.09 |
 | coerceId | 0.08 |
 | assertOperationalRepository | 0.06 |
@@ -289,7 +289,7 @@ totalTicks: 2564
 | scanEntryAt | 0.29 |
 | resolveRead | 0.04 |
 | <anonymous> | 0.04 |
-| resolveObjectContentWithDepth | 0.03 |
+| resolveObjectContent | 0.03 |
 | cursorOid | 0.02 |
 | openWithNoFollow | 0.02 |
 | runWithinBudget | 0.01 |
@@ -323,7 +323,7 @@ totalTicks: 2740
 | resolveRead | 0.07 |
 | <anonymous> | 0.06 |
 | openWithNoFollow | 0.03 |
-| resolveObjectContentWithDepth | 0.03 |
+| resolveObjectContent | 0.03 |
 | runWithinBudget | 0.02 |
 | validateRefName | 0.02 |
 | readObject | 0.02 |
@@ -356,7 +356,7 @@ totalTicks: 772
 | diffRawTrees | 0.02 |
 | tryDeltaCacheHit$1 | 0.01 |
 | bytesToHex | 0.01 |
-| resolveObjectContentWithDepth | 0.01 |
+| resolveObjectContent | 0.01 |
 | readCommitData | 0.01 |
 | processSuspect | 0.01 |
 | resolveInParent | 0.01 |

@@ -121,8 +121,9 @@ An alternate lives outside the repository, so reads of it do not go through the 
 | `SPARSE_PATTERN_FILE_TOO_LARGE` | `MAX_SPARSE_PATTERN_FILE_BYTES` | `loadSparseMatcher`. |
 | `TREE_DEPTH_EXCEEDED` | 4096 | Recursive tree walks. |
 | `TREE_ENTRY_LIMIT_EXCEEDED` | configured | Tree parsers. |
-| `DELTA_CHAIN_TOO_DEEP` | configured | Pack delta resolution. |
 | `SHALLOW_FILE_MALFORMED` | 500 000 entries (`MAX_SHALLOW_ENTRIES`) | `.git/shallow` reader and writer (`updateShallow` refuses before persisting an over-cap or foreign-width set). A file over the cap written by another tool refuses on every read; the remedy is trimming or deleting `.git/shallow` externally. |
+
+Delta chains carry no depth cap: git reads a chain of any depth, so tsgit does too. The walk is bounded by the pack instead — an `OFS_DELTA` with a zero base distance is refused as `OBJECT_NOT_FOUND`, and a `REF_DELTA` chain that revisits a base id is refused as `INVALID_PACK_ENTRY` (`delta base cycle`) ([ADR-1019](../adr/1019-readers-accept-any-delta-depth-two-guards-terminate-the-walk.md)).
 
 ## Glob matcher — ReDoS protection
 

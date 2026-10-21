@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import {
   applyDelta,
-  MAX_DELTA_CHAIN_DEPTH,
   parseDelta,
   readDeltaTargetSize,
 } from '../../../../src/domain/storage/delta.js';
@@ -738,23 +737,6 @@ describe('delta', () => {
               reason: 'INSERT data truncated: needs 10 bytes at position 3, only 3 available',
             });
           }
-        });
-      });
-    });
-  });
-
-  describe('MAX_DELTA_CHAIN_DEPTH', () => {
-    describe('Given the exported constant', () => {
-      describe('When read', () => {
-        it('Then equals 50 (git default)', () => {
-          // Arrange
-          const expected = 50;
-
-          // Act
-          const result = MAX_DELTA_CHAIN_DEPTH;
-
-          // Assert
-          expect(result).toBe(expected);
         });
       });
     });

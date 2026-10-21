@@ -4,6 +4,8 @@
 
 ## Status
 
+- **Status:** superseded by ADR-906
+
 Accepted — superseded in part by ADR-906 (`copyThreshold`)
 
 - **Date:** 2026-06-19

@@ -1,6 +1,8 @@
 # 471 — deep-delta-chain bench fixture: evolving blob at near-cap depth
 
-- **Status:** accepted
+> Superseded by [ADR-1026](1026-the-deep-chain-bench-fixture-keeps-gits-default-depth.md): the at-or-under-50 constraint and its reason that tsgit refuses deeper chains — the fixture itself stays.
+
+- **Status:** superseded by ADR-1026
 - **Date:** 2026-07-10
 - **Design:** docs/design/memory-pressure-bench-scenarios.md · **Relates:** ADR-472, ADR-473, ADR-474
 

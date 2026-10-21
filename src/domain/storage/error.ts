@@ -49,7 +49,6 @@ export type StorageError =
       readonly reason: string;
     }
   | { readonly code: 'INVALID_DELTA'; readonly reason: string }
-  | { readonly code: 'DELTA_CHAIN_TOO_DEEP'; readonly depth: number }
   | {
       readonly code: 'INVALID_MULTI_PACK_INDEX';
       readonly reason: string;
@@ -102,9 +101,6 @@ export const PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON =
 
 export const invalidDelta = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_DELTA', reason });
-
-export const deltaChainTooDeep = (depth: number): TsgitError =>
-  new TsgitError({ code: 'DELTA_CHAIN_TOO_DEEP', depth });
 
 export const invalidMultiPackIndex = (check: MidxCheck, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_MULTI_PACK_INDEX', check, reason });

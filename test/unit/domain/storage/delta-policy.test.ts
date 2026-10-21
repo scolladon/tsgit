@@ -418,9 +418,9 @@ describe('resolveDeltaPolicy', () => {
     });
   });
 
-  describe('Given depth = 250, above tsgit reader cap', () => {
+  describe("Given depth = 250, below git's 4095 ceiling", () => {
     describe('When resolved', () => {
-      it('Then maxDepth clamps to 50', () => {
+      it('Then maxDepth is the configured value', () => {
         // Arrange
         const sut = resolveDeltaPolicy;
 
@@ -428,12 +428,42 @@ describe('resolveDeltaPolicy', () => {
         const result = sut({ depth: 250 }, ANY_THRESHOLD);
 
         // Assert
-        expect(result.maxDepth).toBe(50);
+        expect(result.maxDepth).toBe(250);
       });
     });
   });
 
-  describe('Given depth = 10, below the reader cap', () => {
+  describe("Given depth = 4095, at git's ceiling", () => {
+    describe('When resolved', () => {
+      it('Then maxDepth is 4095', () => {
+        // Arrange
+        const sut = resolveDeltaPolicy;
+
+        // Act
+        const result = sut({ depth: 4095 }, ANY_THRESHOLD);
+
+        // Assert
+        expect(result.maxDepth).toBe(4095);
+      });
+    });
+  });
+
+  describe("Given depth = 4096, above git's ceiling", () => {
+    describe('When resolved', () => {
+      it('Then maxDepth clamps to 4095', () => {
+        // Arrange
+        const sut = resolveDeltaPolicy;
+
+        // Act
+        const result = sut({ depth: 4096 }, ANY_THRESHOLD);
+
+        // Assert
+        expect(result.maxDepth).toBe(4095);
+      });
+    });
+  });
+
+  describe("Given depth = 10, below git's ceiling", () => {
     describe('When resolved', () => {
       it('Then maxDepth is the configured value, unclamped', () => {
         // Arrange

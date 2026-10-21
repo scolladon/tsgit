@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TsgitErrorData } from '../../../../src/domain/error.js';
 import {
-  deltaChainTooDeep,
   invalidDelta,
   invalidMultiPackIndex,
   invalidPackBitmap,
@@ -63,18 +62,6 @@ describe('storage error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'INVALID_DELTA', reason: 'source mismatch' });
-        });
-      });
-    });
-
-    describe('Given deltaChainTooDeep(depth)', () => {
-      describe('When checking error.data', () => {
-        it('Then code and depth are set', () => {
-          // Arrange & Act
-          const result = deltaChainTooDeep(51);
-
-          // Assert
-          expect(result.data).toEqual({ code: 'DELTA_CHAIN_TOO_DEEP', depth: 51 });
         });
       });
     });

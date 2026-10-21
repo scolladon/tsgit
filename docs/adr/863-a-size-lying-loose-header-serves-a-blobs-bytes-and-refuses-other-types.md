@@ -10,7 +10,7 @@ subjects:
 
 > Superseded in part by [ADR-907](907-whole-object-loose-reads-bound-the-inflate-to-the-size-claim.md): whole-object reads of a size-lying loose blob serve its real bytes — they now bound the inflate to the claim, like git; streaming routes and the rest of this decision stand.
 
-- **Status:** superseded in part by ADR-907
+- **Status:** superseded by ADR-907
 - **Date:** 2026-09-14
 - **Design:** docs/design/session-caches-faithfulness-addendum.md (A, DC-A1, DC-A2) · **Supersedes/Refines:** refines ADR-226; keeps ADR-854's cache value shape
 

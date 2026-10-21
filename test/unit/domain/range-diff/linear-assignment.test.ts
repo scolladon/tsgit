@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertColumnIndex,
   COST_MAX,
   computeAssignment,
 } from '../../../../src/domain/range-diff/linear-assignment.js';
@@ -147,7 +148,7 @@ describe('computeAssignment', () => {
   });
 
   describe('Given a fully forbidden row forcing findTwoSmallest to reset its second candidate, When assigned', () => {
-    it('Then the reset drives the complete permutation the solver pins', () => {
+    it("Then the reset lands every column where git's solver does", () => {
       // Arrange — row 2 is entirely COST_MAX, so during augmenting-row reduction
       // a free row sees every column reduced cost >= COST_MAX; findTwoSmallest
       // never records a distinct second smallest, and its `j2 < 0` reset
@@ -175,8 +176,8 @@ describe('computeAssignment', () => {
       const result = computeAssignment(4, cost);
 
       // Assert
-      expect(result.columnToRow).toEqual([2, 0, 3, 1]);
-      expect(result.rowToColumn).toEqual([1, 3, 0, 2]);
+      expect(result.columnToRow).toEqual([3, 0, 2, 1]);
+      expect(result.rowToColumn).toEqual([1, 3, 2, 0]);
     });
   });
 
@@ -231,6 +232,34 @@ describe('computeAssignment', () => {
       // Assert
       expect(result.columnToRow).toEqual([4, 1, 2, 5, 0, 3]);
       expect(result.rowToColumn).toEqual([4, 1, 2, 5, 0, 3]);
+    });
+  });
+});
+
+describe('assertColumnIndex', () => {
+  describe('Given a negative column index, When asserted', () => {
+    it("Then it throws git's negative-j error naming the index", () => {
+      // Arrange
+      const sut = assertColumnIndex;
+
+      // Act
+      const act = () => sut(-1);
+
+      // Assert
+      expect(act).toThrow('negative j: -1');
+    });
+  });
+
+  describe('Given a column index of zero, When asserted', () => {
+    it('Then it returns without throwing', () => {
+      // Arrange
+      const sut = assertColumnIndex;
+
+      // Act
+      const act = () => sut(0);
+
+      // Assert
+      expect(act).not.toThrow();
     });
   });
 });
