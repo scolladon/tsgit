@@ -647,10 +647,12 @@ async function installPromisorPack(
   return written.packSha as ObjectId;
 }
 
-/** The cruft pack's staged fate: what `installCruft` will physically do. */
+/** The cruft pack's staged fate: what `installCruft` will physically do.
+ *  `settled` writes nothing — an existing pack kept as is, one retired (`undefined`),
+ *  or a rebuild that reproduced an existing sha. */
 type StagedCruft =
   | { readonly kind: 'loosen' }
-  | { readonly kind: 'kept'; readonly cruftPackId: ObjectId | undefined }
+  | { readonly kind: 'settled'; readonly cruftPackId: ObjectId | undefined }
   | { readonly kind: 'fresh'; readonly pack: BuildPackResult };
 
 /**
@@ -662,7 +664,7 @@ type StagedCruft =
  * pack's OWN file mtime carries no semantic weight — ages live in the
  * `.mtimes` sidecar, never the `stat` — so reusing the file in place is
  * safe and simpler than a quarantine rewrite: no `FILE_EXISTS` risk, no
- * mtime to refresh. That reuse is staged as `kept`.
+ * mtime to refresh. That reuse is staged as `settled`.
  */
 async function buildFreshCruft(
   ctx: Context,
@@ -670,7 +672,9 @@ async function buildFreshCruft(
   existingCruftShas: ReadonlySet<string>,
 ): Promise<StagedCruft> {
   const pack = await buildPack(ctx, { objects: survivors.map((id) => ({ id })), delta: true });
-  if (existingCruftShas.has(pack.sha)) return { kind: 'kept', cruftPackId: pack.sha as ObjectId };
+  if (existingCruftShas.has(pack.sha)) {
+    return { kind: 'settled', cruftPackId: pack.sha as ObjectId };
+  }
   return { kind: 'fresh', pack };
 }
 
@@ -720,15 +724,16 @@ interface CruftOutcome {
  */
 async function stageCruft(
   ctx: Context,
-  cruftPacksEnabled: boolean,
+  settings: GcSettings,
   survivors: ReadonlyArray<ObjectId>,
   existingCruft: ExistingCruftPack,
 ): Promise<StagedCruft> {
-  if (!cruftPacksEnabled) return { kind: 'loosen' };
+  if (!settings.cruftPacks) return { kind: 'loosen' };
   const existingCruftKeys = new Set(existingCruft.mtimes.keys());
   const fate = decideCruftFate(survivors, existingCruftKeys, existingCruft.packShas.length);
-  if (fate === 'noop') return { kind: 'kept', cruftPackId: existingCruft.packShas[0] as ObjectId };
-  if (fate === 'delete') return { kind: 'kept', cruftPackId: undefined };
+  if (fate === 'noop')
+    return { kind: 'settled', cruftPackId: existingCruft.packShas[0] as ObjectId };
+  if (fate === 'delete') return { kind: 'settled', cruftPackId: undefined };
   return buildFreshCruft(ctx, survivors, new Set(existingCruft.packShas));
 }
 
@@ -738,7 +743,7 @@ async function installCruft(
   staged: StagedCruft,
 ): Promise<CruftOutcome> {
   const { ctx, packDir } = run;
-  if (staged.kind === 'kept') return { cruftPackId: staged.cruftPackId };
+  if (staged.kind === 'settled') return { cruftPackId: staged.cruftPackId };
   if (staged.kind === 'fresh') {
     const cruftPackId = await installFreshCruft(
       ctx,
@@ -1261,12 +1266,7 @@ async function buildRepack(
   const { ctx } = run;
   const normal = await buildPackUnlessEmpty(ctx, plan.toNormalPack);
   const promisor = await buildPackUnlessEmpty(ctx, plan.toPromisorPackInputs);
-  const cruft = await stageCruft(
-    ctx,
-    run.settings.cruftPacks,
-    plan.survivors,
-    existing.existingCruft,
-  );
+  const cruft = await stageCruft(ctx, run.settings, plan.survivors, existing.existingCruft);
   return { normal, promisor, cruft };
 }
 
