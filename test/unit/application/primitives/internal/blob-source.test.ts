@@ -337,7 +337,7 @@ describe('openBlobSource', () => {
 
   describe("Given a loose blob whose header size claim disagrees with its body length past git's 32-byte header window", () => {
     describe("When openBlobSource is called with looseMode 'buffered' at the gate at the compressed length", () => {
-      it('Then throws INVALID_OBJECT_HEADER with the content-exceeds-claim reason', async () => {
+      it('Then throws LOOSE_OBJECT_CORRUPT with the object id', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -356,9 +356,9 @@ describe('openBlobSource', () => {
           expect.unreachable();
         } catch (error) {
           const data = (error as TsgitError).data;
-          expect(data.code).toBe('INVALID_OBJECT_HEADER');
-          if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe('content exceeds declared size 3');
+          expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+          if (data.code === 'LOOSE_OBJECT_CORRUPT') {
+            expect(data.id).toBe(id);
           }
         }
       });
@@ -397,7 +397,7 @@ describe('openBlobSource', () => {
 
   describe('Given a loose blob resolved on the stream arm whose header size claim disagrees with its body length', () => {
     describe("When openBlobSource is called with looseMode 'buffered' at a gate under the compressed length", () => {
-      it('Then the stream throws INVALID_OBJECT_HEADER as soon as the body exceeds the claim', async () => {
+      it('Then the stream throws LOOSE_OBJECT_CORRUPT as soon as the body exceeds the claim', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -423,9 +423,9 @@ describe('openBlobSource', () => {
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
-            expect(data.code).toBe('INVALID_OBJECT_HEADER');
-            if (data.code === 'INVALID_OBJECT_HEADER') {
-              expect(data.reason).toBe('content exceeds declared size 5');
+            expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+            if (data.code === 'LOOSE_OBJECT_CORRUPT') {
+              expect(data.id).toBe(id);
             }
           }
         }
@@ -504,9 +504,9 @@ describe('openBlobSource', () => {
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
-            expect(data.code).toBe('INVALID_OBJECT_HEADER');
-            if (data.code === 'INVALID_OBJECT_HEADER') {
-              expect(data.reason).toBe('content exceeds declared size 5');
+            expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+            if (data.code === 'LOOSE_OBJECT_CORRUPT') {
+              expect(data.id).toBe(id);
             }
           }
         }

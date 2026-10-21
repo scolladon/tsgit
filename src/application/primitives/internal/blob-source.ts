@@ -15,6 +15,7 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import { concatBytes } from '../../../domain/objects/encoding.js';
 import {
   invalidObjectHeader,
+  looseObjectCorrupt,
   type ObjectType,
   objectHashMismatch,
   objectNotFound,
@@ -35,7 +36,6 @@ import {
   applyLooseVerdict,
   assertInflatedSizeMatches,
   cacheEntry,
-  contentExceedsDeclaredSize,
   inflateLooseBuffered,
   isBase,
   type LooseReadMode,
@@ -745,11 +745,12 @@ async function returnIterator(iterator: AsyncIterator<Uint8Array>): Promise<void
 }
 
 /** The buffered tier's own bound for the STREAM arm, checked incrementally so
- *  a small claim never buys a caller a full-size stream first — `declaredSize
- *  === undefined` (the streamed tier) skips the check entirely. */
-function assertWithinClaim(total: number, declaredSize: number | undefined): void {
+ *  a small claim never buys a caller a full-size stream first — an overrun is
+ *  `LOOSE_OBJECT_CORRUPT`; `declaredSize === undefined` (the streamed tier)
+ *  skips the check entirely. */
+function assertWithinClaim(id: ObjectId, total: number, declaredSize: number | undefined): void {
   if (declaredSize !== undefined && total > declaredSize) {
-    throw contentExceedsDeclaredSize(declaredSize);
+    throw looseObjectCorrupt(id);
   }
 }
 
@@ -757,7 +758,7 @@ function assertWithinClaim(total: number, declaredSize: number | undefined): voi
  * Streaming tail for the loose path. The header is already known (read at
  * open by `readLooseHeader`); this hashes it and the remaining chunks with
  * incremental verification. `declaredSize` given (buffered mode) also
- * refuses as soon as the body overruns the claim — undefined (streamed mode)
+ * refuses as `LOOSE_OBJECT_CORRUPT` as soon as the body overruns the claim — undefined (streamed mode)
  * ignores the claim entirely, as git's streaming tier does.
  */
 async function* yieldAndVerifyLooseChunks(
@@ -776,7 +777,7 @@ async function* yieldAndVerifyLooseChunks(
 
     if (header.content.length > 0) {
       total += header.content.length;
-      assertWithinClaim(total, declaredSize);
+      assertWithinClaim(id, total, declaredSize);
       hasher?.update(header.content);
       yield header.content;
     }
@@ -786,7 +787,7 @@ async function* yieldAndVerifyLooseChunks(
         throw operationAborted();
       }
       total += chunk.byteLength;
-      assertWithinClaim(total, declaredSize);
+      assertWithinClaim(id, total, declaredSize);
       hasher?.update(chunk);
       yield chunk;
     }

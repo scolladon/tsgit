@@ -1692,7 +1692,7 @@ describe('object-resolver', () => {
 
   describe('Given a loose blob whose body overruns its header claim past the 32-byte header window', () => {
     describe('When resolveObjectContent is called (the default buffered read)', () => {
-      it('Then it throws INVALID_OBJECT_HEADER naming the claim, from the single-pass inflate call bounded at SINGLE_PASS_INFLATE_CAP', async () => {
+      it('Then it throws LOOSE_OBJECT_CORRUPT, from the single-pass inflate call bounded at SINGLE_PASS_INFLATE_CAP', async () => {
         // Arrange — this object's compressed size sits under
         // MAX_SINGLE_PASS_COMPRESSED_BYTES, so the single-pass arm answers
         // with one inflate call capped at SINGLE_PASS_INFLATE_CAP, never at
@@ -1712,9 +1712,9 @@ describe('object-resolver', () => {
         } catch (error) {
           // Assert
           const data = (error as TsgitError).data;
-          expect(data.code).toBe('INVALID_OBJECT_HEADER');
-          if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe(`content exceeds declared size ${claim}`);
+          expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+          if (data.code === 'LOOSE_OBJECT_CORRUPT') {
+            expect(data.id).toBe(id);
           }
         }
         expect(inflateSpy.mock.calls.length).toBe(1);
@@ -1962,7 +1962,7 @@ describe('object-resolver', () => {
 
   describe('Given a hostile-sized loose blob whose body overruns its header claim', () => {
     describe('When resolveObjectContent is called (the default buffered read)', () => {
-      it("Then it throws INVALID_OBJECT_HEADER naming the claim, remapped from the compressor's own cap-exceeded refusal", async () => {
+      it("Then it throws LOOSE_OBJECT_CORRUPT, remapped from the compressor's own cap-exceeded refusal", async () => {
         // Arrange — content sized past MAX_SINGLE_PASS_COMPRESSED_BYTES once
         // deflated keeps this on the hostile-sized arm (inflateLooseHeadProbed),
         // the only one that remaps a REAL cap-exceeded error through
@@ -1983,9 +1983,9 @@ describe('object-resolver', () => {
         } catch (error) {
           // Assert
           const data = (error as TsgitError).data;
-          expect(data.code).toBe('INVALID_OBJECT_HEADER');
-          if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe(`content exceeds declared size ${claim}`);
+          expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+          if (data.code === 'LOOSE_OBJECT_CORRUPT') {
+            expect(data.id).toBe(id);
           }
         }
         expect(inflateHeadSpy.mock.calls.length).toBe(1);

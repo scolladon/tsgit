@@ -341,7 +341,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
   });
 
   describe("Given a medium (1880-byte) blob whose header claim of 500 overruns git's 32-byte header window, When a second commit modifies it", () => {
-    it('Then git diff --numstat refuses corrupt loose object and tsgit diff({ withStat: true }) refuses INVALID_OBJECT_HEADER', async () => {
+    it('Then git diff --numstat refuses corrupt loose object and tsgit diff({ withStat: true }) refuses LOOSE_OBJECT_CORRUPT', async () => {
       // Arrange
       const dir = await caseDirWithOverrunSecondCommit('medium-overrun-numstat');
       const ctx = createNodeContext({ workDir: dir });
@@ -368,7 +368,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       expect(gitResult.exitCode).toBe(128);
       expect(gitResult.stderr).toContain('corrupt loose object');
       expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+      expect((caught as TsgitError).data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: mediumId });
     });
 
     it('Then git diff -B --name-status refuses corrupt loose object (should_break reads both blobs in full) and tsgit break-rewrite detection refuses too', async () => {
@@ -404,7 +404,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       expect(gitResult.exitCode).toBe(128);
       expect(gitResult.stderr).toContain('corrupt loose object');
       expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+      expect((caught as TsgitError).data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: mediumId });
     });
 
     it('Then git diff -w --name-status refuses corrupt loose object (the whitespace-drop predicate reads both blobs in full) and tsgit ignoreWhitespace refuses too', async () => {
@@ -435,12 +435,12 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       expect(gitResult.exitCode).toBe(128);
       expect(gitResult.stderr).toContain('corrupt loose object');
       expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+      expect((caught as TsgitError).data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: mediumId });
     });
   });
 
   describe('Given a medium blob header claim of 500, When git archive and tsgit archive both read it', () => {
-    it('Then both refuse — git corrupt loose object, tsgit INVALID_OBJECT_HEADER', async () => {
+    it('Then both refuse — git corrupt loose object, tsgit LOOSE_OBJECT_CORRUPT', async () => {
       // Arrange
       const dir = await caseDir('medium-overrun-archive');
       await forgeLoose(dir, mediumId, 'blob', 500, MEDIUM_CONTENT);
@@ -463,7 +463,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       expect(gitResult.exitCode).toBe(128);
       expect(gitResult.stderr).toContain('corrupt loose object');
       expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+      expect((caught as TsgitError).data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: mediumId });
     });
   });
 
@@ -673,7 +673,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
         // Assert
         expect(gitResult.exitCode).toBe(128);
         expect(gitResult.stderr).toContain('corrupt loose object');
-        expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+        expect((caught as TsgitError).data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: commitId });
       });
     });
   });
@@ -701,7 +701,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
         // Assert
         expect(gitLsTree.exitCode).toBe(128);
         expect(gitStatus.exitCode).toBe(128);
-        expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+        expect((caught as TsgitError).data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: treeId });
       });
     });
   });
@@ -877,7 +877,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
   });
 
   describe('Given a commit whose header claim is smaller than its real body (over-run), When git and tsgit both read it', () => {
-    it('Then git refuses corrupt loose object and tsgit refuses INVALID_OBJECT_HEADER', async () => {
+    it('Then git refuses corrupt loose object and tsgit refuses LOOSE_OBJECT_CORRUPT', async () => {
       // Arrange
       const dir = await caseDir('commit-overrun');
       const body = await honestContent(dir, commitId);
@@ -902,12 +902,9 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       expect(gitResult.stderr).toContain('corrupt loose object');
       expect(caught).toBeInstanceOf(TsgitError);
       const data = (caught as TsgitError).data;
-      expect(data.code).toBe('INVALID_OBJECT_HEADER');
-      if (data.code === 'INVALID_OBJECT_HEADER') {
-        // git's buffered tier never inflates past header + claim, so the
-        // refusal reason is now the declared size, not the (never-computed)
-        // actual content length.
-        expect(data.reason).toBe(`content exceeds declared size ${claim}`);
+      expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+      if (data.code === 'LOOSE_OBJECT_CORRUPT') {
+        expect(data.id).toBe(commitId);
       }
     });
   });
@@ -959,42 +956,40 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       // Under-run: the whole body is inflated, so the refusal still names
       // the real content length alongside the claim.
       { label: 'claim larger than the body', delta: 125, reasonNamesClaim: false },
-    ])(
-      'Then git refuses ($label) and tsgit refuses INVALID_OBJECT_HEADER',
-      async ({ delta, reasonNamesClaim }) => {
-        // Arrange
-        const dir = await caseDir(`tree-${delta}`);
-        const body = await honestContent(dir, treeId);
-        const claim = body.byteLength + delta;
-        await forgeLoose(dir, treeId, 'tree', claim, body);
-        const ctx = createNodeContext({ workDir: dir });
-        const id = treeId as ObjectId;
+    ])('Then git refuses ($label) and tsgit refuses', async ({ delta, reasonNamesClaim }) => {
+      // Arrange
+      const dir = await caseDir(`tree-${delta}`);
+      const body = await honestContent(dir, treeId);
+      const claim = body.byteLength + delta;
+      await forgeLoose(dir, treeId, 'tree', claim, body);
+      const ctx = createNodeContext({ workDir: dir });
+      const id = treeId as ObjectId;
 
-        // Act — git side
-        const gitResult = tryRunGitWithExit(['-C', dir, 'ls-tree', treeId]);
+      // Act — git side
+      const gitResult = tryRunGitWithExit(['-C', dir, 'ls-tree', treeId]);
 
-        // Act — tsgit side
-        let caught: unknown;
-        try {
-          await readObject(ctx, id);
-        } catch (error) {
-          caught = error;
-        }
+      // Act — tsgit side
+      let caught: unknown;
+      try {
+        await readObject(ctx, id);
+      } catch (error) {
+        caught = error;
+      }
 
-        // Assert
-        expect(gitResult.exitCode).toBe(128);
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('INVALID_OBJECT_HEADER');
-        if (data.code === 'INVALID_OBJECT_HEADER') {
-          expect(data.reason).toBe(
-            reasonNamesClaim
-              ? `content exceeds declared size ${claim}`
-              : `size mismatch: header says ${claim}, actual content is ${body.byteLength}`,
-          );
-        }
-      },
-    );
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe(reasonNamesClaim ? 'LOOSE_OBJECT_CORRUPT' : 'INVALID_OBJECT_HEADER');
+      if (data.code === 'LOOSE_OBJECT_CORRUPT') {
+        expect(data.id).toBe(treeId);
+      }
+      if (data.code === 'INVALID_OBJECT_HEADER') {
+        expect(data.reason).toBe(
+          `size mismatch: header says ${claim}, actual content is ${body.byteLength}`,
+        );
+      }
+    });
   });
 
   describe('Given a blob header claim of 9007199254740993 (2^53 + 1), When git and tsgit both read it — the recorded residual', () => {
