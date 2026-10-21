@@ -636,6 +636,106 @@ exceed 5 cycles. loose-header-size-interop.test.ts is shared with Part 3 only fo
 `forgeOwnHash` import swap. Part 3 is already at the 6-file ceiling, and the lift belongs to the
 helper's first new consumer, this part.
 
+## Part 6a — the closure types a blob want from its header alone
+
+Inserted after Part 5 landed, before Part 6 commits. Part 6's alternates row (a borrower whose
+index names a size-lying blob that only the donor holds) failed where the plan expected a pass:
+tsgit's gc refused `LOOSE_OBJECT_CORRUPT` and git exited 0. Part 6's green edits stay uncommitted
+in the tree while this part lands; this part touches none of Part 6's four remaining files.
+
+### Context
+
+Root cause, measured (`runGcTask` on a donor/borrower pair, pinned git 2.55.0): the closure
+types every WANT by reading its whole body. `src/application/primitives/internal/closure-engine.ts`
+`resolveWant` (L326-341) calls `resolveTagChain` then `readObject(ctx, peeled)` (L335);
+`src/application/primitives/internal/object-emit.ts` `resolveTagChain` (L41-58) calls
+`parseTypedObject(ctx, table, current)` on every hop, the final non-tag hop included, and
+`parseTypedObject` is `readObject` (object-type-table.ts L181), the buffered tier. gc passes the
+index entries as wants (fsck/roots.ts `collectRetentionRoots`), so a size-lying blob in the index,
+or named directly by a ref, refuses at root resolution even when an alternate holds it and gc would
+never pack it. Reached through a tree only (index entry removed) tsgit already succeeds, because
+`emitTreeContents` types a blob from the tree entry mode without reading it.
+
+git: `parse_object` (object.c) types a blob want through `oid_object_info` — the header only — and,
+without `--verify-objects`, never inflates its body; `--indexed-objects` adds index blobs to pending
+with no read at all. Pinned: index→borrowed liar and ref→borrowed liar: git `gc` exit 0, tsgit
+refuses; index→local liar and ref→local liar: git exit 128 at `pack-objects` (`error: corrupt loose
+object`), tsgit refuses — same outcome, different site; index→missing blob: git `fatal: unable to
+read <oid>` exit 128, tsgit `OBJECT_NOT_FOUND` — match.
+
+Edits:
+- `object-emit.ts` `resolveTagChain`: at the top of each loop iteration read
+  `readDeclaredObjectHeader(ctx, current)` (import from `../read-object.js`). When its `type` is
+  `'blob'`: `if (!assignObjectType(ctx, table, current, 'blob')) throw objectNotFound(current);
+  return current;` — the same `undefined → objectNotFound` contract `parseTypedObject` has. Any
+  other type keeps today's `parseTypedObject` hop. Import `assignObjectType` from
+  `./object-type-table.js` (closure-engine.ts already imports it from there). Doc comment: git's
+  `parse_object` types a blob through `oid_object_info`, header only, never the body.
+- `closure-engine.ts` `resolveWant`: after `peeled`, read
+  `const { type } = await readDeclaredObjectHeader(ctx, peeled)` (import from `../read-object.js`,
+  where `readObject` already comes from). When `type === 'blob'`: push
+  `{ id: peeled, type: 'blob' }` to `resolving.pending` and return `undefined`, with no content
+  read. Otherwise keep today's `readObject(ctx, peeled)` branch unchanged (a commit seeds the walk
+  with its body; a tree keeps its read, as git's `parse_object` reads a tree). A blob want pays two
+  header probes (one per function); a commit want pays one header probe before the full read it
+  already paid; no want pays more inflates than today.
+- No other file. Callers of `resolveTagChain` take the change as is:
+  `internal/bitmap-binding.ts` L251, `enumerate-bundle-objects.ts` L102,
+  `enumerate-push-objects.ts` L48 — git's rev-list behaves the same for `bundle create` and `push`.
+
+Tests in `test/unit/application/primitives/internal/closure-engine.test.ts` (imports already
+present: `computeClosure`, `createObjectTypeTable`, `* as readObjectModule`, `buildSeededContext`,
+`writeBlob`/`writeTree`/`writeCommit`/`writeTag`, `vi`; add `writeSelfHashedLooseWithDeclaredSize`
+from `../fixtures.js`, the Part 4 helper). The liar is `writeSelfHashedLooseWithDeclaredSize(ctx,
+'blob', 5, Uint8Array.from({ length: 200 }, (_, i) => i))`, written right after the context is
+built. `sut = computeClosure`, walk tier, `objects: true`.
+- `Given a blob want whose loose body overruns its size claim past the header window` >
+  `When computeClosure walks it with object typing` > `Then the blob is listed as a pending blob
+  and its body is never inflated`: `wants: [liarId]`, `objectTypes: createObjectTypeTable()`;
+  assert `result.objects` contains `{ id: liarId, type: 'blob', nameHash: 0 }`.
+- `Given a tag whose target is such a blob` > `When computeClosure walks the tag want` > `Then
+  the tag and the blob are listed`: `writeTag(ctx, liarId, 'blob', 'liar')`, `wants: [tagId]`,
+  typing on; assert both ids present with their types.
+- `Given an honest blob want` > `When computeClosure walks it` > `Then neither readObject nor
+  readRawObject is called with its id` (`vi.spyOn(readObjectModule, 'readObject')` and
+  `'readRawObject'`, pass-through; `afterEach(vi.restoreAllMocks)` already exists in the file).
+  Kills a mutant that keeps reading the body on the blob branch.
+- `Given a blob want naming an id no store holds` > `Then OBJECT_NOT_FOUND names that id`
+  (try/catch on `.data`): a GUARD if a row already pins it, else a new row written and run.
+- Interop: the row Part 6 wrote in `test/integration/alternates-gc-fsck-interop.test.ts`
+  (`'Given a borrower reaching a size-lying loose blob that only the donor holds'`), red today,
+  turns green. That file carries only that row as an uncommitted edit; stage the whole file here.
+
+### TDD steps
+
+1. RED (`resolveWant` blob want): fails because `readObject(ctx, peeled)` inflates the liar and
+   refuses `LOOSE_OBJECT_CORRUPT` — wait: it fails earlier, in `resolveTagChain`'s
+   `parseTypedObject`, with the same code. Record the observed code.
+2. RED (tag → liar blob): fails the same way through `resolveTagChain`'s final hop.
+3. GREEN: the `resolveTagChain` header probe first (step 2 goes green; step 1 still red at
+   `resolveWant`'s `readObject`), then the `resolveWant` branch (step 1 green).
+4. RED (spy, honest blob): write and run before step 3 when possible; after step 3 it passes —
+   then record it as a GUARD whose kill power is the mutant that drops the blob branch.
+5. GUARD: the missing-id row; every existing row of closure-engine.test.ts,
+   closure-engine-sparse.test.ts and bitmap-binding.closure.test.ts; the enumerate-push /
+   enumerate-bundle suites (`ls test/unit/application/primitives | command grep enumerate`).
+6. GUARD (interop): the alternates row is green with git 2.55 on PATH.
+7. REFACTOR: doc comments on both functions naming git's `parse_object` / `oid_object_info` split.
+
+### Gate
+
+```
+npx vitest run test/unit/application/primitives/internal/closure-engine.test.ts test/unit/application/primitives/internal/closure-engine-sparse.test.ts test/unit/application/primitives/internal/bitmap-binding.closure.test.ts test/unit/application/primitives/enumerate-push-objects.test.ts test/unit/application/primitives/enumerate-bundle-objects.test.ts && PATH="<git-2.55-bin>:$PATH" npx vitest run test/integration/alternates-gc-fsck-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/internal/object-emit.ts src/application/primitives/internal/closure-engine.ts test/unit/application/primitives/internal/closure-engine.test.ts test/integration/alternates-gc-fsck-interop.test.ts && npm run check:spelling
+```
+Notes. (a) wireit caches `check:types`/`check:spelling`; bare oracles `npx tsc --noEmit -p
+tsconfig.json`, `npx cspell --no-progress <files>`. (b) The interop file spawns real git: pinned
+git 2.55 first on PATH; a skip is not green. (c) Literal file lists (zsh). (d) Stage ONLY the four
+files above, whole; Part 6's other four modified files stay unstaged and uncommitted.
+
+### Commit
+
+`fix(closure): type a blob want from its header alone, as git's parse_object does`
+
 ## Part 6 — gc verifies only the packs this run wrote
 
 ### Context
