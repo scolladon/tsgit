@@ -5,6 +5,8 @@ subjects:
   - src/application/primitives/object-resolver.ts
   - src/application/primitives/internal/blob-source.ts
   - src/application/commands/internal/fsck/stored-corruption.ts
+  - src/application/commands/internal/fsck/packed-ref-tips.ts
+  - src/application/commands/internal/fsck/object-cache.ts
 ---
 # 1029 — A buffered overrun refuses as `LOOSE_OBJECT_CORRUPT` with its id
 
@@ -39,8 +41,9 @@ need and nothing rendered.
 `inflateLooseSinglePass`, `inflateBoundToClaim` and blob-source's `assertWithinClaim` — throws
 `LOOSE_OBJECT_CORRUPT { id }`, `id` the object id the read was asked for. `INVALID_OBJECT_HEADER`
 keeps the unparseable header, the header-too-long refusal and the commit, tree or tag size
-mismatch. `fsck`'s stored-corruption set gains the new code so its verdict on a corrupt loose
-object is unchanged. The loose path in git's `fatal:` line is composed by the caller from the id
+mismatch. Every `fsck` code set that classifies a loose read fault — the stored-corruption set, the
+packed-ref tip reader's unreadable set and the object cache's recoverable-decode set — gains the
+new code, so `fsck`'s verdict on a corrupt loose object is unchanged. The loose path in git's `fatal:` line is composed by the caller from the id
 and the objects directory, never carried.
 
 ## Consequences
