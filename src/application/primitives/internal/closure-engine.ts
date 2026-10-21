@@ -321,7 +321,9 @@ async function resolveTips(
  * Resolve one want: peel tags (keeping each tag pending), then either seed
  * the commit walk or keep a tree/blob want pending. Commit seeds carry their
  * full body so the `noWalk` path can emit them (and, under `objects`, their
- * own tree) without a second read. Answers the commit seeded, if any.
+ * own tree) without a second read. A blob want is typed from its header
+ * alone, as git's `parse_object` does via `oid_object_info`; a tree keeps its
+ * read, as `parse_object` reads a tree. Answers the commit seeded, if any.
  */
 async function resolveWant(
   ctx: Context,
@@ -332,9 +334,13 @@ async function resolveWant(
   const peeled = await resolveTagChain(ctx, request.objectTypes, wantId, (tagId) =>
     resolving.pending.push({ id: tagId, type: 'tag' }),
   );
-  const obj = await readObject(ctx, peeled);
+  if (peeled.kind === 'blob') {
+    resolving.pending.push({ id: peeled.id, type: 'blob' });
+    return undefined;
+  }
+  const obj = await readObject(ctx, peeled.id);
   if (obj.type !== 'commit') {
-    resolving.pending.push({ id: peeled, type: obj.type });
+    resolving.pending.push({ id: peeled.id, type: obj.type });
     return undefined;
   }
   resolving.commitSeeds.push(obj);

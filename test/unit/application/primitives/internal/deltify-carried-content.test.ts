@@ -12,10 +12,11 @@ import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../src/application
 import { deltifyEntries } from '../../../../../src/application/primitives/internal/deltify.js';
 import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { DeltaPolicy } from '../../../../../src/domain/storage/delta-policy.js';
 import { PACK_ENTRY_TYPE } from '../../../../../src/domain/storage/pack-entry.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, writeSelfHashedLooseWithDeclaredSize } from '../fixtures.js';
 import { writeSyntheticPack } from '../pack-fixture.js';
 
 /** A pure function of (seed, index) — mirrors the sibling deltify/build-pack
@@ -167,6 +168,39 @@ describe('deltifyEntries — carried-content residency bound', () => {
         const nextCalls = readCallCountFor(spy, idNext);
         expect(boundaryCalls).toBe(nextCalls - 1);
         spy.mockRestore();
+      });
+    });
+  });
+});
+
+describe('deltifyEntries — a loose blob whose body overruns its size claim', () => {
+  const OVERRUN = Uint8Array.from({ length: 200 }, (_, i) => i);
+
+  describe.each([
+    ['the default context, where its content is carried', () => buildSeededContext()],
+    [
+      'a zero-byte deltaCache budget, where nothing is carried',
+      () => Promise.resolve(createMemoryContext({ deltaCacheMaxBytes: 0 })),
+    ],
+  ])('Given %s', (_label, makeCtx) => {
+    describe('When deltifyEntries runs', () => {
+      it('Then it refuses with LOOSE_OBJECT_CORRUPT naming the blob', async () => {
+        // Arrange
+        const ctx = await makeCtx();
+        const id = await writeSelfHashedLooseWithDeclaredSize(ctx, 'blob', 5, OVERRUN);
+        const honestId = await writeBlob(ctx, pseudoRandomBytes(7, 300));
+        const sut = deltifyEntries;
+
+        // Act
+        try {
+          await sut(ctx, [{ id }, { id: honestId }], DEFAULT_POLICY);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data as { code: string; id: string };
+          expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+          expect(data.id).toBe(id);
+        }
       });
     });
   });

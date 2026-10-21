@@ -2,9 +2,11 @@ import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import {
   getPackRegistry,
+  peekDeclaredObjectHeader,
   readDeclaredObjectHeader,
   readDeclaredObjectSize,
   readObjectMetadata,
+  readObjectMetadataWithContent,
 } from '../../../../src/application/primitives/read-object.js';
 import { decompressFailed, notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -23,7 +25,12 @@ import {
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
-import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
+import {
+  buildSeededContext,
+  writeLooseWithDeclaredSize,
+  writeRawObjectBytes,
+  writeSelfHashedLooseWithDeclaredSize,
+} from './fixtures.js';
 import type { EntrySpec } from './pack-fixture.js';
 import {
   buildSyntheticPack,
@@ -628,7 +635,9 @@ describe('readObjectMetadata', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const planted = 'a'.repeat(40) as ObjectId;
-        await readObjectMetadata(ctx, planted).catch(() => undefined);
+        await expect(readObjectMetadata(ctx, planted)).rejects.toMatchObject({
+          data: { code: 'OBJECT_NOT_FOUND' },
+        });
         await ctx.fs.write(
           `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(planted)}`,
           await ctx.compressor.deflate(ENC.encode('blob 3\0xyz')),
@@ -640,6 +649,78 @@ describe('readObjectMetadata', () => {
 
         // Assert
         expect(result).toEqual({ type: 'blob', uncompressedSize: 3 });
+      });
+    });
+  });
+});
+
+describe('readObjectMetadataWithContent', () => {
+  const CLAIM = 5;
+  const OVERRUN = Uint8Array.from({ length: 200 }, (_, i) => i);
+  const IN_WINDOW = Uint8Array.from({ length: 10 }, (_, i) => i + 1);
+
+  describe('Given a loose blob whose body overruns its claim past the header window', () => {
+    describe('When readObjectMetadataWithContent reads it', () => {
+      it('Then it refuses with LOOSE_OBJECT_CORRUPT naming the blob', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeSelfHashedLooseWithDeclaredSize(ctx, 'blob', CLAIM, OVERRUN);
+        const sut = readObjectMetadataWithContent;
+
+        // Act
+        try {
+          await sut(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data as { code: string; id: string };
+          expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+          expect(data.id).toBe(id);
+        }
+      });
+    });
+  });
+
+  describe('Given a loose blob whose body overruns its claim inside the header window', () => {
+    describe('When readObjectMetadataWithContent reads it', () => {
+      it('Then it serves the claimed prefix and sizes it by those bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeSelfHashedLooseWithDeclaredSize(ctx, 'blob', CLAIM, IN_WINDOW);
+        const sut = readObjectMetadataWithContent;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result.uncompressedSize).toBe(CLAIM);
+        expect(result.content?.length).toBe(CLAIM);
+        expect(Array.from(result.content ?? [])).toEqual(Array.from(IN_WINDOW.slice(0, CLAIM)));
+      });
+    });
+  });
+
+  describe('Given an in-window liar that appears after its id missed', () => {
+    describe('When readObjectMetadataWithContent reads it', () => {
+      it('Then the full-miss route sizes it by the claimed prefix', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const bytes = new Uint8Array([...serializeHeader('blob', CLAIM), ...IN_WINDOW]);
+        const planted = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        await expect(readObjectMetadataWithContent(ctx, planted)).rejects.toMatchObject({
+          data: { code: 'OBJECT_NOT_FOUND' },
+        });
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(planted)}`,
+          await ctx.compressor.deflate(bytes),
+        );
+        const sut = readObjectMetadataWithContent;
+
+        // Act
+        const result = await sut(ctx, planted);
+
+        // Assert
+        expect(result.uncompressedSize).toBe(CLAIM);
       });
     });
   });
@@ -1221,6 +1302,72 @@ describe('readDeclaredObjectHeader', () => {
         // Assert
         expect(base).toEqual({ type: 'blob', declaredSize: 4 });
         expect(delta).toEqual({ type: 'blob', declaredSize: 8 });
+      });
+    });
+  });
+});
+
+describe('peekDeclaredObjectHeader', () => {
+  describe('Given a loose blob', () => {
+    describe('When peekDeclaredObjectHeader is called', () => {
+      it('Then returns its type and declared size', async () => {
+        // Arrange
+        const content = ENC.encode('loose');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        const sut = peekDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', declaredSize: content.length });
+      });
+    });
+  });
+
+  describe('Given a packed blob', () => {
+    describe('When peekDeclaredObjectHeader is called', () => {
+      it('Then returns the pack entry header', async () => {
+        // Arrange
+        const content = ENC.encode('packed');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'peek-base', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const sut = peekDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, ids[0] as ObjectId);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', declaredSize: content.length });
+      });
+    });
+  });
+
+  describe('Given an id held nowhere and a promisor', () => {
+    describe('When peekDeclaredObjectHeader is called', () => {
+      it('Then answers undefined and never asks the promisor', async () => {
+        // Arrange
+        let fetches = 0;
+        const base = await buildSeededContext();
+        const ctx = {
+          ...base,
+          promisor: {
+            fetch: async (oids: readonly ObjectId[]) => {
+              fetches += 1;
+              return { attempted: true, requested: oids.length, fetched: 0 };
+            },
+          },
+        } as unknown as Context;
+        const sut = peekDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, 'e'.repeat(40) as ObjectId);
+
+        // Assert
+        expect({ result, fetches }).toEqual({ result: undefined, fetches: 0 });
       });
     });
   });

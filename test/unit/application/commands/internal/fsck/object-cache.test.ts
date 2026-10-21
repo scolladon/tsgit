@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import {
   buildObjectCache,
@@ -7,6 +7,8 @@ import {
   hasPackCopy,
   withUnreadableOverrides,
 } from '../../../../../../src/application/commands/internal/fsck/object-cache.js';
+import * as readObjectModule from '../../../../../../src/application/primitives/read-object.js';
+import { looseObjectCorrupt } from '../../../../../../src/domain/objects/error.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../../src/ports/context.js';
 import { writeSyntheticPack, writeSyntheticPackIn } from '../../../primitives/pack-fixture.js';
@@ -164,6 +166,35 @@ describe('Given a tree whose loose bytes live only in an alternate and do not pa
 
       // Assert
       expect(result.recovered.get(id)).toBe('tree');
+    });
+  });
+});
+
+describe('Given a blob held loose only in an alternate whose read refuses as a corrupt loose object', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  describe('When buildObjectCache classifies unreadable objects', () => {
+    it('Then its stored type is recovered from the alternate holder', async () => {
+      // Arrange
+      const donorObjects = '/repo/donor/objects';
+      const ctx = createMemoryContext({
+        files: { '/repo/.git/objects/info/alternates': enc.encode(`${donorObjects}\n`) },
+      });
+      await ctx.fs.mkdir(donorObjects);
+      const raw = new Uint8Array([...enc.encode('blob 5\0'), ...new Uint8Array(200)]);
+      const id = (await ctx.hash.hashHex(raw)) as ObjectId;
+      await ctx.fs.write(
+        `${donorObjects}/${id.slice(0, 2)}/${id.slice(2)}`,
+        await ctx.compressor.deflate(raw),
+      );
+      vi.spyOn(readObjectModule, 'readObject').mockRejectedValueOnce(looseObjectCorrupt(id));
+      const sut = buildObjectCache;
+
+      // Act
+      const result = await sut(ctx, new Set([id]), 'classify');
+
+      // Assert
+      expect(result.recovered.get(id)).toBe('blob');
     });
   });
 });

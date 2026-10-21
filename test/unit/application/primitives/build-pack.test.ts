@@ -31,7 +31,11 @@ import {
   parsePackHeader,
 } from '../../../../src/domain/storage/index.js';
 import { createSession } from '../../../../src/ports/context.js';
-import { buildSeededContext, buildSharedSubtreeChain } from './fixtures.js';
+import {
+  buildSeededContext,
+  buildSharedSubtreeChain,
+  writeSelfHashedLooseWithDeclaredSize,
+} from './fixtures.js';
 import { writeSyntheticPackIn } from './pack-fixture.js';
 
 const PACK_HEADER_BYTES = 12;
@@ -1127,6 +1131,29 @@ describe('buildPack core.bigFileThreshold read', () => {
         // Assert
         expect(result.objectCount).toBe(0);
       });
+    });
+  });
+});
+
+describe('Given a single loose blob whose body overruns its size claim past the header window', () => {
+  describe('When buildPack builds it without deltas', () => {
+    it('Then it refuses with LOOSE_OBJECT_CORRUPT naming the blob', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const overrun = Uint8Array.from({ length: 200 }, (_, i) => i);
+      const id = await writeSelfHashedLooseWithDeclaredSize(ctx, 'blob', 5, overrun);
+      const sut = buildPack;
+
+      // Act
+      try {
+        await sut(ctx, { objects: [{ id }], delta: false });
+        expect.unreachable();
+      } catch (error) {
+        // Assert
+        const data = (error as TsgitError).data as { code: string; id: string };
+        expect(data.code).toBe('LOOSE_OBJECT_CORRUPT');
+        expect(data.id).toBe(id);
+      }
     });
   });
 });

@@ -52,12 +52,13 @@
  */
 
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import { deflateSync } from 'node:zlib';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { RevParseEntry } from '../../src/application/commands/rev-parse.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
@@ -591,4 +592,18 @@ export const indexExtensionOf = async (
 ): Promise<Uint8Array | undefined> => {
   const index = await readIndex(createNodeContext({ workDir: dir }));
   return index.extensions.find((extension) => extension.signature === signature)?.data;
+};
+
+/** Writes a NEW loose blob at the SHA-1 of its own stored bytes — a
+ *  genuinely self-consistent size liar, unlike an overwrite of an existing
+ *  (honest) object's path with a mismatched claim. Returns the id the object
+ *  is stored at (never necessarily what a hash check recomputes for a
+ *  size-lying claim). */
+export const forgeOwnHash = async (dir: string, claim: number, body: Buffer): Promise<string> => {
+  const raw = Buffer.concat([Buffer.from(`blob ${claim}\0`), body]);
+  const sha1 = createHash('sha1').update(raw).digest('hex');
+  const target = path.join(dir, '.git', 'objects', sha1.slice(0, 2), sha1.slice(2));
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, deflateSync(raw));
+  return sha1;
 };

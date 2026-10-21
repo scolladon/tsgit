@@ -7,10 +7,11 @@ trigger: test:perf is red on a budget assertion while the machine carries load f
 evidence:
   - test/perf/application/commands/archive.perf.test.ts
   - test/perf/domain/refs/reftable-seek.perf.test.ts
+  - test/perf/domain/regex/extended-regex.perf.test.ts
 source: { run: lift-delta-chain-read-cap, phase: review, date: 2026-10-20 }
 status: active
 supersedes: []
-last-verified: 2026-10-20
+last-verified: 2026-10-21
 ---
 # 003 — Wall-clock budget tests fail under foreign load
 
@@ -36,8 +37,10 @@ Classify first: budget-shaped, failing set changes, file not in the diff — all
 A/B the failing file on `main` and on the branch, interleaved, three runs each, before any retry.
 Wait for the host to be quiet (load under 15, no foreign test process) rather than retrying under load.
 Retry with the wireit cache kept so only the red script re-runs; read "Ran N and skipped M" honestly.
+Judge "quiet" by load and CPU %, never by a process name: an idle helper that matched the name stalled a wait for an hour.
 
 ## Evidence
 
 `test/perf/application/commands/archive.perf.test.ts` and
 `test/perf/domain/refs/reftable-seek.perf.test.ts` — the two budget suites that alternated.
+`test/perf/domain/regex/extended-regex.perf.test.ts` — the `runs within 8 times RegExp` row at 8.29 under five foreign mutation jobs (load 20); 231 s later, at load 2.6, the cached retry passed.

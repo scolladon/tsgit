@@ -51,6 +51,7 @@ import { allObjectIds, entryOffsets } from '../../src/domain/storage/pack-index.
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
+  forgeOwnHash,
   GIT_AVAILABLE,
   git,
   runGitEnv,
@@ -2328,6 +2329,219 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a history git c
         expect(fatalLines).toEqual([`fatal: bad tree object ${blob}\n`]);
         expect(result.tasksRun).toEqual(['commit-graph']);
         expect(git(dir, 'count-objects')).toBe(git(twin, 'count-objects'));
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying loose blob', () => {
+  const OVERRUN_BODY = Buffer.alloc(200, 0x61);
+  const DECLARED_SIZE = 5;
+  const PINNED_DATES = {
+    GIT_AUTHOR_DATE: '1700000000 +0000',
+    GIT_COMMITTER_DATE: '1700000000 +0000',
+  };
+  const bases: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(bases.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  interface LiarBaseOptions {
+    readonly reachable: boolean;
+    readonly prepack: boolean;
+    readonly declaredSize?: number;
+    readonly body?: Buffer;
+  }
+
+  const buildLiarBase = async ({
+    reachable,
+    prepack,
+    declaredSize = DECLARED_SIZE,
+    body = OVERRUN_BODY,
+  }: LiarBaseOptions): Promise<{ readonly dir: string; readonly liarId: string }> => {
+    const dir = await initRepo('liar');
+    bases.push(dir);
+    await addCommit(dir, 'c0');
+    if (prepack) git(dir, 'repack', '-d', '-q');
+    const liarId = await forgeOwnHash(dir, declaredSize, body);
+    if (reachable) {
+      git(dir, 'update-index', '--add', '--cacheinfo', `100644,${liarId},liar.bin`);
+      execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'liar'], {
+        env: { ...runGitEnv(), ...PINNED_DATES },
+      });
+    }
+    return { dir, liarId };
+  };
+
+  const corruptLines = (id: string): string =>
+    `error: corrupt loose object '${id}'\n` +
+    `fatal: loose object ${id} (stored in .git/objects/${id.slice(0, 2)}/${id.slice(2)}) is corrupt\n`;
+
+  const packDirNames = async (dir: string): Promise<readonly string[]> =>
+    readdir(path.join(dir, '.git', 'objects', 'pack'));
+
+  const registeredPacks = async (dir: string): Promise<readonly string[]> =>
+    (await packDirNames(dir)).filter((name) => /^pack-.*\.pack$/.test(name)).sort();
+
+  const mtimesSidecars = async (dir: string): Promise<readonly string[]> =>
+    (await packDirNames(dir)).filter((name) => name.endsWith('.mtimes'));
+
+  const assertStoreUntouched = async (
+    dir: string,
+    baseDir: string,
+    liarId: string,
+    countBefore: string,
+  ): Promise<void> => {
+    expect(await registeredPacks(dir)).toEqual(await registeredPacks(baseDir));
+    expect(await mtimesSidecars(dir)).toEqual([]);
+    expect(git(dir, 'count-objects')).toBe(countBefore);
+    expect(await readFile(looseGitPath(dir, liarId))).toEqual(
+      await readFile(looseGitPath(baseDir, liarId)),
+    );
+  };
+
+  describe.each([
+    ['reachable', { reachable: true, prepack: false }],
+    ['unreachable and unexpired, no prior pack', { reachable: false, prepack: false }],
+    ['unreachable and unexpired, with a prior pack', { reachable: false, prepack: true }],
+  ] as const)('Given a %s size-lying loose blob', (_label, options) => {
+    describe('When both tools run the gc task', () => {
+      it('Then both refuse with the corrupt-object refusal and leave the store untouched', async () => {
+        // Arrange
+        const { dir: baseDir, liarId } = await buildLiarBase(options);
+        const twin = await makeTwin(baseDir, 'liar');
+        const countBefore = git(baseDir, 'count-objects');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
+
+        // Act
+        const { result } = await runOursGc(twin.oursDir);
+
+        // Assert
+        const [refused] = result.tasksFailed;
+        expect(refused?.code).toBe('LOOSE_OBJECT_CORRUPT');
+        expect(refused?.data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: liarId });
+        expect(result.tasksRun).not.toContain('gc');
+        expect(peer.exitCode).toBe(1);
+        expect(peer.stderr).toBe(
+          `${corruptLines(liarId)}fatal: failed to run repack\nerror: task 'gc' failed\n`,
+        );
+        await assertStoreUntouched(twin.peerDir, baseDir, liarId, countBefore);
+        await assertStoreUntouched(twin.oursDir, baseDir, liarId, countBefore);
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given a reachable size-lying loose blob', () => {
+    describe('When git gc runs on it', () => {
+      it('Then git refuses with the corrupt-object lines and exits 128', async () => {
+        // Arrange
+        const { dir, liarId } = await buildLiarBase({ reachable: true, prepack: false });
+
+        // Act
+        const result = tryRunGitWithExit(['-C', dir, 'gc']);
+
+        // Assert
+        expect(result.exitCode).toBe(128);
+        expect(result.stderr).toBe(`${corruptLines(liarId)}fatal: failed to run repack\n`);
+      });
+    });
+  });
+
+  describe('Given an unreachable unexpired size-lying loose blob and gc.cruftPacks=false', () => {
+    describe('When both tools run the gc task', () => {
+      it('Then both succeed, keep the liar loose and register one pack', async () => {
+        // Arrange
+        const { dir: baseDir, liarId } = await buildLiarBase({
+          reachable: false,
+          prepack: false,
+        });
+        git(baseDir, 'config', 'gc.cruftPacks', 'false');
+        const twin = await makeTwin(baseDir, 'liar');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
+
+        // Act
+        const { result } = await runOursGc(twin.oursDir);
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(peer.stderr).toBe('');
+        expect(result.tasksFailed).toEqual([]);
+        for (const dir of [twin.peerDir, twin.oursDir]) {
+          expect(await readFile(looseGitPath(dir, liarId))).toEqual(
+            await readFile(looseGitPath(baseDir, liarId)),
+          );
+          expect(await registeredPacks(dir)).toHaveLength(1);
+        }
+        expect(git(twin.oursDir, 'count-objects')).toBe(git(twin.peerDir, 'count-objects'));
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given an unreachable size-lying loose blob and gc.pruneExpire=now', () => {
+    describe('When both tools run the gc task', () => {
+      it('Then both succeed and the liar is gone on both', async () => {
+        // Arrange
+        const { dir: baseDir, liarId } = await buildLiarBase({
+          reachable: false,
+          prepack: false,
+        });
+        git(baseDir, 'config', 'gc.pruneExpire', 'now');
+        const twin = await makeTwin(baseDir, 'liar');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
+
+        // Act
+        const { result } = await runOursGc(twin.oursDir);
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(result.tasksFailed).toEqual([]);
+        for (const dir of [twin.peerDir, twin.oursDir]) {
+          await expect(readFile(looseGitPath(dir, liarId))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+        }
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  const IN_WINDOW_BODY = Buffer.from('0123456789');
+
+  describe.each([
+    ['reachable', true],
+    ['unreachable and unexpired', false],
+  ] as const)('Given a %s in-window size-lying loose blob', (_label, reachable) => {
+    describe('When both tools run the gc task', () => {
+      it('Then both pack the truncation, drop the loose copy and fsck flags it', async () => {
+        // Arrange
+        const { dir: baseDir, liarId } = await buildLiarBase({
+          reachable,
+          prepack: false,
+          body: IN_WINDOW_BODY,
+        });
+        const twin = await makeTwin(baseDir, 'liar');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
+
+        // Act
+        const { result } = await runOursGc(twin.oursDir);
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(result.tasksFailed).toEqual([]);
+        for (const dir of [twin.peerDir, twin.oursDir]) {
+          expect(git(dir, 'cat-file', '-s', liarId).trim()).toBe('5');
+          await expect(readFile(looseGitPath(dir, liarId))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+          const fsck = tryRunGitWithExit(['-C', dir, 'fsck']);
+          expect(fsck.exitCode).toBe(4);
+          expect(fsck.stderr).toContain(`error: packed ${liarId} from `);
+          expect(await mtimesSidecars(dir)).toHaveLength(reachable ? 0 : 1);
+        }
+        await disposeTwin(twin);
       });
     });
   });

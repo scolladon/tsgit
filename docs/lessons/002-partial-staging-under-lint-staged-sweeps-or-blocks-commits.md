@@ -11,7 +11,7 @@ evidence:
 source: { run: lift-delta-chain-read-cap, phase: implementation, date: 2026-10-20 }
 status: active
 supersedes: []
-last-verified: 2026-10-20
+last-verified: 2026-10-21
 ---
 # 002 — Partial staging under lint-staged sweeps or blocks commits
 
@@ -42,3 +42,4 @@ Never `--no-verify`; a refused commit is a signal to re-stage, not to bypass.
 ## Evidence
 
 `.husky/pre-commit` and the `lint-staged` block of `package.json` — the hook and its tasks.
+`.husky/commit-msg` — a commitlint refusal after lint-staged ran leaves a `lint-staged automatic backup` stash behind; three sat on the shared stash list after the gc size-lying run.

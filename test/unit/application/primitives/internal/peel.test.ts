@@ -7,7 +7,7 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { writeForgedTagLoop } from '../fixtures.js';
+import { writeForgedTagLoop, writeSelfHashedLooseWithDeclaredSize } from '../fixtures.js';
 
 interface Logging {
   readonly ctx: Context;
@@ -86,6 +86,77 @@ describe('peel', () => {
           result: { code: 'OBJECT_NOT_FOUND', id: loop },
           logged: [],
         });
+      });
+    });
+  });
+
+  describe('Given a blob terminal that overruns its size claim past the header window', () => {
+    const OVERRUN_BODY = Uint8Array.from({ length: 200 }, (_, i) => i);
+    const DECLARED_SIZE = 5;
+
+    describe('When peel targets a commit from the blob itself', () => {
+      it('Then it refuses OBJECT_NOT_FOUND for the blob id without reading its body', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const liar = await writeSelfHashedLooseWithDeclaredSize(
+          ctx,
+          'blob',
+          DECLARED_SIZE,
+          OVERRUN_BODY,
+        );
+        const sut = peel;
+
+        // Act
+        const result = await caught(() => sut(ctx, createObjectTypeTable(), liar, 'commit'));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: liar });
+      });
+    });
+
+    describe('When peel targets a commit from an annotated tag over the blob', () => {
+      it('Then it refuses OBJECT_NOT_FOUND for the blob the chain ends at', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const liar = await writeSelfHashedLooseWithDeclaredSize(
+          ctx,
+          'blob',
+          DECLARED_SIZE,
+          OVERRUN_BODY,
+        );
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: { object: liar, objectType: 'blob', tagName: 't', message: 'm', extraHeaders: [] },
+        });
+        const sut = peel;
+
+        // Act
+        const result = await caught(() => sut(ctx, createObjectTypeTable(), tag, 'commit'));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: liar });
+      });
+    });
+  });
+
+  describe('Given an honest blob terminal', () => {
+    describe('When peel targets a commit', () => {
+      it('Then it refuses OBJECT_NOT_FOUND for the blob id', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('honest\n'),
+        });
+        const sut = peel;
+
+        // Act
+        const result = await caught(() => sut(ctx, createObjectTypeTable(), blob, 'commit'));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: blob });
       });
     });
   });

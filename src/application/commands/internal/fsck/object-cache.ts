@@ -126,6 +126,7 @@ function isRecoveryCandidate(err: unknown): err is DecodeError {
 const RECOVERABLE_DECODE_CODES: ReadonlySet<string> = new Set([
   'DECOMPRESS_FAILED',
   'INVALID_OBJECT_HEADER',
+  'LOOSE_OBJECT_CORRUPT',
   'INVALID_TREE_ENTRY',
   'INVALID_COMMIT',
   'INVALID_TAG',

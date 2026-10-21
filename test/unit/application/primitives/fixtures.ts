@@ -360,13 +360,41 @@ export async function writeLooseWithDeclaredSize(
   declaredSize: number,
   content: Uint8Array,
 ): Promise<void> {
+  const bytes = looseBytesWithClaim(type, declaredSize, content);
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+  const compressed = await ctx.compressor.deflate(bytes);
+  await ctx.fs.write(loosePath, compressed);
+}
+
+/**
+ * Plant a size-lying loose object at the SHA-1 of its own stored bytes (a
+ * claim that disagrees with `content`), git's shape for a planted liar. Call
+ * it before any read touches the id's fanout prefix: the loose fanout cache
+ * only learns tsgit's own writes.
+ */
+export async function writeSelfHashedLooseWithDeclaredSize(
+  ctx: Context,
+  type: ObjectType,
+  declaredSize: number,
+  content: Uint8Array,
+): Promise<ObjectId> {
+  const bytes = looseBytesWithClaim(type, declaredSize, content);
+  const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+  await ctx.fs.write(loosePath, await ctx.compressor.deflate(bytes));
+  return id;
+}
+
+function looseBytesWithClaim(
+  type: ObjectType,
+  declaredSize: number,
+  content: Uint8Array,
+): Uint8Array {
   const header = serializeHeader(type, declaredSize);
   const bytes = new Uint8Array(header.length + content.length);
   bytes.set(header, 0);
   bytes.set(content, header.length);
-  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
-  const compressed = await ctx.compressor.deflate(bytes);
-  await ctx.fs.write(loosePath, compressed);
+  return bytes;
 }
 
 /**

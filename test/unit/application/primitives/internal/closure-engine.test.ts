@@ -28,7 +28,7 @@ import * as readObjectModule from '../../../../../src/application/primitives/rea
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
-import { invalidWalkInput } from '../../../../../src/domain/error.js';
+import { invalidWalkInput, permissionDenied } from '../../../../../src/domain/error.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type {
   AuthorIdentity,
@@ -57,6 +57,7 @@ import {
   buildSharedSubtreeChain,
   seedMaxTreeDepth,
   writeCommitGraph,
+  writeSelfHashedLooseWithDeclaredSize,
 } from '../fixtures.js';
 import { writeSyntheticBitmap, writeSyntheticPack, writeSyntheticPackIn } from '../pack-fixture.js';
 
@@ -90,6 +91,14 @@ const writeBlob = async (ctx: Context, content: string): Promise<ObjectId> => {
   };
   return writeObject(ctx, blob);
 };
+
+const writeOverrunningLiar = (ctx: Context): Promise<ObjectId> =>
+  writeSelfHashedLooseWithDeclaredSize(
+    ctx,
+    'blob',
+    5,
+    Uint8Array.from({ length: 200 }, (_, i) => i),
+  );
 
 const writeCommit = async (
   ctx: Context,
@@ -397,6 +406,39 @@ describe('computeClosure', () => {
     });
   });
 
+  describe('Given a tag chain deeper than the unwrap cap', () => {
+    describe('When computeClosure walks the outermost tag with object typing', () => {
+      it('Then the tag at the cap is listed as a tag and the commit is never seeded', async () => {
+        // Arrange — 17 annotated tags over one commit; the walk unwraps 16 and
+        // stops on the innermost tag, which it must still type as a tag.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'capped');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
+        const commitId = await writeCommit(ctx, treeId, [], 'capped');
+        const tagIds: ObjectId[] = [await writeTag(ctx, commitId, 'commit', 'v1')];
+        for (let depth = 2; depth <= 17; depth += 1) {
+          tagIds.push(await writeTag(ctx, tagIds[depth - 2] as ObjectId, 'tag', `v${depth}`));
+        }
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tagIds[16] as ObjectId],
+          not: [],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        const byId = new Map(result.objects.map((o) => [o.id, o.type]));
+        expect(byId.get(tagIds[0] as ObjectId)).toBe('tag');
+        expect(tagIds.every((id) => byId.get(id) === 'tag')).toBe(true);
+        expect(byId.has(commitId)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a want that resolves to a tree', () => {
     describe('When computeClosure is called with objects: true', () => {
       it('Then it contributes itself plus its own subtree', async () => {
@@ -448,6 +490,163 @@ describe('computeClosure', () => {
         // Assert — no path, and the directly-wanted-blob divergence: git
         // would use the pending object's own name, tsgit names it 0.
         expect(result.objects).toStrictEqual([{ id: blobId, type: 'blob', nameHash: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a blob want whose loose body overruns its size claim past the header window', () => {
+    describe('When computeClosure walks it with object typing', () => {
+      it('Then the blob is listed as a pending blob and its body is never inflated', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const liarId = await writeOverrunningLiar(ctx);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [liarId],
+          not: [],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect(result.objects).toStrictEqual([{ id: liarId, type: 'blob', nameHash: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a tag whose target is such a blob', () => {
+    describe('When computeClosure walks the tag want', () => {
+      it('Then the tag and the blob are listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const liarId = await writeOverrunningLiar(ctx);
+        const tagId = await writeTag(ctx, liarId, 'blob', 'liar');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tagId],
+          not: [],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect(result.objects.map((o) => [o.id, o.type])).toStrictEqual([
+          [tagId, 'tag'],
+          [liarId, 'blob'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a blob want that only the delta cache holds', () => {
+    describe('When computeClosure walks it', () => {
+      it('Then the header miss falls through to the content read and the blob is listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('cache only');
+        const blobId = (await ctx.hash.hashHex(
+          new TextEncoder().encode(`blob ${content.length}\0cache only`),
+        )) as ObjectId;
+        ctx.deltaCache.set(blobId, { type: 'blob', content }, content.length);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
+
+        // Assert
+        expect(result.objects).toStrictEqual([{ id: blobId, type: 'blob', nameHash: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a blob want', () => {
+    describe('When computeClosure types it', () => {
+      it('Then its header is peeked exactly once and its body never read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'honest');
+        const peekSpy = vi.spyOn(readObjectModule, 'peekDeclaredObjectHeader');
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+        const rawSpy = vi.spyOn(readObjectModule, 'readRawObject');
+        const sut = computeClosure;
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
+
+        // Assert
+        expect(peekSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(1);
+        expect(readSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(0);
+        expect(rawSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a want whose header peek fails with a fault other than a miss', () => {
+    describe('When computeClosure resolves it', () => {
+      it('Then that fault propagates and the body is never read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'unreadable');
+        vi.spyOn(readObjectModule, 'peekDeclaredObjectHeader').mockRejectedValueOnce(
+          permissionDenied('objects/xx'),
+        );
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+        const sut = computeClosure;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: 'objects/xx',
+        });
+        expect(readSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a want missing everywhere in a partial clone', () => {
+    describe('When computeClosure resolves it', () => {
+      it('Then the promisor is asked once and the miss is refused', async () => {
+        // Arrange
+        const missing = 'f'.repeat(40) as ObjectId;
+        let fetches = 0;
+        const ctx = {
+          ...createMemoryContext({}),
+          promisor: {
+            fetch: async (oids: readonly ObjectId[]) => {
+              fetches += 1;
+              return { attempted: true, requested: oids.length, fetched: 0 };
+            },
+          },
+        } as unknown as Context;
+        const sut = computeClosure;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { tier: 'walk', wants: [missing], not: [], objects: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, fetches }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: missing },
+          fetches: 1,
+        });
       });
     });
   });

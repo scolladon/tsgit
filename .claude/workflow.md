@@ -64,6 +64,12 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   transient reason`, so the whole `e2e (webkit)` job goes red (reproduced twice on PR #295;
   green on the previous build; Chromium and Firefox unaffected). Unpin once a later release
   passes the WebKit e2e job.
+  **`@biomejs/biome` is held at 2.5.15**: release 2.6.0 declares every platform package at
+  `2.6.0`, but `@biomejs/cli-darwin-arm64` is published only up to `2.5.15`, so `npm install`
+  silently skips the unresolvable optional dependency and every `biome` invocation on an Apple
+  Silicon machine dies with `Cannot find module '@biomejs/cli-darwin-arm64/biome'` (reproduced
+  2026-10-21; the Linux CI runners would not see it). Same class as the `jscpd` hold above. Unpin
+  once the darwin-arm64 package is published at the release's version.
   **`@types/node` is skipped**: DefinitelyTyped publishes one stream per Node major and
   points the `latest` dist-tag at the LTS line, which is `22.20.2`, while this repo tracks
   the TypeScript-aligned `ts6.0` tag at `26.5.1` — correct for TypeScript 6.x and Node 26.

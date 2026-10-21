@@ -74,12 +74,10 @@ type RawObjectResult =
  *  fails `readObject`'s own read (the SAME `inflateLooseBuffered` call), so
  *  `reachabilityUnknown` is false — the general resolver never disagrees. */
 function looseHeaderFailure(err: TsgitError): RawObjectResult {
-  // A zlib decode fault (DECOMPRESS_FAILED) reaches here too, now that the
-  // buffered tier's own inflate call can fail before parseHeader ever runs
-  // — the branch below is genuinely reachable both ways, even though its
-  // downstream msgId turns out the same regardless (see the marker below).
+  // inflateLooseBuffered throws three codes that reach here: INVALID_OBJECT_HEADER,
+  // DECOMPRESS_FAILED and LOOSE_OBJECT_CORRUPT. Only INVALID_OBJECT_HEADER's
+  // reason is consulted; the other two read as ''.
   const reason =
-    // Stryker disable next-line ConditionalExpression: equivalent — looseHeaderFailure only ever receives INVALID_OBJECT_HEADER or DECOMPRESS_FAILED (inflateLooseBuffered's only throw codes); both carry .reason and no DECOMPRESS_FAILED reason starts with 'unknown object type', so msgId is unchanged either way.
     err.data.code === 'INVALID_OBJECT_HEADER'
       ? (err.data as { reason: string }).reason
       : // Stryker disable next-line StringLiteral: equivalent — reason is read only by reason.startsWith('unknown object type'); neither '' nor 'Stryker was here!' starts with that prefix, so msgId stays 'unterminatedHeader'.

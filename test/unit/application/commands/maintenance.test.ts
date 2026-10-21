@@ -55,6 +55,7 @@ import {
   multiPackIndexPath,
   packsDir,
 } from '../../../../src/application/primitives/path-layout.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import {
   getPackRegistry,
   readObject,
@@ -2633,6 +2634,31 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given an unchanged cruft survivor set', () => {
+    describe('When the next gc runs', () => {
+      it('Then no survivor is re-read for verification', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const blobId = await writeLooseBlob(ctx, 'survivor-not-reverified');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const readSpy = vi.spyOn(readObjectMod, 'readObject');
+        readSpy.mockClear();
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftPackId).toBe(first.cruftPackId);
+        expect(readSpy).not.toHaveBeenCalledWith(ctx, blobId, { verifyHash: true });
+        readSpy.mockRestore();
+      });
+    });
+  });
+
   describe("Given a crash state with two valid cruft packs whose union exactly matches this run's survivors", () => {
     describe('When the next gc runs', () => {
       it('Then it still rebuilds via buildPack — the noop shortcut requires exactly one existing cruft pack', async () => {
@@ -2673,6 +2699,44 @@ describe('maintenance', () => {
         expect(third.cruftObjectsRetained).toBe(2);
         expect(buildPackSpy).toHaveBeenCalled();
         buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a crash state whose rebuilt cruft pack reproduces an existing cruft sha', () => {
+    describe('When the next gc runs', () => {
+      it('Then no survivor is re-read for verification', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const oldBlobId = await writeLooseBlob(ctx, 'sha-reuse-old');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), oldBlobId), 1_900_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const c1Sha = first.cruftPackId as string;
+        const packDir = packDirOf(ctx);
+        const newBlobId = await writeLooseBlob(ctx, 'sha-reuse-new');
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), newBlobId), 1_950_000_000);
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path.startsWith(`${packDir}/pack-${c1Sha}.`)) return;
+          return originalRm(path);
+        });
+        const second = await sut(ctx, { tasks: ['gc'] });
+        rmSpy.mockRestore();
+        const readSpy = vi.spyOn(readObjectMod, 'readObject');
+        readSpy.mockClear();
+
+        // Act
+        const third = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(third.cruftPackId).toBe(second.cruftPackId);
+        expect(readSpy).not.toHaveBeenCalledWith(ctx, oldBlobId, { verifyHash: true });
+        expect(readSpy).not.toHaveBeenCalledWith(ctx, newBlobId, { verifyHash: true });
+        readSpy.mockRestore();
       });
     });
   });

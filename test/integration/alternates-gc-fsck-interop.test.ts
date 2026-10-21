@@ -42,6 +42,7 @@ import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import {
   disableAutoMaintenance,
+  forgeOwnHash,
   GIT_AVAILABLE,
   runGit,
   tryRunGitWithExit,
@@ -366,6 +367,71 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
           expect([...packedOids(objectsOf(pair.tsgitSide))].sort()).toEqual(expectedPacked);
           expect(looseOids(objectsOf(pair.gitSide))).toEqual([oid]);
           expect(looseOids(objectsOf(pair.tsgitSide))).toEqual([oid]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a borrower reaching a size-lying loose blob that only the donor holds', () => {
+    const OVERRUN_BODY = Buffer.alloc(200, 0x61);
+    const DECLARED_SIZE = 5;
+
+    const reachLiar = (borrower: string, liarId: string): void => {
+      runGit(['-C', borrower, 'update-index', '--add', '--cacheinfo', `100644,${liarId},liar.bin`]);
+      runGit(['-C', borrower, 'commit', '-q', '-m', 'reach liar']);
+    };
+
+    describe('When git gc runs against tsgit gc', () => {
+      it(
+        'Then both succeed and the donor liar is untouched',
+        async () => {
+          // Arrange
+          const pair = pairOf('donor-only-liar');
+          const liarId = await forgeOwnHash(pair.donor, DECLARED_SIZE, OVERRUN_BODY);
+          const liarPath = path.join(objectsOf(pair.donor), liarId.slice(0, 2), liarId.slice(2));
+          const before = readFileSync(liarPath);
+          reachLiar(pair.gitSide, liarId);
+          reachLiar(pair.tsgitSide, liarId);
+          const sut = await openRepository({ cwd: pair.tsgitSide });
+
+          // Act
+          runGit(['-C', pair.gitSide, 'gc', '-q']);
+          const result = await sut.maintenance({ tasks: ['gc'] });
+
+          // Assert
+          expect(result.tasksFailed).toEqual([]);
+          expect(readFileSync(liarPath)).toEqual(before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a borrower whose ref names a size-lying loose blob that only the donor holds', () => {
+    const OVERRUN_BODY = Buffer.alloc(200, 0x61);
+    const DECLARED_SIZE = 5;
+
+    describe('When git gc runs against tsgit gc', () => {
+      it(
+        'Then both succeed and the donor liar is untouched',
+        async () => {
+          // Arrange
+          const pair = pairOf('donor-only-liar-ref');
+          const liarId = await forgeOwnHash(pair.donor, DECLARED_SIZE, OVERRUN_BODY);
+          const liarPath = path.join(objectsOf(pair.donor), liarId.slice(0, 2), liarId.slice(2));
+          const before = readFileSync(liarPath);
+          runGit(['-C', pair.gitSide, 'update-ref', 'refs/tags/liar', liarId]);
+          runGit(['-C', pair.tsgitSide, 'update-ref', 'refs/tags/liar', liarId]);
+          const sut = await openRepository({ cwd: pair.tsgitSide });
+
+          // Act
+          runGit(['-C', pair.gitSide, 'gc', '-q']);
+          const result = await sut.maintenance({ tasks: ['gc'] });
+
+          // Assert
+          expect(result.tasksFailed).toEqual([]);
+          expect(readFileSync(liarPath)).toEqual(before);
         },
         ROW_TIMEOUT,
       );

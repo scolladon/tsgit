@@ -38,6 +38,11 @@ done
 # to the lenient read seam, the rewrite/move store verbs and the
 # byte-faithful rewrite tier — runtime code shipped in every distribution
 # form, none removable without dropping the behaviour.
+# Raised 1439 -> 1440 KiB by the gc size-lying loose blob work: the measured
+# pack landed at 1 474 199 B, 663 B over the old cap, attributable to the gc
+# build-then-install staging, the loose-truncation verify, the header-only blob
+# want typing and the LOOSE_OBJECT_CORRUPT refusal — runtime code shipped in
+# every distribution form, none removable without dropping the behaviour.
 # Raised 885 -> 886 KiB by the tree entry-name byte-sensitivity work: the
 # measured pack landed at 906 622 B, 382 B over the old cap, attributable to
 # the raw name bytes every tree entry now carries, the factory that copies
@@ -357,7 +362,7 @@ done
 # Raised 1436 -> 1439 KiB by the review fixes of that work: the measured pack
 # landed at 1 472 330 B, attributable to the cache-tree repair abort, the
 # pruned HEAD/target walk of a branch switch and the bounded literal read.
-SIZE_CAP=$((1439 * 1024))
+SIZE_CAP=$((1440 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

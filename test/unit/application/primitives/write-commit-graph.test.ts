@@ -27,7 +27,11 @@ import type {
 import { zeroOid } from '../../../../src/domain/objects/index.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext, writeRawObjectBytes } from './fixtures.js';
+import {
+  buildSeededContext,
+  writeRawObjectBytes,
+  writeSelfHashedLooseWithDeclaredSize,
+} from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Alice',
@@ -321,6 +325,30 @@ describe('writeCommitGraph', () => {
         const layer = parseCommitGraphLayer(await ctx.fs.read(commitGraphPath(gitDir)));
         expect(layer.commitCount).toBe(1);
         expect(positionOf(layer, commitId)).not.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a ref naming a loose blob that overruns its size claim', () => {
+    describe('When the reachable commit-graph is written', () => {
+      it('Then the ref contributes no root and the write succeeds', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const commitId = await rootCommit(ctx, AUTHOR.timestamp, 'reachable');
+        await pointRef(ctx, 'refs/heads/main', commitId);
+        const liar = await writeSelfHashedLooseWithDeclaredSize(
+          ctx,
+          'blob',
+          5,
+          Uint8Array.from({ length: 200 }, (_, i) => i),
+        );
+        await pointRef(ctx, 'refs/tags/liar', liar);
+
+        // Act
+        const result = await writeCommitGraph(ctx);
+
+        // Assert
+        expect(result.commitCount).toBe(1);
       });
     });
   });

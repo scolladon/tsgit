@@ -19,6 +19,7 @@ import {
   enterRefBase,
   isBase,
   LOOSE_HEADER_WINDOW,
+  type LooseReadMode,
   looseHeaderTooLong,
   ofsDeltaBaseOffset,
   readEntryHeaderWithChunk,
@@ -242,7 +243,7 @@ export interface ObjectMetadata {
 }
 
 /**
- * `ObjectMetadata` plus the content the loose route already inflated to
+ * `ObjectMetadata` plus the content the loose route already read to
  * compute `uncompressedSize` — see `readObjectMetadataWithContent`. Every
  * packed route leaves `content` `undefined`: a packed base entry gets its
  * size straight from the pack header (zero inflate) and a packed delta gets
@@ -263,24 +264,36 @@ function isDeltaHeader(header: PackEntryHeader): header is DeltaEntryHeader {
 }
 
 export async function readObjectMetadata(ctx: Context, id: ObjectId): Promise<ObjectMetadata> {
-  const { type, uncompressedSize } = await readObjectMetadataWithContent(ctx, id);
+  const { type, uncompressedSize } = await readMetadataWithContentIn(ctx, id, 'streamed');
   return { type, uncompressedSize };
 }
 
 /**
- * Like `readObjectMetadata`, but surfaces the loose route's already-inflated
- * content instead of discarding it. A caller that needs both metadata and
- * content for the same object (deltify's emission-order pass) reads a loose
- * object once instead of twice; packed routes are untouched and never carry
- * content (see `ObjectMetadataWithContent`).
+ * The pack builders' read: unlike `readObjectMetadata` (content-derived,
+ * streamed tier), a loose object is read through the buffered tier, so a
+ * body overrunning its size claim past the header window refuses with
+ * `LOOSE_OBJECT_CORRUPT`, an in-window overrun yields its truncation, and
+ * `uncompressedSize` is the length of the bytes served as `content`. A caller
+ * that needs both metadata and content for the same object (deltify's
+ * emission-order pass, the pack builder's base read) reads a loose object
+ * once instead of twice; packed routes never carry content (see
+ * `ObjectMetadataWithContent`).
  */
-export async function readObjectMetadataWithContent(
+export function readObjectMetadataWithContent(
   ctx: Context,
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
+  return readMetadataWithContentIn(ctx, id, 'buffered');
+}
+
+async function readMetadataWithContentIn(
+  ctx: Context,
+  id: ObjectId,
+  mode: LooseReadMode,
+): Promise<ObjectMetadataWithContent> {
   const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
   return withLazyFetchRetry(ctx, id, store.primary.registry, () =>
-    resolveObjectMetadataWithContent(ctx, store, id),
+    resolveObjectMetadataWithContent(ctx, store, id, mode),
   );
 }
 
@@ -318,6 +331,20 @@ export async function readDeclaredObjectHeader(
   );
 }
 
+/**
+ * The header the local stores hold for `id`, or `undefined` on a miss: one
+ * pass, no promisor fetch, no rescan. git's `parse_object` types a want
+ * through `oid_object_info` from what the stores hold; the content read that
+ * follows owns the promisor fetch, the rescan and the final not-found.
+ */
+export async function peekDeclaredObjectHeader(
+  ctx: Context,
+  id: ObjectId,
+): Promise<DeclaredObjectHeader | undefined> {
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return lookupDeclaredHeaderOnce(ctx, store, id);
+}
+
 export interface DeclaredObjectHeader {
   readonly type: ObjectType;
   readonly declaredSize: number;
@@ -328,6 +355,16 @@ async function resolveDeclaredHeader(
   store: ObjectStore,
   id: ObjectId,
 ): Promise<DeclaredObjectHeader> {
+  const header = await lookupDeclaredHeaderOnce(ctx, store, id);
+  if (header === undefined) throw objectNotFound(id);
+  return header;
+}
+
+async function lookupDeclaredHeaderOnce(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+): Promise<DeclaredObjectHeader | undefined> {
   for (const source of store.sources) {
     const hit = await source.registry.lookup(id);
     if (hit !== undefined) {
@@ -337,7 +374,7 @@ async function resolveDeclaredHeader(
     const looseHeader = await readLooseDeclaredHeader(ctx, id, looseCacheLocation(store, source));
     if (looseHeader !== undefined) return looseHeader;
   }
-  throw objectNotFound(id);
+  return undefined;
 }
 
 /**
@@ -463,25 +500,28 @@ async function resolveObjectMetadataWithContent(
   ctx: Context,
   store: ObjectStore,
   id: ObjectId,
+  mode: LooseReadMode,
 ): Promise<ObjectMetadataWithContent> {
   for (const source of store.sources) {
     const hit = await source.registry.lookup(id);
     if (hit !== undefined) return readPackedMetadata(ctx, source.registry, hit, id);
-    const loose = await metadataFromLoose(ctx, store, source, id);
+    const loose = await metadataFromLoose(ctx, store, source, id, mode);
     if (loose !== undefined) return loose;
   }
-  return metadataAfterFullMiss(ctx, store, id);
+  return metadataAfterFullMiss(ctx, store, id, mode);
 }
 
-/** This metadata stays content-derived, never the header claim a size-lying
- *  blob carries, so the loose read takes the streaming tier — never the
- *  buffered default the public `readRawObject` takes. The loose route already
- *  paid for the inflate, so the content is handed back too. */
+/** The loose read takes the caller's tier: the pack builders pass `buffered`
+ *  (a size-lying blob refuses or truncates exactly as `readRawObject` does),
+ *  while `readObjectMetadata` alone passes `streamed` to stay content-derived.
+ *  The loose route already paid for the read, so the content is handed back
+ *  too. */
 async function metadataFromLoose(
   ctx: Context,
   store: ObjectStore,
   source: ObjectSource,
   id: ObjectId,
+  mode: LooseReadMode,
 ): Promise<ObjectMetadataWithContent | undefined> {
   const loose = await resolveLooseArm(
     ctx,
@@ -489,7 +529,7 @@ async function metadataFromLoose(
     id,
     undefined,
     false,
-    'streamed',
+    mode,
   );
   if (loose === undefined) return undefined;
   return { type: loose.type, uncompressedSize: loose.content.length, content: loose.content };
@@ -502,15 +542,9 @@ async function metadataAfterFullMiss(
   ctx: Context,
   store: ObjectStore,
   id: ObjectId,
+  mode: LooseReadMode,
 ): Promise<ObjectMetadataWithContent> {
-  const { type, content } = await resolveObjectContent(
-    ctx,
-    store,
-    id,
-    false,
-    undefined,
-    'streamed',
-  );
+  const { type, content } = await resolveObjectContent(ctx, store, id, false, undefined, mode);
   return { type, uncompressedSize: content.length, content };
 }
 

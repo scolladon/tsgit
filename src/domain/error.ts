@@ -353,6 +353,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `tree cycle detected: ${data.id}`;
     case 'BAD_TREE_OBJECT':
       return `bad tree object ${data.id}`;
+    case 'LOOSE_OBJECT_CORRUPT':
+      return `corrupt loose object ${data.id}`;
     case 'TREE_UNREADABLE':
       return `unable to read tree (${data.id})`;
     case 'TREE_ENTRY_TYPE_MISMATCH':

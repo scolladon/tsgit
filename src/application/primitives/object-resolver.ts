@@ -6,7 +6,7 @@ import { TsgitError } from '../../domain/error.js';
 import { indexOf } from '../../domain/objects/encoding.js';
 import {
   looseHeaderTooLong as headerTooLong,
-  invalidObjectHeader,
+  looseObjectCorrupt,
   objectHashMismatch,
   objectNotFound,
   objectTooLarge,
@@ -104,13 +104,6 @@ export interface LooseBufferedRead {
   readonly split: LooseObjectSplit;
 }
 
-/** git's buffered-tier refusal reason, shared with `blob-source.ts`'s own
- *  buffered arms (bytes and stream) so a size-lying claim reads the same
- *  wording everywhere it is caught. */
-export function contentExceedsDeclaredSize(size: number): TsgitError {
-  return invalidObjectHeader(`content exceeds declared size ${size}`);
-}
-
 /**
  * git's own `hdr[32]` buffer (`unpack_loose_header`, `object-file.c`):
  * scanning stops once `LOOSE_HEADER_WINDOW` bytes have gone by with no NUL
@@ -126,22 +119,22 @@ export function looseHeaderTooLong(id: ObjectId): TsgitError {
  * Bounds the loose object's full inflate to header + declared size, the
  * same cap `inflateLooseBuffered` derived from the header probe. A cap hit
  * below the port's own hard ceiling means THIS bound fired — the body
- * genuinely overran the claim — so it is remapped to git's buffered-tier
- * refusal; a cap hit at or above the ceiling means the adapter's own 2 GiB
+ * genuinely overran the claim — so it is remapped to `LOOSE_OBJECT_CORRUPT`
+ * (git's buffered-tier refusal); a cap hit at or above the ceiling means the adapter's own 2 GiB
  * limit fired instead (today's behaviour for a >2 GiB object), so it
  * propagates unchanged.
  */
 async function inflateBoundToClaim(
   ctx: Context,
+  id: ObjectId,
   compressed: Uint8Array,
   cap: number,
-  declaredSize: number,
 ): Promise<Uint8Array> {
   try {
     return await ctx.compressor.inflate(compressed, cap);
   } catch (err) {
     if (isInflateCapExceeded(err) && cap < MAX_INFLATE_OUTPUT_BYTES) {
-      throw contentExceedsDeclaredSize(declaredSize);
+      throw looseObjectCorrupt(id);
     }
     throw err;
   }
@@ -222,7 +215,7 @@ function buildBufferedSplit(
  * (see `DEFLATE_MAX_EXPANSION_RATIO`), so it already carries the WHOLE
  * object. The header is derived from its own leading bytes instead of a
  * separate `inflateHead` probe. A body that overruns the claim past
- * `LOOSE_HEADER_WINDOW` throws `INVALID_OBJECT_HEADER`, exactly as the
+ * `LOOSE_HEADER_WINDOW` throws `LOOSE_OBJECT_CORRUPT`, exactly as the
  * hostile-sized arm's own cap-driven refusal does; an overrun that fits
  * inside the window is left for `applyLooseVerdict`'s `'truncate'` verdict.
  */
@@ -238,7 +231,7 @@ async function inflateLooseSinglePass(
   );
   const cap = Math.max(LOOSE_HEADER_WINDOW, contentOffset + size);
   if (bytes.byteLength > cap) {
-    throw contentExceedsDeclaredSize(size);
+    throw looseObjectCorrupt(id);
   }
   return buildBufferedSplit(bytes, type, size, contentOffset);
 }
@@ -248,7 +241,7 @@ async function inflateLooseSinglePass(
  * probe the header through `inflateHead` (never more than
  * `LOOSE_HEADER_PROBE_BYTES` of OUTPUT, whatever the compressed input size),
  * then bound the full inflate to header + declared size. A body that
- * overruns that bound throws `INVALID_OBJECT_HEADER`; an overrun that fits
+ * overruns that bound throws `LOOSE_OBJECT_CORRUPT`; an overrun that fits
  * inside `LOOSE_HEADER_WINDOW` is truncated to the claim, not refused
  * (`applyLooseVerdict`'s `'truncate'` verdict).
  */
@@ -260,7 +253,7 @@ async function inflateLooseHeadProbed(
   const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_PROBE_BYTES);
   const { type, size, contentOffset } = parseLooseHeaderWithinWindow(id, head);
   const cap = Math.max(LOOSE_HEADER_WINDOW, contentOffset + size);
-  const bytes = await inflateBoundToClaim(ctx, compressed, cap, size);
+  const bytes = await inflateBoundToClaim(ctx, id, compressed, cap);
   return buildBufferedSplit(bytes, type, size, contentOffset);
 }
 

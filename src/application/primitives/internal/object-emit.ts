@@ -7,7 +7,8 @@ import { TsgitError } from '../../../domain/error.js';
 import { objectNotFound } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { type ObjectTypeTable, parseTypedObject } from './object-type-table.js';
+import { peekDeclaredObjectHeader } from '../read-object.js';
+import { assignObjectType, type ObjectTypeTable, parseTypedObject } from './object-type-table.js';
 
 export interface EmitState {
   readonly emitted: Set<ObjectId>;
@@ -32,29 +33,48 @@ export const tryEmit = (state: EmitState, id: ObjectId): boolean => {
 };
 
 /**
+ * Whether the local stores' header types `id` a blob. A miss answers `false`
+ * rather than refusing: the content read that follows owns the promisor
+ * fetch, the delta-cache answer, the rescan and the final not-found.
+ */
+export const isBlobByHeader = async (ctx: Context, id: ObjectId): Promise<boolean> =>
+  (await peekDeclaredObjectHeader(ctx, id))?.type === 'blob';
+
+/** The terminal object of a tag chain; `kind` is `'blob'` when its header
+ *  typed it without a body read, `'other'` otherwise — a parsed non-tag
+ *  terminal, or the unparsed id where the hop cap stopped the walk. */
+export type PeeledWant = { readonly id: ObjectId; readonly kind: 'blob' | 'other' };
+
+/**
  * Follow a tag chain (annotated tag → annotated tag →... → commit)
  * yielding each tag oid through `recordTag`. Returns the terminal
- * commit oid for the caller to use as a commit-walk seed. Non-tag
- * oids pass through untouched. Each object is typed into `table`, the
- * invocation's.
+ * object for the caller to use as a walk seed. Non-tag oids pass
+ * through untouched. Each object is typed into `table`, the
+ * invocation's. A blob is typed from its header alone, never its body,
+ * as git's `parse_object` types it through `oid_object_info`; a commit or
+ * tree is parsed, as `parse_object` reads it.
  */
 export const resolveTagChain = async (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   id: ObjectId,
   recordTag: (id: ObjectId) => void,
-): Promise<ObjectId> => {
+): Promise<PeeledWant> => {
   let current = id;
   // A pathological tag-of-tag chain would be rare but a malicious server
   // could in principle advertise one; cap the unwrap at the same depth
   // we already use for symbolic ref resolution to avoid an infinite loop
   // if a tag points back at itself (corrupt object).
   for (let i = 0; i < 16; i += 1) {
+    if (await isBlobByHeader(ctx, current)) {
+      if (!assignObjectType(ctx, table, current, 'blob')) throw objectNotFound(current);
+      return { id: current, kind: 'blob' };
+    }
     const obj = await parseTypedObject(ctx, table, current);
     if (obj === undefined) throw objectNotFound(current);
-    if (obj.type !== 'tag') return current;
+    if (obj.type !== 'tag') return { id: current, kind: 'other' };
     recordTag(current);
     current = obj.data.object;
   }
-  return current;
+  return { id: current, kind: 'other' };
 };
