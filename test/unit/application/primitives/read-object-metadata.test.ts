@@ -634,7 +634,9 @@ describe('readObjectMetadata', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const planted = 'a'.repeat(40) as ObjectId;
-        await readObjectMetadata(ctx, planted).catch(() => undefined);
+        await expect(readObjectMetadata(ctx, planted)).rejects.toMatchObject({
+          data: { code: 'OBJECT_NOT_FOUND' },
+        });
         await ctx.fs.write(
           `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(planted)}`,
           await ctx.compressor.deflate(ENC.encode('blob 3\0xyz')),
@@ -704,7 +706,9 @@ describe('readObjectMetadataWithContent', () => {
         const ctx = await buildSeededContext();
         const bytes = new Uint8Array([...serializeHeader('blob', CLAIM), ...IN_WINDOW]);
         const planted = (await ctx.hash.hashHex(bytes)) as ObjectId;
-        await readObjectMetadataWithContent(ctx, planted).catch(() => undefined);
+        await expect(readObjectMetadataWithContent(ctx, planted)).rejects.toMatchObject({
+          data: { code: 'OBJECT_NOT_FOUND' },
+        });
         await ctx.fs.write(
           `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(planted)}`,
           await ctx.compressor.deflate(bytes),

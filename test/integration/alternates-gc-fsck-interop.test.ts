@@ -387,7 +387,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
         'Then both succeed and the donor liar is untouched',
         async () => {
           // Arrange
-          const pair = pairOf('g7-liar');
+          const pair = pairOf('donor-only-liar');
           const liarId = await forgeOwnHash(pair.donor, DECLARED_SIZE, OVERRUN_BODY);
           const liarPath = path.join(objectsOf(pair.donor), liarId.slice(0, 2), liarId.slice(2));
           const before = readFileSync(liarPath);

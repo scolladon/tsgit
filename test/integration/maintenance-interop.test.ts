@@ -2428,10 +2428,23 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying lo
         );
         await assertStoreUntouched(twin.peerDir, baseDir, liarId, countBefore);
         await assertStoreUntouched(twin.oursDir, baseDir, liarId, countBefore);
-        if (options.reachable) {
-          expect(tryRunGitWithExit(['-C', twin.peerDir, 'gc']).exitCode).toBe(128);
-        }
         await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given a reachable size-lying loose blob', () => {
+    describe('When git gc runs on it', () => {
+      it('Then git refuses with the corrupt-object lines and exits 128', async () => {
+        // Arrange
+        const { dir, liarId } = await buildLiarBase({ reachable: true, prepack: false });
+
+        // Act
+        const result = tryRunGitWithExit(['-C', dir, 'gc']);
+
+        // Assert
+        expect(result.exitCode).toBe(128);
+        expect(result.stderr).toBe(`${corruptLines(liarId)}fatal: failed to run repack\n`);
       });
     });
   });
@@ -2523,7 +2536,10 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying lo
           await expect(readFile(looseGitPath(dir, liarId))).rejects.toMatchObject({
             code: 'ENOENT',
           });
-          expect(tryRunGitWithExit(['-C', dir, 'fsck']).exitCode).toBe(4);
+          const fsck = tryRunGitWithExit(['-C', dir, 'fsck']);
+          expect(fsck.exitCode).toBe(4);
+          expect(fsck.stderr).toContain(`error: packed ${liarId} from `);
+          expect(await mtimesSidecars(dir)).toHaveLength(reachable ? 0 : 1);
         }
         await disposeTwin(twin);
       });
