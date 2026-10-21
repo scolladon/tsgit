@@ -679,6 +679,12 @@ Edits:
   with its body; a tree keeps its read, as git's `parse_object` reads a tree). A blob want pays two
   header probes (one per function); a commit want pays one header probe before the full read it
   already paid; no want pays more inflates than today.
+- As landed: both call sites go through one exported helper, `isBlobByHeader(ctx, id)` in object-emit.ts,
+  which answers `false` on `OBJECT_NOT_FOUND` so the content read that follows keeps its delta-cache
+  answer, its one rescan and its final not-found. Putting the rescan inside `readDeclaredObjectHeader`
+  was tried first and reverted: it flipped two blob-source.test.ts rows and the ref-target.test.ts
+  reprepare-count row, so that reader's missing rescan is filed as a follow-up, not folded here.
+  Row 2 (tag → blob) needs both edits, not the `resolveTagChain` one alone.
 - No other file. Callers of `resolveTagChain` take the change as is:
   internal/bitmap-binding.ts L251, enumerate-bundle-objects.ts L102,
   enumerate-push-objects.ts L48 — git's rev-list behaves the same for `bundle create` and `push`.
