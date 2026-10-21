@@ -74,9 +74,9 @@ type RawObjectResult =
  *  fails `readObject`'s own read (the SAME `inflateLooseBuffered` call), so
  *  `reachabilityUnknown` is false — the general resolver never disagrees. */
 function looseHeaderFailure(err: TsgitError): RawObjectResult {
-  // inflateLooseBuffered throws three codes that reach here:
-  // INVALID_OBJECT_HEADER (carries a reason), DECOMPRESS_FAILED and
-  // LOOSE_OBJECT_CORRUPT (neither carries one, so both read as '').
+  // inflateLooseBuffered throws three codes that reach here: INVALID_OBJECT_HEADER,
+  // DECOMPRESS_FAILED and LOOSE_OBJECT_CORRUPT. Only INVALID_OBJECT_HEADER's
+  // reason is consulted; the other two read as ''.
   const reason =
     err.data.code === 'INVALID_OBJECT_HEADER'
       ? (err.data as { reason: string }).reason
