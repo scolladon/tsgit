@@ -2434,63 +2434,63 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying lo
         await disposeTwin(twin);
       });
     });
+  });
 
-    describe('Given an unreachable unexpired size-lying loose blob and gc.cruftPacks=false', () => {
-      describe('When both tools run the gc task', () => {
-        it('Then both succeed, keep the liar loose and register one pack', async () => {
-          // Arrange
-          const { dir: baseDir, liarId } = await buildLiarBase({
-            reachable: false,
-            prepack: false,
-          });
-          git(baseDir, 'config', 'gc.cruftPacks', 'false');
-          const twin = await makeTwin(baseDir, 'liar');
-          const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
-
-          // Act
-          const { result } = await runOursGc(twin.oursDir);
-
-          // Assert
-          expect(peer.exitCode).toBe(0);
-          expect(peer.stderr).toBe('');
-          expect(result.tasksFailed).toEqual([]);
-          for (const dir of [twin.peerDir, twin.oursDir]) {
-            expect(await readFile(looseGitPath(dir, liarId))).toEqual(
-              await readFile(looseGitPath(baseDir, liarId)),
-            );
-            expect(await registeredPacks(dir)).toHaveLength(1);
-          }
-          expect(git(twin.oursDir, 'count-objects')).toBe(git(twin.peerDir, 'count-objects'));
-          await disposeTwin(twin);
+  describe('Given an unreachable unexpired size-lying loose blob and gc.cruftPacks=false', () => {
+    describe('When both tools run the gc task', () => {
+      it('Then both succeed, keep the liar loose and register one pack', async () => {
+        // Arrange
+        const { dir: baseDir, liarId } = await buildLiarBase({
+          reachable: false,
+          prepack: false,
         });
+        git(baseDir, 'config', 'gc.cruftPacks', 'false');
+        const twin = await makeTwin(baseDir, 'liar');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
+
+        // Act
+        const { result } = await runOursGc(twin.oursDir);
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(peer.stderr).toBe('');
+        expect(result.tasksFailed).toEqual([]);
+        for (const dir of [twin.peerDir, twin.oursDir]) {
+          expect(await readFile(looseGitPath(dir, liarId))).toEqual(
+            await readFile(looseGitPath(baseDir, liarId)),
+          );
+          expect(await registeredPacks(dir)).toHaveLength(1);
+        }
+        expect(git(twin.oursDir, 'count-objects')).toBe(git(twin.peerDir, 'count-objects'));
+        await disposeTwin(twin);
       });
     });
+  });
 
-    describe('Given an unreachable size-lying loose blob and gc.pruneExpire=now', () => {
-      describe('When both tools run the gc task', () => {
-        it('Then both succeed and the liar is gone on both', async () => {
-          // Arrange
-          const { dir: baseDir, liarId } = await buildLiarBase({
-            reachable: false,
-            prepack: false,
-          });
-          git(baseDir, 'config', 'gc.pruneExpire', 'now');
-          const twin = await makeTwin(baseDir, 'liar');
-          const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
-
-          // Act
-          const { result } = await runOursGc(twin.oursDir);
-
-          // Assert
-          expect(peer.exitCode).toBe(0);
-          expect(result.tasksFailed).toEqual([]);
-          for (const dir of [twin.peerDir, twin.oursDir]) {
-            await expect(readFile(looseGitPath(dir, liarId))).rejects.toMatchObject({
-              code: 'ENOENT',
-            });
-          }
-          await disposeTwin(twin);
+  describe('Given an unreachable size-lying loose blob and gc.pruneExpire=now', () => {
+    describe('When both tools run the gc task', () => {
+      it('Then both succeed and the liar is gone on both', async () => {
+        // Arrange
+        const { dir: baseDir, liarId } = await buildLiarBase({
+          reachable: false,
+          prepack: false,
         });
+        git(baseDir, 'config', 'gc.pruneExpire', 'now');
+        const twin = await makeTwin(baseDir, 'liar');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'maintenance', 'run', '--task=gc']);
+
+        // Act
+        const { result } = await runOursGc(twin.oursDir);
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(result.tasksFailed).toEqual([]);
+        for (const dir of [twin.peerDir, twin.oursDir]) {
+          await expect(readFile(looseGitPath(dir, liarId))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+        }
+        await disposeTwin(twin);
       });
     });
   });
