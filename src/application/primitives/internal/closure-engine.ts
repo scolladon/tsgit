@@ -62,7 +62,7 @@ import {
   resolveLimitOptions,
 } from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
-import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
+import { type EmitState, isBlobByHeader, resolveTagChain, tryEmit } from './object-emit.js';
 import { assignObjectType, type ObjectTypeTable } from './object-type-table.js';
 import { loadPackBitmapArtefact } from './pack-bitmap-binding.js';
 import { descendTreePath } from './resolve-tree-path.js';
@@ -321,7 +321,9 @@ async function resolveTips(
  * Resolve one want: peel tags (keeping each tag pending), then either seed
  * the commit walk or keep a tree/blob want pending. Commit seeds carry their
  * full body so the `noWalk` path can emit them (and, under `objects`, their
- * own tree) without a second read. Answers the commit seeded, if any.
+ * own tree) without a second read. A blob want is typed from its header
+ * alone, as git's `parse_object` does via `oid_object_info`; a tree keeps its
+ * read, as `parse_object` reads a tree. Answers the commit seeded, if any.
  */
 async function resolveWant(
   ctx: Context,
@@ -332,6 +334,10 @@ async function resolveWant(
   const peeled = await resolveTagChain(ctx, request.objectTypes, wantId, (tagId) =>
     resolving.pending.push({ id: tagId, type: 'tag' }),
   );
+  if (await isBlobByHeader(ctx, peeled)) {
+    resolving.pending.push({ id: peeled, type: 'blob' });
+    return undefined;
+  }
   const obj = await readObject(ctx, peeled);
   if (obj.type !== 'commit') {
     resolving.pending.push({ id: peeled, type: obj.type });

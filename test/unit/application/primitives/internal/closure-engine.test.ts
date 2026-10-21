@@ -57,6 +57,7 @@ import {
   buildSharedSubtreeChain,
   seedMaxTreeDepth,
   writeCommitGraph,
+  writeSelfHashedLooseWithDeclaredSize,
 } from '../fixtures.js';
 import { writeSyntheticBitmap, writeSyntheticPack, writeSyntheticPackIn } from '../pack-fixture.js';
 
@@ -90,6 +91,14 @@ const writeBlob = async (ctx: Context, content: string): Promise<ObjectId> => {
   };
   return writeObject(ctx, blob);
 };
+
+const writeOverrunningLiar = (ctx: Context): Promise<ObjectId> =>
+  writeSelfHashedLooseWithDeclaredSize(
+    ctx,
+    'blob',
+    5,
+    Uint8Array.from({ length: 200 }, (_, i) => i),
+  );
 
 const writeCommit = async (
   ctx: Context,
@@ -448,6 +457,97 @@ describe('computeClosure', () => {
         // Assert — no path, and the directly-wanted-blob divergence: git
         // would use the pending object's own name, tsgit names it 0.
         expect(result.objects).toStrictEqual([{ id: blobId, type: 'blob', nameHash: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a blob want whose loose body overruns its size claim past the header window', () => {
+    describe('When computeClosure walks it with object typing', () => {
+      it('Then the blob is listed as a pending blob and its body is never inflated', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const liarId = await writeOverrunningLiar(ctx);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [liarId],
+          not: [],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect(result.objects).toStrictEqual([{ id: liarId, type: 'blob', nameHash: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a tag whose target is such a blob', () => {
+    describe('When computeClosure walks the tag want', () => {
+      it('Then the tag and the blob are listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const liarId = await writeOverrunningLiar(ctx);
+        const tagId = await writeTag(ctx, liarId, 'blob', 'liar');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tagId],
+          not: [],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect(result.objects.map((o) => [o.id, o.type])).toStrictEqual([
+          [tagId, 'tag'],
+          [liarId, 'blob'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a blob want that only the delta cache holds', () => {
+    describe('When computeClosure walks it', () => {
+      it('Then the header miss falls through to the content read and the blob is listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('cache only');
+        const blobId = (await ctx.hash.hashHex(
+          new TextEncoder().encode(`blob ${content.length}\0cache only`),
+        )) as ObjectId;
+        ctx.deltaCache.set(blobId, { type: 'blob', content }, content.length);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
+
+        // Assert
+        expect(result.objects).toStrictEqual([{ id: blobId, type: 'blob', nameHash: 0 }]);
+      });
+    });
+  });
+
+  describe('Given an honest blob want', () => {
+    describe('When computeClosure walks it', () => {
+      it('Then neither readObject nor readRawObject is called with its id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'honest');
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+        const rawSpy = vi.spyOn(readObjectModule, 'readRawObject');
+        const sut = computeClosure;
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
+
+        // Assert
+        expect(readSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(0);
+        expect(rawSpy.mock.calls.filter(([, id]) => id === blobId)).toHaveLength(0);
       });
     });
   });

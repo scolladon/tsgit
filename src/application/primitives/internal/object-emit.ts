@@ -4,10 +4,12 @@
 // implement a cap-guarded emitter and a tag-chain resolver with the same algorithm.
 // Canonical, fully-commented source: enumerate-push-objects.ts.
 import { TsgitError } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { objectNotFound } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { type ObjectTypeTable, parseTypedObject } from './object-type-table.js';
+import { readDeclaredObjectHeader } from '../read-object.js';
+import { assignObjectType, type ObjectTypeTable, parseTypedObject } from './object-type-table.js';
 
 export interface EmitState {
   readonly emitted: Set<ObjectId>;
@@ -32,11 +34,26 @@ export const tryEmit = (state: EmitState, id: ObjectId): boolean => {
 };
 
 /**
+ * Whether `id`'s stored header types it a blob. A header miss answers `false`
+ * rather than refusing: the content read that follows owns the delta-cache
+ * answer, the rescan-and-retry, and the final not-found.
+ */
+export const isBlobByHeader = async (ctx: Context, id: ObjectId): Promise<boolean> => {
+  try {
+    return (await readDeclaredObjectHeader(ctx, id)).type === 'blob';
+  } catch (error) {
+    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') return false;
+    throw error;
+  }
+};
+
+/**
  * Follow a tag chain (annotated tag → annotated tag →... → commit)
  * yielding each tag oid through `recordTag`. Returns the terminal
  * commit oid for the caller to use as a commit-walk seed. Non-tag
  * oids pass through untouched. Each object is typed into `table`, the
- * invocation's.
+ * invocation's. A blob is typed from its header alone, never its body,
+ * as git's `parse_object` types it through `oid_object_info`.
  */
 export const resolveTagChain = async (
   ctx: Context,
@@ -50,6 +67,10 @@ export const resolveTagChain = async (
   // we already use for symbolic ref resolution to avoid an infinite loop
   // if a tag points back at itself (corrupt object).
   for (let i = 0; i < 16; i += 1) {
+    if (await isBlobByHeader(ctx, current)) {
+      if (!assignObjectType(ctx, table, current, 'blob')) throw objectNotFound(current);
+      return current;
+    }
     const obj = await parseTypedObject(ctx, table, current);
     if (obj === undefined) throw objectNotFound(current);
     if (obj.type !== 'tag') return current;
