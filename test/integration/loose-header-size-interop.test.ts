@@ -9,7 +9,7 @@
  *   interopSurface: readObject, catFile, streamBlob
  */
 import { createHash } from 'node:crypto';
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync, inflateSync } from 'node:zlib';
@@ -31,6 +31,7 @@ import { TsgitError } from '../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../src/domain/objects/index.js';
 import {
   disableAutoMaintenance,
+  forgeOwnHash,
   GIT_AVAILABLE,
   git,
   runGit,
@@ -89,20 +90,6 @@ const forgeLoose = async (
   await chmod(target, 0o644);
   const header = Buffer.from(`${type} ${claim}\0`);
   await writeFile(target, deflateSync(Buffer.concat([header, body])));
-};
-
-/** Writes a NEW loose blob at the SHA-1 of its own stored bytes — a
- *  genuinely self-consistent size liar, unlike `forgeLoose`'s overwrite of
- *  an existing (honest) object's path with a mismatched claim. Returns the
- *  id the object is stored at (never necessarily what fsck's hash check
- *  recomputes for a size-lying claim). */
-const forgeOwnHash = async (dir: string, claim: number, body: Buffer): Promise<string> => {
-  const raw = Buffer.concat([Buffer.from(`blob ${claim}\0`), body]);
-  const sha1 = createHash('sha1').update(raw).digest('hex');
-  const target = loosePath(dir, sha1);
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, deflateSync(raw));
-  return sha1;
 };
 
 async function collect(iterable: AsyncIterable<Uint8Array>): Promise<Buffer> {

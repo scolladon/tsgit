@@ -13,7 +13,11 @@ import { PACK_NAME_HASH_PATHLESS, parseMultiPackIndex } from '../../../domain/st
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
 import type { DirEntry, FileStat } from '../../../ports/file-system.js';
-import { buildPack, type PackObjectInput } from '../../primitives/build-pack.js';
+import {
+  type BuildPackResult,
+  buildPack,
+  type PackObjectInput,
+} from '../../primitives/build-pack.js';
 import { assertValidPackIntConfig, readConfig } from '../../primitives/config-read.js';
 import { enumerateObjects } from '../../primitives/enumerate-objects.js';
 import { assertValidPromisorRemoteConfig } from '../../primitives/internal/boolean-config-guard.js';
@@ -574,21 +578,31 @@ interface NormalPackOutcome {
 }
 
 /**
- * Skipped entirely (`packId: undefined`) when `objects` is empty — git
- * writes no pack rather than a zero-object one. Otherwise ALWAYS writes
- * fresh, via `writePackArtifactsViaQuarantine`: git rewrites even an
- * unchanged single pack on every run (a skipped rewrite would leave the
- * pack's mtime stale, silently ageing objects that later migrate out of
+ * Builds the pack for `objects`, or nothing when `objects` is empty — git
+ * writes no pack rather than a zero-object one. A read-only step: nothing
+ * reaches the store until `installRepack`.
+ */
+function buildPackUnlessEmpty(
+  ctx: Context,
+  objects: ReadonlyArray<PackObjectInput>,
+): Promise<BuildPackResult | undefined> {
+  if (objects.length === 0) return Promise.resolve(undefined);
+  return buildPack(ctx, { objects, delta: true });
+}
+
+/**
+ * ALWAYS writes fresh, via `writePackArtifactsViaQuarantine`: git rewrites
+ * even an unchanged single pack on every run (a skipped rewrite would leave
+ * the pack's mtime stale, silently ageing objects that later migrate out of
  * it), so there is no "already consolidated ⇒ skip" branch here.
  */
-async function buildAndWriteNormalPack(
+async function installNormalPack(
   ctx: Context,
   packDir: string,
-  objects: ReadonlyArray<PackObjectInput>,
+  pack: BuildPackResult | undefined,
   existingCruftShas: ReadonlySet<string>,
 ): Promise<NormalPackOutcome> {
-  if (objects.length === 0) return { packId: undefined, reuse: 'none' };
-  const pack = await buildPack(ctx, { objects, delta: true });
+  if (pack === undefined) return { packId: undefined, reuse: 'none' };
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
@@ -601,23 +615,22 @@ async function buildAndWriteNormalPack(
 }
 
 /**
- * Step 6b: builds and writes the promisor pack from `toPromisorPack` — the
- * WHOLE union of every promisor pack's own oids, reachability irrelevant.
- * Skipped entirely (`packId: undefined`) when `objects` is empty — every
- * repository that is not a partial clone. Otherwise ALWAYS writes fresh, via
+ * Step 6b: writes the promisor pack built from `toPromisorPack` — the WHOLE
+ * union of every promisor pack's own oids, reachability irrelevant. Nothing
+ * is written (`undefined`) when there is no pack — every repository that is
+ * not a partial clone. Otherwise ALWAYS writes fresh, via
  * `writePackArtifactsViaQuarantine`, for the same no-skip reason step 6's
  * normal pack never short-circuits: a repeat run over an unchanged promisor
  * set reproduces the same sha (the same no-op boundary, one class over), and the
  * quarantine writer is what lets that same-name rewrite land without a
  * `FILE_EXISTS` refusal.
  */
-async function buildAndWritePromisorPack(
+async function installPromisorPack(
   ctx: Context,
   packDir: string,
-  objects: ReadonlyArray<PackObjectInput>,
+  pack: BuildPackResult | undefined,
 ): Promise<ObjectId | undefined> {
-  if (objects.length === 0) return undefined;
-  const pack = await buildPack(ctx, { objects, delta: true });
+  if (pack === undefined) return undefined;
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
@@ -628,6 +641,12 @@ async function buildAndWritePromisorPack(
   return written.packSha as ObjectId;
 }
 
+/** The cruft pack's staged fate: what `installCruft` will physically do. */
+type StagedCruft =
+  | { readonly kind: 'loosen' }
+  | { readonly kind: 'kept'; readonly cruftPackId: ObjectId | undefined }
+  | { readonly kind: 'fresh'; readonly pack: BuildPackResult };
+
 /**
  * A `fate: 'rewrite'` build whose survivor set happens to reproduce an
  * EXISTING cruft pack's bytes byte-for-byte is real: the two-cruft-pack
@@ -637,17 +656,25 @@ async function buildAndWritePromisorPack(
  * pack's OWN file mtime carries no semantic weight — ages live in the
  * `.mtimes` sidecar, never the `stat` — so reusing the file in place is
  * safe and simpler than a quarantine rewrite: no `FILE_EXISTS` risk, no
- * mtime to refresh.
+ * mtime to refresh. That reuse is staged as `kept`.
  */
-async function buildAndWriteCruftPack(
+async function buildFreshCruft(
+  ctx: Context,
+  survivors: ReadonlyArray<ObjectId>,
+  existingCruftShas: ReadonlySet<string>,
+): Promise<StagedCruft> {
+  const pack = await buildPack(ctx, { objects: survivors.map((id) => ({ id })), delta: true });
+  if (existingCruftShas.has(pack.sha)) return { kind: 'kept', cruftPackId: pack.sha as ObjectId };
+  return { kind: 'fresh', pack };
+}
+
+async function installFreshCruft(
   ctx: Context,
   packDir: string,
+  pack: BuildPackResult,
   survivors: ReadonlyArray<ObjectId>,
   mtimes: ReadonlyMap<ObjectId, number>,
-  existingCruftShas: ReadonlySet<string>,
 ): Promise<ObjectId> {
-  const pack = await buildPack(ctx, { objects: survivors.map((id) => ({ id })), delta: true });
-  if (existingCruftShas.has(pack.sha)) return pack.sha as ObjectId;
   const written = await writeCruftPack(ctx, {
     packDir,
     entries: pack.entries,
@@ -679,38 +706,46 @@ interface CruftOutcome {
 }
 
 /**
- * Physically executes the cruft pack's fate. `gc.cruftPacks=false` bypasses
- * the pack entirely: survivors are written back loose (when not already) —
- * this now also covers a survivor that only lived inside a superseded
- * NORMAL pack, since `survivors` is drawn from the widened `cruftCandidates`
- * (Pin AA).
+ * Decides the cruft pack's fate and builds what it needs, writing nothing.
+ * `gc.cruftPacks=false` bypasses the pack entirely (`loosen`): survivors are
+ * written back loose (when not already) at install time — this also covers a
+ * survivor that only lived inside a superseded NORMAL pack, since `survivors`
+ * is drawn from the widened `cruftCandidates` (Pin AA).
  */
-async function applyCruftOutcome(
+async function stageCruft(
   ctx: Context,
-  packDir: string,
   cruftPacksEnabled: boolean,
   survivors: ReadonlyArray<ObjectId>,
   existingCruft: ExistingCruftPack,
-  looseSet: ReadonlySet<ObjectId>,
-  mtimes: ReadonlyMap<ObjectId, number>,
-): Promise<CruftOutcome> {
-  if (!cruftPacksEnabled) {
-    await boundedMapFor(ctx, 'ioBound', survivors, (id) => loosenIfNotLoose(ctx, id, looseSet));
-    return { cruftPackId: undefined };
-  }
-
+): Promise<StagedCruft> {
+  if (!cruftPacksEnabled) return { kind: 'loosen' };
   const existingCruftKeys = new Set(existingCruft.mtimes.keys());
   const fate = decideCruftFate(survivors, existingCruftKeys, existingCruft.packShas.length);
-  if (fate === 'noop') return { cruftPackId: existingCruft.packShas[0] as ObjectId };
-  if (fate === 'delete') return { cruftPackId: undefined };
-  const cruftPackId = await buildAndWriteCruftPack(
-    ctx,
-    packDir,
-    survivors,
-    mtimes,
-    new Set(existingCruft.packShas),
-  );
-  return { cruftPackId };
+  if (fate === 'noop') return { kind: 'kept', cruftPackId: existingCruft.packShas[0] as ObjectId };
+  if (fate === 'delete') return { kind: 'kept', cruftPackId: undefined };
+  return buildFreshCruft(ctx, survivors, new Set(existingCruft.packShas));
+}
+
+async function installCruft(
+  run: GcRun,
+  plan: RepackPlan,
+  staged: StagedCruft,
+): Promise<CruftOutcome> {
+  const { ctx, packDir } = run;
+  if (staged.kind === 'kept') return { cruftPackId: staged.cruftPackId };
+  if (staged.kind === 'fresh') {
+    const cruftPackId = await installFreshCruft(
+      ctx,
+      packDir,
+      staged.pack,
+      plan.survivors,
+      plan.mtimes,
+    );
+    return { cruftPackId };
+  }
+  const { looseSet } = run.census;
+  await boundedMapFor(ctx, 'ioBound', plan.survivors, (id) => loosenIfNotLoose(ctx, id, looseSet));
+  return { cruftPackId: undefined };
 }
 
 function isFileNotFound(error: unknown): boolean {
@@ -1189,41 +1224,59 @@ async function ageCruftCandidates(
   return { mtimes, survivors, cruftDoomed, doomed: [...cruftDoomed, ...expired] };
 }
 
-/** Every write: the normal, promisor and cruft packs; then step 8, a refresh
- *  and a verified read of every object just packed. */
+/** Every pack the run will write, built and held in memory. */
+interface StagedRepack {
+  readonly normal: BuildPackResult | undefined;
+  readonly promisor: BuildPackResult | undefined;
+  readonly cruft: StagedCruft;
+}
+
+/** Builds every pack, then installs them, then runs step 8 — a refresh and a
+ *  verified read of every object just packed. Building first is what lets a
+ *  refused build (a corrupt object met while reading) leave no registered pack
+ *  behind. */
 async function writeRepack(
   run: GcRun,
   plan: RepackPlan,
   existing: ExistingPacks,
 ): Promise<RepackOutputs> {
-  const { ctx, packDir } = run;
-  const existingCruftShas = new Set(existing.existingCruft.packShas);
-  const normalPack = await buildAndWriteNormalPack(
-    ctx,
-    packDir,
-    plan.toNormalPack,
-    existingCruftShas,
-  );
-  const promisorPackId = await buildAndWritePromisorPack(ctx, packDir, plan.toPromisorPackInputs);
-  const cruftOutcome = await writeCruftOutcome(run, plan, existing.existingCruft);
-  await verifyPacked(ctx, plan);
-  return { normalPack, promisorPackId, cruftOutcome };
+  const staged = await buildRepack(run, plan, existing);
+  const outputs = await installRepack(run, plan, existing, staged);
+  await verifyPacked(run.ctx, plan);
+  return outputs;
 }
 
-async function writeCruftOutcome(
+/** Every read, no write: the normal, promisor and cruft packs, in that order. */
+async function buildRepack(
   run: GcRun,
   plan: RepackPlan,
-  existingCruft: ExistingCruftPack,
-): Promise<CruftOutcome> {
-  return applyCruftOutcome(
-    run.ctx,
-    run.packDir,
+  existing: ExistingPacks,
+): Promise<StagedRepack> {
+  const { ctx } = run;
+  const normal = await buildPackUnlessEmpty(ctx, plan.toNormalPack);
+  const promisor = await buildPackUnlessEmpty(ctx, plan.toPromisorPackInputs);
+  const cruft = await stageCruft(
+    ctx,
     run.settings.cruftPacks,
     plan.survivors,
-    existingCruft,
-    run.census.looseSet,
-    plan.mtimes,
+    existing.existingCruft,
   );
+  return { normal, promisor, cruft };
+}
+
+/** Every write, in order: the normal, promisor and cruft packs. */
+async function installRepack(
+  run: GcRun,
+  plan: RepackPlan,
+  existing: ExistingPacks,
+  staged: StagedRepack,
+): Promise<RepackOutputs> {
+  const { ctx, packDir } = run;
+  const existingCruftShas = new Set(existing.existingCruft.packShas);
+  const normalPack = await installNormalPack(ctx, packDir, staged.normal, existingCruftShas);
+  const promisorPackId = await installPromisorPack(ctx, packDir, staged.promisor);
+  const cruftOutcome = await installCruft(run, plan, staged.cruft);
+  return { normalPack, promisorPackId, cruftOutcome };
 }
 
 async function verifyPacked(ctx: Context, plan: RepackPlan): Promise<void> {
