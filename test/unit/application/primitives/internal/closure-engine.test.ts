@@ -406,6 +406,39 @@ describe('computeClosure', () => {
     });
   });
 
+  describe('Given a tag chain deeper than the unwrap cap', () => {
+    describe('When computeClosure walks the outermost tag with object typing', () => {
+      it('Then the tag at the cap is listed as a tag and the commit is never seeded', async () => {
+        // Arrange — 17 annotated tags over one commit; the walk unwraps 16 and
+        // stops on the innermost tag, which it must still type as a tag.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'capped');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
+        const commitId = await writeCommit(ctx, treeId, [], 'capped');
+        const tagIds: ObjectId[] = [await writeTag(ctx, commitId, 'commit', 'v1')];
+        for (let depth = 2; depth <= 17; depth += 1) {
+          tagIds.push(await writeTag(ctx, tagIds[depth - 2] as ObjectId, 'tag', `v${depth}`));
+        }
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tagIds[16] as ObjectId],
+          not: [],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        const byId = new Map(result.objects.map((o) => [o.id, o.type]));
+        expect(byId.get(tagIds[0] as ObjectId)).toBe('tag');
+        expect(tagIds.every((id) => byId.get(id) === 'tag')).toBe(true);
+        expect(byId.has(commitId)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a want that resolves to a tree', () => {
     describe('When computeClosure is called with objects: true', () => {
       it('Then it contributes itself plus its own subtree', async () => {
