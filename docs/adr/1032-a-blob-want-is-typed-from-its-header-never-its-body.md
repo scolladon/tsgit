@@ -47,5 +47,8 @@ unchanged. Tags are still read to peel and commits to seed the walk.
 
 gc, `push` and `bundle create` no longer inflate a blob want's body; a borrower whose index or
 refs name a blob only an alternate holds gets git's exit 0 whatever that blob's header claims.
+`peel` types its hops the same way, so the commit-graph roots, `rev-parse` and `archive` never
+inflate a blob a ref or a tag names — the rule was extended there when the review pinned the
+ref-named case against git.
 Pinned by closure unit rows (a size-lying blob want, a tag targeting it, an honest blob want
 read-spied, a missing id) and by the alternates gc interop row.
