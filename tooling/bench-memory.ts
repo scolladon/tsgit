@@ -1013,38 +1013,73 @@ const assertCruftFixture = (result: {
  * second checked-out build of the library, out of scope for a script whose
  * job is measuring ONE tree.
  */
-const runGcResidencyWorkload = async (
-  gc: () => void,
+/** A fresh repository in `cwd`, handed to `run`, disposed whatever happens. */
+const withRepository = async (
   openRepository: OpenRepository,
-): Promise<WorkloadReport> => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-gc-residency-'));
+  cwd: string,
+  run: (repo: BenchRepository, cwd: string) => Promise<void>,
+): Promise<void> => {
+  const repo = await openRepository({ cwd });
+  try {
+    await repo.init();
+    await run(repo, cwd);
+  } finally {
+    await repo.dispose();
+  }
+};
+
+interface PeakSample {
+  readonly before: MemorySample;
+  readonly peak: MemorySample;
+}
+
+/** The baseline before `work` and the highest sample seen while it ran. */
+const samplePeak = async (gc: () => void, work: () => Promise<void>): Promise<PeakSample> => {
   const before = gcBaseline(gc);
   let peak = before;
   const poll = setInterval(() => {
     peak = maxSample(peak, sampleMemory());
   }, PEAK_POLL_INTERVAL_MS);
   try {
-    const repo = await openRepository({ cwd });
-    try {
-      await repo.init();
-      await seedReachableCommit(repo, cwd);
-      await repo.maintenance({ tasks: ['gc'] });
-      peak = maxSample(peak, sampleMemory());
-    } finally {
-      await repo.dispose();
-    }
+    await work();
+    peak = maxSample(peak, sampleMemory());
   } finally {
     clearInterval(poll);
-    await rm(cwd, { recursive: true, force: true });
   }
-  const after = gcBaseline(gc);
-  return toReport(
-    `gc-residency-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-loose-objects`,
-    before,
-    peak,
-    after,
-  );
+  return { before, peak };
 };
+
+/**
+ * The scaffold both gc rows share: a repository in a scratch directory, a peak
+ * poller around `run`, the scratch directory removed whatever happens, and one
+ * report under `label`.
+ */
+const measureGcResidency = async (
+  gc: () => void,
+  openRepository: OpenRepository,
+  label: string,
+  run: (repo: BenchRepository, cwd: string) => Promise<void>,
+): Promise<WorkloadReport> => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), `tsgit-bench-${label}-`));
+  const sampled = await samplePeak(gc, () => withRepository(openRepository, cwd, run)).finally(() =>
+    rm(cwd, { recursive: true, force: true }),
+  );
+  return toReport(label, sampled.before, sampled.peak, gcBaseline(gc));
+};
+
+const runGcResidencyWorkload = (
+  gc: () => void,
+  openRepository: OpenRepository,
+): Promise<WorkloadReport> =>
+  measureGcResidency(
+    gc,
+    openRepository,
+    `gc-residency-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-loose-objects`,
+    async (repo, cwd) => {
+      await seedReachableCommit(repo, cwd);
+      await repo.maintenance({ tasks: ['gc'] });
+    },
+  );
 
 /**
  * Same plumbing as `runGcResidencyWorkload`, over a repository that also holds
@@ -1053,40 +1088,20 @@ const runGcResidencyWorkload = async (
  * holds while it builds every pack before installing any. The fixture is
  * asserted before the report is returned.
  */
-const runGcCruftResidencyWorkload = async (
+const runGcCruftResidencyWorkload = (
   gc: () => void,
   openRepository: OpenRepository,
-): Promise<WorkloadReport> => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-gc-cruft-residency-'));
-  const before = gcBaseline(gc);
-  let peak = before;
-  const poll = setInterval(() => {
-    peak = maxSample(peak, sampleMemory());
-  }, PEAK_POLL_INTERVAL_MS);
-  try {
-    const repo = await openRepository({ cwd });
-    try {
-      await repo.init();
+): Promise<WorkloadReport> =>
+  measureGcResidency(
+    gc,
+    openRepository,
+    `gc-residency-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-loose-objects-with-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-unexpired-cruft`,
+    async (repo, cwd) => {
       await seedReachableCommit(repo, cwd);
       await seedUnreachableBlobs(repo);
-      const result = await repo.maintenance({ tasks: ['gc'] });
-      assertCruftFixture(result);
-      peak = maxSample(peak, sampleMemory());
-    } finally {
-      await repo.dispose();
-    }
-  } finally {
-    clearInterval(poll);
-    await rm(cwd, { recursive: true, force: true });
-  }
-  const after = gcBaseline(gc);
-  return toReport(
-    `gc-residency-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-loose-objects-with-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-unexpired-cruft`,
-    before,
-    peak,
-    after,
+      assertCruftFixture(await repo.maintenance({ tasks: ['gc'] }));
+    },
   );
-};
 
 const toMarkdownRow = (report: WorkloadReport): string =>
   `| ${report.workload} | ${report.rss.before} | ${report.rss.peak} | ${report.rss.after} | ` +
