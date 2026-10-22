@@ -21,6 +21,7 @@ import {
 } from '../../domain/git-index/directory-file-conflict.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import {
+  escapedPathOf,
   type IndexPath,
   type IndexPathKey,
   indexPathKey,
@@ -89,13 +90,18 @@ import type { IgnorePredicate } from './internal/add-ignore.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
+  type CommandPathspec,
+  type PositivePathspec,
+  resolveCommandPathspec,
+  unmatchedPositives,
+} from './internal/pathspec-intake.js';
+import {
   assertNoPendingOperation,
   assertOperationalRepository,
   requireWorkTree,
 } from './internal/repo-state.js';
 import {
   assertNoSymlinkedLeadingPath,
-  enforceLiteralMustMatch,
   namesDirectoryOnly,
   namesWholeTree,
   type ResolvedPathspec,
@@ -220,7 +226,7 @@ const dispatchPathspec = async (
   paths: ReadonlyArray<string>,
   scope: ConversionScope,
 ): Promise<AddResult> => {
-  const resolved = resolvePathspec(paths);
+  const resolved = resolveCommandPathspec(ctx, paths);
   const { literalMustMatch } = resolved;
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
   const stats = resolved.hasGlob ? undefined : await literalStats(ctx, literalMustMatch);
@@ -601,6 +607,9 @@ const lstatOrMissing = async (
   }
 };
 
+/** The walk as it streams, or as already collected. */
+type WalkSource = AsyncIterable<WalkWorkingTreeEntry> | Iterable<WalkWorkingTreeEntry>;
+
 /**
  * Fans every walked entry's `stageFromStat` work through an `ioBound` pool
  * while the walk itself (`walkWorkingTree`) stays a plain sequential
@@ -621,7 +630,7 @@ const lstatOrMissing = async (
  */
 const stageWalkedEntries = async (
   ctx: Context,
-  walk: AsyncIterable<WalkWorkingTreeEntry>,
+  walk: WalkSource,
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   seen: Set<IndexPathKey>,
   scope: StagingScope,
@@ -645,7 +654,7 @@ const stageWalkedEntries = async (
  * walk before `add_files` runs.
  */
 async function* walkedTrackedFirst(
-  walk: AsyncIterable<WalkWorkingTreeEntry>,
+  walk: WalkSource,
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): AsyncGenerator<WalkWorkingTreeEntry> {
   const walked = new Map<IndexPathKey, WalkWorkingTreeEntry>();
@@ -719,7 +728,7 @@ const dispatchWalkEntry = <T extends Named, R>(
 // applies via `buildRepoIgnorePredicate`.
 const addByPathspec = async (
   ctx: Context,
-  { matcher, literalMustMatch, literalSpellings }: ResolvedPathspec,
+  { matcher, positives }: CommandPathspec,
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const repoIgnore = await buildRepoIgnorePredicate(ctx);
@@ -729,14 +738,12 @@ const addByPathspec = async (
     const staged = await stageIgnoredWalk(
       ctx,
       repoIgnore,
-      matcher,
+      { matcher, positives },
       scope,
       ensurePromisorConfigValid,
     );
     const tally = tallyWalkOutcomes(staged.existing, staged.outcomes, staged.stageZeroBeside);
     const { matched } = tally;
-    // git add never refuses the whole tree, even when it holds nothing to add.
-    const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     const removedEntries = await collectMatchedRemovals(ctx, staged.existing, matched, matcher);
     const settled = await settleWalkRemovals(
       ctx,
@@ -745,7 +752,6 @@ const addByPathspec = async (
       tally.newEntries,
       removedEntries,
     );
-    enforceLiteralMustMatch(mustMatch, [...matched, ...settled.everyRemoval], literalSpellings);
     await commitStaged(lock, staged, settled.remaining, tally.restagedPaths);
     return sortedResult(tally, settled.removed);
   } finally {
@@ -780,23 +786,19 @@ const addRenormalized = async (
   paths: ReadonlyArray<string>,
   scope: ConversionScope,
 ): Promise<AddResult> => {
-  const { matcher, literalMustMatch, literalSpellings, symlinkScanTargets } =
-    resolvePathspec(paths);
+  const { matcher, positives, symlinkScanTargets } = resolveCommandPathspec(ctx, paths);
   await assertNoSymlinkedLeadingPath(ctx, symlinkScanTargets);
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries } = await readIndexOrEmpty(ctx);
+    await refuseUnseenRenormalized(ctx, positives, entries);
     const staging = {
       ctx,
       scope: { ...scope, indexRules: NO_INDEX_RULES },
       ensurePromisorConfigValid,
     };
     const renormalized = await renormalizeEntries(staging, entries, matcher);
-    const onDisk = await literalsOnDisk(ctx, literalMustMatch);
-    // Stryker disable next-line MethodExpression: equivalent — the whole-tree literal is itself among the on-disk literals (the work tree exists), so enforceLiteralMustMatch accepts it unfiltered.
-    const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
-    enforceLiteralMustMatch(mustMatch, onDisk, literalSpellings);
     await commitIfChanged(lock, entries.length, renormalized.entries, {
       restagedPaths: renormalized.restagedPaths,
     });
@@ -806,16 +808,64 @@ const addRenormalized = async (
   }
 };
 
-/** The literals naming something on disk: every tracked one the pass re-cleaned, and an untracked file git accepts and stages nothing for. */
-const literalsOnDisk = async (
+/** Collected in emission order: the walk's ignore stack is stateful, so it is walked once. */
+const collectWalk = async (
+  walk: AsyncIterable<WalkWorkingTreeEntry>,
+): Promise<WalkWorkingTreeEntry[]> => {
+  const walked: WalkWorkingTreeEntry[] = [];
+  for await (const walkEntry of walk) walked.push(walkEntry);
+  return walked;
+};
+
+/** git's `add` never refuses the whole tree, even when it holds nothing to add. */
+const isNarrowerThanWholeTree = ({ entry }: PositivePathspec): boolean =>
+  !namesWholeTree(entry.body as FilePath);
+
+const indexSees = ({ entry }: PositivePathspec, entries: ReadonlyArray<IndexEntry>): boolean =>
+  entries.some((indexed) => entry.compiled.test(escapedPathOf(indexed)));
+
+/** Whether the pathspec's verbatim body, as typed, names something on disk. */
+const namesOnDisk = async (ctx: Context, { entry, probesDisk }: PositivePathspec) =>
+  probesDisk && (await lstatOrBeneathFile(ctx, entry.body as FilePath)) !== undefined;
+
+/**
+ * `add --renormalize` runs no directory fill, so a pathspec is seen through the
+ * index alone; git still accepts one whose verbatim body names a file on disk.
+ */
+const refuseUnseenRenormalized = async (
   ctx: Context,
-  literals: ReadonlyArray<FilePath>,
-): Promise<ReadonlyArray<FilePath>> => {
-  const present: FilePath[] = [];
-  for (const literal of literals) {
-    if ((await lstatOrMissing(ctx, literal)) !== undefined) present.push(literal);
+  positives: ReadonlyArray<PositivePathspec>,
+  entries: ReadonlyArray<IndexEntry>,
+): Promise<void> => {
+  const unseen = unmatchedPositives(positives.filter(isNarrowerThanWholeTree), (positive) =>
+    indexSees(positive, entries),
+  );
+  for (const positive of unseen) {
+    if (!(await namesOnDisk(ctx, positive))) throw pathspecNoMatch(positive.spelling);
   }
-  return present;
+};
+
+/**
+ * The first pathspec, in argument order, that neither the index nor the walk
+ * reaches. A wildcard whose verbatim body names a file on disk is accepted, as
+ * git's `file_exists` escape does.
+ */
+const refuseUnseenWalked = async (
+  ctx: Context,
+  positives: ReadonlyArray<PositivePathspec>,
+  sorted: ReadonlyArray<IndexEntry>,
+  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+): Promise<void> => {
+  const unseen = unmatchedPositives(
+    positives.filter(isNarrowerThanWholeTree),
+    (positive) =>
+      indexSees(positive, sorted) || walked.some(({ path }) => positive.entry.compiled.test(path)),
+  );
+  for (const positive of unseen) {
+    if (positive.entry.isLiteral || !(await namesOnDisk(ctx, positive))) {
+      throw pathspecNoMatch(positive.spelling);
+    }
+  }
 };
 
 /** Whether `add --renormalize` re-cleans this entry: a merged, checked-out file or symlink in the pathspec. */
@@ -883,7 +933,7 @@ const renormalizeOne = async (
 const stageIgnoredWalk = async (
   ctx: Context,
   repoIgnore: IgnorePredicate,
-  matcher: ResolvedPathspec['matcher'],
+  { matcher, positives }: Pick<CommandPathspec, 'matcher' | 'positives'>,
   scope: ConversionScope,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<{
@@ -902,9 +952,11 @@ const stageIgnoredWalk = async (
     indexRules,
   } = await readExistingEntries(ctx);
   const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
+  const walked = await collectWalk(walkWorkingTree(ctx, { ignore }));
+  await refuseUnseenWalked(ctx, positives, sorted, walked);
   const outcomes = await stageWalkedEntries(
     ctx,
-    walkWorkingTree(ctx, { ignore }),
+    walked,
     existing,
     new Set<IndexPathKey>(),
     { ...scope, indexRules },

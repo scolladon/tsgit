@@ -12,7 +12,15 @@
  *   unique:         pathspec wildcards select paths as git's wildmatch does
  *   interopSurface: add, rm, checkout, grep
  */
-import { mkdir, mkdtemp, readFile, realpath, rm as removeTree, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm as removeTree,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -22,6 +30,7 @@ import { checkout } from '../../src/application/commands/checkout.js';
 import { grep } from '../../src/application/commands/grep.js';
 import { rm } from '../../src/application/commands/rm.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
+import { pathspecNoMatch } from '../../src/domain/commands/error.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { encode } from '../../src/domain/objects/encoding.js';
 import { compilePathspec } from '../../src/domain/pathspec/compile-pathspec.js';
@@ -475,6 +484,248 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         expect(git.stderr).toContain(`not removing '${pattern}' recursively without -r`);
         expect(refusal).toEqual({ code: 'RM_RECURSIVE_WITHOUT_R', pattern });
         expect(namesOf(tsgitRepo)).toEqual(namesOf(gitRepo));
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'Given add pathspecs that match nothing',
+  () => {
+    let root = '';
+    let counter = 0;
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-glob-add-')));
+    });
+
+    afterAll(async () => {
+      await removeTree(root, { recursive: true, force: true });
+    });
+
+    interface Row {
+      readonly row: string;
+      readonly files: Files;
+      readonly tracked?: boolean;
+      readonly prepare?: (repo: string) => Promise<void>;
+      readonly args: ReadonlyArray<string>;
+      readonly renormalize?: boolean;
+      /** The pathspec git names in its refusal; absent when git accepts. */
+      readonly refused?: string;
+    }
+
+    const looseCountOf = async (repo: string): Promise<number> => {
+      const prefixes = (await readdir(path.join(repo, '.git', 'objects'))).filter((name) =>
+        /^[0-9a-f]{2}$/.test(name),
+      );
+      const counts = await Promise.all(
+        prefixes.map(
+          async (prefix) => (await readdir(path.join(repo, '.git', 'objects', prefix))).length,
+        ),
+      );
+      return counts.reduce((sum, count) => sum + count, 0);
+    };
+
+    const built = async (side: string, spec: Row): Promise<string> => {
+      counter += 1;
+      const repo = path.join(root, `${side}-${counter}`);
+      runGit(['init', '-q', '-b', 'main', repo]);
+      for (const [name, body] of Object.entries(spec.files)) {
+        await mkdir(path.dirname(path.join(repo, name)), { recursive: true });
+        await writeFile(path.join(repo, name), body);
+      }
+      if (spec.tracked === true) {
+        runGit(['-C', repo, 'add', '-A']);
+        runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-qm', 'c'], {
+          env: { ...runGitEnv(), GIT_AUTHOR_DATE: PINNED_DATE, GIT_COMMITTER_DATE: PINNED_DATE },
+        });
+      }
+      await spec.prepare?.(repo);
+      return repo;
+    };
+
+    const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run();
+      } catch (err) {
+        if (err instanceof TsgitError) return err.data;
+        throw err;
+      }
+      return undefined;
+    };
+
+    const ignoring = (patterns: string): Files => ({ '.gitignore': patterns });
+    const remove = (name: string) => (repo: string) => removeTree(path.join(repo, name));
+    const overwrite = (name: string, body: string) => async (repo: string) => {
+      await writeFile(path.join(repo, name), body);
+    };
+
+    const rows: ReadonlyArray<Row> = [
+      {
+        row: 'B1',
+        files: { 'real.txt': 'r\n' },
+        args: ['nomatch*', 'real.txt'],
+        refused: 'nomatch*',
+      },
+      { row: 'B2', files: { 'a.txt': 'a\n' }, args: ['a*', 'nomatch*'], refused: 'nomatch*' },
+      { row: 'B2b', files: { 'a.txt': 'a\n' }, args: ['nomatch*', 'a*'], refused: 'nomatch*' },
+      {
+        row: 'B3',
+        files: { 'x.log': 'x\n', ...ignoring('*.log\n') },
+        args: ['*.log'],
+        refused: '*.log',
+      },
+      {
+        row: 'B3x',
+        files: { 'x.log': 'x\n', ...ignoring('*.log\n') },
+        args: ['x*'],
+        refused: 'x*',
+      },
+      {
+        row: 'B3d',
+        files: { 'd/x.log': 'x\n', 'd/y.txt': 'y\n', ...ignoring('*.log\n') },
+        args: ['d/*.log'],
+        refused: 'd/*.log',
+      },
+      {
+        row: 'B4',
+        files: { 'x.log': 'x\n', 'real.txt': 'r\n', ...ignoring('*.log\n') },
+        args: ['*.log', 'real.txt'],
+        refused: '*.log',
+      },
+      {
+        row: 'B4b',
+        files: { 'x.log': 'x\n', 'real.txt': 'r\n', ...ignoring('*.log\n') },
+        args: ['real.txt', '*.log', 'nomatch*'],
+        refused: '*.log',
+      },
+      {
+        row: 'B4c',
+        files: { 'd/x.log': 'x\n', 'real.txt': 'r\n', ...ignoring('d/\n') },
+        args: ['*.log'],
+        refused: '*.log',
+      },
+      { row: 'B9', files: { a: 'a\n' }, args: ['n1*', 'n2*'], refused: 'n1*' },
+      { row: 'B10b', files: { a: 'a\n' }, args: ['n1*', 'missing'], refused: 'n1*' },
+      { row: 'B10', files: { a: 'a\n' }, args: ['missing', 'n1*'], refused: 'missing' },
+      { row: 'B12', files: { 'a.txt': 'a\n' }, args: ['.', 'nomatch*'], refused: 'nomatch*' },
+      { row: 'B12r', files: { 'a.txt': 'a\n' }, args: ['zz*', '.'], refused: 'zz*' },
+      { row: 'D7', files: { 'dir/f': 'f\n', 'd.txt': 'd\n' }, args: ['d*/'], refused: 'd*/' },
+      { row: 'D8c', files: { ab: 'ab\n' }, args: ['a[[:foo:]]'], refused: 'a[[:foo:]]' },
+      { row: 'D10', files: { 'dir/file': 'f\n' }, args: ['di?'], refused: 'di?' },
+      {
+        row: 'B11prime',
+        files: { 'nomatch*': 'n\n', ...ignoring('nomatch?\n') },
+        args: ['nomatch*'],
+      },
+      { row: 'B6', files: { 't.txt': 't\n' }, tracked: true, args: ['t*'] },
+      {
+        row: 'B7',
+        files: { 't.txt': 't\n', 'u.txt': 'u\n' },
+        tracked: true,
+        prepare: remove('t.txt'),
+        args: ['t*'],
+      },
+      {
+        row: 'RN1',
+        files: { 'a.txt': 'a\n' },
+        tracked: true,
+        renormalize: true,
+        args: ['nomatch*'],
+        refused: 'nomatch*',
+      },
+      {
+        row: 'RN2',
+        files: { 'a.txt': 'a\n' },
+        tracked: true,
+        renormalize: true,
+        args: ['a*', 'nomatch*'],
+        refused: 'nomatch*',
+      },
+      { row: 'RN3', files: { 'a.txt': 'a\n' }, tracked: true, renormalize: true, args: ['a*'] },
+      {
+        row: 'RN4',
+        files: { 'a.txt': 'a\n' },
+        tracked: true,
+        prepare: overwrite('nomatch*', 'n\n'),
+        renormalize: true,
+        args: ['nomatch*'],
+      },
+      {
+        row: 'RN5',
+        files: { 'a.txt': 'a\n' },
+        tracked: true,
+        prepare: overwrite('untracked.txt', 'u\n'),
+        renormalize: true,
+        args: ['untracked.txt'],
+      },
+      {
+        row: 'RN6',
+        files: { 'a.txt': 'a\n' },
+        tracked: true,
+        prepare: overwrite('untracked.txt', 'u\n'),
+        renormalize: true,
+        args: ['untr*'],
+        refused: 'untr*',
+      },
+    ];
+
+    describe.each(rows)('When $row git and tsgit add $args', (spec) => {
+      it('Then both agree on the verdict, the index and the loose objects', async () => {
+        // Arrange
+        const gitRepo = await built('git', spec);
+        const tsgitRepo = await built('tsgit', spec);
+        const flags = spec.renormalize === true ? ['--renormalize'] : [];
+        const sut = add;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitRepo, 'add', ...flags, '--', ...spec.args]);
+        const refusal = await refusalOf(() =>
+          sut(createNodeContext({ workDir: tsgitRepo }), [...spec.args], {
+            renormalize: spec.renormalize === true,
+          }),
+        );
+
+        // Assert
+        if (spec.refused === undefined) {
+          expect(git.exitCode).toBe(0);
+          expect(refusal).toBeUndefined();
+        } else {
+          expect(git.exitCode).toBe(128);
+          expect(refusal).toEqual(pathspecNoMatch(spec.refused).data);
+          expect(git.stderr.trim()).toBe(
+            `fatal: pathspec '${(refusal as { pattern: string }).pattern}' did not match any files`,
+          );
+        }
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(await looseCountOf(tsgitRepo)).toBe(await looseCountOf(gitRepo));
+      });
+    });
+
+    describe('When K2 git and tsgit add nomatch* while index.lock exists', () => {
+      it('Then both refuse on the lock, not on the pathspec', async () => {
+        // Arrange
+        const spec: Row = {
+          row: 'K2',
+          files: { 'a.txt': 'a\n' },
+          args: ['nomatch*'],
+          prepare: overwrite(path.join('.git', 'index.lock'), ''),
+        };
+        const gitRepo = await built('git', spec);
+        const tsgitRepo = await built('tsgit', spec);
+        const sut = add;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitRepo, 'add', '--', 'nomatch*']);
+        const refusal = await refusalOf(() =>
+          sut(createNodeContext({ workDir: tsgitRepo }), ['nomatch*']),
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toContain('index.lock');
+        expect((refusal as { code: string }).code).not.toBe('PATHSPEC_NO_MATCH');
+        expect(refusal).toBeDefined();
       });
     });
   },

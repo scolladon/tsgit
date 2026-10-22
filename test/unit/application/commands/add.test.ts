@@ -15,7 +15,7 @@ import {
   type IndexEntry,
   STAGE0_FLAGS,
 } from '../../../../src/domain/git-index/index.js';
-import { permissionDenied, TsgitError } from '../../../../src/domain/index.js';
+import { pathspecNoMatch, permissionDenied, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { type FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
@@ -157,7 +157,7 @@ describe('add', () => {
         const err = await expectError(() => sut(ctx, ['./nomatch']), 'PATHSPEC_NO_MATCH');
 
         // Assert
-        expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: './nomatch' });
+        expect(err.data).toEqual(pathspecNoMatch('./nomatch').data);
       });
     });
   });
@@ -173,7 +173,7 @@ describe('add', () => {
         const err = await expectError(() => sut(ctx, ['f/']), 'PATHSPEC_NO_MATCH');
 
         // Assert
-        expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'f/' });
+        expect(err.data).toEqual(pathspecNoMatch('f/').data);
       });
     });
   });
@@ -292,15 +292,16 @@ describe('add', () => {
 
   describe('Given a glob whose magic sits in the leading path component and no literal directory exists there', () => {
     describe('When add', () => {
-      it('Then it does not throw PATHSPEC_BEYOND_SYMLINK — verified against real git 2.55, which falls through to a plain no-match instead', async () => {
+      it('Then it refuses PATHSPEC_NO_MATCH, not PATHSPEC_BEYOND_SYMLINK — verified against real git 2.55, which falls through to a plain no-match', async () => {
         // Arrange
         const ctx = await seedFreshRepo();
+        const sut = add;
 
         // Act
-        const result = await add(ctx, ['li*/x.ts']);
+        const err = await expectError(() => sut(ctx, ['li*/x.ts']), 'PATHSPEC_NO_MATCH');
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(err.data).toEqual(pathspecNoMatch('li*/x.ts').data);
       });
     });
   });
@@ -1651,15 +1652,17 @@ describe('add', () => {
 
   describe('Given a glob with no match', () => {
     describe('When add', () => {
-      it('Then returns added=[] without throwing', async () => {
+      it('Then it refuses PATHSPEC_NO_MATCH and leaves the index unchanged', async () => {
         // Arrange
         const ctx = await seedFreshRepo({ 'README.md': '# r' });
+        const sut = add;
 
         // Act
-        const result = await add(ctx, ['*.ts']);
+        const err = await expectError(() => sut(ctx, ['*.ts']), 'PATHSPEC_NO_MATCH');
 
         // Assert
-        expect(result.added).toEqual([]);
+        expect(err.data).toEqual(pathspecNoMatch('*.ts').data);
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
       });
     });
   });
@@ -3429,10 +3432,7 @@ describe('add renormalize option', () => {
         }
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'PATHSPEC_NO_MATCH',
-          pattern: 'g.txt',
-        });
+        expect((caught as TsgitError).data).toEqual(pathspecNoMatch('g.txt').data);
         expect(await idsByPath(ctx)).toEqual(before);
       });
     });
@@ -4021,10 +4021,7 @@ describe('add on an index holding entries whose decoded paths collide', () => {
 
         // Assert
         expect(thrown).toBeInstanceOf(TsgitError);
-        expect((thrown as TsgitError).data).toEqual({
-          code: 'PATHSPEC_NO_MATCH',
-          pattern: LOSSY_VIEW,
-        });
+        expect((thrown as TsgitError).data).toEqual(pathspecNoMatch(LOSSY_VIEW).data);
         const { entries } = await readIndex(ctx);
         expect(entries.map((e) => e.pathBytes)).toEqual([undefined, undefined, LOSSY_NAME_BYTES]);
         expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z', 'y', 'x']);
@@ -4233,3 +4230,143 @@ const withProbedSize = (ctx: Context, name: string, size: number): Context['fs']
     },
   });
 };
+
+describe('add refuses an unmatched pathspec before any object write', () => {
+  const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  describe('Given a real file and a glob matching nothing', () => {
+    describe('When add names the glob first', () => {
+      it('Then it refuses the glob, stages nothing and writes no blob', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'real.txt': 'real content' });
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['nomatch*', 'real.txt']));
+
+        // Assert
+        expect(refusal).toEqual(pathspecNoMatch('nomatch*').data);
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
+        expect(await blobExists(ctx, 'real content')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tracked file deleted from disk', () => {
+    describe('When add names it by a glob', () => {
+      it('Then the deletion is staged and nothing is refused', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'gone.txt': 'g', 'keep.txt': 'k' });
+        await add(ctx, ['gone.txt', 'keep.txt']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/gone.txt`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['gone*']);
+
+        // Assert
+        expect(result.removed).toEqual(['gone.txt']);
+      });
+    });
+  });
+
+  describe('Given a glob and a missing literal both unmatched', () => {
+    describe('When add names the glob first', () => {
+      it('Then the glob is the one refused', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ a: 'a' });
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['n1*', 'missing']));
+
+        // Assert
+        expect(refusal).toEqual(pathspecNoMatch('n1*').data);
+      });
+    });
+  });
+
+  describe('Given the whole tree and a glob matching nothing', () => {
+    describe('When add names them together', () => {
+      it('Then the glob is refused and the whole tree stages nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a content' });
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['.', 'nomatch*']));
+
+        // Assert
+        expect(refusal).toEqual(pathspecNoMatch('nomatch*').data);
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
+        expect(await blobExists(ctx, 'a content')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a file literally named like the glob and ignored by another pattern', () => {
+    describe('When add names the glob', () => {
+      it('Then nothing is refused and nothing is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'nomatch*': 'n', '.gitignore': 'nomatch?\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['nomatch*']);
+
+        // Assert
+        expect(result.added).toEqual([]);
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a tracked file and the renormalize option', () => {
+    describe.each([
+      { row: 'RN1', args: ['nomatch*'], pattern: 'nomatch*' },
+      { row: 'RN2', args: ['a*', 'nomatch*'], pattern: 'nomatch*' },
+      { row: 'RN6', args: ['untr*'], pattern: 'untr*' },
+    ])('When $row add renormalize names $args', ({ args, pattern }) => {
+      it('Then it refuses the glob, leaves the index and writes no blob', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a\r\nb\r\n', 'untracked.txt': 'u' });
+        await add(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* text=auto\n');
+        const before = await idsByPath(ctx);
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, args, RENORMALIZE));
+
+        // Assert
+        expect(refusal).toEqual(pathspecNoMatch(pattern).data);
+        expect(await idsByPath(ctx)).toEqual(before);
+        expect(await blobExists(ctx, 'a\nb\n')).toBe(false);
+      });
+    });
+
+    describe('When RN4 add renormalize names a glob spelled as an untracked file on disk', () => {
+      it('Then it accepts and changes nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'nomatch*': 'n' });
+        await add(ctx, ['a.txt']);
+        const before = await idsByPath(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['nomatch*'], RENORMALIZE);
+
+        // Assert
+        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(await idsByPath(ctx)).toEqual(before);
+      });
+    });
+  });
+});

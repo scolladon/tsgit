@@ -6,7 +6,7 @@ import {
   readIndex,
 } from '../../../../src/application/primitives/read-index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { pathspecNoMatch, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { indexExtensionsOf } from '../primitives/helpers/index-extensions.js';
@@ -1061,7 +1061,7 @@ describe('Given an existing file and a regular file named with a trailing slash'
       );
 
       // Assert
-      expect(outcome).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'f/' });
+      expect(outcome).toEqual(pathspecNoMatch('f/').data);
       expect(await indexPaths(ctx)).toEqual([]);
     });
   });
