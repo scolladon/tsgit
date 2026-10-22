@@ -778,11 +778,7 @@ const collectMatchedRemovals = (
   matched: ReadonlyArray<FilePath>,
   verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>,
 ): Promise<IndexEntry[]> => {
-  const named = new Map(
-    [...existing].filter(
-      ([key, entry]) => entry.flags.stage === 0 && verdicts.get(key)?.matched === true,
-    ),
-  );
+  const named = new Map([...existing].filter(([key]) => verdicts.get(key)?.matched === true));
   return collectRemovedEntries(ctx, named, new Set(matched.map(keyOfPath)));
 };
 
@@ -1038,7 +1034,7 @@ const pathspecSelectsTracked = (
   verdict: PathspecVerdict | undefined,
 ): boolean =>
   stages === undefined
-    ? entry.flags.stage === 0 && verdict?.matched === true
+    ? verdict?.matched === true
     : matchesUnmergedIndexPath(matcher, entry, stages.length);
 
 /** The walk entry the walker would have yielded, from the file as it lies on disk. */

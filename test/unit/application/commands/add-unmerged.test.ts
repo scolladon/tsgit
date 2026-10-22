@@ -295,6 +295,26 @@ describe('Given an unmerged f deleted from the working tree', () => {
   });
 });
 
+describe('Given an unmerged f deleted from the working tree', () => {
+  describe('When add names f', () => {
+    it('Then every stage of f is gone and h keeps its own', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['f']);
+      const stages = await stagesOf(ctx);
+
+      // Assert
+      expect(result.removed).toEqual(['f']);
+      expect(stagesAt(stages, 'f')).toEqual([]);
+      expect(stagesAt(stages, 'h')).toEqual(['1', '2', '3']);
+    });
+  });
+});
+
 describe.each([SHAPES[1], SHAPES[2]] as Shape[])(
   'Given $title whose working file equals its last stage',
   (shape) => {
