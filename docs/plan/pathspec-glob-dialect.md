@@ -1,6 +1,6 @@
 # Plan — pathspec glob dialect, unmatched-pathspec refusal, describe/name-rev patterns
 
-> Source: design doc `docs/design/pathspec-glob-dialect.md` · ADRs 1033, 1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1043 (binding); pre-existing 038, 077, 226, 249, 866, 980, 1000, 1012
+> Source: design doc `docs/design/pathspec-glob-dialect.md` · ADRs 1033, 1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1043, 1044 (binding); pre-existing 038, 077, 226, 249, 866, 980, 1000, 1012
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
@@ -25,13 +25,15 @@
 Each was probed against git 2.55.0 in a `mktemp -d` throwaway (scrubbed `GIT_*`, empty `HOME`,
 `GIT_CONFIG_NOSYSTEM=1`, `LC_ALL=C`, signing off) or read from the code at `8dd442ee`.
 
-1. **tsgit refuses every pathspec holding a backslash before any matching.** `resolvePathspec`
-   runs `validatePath` (= `validateWorkingTreePath`, src/domain/working-tree-path.ts:71
+1. **tsgit refused every pathspec holding a backslash before any matching** (base `8dd442ee`).
+   `resolvePathspec` runs `validatePath` (= `validateWorkingTreePath`, src/domain/working-tree-path.ts:71
    `if (input.includes('\\')) reject(input)`) on every body. Probe through the real module:
    `resolvePathspec(['a\\b'])`, `(['a\\*b'])`, `(['a\\'])` each throw
-   `{"code":"PATHSPEC_OUTSIDE_REPO","path":…}`; `(['[ab].txt'])` is accepted. So matrix rows D6, D8b,
-   D17, E1, E2 cannot pass through any command until that validator changes — Decision candidate 1.
-   The matcher still treats `\` as glob-special (ADR-1034) and is unit-tested at the domain level.
+   `{"code":"PATHSPEC_OUTSIDE_REPO","path":…}`; `(['[ab].txt'])` is accepted.
+   **Decided: ADR-1044, option B** (candidate 1) — on a host without Windows path syntax the
+   pathspec intake accepts `\` for matching only; Part 9 lands it. D6, D17 and E2 get command-level
+   interop rows on POSIX hosts; D8b and E1 stay pinned follow-ups (they need a `\`-named
+   working-tree file, which `validateWalkedEntryPath` refuses).
 2. **B11 as designed is unreachable**: its `.gitignore: nomatch[*]` needs `[…]` in the gitignore
    dialect, which tsgit does not have (src/domain/pathspec/compile-glob.ts header; R9 keeps it so).
    Re-pinned variant **B11′**: file `nomatch*`, `.gitignore: nomatch?`, `git add 'nomatch*'` →
@@ -62,25 +64,25 @@ Each was probed against git 2.55.0 in a `mktemp -d` throwaway (scrubbed `GIT_*`,
 
 | Req | Part(s) |
 |---|---|
-| R1 dialect (verbatim first, flags-0 wildmatch over bytes) | 1, 2 (fast paths); `\` rows at command level: candidate 1 |
-| R2 add / add --renormalize / rm refuse the first unmatched, before any write | 6, 8 (helpers: 5) |
-| R3 checkout refuses every unmatched, lock + index read first | 7 (helpers: 5) |
-| R4 rm -r by match level | 2 (level), 8 |
-| R5 unmatched glob whose verbatim body exists is not refused | 6 |
+| R1 dialect (verbatim first, flags-0 wildmatch over bytes) | 1, 2 (fast paths), 9 (`\` bodies at command level, ADR-1044) |
+| R2 add / add --renormalize / rm refuse the first unmatched, before any write | 6 (rm), 7 (add); helpers: 5 |
+| R3 checkout refuses every unmatched, lock + index read first | 8; helpers: 5 |
+| R4 rm -r by match level | 6 |
+| R5 unmatched glob whose verbatim body exists is not refused | 7 |
 | R6 grep never refuses | 1 (GUARD rows) |
 | R7 describe flags-0 on the short name | 3 |
-| R8 name-rev suffix matching + abbreviation as data | 3 (filter), 9 (result field) |
+| R8 name-rev suffix matching + abbreviation as data | 3 (filter), 10 (result field, every N interop row) |
 | R9 gitignore/attributes/sparse unchanged | 4 |
-| R10 linear matchers, size, add-glob bench | 2, 10 |
+| R10 linear matchers, size, add-glob bench | 2, 11 |
 
 ## Decision candidates
 
-The parts implement each recommendation; another choice changes only the part the row names
-(candidate 1 B adds one part after Part 8).
+Candidate 1 is decided (ADR-1044, B); candidates 2–5 were adopted as recommended. The rows stay
+as the audit trail.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| 1 | Backslash in a pathspec body (fact 1) | **A** keep `validateWorkingTreePath`'s refusal: D6/D8b/D17/E1/E2 stay divergent at command level, pinned as a follow-up; the matcher keeps `\` glob-special · **B** accept `\` in pathspec bodies on non-Windows hosts, matcher-only: a `\`-holding body never reaches `lstat`, the symlink scan or `literalStats` (needs a security review of the relaxed validator) · **C** accept `\` everywhere | A for this run (the plan is written for A) | The refusal is a path-traversal defence shared with tree/index boundaries; relaxing it is a security-surface change the design never weighed. B is a separate part (validator split + the five rows) if chosen. |
+| 1 | Backslash in a pathspec body (fact 1) | **A** keep `validateWorkingTreePath`'s refusal: D6/D8b/D17/E1/E2 stay divergent at command level, pinned as a follow-up; the matcher keeps `\` glob-special · **B** accept `\` in pathspec bodies on non-Windows hosts, matcher-only: a `\`-holding body never reaches `lstat`, the symlink scan or `literalStats` (needs a security review of the relaxed validator) · **C** accept `\` everywhere | **Decided: ADR-1044, B** (recommendation was A) | The refusal is a path-traversal defence shared with tree/index boundaries; relaxing it is a security-surface change the design never weighed. B is a separate part (validator split + the five rows) if chosen. |
 | 2 | Testing the Part 2 fast paths under mutation | **A** export the shape classifier and the one-star evaluator (internal) and unit-test them directly; the dispatch `if` that falls back to the byte DP stays an equivalent mutant, triaged at validation with no suppression comment unless the user approves one · **B** ship Part 1 without fast paths; add them only if `bench:ab` on the add-by-glob row regresses beyond noise | A | The design and ADR-1033 admit the fast paths and the hot path (`add '*.ts'`) is the common call; A leaves at most a handful of provably equivalent dispatch mutants. |
 | 3 | `add` walk-seen source when a `!` element is present | **A** test each positive element against the leaves the walk yields (already filtered by the whole spec) · **B** test against every non-ignored leaf before the pathspec filter (git's positive pass marks `seen` before excludes) | A | Only specs combining `!` with an otherwise-unmatched element differ; `!` semantics are backlog 32.11b. |
 | 4 | On-disk escape scope under `add --renormalize` | **A** every unseen positive (literal or wildcard) whose verbatim body `lstat`s is accepted — git's `file_exists` (RN4, RN5) · **B** wildcard only, as ADR-1036 states for the walk | A | RN5 is today's pinned literal behaviour and RN4 is git's; ADR-1036's literal exclusion exists because the walk's ignored-literal advice is unbuilt, which `--renormalize` never prints. |
@@ -95,6 +97,9 @@ The parts implement each recommendation; another choice changes only the part th
   docs/use/commands/checkout.md line 92, docs/use/recipes.md line 71, docs/use/errors.md line 130
   (`patterns`), docs/use/commands/name-rev.md (result shape gains `abbreviated`; line 40 says
   "full-refname glob"), docs/use/commands/describe.md (`match`/`exclude` dialect).
+- docs/use/errors.md line 131 (`PATHSPEC_OUTSIDE_REPO`): on a POSIX host a pathspec holding `\` is
+  no longer refused (ADR-1044); the row's wording and the pathspec mentions in
+  docs/use/commands/add.md, rm.md and checkout.md need the Windows-only qualifier.
 - `docs/design/pathspec-glob-dialect.md` Test strategy names `rev-parse --abbrev-ref`; fact 3
   corrects it to `--abbrev-ref=loose`.
 
@@ -113,18 +118,23 @@ The parts implement each recommendation; another choice changes only the part th
 Files this part creates or edits (exactly these):
 - `src/domain/refs/ref-glob.ts` — add the bytes-taking compile.
 - `test/unit/domain/refs/ref-glob.test.ts` — rows for it.
-- `src/domain/pathspec/compile-pathspec.ts` — new dialect.
-- `test/unit/domain/pathspec/compile-pathspec.test.ts` — dialect rows.
-- `test/unit/domain/pathspec/matching-path.test.ts` — byte-semantics rows on index entries.
-- `test/integration/pathspec-glob-dialect-interop.test.ts` — CREATED here; Parts 6, 7, 8 extend it
-  (shared on purpose: one interop file per pinned matrix, one twin-repo builder).
+- `src/domain/pathspec/wildcard.ts` — CREATED: match levels, verbatim rule, glob-special test,
+  the wildcard matcher. Part 2 adds the fast paths to it (a new module, so the two parts share no
+  pre-existing file).
+- `test/unit/domain/pathspec/wildcard.test.ts` — CREATED; Part 2 extends it.
+- `src/domain/pathspec/compile-pathspec.ts` — `compileOne` delegates to wildcard.ts. This part is
+  its only editor in the run.
+- `test/integration/pathspec-glob-dialect-interop.test.ts` — CREATED here; Parts 6, 7, 8, 9 extend it
+  (one interop file per pinned matrix, one twin-repo builder).
 
 Read-only references: src/domain/objects/encoding.ts (encodeEscaped at :205, encode),
-src/domain/git-index/index-path-key.ts (escapedPathOf, indexPathOfBytes, IndexPath),
+src/domain/git-index/index-path-key.ts (escapedPathOf, IndexPath),
 src/domain/pathspec/match-pathspec.ts, src/domain/pathspec/matching-path.ts,
-test/integration/pathspec-dot-interop.test.ts (twin-repo and createNodeContext template, the
-`@proves` header shape), test/integration/interop-helpers.ts (GIT_AVAILABLE, runGit, runGitEnv,
-runGitBytes, tryRunGitWithExit, stageRaw, hashBlob, pathHexOfRecords, lsFilesPathHex, hex).
+test/unit/domain/pathspec/compile-pathspec.test.ts and matching-path.test.ts (existing rows stay
+green unchanged here — Part 2 retitles two of them), test/integration/pathspec-dot-interop.test.ts
+(twin-repo and createNodeContext template, the `@proves` header shape),
+test/integration/interop-helpers.ts (GIT_AVAILABLE, runGit, runGitEnv, runGitBytes,
+tryRunGitWithExit, stageRaw, hashBlob, pathHexOfRecords, lsFilesPathHex, hex).
 
 Current code (at the base):
 - ref-glob.ts: private `tokenize(bytes, dialect)`, `matchTokens(tokens, text: Uint8Array)`,
@@ -146,7 +156,7 @@ Current code (at the base):
 
 Target shape (internal exports, not barrelled, not public):
 
-    // compile-pathspec.ts
+    // wildcard.ts
     export const MATCH_LEVEL = { NONE: 0, RECURSIVE: 1, FNMATCH: 2, EXACT: 3 } as const;
     export type MatchLevel = (typeof MATCH_LEVEL)[keyof typeof MATCH_LEVEL];
     export const hasGlobSpecial = (body: string): boolean  // any of * ? [ \
@@ -154,23 +164,28 @@ Target shape (internal exports, not barrelled, not public):
       // '' → RECURSIVE (git: an empty match covers every path)
       // !path.startsWith(body) → NONE; same length → EXACT;
       // body ends in '/' or path[body.length] === '/' → RECURSIVE; else NONE
-    // compileOne: isLiteral = !hasGlobSpecial(body)
+    export const compileWildcard = (body: string): GlobMatcher
+      // const wild = compileRefGlobBytes(body);
+      // test = verbatimLevel(body, p) !== NONE || wild(encodeEscaped(p))
+    // compile-pathspec.ts — compileOne: isLiteral = !hasGlobSpecial(body)
     //   literal: '' → WHOLE_TREE, else test = verbatimLevel(body, p) !== NONE
-    //   wildcard: const wild = compileRefGlobBytes(body);
-    //             test = verbatimLevel(body, p) !== NONE || wild(encodeEscaped(p))
+    //   wildcard: compileWildcard(body)
     // ref-glob.ts
     export const compileRefGlobBytes = (pattern: string): ((text: Uint8Array) => boolean)
       // tokenize(encode(pattern), REF_DIALECT) once; abort → () => false; reuses matchTokens;
       // compileWith is rewritten on top of it (no second DP)
 
-The level ordering mirrors git (`RECURSIVE < FNMATCH < EXACT`) so Part 2 and Part 8 can take a max.
-Never `TextEncoder` a path: `encodeEscaped` turns each lone U+DC80..U+DCFF back into its raw byte.
+wildcard.ts imports `GlobMatcher` as a type from compile-glob.ts; compile-pathspec.ts imports
+wildcard.ts (no import back — no cycle). The level ordering mirrors git
+(`RECURSIVE < FNMATCH < EXACT`) so Part 6 can take a max. Never `TextEncoder` a path:
+`encodeEscaped` turns each lone U+DC80..U+DCFF back into its raw byte.
 
 Matrix rows this part makes pass (design `## Pin matrix (git 2.55.0)`): D2, D3, D5a–D5e, D9, D11,
 D11b, D12, D16, E4, E5, C6, L1–L3, L5, L6, G3, R2, R4, R5, R6. GUARD rows (design marks them ok):
-D1, D4, D8a, D13, D14, E3, G1, G2, G4, G5, L4, R3. Not here: D7, D8c, D10 (refusals, Part 6);
-D6, D8b, D17, E1, E2 at command level (candidate 1 — tsgit refuses the `\` body with
-PATHSPEC_OUTSIDE_REPO); their matcher behaviour IS unit-tested here.
+D1, D4, D8a, D13, D14, E3, G1, G2, G4, G5, L4, R3. Not here: D7, D8c, D10 (refusals, Part 7).
+The matcher behaviour of D6, D17, E1, E2 (bodies holding a backslash) IS unit-tested here through
+`compileWildcard`; their command-level rows (D6, D17, E2) land in Part 9 once the intake accepts
+the backslash on POSIX hosts (ADR-1044); D8b/E1 stay follow-ups.
 
 Interop file guidance: copy the header and the twin-repo builder shape from
 pathspec-dot-interop.test.ts (`@proves` surface/bucket/unique/interopSurface: add, rm, checkout,
@@ -197,24 +212,24 @@ Implementers have no MCP tools: use Bash (grep/sed) over the paths above.
 
 Windows: no file name there can hold `*`, `?`, `:` or a backslash, so every interop row whose
 FIXTURE creates such a name (not merely a pathspec spelling) sits under
-`describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')`; the unit rows (memory adapter)
-cover those shapes on every OS.
+`describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')` (the repo convention, e.g.
+test/integration/filter-clean-smudge-interop.test.ts:1377); the unit rows (memory adapter) cover
+those shapes on every OS.
 
 House rules: one RED per function, run it and watch it fail for the stated reason before writing
 its code; a row that already passes is a GUARD, never a RED. After any scripted edit, confirm
-`git diff --no-ext-diff --stat` shows it before trusting a gate. Poll background processes, never end a turn
-waiting on one. Commit only this part's files (explicit `git add <file>…`). No phase, ADR,
-backlog or matrix-row ids in source or test text (titles describe behaviour; "pinned against git
-2.55" is fine). No suppression directives.
+`git diff --no-ext-diff --stat` shows it before trusting a gate. Poll background processes, never
+end a turn waiting on one. Commit only this part's files (explicit `git add <file>…`). No phase,
+ADR, backlog or matrix-row ids in source or test text (titles describe behaviour; "pinned against
+git 2.55" is fine). No suppression directives.
 
 Re-pinning rule: When an existing test row breaks, decide whether the OLD expectation encoded the
 contract. If it did, fix the code, not the row, and say so. A changed row is re-pinned against real
 git 2.55 (or the design's matrix row id), never rewritten to match the new code.
-Rows the design names here: compile-pathspec.test.ts "Given a glob \"*.ts\"" (verdicts unchanged —
-D1; only the "non-anchored" wording is now false) and "Given an anchored glob \"src/**\"" (verdicts
-unchanged — D13; the "anchored" wording goes). Both are GUARDs retitled in REFACTOR. Consumer suites
-the gate sweeps (add, rm, checkout, grep, snapshot, workdir enumerator) must stay green; any row
-there that breaks goes through the rule above.
+The design names compile-pathspec.test.ts "Given a glob \"*.ts\"" (D1) and "Given an anchored glob
+\"src/**\"" (D13): their verdicts do not change, they stay green here, and Part 2 retitles them.
+Consumer suites the gate sweeps (add, rm, checkout, grep, snapshot, workdir enumerator, the
+existing pathspec suites) must stay green; any row there that breaks goes through the rule above.
 
 ### TDD steps
 
@@ -225,46 +240,42 @@ there that breaks goes through the rule above.
    "a[[:alpha:]]" rejects `[0x61,0xff]`. Fails: `compileRefGlobBytes` is not exported (import is
    undefined → "is not a function").
    GREEN — add `compileRefGlobBytes`; rebuild `compileWith` on it; existing exports unchanged.
-2. RED — `compile-pathspec.test.ts`, describes "verbatimLevel" (rows: "src"/"src" EXACT,
+2. RED — `wildcard.test.ts` (create), describes "verbatimLevel" (rows: "src"/"src" EXACT,
    "src"/"src/a" RECURSIVE, "src"/"src2" NONE, "d/"/"d/x" RECURSIVE, "a?"/"a?/f" RECURSIVE,
    ""/"x" RECURSIVE, "src/a"/"src" NONE) and "hasGlobSpecial" ("*.ts", "a?", "[ab]", "a\\b" true;
-   "plain.ts", "a]b", "" false). Fails: neither is exported.
-   GREEN — add `MATCH_LEVEL`, `MatchLevel`, `verbatimLevel`, `hasGlobSpecial`.
-3. RED — dialect rows, all written before the GREEN and run red:
-   - `compile-pathspec.test.ts` table over `compilePathspec([spec])[0].compiled.test(path)`:
-     "src/*.ts": "src/a/b.ts" true, "src/x.ts" true, "y.ts" false · "foo*": "foo1" true,
-     "dir/foobar" false · "[a-c].txt": "a.txt" true, "d.txt" false · "[!a].txt" and "[^a].txt":
-     "b.txt" true, "a.txt" false · "[[:digit:]].txt": "1.txt" true · "[/a]*": "a/b" true, "x" false ·
-     "a\\*b": "a*b" true, "aXb" false · "a\\?b": "a?b" true, "axb" false · "a\\b": "a\\b" true,
-     "ab" true · "a?": "a?/f" true, "ab" true · "di?": "dir/file" false · "**/x.txt": "d/x.txt"
-     true, "x.txt" false · "[]a]": "]" true, "a" true, "b" false · "?.txt": "é.txt" false ·
-     "??.txt": "é.txt" true · "d*/": "dir/f" false · "a[": "a[" true, "ab" false; plus
-     `isLiteral` false for "a[", "a\\", "[]a]", "a\\b".
-     Fails today: `*` stops at `/`, gitignore anchoring lets "foo*" reach "dir/foobar", `[`/`\` are
-     verbatim, `?` takes one UTF-16 unit.
-   - `matching-path.test.ts`: entries `{ path: 'a�', pathBytes: [0x61,0xff] }`,
-     `{ path: 'aé' }`, `{ path: 'ab' }`: "a?" → [true,false,true]; "a??" → [false,true,false];
-     "a[^b]" → [true,false,false]; "a[[:alpha:]]" → [false,false,true]. Fails today: code-unit
-     `?`, literal brackets. Add "a*" → all true as a GUARD (passes today).
-   - `pathspec-glob-dialect-interop.test.ts` (create): `add` rows D2, D3, D5a–D5e, D9, D11, D11b,
-     D12, D16 (git vs tsgit `ls-files -s`); E4 and G3 through tsgit `grep`; E5 and C6 through
-     tsgit `checkout`; R2, R4, R5, R6 through tsgit `rm`; L1–L3, L5, L6 as described in Context;
-     the Linux-only lossy `add` row. Fails today on the same causes. GUARD rows in the same
-     tables: D1, D4, D8a, D13, D14, E3, G1, G2, G4, G5, L4, R3 — run them now; each must pass
-     before the GREEN (a GUARD that fails is a RED and is listed as one in the commit's diff
-     review, not hidden).
+   "plain.ts", "a]b", "" false). Fails: the module does not exist.
+   GREEN — create wildcard.ts with `MATCH_LEVEL`, `MatchLevel`, `verbatimLevel`, `hasGlobSpecial`.
+3. RED — `wildcard.test.ts`, describe "compileWildcard" over `compileWildcard(body).test(path)`:
+   "src/*.ts": "src/a/b.ts" true, "src/x.ts" true, "y.ts" false · "foo*": "foo1" true,
+   "dir/foobar" false · "[a-c].txt": "a.txt" true, "d.txt" false · "[!a].txt" and "[^a].txt":
+   "b.txt" true, "a.txt" false · "[[:digit:]].txt": "1.txt" true · "[/a]*": "a/b" true, "x" false ·
+   "a\\*b": "a*b" true, "aXb" false · "a\\?b": "a?b" true, "axb" false · "a\\b": "a\\b" true,
+   "ab" true · "a?": "a?/f" true, "ab" true · "di?": "dir/file" false · "**/x.txt": "d/x.txt"
+   true, "x.txt" false · "[]a]": "]" true, "a" true, "b" false · "?.txt": "é.txt" false ·
+   "??.txt": "é.txt" true · "d*/": "dir/f" false · "a[": "a[" true, "ab" false · escape-view
+   paths "a" followed by the escape of byte 0xff, "aé", "ab": "a?" → [true,false,true]; "a??" →
+   [false,true,false]; "a[^b]" → [true,false,false]; "a[[:alpha:]]" → [false,false,true]; "a*" →
+   all true. Fails: `compileWildcard` is not exported.
+   GREEN — add `compileWildcard`.
+4. RED — `pathspec-glob-dialect-interop.test.ts` (create): `add` rows D2, D3, D5a–D5e, D9, D11,
+   D11b, D12, D16 (git vs tsgit `ls-files -s`); E4 and G3 through tsgit `grep`; E5 and C6 through
+   tsgit `checkout`; R2, R4, R5, R6 through tsgit `rm`; L1–L3, L5, L6 as described in Context;
+   the Linux-only lossy `add` row. They fail today because `compileOne` still uses `compileGlob`
+   (D16 is even refused, read as a missing literal). GUARD rows in the same tables: D1, D4, D8a,
+   D13, D14, E3, G1, G2, G4, G5, L4, R3 — run them now; each must pass before the GREEN (a GUARD
+   that fails is a RED).
    GREEN — rewrite `compileOne` to the target shape; delete `compileLiteral`/`compileDirectory`
    and the `compileGlob`/`containsGlob` import (`containsGlob` stays exported until Part 4).
-4. REFACTOR — rewrite the header comment of compile-pathspec.ts (lines 28-36: drop the anchoring
+5. REFACTOR — rewrite the header comment of compile-pathspec.ts (lines 28-36: drop the anchoring
    and RegExp story; say verbatim first, then git's wildmatch over the path's bytes; name no ADR);
-   update the `isLiteral` doc (`* ? [ \`); retitle the two GUARD rows named in Context. Gate.
+   update the `isLiteral` doc (`* ? [ \`). Gate.
 
 ### Gate
 
 ```bash
 PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/domain/refs test/unit/domain/pathspec test/unit/application/commands/add.test.ts test/unit/application/commands/rm.test.ts test/unit/application/commands/checkout.test.ts test/unit/application/commands/grep.test.ts test/unit/application/primitives/snapshot test/unit/adapters/snapshot-resolvers test/integration/pathspec-glob-dialect-interop.test.ts test/integration/glob-double-star-interop.test.ts test/integration/add-interop.test.ts test/integration/rm-interop.test.ts test/integration/grep-interop.test.ts \
   && npm run check:types \
-  && ./node_modules/.bin/biome check src/domain/refs/ref-glob.ts test/unit/domain/refs/ref-glob.test.ts src/domain/pathspec/compile-pathspec.ts test/unit/domain/pathspec/compile-pathspec.test.ts test/unit/domain/pathspec/matching-path.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
+  && ./node_modules/.bin/biome check src/domain/refs/ref-glob.ts test/unit/domain/refs/ref-glob.test.ts src/domain/pathspec/wildcard.ts test/unit/domain/pathspec/wildcard.test.ts src/domain/pathspec/compile-pathspec.ts test/integration/pathspec-glob-dialect-interop.test.ts \
   && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
 ```
 
@@ -276,38 +287,30 @@ Run after the last edit; the printed exit code must be 0. Wireit caveat: `npm ru
 
 `fix(pathspec): match wildcards with git's wildmatch over the path's bytes`
 
-## Part 2 — Pathspec match levels and allocation-free wildcard fast paths
+## Part 2 — Allocation-free wildcard fast paths and the pathspec property suite
 
 ### Context
 
 Files this part creates or edits (exactly these):
-- `src/domain/pathspec/compile-pathspec.ts` — fast paths in the wildcard branch (shared with Part 1;
-  Part 1 lands the dialect, this part the hot path and its proof).
-- `test/unit/domain/pathspec/compile-pathspec.test.ts` — example rows for the shape classifier
-  and the one-star evaluator.
+- `src/domain/pathspec/wildcard.ts` — fast paths inside `compileWildcard` (created by Part 1; a
+  module new to this run, so the two parts share no pre-existing file).
+- `test/unit/domain/pathspec/wildcard.test.ts` — rows for the shape classifier and evaluator.
+- `test/unit/domain/pathspec/compile-pathspec.test.ts` — `isLiteral` and dialect rows through
+  `compilePathspec`, and the two retitles. This part is the file's only editor in the run.
 - `test/unit/domain/pathspec/compile-pathspec.properties.test.ts` — extended.
 - `test/unit/domain/pathspec/arbitraries.ts` — new generators.
-- `src/domain/pathspec/match-pathspec.ts` — `pathspecMatchLevel`.
-- `test/unit/domain/pathspec/match-pathspec.test.ts` — its rows.
 
-Read-only references: src/domain/refs/ref-glob.ts (`compileRefGlobBytes`, Part 1),
-src/domain/objects/encoding.ts (`encodeEscaped`), .claude/workflow/property-testing.md (lenses,
-`numRuns` tiers: 200 cheap round-trip, 100 invariant/composition, 50 filter-heavy; generators live
-in arbitraries.ts; never commit a seed), test/unit/domain/pathspec/match-pathspec.properties.test.ts
-(style).
+Read-only references: src/domain/pathspec/compile-pathspec.ts (Part 1's `compileOne`),
+src/domain/refs/ref-glob.ts (`compileRefGlobBytes`, Part 1), src/domain/objects/encoding.ts
+(`encodeEscaped`), .claude/workflow/property-testing.md (lenses, `numRuns` tiers: 200 cheap
+round-trip, 100 invariant/composition, 50 filter-heavy; generators live in arbitraries.ts; never
+commit a seed), test/unit/domain/pathspec/match-pathspec.properties.test.ts (style).
 
-State after Part 1: `compileOne` wildcard branch is
-`test = verbatimLevel(body, p) !== NONE || wild(encodeEscaped(p))` — it encodes every tested path.
-`MATCH_LEVEL`, `verbatimLevel`, `hasGlobSpecial` exist in compile-pathspec.ts.
+State after Part 1: `compileWildcard(body).test(p) = verbatimLevel(body, p) !== NONE ||
+wild(encodeEscaped(p))` — it encodes every tested path.
 
-Target (all internal, not barrelled):
+Target (all internal, not barrelled; decision candidate 2, option A):
 
-    // match-pathspec.ts
-    export const pathspecMatchLevel = (entry: PathspecEntry, path: FilePath): MatchLevel
-      // verbatimLevel(entry.body, path) if not NONE; else FNMATCH if entry.compiled.test(path);
-      // else NONE. The PathspecEntry shape does not change. matchesPathspec, withoutExactly,
-      // matchesUnmergedPath keep their code.
-    // compile-pathspec.ts — decision candidate 2, option A
     export type WildcardShape =
       | { readonly kind: 'one-star'; readonly prefix: string; readonly suffix: string }
       | { readonly kind: 'general'; readonly literalPrefix: string };
@@ -316,63 +319,63 @@ Target (all internal, not barrelled):
       // the first glob-special character
     export const oneStarMatches = (prefix: string, suffix: string, path: string): boolean
       // path.startsWith(prefix) && path.endsWith(suffix) && path.length >= prefix.length + suffix.length
-    // wildcard test after the verbatim check:
+    // compileWildcard, after the verbatim check (shape computed once per body):
     //   one-star → oneStarMatches(...)            (no encoding)
     //   general  → !path.startsWith(literalPrefix) ? false : wild(encodeEscaped(path))
 
-Why the string compares equal the byte DP (the property suite proves it, ADR-1033 admits a fast
+Why the string compares equal the byte DP (the property suite proves it; ADR-1033 admits a fast
 path only on that condition): prefix and suffix are well-formed strings, so they start and end on
 code-point boundaries; the escape view decodes every valid UTF-8 sequence to its character and
 every invalid byte to one lone low surrogate, so string prefix/suffix relations and the
 non-overlap length test coincide with the byte relations.
 
-Property lenses (state them in each `it` title's describe): totality (lens 3) — `compilePathspec`
-over arbitrary bodies drawn from letters, "/", `é`, `*`, `?`, `[`, `]`, `\`, `!`, `^`, `-`, `:`
-returns one entry per input whose `test` returns a boolean for arbitrary escape-view paths
-(alphabet letters, "/", `é`, `\uDC80` and the escape of byte 0xff), numRuns 100; fast path ≡ DP (oracle delegated to
-the independently tested `compileRefGlobBytes` + `verbatimLevel`, not a copy of the production
-loop) — for arbitrary one-star bodies and arbitrary general bodies, `compiled.test(path) ===
+Property lenses (name them in each describe): totality (lens 3) — `compilePathspec` over arbitrary
+bodies drawn from letters, "/", `é`, `*`, `?`, `[`, `]`, a backslash, `!`, `^`, `-`, `:` returns
+one entry per input whose `test` returns a boolean for arbitrary escape-view paths (letters, "/",
+`é`, `\uDC80` and the escape of byte 0xff), numRuns 100; fast path ≡ DP (oracle delegated to the
+independently tested `compileRefGlobBytes` + `verbatimLevel`, not a copy of the production loop)
+— for arbitrary one-star bodies and arbitrary general bodies, `compiled.test(path) ===
 (verbatimLevel(body, path) !== MATCH_LEVEL.NONE || compileRefGlobBytes(body)(encodeEscaped(path)))`,
 numRuns 100; verbatim invariant (lens 4) — for every non-empty body not ending in "/",
 `test(body)` and `test(body + '/' + segment)` are true, numRuns 100. Generators (`arbGlobBody`,
 `arbOneStarBody`, `arbEscapedPath`) go in arbitraries.ts. The existing two properties stay.
 
-Matrix rows: R4, R4b, R6 shapes become `pathspecMatchLevel` rows (the rm refusal itself is Part 8).
-
-House rules: one RED per function, run before its code; GUARD = already passes. `git diff --no-ext-diff --stat`
-after scripted edits. Poll, never wait. Commit only these files. No provenance ids in code. No
-suppression directives — a dispatch mutant that survives is triaged at validation (candidate 2).
+House rules: one RED per function, run before its code; GUARD = already passes.
+`git diff --no-ext-diff --stat` after scripted edits. Poll, never wait. Commit only these files.
+No provenance ids in code. No suppression directives — a dispatch mutant that survives is triaged
+at validation (candidate 2).
 
 Re-pinning rule: When an existing test row breaks, decide whether the OLD expectation encoded the
 contract. If it did, fix the code, not the row, and say so. A changed row is re-pinned against real
-git 2.55 (or the design's matrix row id), never rewritten to match the new code. No existing row is
-expected to change in this part (behaviour-preserving apart from the new export).
+git 2.55 (or the design's matrix row id), never rewritten to match the new code.
+Rows the design names: compile-pathspec.test.ts "Given a glob \"*.ts\"" (verdicts unchanged —
+D1; "non-anchored" is now false wording) and "Given an anchored glob \"src/**\"" (verdicts
+unchanged — D13; "anchored" goes) — GUARDs retitled in REFACTOR.
 
 ### TDD steps
 
-1. RED — `match-pathspec.test.ts`, describe "pathspecMatchLevel": "src" vs "src" EXACT, vs
-   "src/a" RECURSIVE; "a?" vs "a?/f" RECURSIVE, vs "ab" FNMATCH, vs "zz" NONE; "d*" vs "dir/f"
-   FNMATCH; "" (whole tree) vs "x" RECURSIVE; "!src" negated entry vs "src" EXACT (level ignores
-   negation — callers pass positives only). Fails: not exported.
-   GREEN — add `pathspecMatchLevel`.
-2. RED — `compile-pathspec.test.ts`, describes "wildcardShape" ("*.ts" → one-star "" / ".ts";
-   "src/*.ts" → one-star "src/" / ".ts"; "foo*" → one-star "foo" / ""; "a*b*" → general "a";
-   "src/[ab]*" → general "src/"; "a\\*" → general "a") and "oneStarMatches" ("", ".ts", ".ts" true;
-   "a", "a", "a" false (overlap); "src/", ".ts", "src/a/b.ts" true; "src/", ".ts", "lib/x.ts"
-   false; "a", "", "a" followed by the escape of byte 0xff true). Fails: not exported.
+1. GUARD — `compile-pathspec.test.ts`: `isLiteral` false for "a[", "a\\", "[]a]", "a\\b", true for
+   "src/foo.ts"; `compilePathspec(["foo*"])[0].compiled.test("dir/foobar")` false and
+   `compilePathspec(["src/*.ts"])[0].compiled.test("src/a/b.ts")` true (Part 1 made these pass —
+   run to confirm).
+2. RED — `wildcard.test.ts`, describes "wildcardShape" ("*.ts" → one-star "" / ".ts"; "src/*.ts"
+   → one-star "src/" / ".ts"; "foo*" → one-star "foo" / ""; "a*b*" → general "a"; "src/[ab]*" →
+   general "src/"; "a\\*" → general "a") and "oneStarMatches" ("", ".ts", ".ts" true; "a", "a",
+   "a" false (overlap); "src/", ".ts", "src/a/b.ts" true; "src/", ".ts", "lib/x.ts" false; "a", "",
+   "a" followed by the escape of byte 0xff true). Fails: not exported.
    GREEN — add both (pure, no wiring yet).
 3. GUARD — `compile-pathspec.properties.test.ts`: the three properties of Context, written and run
    against the Part 1 code (no fast path wired: they hold by construction). Generators in
    `arbitraries.ts`.
-4. REFACTOR — wire the shape into the wildcard branch (compute `wildcardShape(body)` once per
-   entry at compile time). Re-run the properties and every pathspec row: all green.
+4. REFACTOR — wire the shape into `compileWildcard`; re-run the properties and every pathspec row:
+   all green. Retitle the two named rows.
 
 ### Gate
 
 ```bash
 PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/domain/pathspec test/unit/domain/refs test/unit/application/commands/add.test.ts test/unit/application/commands/rm.test.ts test/unit/application/commands/checkout.test.ts test/unit/application/commands/grep.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
   && npm run check:types \
-  && ./node_modules/.bin/biome check src/domain/pathspec/compile-pathspec.ts test/unit/domain/pathspec/compile-pathspec.test.ts test/unit/domain/pathspec/compile-pathspec.properties.test.ts test/unit/domain/pathspec/arbitraries.ts src/domain/pathspec/match-pathspec.ts test/unit/domain/pathspec/match-pathspec.test.ts \
+  && ./node_modules/.bin/biome check src/domain/pathspec/wildcard.ts test/unit/domain/pathspec/wildcard.test.ts test/unit/domain/pathspec/compile-pathspec.test.ts test/unit/domain/pathspec/compile-pathspec.properties.test.ts test/unit/domain/pathspec/arbitraries.ts \
   && npm run check:spelling; echo "gate exit=$?"
 ```
 
@@ -382,7 +385,7 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`.
 
 ### Commit
 
-`fix(pathspec): add pathspec match levels and allocation-free wildcard fast paths`
+`fix(pathspec): match one-star and literal-prefix wildcards without encoding the path`
 
 ## Part 3 — describe and name-rev patterns use git's wildmatch dialect
 
@@ -394,8 +397,10 @@ Files this part creates or edits (exactly these):
 - `test/integration/describe-interop.test.ts` — DS rows.
 - `src/domain/name-rev/ref-pattern.ts` — every-suffix matching, compile once, `abbreviates`.
 - `test/unit/domain/name-rev/ref-pattern.test.ts`
-- `test/integration/name-rev-interop.test.ts` — the N rows that need no abbreviation (Part 9
-  extends it with the abbreviated rows; shared on purpose, Part 9 needs the result field first).
+
+Every N interop row (name-rev-interop.test.ts) lands in Part 10, the run's only editor of that
+file: most N rows need the `abbreviated` field Part 10 adds, and one owner keeps the twin
+fixtures in one place. This part proves its filter with unit rows.
 
 Read-only references: src/domain/refs/ref-glob.ts (`compileRefGlob`), src/application/commands/
 describe.ts (`buildNameFilter` caller at :193, `describeContains` at :113 maps patterns to
@@ -427,16 +432,13 @@ Target:
 
   Leave `matchRefGlob` exported in ref-glob.ts (its contract is kept; tests use it).
 
-Matrix rows: DS2–DS7, DS14 flip; DS1, DS8–DS13 GUARD. N7, N8, N10, N11, N12 flip (the default
-renderer already prints git's text for them); N1, N5, N9, N14, N15, N20, N22 GUARD. The
-abbreviated N rows wait for Part 9.
+Matrix rows: DS2–DS7, DS14 flip; DS1, DS8–DS13 GUARD. The N rows this filter flips (N7, N8,
+N10, N11, N12) are pinned at command level in Part 10.
 
 Fixtures: DS — `v1.0` annotated + `w2` lightweight on c1, "v1/rc1" annotated on c2, HEAD c3; git
 side `describe --tags --abbrev=0 [opts]` (DS14: no `--tags`); compare the tag name tsgit reports
 (read DescribeResult in describe.ts) or the refusal (git 128 `fatal: No names found, cannot
-describe anything.` ↔ tsgit's no-names error code, read `noNames` in describe.ts). N — c1 holds
-`v1.0` (annotated) and `w2`; c2 holds "v1/rc1" (annotated); `main` at c3; target c1. Reuse
-`datedEnv`, `gitNameRev`, `renderNameRev` in name-rev-interop.test.ts.
+describe anything.` ↔ tsgit's no-names error code, read `noNames` in describe.ts).
 
 Environment: git 2.55.0 first on PATH for interop: `PATH="$HOME/.local/git-2.55.0/bin:$PATH"`.
 
@@ -463,9 +465,7 @@ false) is re-pinned to true (DS2: `--match 'v*'` names "v1/rc1").
 2. RED — `ref-pattern.test.ts`: include through a suffix — refs ["v*"] qualifies
    "refs/tags/v1.0"; ["tags/*"] qualifies it; ["main"] qualifies "refs/heads/main"; GUARD
    ["ags/v1.0"] does not; exclude through a suffix — exclude ["tags/*"] drops "refs/tags/v1.0";
-   exclude ["v*"] drops it. In the same step, `name-rev-interop.test.ts`: N7, N8, N10, N11, N12
-   (red today) with N1, N5, N9, N14, N15, N20, N22 as GUARDs. Run: the flips fail because only the
-   full ref is matched.
+   exclude ["v*"] drops it. Fails: only the full ref is matched.
    GREEN — `subpathOffset` + compile-once in `buildRefFilter`.
 3. RED — `ref-pattern.test.ts`, "abbreviates": ["v*"] → true for "refs/tags/v1.0";
    ["refs/tags/*"] → false; ["refs/tags/v*", "v1.*"] → true; ["*1.0"] → false (first offset 0);
@@ -476,9 +476,9 @@ false) is re-pinned to true (DS2: `--match 'v*'` names "v1/rc1").
 ### Gate
 
 ```bash
-PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/domain/describe test/unit/domain/name-rev test/unit/application/commands/describe.test.ts test/unit/application/commands/describe.properties.test.ts test/unit/application/commands/name-rev.test.ts test/unit/application/commands/name-rev-tip-table.test.ts test/unit/application/commands/name-rev-skip.test.ts test/integration/describe-interop.test.ts test/integration/name-rev-interop.test.ts \
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/domain/describe test/unit/domain/name-rev test/unit/application/commands/describe.test.ts test/unit/application/commands/describe.properties.test.ts test/unit/application/commands/name-rev.test.ts test/unit/application/commands/name-rev-tip-table.test.ts test/unit/application/commands/name-rev-skip.test.ts test/integration/describe-interop.test.ts \
   && npm run check:types \
-  && ./node_modules/.bin/biome check src/domain/describe/match.ts test/unit/domain/describe/match.test.ts test/integration/describe-interop.test.ts src/domain/name-rev/ref-pattern.ts test/unit/domain/name-rev/ref-pattern.test.ts test/integration/name-rev-interop.test.ts \
+  && ./node_modules/.bin/biome check src/domain/describe/match.ts test/unit/domain/describe/match.test.ts test/integration/describe-interop.test.ts src/domain/name-rev/ref-pattern.ts test/unit/domain/name-rev/ref-pattern.test.ts \
   && npm run check:spelling; echo "gate exit=$?"
 ```
 
@@ -574,80 +574,104 @@ exist, drop it from the command (do not invent files).
 
 `fix(pathspec): keep only the gitignore dialect in compileGlob`
 
-## Part 5 — Positive pathspecs in argument order for the no-match refusal
+## Part 5 — One command pathspec intake: positives in argument order, unmatched helper
 
 ### Context
 
 Files this part creates or edits (exactly these):
-- `src/application/commands/internal/resolve-pathspec.ts` — `positives` + `unmatchedPositives`.
-- `test/unit/application/commands/internal/resolve-pathspec.test.ts`
+- `src/application/commands/internal/pathspec-intake.ts` — CREATED: the intake every command uses.
+- `test/unit/application/commands/internal/pathspec-intake.test.ts` — CREATED.
+- `src/application/commands/grep.ts` — switch its one `resolvePathspec` call (:198) to the intake.
 - `test/unit/application/commands/checkout-switch-target.test.ts` — shape assertion at :57.
 - `test/unit/application/commands/switch-and-tag-target-dwim.test.ts` — shape assertion at :168.
 - `test/integration/pathspec-dot-interop.test.ts` — shape assertions at :115 and :169.
-- `test/unit/application/commands/rm.test.ts` — shape assertion at :125 only (Part 8 owns the rest).
 
-Why the four shape edits live here: Part 7 adds `patterns` to `PATHSPEC_NO_MATCH`, which breaks
-every `toEqual({ code: 'PATHSPEC_NO_MATCH', pattern })`. Each such single-pattern assertion is
-rewritten now to `toEqual(pathspecNoMatch(<same pattern>).data)` (import `pathspecNoMatch` from
-src/domain/commands/error.ts) — identical today, and still exact once the factory fills `patterns`.
-Parts 6 and 7 convert the rows in the files they own (add.test.ts, add-directory-file.test.ts,
-checkout.test.ts).
+Why a new module instead of new `ResolvedPathspec` fields: src/application/commands/internal/
+resolve-pathspec.ts then has exactly one editor in the run (Part 9, which relaxes its validator and
+deletes the helpers this run retires), and the host policy enters through one function that every
+command already calls from its own part (rm 6, add 7, checkout 8, grep here) — Part 9 changes no
+command file.
 
-Read-only references: src/domain/pathspec/compile-pathspec.ts (`PathspecEntry`),
-src/application/commands/add.ts, rm.ts, checkout.ts (current consumers of `literalMustMatch`,
-`literalSpellings`, `hasGlob`, `enforceLiteralMustMatch` — unchanged here).
+Why the shape edits live here: Part 8 adds `patterns` to `PATHSPEC_NO_MATCH`, which breaks every
+`toEqual({ code: 'PATHSPEC_NO_MATCH', pattern })`. Each single-pattern assertion is rewritten to
+`toEqual(pathspecNoMatch(<same pattern>).data)` (import from src/domain/commands/error.ts) —
+identical today, still exact once the factory fills `patterns`. Parts 6, 7, 8 convert the rows in
+the files they own (rm.test.ts, add.test.ts, add-directory-file.test.ts, checkout.test.ts).
 
-Current resolve-pathspec.ts: `ResolvedPathspec { matcher, literalMustMatch, literalSpellings,
-hasGlob, symlinkScanTargets }`; `resolvePathspec(patterns)` wellFormed → `collapsePattern` →
-`enforcePatternBudget` → `compilePathspec`; `matcher` and the input patterns are index-aligned;
-`enforceLiteralMustMatch(literals, matched, spellings)`; whole tree = body `''`, spelled back `.`
-when no spelling is known.
+Read-only references: src/application/commands/internal/resolve-pathspec.ts
+(`resolvePathspec(patterns): ResolvedPathspec { matcher, literalMustMatch, literalSpellings,
+hasGlob, symlinkScanTargets }`; `matcher` is index-aligned with the input patterns; whole tree =
+body `''`), src/domain/objects/encoding.ts (`wellFormed`), src/domain/pathspec/compile-pathspec.ts
+(`PathspecEntry`), src/domain/commands/error.ts (`pathspecOutsideRepo(path)`), src/ports/context.ts
+(`Context.windowsPathSyntax?: boolean` at :358 — "the filesystem reads paths the Windows way";
+set by the node adapter on Windows, src/adapters/node/node-adapter.ts:155; absent on memory and
+browser), src/application/primitives/internal/git-path-syntax.ts:98 and index-path-rules.ts:8
+(how primitives read the flag: they take `ctx` structurally as `{ readonly windowsPathSyntax?:
+boolean }` — follow the same shape).
 
-Target (internal; the module is under application/commands/internal and is not barrelled):
+Target (internal; not barrelled):
 
-    export interface PositivePathspec { readonly entry: PathspecEntry; readonly spelling: string }
-    // ResolvedPathspec gains:
-    readonly positives: ReadonlyArray<PositivePathspec>
-      // every non-negated entry, argument order, duplicates kept, spelling = the well-formed raw
-      // pattern as typed ('./d', '.', 'nomatch*')
+    export interface PathspecHost { readonly windowsPathSyntax?: boolean }   // a Context satisfies it
+    export interface PositivePathspec {
+      readonly entry: PathspecEntry;
+      readonly spelling: string;      // the well-formed raw pattern as typed ('./d', '.', 'nomatch*')
+      readonly probesDisk: boolean;   // false for a body holding a backslash (ADR-1044: matching only)
+    }
+    export interface CommandPathspec extends ResolvedPathspec {
+      readonly positives: ReadonlyArray<PositivePathspec>;   // non-negated, argument order, duplicates kept
+    }
+    export const resolveCommandPathspec = (host: PathspecHost, paths: ReadonlyArray<string>): CommandPathspec
+      // 1. under host.windowsPathSyntax === true: the first pattern whose body (leading '!'
+      //    stripped) holds a backslash → throw pathspecOutsideRepo(body)  — git for Windows reads
+      //    '\' as a separator; tsgit keeps refusing it there (ADR-1044)
+      // 2. resolvePathspec(paths), then positives from matcher + wellFormed(paths[i])
     export const unmatchedPositives = (
       positives: ReadonlyArray<PositivePathspec>,
       isSeen: (positive: PositivePathspec) => boolean,
     ): ReadonlyArray<PositivePathspec>   // argument order
 
-`hasGlob` keeps its dispatch role only; reword its doc ("routes add away from the literal-only
-fast path"). Fix the stale comments at lines 17-23 and 54-56 ("compiled to RegExp", "cost of the
-compiled regex"): the matcher is linear; the byte and `**` caps stay as a bound on the work a
-hostile pattern can request (ADR-1043 keeps them; name no ADR in the comment).
-`enforceLiteralMustMatch` and `literalSpellings` stay until Part 8 removes their last caller.
+Step 1 runs before `resolvePathspec`, so on a Windows host the intake — not the general validator —
+is what refuses a backslash; today the general validator also refuses it on every host (Part 9
+relaxes that for POSIX). The refusal data stays `{ code: 'PATHSPEC_OUTSIDE_REPO', path }`.
 
-House rules: one RED per function, run before its code; GUARD = already passes. `git diff --no-ext-diff --stat`
-after scripted edits. Poll, never wait. Commit only these files. No provenance ids in code.
+House rules: one RED per function, run before its code; GUARD = already passes.
+`git diff --no-ext-diff --stat` after scripted edits. Poll, never wait. Commit only these files.
+No provenance ids in code.
 
 Re-pinning rule: When an existing test row breaks, decide whether the OLD expectation encoded the
 contract. If it did, fix the code, not the row, and say so. A changed row is re-pinned against real
-git 2.55 (or the design's matrix row id), never rewritten to match the new code.
-The design's "hasGlob relaxation rows" in resolve-pathspec.test.ts (:41-77) stay as they are: the
-relaxation lives in the callers, `hasGlob` still reports the same values (GUARD).
+git 2.55 (or the design's matrix row id), never rewritten to match the new code. No row is expected
+to change: grep's behaviour is identical through the intake (G rows stay green).
 
 ### TDD steps
 
-1. RED — `resolve-pathspec.test.ts`, "positives": `['src/foo', '*.ts', '!*.test.ts', './d',
-   'src/foo']` → spellings `['src/foo', '*.ts', './d', 'src/foo']` and bodies
-   `['src/foo', '*.ts', 'd', 'src/foo']`; `['.']` → one positive with body `''`, spelling `.`;
-   `['!x']` → none. Fails: `positives` is undefined.
-   GREEN — build `positives` in `resolvePathspec`.
-2. RED — "unmatchedPositives": three positives, `isSeen` true for the second → first and third in
+1. RED — `pathspec-intake.test.ts`, "positives": `resolveCommandPathspec({}, ['src/foo', '*.ts',
+   '!*.test.ts', './d', 'src/foo'])` → spellings `['src/foo', '*.ts', './d', 'src/foo']`, bodies
+   `['src/foo', '*.ts', 'd', 'src/foo']`, every `probesDisk` true; `['.']` → one positive, body `''`,
+   spelling `.`; `['!x']` → none; the other `ResolvedPathspec` fields equal `resolvePathspec`'s.
+   Fails: the module does not exist. GREEN — create it (steps 1–2 of the target, no host check yet).
+2. RED — "probesDisk": the positive built from the entry `compilePathspec(['a\\*b'])[0]` (call the
+   exported builder directly — the intake still refuses a backslash on every host until Part 9)
+   has `probesDisk` false. Export the per-entry builder (`positiveOf(entry, spelling)`) for this.
+   Fails: always true. GREEN — `probesDisk = !entry.body.includes('\\')`.
+3. GUARD — "Windows host": `resolveCommandPathspec({ windowsPathSyntax: true }, ['ok', '!a\\b'])`
+   throws PATHSPEC_OUTSIDE_REPO with `path: 'a\\b'`; a backslash-free spec resolves. It passes
+   today through the general validator (collapsePattern refuses every backslash before the budget
+   check). REFACTOR under this GUARD: add the host check (target step 1) so the Windows refusal is
+   the intake's own; it becomes the only refusal once Part 9 relaxes the general validator, and
+   Part 9's POSIX-accept rows are the RED that make it observable (until then its mutants are
+   equivalent — say so in the part report, add no suppression).
+4. RED — "unmatchedPositives": three positives, `isSeen` true for the second → first and third in
    order; all seen → empty. Fails: not exported. GREEN — add it.
-3. GUARD — convert the four shape assertions to `pathspecNoMatch(…).data`; the suites stay green.
-4. REFACTOR — comments and the `hasGlob` doc.
+5. GUARD — grep.ts calls `resolveCommandPathspec(ctx, opts.paths)`; the grep suite and G interop
+   rows stay green. Convert the three shape assertions to `pathspecNoMatch(…).data`; green.
 
 ### Gate
 
 ```bash
-PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/internal/resolve-pathspec.test.ts test/unit/application/commands/checkout-switch-target.test.ts test/unit/application/commands/switch-and-tag-target-dwim.test.ts test/unit/application/commands/rm.test.ts test/integration/pathspec-dot-interop.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/checkout.test.ts test/unit/application/commands/grep.test.ts \
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/internal/pathspec-intake.test.ts test/unit/application/commands/internal/resolve-pathspec.test.ts test/unit/application/commands/grep.test.ts test/unit/application/commands/checkout-switch-target.test.ts test/unit/application/commands/switch-and-tag-target-dwim.test.ts test/integration/pathspec-dot-interop.test.ts test/integration/grep-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
   && npm run check:types \
-  && ./node_modules/.bin/biome check src/application/commands/internal/resolve-pathspec.ts test/unit/application/commands/internal/resolve-pathspec.test.ts test/unit/application/commands/checkout-switch-target.test.ts test/unit/application/commands/switch-and-tag-target-dwim.test.ts test/integration/pathspec-dot-interop.test.ts test/unit/application/commands/rm.test.ts \
+  && ./node_modules/.bin/biome check src/application/commands/internal/pathspec-intake.ts test/unit/application/commands/internal/pathspec-intake.test.ts src/application/commands/grep.ts test/unit/application/commands/checkout-switch-target.test.ts test/unit/application/commands/switch-and-tag-target-dwim.test.ts test/integration/pathspec-dot-interop.test.ts \
   && npm run check:spelling; echo "gate exit=$?"
 ```
 
@@ -657,9 +681,113 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`.
 
 ### Commit
 
-`fix(pathspec): resolve positive pathspecs in argument order for the no-match refusal`
+`fix(pathspec): resolve command pathspecs through one intake that keeps positives in argument order`
 
-## Part 6 — add refuses an unmatched pathspec before any object write
+## Part 6 — rm refuses by match level
+
+### Context
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/rm.ts`
+- `test/unit/application/commands/rm.test.ts` — this part is its only editor in the run (it also
+  converts the shape row at :125, see Part 5).
+- `src/domain/pathspec/match-pathspec.ts` — `pathspecMatchLevel`.
+- `test/unit/domain/pathspec/match-pathspec.test.ts`
+- `test/integration/pathspec-glob-dialect-interop.test.ts` — extend with the R refusal rows
+  (created by Part 1; a file new to this run).
+
+Read-only references: src/application/commands/internal/pathspec-intake.ts
+(`resolveCommandPathspec(ctx, paths)`, `positives`), src/domain/pathspec/wildcard.ts
+(`MATCH_LEVEL`: NONE 0 < RECURSIVE 1 < FNMATCH 2 < EXACT 3, `verbatimLevel`),
+src/domain/git-index/index-path-key.ts (`escapedPathOf`), src/domain/commands/error.ts
+(`pathspecNoMatch`, `rmRecursiveWithoutR(pattern)`), src/domain/pathspec/compile-pathspec.ts
+(`PathspecEntry`).
+
+Current rm.ts (:72): `resolvePathspec(paths)` → `{ matcher, literalSpellings }`; lock; read index
+(tolerating `isIndexMissingCode`); `groupByPath`; removal set by `matchesIndexPath(matcher,
+first)`; `enforceLiteralMatches(literalSpellings, removed, reach)` (:~176, literals only:
+no-match, then `rmRecursiveWithoutR(spelled)` when the literal did not name a path itself); then
+the safety valve and removals.
+
+Target (ADR-1042, fact 6):
+
+    // match-pathspec.ts (internal)
+    export const pathspecMatchLevel = (entry: PathspecEntry, path: FilePath): MatchLevel
+      // verbatimLevel(entry.body, path) if not NONE; else FNMATCH if entry.compiled.test(path);
+      // else NONE. matchesPathspec, withoutExactly, matchesUnmergedPath keep their code (ADR-1000).
+    // rm.ts: resolveCommandPathspec(ctx, paths); replace enforceLiteralMatches with, at the same
+    // point (before enforceSafetyValve and any removeFile), in argument order:
+    for p of positives:
+      level = max over byPath groups of pathspecMatchLevel(p.entry, escapedPathOf(first stage))
+      level === NONE                       → throw pathspecNoMatch(p.spelling)
+      level === RECURSIVE && !recursive    → throw rmRecursiveWithoutR(p.spelling)
+
+The whole tree (`.`, body `''`) is RECURSIVE for every path, so `rm .` without `recursive` still
+refuses naming `.` and an empty index refuses it as unmatched (rows at rm.test.ts:136-156 stay
+GUARDs). rm no longer calls `enforceLiteralMustMatch`; Part 9 deletes it once Parts 7 and 8 drop
+the other callers.
+
+Matrix rows: R1, R1b, R4b, R7, R8 flip; R4c, R2–R6 GUARD (R2–R6 landed in Part 1; R4 stays green
+because FNMATCH outranks RECURSIVE), K3 GUARD (rm already locks first). ADR-1012 (resolve-undo,
+pending operations) is untouched — its rows in rm.test.ts are GUARDs. Interop asserts git's 128 +
+`fatal: pathspec '<p>' did not match any files` or `fatal: not removing '<p>' recursively without
+-r`, the index, and that the working-tree file still exists (R1).
+
+Environment: git 2.55.0 first on PATH for interop: `PATH="$HOME/.local/git-2.55.0/bin:$PATH"`.
+
+Windows: no file name there can hold `*`, `?`, `:` or a backslash, so every interop row whose
+FIXTURE creates such a name (R4b's `a?/f`) sits under
+`describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')`; the unit rows (memory adapter)
+cover those shapes on every OS.
+
+House rules: one RED per function, run before its code; GUARD = already passes.
+`git diff --no-ext-diff --stat` after scripted edits. Poll, never wait. Commit only these files.
+No provenance ids in code.
+
+Re-pinning rule: When an existing test row breaks, decide whether the OLD expectation encoded the
+contract. If it did, fix the code, not the row, and say so. A changed row is re-pinned against real
+git 2.55 (or the design's matrix row id), never rewritten to match the new code.
+Rows that change here: rm.test.ts:405 "Given a glob \"*.nope\" with no matches" (`removed: []`) →
+refuses PATHSPEC_NO_MATCH '*.nope' (R7/R8 shape); :455 and :474 (corrupt index tolerated, `*.nope`
+→ `removed: []`) and :505 (readIndex racing to FILE_NOT_FOUND) → now throw PATHSPEC_NO_MATCH
+'*.nope' — the tolerance they exist to prove still shows (the parse error does not surface);
+:560 (PERMISSION_DENIED propagates) stays a GUARD. :391 "both are removed (no PATHSPEC_NO_MATCH for
+globs)" keeps its verdict; only the parenthetical in its title is false — retitle. :125 shape row
+→ `toEqual(pathspecNoMatch('./nomatch').data)` (same expectation, Part 8-proof).
+
+### TDD steps
+
+1. RED — `match-pathspec.test.ts`, describe "pathspecMatchLevel": "src" vs "src" EXACT, vs
+   "src/a" RECURSIVE; "a?" vs "a?/f" RECURSIVE, vs "ab" FNMATCH, vs "zz" NONE; "d*" vs "dir/f"
+   FNMATCH; "" (whole tree) vs "x" RECURSIVE; "!src" negated entry vs "src" EXACT (the level ignores
+   negation — callers pass positives). Fails: not exported. GREEN — add it.
+2. RED — rm.test.ts R1: `rm(ctx, ['nomatch*', 'tracked.txt'])` throws PATHSPEC_NO_MATCH
+   'nomatch*', `tracked.txt` stays in the index and on disk; R1b with the order swapped, same.
+   Re-pin :405, :455, :474, :505 here. Interop R1, R1b, R7, R8. Fails: globs never refuse.
+   GREEN — intake + per-positive levels, NONE branch.
+3. RED — R4b: index `a?/f`, `zz`, `rm(ctx, ['a?'])` → RM_RECURSIVE_WITHOUT_R 'a?', nothing removed;
+   with `recursive: true` removes `a?/f`. Interop R4b (R4c GUARD). Fails: the `-r` check covers
+   literals only. GREEN — RECURSIVE branch; delete `enforceLiteralMatches`.
+4. REFACTOR — convert :125; retitle :391. Gate.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/rm.test.ts test/unit/domain/pathspec test/unit/application/commands/internal test/integration/pathspec-glob-dialect-interop.test.ts test/integration/rm-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/rm.ts test/unit/application/commands/rm.test.ts src/domain/pathspec/match-pathspec.ts test/unit/domain/pathspec/match-pathspec.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
+  && npm run check:spelling; echo "gate exit=$?"
+```
+
+Run after the last edit; exit code must be 0. Wireit caveat: `check:types` / `check:spelling` can
+print `Ran 0 scripts and skipped 1` on a cached result — bare oracles: `npx tsc --noEmit -p
+tsconfig.json`, `npx cspell --no-progress <touched-files>`.
+
+### Commit
+
+`fix(rm): refuse an unmatched or directory-reaching pathspec by match level`
+
+## Part 7 — add refuses an unmatched pathspec before any object write
 
 ### Context
 
@@ -668,16 +796,18 @@ Files this part creates or edits (exactly these):
 - `test/unit/application/commands/add.test.ts`
 - `test/unit/application/commands/add-directory-file.test.ts` — the shape assertion at :1064 only.
 - `test/integration/pathspec-glob-dialect-interop.test.ts` — extend with the B, D7/D8c/D10, RN, K2
-  rows (shared with Parts 1, 7, 8 on purpose).
+  rows (created by Part 1; a file new to this run).
 
-Read-only references: src/application/commands/internal/resolve-pathspec.ts (`positives`,
-`PositivePathspec`, `unmatchedPositives`, `namesWholeTree`), src/domain/pathspec/match-pathspec.ts
-(`pathspecMatchLevel`), src/domain/pathspec/compile-pathspec.ts (`MATCH_LEVEL`),
+Read-only references: src/application/commands/internal/pathspec-intake.ts
+(`resolveCommandPathspec(ctx, paths)`, `positives`, `PositivePathspec { entry, spelling,
+probesDisk }`, `unmatchedPositives`), src/application/commands/internal/resolve-pathspec.ts
+(`namesWholeTree`, `ResolvedPathspec`), src/domain/pathspec/match-pathspec.ts
+(`pathspecMatchLevel`, Part 6), src/domain/pathspec/wildcard.ts (`MATCH_LEVEL`),
 src/domain/git-index/index-path-key.ts (`escapedPathOf`), src/domain/commands/error.ts
 (`pathspecNoMatch(pattern)`), src/application/primitives/walk-working-tree.ts (`walkWorkingTree`
 yields `WalkWorkingTreeEntry { path, … }`).
 
-Current add.ts anchors (unchanged by Parts 1–5):
+Current add.ts anchors (unchanged by Parts 1–6):
 - `dispatchPathspec` :218 — `hasGlob` or a missing/directory literal → `addByPathspec`; else
   `addLiteralOnly` (every literal is an existing file; no refusal needed there, unchanged).
 - `addByPathspec` :720 — `buildRepoIgnorePredicate`, `acquireIndexLock`, then
@@ -699,6 +829,9 @@ Current add.ts anchors (unchanged by Parts 1–5):
 Target:
 - `stageWalkedEntries` and `walkedTrackedFirst` accept `AsyncIterable<WalkWorkingTreeEntry> |
   Iterable<WalkWorkingTreeEntry>`.
+- `dispatchPathspec` (:223) and `addRenormalized` (:783) call `resolveCommandPathspec(ctx, paths)`
+  instead of `resolvePathspec(paths)`; `WHOLE_TREE_MATCHER` (:186) keeps `resolvePathspec` (it only
+  ever resolves '.').
 - `addByPathspec` reads `{ matcher, positives }`; `stageIgnoredWalk` (gains `positives`) reads the
   index, collects the walk into an array, runs the refusal, then stages from the array. Delete the
   post-staging `enforceLiteralMustMatch` and `mustMatch` in `addByPathspec`.
@@ -708,21 +841,21 @@ Target:
       seen(p) = sorted.some(e => p.entry.compiled.test(escapedPathOf(e)))
              || walked.some(w => p.entry.compiled.test(w.path))
       for p of unmatchedPositives(candidates, seen):            // argument order
-        if (!p.entry.isLiteral && await lstatOrBeneathFile(ctx, body) !== undefined) continue
+        if (!p.entry.isLiteral && p.probesDisk && await lstatOrBeneathFile(ctx, body) !== undefined) continue
         throw pathspecNoMatch(p.spelling)
 
   (`compiled.test` true ⇔ `pathspecMatchLevel` ≠ NONE; use whichever reads clearer.)
 - `addRenormalized`: `{ matcher, positives, symlinkScanTargets }`; after the lock and
   `readIndexOrEmpty`, BEFORE `renormalizeEntries`: seen = index entries only (git runs no directory
   fill under `--renormalize`); an unseen positive whose verbatim body `lstat`s (literal OR wildcard —
-  candidate 4 A; RN4, RN5) is accepted; else `pathspecNoMatch(spelling)`. Delete `literalsOnDisk`
+  candidate 4 A; RN4, RN5) and whose `probesDisk` is true is accepted; else `pathspecNoMatch(spelling)`. Delete `literalsOnDisk`
   if nothing else calls it.
 - The escape probe uses `lstatOrBeneathFile` (a body beneath a regular file is "missing", not a
   NOT_A_DIRECTORY throw). On Windows a name holding `*` or `?` is an invalid name; libuv reports it
   as ENOENT, which the node adapter maps to FILE_NOT_FOUND — if the Windows CI leg shows another
   code, report it as a blocker rather than widening the catch.
 - The shape assertions in add.test.ts (:160, :176, :3433, :4025) and add-directory-file.test.ts
-  (:1064) become `toEqual(pathspecNoMatch(<pattern>).data)` (see Part 5 for why).
+  (:1064) become `toEqual(pathspecNoMatch(<pattern>).data)` (see Part 5 for why; Part 8 adds `patterns`).
 
 Matrix rows: B1, B2, B2b, B3, B3x, B3d, B4, B4b, B4c, B9, B10b, B12, B12r (fact 4), B11′ (fact 2),
 D7, D8c, D10, RN1, RN2, RN4, RN6 flip; B6, B7, B8, B10, RN3, RN5, K2 GUARD. B3l/B3m are out of scope.
@@ -792,7 +925,7 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`.
 
 `fix(add): refuse an unmatched pathspec before any object write, as git does`
 
-## Part 7 — checkout locks and reads the index first, then names every unmatched pathspec
+## Part 8 — checkout locks and reads the index first, then names every unmatched pathspec
 
 ### Context
 
@@ -801,18 +934,22 @@ Files this part creates or edits (exactly these):
 - `test/unit/domain/commands/error.test.ts`
 - `src/application/commands/checkout.ts`
 - `test/unit/application/commands/checkout.test.ts`
-- `test/integration/pathspec-glob-dialect-interop.test.ts` — extend with C and K rows (shared with
-  Parts 1, 6, 8 on purpose).
+- `test/integration/pathspec-glob-dialect-interop.test.ts` — extend with C and K rows (created by
+  Part 1; a file new to this run).
+
+Read-only references: src/application/commands/internal/pathspec-intake.ts
+(`resolveCommandPathspec(ctx, paths)`, `positives`, `unmatchedPositives`),
+src/domain/git-index/index-path-key.ts (`escapedPathOf`).
 
 Public surface (decided here): `PATHSPEC_NO_MATCH` is a member of the public `CommandError` union
 (reachable through `TsgitError.data`). Adding `patterns` is an additive member change:
 - exhaustiveness switches: none change — the code string is unchanged; the message switch in
   src/domain/error.ts:454 keeps `pathspec did not match any files: ${data.pattern}`;
 - barrel-surface/error-code set tests: the set of codes is unchanged, nothing to update;
-- every `toEqual({ code: 'PATHSPEC_NO_MATCH', pattern })` was converted in Parts 5 and 6; the
+- every `toEqual({ code: 'PATHSPEC_NO_MATCH', pattern })` was converted in Parts 5, 6 and 7; the
   remaining ones are in this part's files (checkout.test.ts:1870, error.test.ts:147 and the
   `CommandError`-typed message table at error.test.ts:1706, which needs `patterns` to type-check);
-- reports/api.json changes — regenerated ONCE in Part 9 (which also changes the public surface),
+- reports/api.json changes — regenerated ONCE in Part 10 (which also changes the public surface),
   before any push; api.json is a prepush gate, not a validate gate.
 
 Target type and factory (ADR-1037; the tuple type makes "non-empty, `patterns[0] === pattern`"
@@ -836,7 +973,7 @@ The post-checkout hook runs after the lock is released.
 Target (ADR-1038, candidate 5 A):
 
     source = await pathSourceFor(...)                 // an unresolvable rev still refuses first
-    { matcher, positives } = resolvePathspec(paths)   // pathspec validation still before the lock
+    { matcher, positives } = resolveCommandPathspec(ctx, paths)   // pathspec intake still before the lock
     lock = await acquireIndexLock(ctx)
     try:
       currentIndex = await readIndex(ctx)            // K4/K5: a corrupt index refuses here
@@ -919,102 +1056,136 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`. `check:types` also p
 
 `fix(checkout): lock and read the index before refusing every unmatched pathspec`
 
-## Part 8 — rm refuses by match level
+## Part 9 — A pathspec may hold a backslash on POSIX hosts, for matching only
 
 ### Context
 
+ADR-1044 (user-ratified, candidate 1 B). This part lands after the `rm` part (Part 6) and after
+add (7) and checkout (8), so every command already resolves pathspecs through Part 5's intake.
+
 Files this part creates or edits (exactly these):
-- `src/application/commands/rm.ts`
-- `test/unit/application/commands/rm.test.ts` (Part 5 already converted its :125 shape row)
-- `src/application/commands/internal/resolve-pathspec.ts` — delete `enforceLiteralMustMatch`,
-  `literalSpellings` and their helpers once this part removes their last caller.
-- `test/unit/application/commands/internal/resolve-pathspec.test.ts` — delete their describes
-  (:324-458 at the base; locate by name).
-- `test/integration/pathspec-glob-dialect-interop.test.ts` — extend with the R refusal rows
-  (shared with Parts 1, 6, 7 on purpose).
+- `src/application/commands/internal/resolve-pathspec.ts` — relax the body validation; scan
+  prefix; delete the retired helpers. This part is the file's only editor in the run.
+- `test/unit/application/commands/internal/resolve-pathspec.test.ts` — likewise its only editor.
+- `test/unit/application/commands/internal/pathspec-intake.test.ts` — POSIX-accept rows (created
+  by Part 5; a file new to this run).
+- `test/integration/pathspec-glob-dialect-interop.test.ts` — D6, D17, E2 rows and the Windows
+  refusal row (created by Part 1; a file new to this run).
 
-Read-only references: src/domain/pathspec/match-pathspec.ts (`pathspecMatchLevel`),
-src/domain/pathspec/compile-pathspec.ts (`MATCH_LEVEL`: NONE 0 < RECURSIVE 1 < FNMATCH 2 <
-EXACT 3), src/domain/git-index/index-path-key.ts (`escapedPathOf`), src/domain/commands/error.ts
-(`pathspecNoMatch`, `rmRecursiveWithoutR(pattern)`).
+Read-only references: src/application/commands/internal/pathspec-intake.ts (Part 5:
+`resolveCommandPathspec(host, paths)` already refuses a backslash body when
+`host.windowsPathSyntax === true`, before calling `resolvePathspec`; `PositivePathspec.probesDisk`
+is false for a backslash body), src/domain/working-tree-path.ts (`validateWorkingTreePath`: :71
+refuses any backslash; `validateWalkedEntryPath`), src/application/commands/internal/working-tree.ts
+(`validatePath = validateWorkingTreePath`, used at :44, :85, :116-117), src/application/commands/
+mv.ts:120/:125, src/application/commands/blame.ts:223, src/ports/context.ts:358
+(`Context.windowsPathSyntax`), test/unit/domain/working-tree-path.test.ts:145 ("Given a
+backslash in the path … Then rejects" — stays as-is: the general validator is unchanged).
 
-Current rm.ts (:72): `resolvePathspec(paths)` → `{ matcher, literalSpellings }`; lock; read index
-(tolerating `isIndexMissingCode`); `groupByPath`; removal set by `matchesIndexPath(matcher,
-first)`; `enforceLiteralMatches(literalSpellings, removed, reach)` (:~176, literals only:
-no-match, then `rmRecursiveWithoutR(spelled)` when the literal did not name a path itself); then
-the safety valve and removals.
+How the host policy reaches the intake: there is no `PathPolicy` object on `Context`; the flag is
+the optional field `Context.windowsPathSyntax` (context.ts:358), set by the node adapter on Windows
+(src/adapters/node/node-adapter.ts:155, src/index.node.ts:171) and absent on memory/browser.
+Primitives read it by passing `ctx` structurally (`gitPathSyntaxOf(ctx)`,
+src/application/primitives/internal/git-path-syntax.ts:98; `indexPathRulesOf(ctx)`,
+index-path-rules.ts:8). The commands pass `ctx` to `resolveCommandPathspec(ctx, paths)`: rm.ts
+(Part 6), add.ts `dispatchPathspec` and `addRenormalized` (Part 7), checkout.ts `pathRestore`
+(Part 8), grep.ts (Part 5). `grep -rn "resolveCommandPathspec\|resolvePathspec(" src` must show
+exactly those call sites plus add.ts's `WHOLE_TREE_MATCHER` (`resolvePathspec(['.'])`).
 
-Target (ADR-1042, fact 6): replace `enforceLiteralMatches` with a per-positive check, argument
-order, at the same point (before `enforceSafetyValve` and any `removeFile`):
+Current resolve-pathspec.ts gate point: `collapsePattern` (:107-118) calls `validatePath(body)`
+for an empty or "/"-led body (:111) and `validatePath(kept)` on the collapsed body (:115);
+`validatePath` refuses any backslash. `symlinkScanTargets` (:65) passes every whole body to
+`assertNoSymlinkedLeadingPath` (:185, a `createLeadingPathScanner` lstat walk).
 
-    for p of positives:
-      level = max over byPath groups of pathspecMatchLevel(p.entry, escapedPathOf(first stage))
-      level === NONE                       → throw pathspecNoMatch(p.spelling)
-      level === RECURSIVE && !recursive    → throw rmRecursiveWithoutR(p.spelling)
+Target (ADR-1044):
+- `collapsePattern` validates the collapsed body with every backslash read as an ordinary byte
+  (e.g. a private `validatePathspecBody(kept)` that runs `validatePath` on the body with each
+  backslash replaced by a byte the validator accepts, returning the original body) — every other
+  rule (traversal components, control bytes, `.git` aliases, leading `/`, length in bytes) still
+  applies. The intake (Part 5) keeps the refusal under Windows path syntax; `validateWorkingTreePath`
+  itself is NOT changed, so `mv`, `blame`, working-tree.ts:44 and every other caller keep refusing a
+  backslash, and `validateWalkedEntryPath` is unchanged.
+- A backslash body is a wildcard (`hasGlobSpecial`, Part 1), so it is never in `literalMustMatch`,
+  never `literalStats`-probed by add's dispatch, never the on-disk escape subject (Part 5's
+  `probesDisk` false, read by Part 7's escape) — verify each with a row, not by assumption.
+- `symlinkScanTargets`: for a body holding a backslash, the target is its no-wildcard prefix — the
+  bytes before the first glob-special byte (`* ? [ \`), git's no-wildcard prefix length — never the
+  whole body; empty prefixes are dropped. Other bodies keep today's whole-body target (ADR-1044
+  scopes the change to backslash bodies; the existing add rows "link/*.ts", "li*/x.ts",
+  "realdir/*.ts" stay GUARDs).
+- Delete the helpers this run retired, after `grep -rn "enforceLiteralMustMatch\|literalSpellings"
+  src` shows no caller outside this file (Parts 6, 7, 8 removed them): `enforceLiteralMustMatch`,
+  `literalSpellings`/`spellLiterals`, `NO_SPELLINGS`, `descendantPrefix`, `WHOLE_TREE_SPELLING` if
+  unused; keep `namesWholeTree`, `namesDirectoryOnly`, `literalMustMatch`, `hasGlob` (add's dispatch).
+  Delete their describes in resolve-pathspec.test.ts (`describe('enforceLiteralMustMatch'` at
+  :324-458 at the base; locate by name).
+- Fix the stale comments: lines 17-23 and 54-56 ("compiled to RegExp", "cost of the compiled
+  regex") — the matcher is linear; the byte and `**` caps stay as a bound on the work a hostile
+  pattern can request (name no ADR); the `hasGlob` doc becomes its dispatch role ("routes add away
+  from the literal-only fast path").
 
-The whole tree (`.`, body `''`) is RECURSIVE for every path, so `rm .` without `recursive` still
-refuses naming `.` and an empty index refuses it as unmatched (existing rows at rm.test.ts:136-156
-stay GUARDs). After this part, `grep -rn "enforceLiteralMustMatch\|literalSpellings" src` must be
-empty (Parts 6 and 7 removed the other callers) — then delete `enforceLiteralMustMatch`,
-`literalSpellings`, `spellLiterals`, `NO_SPELLINGS`, `descendantPrefix` and `WHOLE_TREE_SPELLING`
-if unused; keep `namesWholeTree`, `namesDirectoryOnly`, `literalMustMatch`, `hasGlob` (add's
-dispatch uses them). Delete the matching describes in resolve-pathspec.test.ts.
-
-Matrix rows: R1, R1b, R4b, R7, R8 flip; R4c, R2–R6 GUARD (R2–R6 landed in Part 1; R4 stays green
-because FNMATCH outranks RECURSIVE), K3 GUARD (rm already locks first). ADR-1012 (resolve-undo,
-pending operations) is untouched — its rows in rm.test.ts are GUARDs. Interop asserts git's 128 +
-`fatal: pathspec '<p>' did not match any files` or `fatal: not removing '<p>' recursively without
--r`, the index, and that the working-tree file still exists (R1).
+Matrix rows: D6 (`a*b`, `aXb`; `add 'a\*b'` stages `a*b`), D17 (`a?b`, `axb`; `add 'a\?b'` stages
+`a?b`), E2 (`ab`; `add 'a\b'` stages `ab`) flip at command level on POSIX hosts, interop rows
+under `describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')` (repo convention, e.g.
+test/integration/commit-cache-tree-interop.test.ts:571). The Windows CI leg pins the refusal with
+a tsgit-only row under `describe.skipIf(process.platform !== 'win32')`: `add(ctx, ['a\\b'])`
+through `createNodeContext` → PATHSPEC_OUTSIDE_REPO. D8b and E1 stay pinned follow-ups: they need a
+working-tree entry whose name holds a backslash, which `validateWalkedEntryPath` refuses (ADR-1044
+Consequences).
 
 Environment: git 2.55.0 first on PATH for interop: `PATH="$HOME/.local/git-2.55.0/bin:$PATH"`.
+This part relaxes a path-traversal defence: the review phase's security dimension reviews it
+explicitly (ADR-1044) — keep the change confined to `collapsePattern` and the scan targets.
 
-Windows: no file name there can hold `*`, `?`, `:` or a backslash, so every interop row whose
-FIXTURE creates such a name (not merely a pathspec spelling) sits under
-`describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')`; the unit rows (memory adapter)
-cover those shapes on every OS.
-
-House rules: one RED per function, run before its code; GUARD = already passes. `git diff --no-ext-diff --stat`
-after scripted edits. Poll, never wait. Commit only these files. No provenance ids in code.
+House rules: one RED per function, run before its code; GUARD = already passes.
+`git diff --no-ext-diff --stat` after scripted edits. Poll, never wait. Commit only these files.
+No provenance ids in code. No suppression directives.
 
 Re-pinning rule: When an existing test row breaks, decide whether the OLD expectation encoded the
 contract. If it did, fix the code, not the row, and say so. A changed row is re-pinned against real
 git 2.55 (or the design's matrix row id), never rewritten to match the new code.
-Rows that change here: rm.test.ts:405 "Given a glob \"*.nope\" with no matches" (`removed: []`) →
-refuses PATHSPEC_NO_MATCH '*.nope' (R7/R8 shape); :455 and :474 (corrupt index tolerated, `*.nope`
-→ `removed: []`) and :505 (readIndex racing to FILE_NOT_FOUND) → now throw PATHSPEC_NO_MATCH
-'*.nope' — the tolerance they exist to prove still shows (the parse error does not surface);
-:560 (PERMISSION_DENIED propagates) stays a GUARD. :391 "both are removed (no PATHSPEC_NO_MATCH for
-globs)" keeps its verdict; only the parenthetical in its title is false — retitle.
+Rows that change here: any resolve-pathspec.test.ts row expecting PATHSPEC_OUTSIDE_REPO for a
+backslash body (grep the file for a backslash in a pattern) is re-pinned to acceptance (D6/D17/E2,
+git accepts the pathspec); rows refusing traversal, NUL or a leading "/" stay GUARDs.
 
 ### TDD steps
 
-1. RED — rm.test.ts R1: `rm(ctx, ['nomatch*', 'tracked.txt'])` throws PATHSPEC_NO_MATCH
-   'nomatch*', `tracked.txt` stays in the index and on disk; R1b with the order swapped, same.
-   Re-pin :405, :455, :474, :505 here. Interop R1, R1b, R7, R8. Fails: globs never refuse.
-   GREEN — per-positive levels, NONE branch.
-2. RED — R4b: index `a?/f`, `zz`, `rm(ctx, ['a?'])` → RM_RECURSIVE_WITHOUT_R 'a?', nothing removed;
-   with `recursive: true` removes `a?/f`. Interop R4b (R4c GUARD). Fails: the `-r` check covers
-   literals only. GREEN — RECURSIVE branch.
-3. REFACTOR — delete the dead helpers and their tests (grep first); retitle :391. Gate.
+1. RED — written together and run red before any code:
+   - `resolve-pathspec.test.ts`, "Given a pattern holding a backslash": `resolvePathspec(['a\\*b'])`
+     resolves to one wildcard entry (`isLiteral` false) with `literalMustMatch` empty; GUARDs
+     `['../a\\b']` and `['a\\b/../x']` still throw PATHSPEC_OUTSIDE_REPO.
+   - `pathspec-intake.test.ts`, "POSIX host": `resolveCommandPathspec({}, ['a\\*b'])` resolves and
+     its positive has `probesDisk` false; GUARD: Part 5's Windows-host row still refuses.
+   - `pathspec-glob-dialect-interop.test.ts`: D6, D17, E2 (POSIX only) and the Windows-only
+     refusal row.
+   Fails: `validatePath` refuses every backslash body. GREEN — relaxed body validation in
+   `collapsePattern`. Part 5's host check is now the only Windows refusal (its mutants now die).
+2. RED — `resolve-pathspec.test.ts`: `['d/a\\b']` → `symlinkScanTargets` `['d/a']`; `['a\\b']` →
+   `['a']`; `['\\x']` → `[]` (empty prefix dropped); `['link/*.ts']` → `['link/*.ts']` (GUARD:
+   other bodies unchanged). Fails: whole bodies are passed. GREEN — the scan-prefix rule.
+3. REFACTOR — `grep` that no caller of `enforceLiteralMustMatch`/`literalSpellings` remains, delete
+   them and their describes; comments. GUARD: test/unit/domain/working-tree-path.test.ts and the mv
+   and blame suites stay green unchanged. Gate.
 
 ### Gate
 
 ```bash
-PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/rm.test.ts test/unit/application/commands/internal/resolve-pathspec.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/checkout.test.ts test/unit/application/commands/grep.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/rm-interop.test.ts \
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/internal test/unit/domain/working-tree-path.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/rm.test.ts test/unit/application/commands/checkout.test.ts test/unit/application/commands/grep.test.ts test/unit/application/commands/mv.test.ts test/unit/application/commands/blame.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/pathspec-dot-interop.test.ts \
   && npm run check:types \
-  && ./node_modules/.bin/biome check src/application/commands/rm.ts test/unit/application/commands/rm.test.ts src/application/commands/internal/resolve-pathspec.ts test/unit/application/commands/internal/resolve-pathspec.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
+  && ./node_modules/.bin/biome check src/application/commands/internal/resolve-pathspec.ts test/unit/application/commands/internal/resolve-pathspec.test.ts test/unit/application/commands/internal/pathspec-intake.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
   && npm run check:spelling; echo "gate exit=$?"
 ```
 
-Run after the last edit; exit code must be 0. Wireit caveat: `check:types` / `check:spelling` can
-print `Ran 0 scripts and skipped 1` on a cached result — bare oracles: `npx tsc --noEmit -p
-tsconfig.json`, `npx cspell --no-progress <touched-files>`.
+Run after the last edit; exit code must be 0. Drop a listed suite only if the file does not exist
+(do not invent files). Wireit caveat: `check:types` / `check:spelling` can print `Ran 0 scripts
+and skipped 1` on a cached result — bare oracles: `npx tsc --noEmit -p tsconfig.json`,
+`npx cspell --no-progress <touched-files>`.
 
 ### Commit
 
-`fix(rm): refuse an unmatched or directory-reaching pathspec by match level`
+`fix(pathspec): accept a backslash in a pathspec on POSIX hosts, for matching only`
 
-## Part 9 — name-rev reports suffix-matched abbreviation as data
+## Part 10 — name-rev reports suffix-matched abbreviation as data
 
 ### Context
 
@@ -1025,14 +1196,15 @@ Files this part creates or edits (exactly these):
   `abbreviated: false` (:150-156, :191-197, :214-220, :235, :271-277, :293).
 - `test/unit/application/commands/describe.test.ts` — `describe --contains` returns a
   `NameRevResult`: rows at :1034-1040 and :1082 gain `abbreviated: false`.
-- `test/integration/name-rev-interop.test.ts` — the abbreviated N rows (Part 3 added the others).
+- `test/integration/name-rev-interop.test.ts` — every N row; this part is the file's only editor
+  in the run (Part 3 changed the filter with unit rows only).
 - `reports/api.json` — regenerated with `npm run docs:json`, committed.
 
 Public surface (decided here): `NameRevResult` is public (src/application/commands/index.ts:215,
 `Repository.nameRev`). `readonly abbreviated: boolean` is an additive public field. Gates: no new
 command, barrel entry, facade method or error code, so `check:doc-coverage`, the repository
 surface snapshot and `audit-browser-surface` are untouched; `reports/api.json` changes and is a
-prepush gate — regenerate it here with `npm run docs:json` (it also captures Part 7's
+prepush gate — regenerate it here with `npm run docs:json` (it also captures Part 8's
 `PATHSPEC_NO_MATCH.patterns`; the large typedoc-id diff is normal) and commit it. The user doc
 (docs/use/commands/name-rev.md) is the documentation phase's.
 
@@ -1053,7 +1225,11 @@ undefined. `--tags --name-only` stays the caller's own rule (N21).
 Interop renderer: add a sibling of `renderNameRev` that, when `r.abbreviated`, takes the base name
 from `git(dir, 'rev-parse', '--abbrev-ref=loose', r.ref).trim()` (fact 3 — NOT plain
 `--abbrev-ref`), then applies the existing `^0` / step suffix; otherwise defers to `renderNameRev`.
-Rows: N2, N3, N4, N6, N13, N16, N17, N18, N19 on the Part 3 fixture; N23, N24 with an added branch
+Fixture: c1 holds `v1.0` (annotated) and `w2`; c2 holds "v1/rc1" (annotated); `main` at c3;
+target c1 unless noted. Reuse `datedEnv`, `gitNameRev`, `renderNameRev` in the file.
+Rows flipped by Part 3's filter, rendered by the existing `renderNameRev` (no abbreviation): N7,
+N8, N10, N11, N12; GUARDs N1, N5, N9, N14, N15, N20, N22. Abbreviated rows: N2, N3, N4, N6, N13,
+N16, N17, N18, N19 on that fixture; N23, N24 with an added branch
 `v1.0` at c1; N25–N28 on a new repo (tag `x` at c1, branch `x` at c2). N21 GUARD (existing row at
 name-rev-interop.test.ts:~353).
 
@@ -1071,14 +1247,18 @@ The whole-result rows listed above encode the contract minus the new field: add
 
 ### TDD steps
 
-1. RED — name-rev.test.ts: refs ["v*"] on a tag `v1.0` → `{ …, ref: 'refs/tags/v1.0',
-   abbreviated: true }`; refs ["refs/tags/*"] → `abbreviated: false`; unnamed → `false`. Fails:
-   no field. GREEN — thread the filter, set the field; add `abbreviated: false` to the listed
-   whole-result rows in name-rev.test.ts, name-rev-tip-table.test.ts, describe.test.ts.
-2. RED — name-rev-interop.test.ts: the abbreviated rows with the new renderer (written before
-   step 1's GREEN; fail today because tsgit's default rendering prints `tags/v1.0^0` where git
-   prints `v1.0^0`). GREEN — step 1's code; run.
-3. REFACTOR — `npm run docs:json`; confirm `git diff --no-ext-diff --stat reports/api.json` shows the change. Gate.
+1. GUARD — name-rev-interop.test.ts: the fixture plus N7, N8, N10, N11, N12, N1, N5, N9, N14, N15,
+   N20, N22 through `renderNameRev` — they pass since Part 3's filter (run to confirm; one that
+   fails is a RED and is reported).
+2. RED — written together and run red before any code:
+   - name-rev.test.ts: refs ["v*"] on a tag `v1.0` → `{ …, ref: 'refs/tags/v1.0', abbreviated:
+     true }`; refs ["refs/tags/*"] → `abbreviated: false`; unnamed → `false`. Fails: no field.
+   - name-rev-interop.test.ts: the abbreviated rows with the new renderer. Fail: tsgit's default
+     rendering prints `tags/v1.0^0` where git prints `v1.0^0`.
+   GREEN — thread the filter, set the field; add `abbreviated: false` to the listed whole-result
+   rows in name-rev.test.ts, name-rev-tip-table.test.ts, describe.test.ts.
+3. REFACTOR — `npm run docs:json`; confirm `git diff --no-ext-diff --stat reports/api.json` shows
+   the change. Gate.
 
 ### Gate
 
@@ -1100,7 +1280,7 @@ api.json is current.
 
 `fix(name-rev): report a suffix-matched ref abbreviation as data`
 
-## Part 10 — Bundle-size measurement, add-by-glob bench, byte-matcher linearity guard
+## Part 11 — Bundle-size measurement, add-by-glob bench, byte-matcher linearity guard
 
 ### Context
 
@@ -1149,8 +1329,8 @@ Size procedure (lesson 006 + ADR-1043):
 4. No row red → edit neither `.size-limit.json` nor the design doc.
 
 api.json drift check: `npm run docs:json && git diff --no-ext-diff --stat reports/api.json` must print nothing
-(Part 9 regenerated it after the last public change). A diff here means a later part changed the
-public surface — stop and report `{ unit: Part 10, reason, options }`, do not commit api.json.
+(Part 10 regenerated it after the last public change). A diff here means a later part changed the
+public surface — stop and report `{ unit: Part 11, reason, options }`, do not commit api.json.
 
 House rules: `git diff --no-ext-diff --stat` after edits. Poll, never wait (`check:size` builds — poll its
 output). Commit only this part's files. Never run two `npm run` scripts at once.
