@@ -4469,8 +4469,10 @@ describe('add over tracked entries that ignore rules hide from the walk', () => 
         const result = await sut(ctx, ['.']);
 
         // Assert
+        expect(result.added).toEqual(['.gitignore']);
         expect(result.modified).toEqual([]);
         expect(result.removed).toEqual([LOSSY_VIEW]);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['.gitignore']);
       });
     });
   });
@@ -4627,6 +4629,29 @@ describe('addAll stages tracked entries that ignore rules hide from the walk', (
         expect(result.modified).toEqual([path]);
         expect(result.removed).toEqual([]);
         expect(await stagedBlobText(ctx, path)).toBe('bb');
+      });
+    });
+  });
+});
+
+describe('add against a held index.lock', () => {
+  describe('Given index.lock held by another process and a glob that matches nothing', () => {
+    describe('When add names the glob', () => {
+      it('Then the lock refusal wins over the no-match refusal and the lock is kept', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'real.txt': 'r' }, '');
+        const lockPath = `${ctx.layout.gitDir}/index.lock`;
+        const held = new Uint8Array([0x68]);
+        await ctx.fs.writeExclusive(lockPath, held);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['nomatch*']), 'RESOURCE_LOCKED');
+
+        // Assert
+        if (err.data.code !== 'RESOURCE_LOCKED') throw new Error('unexpected error shape');
+        expect(err.data.resource).toBe('index');
+        expect(await ctx.fs.read(lockPath)).toEqual(held);
       });
     });
   });

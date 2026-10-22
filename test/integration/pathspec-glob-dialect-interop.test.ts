@@ -724,8 +724,8 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         // Assert
         expect(git.exitCode).toBe(128);
         expect(git.stderr).toContain('index.lock');
-        expect((refusal as { code: string }).code).not.toBe('PATHSPEC_NO_MATCH');
-        expect(refusal).toBeDefined();
+        expect((refusal as { code: string }).code).toBe('RESOURCE_LOCKED');
+        expect(await readFile(path.join(tsgitRepo, '.git', 'index.lock'), 'utf8')).toBe('');
       });
     });
   },

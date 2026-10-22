@@ -408,9 +408,10 @@ describe('rm', () => {
       it('Then it refuses PATHSPEC_NO_MATCH naming the glob', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const sut = rm;
 
         // Act
-        const err = await expectError(() => rm(ctx, ['*.nope']), 'PATHSPEC_NO_MATCH');
+        const err = await expectError(() => sut(ctx, ['*.nope']), 'PATHSPEC_NO_MATCH');
 
         // Assert
         expect(err.data).toEqual(pathspecNoMatch('*.nope').data);
@@ -426,9 +427,10 @@ describe('rm', () => {
       it('Then the unmatched glob refuses and tracked.txt stays indexed and on disk', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'tracked.txt': 't' });
+        const sut = rm;
 
         // Act
-        const err = await expectError(() => rm(ctx, [first, second]), 'PATHSPEC_NO_MATCH');
+        const err = await expectError(() => sut(ctx, [first, second]), 'PATHSPEC_NO_MATCH');
 
         // Assert
         expect(err.data).toEqual(pathspecNoMatch('nomatch*').data);
@@ -443,9 +445,10 @@ describe('rm', () => {
       it('Then it refuses RM_RECURSIVE_WITHOUT_R and removes nothing', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a?/f': 'f', zz: 'z' });
+        const sut = rm;
 
         // Act
-        const err = await expectError(() => rm(ctx, ['a?']), 'RM_RECURSIVE_WITHOUT_R');
+        const err = await expectError(() => sut(ctx, ['a?']), 'RM_RECURSIVE_WITHOUT_R');
 
         // Assert
         expect(err.data).toEqual(rmRecursiveWithoutR('a?').data);
@@ -457,9 +460,10 @@ describe('rm', () => {
       it('Then it removes a?/f only', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a?/f': 'f', zz: 'z' });
+        const sut = rm;
 
         // Act
-        const result = await rm(ctx, ['a?'], { recursive: true });
+        const result = await sut(ctx, ['a?'], { recursive: true });
 
         // Assert
         expect(result.removed).toEqual(['a?/f']);
@@ -469,12 +473,13 @@ describe('rm', () => {
 
   describe('Given a tracked a?/f and ab', () => {
     describe('When rm names the glob a? without recursive', () => {
-      it('Then the wildcard match outranks the directory and only ab is removed', async () => {
+      it('Then the wildcard match outranks the directory and both a?/f and ab are removed', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a?/f': 'f', ab: 'b' });
+        const sut = rm;
 
         // Act
-        const result = await rm(ctx, ['a?']);
+        const result = await sut(ctx, ['a?']);
 
         // Assert
         expect([...result.removed].sort()).toEqual(['a?/f', 'ab']);
@@ -724,6 +729,27 @@ describe('rm', () => {
         const err = await expectError(() => rm(ctx, ['a.txt']), 'RESOURCE_LOCKED');
         if (err.data.code !== 'RESOURCE_LOCKED') throw new Error('unexpected error shape');
         expect(err.data.resource).toBe('index');
+      });
+    });
+  });
+
+  describe('Given a held lock and a glob that matches nothing', () => {
+    describe('When rm names the glob', () => {
+      it('Then the lock refusal wins over the no-match refusal and the lock is kept', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const lockPath = `${ctx.layout.gitDir}/index.lock`;
+        const held = new Uint8Array([0x68]);
+        await ctx.fs.writeExclusive(lockPath, held);
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['nomatch*']), 'RESOURCE_LOCKED');
+
+        // Assert
+        if (err.data.code !== 'RESOURCE_LOCKED') throw new Error('unexpected error shape');
+        expect(err.data.resource).toBe('index');
+        expect(await ctx.fs.read(lockPath)).toEqual(held);
       });
     });
   });
