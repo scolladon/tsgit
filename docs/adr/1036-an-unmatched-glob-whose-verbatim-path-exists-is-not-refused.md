@@ -4,7 +4,12 @@ subjects:
 ---
 # 1036 — An unmatched glob whose verbatim path exists on disk is not refused
 
-- **Status:** accepted
+> **Superseded by [ADR-1045](1045-an-unseen-literal-naming-an-unignored-path-on-disk-is-not-refused.md)**
+> for the escape's scope: an unseen literal whose path exists on disk and is not ignored is no
+> longer refused either (an empty directory, pinned against git 2.55). The wildcard escape and the
+> ignored-literal follow-up are carried forward.
+
+- **Status:** superseded by ADR-1045
 - **Date:** 2026-10-22
 - **Design:** docs/design/pathspec-glob-dialect.md · **Supersedes/Refines:** refines ADR-1035; none superseded
 
