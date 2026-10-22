@@ -38,7 +38,11 @@ export type CommandError =
       readonly localChanges: ReadonlyArray<FilePath>;
       readonly untracked: ReadonlyArray<FilePath>;
     }
-  | { readonly code: 'PATHSPEC_NO_MATCH'; readonly pattern: string }
+  | {
+      readonly code: 'PATHSPEC_NO_MATCH';
+      readonly pattern: string;
+      readonly patterns: readonly [string, ...string[]];
+    }
   | { readonly code: 'PATHSPEC_OUTSIDE_REPO'; readonly path: FilePath }
   | { readonly code: 'PATHSPEC_BEYOND_SYMLINK'; readonly path: FilePath }
   | { readonly code: 'NOTHING_TO_COMMIT' }
@@ -588,8 +592,8 @@ export interface WouldOverwriteClasses {
 export const workingTreeDirty = ({ localChanges, untracked }: WouldOverwriteClasses): TsgitError =>
   new TsgitError({ code: 'WORKING_TREE_DIRTY', localChanges, untracked });
 
-export const pathspecNoMatch = (pattern: string): TsgitError =>
-  new TsgitError({ code: 'PATHSPEC_NO_MATCH', pattern });
+export const pathspecNoMatch = (pattern: string, ...others: string[]): TsgitError =>
+  new TsgitError({ code: 'PATHSPEC_NO_MATCH', pattern, patterns: [pattern, ...others] });
 
 export const pathspecOutsideRepo = (path: FilePath): TsgitError =>
   new TsgitError({ code: 'PATHSPEC_OUTSIDE_REPO', path });

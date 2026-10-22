@@ -455,7 +455,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         const pattern = args.find((arg) => arg.includes('*')) as string;
         expect(git.exitCode).toBe(128);
         expect(git.stderr).toContain(`pathspec '${pattern}' did not match any files`);
-        expect(refusal).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern });
+        expect(refusal).toEqual(pathspecNoMatch(pattern).data);
         expect(namesOf(tsgitRepo)).toEqual(namesOf(gitRepo));
         expect(await readFile(path.join(tsgitRepo, kept), 'utf8')).toBe(`${kept}\n`);
       });
@@ -726,6 +726,217 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         expect(git.stderr).toContain('index.lock');
         expect((refusal as { code: string }).code).not.toBe('PATHSPEC_NO_MATCH');
         expect(refusal).toBeDefined();
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'Given checkout pathspecs against a tracked repository',
+  () => {
+    let root = '';
+    let counter = 0;
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-glob-checkout-')));
+    });
+
+    afterAll(async () => {
+      await removeTree(root, { recursive: true, force: true });
+    });
+
+    const unmatchedLine = (pattern: string): string =>
+      `error: pathspec '${pattern}' did not match any file(s) known to git`;
+
+    interface Setup {
+      readonly files: Files;
+      readonly dirty?: ReadonlyArray<string>;
+      readonly staged?: ReadonlyArray<string>;
+      readonly untracked?: ReadonlyArray<string>;
+    }
+
+    const built = async (side: string, setup: Setup): Promise<string> => {
+      counter += 1;
+      const repo = path.join(root, `${side}-${counter}`);
+      runGit(['init', '-q', '-b', 'main', repo]);
+      for (const [name, body] of Object.entries(setup.files)) {
+        await mkdir(path.dirname(path.join(repo, name)), { recursive: true });
+        await writeFile(path.join(repo, name), body);
+      }
+      commitAllIn(repo);
+      for (const name of setup.dirty ?? []) await writeFile(path.join(repo, name), 'changed\n');
+      for (const name of setup.staged ?? []) {
+        await writeFile(path.join(repo, name), 'new\n');
+        runGit(['-C', repo, 'add', '--', name]);
+      }
+      for (const name of setup.untracked ?? []) await writeFile(path.join(repo, name), 'u\n');
+      return repo;
+    };
+
+    const commitAllIn = (repo: string): void => {
+      runGit(['-C', repo, 'add', '-A']);
+      runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-qm', 'c'], {
+        env: { ...runGitEnv(), GIT_AUTHOR_DATE: PINNED_DATE, GIT_COMMITTER_DATE: PINNED_DATE },
+      });
+    };
+
+    const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run();
+      } catch (err) {
+        if (err instanceof TsgitError) return err.data;
+        throw err;
+      }
+      return undefined;
+    };
+
+    const dirtyFile: Setup = {
+      files: { 'dirty.txt': 'd\n', 'dir/x': 'x\n' },
+      dirty: ['dirty.txt'],
+    };
+    const plain: Setup = { files: { 'a.txt': 'a\n' } };
+
+    describe.each([
+      { row: 'C1', setup: dirtyFile, args: ['nomatch*', 'dirty.txt'], unmatched: ['nomatch*'] },
+      { row: 'C1b', setup: dirtyFile, args: ['d*', 'nomatch*'], unmatched: ['nomatch*'] },
+      {
+        row: 'C3',
+        setup: dirtyFile,
+        source: 'HEAD',
+        args: ['nomatch*', 'dirty.txt'],
+        unmatched: ['nomatch*'],
+      },
+      { row: 'C4', setup: plain, args: ['n1*', 'n2*'], unmatched: ['n1*', 'n2*'] },
+      { row: 'C5', setup: plain, args: ['n1*', 'missing'], unmatched: ['n1*', 'missing'] },
+      {
+        row: 'C7',
+        setup: { files: { 'x.txt': 'x\n' }, untracked: ['untracked.txt'] },
+        args: ['untr*'],
+        unmatched: ['untr*'],
+      },
+      {
+        row: 'C8',
+        setup: { files: { 'a.txt': 'a\n' }, staged: ['new.txt'] },
+        source: 'HEAD',
+        args: ['new*'],
+        unmatched: ['new*'],
+      },
+      {
+        row: 'C9',
+        setup: { files: { 'a.txt': 'a\n' }, staged: ['new.txt'] },
+        source: 'HEAD',
+        args: ['new.txt'],
+        unmatched: ['new.txt'],
+      },
+    ])('When $row git and tsgit checkout $args', ({ setup, source, args, unmatched }) => {
+      it('Then both refuse every unmatched pathspec and leave the index and the files', async () => {
+        // Arrange
+        const gitRepo = await built('git', setup);
+        const tsgitRepo = await built('tsgit', setup);
+        const sut = checkout;
+        const head = source === undefined ? [] : [source];
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', ...head, '--', ...args]);
+        const refusal = await refusalOf(() =>
+          sut(createNodeContext({ workDir: tsgitRepo }), {
+            paths: [...args],
+            ...(source === undefined ? {} : { source }),
+          }),
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(1);
+        expect(git.stderr.trim().split('\n')).toEqual(unmatched.map(unmatchedLine));
+        expect(refusal).toEqual(
+          pathspecNoMatch(unmatched[0] as string, ...unmatched.slice(1)).data,
+        );
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(
+          await readFile(path.join(tsgitRepo, args[args.length - 1] as string), 'utf8').catch(
+            () => '',
+          ),
+        ).toBe(
+          await readFile(path.join(gitRepo, args[args.length - 1] as string), 'utf8').catch(
+            () => '',
+          ),
+        );
+      });
+    });
+
+    describe('When C2 git and tsgit checkout *.txt over a modified nested file', () => {
+      it('Then both restore it', async () => {
+        // Arrange
+        const setup: Setup = { files: { 'a/b/c.txt': 'c\n' }, dirty: ['a/b/c.txt'] };
+        const gitRepo = await built('git', setup);
+        const tsgitRepo = await built('tsgit', setup);
+        const sut = checkout;
+
+        // Act
+        runGit(['-C', gitRepo, 'checkout', '--', '*.txt']);
+        await sut(createNodeContext({ workDir: tsgitRepo }), { paths: ['*.txt'] });
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(snapshotOf(tsgitRepo).status).toBe('');
+      });
+    });
+
+    describe.each([
+      { row: 'K1', args: ['nomatch*'] },
+      { row: 'K1L', args: ['missing'] },
+      { row: 'K1L tracked', args: ['a.txt'] },
+    ])('When $row git and tsgit checkout $args while index.lock exists', ({ args }) => {
+      it('Then both refuse on the lock and keep its bytes', async () => {
+        // Arrange
+        const gitRepo = await built('git', plain);
+        const tsgitRepo = await built('tsgit', plain);
+        for (const repo of [gitRepo, tsgitRepo]) {
+          await writeFile(path.join(repo, '.git', 'index.lock'), 'held');
+        }
+        const sut = checkout;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', ...args]);
+        const refusal = await refusalOf(() =>
+          sut(createNodeContext({ workDir: tsgitRepo }), { paths: [...args] }),
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toContain('index.lock');
+        expect((refusal as { code: string }).code).toBe('RESOURCE_LOCKED');
+        expect(await readFile(path.join(tsgitRepo, '.git', 'index.lock'), 'utf8')).toBe('held');
+      });
+    });
+
+    describe.each([
+      { row: 'K4', source: 'HEAD' },
+      { row: 'K5', source: undefined },
+    ])('When $row git and tsgit checkout *.nomatch over a corrupt index', ({ source }) => {
+      it('Then both refuse on the index read before the pathspec', async () => {
+        // Arrange
+        const gitRepo = await built('git', plain);
+        const tsgitRepo = await built('tsgit', plain);
+        for (const repo of [gitRepo, tsgitRepo]) {
+          await writeFile(path.join(repo, '.git', 'index'), Uint8Array.of(0, 0, 0, 0));
+        }
+        const head = source === undefined ? [] : [source];
+        const sut = checkout;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', ...head, '--', '*.nomatch']);
+        const refusal = await refusalOf(() =>
+          sut(createNodeContext({ workDir: tsgitRepo }), {
+            paths: ['*.nomatch'],
+            ...(source === undefined ? {} : { source }),
+          }),
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toContain('index file smaller than expected');
+        expect((refusal as { code: string }).code).toBe('INVALID_INDEX_HEADER');
       });
     });
   },

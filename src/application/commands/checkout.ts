@@ -21,6 +21,7 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filter.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
+import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import type { HeadState } from '../primitives/internal/repo-state.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
@@ -43,13 +44,18 @@ import { type BranchTrack, branchCreate } from './branch.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import {
+  type CommandPathspec,
+  type PositivePathspec,
+  resolveCommandPathspec,
+  unmatchedPositives,
+} from './internal/pathspec-intake.js';
 import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import {
   assertOperationalRepository,
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
-import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 import { rejectUnmergedIndex } from './internal/unmerged-index.js';
@@ -341,44 +347,15 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     throw invalidOption('paths', 'must not be empty');
   }
   const source = await pathSourceFor(ctx, opts.source ?? INDEX_SOURCE);
-  const { matcher, literalMustMatch, literalSpellings } = resolvePathspec(opts.paths);
+  const pathspec = resolveCommandPathspec(ctx, opts.paths);
 
-  // Enumerate the source's flat path universe so globs (`*.ts`,
-  // `src/**`) can be expanded into a concrete `pathSet` for the
-  // existing materialise primitives. For `source: 'index'` this reads
-  // the index once here, before the lock; the locked materialise below
-  // reads its own snapshot, which only decides what gets written — the
-  // pathspec expansion was done on this earlier read.
-  // For `source: 'HEAD'` or an ObjectId, walk the tree once.
-  const universe: ReadonlyArray<IndexPath> = await enumerateSourcePaths(ctx, source);
-  const matched = universe.filter((entry) => matchesIndexPath(matcher, entry));
-  enforceLiteralMustMatch(
-    literalMustMatch,
-    matched.map((entry) => entry.path),
-    literalSpellings,
-  );
-  const pathSet = new Set<FilePath>(matched.map(escapedPathOf));
-
-  // Glob with zero matches → no-op (literals already threw above).
-  if (pathSet.size === 0) {
-    const head = await resolveRef(ctx, 'HEAD' as RefName);
-    return { branch: undefined, id: head, detached: false, changedPaths: 0 };
-  }
-
-  // Both branches take the index lock first and commit the index, as git's
-  // `checkout_paths` does (stat refreshed for restored entries, a held lock
-  // refuses). They differ in the target tree:
-  // - 'index' (default): the tree is synthesised from the index, read ONCE
-  //  so a concurrent writer cannot leave the target tree and the
-  //  current-index base pointing at different snapshots.
-  // - 'HEAD' | ObjectId: the source's own tree.
-  const materializeResult =
-    source === undefined
-      ? await materializePathRestoreFromIndex(ctx, pathSet)
-      : await materializePathRestoreLocked(ctx, source, pathSet);
+  const materializeResult = await restoreUnderIndexLock(ctx, source, pathspec);
 
   // HEAD unchanged. Resolve current HEAD for the result.
   const head = await resolveRef(ctx, 'HEAD' as RefName);
+  if (materializeResult === undefined) {
+    return { branch: undefined, id: head, detached: false, changedPaths: 0 };
+  }
   // post-checkout (informational) fires after a file checkout with prev == new
   // HEAD (the restore does not move HEAD) and the file flag.
   await runInformationalHook(ctx, 'post-checkout', { args: [head, head, FILE_FLAG] });
@@ -391,71 +368,106 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   };
 };
 
-const materializePathRestoreFromIndex = async (
+type MaterializeResult = Awaited<ReturnType<typeof materializeTree>>;
+
+// Takes the index lock and reads the index before the pathspec is judged, as
+// git's `checkout_paths` does: a held lock or a corrupt index refuses first.
+// `undefined` means nothing matched, so nothing was written.
+const restoreUnderIndexLock = async (
   ctx: Context,
-  pathSet: ReadonlySet<FilePath>,
-): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
+  source: PathSource | undefined,
+  pathspec: CommandPathspec,
+): Promise<MaterializeResult | undefined> => {
   const lock = await acquireIndexLock(ctx);
   try {
-    // Read the index ONCE and pass the same snapshot to both synthesis
-    // and the diff.
     const currentIndex = await readIndex(ctx);
-    const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
-    const result = await materializeTree(ctx, {
-      targetTree,
-      currentIndex,
-      force: true,
-      // Path-restore is the explicit "give me this version" operation —
-      // canonical git always writes the source content even when the index
-      // already matches it. For `source: 'index'` the target tree is
-      // synthesised FROM the index, so without this flag every entry would
-      // be classified `noop` and nothing would be written.
-      forceRewriteAll: true,
-      paths: pathSet,
-    });
-    await lock.commit(result.newIndexEntries, 'update');
-    return result;
+    const universe = await enumerateSourcePaths(ctx, source, currentIndex);
+    refuseUnmatched(pathspec.positives, universe);
+    const matched = universe.filter((entry) => matchesIndexPath(pathspec.matcher, entry));
+    const pathSet = new Set<FilePath>(matched.map(escapedPathOf));
+    if (pathSet.size === 0) return undefined;
+    return source === undefined
+      ? await materializePathRestoreFromIndex(ctx, lock, currentIndex, pathSet)
+      : await materializePathRestoreLocked(ctx, lock, currentIndex, source, pathSet);
   } finally {
     await lock.release();
   }
+};
+
+// Every positive pathspec must name something in the source universe; git
+// reports each unmatched one, and so does the error.
+const refuseUnmatched = (
+  positives: ReadonlyArray<PositivePathspec>,
+  universe: ReadonlyArray<IndexPath>,
+): void => {
+  const unmatched = unmatchedPositives(positives, (positive) =>
+    universe.some((entry) => positive.entry.compiled.test(escapedPathOf(entry))),
+  );
+  const [first, ...rest] = unmatched;
+  if (first === undefined) return;
+  throw pathspecNoMatch(first.spelling, ...rest.map((positive) => positive.spelling));
+};
+
+// Both restores commit the index under the lock the caller holds (stat
+// refreshed for restored entries). They differ in the target tree:
+// - 'index' (default): the tree is synthesised from the index snapshot the
+//  caller read, so the target tree and the current-index base agree.
+// - 'HEAD' | ObjectId: the source's own tree.
+const materializePathRestoreFromIndex = async (
+  ctx: Context,
+  lock: IndexLock,
+  currentIndex: GitIndex,
+  pathSet: ReadonlySet<FilePath>,
+): Promise<MaterializeResult> => {
+  const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
+  const result = await materializeTree(ctx, {
+    targetTree,
+    currentIndex,
+    force: true,
+    // Path-restore is the explicit "give me this version" operation —
+    // canonical git always writes the source content even when the index
+    // already matches it. For `source: 'index'` the target tree is
+    // synthesised FROM the index, so without this flag every entry would
+    // be classified `noop` and nothing would be written.
+    forceRewriteAll: true,
+    paths: pathSet,
+  });
+  await lock.commit(result.newIndexEntries, 'update');
+  return result;
 };
 
 const materializePathRestoreLocked = async (
   ctx: Context,
+  lock: IndexLock,
+  currentIndex: GitIndex,
   source: PathSource,
   pathSet: ReadonlySet<FilePath>,
-): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
-  const lock = await acquireIndexLock(ctx);
-  try {
-    const currentIndex = await readIndex(ctx);
-    const result = await materializeTree(ctx, {
-      targetTree: source.tree,
-      currentIndex,
-      force: true,
-      checkoutMetadata: source.metadata,
-      // Path-restore from `HEAD` / ObjectId is the explicit
-      // "give me this version" operation — canonical git always writes
-      // the source content even when the index already records it (so
-      // a locally-modified file gets reverted reliably).
-      forceRewriteAll: true,
-      paths: pathSet,
-    });
-    // The commit is unconditional here: the L145 guard guarantees a
-    // non-empty `pathSet`, the pathspec universe is the source tree itself,
-    // and `forceRewriteAll` upgrades every matched entry to a write — so
-    // `result.written` is always `pathSet.size` (>= 1) and `result.deleted`
-    // is always 0. A `written > 0 || deleted > 0` guard would therefore be
-    // dead code (always true), so it is omitted.
-    await lock.commit(result.newIndexEntries, 'update');
-    return result;
-  } finally {
-    await lock.release();
-  }
+): Promise<MaterializeResult> => {
+  const result = await materializeTree(ctx, {
+    targetTree: source.tree,
+    currentIndex,
+    force: true,
+    checkoutMetadata: source.metadata,
+    // Path-restore from `HEAD` / ObjectId is the explicit
+    // "give me this version" operation — canonical git always writes
+    // the source content even when the index already records it (so
+    // a locally-modified file gets reverted reliably).
+    forceRewriteAll: true,
+    paths: pathSet,
+  });
+  // The commit is unconditional here: the caller returns early on an empty
+  // `pathSet`, the pathspec universe is the source tree itself, and
+  // `forceRewriteAll` upgrades every matched entry to a write — so
+  // `result.written` is always `pathSet.size` (>= 1) and `result.deleted`
+  // is always 0. A `written > 0 || deleted > 0` guard would therefore be
+  // dead code (always true), so it is omitted.
+  await lock.commit(result.newIndexEntries, 'update');
+  return result;
 };
 
 // Enumerate the flat path universe of the path-restore source so the
 // pathspec matcher can be expanded into a concrete `Set<FilePath>`.
-// For `'index'`, returns every index entry's path. For `'HEAD'` or an
+// For `'index'`, returns every entry of the index the caller already read. For `'HEAD'` or an
 // ObjectId, walks the tree and returns every non-directory entry's
 // path.
 //
@@ -467,11 +479,9 @@ const materializePathRestoreLocked = async (
 const enumerateSourcePaths = async (
   ctx: Context,
   source: PathSource | undefined,
+  currentIndex: GitIndex,
 ): Promise<ReadonlyArray<IndexPath>> => {
-  if (source === undefined) {
-    const index = await readIndex(ctx);
-    return index.entries;
-  }
+  if (source === undefined) return currentIndex.entries;
   const paths: IndexPath[] = [];
   for await (const entry of walkTreeWithLossyBytes(ctx, source.tree)) {
     // Stryker disable next-line ConditionalExpression: equivalent — directory entries in the universe are unobservable: materializeTree filters DIRECTORY modes itself and matches by exact path, and any pathspec matching a directory also matches its (non-empty) descendant files.
