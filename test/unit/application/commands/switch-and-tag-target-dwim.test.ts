@@ -15,6 +15,7 @@ import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
+import { pathspecNoMatch } from '../../../../src/domain/commands/error.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -165,7 +166,7 @@ describe('checkout — a name no branch carries', () => {
         }
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'nope' });
+        expect((caught as TsgitError).data).toEqual(pathspecNoMatch('nope').data);
       });
     });
   });

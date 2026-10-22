@@ -8,6 +8,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { readHeadRaw as readHead } from '../../../../src/application/primitives/internal/repo-state.js';
 import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
+import { pathspecNoMatch } from '../../../../src/domain/commands/error.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -54,7 +55,7 @@ describe('checkout of a switch target git cannot switch to', () => {
           const result = await refusal(sut(ctx, { rev }));
 
           // Assert
-          expect(result).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: rev });
+          expect(result).toEqual(pathspecNoMatch(rev).data);
           expect(await readHead(ctx)).toMatchObject({ kind: 'symbolic' });
         });
       });
