@@ -369,7 +369,14 @@ done
 # `compileLiteral`/`compileDirectory` and `enforceLiteralMustMatch` — runtime
 # code shipped in every distribution form, none removable without dropping the
 # behaviour.
-SIZE_CAP=$((1442 * 1024))
+# Raised 1442 -> 1444 KiB by the review and refactoring rounds of the pathspec
+# glob-dialect work: the measured pack landed at 1 477 954 B, 1 346 B over the
+# old cap, attributable to the one-pass pathspec verdict, the literal-suffix
+# post-filter, the ping-pong matcher rows, the shared positive tracker, the
+# ancestor-aware literal escape and the hidden conflicted-path staging pass —
+# runtime code shipped in every distribution form, none removable without
+# dropping the behaviour.
+SIZE_CAP=$((1444 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

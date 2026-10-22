@@ -686,3 +686,16 @@ its measured delta, rounded up to the next 0.1 kB; every other row is unchanged.
 
 The npm tarball cap moved 1440 → 1442 KiB (1 476 231 B measured); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+The review and refactoring rounds of the same change crossed all five rows again, measured the
+same way on a clean build; each is raised once more to the next 0.1 kB. The tarball cap moved
+1442 → 1444 KiB (1 477 954 B measured); its attribution lives in `tooling/verify-tarball.sh`'s
+cap block.
+
+| Row | before the fixes | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 342 413 | 342 984 | +571 | 342.5 kB | 343 kB | every layer below |
+| Full library | 400 108 | 400 646 | +538 | 400.4 kB | 400.7 kB | every layer below |
+| Chunks: domain | 126 289 | 126 480 | +191 | 126.4 kB | 126.5 kB | the one-pass `pathspecVerdict`, the literal-suffix post-filter on the general wildcard shape, and the ping-pong rows with their all-zero early exit in the ref-glob matcher |
+| Chunks: commands-internal | 82 203 | 82 326 | +123 | 82.3 kB | 82.4 kB | the shared positive tracker (`trackPositives`), whose fail-closed `seen` replaced the per-command bookkeeping of `rm`, `add` and `checkout` |
+| Command (add) | 4 707 | 4 991 | +284 | 4.9 kB | 5 kB | the literal on-disk escape with git's ancestor-ignore check and the directory-only trailing-slash rule, and the index-side pass staging a hidden conflicted path |
