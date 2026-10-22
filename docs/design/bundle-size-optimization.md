@@ -669,3 +669,20 @@ measured against 1 440 KiB).
 | Browser bundle (no-build) | 341 961 | 342 003 | +42 | 342.0 kB | 342.1 kB | every layer below |
 | Full library | 399 490 | 399 645 | +155 | 399.5 kB | 399.7 kB | every layer below |
 | Chunks: primitives | 108 066 | 108 128 | +62 | 108.1 kB | 108.2 kB | the local header peek (`peekDeclaredObjectHeader`, no fetch, no rescan), the peeled want's kind carried out of the tag-chain resolver so the closure probes a want once, and the header-only blob hop in `peel` |
+
+## Size-limit raise — the pathspec glob dialect
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`),
+gzip bytes, against `main` (`8dd442ee`) at the same toolchain. Each failing row is raised by
+its measured delta, rounded up to the next 0.1 kB; every other row is unchanged.
+
+| Row | main | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 342 024 | 342 413 | +389 | 342.1 kB | 342.5 kB | every layer below |
+| Full library | 399 484 | 400 108 | +624 | 399.7 kB | 400.4 kB | every layer below |
+| Chunks: domain | 126 169 | 126 289 | +120 | 126.2 kB | 126.4 kB | the dialect matcher and its fast paths, the refusal helpers, `subpathOffset`, offset by the removed `scanStar`, `containsGlob` and `compileLiteral`/`compileDirectory` |
+| Chunks: commands-internal | 82 088 | 82 203 | +115 | 82.1 kB | 82.3 kB | the index-side glob pass, offset by the removed `enforceLiteralMustMatch` |
+| Command (add) | 4 416 | 4 707 | +291 | 4.6 kB | 4.9 kB | the glob-aware staging pass and its refusal helpers |
+
+The npm tarball cap moved 1440 → 1442 KiB (1 476 231 B measured); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.

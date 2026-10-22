@@ -362,7 +362,14 @@ done
 # Raised 1436 -> 1439 KiB by the review fixes of that work: the measured pack
 # landed at 1 472 330 B, attributable to the cache-tree repair abort, the
 # pruned HEAD/target walk of a branch switch and the bounded literal read.
-SIZE_CAP=$((1440 * 1024))
+# Raised 1440 -> 1442 KiB by the pathspec glob-dialect work: the measured pack
+# landed at 1 476 231 B, 1 671 B over the old cap, attributable to the dialect
+# matcher, its fast paths, the refusal helpers, the index-side pass and
+# `subpathOffset`, offset by the removed `scanStar`, `containsGlob`,
+# `compileLiteral`/`compileDirectory` and `enforceLiteralMustMatch` — runtime
+# code shipped in every distribution form, none removable without dropping the
+# behaviour.
+SIZE_CAP=$((1442 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

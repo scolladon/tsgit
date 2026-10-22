@@ -66,6 +66,26 @@ benchScenario(
   },
 );
 
+benchScenario(
+  'Given a freshly built scratch repo with 200 unstaged files across nested directories',
+  'When add() stages them by the glob "*.txt", Then measure tsgit',
+  () => {
+    const scratches: ScratchRepo[] = [];
+
+    const sut = async (): Promise<void> => {
+      const scratch = await buildAddManyScratch(MANY_FILE_COUNT);
+      scratches.push(scratch);
+      await scratch.repo.add(['*.txt']);
+    };
+    return {
+      teardown: (): void => {
+        for (const scratch of scratches) scratch.disposeSync();
+      },
+      sut,
+    };
+  },
+);
+
 const blobOf = (text: string): Blob => ({
   type: 'blob',
   id: '' as ObjectId,

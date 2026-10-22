@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileRefGlob } from '../../../../src/domain/refs/ref-glob.js';
+import { compileRefGlob, compileRefGlobBytes } from '../../../../src/domain/refs/ref-glob.js';
 
 /**
  * Wall-clock ReDoS guard for the ref-glob matcher. This is a PERFORMANCE
@@ -9,7 +9,7 @@ import { compileRefGlob } from '../../../../src/domain/refs/ref-glob.js';
  *
  * `gc.<pattern>.*` keys read patterns straight from repository configuration,
  * which a planted `.git/config` controls — the same ReDoS class
- * `compile-glob.perf.test.ts` closes for pathspecs must stay closed here too.
+ * `compile-glob.perf.test.ts` closes for gitignore rules must stay closed here too.
  */
 describe('compileRefGlob (performance)', () => {
   describe('Given an adversarial `a*a*…*b` pattern', () => {
@@ -27,6 +27,25 @@ describe('compileRefGlob (performance)', () => {
         const elapsedMs = performance.now() - start;
 
         // Assert — no `b`, so no match; and it completes near-instantly.
+        expect(result).toBe(false);
+        expect(elapsedMs).toBeLessThan(1000);
+      });
+    });
+  });
+
+  describe('Given an adversarial `a*a*…*b` pattern on the byte matcher', () => {
+    describe('When matched against a long non-matching run of bytes', () => {
+      it('Then it returns false without catastrophic backtracking', () => {
+        // Arrange
+        const sut = compileRefGlobBytes(`${'a*'.repeat(64)}b`);
+        const adversarial = new Uint8Array(10_000).fill(0x61);
+
+        // Act
+        const start = performance.now();
+        const result = sut(adversarial);
+        const elapsedMs = performance.now() - start;
+
+        // Assert
         expect(result).toBe(false);
         expect(elapsedMs).toBeLessThan(1000);
       });
