@@ -1,9 +1,6 @@
 ---
 subjects:
   - src/application/commands/add.ts
-supersedes:
-  - adr: "1036"
-    scope: "the on-disk escape applying to wildcard pathspecs only"
 ---
 # 1045 — An unseen literal naming an unignored path on disk is not refused
 
