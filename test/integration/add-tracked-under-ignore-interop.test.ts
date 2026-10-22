@@ -52,6 +52,22 @@ const trackedThen =
     await writeFiles(repo, { '.gitignore': rules, ...edits });
   };
 
+/** Commits x.log on two branches, merges them into a conflict, then lays the ignore rule down. */
+const conflictedThen =
+  (rules: string): Setup =>
+  async (repo) => {
+    await writeFiles(repo, { 'x.log': 'base\n' });
+    commitAll(repo);
+    runGit(['-C', repo, 'checkout', '-qb', 'side']);
+    await writeFiles(repo, { 'x.log': 'side\n' });
+    commitAll(repo);
+    runGit(['-C', repo, 'checkout', '-q', 'main']);
+    await writeFiles(repo, { 'x.log': 'main\n' });
+    commitAll(repo);
+    tryRunGitWithExit(['-C', repo, 'merge', 'side']);
+    await writeFiles(repo, { '.gitignore': rules });
+  };
+
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'add over tracked files that ignore rules hide from the walk',
   () => {
@@ -83,6 +99,11 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       {
         label: 'a modified file matched by an ignore glob, added by glob',
         setup: trackedThen({ 'x.log': 'a\n' }, gitIgnore('*.log\n'), { 'x.log': 'bb\n' }),
+        spec: ['*.log'],
+      },
+      {
+        label: 'a conflicted file matched by an ignore glob, added by glob',
+        setup: conflictedThen('*.log\n'),
         spec: ['*.log'],
       },
       {
@@ -209,6 +230,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         label: 'a modified file matched by an ignore glob',
         setup: trackedThen({ 'x.log': 'a\n' }, gitIgnore('*.log\n'), { 'x.log': 'bb\n' }),
       },
+      { label: 'a conflicted file matched by an ignore glob', setup: conflictedThen('*.log\n') },
     ])('Given $label', ({ setup }) => {
       describe('When git add -A and tsgit add all run', () => {
         it('Then both leave the same index and status', async () => {

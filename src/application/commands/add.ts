@@ -955,19 +955,21 @@ const renormalizeOne = async (
 /**
  * git's `add` also runs an index-side pass that stages every matching tracked
  * entry whatever the ignore rules say, so a tracked file the pruned walk never
- * reached is still staged. What the removal pass owns (gone, replaced by a
- * directory) and what the pass never stages (skip-worktree, lossy, gitlink,
- * unmerged) is left out.
+ * reached is still staged — a conflicted one resolved from the file on disk.
+ * What the removal pass owns (gone, replaced by a directory) and what the pass
+ * never stages (skip-worktree, lossy, gitlink) is left out.
  */
 const hiddenTracked = async (
   ctx: Context,
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   matcher: ResolvedPathspec['matcher'],
   walked: ReadonlyArray<WalkWorkingTreeEntry>,
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
 ): Promise<WalkWorkingTreeEntry[]> => {
   const walkedKeys = new Set(walked.map(({ path }) => keyOfPath(path)));
   const candidates = [...existing].filter(
-    ([key, entry]) => !walkedKeys.has(key) && isHiddenCandidate(entry, matcher),
+    ([key, entry]) =>
+      !walkedKeys.has(key) && isHiddenCandidate(entry, matcher, unmergedStages.get(key)),
   );
   const scanner = createLeadingPathScanner(ctx);
   const hidden = await boundedMapFor(ctx, 'ioBound', candidates, ([, entry]) =>
@@ -976,12 +978,25 @@ const hiddenTracked = async (
   return hidden.filter((walkEntry) => walkEntry !== undefined);
 };
 
-const isHiddenCandidate = (entry: IndexEntry, matcher: ResolvedPathspec['matcher']): boolean =>
-  entry.flags.stage === 0 &&
+const isHiddenCandidate = (
+  entry: IndexEntry,
+  matcher: ResolvedPathspec['matcher'],
+  stages: ReadonlyArray<IndexEntry> | undefined,
+): boolean =>
   !entry.flags.skipWorktree &&
   !isLossy(entry) &&
   entry.mode !== FILE_MODE.GITLINK &&
-  matchesIndexPath(matcher, entry);
+  pathspecSelectsTracked(entry, matcher, stages);
+
+/** A merged entry is selected on a match; an unmerged path under git's conflict rule. */
+const pathspecSelectsTracked = (
+  entry: IndexEntry,
+  matcher: ResolvedPathspec['matcher'],
+  stages: ReadonlyArray<IndexEntry> | undefined,
+): boolean =>
+  stages === undefined
+    ? entry.flags.stage === 0 && matchesIndexPath(matcher, entry)
+    : matchesUnmergedIndexPath(matcher, entry, stages.length);
 
 /** The walk entry the walker would have yielded, from the file as it lies on disk. */
 const hiddenWalkEntryOf = async (
@@ -1026,7 +1041,7 @@ const stageIgnoredWalk = async (
   const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
   const walked = await collectWalk(walkWorkingTree(ctx, { ignore }));
   await refuseUnseenWalked(ctx, repoIgnore, positives, sorted, walked);
-  const hidden = await hiddenTracked(ctx, existing, matcher, walked);
+  const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages);
   const outcomes = await stageWalkedEntries(
     ctx,
     [...walked, ...hidden],
@@ -1166,7 +1181,13 @@ export const addAll = async (
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
     const walkedEntries = await collectWalk(walkWorkingTree(ctx, { ignore }));
-    const hidden = await hiddenTracked(ctx, existing, WHOLE_TREE_MATCHER, walkedEntries);
+    const hidden = await hiddenTracked(
+      ctx,
+      existing,
+      WHOLE_TREE_MATCHER,
+      walkedEntries,
+      state.unmergedStages,
+    );
     const outcomes = await stageWalkedEntries(
       ctx,
       [...walkedEntries, ...hidden],

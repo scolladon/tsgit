@@ -174,7 +174,7 @@ describe('Given an unmerged f and h next to tracked top and d/e', () => {
   });
 
   describe('When the bulk add hides f from the walk', () => {
-    it('Then f keeps every stage while the rest is staged', async () => {
+    it('Then f is resolved from disk like the rest, as git stages it from the index side', async () => {
       // Arrange
       const ctx = await seedConflicted(SHAPES[0] as Shape);
       const sut = addAll;
@@ -184,7 +184,7 @@ describe('Given an unmerged f and h next to tracked top and d/e', () => {
       const result = await stagesOf(ctx);
 
       // Assert
-      expect(stagesAt(result, 'f')).toEqual(['1', '2', '3']);
+      expect(stagesAt(result, 'f')).toEqual(['0']);
       expect(stagesAt(result, 'h')).toEqual(['0']);
     });
   });
@@ -761,6 +761,27 @@ describe('Given a path held at stage 0 and at the conflict stages 1 and 2, delet
       expect(result.removed).toEqual(['c']);
       expect(await stagesOf(ctx)).toEqual([]);
       expect(await recordedStages(ctx)).toEqual([['c', [1, 2]]]);
+    });
+  });
+});
+
+describe('Given an unmerged h that an ignore rule hides from the walk', () => {
+  describe.each([
+    { title: 'add names it by glob', paths: ['h*'], options: undefined },
+    { title: 'add all runs', paths: [] as string[], options: { all: true } },
+  ])('When $title', ({ paths, options }) => {
+    it('Then h is staged at stage 0 from the file on disk', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'h\n');
+      const sut = add;
+
+      // Act
+      await sut(ctx, paths, options);
+      const result = await stagesOf(ctx);
+
+      // Assert
+      expect(stagesAt(result, 'h')).toEqual(['0']);
     });
   });
 });
