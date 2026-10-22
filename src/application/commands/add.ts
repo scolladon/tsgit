@@ -49,7 +49,6 @@ import {
   withoutExactly,
 } from '../../domain/pathspec/match-pathspec.js';
 import { matchesIndexPath, matchesUnmergedIndexPath } from '../../domain/pathspec/matching-path.js';
-import { MATCH_LEVEL } from '../../domain/pathspec/wildcard.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -99,6 +98,7 @@ import {
   type CommandPathspec,
   type PositivePathspec,
   resolveCommandPathspec,
+  trackPositives,
   unmatchedPositives,
 } from './internal/pathspec-intake.js';
 import {
@@ -838,27 +838,17 @@ const indexSees = ({ entry }: PositivePathspec, entries: ReadonlyArray<IndexEntr
   entries.some((indexed) => entry.compiled.test(escapedPathOf(indexed)));
 
 /** One matcher pass over the index, shared by the refusal, the hidden pass and the removals. */
+const verdictsOf = (
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  verdictOf: (path: FilePath) => PathspecVerdict,
+): ReadonlyMap<IndexPathKey, PathspecVerdict> =>
+  new Map([...existing].map(([key, entry]) => [key, verdictOf(escapedPathOf(entry))]));
+
 const indexVerdicts = (
   matcher: ResolvedPathspec['matcher'],
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): ReadonlyMap<IndexPathKey, PathspecVerdict> =>
-  new Map(
-    [...existing].map(([key, entry]) => [key, pathspecVerdict(matcher, escapedPathOf(entry))]),
-  );
-
-/** Whether the index pass saw a positive: some tracked path reached its entry. */
-const seenByIndex = (
-  matcher: ResolvedPathspec['matcher'],
-  verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>,
-): ((positive: PositivePathspec) => boolean) => {
-  const seen = new Set<number>();
-  for (const { levels } of verdicts.values()) {
-    levels.forEach((level, i) => {
-      if (level !== MATCH_LEVEL.NONE) seen.add(i);
-    });
-  }
-  return ({ entry }) => seen.has(matcher.indexOf(entry));
-};
+  verdictsOf(existing, (path) => pathspecVerdict(matcher, path));
 
 /** Whether the pathspec's verbatim body, as typed, names something on disk. */
 const namesOnDisk = async (ctx: Context, { entry, probesDisk }: PositivePathspec) =>
@@ -1092,10 +1082,17 @@ const stageIgnoredWalk = async (
     indexMtime,
     indexRules,
   } = await readExistingEntries(ctx);
-  const verdicts = indexVerdicts(matcher, existing);
+  const tracker = trackPositives(matcher, positives);
+  const verdicts = verdictsOf(existing, (path) => tracker.observe(path));
   const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
   const walked = await collectWalk(walkWorkingTree(ctx, { ignore }));
-  await refuseUnseenWalked(ctx, repoIgnore, positives, seenByIndex(matcher, verdicts), walked);
+  await refuseUnseenWalked(
+    ctx,
+    repoIgnore,
+    positives,
+    (positive) => tracker.seen(positive),
+    walked,
+  );
   const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages, verdicts);
   const outcomes = await stageWalkedEntries(
     ctx,

@@ -1,7 +1,9 @@
 import { pathspecOutsideRepo } from '../../../domain/commands/error.js';
 import { wellFormed } from '../../../domain/objects/encoding.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
-import type { PathspecEntry } from '../../../domain/pathspec/index.js';
+import type { Pathspec, PathspecEntry } from '../../../domain/pathspec/index.js';
+import { type PathspecVerdict, pathspecVerdict } from '../../../domain/pathspec/match-pathspec.js';
+import { MATCH_LEVEL, type MatchLevel } from '../../../domain/pathspec/wildcard.js';
 import { type ResolvedPathspec, resolvePathspec } from './resolve-pathspec.js';
 
 const BACKSLASH = '\\';
@@ -57,3 +59,38 @@ export const unmatchedPositives = (
   positives: ReadonlyArray<PositivePathspec>,
   isSeen: (positive: PositivePathspec) => boolean,
 ): ReadonlyArray<PositivePathspec> => positives.filter((positive) => !isSeen(positive));
+
+/** One matcher pass's bookkeeping: which positives the observed paths reached, and how far. */
+export interface PositiveTracker {
+  /** Judges one path: records every positive's level for it and returns the spec's verdict. */
+  observe(path: FilePath): PathspecVerdict;
+  /** Whether some observed path reached the positive. */
+  seen(positive: PositivePathspec): boolean;
+  /** The highest level each positive reached, in positives order. */
+  highest(): ReadonlyArray<MatchLevel>;
+}
+
+/**
+ * Positives are built from the matcher's own entries (`resolveCommandPathspec`),
+ * so each one's entry is found in the matcher by identity and its verdict level
+ * is read at that index.
+ */
+export const trackPositives = (
+  matcher: Pathspec,
+  positives: ReadonlyArray<PositivePathspec>,
+): PositiveTracker => {
+  const at = positives.map((positive) => matcher.indexOf(positive.entry));
+  const highest: MatchLevel[] = positives.map(() => MATCH_LEVEL.NONE);
+  return {
+    observe(path) {
+      const verdict = pathspecVerdict(matcher, path);
+      at.forEach((index, i) => {
+        const level = verdict.levels[index] ?? MATCH_LEVEL.NONE;
+        if (level > (highest[i] as MatchLevel)) highest[i] = level;
+      });
+      return verdict;
+    },
+    seen: (positive) => highest[positives.indexOf(positive)] !== MATCH_LEVEL.NONE,
+    highest: () => highest,
+  };
+};

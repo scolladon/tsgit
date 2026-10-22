@@ -15,8 +15,6 @@ import {
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
-import { pathspecVerdict } from '../../domain/pathspec/match-pathspec.js';
-import { MATCH_LEVEL } from '../../domain/pathspec/wildcard.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
@@ -49,6 +47,7 @@ import {
   type CommandPathspec,
   type PositivePathspec,
   resolveCommandPathspec,
+  trackPositives,
   unmatchedPositives,
 } from './internal/pathspec-intake.js';
 import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
@@ -401,17 +400,12 @@ const selectFromUniverse = (
   { matcher, positives }: CommandPathspec,
   universe: ReadonlyArray<IndexPath>,
 ): { readonly matched: IndexPath[]; readonly unmatched: ReadonlyArray<PositivePathspec> } => {
-  const at = positives.map((positive) => matcher.indexOf(positive.entry));
-  const seen = new Set<PositivePathspec>();
-  const matched: IndexPath[] = [];
-  for (const entry of universe) {
-    const verdict = pathspecVerdict(matcher, escapedPathOf(entry));
-    at.forEach((index, i) => {
-      if (verdict.levels[index] !== MATCH_LEVEL.NONE) seen.add(positives[i] as PositivePathspec);
-    });
-    if (verdict.matched) matched.push(entry);
-  }
-  return { matched, unmatched: unmatchedPositives(positives, (positive) => seen.has(positive)) };
+  const tracker = trackPositives(matcher, positives);
+  const matched = universe.filter((entry) => tracker.observe(escapedPathOf(entry)).matched);
+  return {
+    matched,
+    unmatched: unmatchedPositives(positives, (positive) => tracker.seen(positive)),
+  };
 };
 
 // Every positive pathspec must name something in the source universe; git

@@ -30,7 +30,6 @@ import {
 } from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import { pathspecVerdict } from '../../domain/pathspec/match-pathspec.js';
 import { MATCH_LEVEL, type MatchLevel } from '../../domain/pathspec/wildcard.js';
 import type { Context } from '../../ports/context.js';
 import {
@@ -46,9 +45,9 @@ import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
-  type CommandPathspec,
   type PositivePathspec,
   resolveCommandPathspec,
+  trackPositives,
 } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 import { removeFile } from './internal/working-tree.js';
@@ -99,16 +98,16 @@ export const rm = async (
     const removed: FilePath[] = [];
     const removedKeys: IndexPathKey[] = [];
     const removedGroups: ReadonlyArray<IndexEntry>[] = [];
-    const levels = positiveLevels(matcher, positives);
+    const tracker = trackPositives(matcher, positives);
     for (const [key, stages] of byPath) {
       const [first] = stages as readonly [IndexEntry, ...IndexEntry[]];
-      if (levels.observe(escapedPathOf(first))) {
+      if (tracker.observe(escapedPathOf(first)).matched) {
         removed.push(first.path);
         removedKeys.push(key);
         removedGroups.push(stages);
       }
     }
-    enforcePositiveLevels(positives, levels.highest(), opts.recursive === true);
+    enforcePositiveLevels(positives, tracker.highest(), opts.recursive === true);
     if (opts.force !== true) {
       await enforceSafetyValve(
         ctx,
@@ -166,30 +165,6 @@ const resolvedRecordsOf = (
   removedGroups: ReadonlyArray<ReadonlyArray<IndexEntry>>,
 ): ReadonlyArray<ResolveUndoRecord> =>
   removedGroups.filter((stages) => !stages.every(isStageZero)).map(resolveUndoRecordOf);
-
-/**
- * The highest level each positive reached over the paths observed so far, kept
- * beside the removal verdict so every (path, entry) pair is matched once.
- */
-const positiveLevels = (
-  matcher: CommandPathspec['matcher'],
-  positives: ReadonlyArray<PositivePathspec>,
-) => {
-  const at = positives.map((positive) => matcher.indexOf(positive.entry));
-  const highest: MatchLevel[] = positives.map(() => MATCH_LEVEL.NONE);
-  return {
-    /** Records the path's levels; returns the spec's verdict for it. */
-    observe(path: FilePath): boolean {
-      const { matched, levels } = pathspecVerdict(matcher, path);
-      at.forEach((index, i) => {
-        const level = levels[index] ?? MATCH_LEVEL.NONE;
-        if (level > (highest[i] ?? MATCH_LEVEL.NONE)) highest[i] = level;
-      });
-      return matched;
-    },
-    highest: (): ReadonlyArray<MatchLevel> => highest,
-  };
-};
 
 /**
  * git rm's per-pathspec check, in argument order: each positive must match a

@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   positiveOf,
   resolveCommandPathspec,
+  trackPositives,
   unmatchedPositives,
 } from '../../../../../src/application/commands/internal/pathspec-intake.js';
 import { resolvePathspec } from '../../../../../src/application/commands/internal/resolve-pathspec.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
+import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 import { compilePathspec, type PathspecEntry } from '../../../../../src/domain/pathspec/index.js';
+import { MATCH_LEVEL } from '../../../../../src/domain/pathspec/wildcard.js';
 
 describe('resolveCommandPathspec', () => {
   describe('Given positive, negated and duplicate patterns', () => {
@@ -191,6 +194,108 @@ describe('unmatchedPositives', () => {
 
         // Assert
         expect(result).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('trackPositives', () => {
+  const fileAt = (path: string) => path as FilePath;
+  const trackerOver = (...paths: string[]) => {
+    const { matcher, positives } = resolveCommandPathspec({}, paths);
+    return { matcher, positives, sut: trackPositives(matcher, positives) };
+  };
+
+  describe('Given a tracker that observed nothing', () => {
+    describe('When asked what was reached', () => {
+      it('Then no positive is seen and every level is NONE', () => {
+        // Arrange
+        const { positives, sut } = trackerOver('a.txt', 'dir');
+
+        // Act
+        const seen = positives.map((positive) => sut.seen(positive));
+
+        // Assert
+        expect(seen).toEqual([false, false]);
+        expect(sut.highest()).toEqual([MATCH_LEVEL.NONE, MATCH_LEVEL.NONE]);
+      });
+    });
+  });
+
+  describe('Given a path reaching one positive', () => {
+    describe('When observed', () => {
+      it('Then the verdict is returned and only that positive is seen', () => {
+        // Arrange
+        const { positives, sut } = trackerOver('a.txt', 'b.txt');
+
+        // Act
+        const verdict = sut.observe(fileAt('a.txt'));
+
+        // Assert
+        expect(verdict.matched).toBe(true);
+        expect(verdict.levels).toEqual([MATCH_LEVEL.EXACT, MATCH_LEVEL.NONE]);
+        expect(positives.map((positive) => sut.seen(positive))).toEqual([true, false]);
+        expect(sut.highest()).toEqual([MATCH_LEVEL.EXACT, MATCH_LEVEL.NONE]);
+      });
+    });
+  });
+
+  describe('Given a positive reached at several levels', () => {
+    describe('When the paths are observed in any order', () => {
+      it('Then highest keeps the maximum level reached', () => {
+        // Arrange
+        const { sut } = trackerOver('dir');
+
+        // Act
+        sut.observe(fileAt('dir/inner.txt'));
+        sut.observe(fileAt('dir'));
+        sut.observe(fileAt('other'));
+
+        // Assert
+        expect(sut.highest()).toEqual([MATCH_LEVEL.EXACT]);
+      });
+    });
+
+    describe('When only a path beneath the directory is observed', () => {
+      it('Then the level is RECURSIVE', () => {
+        // Arrange
+        const { sut } = trackerOver('dir');
+
+        // Act
+        sut.observe(fileAt('dir/inner.txt'));
+
+        // Assert
+        expect(sut.highest()).toEqual([MATCH_LEVEL.RECURSIVE]);
+      });
+    });
+
+    describe('When only a wildcard reaches the path', () => {
+      it('Then the level is FNMATCH', () => {
+        // Arrange
+        const { sut } = trackerOver('*.txt');
+
+        // Act
+        sut.observe(fileAt('a.txt'));
+
+        // Assert
+        expect(sut.highest()).toEqual([MATCH_LEVEL.FNMATCH]);
+      });
+    });
+  });
+
+  describe('Given a negated entry beside a positive', () => {
+    describe('When a path the negation excludes is observed', () => {
+      it('Then the verdict is the negated one and the positives keep their own order', () => {
+        // Arrange
+        const { positives, sut } = trackerOver('*.ts', '!skip.ts', 'x.ts');
+
+        // Act
+        const verdict = sut.observe(fileAt('skip.ts'));
+
+        // Assert
+        expect(verdict.matched).toBe(false);
+        expect(positives.map((positive) => positive.spelling)).toEqual(['*.ts', 'x.ts']);
+        expect(sut.highest()).toEqual([MATCH_LEVEL.FNMATCH, MATCH_LEVEL.NONE]);
       });
     });
   });
