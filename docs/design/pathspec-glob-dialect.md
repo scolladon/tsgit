@@ -7,7 +7,7 @@
 > tag name; (d) `name-rev --refs`/`--exclude` match every `/`-suffix of the refname and expose
 > git's abbreviation signal; (e) docs fold-in, carried by the plan. Magic pathspecs, `:(exclude)`,
 > the `!` alias and the ADR superseding 038 are 32.11b, out.
-> Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22) → folded the tracked-under-ignore staging gap (2026-10-22)
+> Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22) → folded the tracked-under-ignore staging gap (2026-10-22) → review pins folded: empty-directory literal, hidden conflicted path (2026-10-22)
 
 ## Context
 
@@ -89,6 +89,9 @@ tsgit.
   git's `file_exists` escape). On the walk path the escape covers wildcard bodies only (candidate
   4, ADR-1036). Under `add --renormalize` it covers literal and wildcard bodies (RN4, RN5). A body
   holding `\` never takes either escape (R11).
+  Review pin (git 2.55): an unseen literal naming an empty directory is not refused either (`add e`
+  exits 0; `add e 'k*'` stages `k`); a literal naming an ignored path keeps refusing until the
+  ignored-paths report exists (ADR-1045 supersedes ADR-1036's wildcard-only scope).
 - R6. `grep` never refuses an unmatched pathspec (G1, G5).
 - R7. `describe` include/exclude = `wildmatch(pattern, shortTagName, 0)` (DS rows).
 - R8. `name-rev` include/exclude = git's `subpath_matches`: the full refname, then each suffix after
@@ -540,7 +543,9 @@ ends after "was a reported user failure"), strikes the four delivered sub-items 
 leaves 32.11b open.
 
 ### Size and hot path
-
+  Review pin (git 2.55): a conflicted path the rules hide is resolved to stage 0 from the file on
+  disk by `add <glob>`, `add .` and `add -A`, like a walked conflicted path; the pass selects it
+  under the conflict rule (`matchesUnmergedIndexPath`).
 - Removed: `scanStar`, the `pathname` option, `containsGlob`, `compileLiteral`/`compileDirectory`,
   the `describe` `compileGlob` import, and per-ref recompilation in `buildRefFilter`.
 - Added: `verbatimLevel`, `hasGlobSpecial`, the prefix and one-star fast paths, the bytes export,
