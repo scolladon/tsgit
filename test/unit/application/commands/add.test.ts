@@ -4330,10 +4330,10 @@ describe('add refuses an unmatched pathspec before any object write', () => {
 
   describe('Given a tracked file and the renormalize option', () => {
     describe.each([
-      { row: 'RN1', args: ['nomatch*'], pattern: 'nomatch*' },
-      { row: 'RN2', args: ['a*', 'nomatch*'], pattern: 'nomatch*' },
-      { row: 'RN6', args: ['untr*'], pattern: 'untr*' },
-    ])('When $row add renormalize names $args', ({ args, pattern }) => {
+      { args: ['nomatch*'], pattern: 'nomatch*' },
+      { args: ['a*', 'nomatch*'], pattern: 'nomatch*' },
+      { args: ['untr*'], pattern: 'untr*' },
+    ])('When add renormalize names $args', ({ args, pattern }) => {
       it('Then it refuses the glob, leaves the index and writes no blob', async () => {
         // Arrange
         const ctx = await seedFreshRepo({ 'a.txt': 'a\r\nb\r\n', 'untracked.txt': 'u' });
@@ -4352,7 +4352,7 @@ describe('add refuses an unmatched pathspec before any object write', () => {
       });
     });
 
-    describe('When RN4 add renormalize names a glob spelled as an untracked file on disk', () => {
+    describe('When add renormalize names a glob spelled as an untracked file on disk', () => {
       it('Then it accepts and changes nothing', async () => {
         // Arrange
         const ctx = await seedFreshRepo({ 'a.txt': 'a', 'nomatch*': 'n' });

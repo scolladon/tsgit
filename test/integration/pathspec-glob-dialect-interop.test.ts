@@ -431,16 +431,15 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     };
 
     describe.each([
-      { row: 'R1', names: ['tracked.txt'], args: ['nomatch*', 'tracked.txt'], kept: 'tracked.txt' },
+      { names: ['tracked.txt'], args: ['nomatch*', 'tracked.txt'], kept: 'tracked.txt' },
       {
-        row: 'R1b',
         names: ['tracked.txt'],
         args: ['tracked.txt', 'nomatch*'],
         kept: 'tracked.txt',
       },
-      { row: 'R7', names: ['x.txt'], args: ['untr*'], kept: 'x.txt' },
-      { row: 'R8', names: ['a.txt'], args: ['n1*', 'n2*'], kept: 'a.txt' },
-    ])('When $row git and tsgit rm the pathspecs $args', ({ names, args, kept }) => {
+      { names: ['x.txt'], args: ['untr*'], kept: 'x.txt' },
+      { names: ['a.txt'], args: ['n1*', 'n2*'], kept: 'a.txt' },
+    ])('When git and tsgit rm the pathspecs $args', ({ names, args, kept }) => {
       it('Then both refuse as unmatched, keep the index and keep the file', async () => {
         // Arrange
         const gitRepo = await tracked('git', names);
@@ -462,9 +461,9 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     });
 
     describe.each([
-      { row: 'R4b', args: ['a?'], flags: [] },
-      { row: 'R4c', args: ['a?/'], flags: ['--cached'] },
-    ])('When $row git and tsgit rm $flags $args beside a?/f and zz', ({ args, flags }) => {
+      { args: ['a?'], flags: [] },
+      { args: ['a?/'], flags: ['--cached'] },
+    ])('When git and tsgit rm $flags $args beside a?/f and zz', ({ args, flags }) => {
       it('Then both refuse recursively without -r and keep the index', async () => {
         // Arrange
         const gitRepo = await tracked('git', ['a?/f', 'zz']);
@@ -504,7 +503,6 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     });
 
     interface Row {
-      readonly row: string;
       readonly files: Files;
       readonly tracked?: boolean;
       readonly prepare?: (repo: string) => Promise<void>;
@@ -562,72 +560,62 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
     const rows: ReadonlyArray<Row> = [
       {
-        row: 'B1',
         files: { 'real.txt': 'r\n' },
         args: ['nomatch*', 'real.txt'],
         refused: 'nomatch*',
       },
-      { row: 'B2', files: { 'a.txt': 'a\n' }, args: ['a*', 'nomatch*'], refused: 'nomatch*' },
-      { row: 'B2b', files: { 'a.txt': 'a\n' }, args: ['nomatch*', 'a*'], refused: 'nomatch*' },
+      { files: { 'a.txt': 'a\n' }, args: ['a*', 'nomatch*'], refused: 'nomatch*' },
+      { files: { 'a.txt': 'a\n' }, args: ['nomatch*', 'a*'], refused: 'nomatch*' },
       {
-        row: 'B3',
         files: { 'x.log': 'x\n', ...ignoring('*.log\n') },
         args: ['*.log'],
         refused: '*.log',
       },
       {
-        row: 'B3x',
         files: { 'x.log': 'x\n', ...ignoring('*.log\n') },
         args: ['x*'],
         refused: 'x*',
       },
       {
-        row: 'B3d',
         files: { 'd/x.log': 'x\n', 'd/y.txt': 'y\n', ...ignoring('*.log\n') },
         args: ['d/*.log'],
         refused: 'd/*.log',
       },
       {
-        row: 'B4',
         files: { 'x.log': 'x\n', 'real.txt': 'r\n', ...ignoring('*.log\n') },
         args: ['*.log', 'real.txt'],
         refused: '*.log',
       },
       {
-        row: 'B4b',
         files: { 'x.log': 'x\n', 'real.txt': 'r\n', ...ignoring('*.log\n') },
         args: ['real.txt', '*.log', 'nomatch*'],
         refused: '*.log',
       },
       {
-        row: 'B4c',
         files: { 'd/x.log': 'x\n', 'real.txt': 'r\n', ...ignoring('d/\n') },
         args: ['*.log'],
         refused: '*.log',
       },
-      { row: 'B9', files: { a: 'a\n' }, args: ['n1*', 'n2*'], refused: 'n1*' },
-      { row: 'B10b', files: { a: 'a\n' }, args: ['n1*', 'missing'], refused: 'n1*' },
-      { row: 'B10', files: { a: 'a\n' }, args: ['missing', 'n1*'], refused: 'missing' },
-      { row: 'B12', files: { 'a.txt': 'a\n' }, args: ['.', 'nomatch*'], refused: 'nomatch*' },
-      { row: 'B12r', files: { 'a.txt': 'a\n' }, args: ['zz*', '.'], refused: 'zz*' },
-      { row: 'D7', files: { 'dir/f': 'f\n', 'd.txt': 'd\n' }, args: ['d*/'], refused: 'd*/' },
-      { row: 'D8c', files: { ab: 'ab\n' }, args: ['a[[:foo:]]'], refused: 'a[[:foo:]]' },
-      { row: 'D10', files: { 'dir/file': 'f\n' }, args: ['di?'], refused: 'di?' },
+      { files: { a: 'a\n' }, args: ['n1*', 'n2*'], refused: 'n1*' },
+      { files: { a: 'a\n' }, args: ['n1*', 'missing'], refused: 'n1*' },
+      { files: { a: 'a\n' }, args: ['missing', 'n1*'], refused: 'missing' },
+      { files: { 'a.txt': 'a\n' }, args: ['.', 'nomatch*'], refused: 'nomatch*' },
+      { files: { 'a.txt': 'a\n' }, args: ['zz*', '.'], refused: 'zz*' },
+      { files: { 'dir/f': 'f\n', 'd.txt': 'd\n' }, args: ['d*/'], refused: 'd*/' },
+      { files: { ab: 'ab\n' }, args: ['a[[:foo:]]'], refused: 'a[[:foo:]]' },
+      { files: { 'dir/file': 'f\n' }, args: ['di?'], refused: 'di?' },
       {
-        row: 'B11prime',
         files: { 'nomatch*': 'n\n', ...ignoring('nomatch?\n') },
         args: ['nomatch*'],
       },
-      { row: 'B6', files: { 't.txt': 't\n' }, tracked: true, args: ['t*'] },
+      { files: { 't.txt': 't\n' }, tracked: true, args: ['t*'] },
       {
-        row: 'B7',
         files: { 't.txt': 't\n', 'u.txt': 'u\n' },
         tracked: true,
         prepare: remove('t.txt'),
         args: ['t*'],
       },
       {
-        row: 'RN1',
         files: { 'a.txt': 'a\n' },
         tracked: true,
         renormalize: true,
@@ -635,16 +623,14 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         refused: 'nomatch*',
       },
       {
-        row: 'RN2',
         files: { 'a.txt': 'a\n' },
         tracked: true,
         renormalize: true,
         args: ['a*', 'nomatch*'],
         refused: 'nomatch*',
       },
-      { row: 'RN3', files: { 'a.txt': 'a\n' }, tracked: true, renormalize: true, args: ['a*'] },
+      { files: { 'a.txt': 'a\n' }, tracked: true, renormalize: true, args: ['a*'] },
       {
-        row: 'RN4',
         files: { 'a.txt': 'a\n' },
         tracked: true,
         prepare: overwrite('nomatch*', 'n\n'),
@@ -652,7 +638,6 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         args: ['nomatch*'],
       },
       {
-        row: 'RN5',
         files: { 'a.txt': 'a\n' },
         tracked: true,
         prepare: overwrite('untracked.txt', 'u\n'),
@@ -660,7 +645,6 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         args: ['untracked.txt'],
       },
       {
-        row: 'RN6',
         files: { 'a.txt': 'a\n' },
         tracked: true,
         prepare: overwrite('untracked.txt', 'u\n'),
@@ -670,7 +654,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       },
     ];
 
-    describe.each(rows)('When $row git and tsgit add $args', (spec) => {
+    describe.each(rows)('When git and tsgit add $args', (spec) => {
       it('Then both agree on the verdict, the index and the loose objects', async () => {
         // Arrange
         const gitRepo = await built('git', spec);
@@ -702,11 +686,10 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
-    describe('When K2 git and tsgit add nomatch* while index.lock exists', () => {
+    describe('When git and tsgit add nomatch* while index.lock exists', () => {
       it('Then both refuse on the lock, not on the pathspec', async () => {
         // Arrange
         const spec: Row = {
-          row: 'K2',
           files: { 'a.txt': 'a\n' },
           args: ['nomatch*'],
           prepare: overwrite(path.join('.git', 'index.lock'), ''),
@@ -797,38 +780,34 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     const plain: Setup = { files: { 'a.txt': 'a\n' } };
 
     describe.each([
-      { row: 'C1', setup: dirtyFile, args: ['nomatch*', 'dirty.txt'], unmatched: ['nomatch*'] },
-      { row: 'C1b', setup: dirtyFile, args: ['d*', 'nomatch*'], unmatched: ['nomatch*'] },
+      { setup: dirtyFile, args: ['nomatch*', 'dirty.txt'], unmatched: ['nomatch*'] },
+      { setup: dirtyFile, args: ['d*', 'nomatch*'], unmatched: ['nomatch*'] },
       {
-        row: 'C3',
         setup: dirtyFile,
         source: 'HEAD',
         args: ['nomatch*', 'dirty.txt'],
         unmatched: ['nomatch*'],
       },
-      { row: 'C4', setup: plain, args: ['n1*', 'n2*'], unmatched: ['n1*', 'n2*'] },
-      { row: 'C5', setup: plain, args: ['n1*', 'missing'], unmatched: ['n1*', 'missing'] },
+      { setup: plain, args: ['n1*', 'n2*'], unmatched: ['n1*', 'n2*'] },
+      { setup: plain, args: ['n1*', 'missing'], unmatched: ['n1*', 'missing'] },
       {
-        row: 'C7',
         setup: { files: { 'x.txt': 'x\n' }, untracked: ['untracked.txt'] },
         args: ['untr*'],
         unmatched: ['untr*'],
       },
       {
-        row: 'C8',
         setup: { files: { 'a.txt': 'a\n' }, staged: ['new.txt'] },
         source: 'HEAD',
         args: ['new*'],
         unmatched: ['new*'],
       },
       {
-        row: 'C9',
         setup: { files: { 'a.txt': 'a\n' }, staged: ['new.txt'] },
         source: 'HEAD',
         args: ['new.txt'],
         unmatched: ['new.txt'],
       },
-    ])('When $row git and tsgit checkout $args', ({ setup, source, args, unmatched }) => {
+    ])('When git and tsgit checkout $args', ({ setup, source, args, unmatched }) => {
       it('Then both refuse every unmatched pathspec and leave the index and the files', async () => {
         // Arrange
         const gitRepo = await built('git', setup);
@@ -864,7 +843,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
-    describe('When C2 git and tsgit checkout *.txt over a modified nested file', () => {
+    describe('When git and tsgit checkout *.txt over a modified nested file', () => {
       it('Then both restore it', async () => {
         // Arrange
         const setup: Setup = { files: { 'a/b/c.txt': 'c\n' }, dirty: ['a/b/c.txt'] };
@@ -882,62 +861,61 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
-    describe.each([
-      { row: 'K1', args: ['nomatch*'] },
-      { row: 'K1L', args: ['missing'] },
-      { row: 'K1L tracked', args: ['a.txt'] },
-    ])('When $row git and tsgit checkout $args while index.lock exists', ({ args }) => {
-      it('Then both refuse on the lock and keep its bytes', async () => {
-        // Arrange
-        const gitRepo = await built('git', plain);
-        const tsgitRepo = await built('tsgit', plain);
-        for (const repo of [gitRepo, tsgitRepo]) {
-          await writeFile(path.join(repo, '.git', 'index.lock'), 'held');
-        }
-        const sut = checkout;
+    describe.each([{ args: ['nomatch*'] }, { args: ['missing'] }, { args: ['a.txt'] }])(
+      'When git and tsgit checkout $args while index.lock exists',
+      ({ args }) => {
+        it('Then both refuse on the lock and keep its bytes', async () => {
+          // Arrange
+          const gitRepo = await built('git', plain);
+          const tsgitRepo = await built('tsgit', plain);
+          for (const repo of [gitRepo, tsgitRepo]) {
+            await writeFile(path.join(repo, '.git', 'index.lock'), 'held');
+          }
+          const sut = checkout;
 
-        // Act
-        const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', ...args]);
-        const refusal = await refusalOf(() =>
-          sut(createNodeContext({ workDir: tsgitRepo }), { paths: [...args] }),
-        );
+          // Act
+          const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', ...args]);
+          const refusal = await refusalOf(() =>
+            sut(createNodeContext({ workDir: tsgitRepo }), { paths: [...args] }),
+          );
 
-        // Assert
-        expect(git.exitCode).toBe(128);
-        expect(git.stderr).toContain('index.lock');
-        expect((refusal as { code: string }).code).toBe('RESOURCE_LOCKED');
-        expect(await readFile(path.join(tsgitRepo, '.git', 'index.lock'), 'utf8')).toBe('held');
-      });
-    });
+          // Assert
+          expect(git.exitCode).toBe(128);
+          expect(git.stderr).toContain('index.lock');
+          expect((refusal as { code: string }).code).toBe('RESOURCE_LOCKED');
+          expect(await readFile(path.join(tsgitRepo, '.git', 'index.lock'), 'utf8')).toBe('held');
+        });
+      },
+    );
 
-    describe.each([
-      { row: 'K4', source: 'HEAD' },
-      { row: 'K5', source: undefined },
-    ])('When $row git and tsgit checkout *.nomatch over a corrupt index', ({ source }) => {
-      it('Then both refuse on the index read before the pathspec', async () => {
-        // Arrange
-        const gitRepo = await built('git', plain);
-        const tsgitRepo = await built('tsgit', plain);
-        for (const repo of [gitRepo, tsgitRepo]) {
-          await writeFile(path.join(repo, '.git', 'index'), Uint8Array.of(0, 0, 0, 0));
-        }
-        const head = source === undefined ? [] : [source];
-        const sut = checkout;
+    describe.each([{ source: 'HEAD' }, { source: undefined }])(
+      'When git and tsgit checkout *.nomatch over a corrupt index',
+      ({ source }) => {
+        it('Then both refuse on the index read before the pathspec', async () => {
+          // Arrange
+          const gitRepo = await built('git', plain);
+          const tsgitRepo = await built('tsgit', plain);
+          for (const repo of [gitRepo, tsgitRepo]) {
+            await writeFile(path.join(repo, '.git', 'index'), Uint8Array.of(0, 0, 0, 0));
+          }
+          const head = source === undefined ? [] : [source];
+          const sut = checkout;
 
-        // Act
-        const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', ...head, '--', '*.nomatch']);
-        const refusal = await refusalOf(() =>
-          sut(createNodeContext({ workDir: tsgitRepo }), {
-            paths: ['*.nomatch'],
-            ...(source === undefined ? {} : { source }),
-          }),
-        );
+          // Act
+          const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', ...head, '--', '*.nomatch']);
+          const refusal = await refusalOf(() =>
+            sut(createNodeContext({ workDir: tsgitRepo }), {
+              paths: ['*.nomatch'],
+              ...(source === undefined ? {} : { source }),
+            }),
+          );
 
-        // Assert
-        expect(git.exitCode).toBe(128);
-        expect(git.stderr).toContain('index file smaller than expected');
-        expect((refusal as { code: string }).code).toBe('INVALID_INDEX_HEADER');
-      });
-    });
+          // Assert
+          expect(git.exitCode).toBe(128);
+          expect(git.stderr).toContain('index file smaller than expected');
+          expect((refusal as { code: string }).code).toBe('INVALID_INDEX_HEADER');
+        });
+      },
+    );
   },
 );
