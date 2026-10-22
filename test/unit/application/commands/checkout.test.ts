@@ -2379,3 +2379,35 @@ describe('checkout of a glob whose only match an exclusion removes', () => {
     });
   });
 });
+
+describe('checkout of a glob whose only match an exclusion removes, with a post-checkout hook', () => {
+  describe('Given only skip.ts tracked and modified', () => {
+    describe('When checkout names *.ts and excludes skip.ts', () => {
+      it('Then the result reports the unmoved HEAD and post-checkout fires with the file flag', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/skip.ts`, 'v1');
+        await add(ctx, ['skip.ts']);
+        const tip = await commit(ctx, { message: 'v1', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/skip.ts`, 'v2');
+        const before = runner.calls.length;
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { paths: ['*.ts', '!skip.ts'] });
+
+        // Assert
+        expect(result).toEqual({
+          branch: undefined,
+          id: tip.id,
+          detached: false,
+          changedPaths: 0,
+        });
+        const post = runner.calls.slice(before).filter((call) => call.name === 'post-checkout');
+        expect(post.map((call) => call.args)).toEqual([[tip.id, tip.id, '0']]);
+      });
+    });
+  });
+});

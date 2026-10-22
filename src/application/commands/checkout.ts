@@ -353,9 +353,6 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
 
   // HEAD unchanged. Resolve current HEAD for the result.
   const head = await resolveRef(ctx, 'HEAD' as RefName);
-  if (materializeResult === undefined) {
-    return { branch: undefined, id: head, detached: false, changedPaths: 0 };
-  }
   // post-checkout (informational) fires after a file checkout with prev == new
   // HEAD (the restore does not move HEAD) and the file flag.
   await runInformationalHook(ctx, 'post-checkout', { args: [head, head, FILE_FLAG] });
@@ -372,12 +369,11 @@ type MaterializeResult = Awaited<ReturnType<typeof materializeTree>>;
 
 // Takes the index lock and reads the index before the pathspec is judged, as
 // git's `checkout_paths` does: a held lock or a corrupt index refuses first.
-// `undefined` means nothing matched, so nothing was written.
 const restoreUnderIndexLock = async (
   ctx: Context,
   source: PathSource | undefined,
   pathspec: CommandPathspec,
-): Promise<MaterializeResult | undefined> => {
+): Promise<MaterializeResult> => {
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
@@ -385,7 +381,6 @@ const restoreUnderIndexLock = async (
     const { matched, unmatched } = selectFromUniverse(pathspec, universe);
     refuseUnmatched(unmatched);
     const pathSet = new Set<FilePath>(matched.map(escapedPathOf));
-    if (pathSet.size === 0) return undefined;
     return source === undefined
       ? await materializePathRestoreFromIndex(ctx, lock, currentIndex, pathSet)
       : await materializePathRestoreLocked(ctx, lock, currentIndex, source, pathSet);
