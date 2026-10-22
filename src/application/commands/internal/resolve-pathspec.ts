@@ -11,6 +11,7 @@ import {
   type Pathspec,
   type PathspecEntry,
 } from '../../../domain/pathspec/index.js';
+import { globSpecialIndex } from '../../../domain/pathspec/wildcard.js';
 import type { Context } from '../../../ports/context.js';
 import { createLeadingPathScanner } from '../../primitives/internal/symlinked-leading-path.js';
 import { validatePath } from './working-tree.js';
@@ -167,8 +168,6 @@ export const assertNoSymlinkedLeadingPath = async (
   }
 };
 
-const GLOB_SPECIAL = /[*?[\\]/;
-
 /**
  * What the leading-symlink scan walks for one entry. A body holding a
  * backslash is scanned by its no-wildcard prefix (the bytes before the first
@@ -178,7 +177,7 @@ const scanTargetsOf = (entry: PathspecEntry): ReadonlyArray<FilePath> => {
   const body = bodyOf(entry);
   if (body === WHOLE_TREE) return [];
   if (!body.includes(BACKSLASH)) return [body];
-  const prefix = body.slice(0, body.search(GLOB_SPECIAL));
+  const prefix = body.slice(0, globSpecialIndex(body));
   return prefix === '' ? [] : [prefix as FilePath];
 };
 

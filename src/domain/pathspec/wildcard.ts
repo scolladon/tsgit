@@ -9,6 +9,7 @@ import type { GlobMatcher } from './compile-glob.js';
 
 const SLASH = '/';
 const STAR = '*';
+const QUESTION = '?';
 const GLOB_SPECIAL = /[*?[\\]/;
 const GLOB_SPECIAL_GLOBAL = /[*?[\\]/g;
 
@@ -18,6 +19,9 @@ export type MatchLevel = (typeof MATCH_LEVEL)[keyof typeof MATCH_LEVEL];
 
 /** True when the body holds a character git treats as a wildcard: `*`, `?`, `[` or `\`. */
 export const hasGlobSpecial = (body: string): boolean => GLOB_SPECIAL.test(body);
+
+/** Index of the first wildcard character in `body`, or -1 — git's no-wildcard prefix length. */
+export const globSpecialIndex = (body: string): number => body.search(GLOB_SPECIAL);
 
 /** How `body` names `path` literally: the path itself, a directory above it, or neither. */
 export const verbatimLevel = (body: string, path: string): MatchLevel => {
@@ -30,16 +34,33 @@ export const verbatimLevel = (body: string, path: string): MatchLevel => {
 
 export type WildcardShape =
   | { readonly kind: 'one-star'; readonly prefix: string; readonly suffix: string }
-  | { readonly kind: 'general'; readonly literalPrefix: string };
+  | { readonly kind: 'general'; readonly literalPrefix: string; readonly literalSuffix: string };
 
-/** Splits a body into what string compares can decide (`prefix*suffix`) or its literal head. */
+const STAR_OR_QUESTION_LAST = /[*?][^*?]*$/;
+
+/**
+ * The literal tail a matching path must end with: everything after the last
+ * `*` or `?`, when no `[` or `\` can make that tail mean anything else. Empty
+ * when the tail is not known to be literal, which disables the check.
+ */
+const literalSuffixOf = (body: string, specials: ReadonlyArray<string>): string => {
+  if (specials.some((char) => char !== STAR && char !== QUESTION)) return '';
+  const tail = STAR_OR_QUESTION_LAST.exec(body);
+  return tail === null ? '' : tail[0].slice(1);
+};
+
+/** Splits a body into what string compares can decide (`prefix*suffix`) or its literal head and tail. */
 export const wildcardShape = (body: string): WildcardShape => {
   const specials = body.match(GLOB_SPECIAL_GLOBAL) ?? [];
-  const first = body.search(GLOB_SPECIAL);
+  const first = globSpecialIndex(body);
   if (specials.length === 1 && specials[0] === STAR) {
     return { kind: 'one-star', prefix: body.slice(0, first), suffix: body.slice(first + 1) };
   }
-  return { kind: 'general', literalPrefix: first < 0 ? body : body.slice(0, first) };
+  return {
+    kind: 'general',
+    literalPrefix: first < 0 ? body : body.slice(0, first),
+    literalSuffix: literalSuffixOf(body, specials),
+  };
 };
 
 /** `prefix*suffix` over strings: both ends must fit without overlapping, as the byte DP requires. */
@@ -53,6 +74,8 @@ export const compileWildcard = (body: string): GlobMatcher => {
   const wildmatch = (path: string): boolean =>
     shape.kind === 'one-star'
       ? oneStarMatches(shape.prefix, shape.suffix, path)
-      : path.startsWith(shape.literalPrefix) && wild(encodeEscaped(path));
+      : path.startsWith(shape.literalPrefix) &&
+        path.endsWith(shape.literalSuffix) &&
+        wild(encodeEscaped(path));
   return { test: (path) => verbatimLevel(body, path) !== MATCH_LEVEL.NONE || wildmatch(path) };
 };

@@ -129,11 +129,20 @@ describe('wildcardShape', () => {
     { body: '*.ts', expected: { kind: 'one-star', prefix: '', suffix: '.ts' } },
     { body: 'src/*.ts', expected: { kind: 'one-star', prefix: 'src/', suffix: '.ts' } },
     { body: 'foo*', expected: { kind: 'one-star', prefix: 'foo', suffix: '' } },
-    { body: 'a*b*', expected: { kind: 'general', literalPrefix: 'a' } },
-    { body: 'src/[ab]*', expected: { kind: 'general', literalPrefix: 'src/' } },
-    { body: 'a\\*', expected: { kind: 'general', literalPrefix: 'a' } },
-    { body: 'a?*', expected: { kind: 'general', literalPrefix: 'a' } },
-    { body: 'plain.ts', expected: { kind: 'general', literalPrefix: 'plain.ts' } },
+    { body: 'a*b*', expected: { kind: 'general', literalPrefix: 'a', literalSuffix: '' } },
+    { body: 'src/[ab]*', expected: { kind: 'general', literalPrefix: 'src/', literalSuffix: '' } },
+    { body: 'a\\*', expected: { kind: 'general', literalPrefix: 'a', literalSuffix: '' } },
+    { body: 'a?*', expected: { kind: 'general', literalPrefix: 'a', literalSuffix: '' } },
+    {
+      body: 'plain.ts',
+      expected: { kind: 'general', literalPrefix: 'plain.ts', literalSuffix: '' },
+    },
+    {
+      body: '?rc/d1/f?.ts',
+      expected: { kind: 'general', literalPrefix: '', literalSuffix: '.ts' },
+    },
+    { body: '*/dir/*.md', expected: { kind: 'general', literalPrefix: '', literalSuffix: '.md' } },
+    { body: 'a?b[c]d', expected: { kind: 'general', literalPrefix: 'a', literalSuffix: '' } },
   ])('Given the body "$body"', ({ body, expected }) => {
     describe('When classifying its shape', () => {
       it('Then it is the expected shape', () => {
