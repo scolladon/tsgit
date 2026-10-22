@@ -88,9 +88,9 @@ describe('compile-pathspec properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbBody().filter(notNegated), arbEscapedPath(), (body, path) => {
-            const sut = compilePathspec([body])[0]?.compiled;
+            const sut = compilePathspec;
             const expected = dialectOracle(body, path);
-            expect(sut?.test(path)).toBe(expected);
+            expect(sut([body])[0]?.compiled.test(path)).toBe(expected);
           }),
           { numRuns: 100 },
         );
@@ -107,9 +107,10 @@ describe('compile-pathspec properties', () => {
             arbGlobBody().filter((body) => notNegated(body) && body !== '' && !body.endsWith('/')),
             arbLiteralPattern(),
             (body, segment) => {
-              const sut = compilePathspec([body])[0]?.compiled;
-              expect(sut?.test(body)).toBe(true);
-              expect(sut?.test(`${body}/${segment}`)).toBe(true);
+              const sut = compilePathspec;
+              const compiled = sut([body])[0]?.compiled;
+              expect(compiled?.test(body)).toBe(true);
+              expect(compiled?.test(`${body}/${segment}`)).toBe(true);
             },
           ),
           { numRuns: 100 },
