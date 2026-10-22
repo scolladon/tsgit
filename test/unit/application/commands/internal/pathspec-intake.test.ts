@@ -297,6 +297,7 @@ describe('trackPositives', () => {
         expect(verdict.matched).toBe(false);
         expect(positives.map((positive) => positive.spelling)).toEqual(['*.ts', 'x.ts']);
         expect(sut.highest()).toEqual([MATCH_LEVEL.FNMATCH, MATCH_LEVEL.NONE]);
+        expect(positives.map((positive) => sut.seen(positive))).toEqual([true, false]);
       });
     });
 

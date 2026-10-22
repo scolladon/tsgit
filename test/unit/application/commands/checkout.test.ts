@@ -2353,3 +2353,29 @@ describe('checkout — staged changes on a branch switch', () => {
     });
   });
 });
+
+describe('checkout of a glob whose only match an exclusion removes', () => {
+  describe('Given only skip.ts tracked', () => {
+    describe('When checkout names *.ts and excludes skip.ts', () => {
+      it('Then the glob counts as matched and nothing is refused or restored', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/skip.ts`, 'v1');
+        await add(ctx, ['skip.ts']);
+        await commit(ctx, { message: 'v1', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/skip.ts`, 'v2');
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { paths: ['*.ts', '!skip.ts'] });
+
+        // Assert
+        expect(result.changedPaths).toBe(0);
+        expect(new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/skip.ts`))).toBe(
+          'v2',
+        );
+      });
+    });
+  });
+});
