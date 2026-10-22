@@ -4656,3 +4656,25 @@ describe('add against a held index.lock', () => {
     });
   });
 });
+
+describe('add of a literal beneath an ignored directory', () => {
+  describe('Given .gitignore hides build/ and an untracked build/x beside a modified tracked k', () => {
+    describe('When add names build/x and a glob reaching k', () => {
+      it('Then the literal is refused as unmatched and k stays unstaged', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ k: 'k' }, 'build/\n');
+        await writeWork(ctx, 'build/x', 'x');
+        await writeWork(ctx, 'k', 'kk');
+        const before = (await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['build/x', 'k*']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('build/x').data);
+        expect((await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`)).toEqual(before);
+      });
+    });
+  });
+});

@@ -581,6 +581,7 @@ const literalStats = async (
 };
 
 const NOT_A_DIRECTORY = 'NOT_A_DIRECTORY';
+const SEPARATOR = '/';
 
 /** A literal beneath a regular file is routed to the pathspec walk, which stages its removal. */
 const lstatOrBeneathFile = async (
@@ -923,7 +924,20 @@ const namesUnignoredDiskPath = async (
   if (stat === undefined || (directoryOnly && !stat.isDirectory)) return false;
   if (!entry.isLiteral) return true;
   const queried = (directoryOnly ? body.slice(0, -1) : body) as FilePath;
-  return !(await repoIgnore(queried, stat.isDirectory));
+  return !(await ignoredWithAncestors(repoIgnore, queried, stat.isDirectory));
+};
+
+/** git's `is_excluded`: a path is ignored when it or any directory above it is. */
+const ignoredWithAncestors = async (
+  repoIgnore: IgnorePredicate,
+  path: FilePath,
+  isDirectory: boolean,
+): Promise<boolean> => {
+  const segments = path.split(SEPARATOR);
+  for (let depth = 1; depth < segments.length; depth += 1) {
+    if (await repoIgnore(segments.slice(0, depth).join(SEPARATOR) as FilePath, true)) return true;
+  }
+  return repoIgnore(path, isDirectory);
 };
 
 /** Whether `add --renormalize` re-cleans this entry: a merged, checked-out file or symlink in the pathspec. */
