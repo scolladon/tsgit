@@ -7,7 +7,7 @@
 > tag name; (d) `name-rev --refs`/`--exclude` match every `/`-suffix of the refname and expose
 > git's abbreviation signal; (e) docs fold-in, carried by the plan. Magic pathspecs, `:(exclude)`,
 > the `!` alias and the ADR superseding 038 are 32.11b, out.
-> Status: draft → self-reviewed ×3 → accepted
+> Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22)
 
 ## Context
 
@@ -85,8 +85,10 @@ tsgit.
 - R4. `rm` without `recursive` refuses `RM_RECURSIVE_WITHOUT_R` for a pathspec whose best match
   level over the index is "recursive". This covers globs reaching a directory verbatim (R4b), and
   it does not fire when a wildcard match also exists (R4).
-- R5. An unmatched glob whose verbatim body exists on disk is not refused by `add` (B11:
-  git's `file_exists` escape; scope: candidate 4).
+- R5. An unmatched pathspec whose verbatim body exists on disk is not refused by `add` (B11/B11′:
+  git's `file_exists` escape). On the walk path the escape covers wildcard bodies only (candidate
+  4, ADR-1036). Under `add --renormalize` it covers literal and wildcard bodies (RN4, RN5). A body
+  holding `\` never takes either escape (R11).
 - R6. `grep` never refuses an unmatched pathspec (G1, G5).
 - R7. `describe` include/exclude = `wildmatch(pattern, shortTagName, 0)` (DS rows).
 - R8. `name-rev` include/exclude = git's `subpath_matches`: the full refname, then each suffix after
@@ -97,6 +99,11 @@ tsgit.
 - R10. Every matcher stays linear (ADR-077). The browser bundle stays under its cap or the cap
   change is a user decision (candidate 11). The `add` glob path regresses by no more than
   `bench:ab` noise on the add bench.
+- R11. When the context does not set `windowsPathSyntax`, `resolvePathspec` accepts a pathspec
+  body holding `\` (D6, D17, E2). The body is used for matching only: it is never `lstat`ed, never
+  the subject of an on-disk escape, and the symlink scan covers only its no-wildcard prefix. Under
+  Windows path syntax the body is refused `PATHSPEC_OUTSIDE_REPO`, as today. Every other
+  `validateWorkingTreePath` caller keeps refusing `\` (ADR-1044).
 
 ## Design
 
@@ -118,10 +125,10 @@ Notation: `ok` = tsgit today gives git's result; `✗` = it diverges (consequenc
 | D5c | same | `[^a].txt` | 0 · — · `1.txt b.txt d.txt` | ✗ nothing |
 | D5d | same | `[[:digit:]].txt` | 0 · — · `1.txt` | ✗ nothing |
 | D5e | `a/b x` | `[/a]*` | 0 · — · `a/b` | ✗ nothing |
-| D6 | `a*b aXb` | `a\*b` | 0 · — · `a*b` | ✗ nothing |
+| D6 | `a*b aXb` | `a\*b` | 0 · — · `a*b` (re-run 2026-10-22: same) | ✗ refuses `PATHSPEC_OUTSIDE_REPO` at intake (probed: `resolvePathspec`). ADR-1044 delivers it on POSIX |
 | D7 | `dir/f d.txt` | `d*/` | 128 · `fatal: pathspec 'd*/' did not match any files` · empty | ✗ no error |
 | D8a | `a[ ab` | `a[` | 0 · — · `a[` (verbatim; wildmatch aborts) | ok (literal) |
-| D8b | `a\ ab` | `a\` | 0 · — · `"a\\"` | ok (literal) |
+| D8b | `a\ ab` | `a\` | 0 · — · `"a\\"` (re-run 2026-10-22: same) | ✗ refuses `PATHSPEC_OUTSIDE_REPO` at intake (probed: `resolvePathspec`). Follow-up: needs a `\`-named file, which the walk refuses (Out of scope) |
 | D8c | `ab` | `a[[:foo:]]` | 128 · `fatal: pathspec 'a[[:foo:]]' did not match any files` · empty | ok (literal refusal) |
 | D9 | `a?/f ab` | `a?` | 0 · — · `a?/f ab` (verbatim-recursive + wildmatch) | ✗ `ab` only |
 | D10 | `dir/file` | `di?` | 128 · `fatal: pathspec 'di?' did not match any files` · empty | ✗ no error |
@@ -131,9 +138,9 @@ Notation: `ok` = tsgit today gives git's result; `✗` = it diverges (consequenc
 | D13 | `a/b/c a/d` | `a/**` | 0 · — · `a/b/c a/d` | ok |
 | D14 | `d/a.txt e.txt` | `d/*` | 0 · — · `d/a.txt` | ok |
 | D16 | `a ] b` | `[]a]` | 0 · — · `] a` | ✗ refuses (read as a literal) |
-| D17 | `a?b axb` | `a\?b` | 0 · — · `a?b` | ✗ nothing |
-| E1 | `a\b ab` | `a\b` | 0 · — · `"a\\b" ab` | ✗ `a\b` only |
-| E2 | `ab` | `a\b` | 0 · — · `ab` | ✗ refuses |
+| D17 | `a?b axb` | `a\?b` | 0 · — · `a?b` (re-run 2026-10-22: same) | ✗ refuses `PATHSPEC_OUTSIDE_REPO` at intake (probed: `resolvePathspec`). ADR-1044 delivers it on POSIX |
+| E1 | `a\b ab` | `a\b` | 0 · — · `"a\\b" ab` (re-run 2026-10-22: same) | ✗ refuses `PATHSPEC_OUTSIDE_REPO` at intake (probed: `resolvePathspec`). Follow-up: needs a `\`-named file, which the walk refuses (Out of scope) |
+| E2 | `ab` | `a\b` | 0 · — · `ab` (re-run 2026-10-22: same) | ✗ refuses `PATHSPEC_OUTSIDE_REPO` at intake (probed: `resolvePathspec`). ADR-1044 delivers it on POSIX |
 | E3 | `a[b ab` | `a[b` | 0 · — · `a[b` (abort; verbatim only) | ok |
 | E4 | tracked `a?/f ab` | `git grep -l . -- 'a?'` | 0 · out `a?/f`, `ab` | ✗ `ab` only |
 | E5 | tracked `a?/f`, dirty | `git checkout -- 'a?'` | 0 · — · `a?/f` restored | ✗ zero-match glob no-op, file stays dirty |
@@ -177,10 +184,15 @@ matcher itself.
 | B10 | `a` | `add missing 'n1*'` | 128 · `… 'missing' …` | ok (literal refusal) — but after the walk, see below |
 | B10b | `a` | `add 'n1*' missing` | 128 · `… 'n1*' …` | ✗ names `missing` |
 | B11 | file named `nomatch*`, `.gitignore: nomatch[*]` | `add 'nomatch*'` | 0 · — · empty | ok by accident (no error, nothing staged) |
+| B11′ | file named `nomatch*`, `.gitignore: nomatch?` | `add 'nomatch*'` | 0 · — · empty · 0 (re-run 2026-10-22: same) | ok by accident. Test fixture for B11: tsgit's gitignore dialect has no `[…]`, so B11 cannot be twinned |
 | B12 | `a.txt` | `add . 'nomatch*'` | 128 · `… 'nomatch*' …` · empty | ✗ stages `a.txt` |
+| B12r | `a.txt` | `add 'zz*' .` | 128 · `fatal: pathspec 'zz*' did not match any files` · empty · 0 (re-run 2026-10-22: same) | ✗ stages `a.txt` |
 | RN1 | tracked `a.txt` | `add --renormalize 'nomatch*'` | 128 · `… 'nomatch*' …` | ✗ no error |
 | RN2 | same | `add --renormalize 'a*' 'nomatch*'` | 128 · `… 'nomatch*' …` | ✗ |
 | RN3 | same | `add --renormalize 'a*'` | 0 | ok |
+| RN4 | tracked `a.txt`, untracked file named `nomatch*` | `add --renormalize 'nomatch*'` | 0 · — · `a.txt`, unchanged (re-run 2026-10-22: same) | ok (no error today) |
+| RN5 | tracked `a.txt`, untracked `untracked.txt` | `add --renormalize untracked.txt` | 0 · — · `a.txt`, unchanged (re-run 2026-10-22: same) | ok (`literalsOnDisk`) |
+| RN6 | same | `add --renormalize 'untr*'` | 128 · `fatal: pathspec 'untr*' did not match any files` · unchanged (re-run 2026-10-22: same) | ✗ no error |
 
 **Refuted brief hypothesis:** `git add '*.log'` where every match is ignored is the plain
 `did not match` refusal (exit 128, B3/B3x/B3d/B4c), **not** the "paths are ignored" advice. That
@@ -241,11 +253,14 @@ only after that (`add.ts:748`). A refusal on that path leaves loose blobs where 
 | K3 | `rm 'nomatch*'` | same lock refusal |
 | K4 | index replaced by 4 NUL bytes; `checkout HEAD -- '*.nomatch'` | 128 · `fatal: .git/index: index file smaller than expected` — the index is read before the pathspec check, even for a tree source |
 | K5 | same; `checkout -- '*.nomatch'` | 128 · same |
+| K1L | tracked `a.txt`; `checkout -- missing` (unmatched literal), then `checkout -- a.txt` (tracked literal) | 128 · the K1 lock refusal, both (re-run 2026-10-22: same) |
 
 tsgit today: `add` and `rm` lock first (ok). `checkout.pathRestore` checks the pathspec before
-`acquireIndexLock` (`checkout.ts:344-358`), so K1 diverges, for literals too. For a tree source it
-never reads the index on a zero-match glob, so K4 diverges (no-op success; the test at
-`checkout.test.ts:992` pins that divergence).
+`acquireIndexLock` (`checkout.ts:344-358`), so K1 diverges, for literals too: K1L's `missing`
+refuses `PATHSPEC_NO_MATCH` instead of the lock, while its tracked `a.txt` passes the check and
+reaches the lock (ok). For a tree source it never reads the index on a zero-match glob, so K4
+diverges (no-op success; the test at `checkout.test.ts:992` pins that divergence). K5 is ok today:
+the index source reads the index before its check and errors on the corrupt file.
 
 #### DS — `describe` (`--tags --abbrev=0`; `v1.0` annotated + `w2` light on c1, `v1/rc1` annotated on c2, HEAD c3)
 
@@ -303,8 +318,10 @@ N25 versus N27 shows the abbreviation is `refs_shorten_unambiguous_ref`, not a f
 That needs ref-existence lookups, so it is display work for the caller (ADR-249). tsgit already
 has the primitive: `src/application/commands/internal/shorten-ref.ts` `shortenUnambiguousRef`.
 
-**Row count** (D 23 + E 5 + L 6 + B 22 + R 11 + C 10 + G 5 + K 5 + DS 14 + N 28 = 129; B3l/B3m are
-pinned for the out-of-scope follow-up and counted).
+**Row count** (D 23 + E 5 + L 6 + B 27 + R 11 + C 10 + G 5 + K 6 + DS 14 + N 28 = 135; B3l/B3m are
+pinned for the out-of-scope follow-up and counted). B11′, B12r, RN4–RN6 and K1L were pinned by the
+planner and re-run once on 2026-10-22 with the procedure above, as were D6, D8b, D17, E1 and E2;
+every re-run gave the recorded output.
 
 ### Part a — the pathspec dialect
 
@@ -325,7 +342,8 @@ test(path) =
   pattern ends on a code-point boundary, and a complete UTF-8 sequence decodes the same whatever
   follows it.
 - `hasGlobSpecial(body)` is git's `is_glob_special` set `* ? [ \` (candidate 2). It replaces
-  `containsGlob` and sets `isLiteral = !hasGlobSpecial(body)`, so E1/E2 behave as git.
+  `containsGlob` and sets `isLiteral = !hasGlobSpecial(body)`, so E2 behaves as git once the
+  intake admits `\` (below). E1 also needs a `\`-named file: Out of scope.
 - `wildcard(path)` is the flags-0 wildmatch from `ref-glob.ts`, run over the **raw bytes**
   `encodeEscaped(path)` (`src/domain/objects/encoding.ts:205`). The view is the ADR-980 escape
   view, so the bytes are exactly git's, lossy entries included (L1–L6). `TextEncoder` would turn
@@ -359,6 +377,45 @@ true for the gitignore dialect; reword to say so).
 `looks_like_pathspec` for argument disambiguation) is a different git function and stays as is.
 `hasGlobSpecial` is git's `is_glob_special` used by `simple_length` and the no-wildcard prefix length. ADR-037's
 "`*`, `?`, or `[`" becomes "`*`, `?`, `[`, `\`".
+
+**Backslash intake (ADR-1044).** Today `collapsePattern` (`resolve-pathspec.ts:108-118`) runs
+`validatePath` (= `validateWorkingTreePath`) on every body at `:111` and `:115`, and
+`rejectInputShape` (`src/domain/working-tree-path.ts:71`) refuses any `\` with
+`PATHSPEC_OUTSIDE_REPO`. So D6, D17 and E2 never reach the matcher.
+
+- `working-tree-path.ts`: the `\` test moves out of `rejectInputShape` into `rejectBackslash`.
+  `validateWorkingTreePath` and `validateWalkedEntryPath` call both, so their verdicts do not
+  change. A new export `validatePathspecBody` runs every `validateWorkingTreePath` rule except
+  `rejectBackslash`: empty, absolute, NUL, control bytes, `.`/`..`/empty components, `.git`
+  aliases, leading `:`, length caps.
+- `resolve-pathspec.ts`: `resolvePathspec(patterns)` becomes
+  `resolvePathspec(patterns, host: Pick<Context, 'windowsPathSyntax'>)`. `collapsePattern` gets
+  the body validator from the host: `host.windowsPathSyntax === true ? validatePath :
+  validatePathspecBody`. The field is `Context.windowsPathSyntax` (`src/ports/context.ts:358`),
+  the same one `gitPathSyntaxOf(ctx)` reads. ADR-1044's "`PathPolicy.windowsPathSyntax`" is this
+  field: the node adapter fills it from `PathPolicy.windowsSyntax`
+  (`src/adapters/node/path-policy.ts:72`, true only on `win32`). Callers pass `ctx`: `add.ts:223`, `add.ts:784`, `rm.ts:80`, `checkout.ts:344`,
+  `grep.ts:198`. The module-level `WHOLE_TREE_MATCHER` (`add.ts:186`) compiles `.`, which holds
+  no `\`, and passes an empty host. `windowsIndexPaths` alone does not gate. A Windows host on a
+  non-native filesystem (`windowsIndexPaths` set, `windowsPathSyntax` absent) therefore accepts
+  the body as POSIX does, as ADR-1044 words it.
+- The body is never a filesystem path. `\` is glob-special (ADR-1034), so the entry has
+  `isLiteral: false`. It never enters `literalMustMatch`, `literalSpellings` or the literal
+  `lstat` in `add` (`add.ts:552`). Both on-disk escapes (the walk's R5 escape and the
+  `--renormalize` escape) skip a body holding `\`. On POSIX a component such as `..\x` passes,
+  because it is not `..`. It is harmless because nothing resolves it on disk.
+- `symlinkScanTargets` (`resolve-pathspec.ts:65`) passes whole bodies today. For a body holding
+  `\` it passes the no-wildcard prefix instead: the bytes before the first `* ? [ \` (git's no-wildcard
+  prefix length), through the same helper as the literal-prefix prefilter. An empty prefix is
+  dropped, as `WHOLE_TREE` is. Every other body is passed whole, as today. The scanner `lstat`s
+  only the leading segments of what it receives (`symlinked-leading-path.ts:126-131`), so
+  `a\*b` scans nothing and `d/a\*b` scans `d`.
+- Windows: a unit row in `resolve-pathspec.test.ts` with `{ windowsPathSyntax: true }` pins the
+  `PATHSPEC_OUTSIDE_REPO { path }` refusal on every OS. An integration row on the existing
+  `windows-latest` CI leg (`.github/workflows/ci.yml:257`) runs tsgit through the node adapter,
+  which sets `windowsPathSyntax` (`node-adapter.ts:155`). It pins the same refusal for
+  `add(['a\\*b'])`. That row has no git twin: git for Windows reads `\` as a separator
+  (ADR-1044 option 3, out of scope).
 
 **Stale text to fix in passing** (touched files only): `resolve-pathspec.ts:17-23,54-56` ("compiled
 to RegExp"); `compile-pathspec.ts:28-36` (anchoring comment); `describe/match.ts:1-6`;
@@ -466,6 +523,8 @@ leaves 32.11b open.
 | 10 | `rm -r` rule for pathspecs that are not literals | **A** per-entry max match level over the index, checked in argument order with the no-match check · **B** keep the `-r` check for literals only | A | R4b refuses in git; under B, verbatim-first would silently remove `a?/f` without `-r` (data loss). R4/R6 show `FNMATCH` never needs `-r`. |
 | 11 | Browser-bundle cap (342.1 kB, ~0.1 kB headroom) | **A** offset first (candidate 9 removals); if still over, raise the cap by the measured delta in this PR · **B** also drop `MAX_DOUBLE_STAR_PER_PATTERN` / `countDoubleStars` from `resolve-pathspec.ts`: its stated reason (RegExp blow-up) is gone under ADR-077, and git has no such cap · **C** hold the PR until another change frees bytes | A, with B as a separate user call | A is the measured route. B is also a behaviour change, since git accepts patterns tsgit refuses with `INVALID_OPTION`; it is faithful but out of the brief's literal scope, so it needs a yes. |
 
+| 12 | Backslash in a pathspec body (`resolvePathspec` refuses it today; the design missed it, the planner found it) | **A** keep the refusal: D6/D8b/D17/E1/E2 stay command-level follow-ups, and the matcher keeps `\` glob-special · **B** accept `\` on hosts without Windows path syntax, for matching only · **C** accept `\` everywhere | planner: A | **Decided: ADR-1044, B** (user-ratified). D6, D17 and E2 match git on POSIX. The security dimension reviews the relaxed intake. D8b and E1 stay follow-ups under the walk validator. |
+
 **Blockers:** none. None of the four IN parts needs magic pathspecs, `:(exclude)` or a change to
 the `!` alias to match the pinned rows.
 
@@ -504,26 +563,42 @@ the `!` alias to match the pinned rows.
 **Unit — application:**
 
 - `test/unit/application/commands/internal/resolve-pathspec.test.ts`: `positives` order and
-  spellings; the `hasGlob` relaxation tests are re-pinned (B rows).
+  spellings; the `hasGlob` relaxation tests are re-pinned (B rows). Backslash intake (R11): with
+  a POSIX host, `a\*b`, `a\?b`, `a\b` are accepted as non-literal entries and their
+  `symlinkScanTargets` are the no-wildcard prefixes; with `{ windowsPathSyntax: true }` each
+  refuses `PATHSPEC_OUTSIDE_REPO { path }`.
+- `test/unit/domain/working-tree-path.test.ts`:
+  `validatePathspecBody` accepts `\` and keeps every other refusal; `validateWorkingTreePath` and
+  `validateWalkedEntryPath` still refuse `\`.
 - `add.test.ts`: re-pin "Given a glob with no match" (`:1652`) → B9 refusal. Add B1/B2 with an
-  object-store spy asserting no `writeObject` before the throw. Add B11 and RN1/RN2.
+  object-store spy asserting no `writeObject` before the throw. Add B11 with the B11′ fixture
+  (`.gitignore: nomatch?`; tsgit's gitignore dialect has no `[…]`), B12r, and RN1/RN2/RN4–RN6.
 - `rm.test.ts`: re-pin "Given a glob \"*.nope\" with no matches" (`:405`). Add R1, R2, R4, R4b, R6.
 - `checkout.test.ts`: re-pin `:967`, `:992` (becomes K4: the corrupt index refuses on the read),
-  `:1380`, `:1557`. Add C1b, C4/C5 `patterns`, C8, K1.
+  `:1380`, `:1557`. Add C1b, C4/C5 `patterns`, C8, K1, K1L. K5 is a guard (it passes today).
 - `name-rev*.test.ts`: `abbreviated` on N2/N5; `test/unit/application/commands/name-rev-tip-table.test.ts`
   keeps its name forms (the ref chosen does not change).
 
 **Integration — interop** (`test/integration/interop-helpers.js` `GIT_AVAILABLE`, `git`,
 `runGit`, `tryRunGitWithExit`; scrubbed env, pinned dates for commits):
 
-- New `test/integration/pathspec-glob-dialect-interop.test.ts`: the D/E/B/R/C/G/K rows. Each runs
-  real git and tsgit on twin repos and compares `ls-files -s` / file bytes / loose-object count /
-  error code + pattern(s). Wording is reconstructed per command from the code.
+- New `test/integration/pathspec-glob-dialect-interop.test.ts`: the D/E/B/R/C/G/K rows, with
+  B11′, B12r, RN4–RN6 and K1L. Each runs real git and tsgit on twin repos and compares
+  `ls-files -s` / file bytes / loose-object count / error code + pattern(s). Wording is
+  reconstructed per command from the code.
+- D6, D17 and E2 run at command level under
+  `describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')`, the repo's convention (for
+  example `gitmodules-symlink-alias-interop.test.ts:239`). Windows cannot hold the `a*b`/`a?b`
+  fixtures, and its `\` refusal is the tsgit-only Windows row in Part a. The same gate covers
+  every row whose fixture name holds `*`, `?` or `\` (RN4, B11′). D8b and E1 are not
+  interop rows: they need a `\`-named file (Out of scope).
 - L rows: build the lossy index with `git update-index --cacheinfo` (works on APFS). The
   worktree-side lossy `add` row is gated to Linux (`process.platform === 'linux'`).
 - Extend `test/integration/describe-interop.test.ts` (DS rows) and
   `test/integration/name-rev-interop.test.ts` (N rows: `renderNameRev` gains the `abbreviated`
-  branch using `git rev-parse --abbrev-ref <ref>` as the shortening oracle).
+  branch using `git rev-parse --abbrev-ref=loose <ref>` as the shortening oracle. Plain
+  `--abbrev-ref` is strict: with a tag and a branch both named `x`, it prints `tags/x` where git's
+  `name-rev` prints `x` (N28). `=loose` prints `x` and `heads/x` (N25), re-run 2026-10-22).
 - `test/integration/glob-double-star-interop.test.ts` must stay green unchanged (R9).
 
 **Perf / size:**
@@ -551,3 +626,7 @@ the `!` alias to match the pinned rows.
 - The gitignore/gitattributes dialect's own `[…]`/`\` support: R9 keeps it unchanged. Unproven
   hunch; to prove it, pin `printf '[ab].log\n' > .gitignore` against `git check-ignore`.
 - The `MAX_PATHSPEC_PATTERN_BYTES` / `**`-count budget: kept unless candidate 11 B is chosen.
+- A `\`-named working-tree entry (D8b, E1). `validateWalkedEntryPath`
+  (`src/domain/working-tree-path.ts:52`, called at `walk-working-tree.ts:102`) refuses it on every
+  host. Reading the code, the walk throws `PATHSPEC_OUTSIDE_REPO` on it. Proof recipe: on POSIX,
+  `printf a > 'a\b'`, then twin `git add .` (stages `"a\\b"`) against tsgit `add(['.'])`.
