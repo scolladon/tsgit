@@ -22,6 +22,7 @@ import { checkout } from '../../src/application/commands/checkout.js';
 import { grep } from '../../src/application/commands/grep.js';
 import { rm } from '../../src/application/commands/rm.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
+import { TsgitError } from '../../src/domain/error.js';
 import { encode } from '../../src/domain/objects/encoding.js';
 import { compilePathspec } from '../../src/domain/pathspec/compile-pathspec.js';
 import { matchesIndexPath } from '../../src/domain/pathspec/matching-path.js';
@@ -379,6 +380,101 @@ describe.skipIf(!GIT_AVAILABLE || process.platform !== 'linux')(
         // Assert
         expect(lsFilesPathHex(gitRepo)).toEqual(['6162', '61ff']);
         expect(lsFilesPathHex(tsgitRepo)).toEqual(lsFilesPathHex(gitRepo));
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'Given rm pathspecs that match nothing or only a directory',
+  () => {
+    let root = '';
+    let counter = 0;
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-glob-rm-')));
+    });
+
+    afterAll(async () => {
+      await removeTree(root, { recursive: true, force: true });
+    });
+
+    const tracked = async (side: string, names: ReadonlyArray<string>): Promise<string> => {
+      counter += 1;
+      const repo = path.join(root, `${side}-${counter}`);
+      runGit(['init', '-q', '-b', 'main', repo]);
+      for (const name of names) {
+        await mkdir(path.dirname(path.join(repo, name)), { recursive: true });
+        await writeFile(path.join(repo, name), `${name}\n`);
+      }
+      runGit(['-C', repo, 'add', '-A']);
+      return repo;
+    };
+
+    const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run();
+      } catch (err) {
+        if (err instanceof TsgitError) return err.data;
+        throw err;
+      }
+      return undefined;
+    };
+
+    describe.each([
+      { row: 'R1', names: ['tracked.txt'], args: ['nomatch*', 'tracked.txt'], kept: 'tracked.txt' },
+      {
+        row: 'R1b',
+        names: ['tracked.txt'],
+        args: ['tracked.txt', 'nomatch*'],
+        kept: 'tracked.txt',
+      },
+      { row: 'R7', names: ['x.txt'], args: ['untr*'], kept: 'x.txt' },
+      { row: 'R8', names: ['a.txt'], args: ['n1*', 'n2*'], kept: 'a.txt' },
+    ])('When $row git and tsgit rm the pathspecs $args', ({ names, args, kept }) => {
+      it('Then both refuse as unmatched, keep the index and keep the file', async () => {
+        // Arrange
+        const gitRepo = await tracked('git', names);
+        const tsgitRepo = await tracked('tsgit', names);
+        const sut = rm;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitRepo, 'rm', '-q', '--', ...args]);
+        const refusal = await refusalOf(() => sut(createNodeContext({ workDir: tsgitRepo }), args));
+
+        // Assert
+        const pattern = args.find((arg) => arg.includes('*')) as string;
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toContain(`pathspec '${pattern}' did not match any files`);
+        expect(refusal).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern });
+        expect(namesOf(tsgitRepo)).toEqual(namesOf(gitRepo));
+        expect(await readFile(path.join(tsgitRepo, kept), 'utf8')).toBe(`${kept}\n`);
+      });
+    });
+
+    describe.each([
+      { row: 'R4b', args: ['a?'], flags: [] },
+      { row: 'R4c', args: ['a?/'], flags: ['--cached'] },
+    ])('When $row git and tsgit rm $flags $args beside a?/f and zz', ({ args, flags }) => {
+      it('Then both refuse recursively without -r and keep the index', async () => {
+        // Arrange
+        const gitRepo = await tracked('git', ['a?/f', 'zz']);
+        const tsgitRepo = await tracked('tsgit', ['a?/f', 'zz']);
+        const sut = rm;
+        const cached = flags.length > 0;
+        const pattern = args[0] as string;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitRepo, 'rm', '-q', ...flags, '--', ...args]);
+        const refusal = await refusalOf(() =>
+          sut(createNodeContext({ workDir: tsgitRepo }), [pattern], { cached }),
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toContain(`not removing '${pattern}' recursively without -r`);
+        expect(refusal).toEqual({ code: 'RM_RECURSIVE_WITHOUT_R', pattern });
+        expect(namesOf(tsgitRepo)).toEqual(namesOf(gitRepo));
       });
     });
   },

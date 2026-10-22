@@ -13,6 +13,7 @@
  *   format:  git-index-tree-state
  */
 import {
+  pathspecNoMatch,
   rmLocalModifications,
   rmRecursiveWithoutR,
   rmStagedAndLocalChanges,
@@ -29,7 +30,9 @@ import {
 } from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import { pathspecMatchLevel } from '../../domain/pathspec/match-pathspec.js';
 import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
+import { MATCH_LEVEL, type MatchLevel } from '../../domain/pathspec/wildcard.js';
 import type { Context } from '../../ports/context.js';
 import {
   compareWorkingTreeEntry,
@@ -43,8 +46,8 @@ import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitat
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { type PositivePathspec, resolveCommandPathspec } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
-import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { removeFile } from './internal/working-tree.js';
 
 // A predicate (not a static Set) so Stryker attributes per-test coverage to
@@ -77,7 +80,7 @@ export const rm = async (
   await assertOperationalRepository(ctx);
   const workDir = requireWorkTree(ctx, 'rm');
   if (paths.length === 0) throw emptyPathspec();
-  const { matcher, literalSpellings } = resolvePathspec(paths);
+  const { matcher, positives } = resolveCommandPathspec(ctx, paths);
   const lock = await acquireIndexLock(ctx);
   try {
     const index = await readIndex(ctx).catch((err: unknown) => {
@@ -101,11 +104,7 @@ export const rm = async (
         removedGroups.push(stages);
       }
     }
-    enforceLiteralMatches(
-      literalSpellings,
-      removed,
-      opts.recursive === true ? 'recursive' : 'paths-only',
-    );
+    enforcePositiveLevels(positives, byPath, opts.recursive === true);
     if (opts.force !== true) {
       await enforceSafetyValve(
         ctx,
@@ -164,23 +163,32 @@ const resolvedRecordsOf = (
 ): ReadonlyArray<ResolveUndoRecord> =>
   removedGroups.filter((stages) => !stages.every(isStageZero)).map(resolveUndoRecordOf);
 
-/** Whether a pathspec may remove the paths beneath a directory (`-r`) or only paths it names. */
-type RemovalReach = 'recursive' | 'paths-only';
+const highestLevel = (
+  positive: PositivePathspec,
+  byPath: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+): MatchLevel => {
+  let highest: MatchLevel = MATCH_LEVEL.NONE;
+  for (const [first] of byPath.values()) {
+    const level = pathspecMatchLevel(positive.entry, escapedPathOf(first as IndexEntry));
+    if (level > highest) highest = level;
+  }
+  return highest;
+};
 
 /**
- * git rm's per-pathspec check, in pathspec order: a literal must match, and
- * under `paths-only`, it must name a tracked path itself — one that only reached
- * paths beneath it is a directory removal git refuses without `-r`.
+ * git rm's per-pathspec check, in argument order: each positive must match a
+ * tracked path, and one that only reaches paths beneath a directory is a
+ * directory removal git refuses without `-r`.
  */
-const enforceLiteralMatches = (
-  spellings: ReadonlyMap<FilePath, string>,
-  removed: ReadonlyArray<FilePath>,
-  reach: RemovalReach,
+const enforcePositiveLevels = (
+  positives: ReadonlyArray<PositivePathspec>,
+  byPath: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  recursive: boolean,
 ): void => {
-  const exact = new Set<string>(removed);
-  for (const [literal, spelled] of spellings) {
-    enforceLiteralMustMatch([literal], removed, spellings);
-    if (reach === 'paths-only' && !exact.has(literal)) throw rmRecursiveWithoutR(spelled);
+  for (const positive of positives) {
+    const level = highestLevel(positive, byPath);
+    if (level === MATCH_LEVEL.NONE) throw pathspecNoMatch(positive.spelling);
+    if (level === MATCH_LEVEL.RECURSIVE && !recursive) throw rmRecursiveWithoutR(positive.spelling);
   }
 };
 

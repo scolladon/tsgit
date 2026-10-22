@@ -4,8 +4,10 @@ import { compilePathspec } from '../../../../src/domain/pathspec/compile-pathspe
 import {
   matchesPathspec,
   matchesUnmergedPath,
+  pathspecMatchLevel,
   withoutExactly,
 } from '../../../../src/domain/pathspec/match-pathspec.js';
+import { MATCH_LEVEL } from '../../../../src/domain/pathspec/wildcard.js';
 
 const path = (s: string): FilePath => s as FilePath;
 
@@ -182,6 +184,32 @@ describe('withoutExactly', () => {
 
         // Assert
         expect(result.map((entry) => entry.pattern)).toEqual(['', '!f*']);
+      });
+    });
+  });
+});
+
+describe('pathspecMatchLevel', () => {
+  describe.each([
+    ['src', 'src', MATCH_LEVEL.EXACT],
+    ['src', 'src/a', MATCH_LEVEL.RECURSIVE],
+    ['a?', 'a?/f', MATCH_LEVEL.RECURSIVE],
+    ['a?', 'ab', MATCH_LEVEL.FNMATCH],
+    ['a?', 'zz', MATCH_LEVEL.NONE],
+    ['d*', 'dir/f', MATCH_LEVEL.FNMATCH],
+    ['', 'x', MATCH_LEVEL.RECURSIVE],
+    ['!src', 'src', MATCH_LEVEL.EXACT],
+  ])('Given the pattern %j', (pattern, candidate, expected) => {
+    describe(`When measured against ${candidate}`, () => {
+      it(`Then the level is ${expected}`, () => {
+        // Arrange
+        const [entry] = compilePathspec([pattern]);
+
+        // Act
+        const result = pathspecMatchLevel(entry as NonNullable<typeof entry>, path(candidate));
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
