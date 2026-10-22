@@ -5,7 +5,13 @@ subjects:
 <!-- cspell:ignore FFFD multibyte -->
 # 980 — Pathspecs match lossy entries through a surrogate-escape view
 
-- **Status:** accepted
+
+> **Superseded by [ADR-1033](1033-pathspecs-match-with-gits-default-wildmatch-over-the-escape-views-bytes.md)**
+> for the wildcard width: `?` and `[…]` now match one byte of the escape view, as git's do, instead
+> of one code unit. The surrogate-escape matching view itself, the internal-only rule and the
+> public U+FFFD `path` are carried forward.
+
+- **Status:** superseded by ADR-1033
 - **Date:** 2026-10-15
 - **Design:** docs/design/index-entry-path-bytes.md · **Supersedes/Refines:** refines ADR-972
 

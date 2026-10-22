@@ -1,8 +1,16 @@
 # ADR-040: `compileGlob` extracted from `parseGitignore` into shared domain module
 
+
+> **Superseded by [ADR-1033](1033-pathspecs-match-with-gits-default-wildmatch-over-the-escape-views-bytes.md)**
+> for the pathspec engine: a pathspec glob now compiles to git's flags-0 `wildmatch` over the
+> escape view's bytes, shared from `ref-glob.ts`, and `compileGlob` keeps the gitignore dialect only
+> ([ADR-1041](1041-compile-glob-keeps-only-the-gitignore-dialect.md)). The shared compiler for
+> gitignore, gitattributes and sparse rules is carried forward.
+
 ## Status
 
-Accepted (at `49a147e`)
+- **Status:** superseded by ADR-1033
+- Accepted at `49a147e`.
 
 ## Context
 
