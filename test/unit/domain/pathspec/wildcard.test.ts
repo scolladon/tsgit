@@ -3,7 +3,9 @@ import {
   compileWildcard,
   hasGlobSpecial,
   MATCH_LEVEL,
+  oneStarMatches,
   verbatimLevel,
+  wildcardShape,
 } from '../../../../src/domain/pathspec/wildcard.js';
 
 describe('verbatimLevel', () => {
@@ -117,6 +119,51 @@ describe('compileWildcard', () => {
         const result = paths.map((path) => matcher.test(path));
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('wildcardShape', () => {
+  describe.each([
+    { body: '*.ts', expected: { kind: 'one-star', prefix: '', suffix: '.ts' } },
+    { body: 'src/*.ts', expected: { kind: 'one-star', prefix: 'src/', suffix: '.ts' } },
+    { body: 'foo*', expected: { kind: 'one-star', prefix: 'foo', suffix: '' } },
+    { body: 'a*b*', expected: { kind: 'general', literalPrefix: 'a' } },
+    { body: 'src/[ab]*', expected: { kind: 'general', literalPrefix: 'src/' } },
+    { body: 'a\\*', expected: { kind: 'general', literalPrefix: 'a' } },
+    { body: 'a?*', expected: { kind: 'general', literalPrefix: 'a' } },
+  ])('Given the body "$body"', ({ body, expected }) => {
+    describe('When classifying its shape', () => {
+      it('Then it is the expected shape', () => {
+        // Arrange
+        const sut = wildcardShape;
+        // Act
+        const result = sut(body);
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('oneStarMatches', () => {
+  describe.each([
+    { prefix: '', suffix: '.ts', path: '.ts', expected: true },
+    { prefix: 'a', suffix: 'a', path: 'a', expected: false },
+    { prefix: 'src/', suffix: '.ts', path: 'src/a/b.ts', expected: true },
+    { prefix: 'src/', suffix: '.ts', path: 'lib/x.ts', expected: false },
+    { prefix: 'a', suffix: '', path: 'a\udcff', expected: true },
+    { prefix: 'a', suffix: 'b', path: 'ac', expected: false },
+  ])('Given prefix "$prefix", suffix "$suffix" and the path "$path"', (row) => {
+    describe('When matching', () => {
+      it('Then the verdict is the expected one', () => {
+        // Arrange
+        const sut = oneStarMatches;
+        // Act
+        const result = sut(row.prefix, row.suffix, row.path);
+        // Assert
+        expect(result).toBe(row.expected);
       });
     });
   });

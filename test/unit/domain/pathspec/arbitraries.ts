@@ -31,3 +31,23 @@ export const arbCandidatePath = (): fc.Arbitrary<FilePath> =>
   fc
     .array(arbSegment(), { minLength: 1, maxLength: 4 })
     .map((segments) => FilePath.from(segments.join('/')));
+
+const GLOB_BODY_CHARS = ['a', 'b', '/', 'é', '*', '?', '[', ']', '\\', '!', '^', '-', ':'];
+const PATH_CHARS = ['a', 'b', '/', 'é', '\uDC80', '\uDCFF'];
+const PLAIN_BODY_CHARS = ['a', 'b', '/', 'é', ']', '!', '^', '-', ':'];
+
+const arbChars = (chars: ReadonlyArray<string>, maxLength: number): fc.Arbitrary<string> =>
+  fc.array(fc.constantFrom(...chars), { maxLength }).map((picked) => picked.join(''));
+
+// Bodies over every character the glob grammar treats specially, so brackets,
+// escapes and stars appear in arbitrary combinations (valid and malformed).
+export const arbGlobBody = (): fc.Arbitrary<string> => arbChars(GLOB_BODY_CHARS, 8);
+
+// Exactly one `*` and none of `? [ \`, which is the shape the string fast path decides.
+export const arbOneStarBody = (): fc.Arbitrary<string> =>
+  fc
+    .tuple(arbChars(PLAIN_BODY_CHARS, 4), arbChars(PLAIN_BODY_CHARS, 4))
+    .map(([prefix, suffix]) => `${prefix}*${suffix}`);
+
+// A path in the escape view: valid text plus lone low surrogates standing for raw bytes.
+export const arbEscapedPath = (): fc.Arbitrary<string> => arbChars(PATH_CHARS, 8);

@@ -51,29 +51,29 @@ describe('compilePathspec', () => {
 
   describe('Given a glob "*.ts"', () => {
     describe('When compiled', () => {
-      it('Then yields a non-literal non-anchored entry', () => {
+      it('Then yields a non-literal entry', () => {
         // Arrange
         const result = compilePathspec(['*.ts']);
 
         // Assert
         expect(result[0]?.isLiteral).toBe(false);
         expect(result[0]?.negated).toBe(false);
-        // Non-anchored — matches at any depth.
+        // `*` crosses `/`, so the suffix matches at any depth.
         expect(result[0]?.compiled.test('foo.ts')).toBe(true);
         expect(result[0]?.compiled.test('src/foo.ts')).toBe(true);
       });
     });
   });
 
-  describe('Given an anchored glob "src/**"', () => {
+  describe('Given a glob "src/**"', () => {
     describe('When compiled', () => {
-      it('Then yields an anchored entry', () => {
+      it('Then yields a non-literal entry', () => {
         // Arrange
         const result = compilePathspec(['src/**']);
 
         // Assert
         expect(result[0]?.isLiteral).toBe(false);
-        // Anchored — only matches paths starting at the repo root.
+        // The prefix is rooted: a nested `src` does not match.
         expect(result[0]?.compiled.test('src/foo')).toBe(true);
         expect(result[0]?.compiled.test('src/a/b/c')).toBe(true);
         expect(result[0]?.compiled.test('other/src/x')).toBe(false);
@@ -164,6 +164,41 @@ describe('compilePathspec', () => {
 
         // Assert
         expect(result.map((e) => e.pattern)).toEqual(['*.ts', '!*.test.ts', 'src/foo']);
+      });
+    });
+  });
+
+  describe.each([
+    { body: 'a[', expected: false },
+    { body: 'a\\', expected: false },
+    { body: '[]a]', expected: false },
+    { body: 'a\\b', expected: false },
+    { body: 'src/foo.ts', expected: true },
+  ])('Given the body "$body"', ({ body, expected }) => {
+    describe('When compiled', () => {
+      it('Then isLiteral is the expected flag', () => {
+        // Arrange
+        const sut = compilePathspec;
+        // Act
+        const result = sut([body]);
+        // Assert
+        expect(result[0]?.isLiteral).toBe(expected);
+      });
+    });
+  });
+
+  describe.each([
+    { body: 'foo*', path: 'dir/foobar', expected: false },
+    { body: 'src/*.ts', path: 'src/a/b.ts', expected: true },
+  ])('Given the glob "$body"', ({ body, path, expected }) => {
+    describe('When testing "$path"', () => {
+      it('Then the verdict follows the wildmatch dialect', () => {
+        // Arrange
+        const sut = compilePathspec;
+        // Act
+        const result = sut([body])[0]?.compiled.test(path);
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
