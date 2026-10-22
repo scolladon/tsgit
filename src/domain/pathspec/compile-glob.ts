@@ -128,16 +128,11 @@ const stepStar = (path: string, next: Uint8Array): Uint8Array => {
   return cur;
 };
 
-// `**` — match zero or more of ANY char (slashes included).
-const stepStarStar = (path: string, next: Uint8Array): Uint8Array => {
-  const cur = new Uint8Array(path.length + 1);
-  cur[path.length] = next[path.length] === 1 ? 1 : 0;
-  // Stryker disable next-line ArithmeticOperator: equivalent — starting at `path.length + 1` adds two no-op iterations: the out-of-bounds write is dropped by the typed array, and `j = path.length` recomputes `cur[path.length]` to the value just assigned above.
-  for (let j = path.length - 1; j >= 0; j--) {
-    cur[j] = next[j] === 1 || cur[j + 1] === 1 ? 1 : 0;
-  }
-  return cur;
-};
+// `**` — match zero or more of ANY char (slashes included). A whole-component
+// star run without a trailing `/` can only end the pattern, so the layer it
+// precedes is the base layer, which accepts the end of the path: every suffix
+// matches.
+const stepStarStar = (path: string): Uint8Array => new Uint8Array(path.length + 1).fill(1);
 
 // `**/` ≡ `(.*/)?` — match the empty string (`next[j]`) OR any consumed run
 // that ends on a `/`. `seg[j] === 1` is the latter: from `j`, some non-empty
@@ -164,7 +159,7 @@ const stepToken = (token: GlobToken, path: string, next: Uint8Array): Uint8Array
     case 'star':
       return stepStar(path, next);
     case 'star-star':
-      return stepStarStar(path, next);
+      return stepStarStar(path);
     case 'star-slash':
       return stepStarSlash(path, next);
   }

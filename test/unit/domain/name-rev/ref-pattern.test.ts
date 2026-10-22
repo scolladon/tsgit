@@ -152,6 +152,12 @@ describe('buildRefFilter', () => {
         },
         { refs: ['*1.0'], expected: false, label: 'a first match at offset 0 does not' },
         { refs: [], expected: false, label: 'no include does not' },
+        { refs: ['zzz'], expected: false, label: 'an include matching nowhere does not' },
+        {
+          refs: ['zzz', 'v*'],
+          expected: true,
+          label: 'an include matching nowhere is skipped over a suffix match',
+        },
       ])('Then $label', ({ refs, expected }) => {
         // Arrange
         const sut = buildRefFilter({ tags: false, refs, exclude: [] });

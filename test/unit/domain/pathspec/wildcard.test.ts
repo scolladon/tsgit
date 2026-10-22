@@ -133,6 +133,7 @@ describe('wildcardShape', () => {
     { body: 'src/[ab]*', expected: { kind: 'general', literalPrefix: 'src/' } },
     { body: 'a\\*', expected: { kind: 'general', literalPrefix: 'a' } },
     { body: 'a?*', expected: { kind: 'general', literalPrefix: 'a' } },
+    { body: 'plain.ts', expected: { kind: 'general', literalPrefix: 'plain.ts' } },
   ])('Given the body "$body"', ({ body, expected }) => {
     describe('When classifying its shape', () => {
       it('Then it is the expected shape', () => {

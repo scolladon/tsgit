@@ -37,12 +37,13 @@ describe('compileRefGlob (performance)', () => {
     describe('When matched against a long non-matching run of bytes', () => {
       it('Then it returns false without catastrophic backtracking', () => {
         // Arrange
-        const sut = compileRefGlobBytes(`${'a*'.repeat(64)}b`);
+        const sut = compileRefGlobBytes;
+        const matcher = sut(`${'a*'.repeat(64)}b`);
         const adversarial = new Uint8Array(10_000).fill(0x61);
 
         // Act
         const start = performance.now();
-        const result = sut(adversarial);
+        const result = matcher(adversarial);
         const elapsedMs = performance.now() - start;
 
         // Assert

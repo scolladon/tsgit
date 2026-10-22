@@ -27,13 +27,12 @@ type RefMatcher = (ref: string) => boolean;
 /** First offset (0, then just after each `/`) whose suffix the matcher accepts. */
 const subpathOffset = (matches: RefMatcher, ref: string): number | undefined => {
   let offset = 0;
-  while (offset <= ref.length) {
+  for (;;) {
     if (matches(ref.slice(offset))) return offset;
     const slash = ref.indexOf(SEPARATOR, offset);
     if (slash === -1) return undefined;
     offset = slash + 1;
   }
-  return undefined;
 };
 
 /** A ref qualifies as a naming source: not HEAD, passes the tags gate + include/exclude globs. */
