@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  type PositivePathspec,
   positiveOf,
   resolveCommandPathspec,
   trackPositives,
@@ -296,6 +297,36 @@ describe('trackPositives', () => {
         expect(verdict.matched).toBe(false);
         expect(positives.map((positive) => positive.spelling)).toEqual(['*.ts', 'x.ts']);
         expect(sut.highest()).toEqual([MATCH_LEVEL.FNMATCH, MATCH_LEVEL.NONE]);
+      });
+    });
+
+    describe('When a path reaching the positive placed after the negation is observed', () => {
+      it('Then its level lands in its own slot, not at its matcher index', () => {
+        // Arrange
+        const { sut } = trackerOver('*.ts', '!skip.ts', 'x.ts');
+
+        // Act
+        sut.observe(fileAt('x.ts'));
+
+        // Assert
+        expect(sut.highest()).toEqual([MATCH_LEVEL.FNMATCH, MATCH_LEVEL.EXACT]);
+      });
+    });
+  });
+
+  describe('Given a positive object the tracker was not built from', () => {
+    describe('When its seen state is read', () => {
+      it('Then it counts as unseen', () => {
+        // Arrange
+        const { positives, sut } = trackerOver('*.ts');
+        const foreign = { ...(positives[0] as PositivePathspec) };
+        sut.observe(fileAt('a.ts'));
+
+        // Act
+        const result = sut.seen(foreign);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });
