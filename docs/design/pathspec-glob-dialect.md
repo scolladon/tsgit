@@ -432,8 +432,10 @@ set. N21 (`--tags --name-only`) stays the caller's own `tags && nameOnly` rule, 
 ### Part e — docs fold-in (documentation phase)
 
 `docs/BACKLOG.md` release-order row 1 still reads "6.0.0 — ship now". v6.0.0 shipped on
-2026-10-21 (#315, `8dd442ee`). The documentation phase applies the user's replacement row text
-verbatim, strikes the four delivered sub-items of 32.11 and leaves 32.11b open.
+2026-10-21 (#315, `8dd442ee`). The documentation phase replaces the row with the user's text,
+minus the 5.0.1 hotfix parenthesis the user dropped in the decisions phase (the "why here" cell
+ends after "was a reported user failure"), strikes the four delivered sub-items of 32.11 and
+leaves 32.11b open.
 
 ### Size and hot path
 
