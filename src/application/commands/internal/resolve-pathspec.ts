@@ -3,7 +3,6 @@ import {
   pathspecBeyondSymlink,
   pathspecOutsideRepo,
 } from '../../../domain/commands/error.js';
-import { TsgitError } from '../../../domain/error.js';
 import { wellFormed } from '../../../domain/objects/encoding.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import {
@@ -97,15 +96,10 @@ const BACKSLASH_STAND_IN = 'x';
  * length) still applies. A refusal names the body as typed.
  */
 const validatePathspecBody = (body: string): void => {
-  if (!body.includes(BACKSLASH)) {
-    validatePath(body);
-    return;
-  }
   try {
     validatePath(body.replaceAll(BACKSLASH, BACKSLASH_STAND_IN));
-  } catch (err) {
-    if (err instanceof TsgitError) throw pathspecOutsideRepo(body as FilePath);
-    throw err;
+  } catch {
+    throw pathspecOutsideRepo(body as FilePath);
   }
 };
 

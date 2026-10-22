@@ -7,7 +7,8 @@
 > tag name; (d) `name-rev --refs`/`--exclude` match every `/`-suffix of the refname and expose
 > git's abbreviation signal; (e) docs fold-in, carried by the plan. Magic pathspecs, `:(exclude)`,
 > the `!` alias and the ADR superseding 038 are 32.11b, out.
-> Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22) → folded the tracked-under-ignore staging gap (2026-10-22) → review pins folded: empty-directory literal, hidden conflicted path (2026-10-22)
+> Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22) → folded the tracked-under-ignore staging gap (2026-10-22) → review pins folded: empty-directory literal, hidden conflicted path (2026-10-22) → folded the
+> skip-worktree, gitlink, ignored-report and backslash-name gaps: R13–R17, Parts f–i, candidates 13–19 (2026-10-23)
 
 ## Context
 
@@ -66,6 +67,14 @@ identical (macOS APFS defaults `core.ignorecase=true`). B1 was run three times, 
 The "tsgit today" column comes from **reading the code** (compile path above), not from running
 tsgit.
 
+Fold rows (S, SC, GL, I, W; 2026-10-22/23) used the same procedure, plus
+`-c protocol.file.allow=always` for the submodule fixtures. Their tsgit column was **run**, not
+read. A jiti script called the command functions through `createNodeContext` on the same
+fixture, against `git archive 98c84b01 src` extracted to a scratch directory, because the shared
+working tree held another agent's uncommitted edits. Each S, SC, I1–I11, W1–W5, W8–W16 and GL
+row that has no single-run note ran twice, once against the working tree and once against the
+snapshot, with identical results. I12–I30, GL20–GL23 and W6/W7/W10 ran once against the snapshot.
+
 ## Requirements
 
 - R1. A pathspec entry selects path `p` iff git's `match_pathspec_item` does:
@@ -91,7 +100,8 @@ tsgit.
   holding `\` never takes either escape (R11).
   Review pin (git 2.55): an unseen literal naming an empty directory is not refused either (`add e`
   exits 0; `add e 'k*'` stages `k`); a literal naming an ignored path keeps refusing until the
-  ignored-paths report exists (ADR-1045 supersedes ADR-1036's wildcard-only scope).
+  ignored-paths report exists (ADR-1045 supersedes ADR-1036's wildcard-only scope). R16 builds
+  that report and retires the interim.
 - R6. `grep` never refuses an unmatched pathspec (G1, G5).
 - R7. `describe` include/exclude = `wildmatch(pattern, shortTagName, 0)` (DS rows).
 - R8. `name-rev` include/exclude = git's `subpath_matches`: the full refname, then each suffix after
@@ -118,9 +128,47 @@ tsgit.
   - Gitlink `sub`, ignored, with a new commit inside: `add .` and `add 's*'` both stage the new
     commit (`M  sub`). It is **not** an exception.
   - Skip-worktree `x.log`, modified: `add .` leaves it unstaged (only `A  .gitignore`). `add '*.log'`
-    exits 1 with the sparse-checkout advice and stages nothing. Skip-worktree **is** the exception,
-    and the advice stays out of scope (sparse rules).
+    exits 1 with the sparse-checkout advice and stages nothing. Skip-worktree **is** the exception.
+    Its report is R13.
   - To pin in the part: an unmerged (stage 1–3) path under an ignore rule.
+- R13. `add` never restages, removes or clears the bit of a skip-worktree entry, whatever its file
+  on disk holds: the walk, the literal fast path and `add({ all: true })` leave it (S1, S8, S10,
+  S11, S13); `--renormalize` already does (S14). A positive pathspec that no other index entry and
+  no walk leaf reached, but that matches a skip-worktree entry, is not refused: it is **reported**
+  by its spelling (S2–S7, S12, S15). git exits 1 and still stages every other match (S5–S7). A
+  pathspec some other path also reached is silent (S8). The unmatched-pathspec refusal (R2) wins
+  over the report, and nothing is staged (S9). Report shape: candidate 13. This replaces R12's
+  "the advice stays out of scope".
+- R14. `checkout [<source>] -- <pathspec>` leaves out of its path universe every path whose
+  current index entry has the skip-worktree bit, for the index and the tree source alike (SC1–SC12).
+  Such a path is never written and keeps its bit. A pathspec that only matches such paths refuses
+  `PATHSPEC_NO_MATCH` under R3, with the same all-or-nothing outcome (SC1–SC4, SC9–SC12).
+- R15. `add` stages a stage-0 gitlink entry whose submodule checkout HEAD differs from the index
+  id, ignored or not, by `.`, `<path>`, `<path>/`, a glob or `add({ all: true })` (GL1–GL10). The
+  HEAD is the repository `<path>/.git` leads to, a directory or a gitfile, not the `.gitmodules`
+  name (GL17–GL19). The path lands in `modified`. Nothing is staged when HEAD equals the index id,
+  when the directory is empty, or when the repository there has no commit (GL11–GL13, GL16). A
+  skip-worktree gitlink is left (GL23) and `--renormalize` leaves gitlinks alone (GL22). A
+  `<path>/.git` that leads to no repository is a refusal in git (GL20, GL21; candidate 17).
+- R16. `add` **reports** every ignored entry its walk prunes that a positive pathspec reaches.
+  Nothing untracked beneath a reported entry is staged. An ignored entry is an ignored directory,
+  whatever it holds, or an ignored untracked file. A tracked file is never one (B13, I27). A
+  positive reaches entry `E` when its no-wildcard prefix `P` (the bytes before the first
+  `* ? [ \`, Part a's literal-prefix helper) equals `E` or starts with `E/`. So `x.log`, `d`,
+  `d/`, `d/q.txt`, `d*`, `d/*.txt` and `d/x*` report (I1–I4, I7–I10, I17–I23, I29), and `*`, `?`,
+  `*.log` and `?.log` do not (I25–I28, I30). That rule is inferred from these rows, not from git's
+  source. The listed path is the pruned entry (`d` for `d/q.txt`, I9), sorted (I4). git exits 1
+  and still stages every other match, tracked files beneath the reported directory included (I2,
+  I3, I10, I17, I19–I23). The unmatched-pathspec refusal runs first: nothing is reported or staged
+  (I5, I6, I24). Every literal naming something on disk takes git's `file_exists` escape, ignored
+  or not (I1, I7). B11′ stays exit 0 with no report (`P` = `nomatch` ≠ `nomatch*`). This retires
+  R5's and ADR-1045's "a literal naming an ignored path keeps refusing" interim. With
+  `force: true` nothing is ignored, so nothing is reported (I12–I16). Report shape: candidate 13;
+  `force`: candidate 14; release class: candidate 15.
+- R17. On a host without Windows path syntax, the working-tree walk yields an entry whose name holds
+  `\`, as git's walk does (W1–W5, W7, W16): `add`, `status` and every other `walkWorkingTree`
+  consumer see it. Under Windows path syntax the walk keeps refusing it (candidate 18). `rm`'s
+  working-tree removal of such a path is candidate 19 (W8, W9).
 
 ## Design
 
@@ -187,8 +235,8 @@ matcher itself.
 | B2 | `a.txt` | `add 'a*' 'nomatch*'` | 128 · `… 'nomatch*' …` · empty · 0 | ✗ stages `a.txt` |
 | B2b | `a.txt` | `add 'nomatch*' 'a*'` | 128 · `… 'nomatch*' …` · empty · 0 | ✗ |
 | B3 | `x.log`, `.gitignore: *.log` | `add '*.log'` | 128 · `fatal: pathspec '*.log' did not match any files` · empty · 0 | ✗ no error |
-| B3l | same | `add x.log` | 1 · `The following paths are ignored by one of your .gitignore files:` / `x.log` / 2 `hint:` lines · empty | out of scope (literal) |
-| B3m | `x.log real.txt`, same ignore | `add x.log real.txt` | 1 · same advice · `real.txt` | out of scope |
+| B3l | same | `add x.log` | 1 · `The following paths are ignored by one of your .gitignore files:` / `x.log` / 2 `hint:` lines · empty | ✗ stages `x.log` (run; I1, Part h) |
+| B3m | `x.log real.txt`, same ignore | `add x.log real.txt` | 1 · same advice · `real.txt` | ✗ stages both (run; I2, Part h) |
 | B3x | `x.log`, same ignore | `add 'x*'` | 128 · `… 'x*' …` · empty | ✗ |
 | B3d | `d/x.log d/y.txt`, same ignore | `add 'd/*.log'` | 128 · `… 'd/*.log' …` · empty | ✗ |
 | B4 | `x.log real.txt`, same ignore | `add '*.log' real.txt` | 128 · `… '*.log' …` · empty · 0 | ✗ stages `real.txt` |
@@ -207,7 +255,7 @@ matcher itself.
 | B13 | B8's fixture | `add x.log` | 0 · — · `M  x.log` (re-run 2026-10-22: same) | ok (`modified: ['x.log']`; the literal fast path reads the index) |
 | B14 | tracked `d/x.txt k`, then `.gitignore: d/`, `d/x.txt` modified | `add .` | 0 · — · `A  .gitignore`, `M  d/x.txt` (re-run 2026-10-22: same) | ✗ stages `.gitignore` only, ` M d/x.txt` kept |
 | B15 | same | `add '*.txt'` | 0 · — · `M  d/x.txt` (re-run 2026-10-22: same) | ✗ stages nothing |
-| B16 | same | `add d` | 1 · `The following paths are ignored by one of your .gitignore files:` / `d` / 2 `hint:` lines · `M  d/x.txt` (re-run 2026-10-22: same) | staging: ✗ stages nothing. Advice and exit 1: out of scope (B3l/B3m class) |
+| B16 | same | `add d` | 1 · `The following paths are ignored by one of your .gitignore files:` / `d` / 2 `hint:` lines · `M  d/x.txt` (re-run 2026-10-22: same) | staging: ✗ stages nothing. Advice and exit 1: Part h (I20) |
 | RN1 | tracked `a.txt` | `add --renormalize 'nomatch*'` | 128 · `… 'nomatch*' …` | ✗ no error |
 | RN2 | same | `add --renormalize 'a*' 'nomatch*'` | 128 · `… 'nomatch*' …` | ✗ |
 | RN3 | same | `add --renormalize 'a*'` | 0 | ok |
@@ -218,6 +266,7 @@ matcher itself.
 **Refuted brief hypothesis:** `git add '*.log'` where every match is ignored is the plain
 `did not match` refusal (exit 128, B3/B3x/B3d/B4c), **not** the "paths are ignored" advice. That
 advice (exit 1) is the literal-path behaviour (B3l/B3m). (b) therefore needs no ignored-path scan.
+The fold's R16 adds that report as its own part (Part h), with the reach rule rows I17–I30 pin.
 
 Loose objects: tsgit's `addByPathspec` stages (hashes and `writeObject`s) every walked leaf in
 `stageIgnoredWalk` (`add.ts:883`, write at `add.ts:1414`). It runs `enforceLiteralMustMatch`
@@ -339,8 +388,176 @@ N25 versus N27 shows the abbreviation is `refs_shorten_unambiguous_ref`, not a f
 That needs ref-existence lookups, so it is display work for the caller (ADR-249). tsgit already
 has the primitive: `src/application/commands/internal/shorten-ref.ts` `shortenUnambiguousRef`.
 
-**Row count** (D 23 + E 5 + L 6 + B 31 + R 11 + C 10 + G 5 + K 6 + DS 14 + N 28 = 139; B3l/B3m are
-pinned for the out-of-scope follow-up and counted). B8 and B13–B16 were re-run on 2026-10-22 with
+#### S — `add` over a skip-worktree entry (no ignore rules)
+
+Fixture: tracked `x.log k s.txt` committed (5 loose objects), then
+`git update-index --skip-worktree x.log`, `x.log` rewritten to `changed\n`, `s.txt` rewritten to
+`s2\n`. "S" / "H" is the `ls-files -v` tag. The sparse advice is these exact stderr lines, with
+`<spec>` the pathspec **as spelled**:
+
+```
+The following paths and/or pathspecs matched paths that exist
+outside of your sparse-checkout definition, so will not be
+updated in the index:
+<spec>
+hint: If you intend to update such entries, try one of the following:
+hint: * Use the --sparse option.
+hint: * Disable or modify the sparsity rules.
+hint: Disable this message with "git config set advice.updateSparsePath false"
+```
+
+| # | Command | git: exit · stderr · index · loose | tsgit at HEAD (run) |
+|---|---|---|---|
+| S1 | `add .` | 0 · — · `S x.log` (old blob), `M  s.txt` · 6 | ✗ `modified: [s.txt, x.log]`, `x.log` restaged with the bit cleared (`H`) · 7 |
+| S2 | `add '*.log'` | 1 · advice, `<spec>` = `*.log` · unchanged · 5 | ✗ success, `x.log` restaged, bit cleared · 6 |
+| S3 | `add x.log` | 1 · advice `x.log` · unchanged · 5 | ✗ same (literal fast path) |
+| S4 | `add 'x*'` | 1 · advice `x*` · unchanged · 5 | ✗ same |
+| S5 | `add '*.log' s.txt` | 1 · advice `*.log` · `M  s.txt` only · 6 | ✗ both restaged, bit cleared · 7 |
+| S6 | `add x.log s.txt` | 1 · advice `x.log` · `M  s.txt` only · 6 | ✗ same |
+| S7 | `add 'x*' 's*'` | 1 · advice `x*` · `M  s.txt` only · 6 | ✗ same |
+| S8 | `add '*'` | 0 · — (the spec also reached `k`, `s.txt`) · `M  s.txt`, `S x.log` kept · 6 | ✗ `x.log` restaged too · 7 |
+| S9 | `add x.log 'nomatch*'` | 128 · `fatal: pathspec 'nomatch*' did not match any files` only, no advice · unchanged · 5 | ok (`PATHSPEC_NO_MATCH 'nomatch*'`, nothing written) |
+| S10 | `add -A` | 0 · — · `M  s.txt`, `S x.log` kept · 6 | ✗ `x.log` restaged, bit cleared · 7 |
+| S11 | `x.log` deleted from disk instead; `add .` | 0 · — · `M  s.txt`, `S x.log` kept | ok |
+| S12 | same; `add x.log` | 1 · advice `x.log` · unchanged | index ok; ✗ success, no report |
+| S13 | same; `add -A` | 0 · — · `M  s.txt`, `S x.log` kept | ok |
+| S14 | `add --renormalize .` | 0 · — · `M  s.txt`, `S x.log` kept · 6 | ok |
+| S15 | `add --renormalize x.log` | 1 · advice `x.log` · unchanged · 5 | index ok; ✗ success, no report |
+
+The existing interop rows with the same entry **under an ignore rule**
+(`add-tracked-under-ignore-interop.test.ts:170`, `:196`) pass today: the walk prunes the ignored
+`x.log` before the skip-worktree question arises. The rows above have no ignore rule.
+
+#### SC — `checkout -- <spec>` over a skip-worktree entry
+
+Fixture: tracked `sw.txt n.txt`, `sw.txt` skip-worktree, then `sw.txt` rewritten to `sw-dirty`
+and `n.txt` to `n-dirty`. Every row was run with no source and with `HEAD`; both gave the same
+result, so each row covers both.
+
+| # | Spec (`checkout [HEAD] -- …`) | git: exit · stderr · disk · bit | tsgit at HEAD (run) |
+|---|---|---|---|
+| SC1/SC2 | `'sw*'` | 1 · `error: pathspec 'sw*' did not match any file(s) known to git` · both dirty · `S` | ✗ success, `sw.txt` restored to `sw` (local change lost), bit cleared |
+| SC3/SC4 | `sw.txt` | 1 · same line for `'sw.txt'` · both dirty · `S` | ✗ same |
+| SC5/SC6 | `'*.txt'` | 0 · — · `n.txt` restored, `sw.txt` still `sw-dirty` · `S` | ✗ both restored, bit cleared |
+| SC7/SC8 | `.` | 0 · — · same as SC5 | ✗ same |
+| SC9/SC10 | `sw.txt n.txt` | 1 · error for `'sw.txt'` · **both** still dirty | ✗ both restored, bit cleared |
+| SC11/SC12 | `'sw*' 'n*'` | 1 · error for `'sw*'` · both still dirty | ✗ same |
+
+#### GL — `add` over a gitlink
+
+Fixture: an upstream repo with one commit; the superproject holds `k` and
+`git -c protocol.file.allow=always submodule add <up> sub`, committed (index gitlink `2a17918`).
+"moved" = a new commit `u2` inside `sub` (its HEAD becomes `5fb1a1e`); commit dates pinned to
+`@1700000000 +0000` so the ids are stable across twins. GL7–GL10 and GL11–GL12 ran without
+pinned dates; their git column reads "the sub HEAD" (whatever `git -C sub rev-parse HEAD` printed).
+
+| # | Setup | Command | git: exit · index `sub` | tsgit at HEAD (run) |
+|---|---|---|---|---|
+| GL1 | moved | `add .` | 0 · `160000 5fb1a1e` (`M  sub`) | ✗ `2a17918` kept, `modified: []` |
+| GL2 | moved | `add sub` | 0 · `5fb1a1e` | ✗ |
+| GL3 | moved | `add 's*'` | 0 · `5fb1a1e` | ✗ |
+| GL4 | moved | `add -A` | 0 · `5fb1a1e` | ✗ |
+| GL5 | moved | `add sub/` | 0 · `5fb1a1e` | ✗ |
+| GL6 | moved, `k` modified | `add sub k` | 0 · `5fb1a1e`, `k` staged | ✗ `k` only |
+| GL7 | moved, `.gitignore: sub` | `add .` | 0 · `A  .gitignore`, `M  sub` (the sub HEAD) | ✗ `.gitignore` only |
+| GL8 | same | `add sub` | 0 · the sub HEAD | ✗ |
+| GL9 | same | `add 's*'` | 0 · the sub HEAD | ✗ |
+| GL10 | same | `add -A` | 0 · `A  .gitignore`, `M  sub` | ✗ `.gitignore` only |
+| GL11 | file edited inside `sub`, HEAD not moved | `.`, `sub`, `'s*'`, `-A` | 0 · `2a17918` (unchanged) | ok |
+| GL12 | untouched | same four | 0 · unchanged | ok |
+| GL13 | `submodule deinit -f sub` (empty directory) | same four | 0 · unchanged | ok |
+| GL14 | `sub` replaced by a regular file | same four | 0 · `100644 f8dc9f2` (`T  sub`) | ok (`modified: [sub]`) |
+| GL15 | `sub` replaced by a symlink to `k` | same four | 0 · `120000` (`T  sub`) | ok |
+| GL16 | `sub` replaced by `git init` with no commit | same four | 0 · unchanged | ok |
+| GL17 | embedded clone (`.git` directory, no `.gitmodules`), moved | `add .` | 0 · `5fb1a1e` | ✗ |
+| GL18 | `submodule add --name other` (gitfile `gitdir: ../.git/modules/other`), moved | `add .` | 0 · `5fb1a1e` | ✗ |
+| GL19 | `sub` replaced by an unrelated repository with one commit `2a46b3d` | `add .` | 0 · `2a46b3d` | ✗ |
+| GL20 | `sub/.git` rewritten to `gitdir: ../.git/modules/nowhere` | `add .` | 128 · `fatal: not a git repository: sub/../.git/modules/nowhere` · unchanged | ✗ success, unchanged |
+| GL21 | `.git/modules/sub/HEAD` rewritten to `garbage` | `add .` | 128 · `fatal: not a git repository: sub/../.git/modules/sub` · unchanged | ✗ success, unchanged |
+| GL22 | moved | `add --renormalize .` | 0 · unchanged | ok |
+| GL23 | moved, `update-index --skip-worktree sub` | `add .` | 0 · `S` unchanged | ok |
+
+#### I — `add` of an ignored untracked literal
+
+Fixture: `.gitignore` = `*.log` and `d/`; untracked `x.log y.log real.txt d/q.txt`. The ignored
+report is these exact stderr lines, one path per line, sorted:
+
+```
+The following paths are ignored by one of your .gitignore files:
+<path>
+hint: Use -f if you really want to add them.
+hint: Disable this message with "git config set advice.addIgnoredFile false"
+```
+
+| # | Command | git: exit · reported · index · loose | tsgit at HEAD (run) |
+|---|---|---|---|
+| I1 | `add x.log` (= B3l) | 1 · `x.log` · empty · 0 | ✗ stages `x.log` (the literal fast path never consults ignore rules; `add.test.ts:1728` pins that) · 1 |
+| I2 | `add x.log real.txt` (= B3m) | 1 · `x.log` · `real.txt` · 1 | ✗ stages both · 2 |
+| I3 | `add real.txt x.log` | 1 · `x.log` · `real.txt` · 1 | ✗ stages both |
+| I4 | `add y.log x.log` | 1 · `x.log`, `y.log` (sorted) · empty | ✗ stages both |
+| I5 | `add x.log 'nomatch*'` | 128 · `fatal: pathspec 'nomatch*' did not match any files`, no report · empty · 0 | ✗ `PATHSPEC_NO_MATCH` naming `x.log` |
+| I6 | `add x.log missing` | 128 · `… 'missing' …`, no report · empty · 0 | ✗ names `x.log` |
+| I7 | `add d` | 1 · `d` · empty | ✗ `PATHSPEC_NO_MATCH 'd'` (ADR-1045 interim) |
+| I8 | `add d/` | 1 · `d` · empty | ✗ `PATHSPEC_NO_MATCH 'd/'` |
+| I9 | `add d/q.txt` | 1 · `d` (the ignored ancestor, not the file) · empty | ✗ stages `d/q.txt` |
+| I10 | `add x.log '*.txt'` | 1 · `x.log` · `real.txt` · 1 | ✗ `PATHSPEC_NO_MATCH 'x.log'`, nothing staged |
+| I11 | `add 'x.lo?'` | 128 · `… 'x.lo?' …` · empty | ok (B3 class) |
+| I12 | `add -f x.log` | 0 · — · `x.log` | ok (`force: true`; also stages without it, I1) |
+| I13 | `add -f '*.log'` | 0 · — · `x.log` | ✗ `PATHSPEC_NO_MATCH '*.log'`: `AddOptions.force` is declared and never read |
+| I14 | `add -f .` | 0 · — · `.gitignore d/q.txt real.txt x.log` | ✗ `.gitignore real.txt` |
+| I15 | `add -f d` | 0 · — · `d/q.txt` | ✗ `PATHSPEC_NO_MATCH 'd'` |
+| I16 | `add -A -f` | 0 · — · `.gitignore d/q.txt real.txt x.log` | ✗ `.gitignore real.txt` (`{ all: true, force: true }`) |
+
+Second fixture "D": tracked `d/x.txt k` committed, then `.gitignore` = `d/`, `d/x.txt`
+rewritten, untracked `d/new.txt`. Third fixture "T": tracked `t.log k` committed, then
+`.gitignore` = `*.log`, `t.log` rewritten, untracked `u.log`. Status shown as `--porcelain`.
+
+| # | Fixture · command | git: exit · reported · status | tsgit at HEAD (run) |
+|---|---|---|---|
+| I17 | D · `add d/x.txt` | 1 · `d` · `M  d/x.txt` | index ok; ✗ no report |
+| I18 | D · `add d/new.txt` | 1 · `d` · nothing staged | ✗ stages `d/new.txt` |
+| I19 | D · `add d/x.txt d/new.txt` | 1 · `d` · `M  d/x.txt` only | ✗ also stages `d/new.txt` |
+| I20 | D · `add d` (B16 plus an untracked file) | 1 · `d` · `M  d/x.txt` | index ok; ✗ no report |
+| I21 | D · `add 'd/*.txt'` | 1 · `d` · `M  d/x.txt` | index ok; ✗ no report |
+| I22 | D · `add 'd*'` | 1 · `d` · `M  d/x.txt` | index ok; ✗ no report |
+| I23 | D · `add 'd/x*'` | 1 · `d` · `M  d/x.txt` | index ok; ✗ no report |
+| I24 | D · `add 'd/n*'` | 128 · `fatal: pathspec 'd/n*' did not match any files` · unchanged | ok |
+| I25 | D · `add '?'` | 0 · — · unchanged (` M d/x.txt`) | ok |
+| I26 | D · `add '*'` | 0 · — · `A  .gitignore`, `M  d/x.txt` | ok |
+| I27 | T · `add '*.log'` | 0 · — · `M  t.log` | ok |
+| I28 | T · `add .` | 0 · — · `A  .gitignore`, `M  t.log` | ok |
+| I29 | T · `add t.log u.log` | 1 · `u.log` · `M  t.log` | ✗ also stages `u.log` |
+| I30 | T · `add '?.log'` | 0 · — · `M  t.log` | ok |
+
+The tracked-file twin is B13 (`add x.log` on a tracked ignored file): no report, ok today.
+
+#### W — working-tree entries named with `\` (POSIX; run on macOS APFS)
+
+Untracked fixture: files `a\b` (content `a`), `ab`, `k`. Tracked fixture: the same three
+committed, then `a\b` rewritten to `dirty`. `ls-files` quotes the name as `"a\\b"`.
+
+| # | Fixture | Command | git: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|---|
+| W1 | untracked | `add .` | 0 · `"a\\b" ab k` | ✗ `PATHSPEC_OUTSIDE_REPO { path: 'a\\b' }` from the walk, nothing staged |
+| W2 | untracked | `add 'a\\b'` (escaped) | 0 · `"a\\b"` | ✗ same |
+| W3 | untracked | `add 'a?'` | 0 · `ab` | ✗ same (the walk aborts before matching) |
+| W4 | untracked | `add 'a\b'` (= E1) | 0 · `"a\\b" ab` | ✗ same |
+| W5 | untracked | `add -A` | 0 · `"a\\b" ab k` | ✗ same |
+| W6 | untracked | `add ab` | 0 · `ab` | ok (literal fast path, no walk) |
+| W7 | untracked | `status --porcelain` | 0 · `?? "a\\b"`, `?? ab` | ✗ `status()` throws `PATHSPEC_OUTSIDE_REPO` |
+| W8 | tracked | `rm -f 'a\\b'` | 0 · index `ab k`, file deleted | ✗ `PATHSPEC_OUTSIDE_REPO` from `removeFile`; index and file unchanged |
+| W9 | tracked | `rm -f 'a??'` | 0 · index `ab k` | ✗ same |
+| W10 | tracked | `rm --cached 'a\\b'` | 0 · index `ab k` | ok |
+| W11 | tracked | `rm -f 'a?'` | 0 · removes `ab` only | ok |
+| W12 | tracked | `checkout -- 'a\\b'` | 0 · `a\b` back to `a` | ok |
+| W13 | tracked | `checkout -- 'a?'` | 0 · `a\b` stays `dirty` | ok |
+| W14 | tracked | `grep -l . -- 'a??'` | 0 · `"a\\b"` | ok |
+| W15 | tracked | `grep -l .` | 0 · `"a\\b"`, `ab`, `k` | ok |
+| W16 | tracked | `status --porcelain` | 0 · ` M "a\\b"` | ✗ throws `PATHSPEC_OUTSIDE_REPO` |
+
+**Row count** (D 23 + E 5 + L 6 + B 31 + R 11 + C 10 + G 5 + K 6 + DS 14 + N 28 = 139, plus the
+fold: S 15 + SC 12 + GL 23 + I 30 + W 16 = 96; total 235. B3l/B3m are counted once, in B; I1/I2
+repeat them with the tsgit column run). B8 and B13–B16 were re-run on 2026-10-22 with
 the same procedure. Their tsgit column comes from a session pin that ran tsgit through jiti at
 this branch's HEAD and at `main` (`8dd442ee`). Both gave the same result, so the gap predates this
 change. B11′, B12r, RN4–RN6 and K1L were pinned by the
@@ -501,6 +718,9 @@ presence on disk, not by the ignore filter (B7).
   is also left to the removal path, as `presentOnDisk` already decides.
 - The refusal is unaffected: `refuseUnseenWalked` already counts index-seen entries
   (`indexSees`).
+- Review pin (git 2.55): a conflicted path the rules hide is resolved to stage 0 from the file on
+  disk by `add <glob>`, `add .` and `add -A`, like a walked conflicted path; the pass selects it
+  under the conflict rule (`matchesUnmergedIndexPath`).
 
 Atomicity proof obligations (tests): B1/B2 `loose = 0` and index unchanged. R1 leaves the file on
 disk and in the index. C1/C1b/C3 leave `dirty.txt` dirty. RN2 leaves no index change.
@@ -542,10 +762,170 @@ minus the 5.0.1 hotfix parenthesis the user dropped in the decisions phase (the 
 ends after "was a reported user failure"), strikes the four delivered sub-items of 32.11 and
 leaves 32.11b open.
 
+### Part f — skip-worktree entries in `add` and `checkout` (R13, R14)
+
+Line numbers are at `98c84b01`.
+
+**`add`, report side.** One rule for every route: a skip-worktree index entry neither marks a
+positive seen nor is staged; a positive left unseen that matches one is reported, not refused.
+
+- `src/application/commands/internal/pathspec-intake.ts` `trackPositives` (`PositiveTracker`):
+  unchanged. A new pure helper beside `unmatchedPositives`,
+  `reachesSkipWorktree(positive, skipped: ReadonlyArray<IndexEntry>): boolean`, tests
+  `positive.entry.compiled.test(escapedPathOf(entry))`. It runs only over the unseen positives,
+  so it costs nothing on the common path.
+- `add.ts:1059-1107` `stageIgnoredWalk`: `verdictsOf(existing, tracker.observe)` observes every
+  entry today, skip-worktree ones included, so S2 counts as seen. Observe only
+  `!entry.flags.skipWorktree` entries, and give skip-worktree keys a non-matching verdict so
+  `collectMatchedRemovals` and `hiddenTracked` keep ignoring them. Then drop every walked leaf
+  whose `existing` entry is skip-worktree, before `refuseUnseenWalked` and `stageWalkedEntries`.
+  The walk still yields `x.log`: a skip-worktree file on disk is an ordinary leaf to
+  `walkWorkingTree`.
+- `add.ts:875-899` `refuseUnseenWalked`: before refusing, split the unseen positives into
+  `reported` (`reachesSkipWorktree`) and the rest. The rest refuses as today (S9: nothing
+  staged, no report). The reported spellings flow out to the result (candidate 13).
+- `add.ts:243-273` `addLiteralOnly` / `:323-344` `stageLiterals`: a literal whose stage-0 entry is
+  skip-worktree is dropped from `ordered` and reported (S3, S6). A literal is seen only by itself,
+  so no tracker is needed here.
+- `add.ts:1215-1276` `addAll`: drop skip-worktree leaves from `walkedEntries` (S10). `addAll`
+  has no positives, so it never reports. `add.ts:1304-1318` `collectRemovedEntries` already skips
+  them (S11, S13).
+- `add.ts:792-820` `addRenormalized` → `:857-871` `refuseUnseenRenormalized`: `indexSees` counts
+  skip-worktree entries; exclude them there and report the unseen positives `reachesSkipWorktree`
+  accepts (S15). `isRecleaned` (`:930`) already skips them (S14).
+- Not touched: `isHiddenCandidate` (`:1018`, already excludes skip-worktree),
+  `src/application/commands/internal/apply-sparse-checkout.ts` (sparse patterns stay as they are,
+  R9).
+
+**`checkout`.** `checkout.ts:376-397` `restoreUnderIndexLock` reads `currentIndex`, then
+`enumerateSourcePaths` (`:487`) returns the index entries or the source tree's paths. Filter
+that universe before `selectFromUniverse` (`:399`): drop every path whose stage-0 entry in
+`currentIndex` is skip-worktree. Key the lookup by `indexPathKey` over the entries, compared
+through the same `escapedPathOf` view `selectFromUniverse` already uses, so a lossy name
+behaves. Then `refuseUnmatched` (`:413`) refuses SC1–SC4 and SC9–SC12 through the existing
+path, and `materializePathRestore*` never sees the path (SC5–SC8). `materializeTree`'s own
+skip-worktree carry (`materialize-tree.ts:250`, `:298`) is unchanged.
+
+Tests to extend: `test/unit/application/commands/add.test.ts` (fixtures `seedFreshRepo`
+`:54`, the `STAGE0_FLAGS` overrides used at `:3306`, `expectError` `:85`; the existing
+skip-worktree rows at `:830` and `:3300` stay green), `test/unit/application/commands/checkout.test.ts`
+(`refusalOf` `:40`; the sparse rows at `:1318-1430` stay green), and the interop file
+`test/integration/add-tracked-under-ignore-interop.test.ts` (`twins`, `trackedThen`,
+`snapshotOf`; its skip-worktree rows at `:170`/`:196` stay).
+
+### Part g — gitlinks in `add` (R15)
+
+Today a gitlink never reaches staging. The walk's embedded-repository gate
+(`walk-working-tree.ts:206` `isEmbeddedGitMarker`) yields nothing for `sub`;
+`isHiddenCandidate` (`add.ts:1018-1027`) excludes `FILE_MODE.GITLINK`; `hiddenWalkEntryOf`
+(`:1041`) drops directories; `presentOnDisk` (`:1278-1291`) keeps the entry present. The
+equivalence mark in `restagesAsIs` (`:1562-1571`, "deriveWorkingMode never returns GITLINK")
+stays true, because gitlinks do not go through `stagePromisorChecked`.
+
+- New step `stagedGitlinks(ctx, existing, verdicts)` in `add.ts`, called by `stageIgnoredWalk`
+  (with the tracker's verdicts) and `addAll` (with `indexVerdicts(WHOLE_TREE_MATCHER, existing)`).
+  It runs after `refuseUnseenWalked` and **before** `stageWalkedEntries`, so a refusal (candidate
+  17) leaves zero loose objects, as ADR-1035 requires of every `add` refusal. Candidates: stage-0,
+  `FILE_MODE.GITLINK`, not skip-worktree (GL23), not lossy, `verdicts.get(key)?.matched`.
+- Per candidate, bounded by `limiterFor(ctx, 'ioBound')`: `lstatOrBeneathFile` (`:587`). If the
+  path is not a real directory, do nothing: the walk already yields the file or symlink that
+  replaced it, and stages it (GL14, GL15 ok today). If `<path>/.git` is absent (GL13), do nothing.
+  Otherwise resolve HEAD (candidate 16). Unborn (GL16): do nothing. Different from `entry.id`:
+  emit `{ kind: 'modified', path, entry: indexEntryFromStat(stat, FILE_MODE.GITLINK, head, path) }`.
+  That is the shape `submodule.ts:628` (`stageSubmodule`) already builds.
+- The outcomes join `stageWalkedEntries`'s before `tallyWalkOutcomes` (`:1144`), so
+  `modified`, `restagedPaths` and the index commit need no new code. `--renormalize` is not
+  touched (GL22; `RECLEANED_MODES` excludes gitlinks).
+- Literal routing needs nothing: `literalStats` (`:567`) sends a directory literal (`add sub`,
+  GL2) and a `sub/` literal (GL5) to the walk route.
+- HEAD resolution building blocks: `src/domain/worktree/gitfile.ts` `parseGitfilePointer`;
+  `src/application/primitives/derive-context.ts:61` `deriveContext`, as
+  `src/application/primitives/internal/submodule-context.ts` `buildChildContext` uses it (that
+  helper is keyed on the `.gitmodules` name, which GL17/GL18 rule out); `resolveRef(child, HEAD)`
+  as in `submodule.ts:757`.
+- The pathspec refusal needs nothing: the index pass already sees `sub`.
+
+Tests to extend: `add.test.ts`. The memory adapter can hold `sub/.git` as a gitfile plus
+`.git/modules/sub/{HEAD,refs/heads/main}`. Next to the existing `Given a gitlink entry` row at
+`:3341`, write a moved, an unchanged, an empty-directory and a broken-gitfile row. The
+embedded-repository row at `:927` stays green: it has no index gitlink. Interop: a new
+`describe` in `add-tracked-under-ignore-interop.test.ts` (ignored and plain gitlinks share its
+`twins`). The setup uses `git -c protocol.file.allow=always submodule add`, as
+`submodule-init-sync-deinit-interop.test.ts:40` does, with pinned dates.
+
+### Part h — the ignored report and `force` (R16)
+
+- `add.ts:139-151` `AddOptions` / `AddResult`: `force` is declared and read nowhere today
+  (grep). Candidate 14 wires it. The report fields come from candidate 13.
+- **Walk route.** `add.ts:1109-1121` `withPathspec` wraps `repoIgnore` for the walk. Wrap it once
+  more, outside `withPathspec`, with a collector. When `repoIgnore(path, isDirectory)` is true for a
+  directory, or for a leaf with no `existing` entry, and some positive's no-wildcard prefix `P`
+  satisfies `P === path || P.startsWith(path + '/')`, record `path`. The prefix helper is Part a's
+  literal-prefix bytes. Compute each positive's `P` once per call. The walk prunes at the
+  shallowest ignored directory, so `d/q.txt` records `d` (I9) with no ancestor loop. The
+  collector only observes: what the walk yields does not change.
+- **Escape.** `add.ts:875-899` `refuseUnseenWalked` → `:901-915` `namesUnignoredDiskPath`: drop the
+  ignored-literal exclusion. An unseen literal whose path exists on disk takes git's `file_exists`
+  escape whether ignored or not (I1, I7). The collector reports it. Classify every unseen positive
+  before throwing: if any refuses, throw `PATHSPEC_NO_MATCH` for the first in argument order and
+  report nothing (I5, I6, I24). Today's loop is already ordered; it changes only by losing the
+  ignored branch.
+- **Literal fast path** (`add.ts:230-241` `dispatchPathspec` → `:567-581` `literalStats` →
+  `:243` `addLiteralOnly`): there is no walk, so for each literal compute the shallowest ignored
+  proper ancestor directory, and for an untracked literal also the literal itself. Record it under
+  the same rule. Drop an untracked literal that has such an entry from staging (I1–I4, I18,
+  I19, I29). Keep a tracked one (I17).
+  `add.ts:917-928` `ignoredWithAncestors` returns a boolean today. Add
+  `firstIgnoredOf(repoIgnore, path, isDirectory): FilePath | undefined` (shallowest ignored
+  ancestor-or-self) and express `ignoredWithAncestors` through it, so the loop exists once. The
+  predicate (`buildRepoIgnorePredicate`,
+  `src/application/primitives/internal/ignore-evaluator.ts:56`) is built lazily, only when
+  `force` is off. `add <tracked literal>` still has to pay it, because I17 reports `d` for a tracked
+  literal under an ignored directory. The bench row below measures that.
+- `force: true`: `addByPathspec` (`:736`), `addAll` (`:1215`, which already takes an
+  `ignoreOverride`) and the fast path get a never-ignoring predicate, so nothing is pruned and
+  nothing is reported (I12–I16). The walk's `.git` exclusion (`isDotGitWalkEntry`) is not an
+  ignore rule and stays.
+- `addAll` has no positives, so it never reports. Neither does `.` (`P` = `''`), which matches
+  B14 and I28.
+- Report order: sorted by path (I4), deduplicated.
+
+Tests to re-pin, never edit to fit: `add.test.ts:1728` ("Given a literal path that .gitignore
+would exclude", which pins staging today) becomes I1. `add.test.ts:1750` ("Given a missing
+literal and a gitignored existing literal", which pins `keep.txt` as the refused pattern) becomes
+I6 and names `gone.txt`. The B3l/B3m/B16 advice rows join the interop suite
+`pathspec-glob-dialect-interop.test.ts` (its `rows` table at `:662` and `snapshotOf`).
+
+### Part i — `\`-named working-tree entries (R17)
+
+- `src/domain/working-tree-path.ts:52` `validateWalkedEntryPath` calls `rejectInputShape`
+  (`:71-79`), whose `input.includes('\\')` test refuses on every host. Split that test into
+  `rejectBackslash`. ADR-1044's design named this split, but the shipped intake put its
+  Windows refusal in `pathspec-intake.ts` `refuseBackslash` instead, and `rejectInputShape` still
+  holds the test. `validateWorkingTreePath` keeps calling both.
+  `validateWalkedEntryPath(input, host: { readonly windowsPathSyntax?: boolean })` calls
+  `rejectBackslash` only under Windows path syntax (candidate 18).
+- Call site `src/application/primitives/walk-working-tree.ts:102` in `stepEntry` (`:90`):
+  `WalkConfig` (`:15`) gains the host flag, filled once in `walkWorkingTree` (`:157`) from
+  `ctx.windowsPathSyntax`. The flag is a single boolean read per entry.
+- Consumers that inherit the change: `add.ts`, `status.ts:303`, `stash.ts`,
+  `adapters/snapshot-resolvers/fs-workdir-enumerator.ts`, `repository.ts`. Once the walk admits
+  the name, `add` stages it through `stageFromStat` → `validateIndexPath`, which admits `\` on
+  POSIX. Probed at `98c84b01`: `indexPathRulesOf({}).validateIndexPath('a\\b', 0, '100644')`
+  accepts; with `{ windowsPathSyntax: true }` it refuses `INVALID_INDEX_ENTRY`.
+- `rm` (W8, W9): `src/application/commands/internal/working-tree.ts:84` `removeFile` →
+  `validatePath` (= `validateWorkingTreePath`) refuses. Candidate 19 decides whether the gate
+  reaches it.
+- Windows: the gate keeps the refusal. NTFS cannot hold the name, so only a non-native mount
+  reaches it, and ADR-1044 keys the same question on `windowsPathSyntax`.
+
+Tests to extend: `test/unit/domain/working-tree-path.test.ts` (both hosts),
+`test/unit/application/primitives/walk-working-tree.test.ts` (an adapter returning `a\b`). The
+interop file `test/integration/pathspec-backslash-interop.test.ts` (`snapshotOf`, `namesOf`) gets
+W1–W5, W7, W16 and D8b/E1 under its POSIX `describe.skipIf` at `:31`. Its Windows block at
+`:76` gets the walk refusal.
 ### Size and hot path
-  Review pin (git 2.55): a conflicted path the rules hide is resolved to stage 0 from the file on
-  disk by `add <glob>`, `add .` and `add -A`, like a walked conflicted path; the pass selects it
-  under the conflict rule (`matchesUnmergedIndexPath`).
+
 - Removed: `scanStar`, the `pathname` option, `containsGlob`, `compileLiteral`/`compileDirectory`,
   the `describe` `compileGlob` import, and per-ref recompilation in `buildRefFilter`.
 - Added: `verbatimLevel`, `hasGlobSpecial`, the prefix and one-star fast paths, the bytes export,
@@ -556,6 +936,24 @@ leaves 32.11b open.
 - Hot path: the common `add '*.ts'` and `checkout -- 'src/*.ts'` take the one-star or prefix path
   with no encoding. The DP path encodes once per tested path. That is one `Uint8Array(n)` against
   the `tokens × Uint8Array(n+1)` layers the DP already allocates, so it is not the dominant cost.
+- Fold (Parts f–i), estimated before any code exists: f +80 to +150 B gzip (two filters, the
+  report split, the checkout universe filter); g +150 to +300 B (the gitlink step and gitfile →
+  child-context resolution; `deriveContext`, `resolveRef` and `parseGitfilePointer` are already
+  bundled); h +150 to +250 B (the lazy ignore split, `firstIgnoredOf`, `force` wiring, the result
+  fields); i +20 to +40 B. Total +400 to +740 B against caps raised to the floor by `0287b658`,
+  so candidate 11's route applies again: measure, then raise by the measured delta. Under the
+  recommendations no error-union member is added (13A adds result fields; 17A reuses
+  `NOT_A_REPOSITORY`). 13B would add two members, about 30 B gzip each.
+- Fold hot paths: the literal fast path (`add <file>`) now builds the repo ignore predicate unless
+  `force` is set. I17 makes that necessary even for a tracked literal: git reports the ignored
+  directory above it. This is the one new per-call cost on a path that skipped ignore rules
+  before. Bench it with new `add.bench.ts` rows ("When add() stages one tracked literal" / "one
+  untracked literal") under `bench:ab`. If the delta exceeds noise, the fallback is to build the
+  predicate only when some `.gitignore`/`info/exclude`/`core.excludesFile` source exists, which
+  the evaluator already reads. The walk pays one boolean read per entry (i) and one map lookup per walked
+  leaf (f; `walkedTrackedFirst` already does that lookup, so the filter can sit there). The
+  gitlink step is one pass over the index entries already in memory, plus one `lstat` and one
+  HEAD read per gitlink, and a superproject holds few gitlinks.
 
 ## Decision candidates
 
@@ -572,8 +970,14 @@ leaves 32.11b open.
 | 9 | `compileGlob`'s non-`pathname` mode once (a) and (c) move | **A** remove `scanStar`, the `pathname` option and the branch (pathname-only engine for ignore/attributes/sparse) · **B** keep it | A | After candidates 1A and 7A it has no caller; keeping it is dead code. It is also the size offset for candidate 11. |
 | 10 | `rm -r` rule for pathspecs that are not literals | **A** per-entry max match level over the index, checked in argument order with the no-match check · **B** keep the `-r` check for literals only | A | R4b refuses in git; under B, verbatim-first would silently remove `a?/f` without `-r` (data loss). R4/R6 show `FNMATCH` never needs `-r`. |
 | 11 | Browser-bundle cap (342.1 kB, ~0.1 kB headroom) | **A** offset first (candidate 9 removals); if still over, raise the cap by the measured delta in this PR · **B** also drop `MAX_DOUBLE_STAR_PER_PATTERN` / `countDoubleStars` from `resolve-pathspec.ts`: its stated reason (RegExp blow-up) is gone under ADR-077, and git has no such cap · **C** hold the PR until another change frees bytes | A, with B as a separate user call | A is the measured route. B is also a behaviour change, since git accepts patterns tsgit refuses with `INVALID_OPTION`; it is faithful but out of the brief's literal scope, so it needs a yes. |
-
 | 12 | Backslash in a pathspec body (`resolvePathspec` refuses it today; the design missed it, the planner found it) | **A** keep the refusal: D6/D8b/D17/E1/E2 stay command-level follow-ups, and the matcher keeps `\` glob-special · **B** accept `\` on hosts without Windows path syntax, for matching only · **C** accept `\` everywhere | planner: A | **Decided: ADR-1044, B** (user-ratified). D6, D17 and E2 match git on POSIX. The security dimension reviews the relaxed intake. D8b and E1 stay follow-ups under the walk validator. |
+| 13 | How `add` reports what git lists and exits 1 for while still staging the rest: ignored entries a pathspec reaches (I1–I10, I17–I23, I29) and skip-worktree-only pathspecs (S2–S7, S12, S15) | **A** return normally with additive `AddResult` fields `ignored: ReadonlyArray<FilePath>` (the paths git lists, sorted) and `sparse: ReadonlyArray<string>` (the spellings git lists), both `[]` when nothing is reported. Every other match is staged and committed, as git does. The caller derives git's exit 1 from a non-empty list (ADR-249) · **B** refuse atomically with new error members `PATHSPEC_IGNORED { paths }` / `PATHSPEC_SPARSE { patterns }` (about 30 B gzip each), nothing staged · **C** stage and commit the rest, then throw an error that carries the report and the `AddResult` | A | A is the only shape whose index matches git on the mixed rows (I2, I3, I10, I17, I19–I23, S5–S7: git stages the rest). B would also turn I20–I23, whose index is right today, into refusals. It leaves ADR-1035 untouched: that ADR's atomic refusal covers unmatched pathspecs, which still refuse first (I5, I6, S9). B diverges on every mixed row's index. C throws after a durable write, which breaks the "a throw means nothing changed" contract every `add` refusal keeps (ADR-1035) and CQS. A's cost: a caller that ignores the fields misses git's failure exit. The documentation phase must say so. |
+| 14 | `AddOptions.force`, declared and never read today (I13–I16) | **A** wire it as git's `-f`: no ignore rule applies on any route (literal split, walk, `addAll`) · **B** wire it for the literal report only · **C** leave it unread | A | With R16 and C together, an ignored untracked file could no longer be staged through `add` at all: today's literal bypass is the only route, and R16 closes it. B keeps I13–I16 divergent. A is git's flag as pinned. |
+| 15 | Release class of R16: `add(['ignored.txt'])` stops staging the file without `force` (I1; `add.test.ts:1728` pins today's staging) | **A** ship as a `fix`, as this PR already ships other git-faithful refusal and staging changes (B1, R2, C6) · **B** ship R16's report on the walk route only and keep the fast-path literal bypass until a major (I1–I4 and I9 stay divergent) · **C** hold all of R16 for the breaking batch (32.11b) | A, user call | The brief excludes breaking changes, and only the user can say whether a consumer staging ignored files by literal counts as one. B splits behaviour by route: `add x.log` would stage while `add x.log '*.txt'` reports. C keeps I1–I16 open. |
+| 16 | How `add` resolves a gitlink's checkout HEAD (R15) | **A** read `<path>/.git`: a directory is the gitdir; a gitfile goes through `parseGitfilePointer`, resolved relative to `<path>`. Derive a child `Context` on that gitdir (`deriveContext`, as `buildChildContext` does) and call `resolveRef(child, HEAD)`, which covers packed refs, symbolic HEAD and reftable · **B** reuse `deriveSubmoduleContext` (`.gitmodules` name → `.git/modules/<name>`) · **C** a minimal reader: HEAD file, loose ref, `packed-refs`, no reftable | A | B misses GL17 (embedded clone, no `.gitmodules`) and GL18 (`--name other`), both pinned to stage, and GL19 (a replaced repository). C reimplements ref resolution and misses a reftable submodule. A reuses bundled code. The security review must look at it: the gitfile may point outside the work tree, as it may for git, and the read stays read-only. |
+| 17 | A `<path>/.git` that leads to no repository (GL20 broken gitfile, GL21 corrupt HEAD) | **A** refuse with the existing `NOT_A_REPOSITORY { path }` (`src/domain/repository/error.ts`), the path being git's `<path>/<gitdir as written>`, before any blob write (the gitlink step runs before `stageWalkedEntries`) · **B** leave the entry unchanged and succeed (today's outcome) · **C** a new member `SUBMODULE_NOT_A_REPOSITORY { path }` | A | git dies with exit 128 and the index unchanged, and A matches both with no new union member. B is a refusal-condition mismatch. C costs about 30 B gzip for a distinction `path` already carries. |
+| 18 | Admitting a `\`-named entry in the working-tree walk (R17) | **A** host-gate it: `validateWalkedEntryPath` refuses `\` only under `windowsPathSyntax`, the key ADR-1044 uses · **B** admit it on every host · **C** keep refusing, but skip the entry instead of throwing | A | A matches W1–W5, W7 and W16 on POSIX and keeps ADR-1044's Windows stance in one place. B admits a separator-bearing name under Windows path syntax, which ADR-1044 refused. C stops `status` from throwing but still hides the file from `add` (W1–W5 stay divergent), against git. |
+| 19 | `rm` removing a `\`-named working-tree file (W8, W9) | **A** extend the same host gate to `removeFile` (`internal/working-tree.ts:84`), the only writer these rows reach · **B** leave `rm` as a pinned follow-up (its refusal is atomic: index and file unchanged) · **C** gate `validateWorkingTreePath` itself for every caller (`mv`, `materializeFile`, the pathspec intake) | A | W8/W9 are a refusal-condition mismatch on POSIX, and A closes them with the gate Part i already builds. C widens the change to `mv` and the materializer, which nothing here pinned. B is the fallback if the security review rejects A. |
 
 **Blockers:** none. None of the four IN parts needs magic pathspecs, `:(exclude)` or a change to
 the `!` alias to match the pinned rows.
@@ -666,6 +1070,26 @@ the `!` alias to match the pinned rows.
 `src/domain/pathspec`, `src/domain/refs/ref-glob.ts`, `src/domain/describe/match.ts`,
 `src/domain/name-rev/ref-pattern.ts`, `resolve-pathspec.ts`, and the touched functions in
 `add.ts`/`rm.ts`/`checkout.ts`. Keep the existing equivalence marks on the DP loops intact.
+
+**Fold (Parts f–i)** — every row below is a matrix row; re-pin, never edit to fit:
+
+| Layer | File | Rows |
+|---|---|---|
+| unit | `test/unit/application/commands/add.test.ts` | S1–S15 (memory adapter, `skipWorktree` override as at `:3306`; assert `sparse`, index flags and no `writeObject` for the skipped entry). GL1–GL6, GL11–GL13, GL16, GL20–GL23 (a gitfile `sub/.git` plus `.git/modules/sub` in the memory adapter). I1–I30 (re-pin `:1728` → I1 and `:1750` → I6) |
+| unit | `test/unit/application/commands/checkout.test.ts` | SC1–SC12, both sources; assert the file bytes, the bit and the `PATHSPEC_NO_MATCH` `patterns` |
+| unit | `test/unit/application/commands/internal/pathspec-intake.test.ts` | `reachesSkipWorktree` |
+| unit | `test/unit/domain/working-tree-path.test.ts` | `validateWalkedEntryPath('a\\b')` accepted without Windows syntax, refused with it; `validateWorkingTreePath` unchanged |
+| unit | `test/unit/application/primitives/walk-working-tree.test.ts` | a `\`-named dirent is yielded (POSIX host) and refused (`windowsPathSyntax`) |
+| unit | `test/unit/application/commands/rm.test.ts` | W8/W9 under candidate 19A |
+| interop | `test/integration/add-tracked-under-ignore-interop.test.ts` | S1–S15 (new `describe`, no ignore rule), GL1–GL23 (gitlink fixtures, `protocol.file.allow=always`, pinned dates); compare `ls-files -s -v` and, for the report rows, git's exit code against the structured fields (the advice text is rebuilt from `sparse`) |
+| interop | `test/integration/pathspec-glob-dialect-interop.test.ts` | SC1–SC12 (disk bytes, `ls-files -v`, refusal patterns); I1–I30 and B3l/B3m/B16 (index + the ignored report rebuilt from `ignored`) |
+| interop | `test/integration/pathspec-backslash-interop.test.ts` | W1–W16, D8b, E1 under the POSIX `describe.skipIf` at `:31`; the Windows block at `:76` gains the walk refusal |
+| bench | `test/bench/add.bench.ts` | "When add() stages one tracked literal" and "… one untracked literal" (Part h's ignore build on the fast path), `bench:ab` after the implementation commit |
+
+Mutation: the narrowed buckets gain `src/domain/working-tree-path.ts`,
+`src/application/primitives/walk-working-tree.ts` and the touched `checkout.ts` functions. No
+property sibling: none of the four parts adds a parser, decoder or matcher grammar (the report
+split and the gate are predicates over existing matchers).
 
 ## Out of scope
 
