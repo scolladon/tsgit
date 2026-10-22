@@ -90,7 +90,10 @@ export const trackPositives = (
       });
       return verdict;
     },
-    seen: (positive) => highest[positives.indexOf(positive)] !== MATCH_LEVEL.NONE,
+    seen(positive) {
+      const slot = positives.indexOf(positive);
+      return slot !== -1 && highest[slot] !== MATCH_LEVEL.NONE;
+    },
     highest: () => highest,
   };
 };
