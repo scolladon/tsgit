@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   type CompileGlobOptions,
   compileGlob,
-  containsGlob,
 } from '../../../../src/domain/pathspec/compile-glob.js';
 
 /**
@@ -13,12 +12,6 @@ import {
  * docs/design/compile-glob-redos.md §6).
  */
 const ORACLE_SPECIALS = /[.+^${}()|[\]\\]/;
-const oracleStar = (pattern: string, i: number): { regex: string; next: number } => {
-  if (pattern[i + 1] !== '*') return { regex: '[^/]*', next: i + 1 };
-  const after = i + 2;
-  if (pattern[after] === '/') return { regex: '(.*/)?', next: after + 1 };
-  return { regex: '.*', next: after };
-};
 /**
  * git's WM_PATHNAME star: a run of two or more stars spans `/` only when it is
  * a whole path component — preceded by the pattern start or `/` and followed
@@ -33,14 +26,9 @@ const oraclePathnameStar = (pattern: string, i: number): { regex: string; next: 
   if (pattern[end] === '/') return { regex: '(.*/)?', next: end + 1 };
   return { regex: '.*', next: end };
 };
-const oracleToken = (
-  pattern: string,
-  i: number,
-  options: CompileGlobOptions,
-): { regex: string; next: number } => {
+const oracleToken = (pattern: string, i: number): { regex: string; next: number } => {
   const ch = pattern[i] as string;
-  if (ch === '*' && options.pathname === true) return oraclePathnameStar(pattern, i);
-  if (ch === '*') return oracleStar(pattern, i);
+  if (ch === '*') return oraclePathnameStar(pattern, i);
   if (ch === '?') return { regex: '[^/]', next: i + 1 };
   return { regex: ORACLE_SPECIALS.test(ch) ? `\\${ch}` : ch, next: i + 1 };
 };
@@ -48,7 +36,7 @@ const oracleRegex = (pattern: string, options: CompileGlobOptions): RegExp => {
   let body = '';
   let i = 0;
   while (i < pattern.length) {
-    const consumed = oracleToken(pattern, i, options);
+    const consumed = oracleToken(pattern, i);
     body += consumed.regex;
     i = consumed.next;
   }
@@ -280,51 +268,6 @@ describe('compileGlob', () => {
     });
   });
 
-  describe('Given a `**` NOT followed by `/`', () => {
-    describe('When matched', () => {
-      it('Then it spans `/` within a segment run', () => {
-        // Arrange — `a**z` compiles to [literal a, star-star, literal z]; the
-        // star-star run spans slashes, unlike a single `*`.
-        const result = compileGlob('a**z', { anchored: true });
-
-        // Act / Assert
-        expect(result.test('a/x/z')).toBe(true);
-        expect(result.test('axyz')).toBe(true);
-        expect(result.test('az')).toBe(true);
-        // A single-star `a*z` would reject the slash-crossing case.
-        expect(compileGlob('a*z', { anchored: true }).test('a/x/z')).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a `***` run', () => {
-    describe('When matched', () => {
-      it('Then it behaves as `**` followed by `*`', () => {
-        // Arrange — `***` scans to [star-star, star]; both span freely so the
-        // pair matches any run, slashes included.
-        const result = compileGlob('a***z', { anchored: true });
-
-        // Act / Assert
-        expect(result.test('a/x/z')).toBe(true);
-        expect(result.test('az')).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a trailing `**`', () => {
-    describe('When the matched prefix is the whole path', () => {
-      it('Then the empty remainder still matches', () => {
-        // Arrange — `a**` ends in star-star; its layer at the path end must accept
-        // an empty remaining run.
-        const result = compileGlob('a**', { anchored: true });
-
-        // Act / Assert
-        expect(result.test('a')).toBe(true);
-        expect(result.test('a/b/c')).toBe(true);
-      });
-    });
-  });
-
   describe('Given a trailing `**` followed by a literal', () => {
     describe('When the literal is absent', () => {
       it('Then it does NOT match', () => {
@@ -339,8 +282,8 @@ describe('compileGlob', () => {
     });
   });
 
-  describe('Given pathname matching (gitignore, gitattributes, sparse rules)', () => {
-    const pathname: CompileGlobOptions = { anchored: true, pathname: true };
+  describe('Given the gitignore dialect', () => {
+    const pathname: CompileGlobOptions = { anchored: true };
 
     describe('When a `**` is not a whole path component', () => {
       it.each([
@@ -399,7 +342,6 @@ describe('compileGlob', () => {
     const arbOptions = fc.record({
       anchored: fc.boolean(),
       withDirSuffix: fc.boolean(),
-      pathname: fc.boolean(),
     });
 
     describe('Given any pattern and any line-terminator-free path', () => {
@@ -418,28 +360,6 @@ describe('compileGlob', () => {
             { numRuns: 1000 },
           );
         });
-      });
-    });
-  });
-});
-
-describe('containsGlob', () => {
-  describe('Given pattern %j', () => {
-    describe('When checked', () => {
-      it.each([
-        ['*.ts', true],
-        ['a?b', true],
-        ['src/**', true],
-        ['plain.ts', false],
-        ['a/b/c', false],
-        ['', false],
-        ['[abc]', false],
-      ])('Then returns %s (no character-class detection in v1)', (input, expected) => {
-        // Arrange
-        const result = containsGlob(input);
-
-        // Assert
-        expect(result).toBe(expected);
       });
     });
   });

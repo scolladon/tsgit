@@ -1,11 +1,13 @@
-// Glob compiler shared by `parseGitignore` (.gitignore rules),
-// `compilePathspec`, and `compileSparseRule`. Supports `*`, `?`, `**`, `**/`:
+// Glob compiler for the gitignore-family dialect: `parseGitignore` (.gitignore
+// rules), `parseGitattributes` and `compileSparseRule` (non-cone sparse).
+// Supports `*`, `?`, `**`, `**/` under git's WM_PATHNAME star rule:
 //
 // - `*` matches any run except `/` — i.e. one path segment.
-// - `**` matches any run including `/` — any number of segments. When
-//  followed by `/`, the `/` is absorbed so `**/` spans zero or more whole
-//  `<segment>/` runs. Under `pathname` (gitignore, gitattributes, sparse) a
-//  star run does so only as a whole path component; elsewhere it is a `*`.
+// - A run of two or more stars matches any run including `/` only when it is a
+//   whole path component (preceded by the pattern start or `/`, followed by the
+//   end or `/`); any other run (`a**b`, `d/**b`) is a single `*`. When
+//   followed by `/`, the `/` is absorbed so `**/` spans zero or more whole
+//   `<segment>/` runs.
 // - `?` matches exactly one non-`/` character.
 //
 // A pattern compiles to a LINEAR, non-backtracking matcher: it is tokenised
@@ -14,8 +16,8 @@
 // `a*a*…*b` — can make it super-linear. See docs/design/compile-glob-redos.md
 // and docs/adr/077-linear-glob-matcher.md.
 //
-// Character classes `[abc]` are NOT supported in v1 — with no regex involved,
-// every non-glob character (brackets included) is matched verbatim.
+// In this dialect `[…]` and `\` are matched verbatim: with no regex involved,
+// every non-glob character is a literal.
 //
 // See docs/adr/040-extracted-compile-glob.md.
 
@@ -24,17 +26,9 @@ export interface CompileGlobOptions {
   readonly anchored: boolean;
   /**
    * When true, the matcher also accepts any descendant of the pattern: a
-   * literal `src` matches `src`, `src/foo`, and `src/a/b`. Used by
-   * `compilePathspec` for literal-as-directory semantics.
+   * literal `src` matches `src`, `src/foo`, and `src/a/b`.
    */
   readonly withDirSuffix?: boolean;
-  /**
-   * git's WM_PATHNAME matching, used by gitignore, gitattributes and sparse
-   * rules: a run of stars spans `/` only as a whole path component — preceded
-   * by the pattern start or `/` and followed by the end or `/`. Any other run
-   * (`a**b`, `d/**b`) is a single `*`.
-   */
-  readonly pathname?: boolean;
 }
 
 /** A compiled glob — `test` reports whether a path matches the pattern. */
@@ -62,17 +56,6 @@ const STAR = '*';
 const SEPARATOR = '/';
 const STAR_TOKEN: GlobToken = { kind: 'star' };
 
-const scanStar = (pattern: string, i: number): ScannedToken => {
-  if (pattern[i + 1] !== STAR) {
-    return { token: STAR_TOKEN, next: i + 1 };
-  }
-  const after = i + 2;
-  if (pattern[after] === SEPARATOR) {
-    return { token: { kind: 'star-slash' }, next: after + 1 };
-  }
-  return { token: { kind: 'star-star' }, next: after };
-};
-
 const endOfStarRun = (pattern: string, start: number): number => {
   let end = start;
   while (pattern[end] === STAR) end += 1;
@@ -93,20 +76,18 @@ const scanPathnameStar = (pattern: string, i: number): ScannedToken => {
   return { token: { kind: 'star-star' }, next: end };
 };
 
-const scanToken = (pattern: string, i: number, options: CompileGlobOptions): ScannedToken => {
+const scanToken = (pattern: string, i: number): ScannedToken => {
   const ch = pattern[i] as string;
-  if (ch === STAR) {
-    return options.pathname === true ? scanPathnameStar(pattern, i) : scanStar(pattern, i);
-  }
+  if (ch === STAR) return scanPathnameStar(pattern, i);
   if (ch === '?') return { token: { kind: 'single' }, next: i + 1 };
   return { token: { kind: 'literal', char: ch }, next: i + 1 };
 };
 
-const tokenize = (pattern: string, options: CompileGlobOptions): GlobToken[] => {
+const tokenize = (pattern: string): GlobToken[] => {
   const tokens: GlobToken[] = [];
   let i = 0;
   while (i < pattern.length) {
-    const scanned = scanToken(pattern, i, options);
+    const scanned = scanToken(pattern, i);
     tokens.push(scanned.token);
     i = scanned.next;
   }
@@ -220,15 +201,6 @@ const matchTokens = (
 };
 
 export const compileGlob = (pattern: string, options: CompileGlobOptions): GlobMatcher => {
-  const tokens = tokenize(pattern, options);
+  const tokens = tokenize(pattern);
   return { test: (path: string): boolean => matchTokens(tokens, options, path) };
 };
-
-// True iff `pattern` contains a glob metacharacter (`*` or `?`). Used
-// by `compilePathspec` to auto-detect literal vs glob patterns.
-// See docs/adr/037-pathspec-auto-detect.md.
-//
-// `[` and `]` are NOT considered glob metacharacters in v1 because
-// `compileGlob` does not support character classes.
-export const containsGlob = (pattern: string): boolean =>
-  pattern.includes('*') || pattern.includes('?');

@@ -29,7 +29,6 @@ export const compileSparseRule = (tokenized: TokenizedIgnoreLine, source: string
     matcher: compileGlob(tokenized.cleanPattern, {
       anchored: tokenized.anchored,
       withDirSuffix: recursive,
-      pathname: true,
     }),
   };
 };
