@@ -50,10 +50,11 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-034 — `homeDir` injection for ignore evaluation](../adr/034-homedir-injection.md)
 - [ADR-035 — Walk-time ignore pruning](../adr/035-walk-ignore-pruning.md)
 - [ADR-036 — `.gitignore` bounded read](../adr/036-gitignore-bounded-read.md)
-- [ADR-037 — Pathspec auto-detect (glob vs literal)](../adr/037-pathspec-auto-detect.md)
+- [ADR-1034 — A pathspec is a wildcard when it holds `*`, `?`, `[` or `\`](../adr/1034-a-pathspec-is-a-wildcard-when-it-holds-star-question-bracket-or-backslash.md)
 - [ADR-038 — Pathspec `!` exclusion](../adr/038-pathspec-exclusion.md)
 - [ADR-039 — Status pathspec deferred](../adr/039-defer-status-pathspec.md)
-- [ADR-040 — Extracted `compileGlob`](../adr/040-extracted-compile-glob.md)
+- [ADR-1033 — Pathspecs match with git's default wildmatch over the escape view's bytes](../adr/1033-pathspecs-match-with-gits-default-wildmatch-over-the-escape-views-bytes.md)
+- [ADR-1041 — `compileGlob` keeps only the gitignore dialect](../adr/1041-compile-glob-keeps-only-the-gitignore-dialect.md)
 - [ADR-041 — Windows testing strategy](../adr/041-windows-testing-strategy.md)
 - [ADR-042 — Canonical root lazy realpath](../adr/042-canonical-root-lazy-realpath.md)
 - [ADR-043 — Errno mapping placement](../adr/043-errno-mapping-placement.md)
@@ -227,5 +228,5 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.
 - **Touching the working-tree path?** Read ADR-018 through ADR-028 — the merge / checkout / reset family is the most subtle subsystem.
-- **Touching pathspec / ignore?** Read ADR-037, ADR-038, ADR-039, ADR-077 first.
+- **Touching pathspec / ignore?** Read ADR-1033, ADR-1034, ADR-038, ADR-039, ADR-077 first.
 - **Writing tests?** Read ADR-041, ADR-883 (the `FsOperations` injection), ADR-048 — the testing-strategy choices that the rest of the suite follows.
