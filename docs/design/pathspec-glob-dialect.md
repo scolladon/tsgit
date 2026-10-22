@@ -7,7 +7,7 @@
 > tag name; (d) `name-rev --refs`/`--exclude` match every `/`-suffix of the refname and expose
 > git's abbreviation signal; (e) docs fold-in, carried by the plan. Magic pathspecs, `:(exclude)`,
 > the `!` alias and the ADR superseding 038 are 32.11b, out.
-> Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22)
+> Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22) → folded the tracked-under-ignore staging gap (2026-10-22)
 
 ## Context
 
@@ -104,6 +104,20 @@ tsgit.
   the subject of an on-disk escape, and the symlink scan covers only its no-wildcard prefix. Under
   Windows path syntax the body is refused `PATHSPEC_OUTSIDE_REPO`, as today. Every other
   `validateWorkingTreePath` caller keeps refusing `\` (ADR-1044).
+- R12. `add` stages every tracked stage-0 entry that the pathspec matches and ignore rules hide
+  from the walk, as git's index-side pass does (B8, B14, B15, B16's staging). The same holds for
+  `add({ all: true })`. Pinned against git 2.55 on B8's fixture (`.gitignore: *.log`, tracked
+  `x.log` modified):
+  - `add -A` stages `M  x.log`; on B14's fixture it stages `M  d/x.txt`. `add -u` also stages
+    `M  x.log`, but tsgit has no `-u`.
+  - Intent-to-add `x.log` (`add -N`, then ignored): `add .` and `add '*.log'` both stage it
+    (`A  x.log`, blob of the content). It is **not** an exception.
+  - Gitlink `sub`, ignored, with a new commit inside: `add .` and `add 's*'` both stage the new
+    commit (`M  sub`). It is **not** an exception.
+  - Skip-worktree `x.log`, modified: `add .` leaves it unstaged (only `A  .gitignore`). `add '*.log'`
+    exits 1 with the sparse-checkout advice and stages nothing. Skip-worktree **is** the exception,
+    and the advice stays out of scope (sparse rules).
+  - To pin in the part: an unmerged (stage 1–3) path under an ignore rule.
 
 ## Design
 
@@ -179,7 +193,7 @@ matcher itself.
 | B4c | `d/x.log real.txt`, `.gitignore: d/` | `add '*.log'` | 128 · `… '*.log' …` · empty | ✗ |
 | B6 | tracked clean `t.txt` | `add 't*'` | 0 · — · `t.txt` | ok |
 | B7 | tracked `t.txt u.txt`, `t.txt` deleted | `add 't*'` | 0 · — · `u.txt` (deletion staged) | ok |
-| B8 | tracked `x.log` modified, now ignored | `add '*.log'` | 0 · — · `M  x.log` | ok |
+| B8 | tracked `x.log` modified, now ignored | `add '*.log'` | 0 · — · `M  x.log` (re-run 2026-10-22: same) | ✗ stages nothing, ` M x.log` (pre-existing; the walk prunes tracked-but-ignored paths) |
 | B9 | `a` | `add 'n1*' 'n2*'` | 128 · `… 'n1*' …` | ✗ no error |
 | B10 | `a` | `add missing 'n1*'` | 128 · `… 'missing' …` | ok (literal refusal) — but after the walk, see below |
 | B10b | `a` | `add 'n1*' missing` | 128 · `… 'n1*' …` | ✗ names `missing` |
@@ -187,6 +201,10 @@ matcher itself.
 | B11′ | file named `nomatch*`, `.gitignore: nomatch?` | `add 'nomatch*'` | 0 · — · empty · 0 (re-run 2026-10-22: same) | ok by accident. Test fixture for B11: tsgit's gitignore dialect has no `[…]`, so B11 cannot be twinned |
 | B12 | `a.txt` | `add . 'nomatch*'` | 128 · `… 'nomatch*' …` · empty | ✗ stages `a.txt` |
 | B12r | `a.txt` | `add 'zz*' .` | 128 · `fatal: pathspec 'zz*' did not match any files` · empty · 0 (re-run 2026-10-22: same) | ✗ stages `a.txt` |
+| B13 | B8's fixture | `add x.log` | 0 · — · `M  x.log` (re-run 2026-10-22: same) | ok (`modified: ['x.log']`; the literal fast path reads the index) |
+| B14 | tracked `d/x.txt k`, then `.gitignore: d/`, `d/x.txt` modified | `add .` | 0 · — · `A  .gitignore`, `M  d/x.txt` (re-run 2026-10-22: same) | ✗ stages `.gitignore` only, ` M d/x.txt` kept |
+| B15 | same | `add '*.txt'` | 0 · — · `M  d/x.txt` (re-run 2026-10-22: same) | ✗ stages nothing |
+| B16 | same | `add d` | 1 · `The following paths are ignored by one of your .gitignore files:` / `d` / 2 `hint:` lines · `M  d/x.txt` (re-run 2026-10-22: same) | staging: ✗ stages nothing. Advice and exit 1: out of scope (B3l/B3m class) |
 | RN1 | tracked `a.txt` | `add --renormalize 'nomatch*'` | 128 · `… 'nomatch*' …` | ✗ no error |
 | RN2 | same | `add --renormalize 'a*' 'nomatch*'` | 128 · `… 'nomatch*' …` | ✗ |
 | RN3 | same | `add --renormalize 'a*'` | 0 | ok |
@@ -318,8 +336,11 @@ N25 versus N27 shows the abbreviation is `refs_shorten_unambiguous_ref`, not a f
 That needs ref-existence lookups, so it is display work for the caller (ADR-249). tsgit already
 has the primitive: `src/application/commands/internal/shorten-ref.ts` `shortenUnambiguousRef`.
 
-**Row count** (D 23 + E 5 + L 6 + B 27 + R 11 + C 10 + G 5 + K 6 + DS 14 + N 28 = 135; B3l/B3m are
-pinned for the out-of-scope follow-up and counted). B11′, B12r, RN4–RN6 and K1L were pinned by the
+**Row count** (D 23 + E 5 + L 6 + B 31 + R 11 + C 10 + G 5 + K 6 + DS 14 + N 28 = 139; B3l/B3m are
+pinned for the out-of-scope follow-up and counted). B8 and B13–B16 were re-run on 2026-10-22 with
+the same procedure. Their tsgit column comes from a session pin that ran tsgit through jiti at
+this branch's HEAD and at `main` (`8dd442ee`). Both gave the same result, so the gap predates this
+change. B11′, B12r, RN4–RN6 and K1L were pinned by the
 planner and re-run once on 2026-10-22 with the procedure above, as were D6, D8b, D17, E1 and E2;
 every re-run gave the recorded output.
 
@@ -454,6 +475,30 @@ known to git` / 1 for checkout) are display. The caller knows which command it c
 that wording from the code (ADR-249). Checkout's multi-line report needs the full list:
 candidate 5.
 
+**Index-side pass (tracked entries the walk never reaches).** git's `add` runs
+`add_files_to_cache`. That is `run_diff_files` over the index entries the pathspec matches, and it
+stages modified tracked entries whatever the ignore rules say. tsgit's `stageIgnoredWalk`
+(`add.ts:933`) stages only what the ignore-pruned walk yields. `addAll` (`add.ts:1079`) has the
+same shape (read from the code). Deletions are already right: `collectRemovedEntries` decides by
+presence on disk, not by the ignore filter (B7).
+
+- Where: in `stageIgnoredWalk`, after `collectWalk` and `refuseUnseenWalked` and before
+  `stageWalkedEntries`. `addAll` gets the same step with `WHOLE_TREE_MATCHER`, before its
+  `stageWalkedEntries`.
+- What: walk the `sorted` entries from `readExistingEntries`. Keep each entry that is stage 0,
+  not `skipWorktree`, matched (`matchesIndexPath`) and absent from the walked set. `lstatOrMissing`
+  it. When it is a regular file or symlink, or a directory for a gitlink entry, append a walked
+  record built from that stat. `walkedTrackedFirst` then yields it in index order, and
+  `stageWalkedEntries` → `processWalkEntry` stages it through the walked-entry path: same
+  conversion, same `seen` marking, same modified tally. Intent-to-add entries go through the same
+  path (R12). The gitlink case reuses whatever the walk does for a submodule checkout; the part
+  confirms that path stages a new submodule commit.
+- Not staged here: a missing file stays with the removal path (`collectRemovedEntries`). A
+  skip-worktree entry is skipped (R12). A path whose leading component is now a file or symlink
+  is also left to the removal path, as `presentOnDisk` already decides.
+- The refusal is unaffected: `refuseUnseenWalked` already counts index-seen entries
+  (`indexSees`).
+
 Atomicity proof obligations (tests): B1/B2 `loose = 0` and index unchanged. R1 leaves the file on
 disk and in the index. C1/C1b/C3 leave `dirty.txt` dirty. RN2 leaves no index change.
 
@@ -573,6 +618,9 @@ the `!` alias to match the pinned rows.
 - `add.test.ts`: re-pin "Given a glob with no match" (`:1652`) → B9 refusal. Add B1/B2 with an
   object-store spy asserting no `writeObject` before the throw. Add B11 with the B11′ fixture
   (`.gitignore: nomatch?`; tsgit's gitignore dialect has no `[…]`), B12r, and RN1/RN2/RN4–RN6.
+  Memory-adapter rows for the index-side pass: B8, B14, B15 and B16's staging flip; B13 is a
+  guard. Also the R12 cases: `all: true` on B8's and B14's fixtures, intent-to-add staged, the
+  skip-worktree entry left unstaged, and a missing ignored tracked file still removed (B7 shape).
 - `rm.test.ts`: re-pin "Given a glob \"*.nope\" with no matches" (`:405`). Add R1, R2, R4, R4b, R6.
 - `checkout.test.ts`: re-pin `:967`, `:992` (becomes K4: the corrupt index refuses on the read),
   `:1380`, `:1557`. Add C1b, C4/C5 `patterns`, C8, K1, K1L. K5 is a guard (it passes today).
@@ -583,7 +631,8 @@ the `!` alias to match the pinned rows.
 `runGit`, `tryRunGitWithExit`; scrubbed env, pinned dates for commits):
 
 - New `test/integration/pathspec-glob-dialect-interop.test.ts`: the D/E/B/R/C/G/K rows, with
-  B11′, B12r, RN4–RN6 and K1L. Each runs real git and tsgit on twin repos and compares
+  B11′, B12r, RN4–RN6 and K1L. B8 comes back (Part 7 held it back), together with B13–B16 (B16
+  compares the index only, not the advice or exit code). Each runs real git and tsgit on twin repos and compares
   `ls-files -s` / file bytes / loose-object count / error code + pattern(s). Wording is
   reconstructed per command from the code.
 - D6, D17 and E2 run at command level under
@@ -615,13 +664,16 @@ the `!` alias to match the pinned rows.
 
 ## Out of scope
 
+- The ignored-paths advice and exit 1 when a directory literal names an ignored directory (B16).
+  It belongs to the B3l/B3m class. B16's staging is in scope (R12).
 - Magic pathspecs `:(…)`, `:!`/`:^`, `:(exclude)`, the `!` alias question, ADR superseding 038:
   backlog 32.11b (breaking).
 - `add --ignore-missing` and the `rm` option that ignores unmatched pathspecs: not in the brief.
 - The ignored-literal report (B3l/B3m: "The following paths are ignored…", exit 1, the rest still
   staged): a literal-path behaviour, not part of glob refusal. Pinned here for the follow-up.
-- Sparse / skip-worktree seen rules (git's `PS_IGNORE_SKIP_WORKTREE` and the sparse advice): no
-  sparse row pinned. To prove a gap: twin `git add 'x*'` where `x*` matches only a skip-worktree
+- Sparse / skip-worktree seen rules (git's `PS_IGNORE_SKIP_WORKTREE` and the sparse advice):
+  only R12's skip-worktree staging exception is pinned (its glob form exits 1 with the sparse
+  advice). To prove a gap: twin `git add 'x*'` where `x*` matches only a skip-worktree
   entry.
 - The gitignore/gitattributes dialect's own `[…]`/`\` support: R9 keeps it unchanged. Unproven
   hunch; to prove it, pin `printf '[ab].log\n' > .gitignore` against `git check-ignore`.
