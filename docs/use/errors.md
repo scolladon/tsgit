@@ -127,8 +127,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_INDEX_HEADER` | `reason` | `.git/index` header malformed. |
 | `INVALID_FILE_MODE` | `value` | Mode bits do not match any recognised git file mode. |
 | `PATHSPEC_BEYOND_SYMLINK` | `path` | `add` refused a literal pathspec whose leading directory is a symbolic link (fires for an intra-repo link target too — shape-based, not containment-based). |
-| `PATHSPEC_NO_MATCH` | `pattern` | A literal path pattern matched nothing. |
-| `PATHSPEC_OUTSIDE_REPO` | `pattern` | Pattern resolved to a path outside `workDir`. |
+| `PATHSPEC_NO_MATCH` | `pattern`, `patterns` | A positive pathspec matched nothing. `patterns` is every unmatched positive pathspec in command-line order (`checkout` lists all; `add` and `rm` stop at the first), `pattern` is `patterns[0]`. |
+| `PATHSPEC_OUTSIDE_REPO` | `pattern` | Pattern resolved to a path outside `workDir`, or (under Windows path syntax only) a pathspec holds `\`. On a POSIX host `\` is a matching escape. |
 | `SPARSE_PATTERN_FILE_TOO_LARGE` | `bytes, limit` | `.git/info/sparse-checkout` exceeds the cap. |
 | `TREE_CYCLE_DETECTED` | `path` | Recursing into a tree formed a cycle (gitlink loop). |
 | `TREE_DEPTH_EXCEEDED` | `depth` | Tree recursion exceeded `core.maxTreeDepth` — read from the repository-local config only (never `~/.gitconfig` or any other scope), defaulting to 2048 when unset, and honoured unclamped at any configured value. |

@@ -53,7 +53,7 @@ interface CheckoutPathsOptions {
 - **Atomicity.** Per-file (matches canonical git). The index commit is atomic; working-tree writes are not all-or-nothing if power is cut mid-write.
 - **Sparse checkout.** Switch mode honours the active sparse pattern on the target branch.
 - **Path restore takes the index lock.** Both path-restore sources lock the index first and refuse `RESOURCE_LOCKED` when it is held. Entries of other paths keep their conflict stages.
-- **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md). Scope is matched on raw path bytes, so a literal never restores a lossy entry through its U+FFFD view.
+- **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md#pathspec-syntax) (git's pathspec glob; a `\` is a matching escape on POSIX and refused `PATHSPEC_OUTSIDE_REPO` under Windows path syntax). Scope is matched on raw path bytes, so a literal never restores a lossy entry through its U+FFFD view.
 
 ## Examples
 
@@ -89,7 +89,7 @@ await repo.checkout({ rev: 'main', force: true });
 - `INVALID_REF` — `rev` cannot be spelled as a ref name and does not resolve as an object id.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `rev` matches more than one object.
 - `REF_NOT_FOUND` — HEAD itself does not resolve (an unborn branch).
-- `PATHSPEC_NO_MATCH` — a literal path pattern matched nothing.
+- `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive path pattern, literal or glob, matched nothing. The refusal is atomic and lists every unmatched positive pathspec in command-line order in `patterns` (`pattern` is the first); nothing is restored.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 
 ## Smudge filter drivers (`filter=<name>`)

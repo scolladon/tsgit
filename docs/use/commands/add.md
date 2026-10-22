@@ -30,7 +30,7 @@ interface EolNotice {
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `paths` | `ReadonlyArray<string>` | (required) | Literal paths or pathspec globs. **MUST be empty when `all: true`.** |
+| `paths` | `ReadonlyArray<string>` | (required) | Literal paths or [pathspec globs](#pathspec-syntax). **MUST be empty when `all: true`.** |
 | `opts.all` | `boolean` | `false` | Bulk mode — walk the working tree and stage every change. |
 | `opts.force` | `boolean` | `false` | Stage ignored paths anyway. |
 | `opts.renormalize` | `boolean` | `false` | Re-clean every tracked path the pathspec names under the current attributes and config (`git add --renormalize`). See [Renormalize](#renormalize). |
@@ -39,7 +39,11 @@ interface EolNotice {
 
 ## Pathspec syntax
 
-`*`, `?`, `**` are globs. `!`-prefixed entries exclude (last match wins, `.gitignore` semantics). Anything else is a literal that matches the exact path **and** its descendants. Character classes (`[abc]`) and magic prefixes (`:(top)`, `:(literal)`) are not supported in v1.
+A pathspec is a literal unless it holds `*`, `?`, `[` or `\`. A literal matches the exact path **and** its descendants. Anything else is git's pathspec glob (`wildmatch` with no flags), tried after the verbatim-prefix rule (the body taken as a path or directory prefix): `*` and `?` **cross `/`**, `[…]` is a bracket class (`!`/`^` negate, ranges, the `[:class:]` names), `\x` matches `x`, and the pattern is anchored at both ends. Matching is byte-wise: `?` and `[…]` consume one byte of the path's UTF-8, so `?.txt` does not match `é.txt`. `!`-prefixed entries exclude (last match wins). Magic prefixes (`:(top)`, `:(literal)`) are not supported. gitignore, gitattributes and sparse patterns keep their own dialect.
+
+On a POSIX host a `\` in a pathspec is a matching escape only: it is never looked up on disk. Under Windows path syntax a pathspec holding `\` is refused with `PATHSPEC_OUTSIDE_REPO`.
+
+An unmatched positive pathspec refuses the whole call with `PATHSPEC_NO_MATCH` under the index lock, before any object write: the index is unchanged and no loose object is left behind. A pathspec whose spelled path exists on disk is not refused when it is a glob, or a literal that ignore rules do not hide (an empty directory stages nothing and succeeds); a literal naming an ignored path is still refused. Index entries count as matches, so a glob also selects tracked paths under an ignored directory and conflicted (unmerged) paths, which `add` stages as git's index-side pass does.
 
 ## Examples
 
@@ -57,7 +61,7 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 
 ## Throws
 
-- `PATHSPEC_NO_MATCH` — a literal pattern matched nothing. (Glob no-match is a silent no-op.)
+- `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive pathspec, literal or glob, matched nothing; `pattern` is the first unmatched spelling and `patterns` holds it alone. Nothing is staged or written.
 - `PATHSPEC_BEYOND_SYMLINK` — a literal or glob pathspec whose leading directory is a symbolic link. Not raised in bulk (`all: true`) mode.
 - `INVALID_INDEX_ENTRY` — a path this call would stage fails git's own index-entry name rules. Aborts the whole call; nothing is staged.
 - `INVALID_OPTION { option: 'all' }` — `all: true` with a non-empty pathspec.

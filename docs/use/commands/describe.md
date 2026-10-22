@@ -20,8 +20,8 @@ interface DescribeOptions {
   readonly exactMatch?: boolean;  // only an exact tag counts (≡ candidates: 0)
   readonly candidates?: number;   // max tags considered; default 10
   readonly firstParent?: boolean; // follow only first parents
-  readonly match?: string | ReadonlyArray<string>;   // short-name globs to include
-  readonly exclude?: string | ReadonlyArray<string>; // short-name globs to drop
+  readonly match?: string | ReadonlyArray<string>;   // short-name wildmatch globs to include
+  readonly exclude?: string | ReadonlyArray<string>; // short-name wildmatch globs to drop
   readonly dirty?: boolean;       // report HEAD's tracked dirtiness (HEAD only)
   readonly broken?: boolean;      // tolerate an unreadable tree, reporting dirty
 }
@@ -56,6 +56,7 @@ interface DescribeResult {
   history reads O(distance) commits, not the full ancestry. This is a pure
   traversal optimisation: the reported tag and distance are identical to a full
   walk (git's two output-inert breaks).
+- **`match` / `exclude` dialect:** git's `wildmatch(pattern, name, 0)` on the short name (`v2.0`, `heads/main`), the dialect `name-rev`'s `refs` and the pathspec globs share: `*` and `?` **cross `/`**, `[…]` is a bracket class, `\` escapes, anchored at both ends, matched over UTF-8 bytes. An include must match and no exclude may match; an aborting pattern matches nothing.
 - **Same-commit ties:** two annotated tags on one commit resolve to the newer
   tagger date (git's `replace_name`).
 - **`exactMatch`:** only a tag on the target itself counts; otherwise refuses

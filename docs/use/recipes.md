@@ -68,7 +68,7 @@ await repo.add(['src']);
 await repo.add(['src/**', '!src/legacy/**']);
 ```
 
-Literal-no-match throws `PATHSPEC_NO_MATCH`. Glob-no-match is a silent no-op — matches git's behaviour. Character classes (`[abc]`) and magic prefixes (`:(top)`, `:(literal)`) are not supported in v1.
+Pathspecs use git's glob: `*` and `?` cross `/`, `[abc]` is a character class, `\` escapes. A pathspec that matches nothing throws `PATHSPEC_NO_MATCH` before anything is staged. Magic prefixes (`:(top)`, `:(literal)`) are not supported. See [pathspec syntax](commands/add.md#pathspec-syntax).
 
 ## Bulk `add --all`
 
