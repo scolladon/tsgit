@@ -15,7 +15,8 @@ import {
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
-import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
+import { pathspecVerdict } from '../../domain/pathspec/match-pathspec.js';
+import { MATCH_LEVEL } from '../../domain/pathspec/wildcard.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
@@ -382,8 +383,8 @@ const restoreUnderIndexLock = async (
   try {
     const currentIndex = await readIndex(ctx);
     const universe = await enumerateSourcePaths(ctx, source, currentIndex);
-    refuseUnmatched(pathspec.positives, universe);
-    const matched = universe.filter((entry) => matchesIndexPath(pathspec.matcher, entry));
+    const { matched, unmatched } = selectFromUniverse(pathspec, universe);
+    refuseUnmatched(unmatched);
     const pathSet = new Set<FilePath>(matched.map(escapedPathOf));
     if (pathSet.size === 0) return undefined;
     return source === undefined
@@ -394,15 +395,28 @@ const restoreUnderIndexLock = async (
   }
 };
 
+// One matcher pass over the universe: what the spec selects, and which
+// positives nothing reached, so the refusal needs no second scan.
+const selectFromUniverse = (
+  { matcher, positives }: CommandPathspec,
+  universe: ReadonlyArray<IndexPath>,
+): { readonly matched: IndexPath[]; readonly unmatched: ReadonlyArray<PositivePathspec> } => {
+  const at = positives.map((positive) => matcher.indexOf(positive.entry));
+  const seen = new Set<PositivePathspec>();
+  const matched: IndexPath[] = [];
+  for (const entry of universe) {
+    const verdict = pathspecVerdict(matcher, escapedPathOf(entry));
+    at.forEach((index, i) => {
+      if (verdict.levels[index] !== MATCH_LEVEL.NONE) seen.add(positives[i] as PositivePathspec);
+    });
+    if (verdict.matched) matched.push(entry);
+  }
+  return { matched, unmatched: unmatchedPositives(positives, (positive) => seen.has(positive)) };
+};
+
 // Every positive pathspec must name something in the source universe; git
 // reports each unmatched one, and so does the error.
-const refuseUnmatched = (
-  positives: ReadonlyArray<PositivePathspec>,
-  universe: ReadonlyArray<IndexPath>,
-): void => {
-  const unmatched = unmatchedPositives(positives, (positive) =>
-    universe.some((entry) => positive.entry.compiled.test(escapedPathOf(entry))),
-  );
+const refuseUnmatched = (unmatched: ReadonlyArray<PositivePathspec>): void => {
   const [first, ...rest] = unmatched;
   if (first === undefined) return;
   throw pathspecNoMatch(first.spelling, ...rest.map((positive) => positive.spelling));

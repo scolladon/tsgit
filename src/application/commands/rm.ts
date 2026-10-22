@@ -30,8 +30,7 @@ import {
 } from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import { pathspecMatchLevel } from '../../domain/pathspec/match-pathspec.js';
-import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
+import { pathspecVerdict } from '../../domain/pathspec/match-pathspec.js';
 import { MATCH_LEVEL, type MatchLevel } from '../../domain/pathspec/wildcard.js';
 import type { Context } from '../../ports/context.js';
 import {
@@ -46,7 +45,11 @@ import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitat
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
-import { type PositivePathspec, resolveCommandPathspec } from './internal/pathspec-intake.js';
+import {
+  type CommandPathspec,
+  type PositivePathspec,
+  resolveCommandPathspec,
+} from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 import { removeFile } from './internal/working-tree.js';
 
@@ -96,15 +99,16 @@ export const rm = async (
     const removed: FilePath[] = [];
     const removedKeys: IndexPathKey[] = [];
     const removedGroups: ReadonlyArray<IndexEntry>[] = [];
+    const levels = positiveLevels(matcher, positives);
     for (const [key, stages] of byPath) {
       const [first] = stages as readonly [IndexEntry, ...IndexEntry[]];
-      if (matchesIndexPath(matcher, first)) {
+      if (levels.observe(escapedPathOf(first))) {
         removed.push(first.path);
         removedKeys.push(key);
         removedGroups.push(stages);
       }
     }
-    enforcePositiveLevels(positives, byPath, opts.recursive === true);
+    enforcePositiveLevels(positives, levels.highest(), opts.recursive === true);
     if (opts.force !== true) {
       await enforceSafetyValve(
         ctx,
@@ -163,16 +167,28 @@ const resolvedRecordsOf = (
 ): ReadonlyArray<ResolveUndoRecord> =>
   removedGroups.filter((stages) => !stages.every(isStageZero)).map(resolveUndoRecordOf);
 
-const highestLevel = (
-  positive: PositivePathspec,
-  byPath: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
-): MatchLevel => {
-  let highest: MatchLevel = MATCH_LEVEL.NONE;
-  for (const [first] of byPath.values()) {
-    const level = pathspecMatchLevel(positive.entry, escapedPathOf(first as IndexEntry));
-    if (level > highest) highest = level;
-  }
-  return highest;
+/**
+ * The highest level each positive reached over the paths observed so far, kept
+ * beside the removal verdict so every (path, entry) pair is matched once.
+ */
+const positiveLevels = (
+  matcher: CommandPathspec['matcher'],
+  positives: ReadonlyArray<PositivePathspec>,
+) => {
+  const at = positives.map((positive) => matcher.indexOf(positive.entry));
+  const highest: MatchLevel[] = positives.map(() => MATCH_LEVEL.NONE);
+  return {
+    /** Records the path's levels; returns the spec's verdict for it. */
+    observe(path: FilePath): boolean {
+      const { matched, levels } = pathspecVerdict(matcher, path);
+      at.forEach((index, i) => {
+        const level = levels[index] ?? MATCH_LEVEL.NONE;
+        if (level > (highest[i] ?? MATCH_LEVEL.NONE)) highest[i] = level;
+      });
+      return matched;
+    },
+    highest: (): ReadonlyArray<MatchLevel> => highest,
+  };
 };
 
 /**
@@ -182,14 +198,14 @@ const highestLevel = (
  */
 const enforcePositiveLevels = (
   positives: ReadonlyArray<PositivePathspec>,
-  byPath: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  highest: ReadonlyArray<MatchLevel>,
   recursive: boolean,
 ): void => {
-  for (const positive of positives) {
-    const level = highestLevel(positive, byPath);
+  positives.forEach((positive, i) => {
+    const level = highest[i] ?? MATCH_LEVEL.NONE;
     if (level === MATCH_LEVEL.NONE) throw pathspecNoMatch(positive.spelling);
     if (level === MATCH_LEVEL.RECURSIVE && !recursive) throw rmRecursiveWithoutR(positive.spelling);
-  }
+  });
 };
 
 /**

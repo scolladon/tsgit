@@ -5,6 +5,7 @@ import {
   matchesPathspec,
   matchesUnmergedPath,
   pathspecMatchLevel,
+  pathspecVerdict,
   withoutExactly,
 } from '../../../../src/domain/pathspec/match-pathspec.js';
 import { MATCH_LEVEL } from '../../../../src/domain/pathspec/wildcard.js';
@@ -210,6 +211,55 @@ describe('pathspecMatchLevel', () => {
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('pathspecVerdict', () => {
+  describe.each([
+    {
+      spec: ['src/*.ts', '!src/a.ts'],
+      path: 'src/a.ts',
+      matched: false,
+      levels: [MATCH_LEVEL.FNMATCH, MATCH_LEVEL.EXACT],
+      label: 'an exact exclusion after a wildcard hit',
+    },
+    {
+      spec: ['src/*.ts', '!src/a.ts'],
+      path: 'src/b.ts',
+      matched: true,
+      levels: [MATCH_LEVEL.FNMATCH, MATCH_LEVEL.NONE],
+      label: 'a wildcard hit the exclusion does not reach',
+    },
+    {
+      spec: [''],
+      path: 'x',
+      matched: true,
+      levels: [MATCH_LEVEL.RECURSIVE],
+      label: 'the whole tree',
+    },
+    {
+      spec: ['src', 'lib'],
+      path: 'src/a',
+      matched: true,
+      levels: [MATCH_LEVEL.RECURSIVE, MATCH_LEVEL.NONE],
+      label: 'a directory literal beside a miss',
+    },
+  ])('Given the spec $spec and the path $path ($label)', ({ spec, path, matched, levels }) => {
+    describe('When judged in one pass', () => {
+      it('Then the verdict and every level agree with the per-entry reads', () => {
+        // Arrange
+        const compiled = compilePathspec(spec);
+        const sut = pathspecVerdict;
+
+        // Act
+        const result = sut(compiled, path as FilePath);
+
+        // Assert
+        expect(result.matched).toBe(matched);
+        expect([...result.levels]).toEqual(levels);
+        expect(result.matched).toBe(matchesPathspec(compiled, path as FilePath));
       });
     });
   });

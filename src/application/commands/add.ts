@@ -42,8 +42,14 @@ import {
 } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
-import { matchesUnmergedPath, withoutExactly } from '../../domain/pathspec/match-pathspec.js';
+import {
+  matchesUnmergedPath,
+  type PathspecVerdict,
+  pathspecVerdict,
+  withoutExactly,
+} from '../../domain/pathspec/match-pathspec.js';
 import { matchesIndexPath, matchesUnmergedIndexPath } from '../../domain/pathspec/matching-path.js';
+import { MATCH_LEVEL } from '../../domain/pathspec/wildcard.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -527,7 +533,7 @@ const replacedBeneath = async (
       reported.push(first.path);
     }
   }
-  const gone = await collectMatchedRemovals(ctx, stageZero, [], matcher);
+  const gone = await collectMatchedRemovals(ctx, stageZero, [], indexVerdicts(matcher, stageZero));
   return {
     dropped: [...stageZero.keys(), ...dropped],
     reported: [...gone.map(({ path }) => path), ...reported],
@@ -744,7 +750,12 @@ const addByPathspec = async (
     );
     const tally = tallyWalkOutcomes(staged.existing, staged.outcomes, staged.stageZeroBeside);
     const { matched } = tally;
-    const removedEntries = await collectMatchedRemovals(ctx, staged.existing, matched, matcher);
+    const removedEntries = await collectMatchedRemovals(
+      ctx,
+      staged.existing,
+      matched,
+      staged.verdicts,
+    );
     const settled = await settleWalkRemovals(
       ctx,
       staged,
@@ -764,11 +775,11 @@ const collectMatchedRemovals = (
   ctx: Context,
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   matched: ReadonlyArray<FilePath>,
-  matcher: ResolvedPathspec['matcher'],
+  verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>,
 ): Promise<IndexEntry[]> => {
   const named = new Map(
     [...existing].filter(
-      ([, entry]) => entry.flags.stage === 0 && matchesIndexPath(matcher, entry),
+      ([key, entry]) => entry.flags.stage === 0 && verdicts.get(key)?.matched === true,
     ),
   );
   return collectRemovedEntries(ctx, named, new Set(matched.map(keyOfPath)));
@@ -821,8 +832,32 @@ const collectWalk = async (
 const isNarrowerThanWholeTree = ({ entry }: PositivePathspec): boolean =>
   !namesWholeTree(entry.body as FilePath);
 
+/** Whether some index entry reaches the positive: `--renormalize` has no walk and no shared pass. */
 const indexSees = ({ entry }: PositivePathspec, entries: ReadonlyArray<IndexEntry>): boolean =>
   entries.some((indexed) => entry.compiled.test(escapedPathOf(indexed)));
+
+/** One matcher pass over the index, shared by the refusal, the hidden pass and the removals. */
+const indexVerdicts = (
+  matcher: ResolvedPathspec['matcher'],
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): ReadonlyMap<IndexPathKey, PathspecVerdict> =>
+  new Map(
+    [...existing].map(([key, entry]) => [key, pathspecVerdict(matcher, escapedPathOf(entry))]),
+  );
+
+/** Whether the index pass saw a positive: some tracked path reached its entry. */
+const seenByIndex = (
+  matcher: ResolvedPathspec['matcher'],
+  verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>,
+): ((positive: PositivePathspec) => boolean) => {
+  const seen = new Set<number>();
+  for (const { levels } of verdicts.values()) {
+    levels.forEach((level, i) => {
+      if (level !== MATCH_LEVEL.NONE) seen.add(i);
+    });
+  }
+  return ({ entry }) => seen.has(matcher.indexOf(entry));
+};
 
 /** Whether the pathspec's verbatim body, as typed, names something on disk. */
 const namesOnDisk = async (ctx: Context, { entry, probesDisk }: PositivePathspec) =>
@@ -854,13 +889,13 @@ const refuseUnseenWalked = async (
   ctx: Context,
   repoIgnore: IgnorePredicate,
   positives: ReadonlyArray<PositivePathspec>,
-  sorted: ReadonlyArray<IndexEntry>,
+  seenByIndexPass: (positive: PositivePathspec) => boolean,
   walked: ReadonlyArray<WalkWorkingTreeEntry>,
 ): Promise<void> => {
   const unseen = unmatchedPositives(
     positives.filter(isNarrowerThanWholeTree),
     (positive) =>
-      indexSees(positive, sorted) || walked.some(({ path }) => positive.entry.compiled.test(path)),
+      seenByIndexPass(positive) || walked.some(({ path }) => positive.entry.compiled.test(path)),
   );
   for (const positive of unseen) {
     if (!(await namesUnignoredDiskPath(ctx, repoIgnore, positive))) {
@@ -965,11 +1000,13 @@ const hiddenTracked = async (
   matcher: ResolvedPathspec['matcher'],
   walked: ReadonlyArray<WalkWorkingTreeEntry>,
   unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>,
 ): Promise<WalkWorkingTreeEntry[]> => {
   const walkedKeys = new Set(walked.map(({ path }) => keyOfPath(path)));
   const candidates = [...existing].filter(
     ([key, entry]) =>
-      !walkedKeys.has(key) && isHiddenCandidate(entry, matcher, unmergedStages.get(key)),
+      !walkedKeys.has(key) &&
+      isHiddenCandidate(entry, matcher, unmergedStages.get(key), verdicts.get(key)),
   );
   const scanner = createLeadingPathScanner(ctx);
   const hidden = await boundedMapFor(ctx, 'ioBound', candidates, ([, entry]) =>
@@ -982,20 +1019,22 @@ const isHiddenCandidate = (
   entry: IndexEntry,
   matcher: ResolvedPathspec['matcher'],
   stages: ReadonlyArray<IndexEntry> | undefined,
+  verdict: PathspecVerdict | undefined,
 ): boolean =>
   !entry.flags.skipWorktree &&
   !isLossy(entry) &&
   entry.mode !== FILE_MODE.GITLINK &&
-  pathspecSelectsTracked(entry, matcher, stages);
+  pathspecSelectsTracked(entry, matcher, stages, verdict);
 
-/** A merged entry is selected on a match; an unmerged path under git's conflict rule. */
+/** A merged entry is selected on the index pass's verdict; an unmerged path under git's conflict rule. */
 const pathspecSelectsTracked = (
   entry: IndexEntry,
   matcher: ResolvedPathspec['matcher'],
   stages: ReadonlyArray<IndexEntry> | undefined,
+  verdict: PathspecVerdict | undefined,
 ): boolean =>
   stages === undefined
-    ? entry.flags.stage === 0 && matchesIndexPath(matcher, entry)
+    ? entry.flags.stage === 0 && verdict?.matched === true
     : matchesUnmergedIndexPath(matcher, entry, stages.length);
 
 /** The walk entry the walker would have yielded, from the file as it lies on disk. */
@@ -1029,6 +1068,7 @@ const stageIgnoredWalk = async (
   readonly stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly sorted: ReadonlyArray<IndexEntry>;
   readonly outcomes: ReadonlyArray<WalkOutcome>;
+  readonly verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>;
 }> => {
   const {
     entries: existing,
@@ -1038,10 +1078,11 @@ const stageIgnoredWalk = async (
     indexMtime,
     indexRules,
   } = await readExistingEntries(ctx);
+  const verdicts = indexVerdicts(matcher, existing);
   const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
   const walked = await collectWalk(walkWorkingTree(ctx, { ignore }));
-  await refuseUnseenWalked(ctx, repoIgnore, positives, sorted, walked);
-  const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages);
+  await refuseUnseenWalked(ctx, repoIgnore, positives, seenByIndex(matcher, verdicts), walked);
+  const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages, verdicts);
   const outcomes = await stageWalkedEntries(
     ctx,
     [...walked, ...hidden],
@@ -1051,7 +1092,7 @@ const stageIgnoredWalk = async (
     indexMtime,
     ensurePromisorConfigValid,
   );
-  return { existing, unmergedStages, stageZeroBeside, sorted, outcomes };
+  return { existing, unmergedStages, stageZeroBeside, sorted, outcomes, verdicts };
 };
 
 /**
@@ -1187,6 +1228,7 @@ export const addAll = async (
       WHOLE_TREE_MATCHER,
       walkedEntries,
       state.unmergedStages,
+      indexVerdicts(WHOLE_TREE_MATCHER, existing),
     );
     const outcomes = await stageWalkedEntries(
       ctx,

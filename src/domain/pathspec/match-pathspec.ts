@@ -39,3 +39,22 @@ export const pathspecMatchLevel = (entry: PathspecEntry, path: FilePath): MatchL
   if (verbatim !== MATCH_LEVEL.NONE) return verbatim;
   return entry.compiled.test(path) ? MATCH_LEVEL.FNMATCH : MATCH_LEVEL.NONE;
 };
+
+/** What one pass of the whole spec over a path yields: the verdict and every entry's level. */
+export interface PathspecVerdict {
+  readonly matched: boolean;
+  /** Index-aligned with the spec; a negated entry's level still reports how it matched. */
+  readonly levels: ReadonlyArray<MatchLevel>;
+}
+
+// Each entry is matched once; the verdict is `matchesPathspec`'s last-match-wins
+// read of the same levels, so a caller that needs both pays one pass.
+export const pathspecVerdict = (spec: Pathspec, path: FilePath): PathspecVerdict => {
+  let matched = false;
+  const levels = spec.map((entry) => {
+    const level = pathspecMatchLevel(entry, path);
+    if (level !== MATCH_LEVEL.NONE) matched = !entry.negated;
+    return level;
+  });
+  return { matched, levels };
+};
