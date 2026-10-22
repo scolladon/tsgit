@@ -332,11 +332,21 @@ const matchTokens = (tokens: ReadonlyArray<RefGlobToken>, text: Uint8Array): boo
   return dp[0] === 1;
 };
 
-const compileWith = (pattern: string, dialect: Dialect): ((text: string) => boolean) => {
+const compileBytesWith = (pattern: string, dialect: Dialect): ((text: Uint8Array) => boolean) => {
   const tokens = tokenize(encode(pattern), dialect);
   if (tokens === undefined) return () => false;
-  return (text: string): boolean => matchTokens(tokens, encode(text));
+  return (text: Uint8Array): boolean => matchTokens(tokens, text);
 };
+
+const compileWith = (pattern: string, dialect: Dialect): ((text: string) => boolean) => {
+  const matchBytes = compileBytesWith(pattern, dialect);
+  return (text: string): boolean => matchBytes(encode(text));
+};
+
+/** {@link compileRefGlob} over raw bytes: for text that is not valid UTF-8, where
+ *  a string round-trip would lose the bytes `wildmatch` compares. */
+export const compileRefGlobBytes = (pattern: string): ((text: Uint8Array) => boolean) =>
+  compileBytesWith(pattern, REF_DIALECT);
 
 /** Compiles `pattern` once into a matcher `wildmatch(pattern, ref, 0)`
  *  agrees with byte-for-byte — full match, case-sensitive, `*`/`?` crossing

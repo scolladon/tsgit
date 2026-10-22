@@ -1,4 +1,5 @@
-import { compileGlob, containsGlob, type GlobMatcher } from './compile-glob.js';
+import type { GlobMatcher } from './compile-glob.js';
+import { compileWildcard, hasGlobSpecial, MATCH_LEVEL, verbatimLevel } from './wildcard.js';
 
 // One entry in a compiled pathspec. The order in the parent `Pathspec`
 // array matters: `matchesPathspec` evaluates entries in order and the
@@ -11,7 +12,7 @@ export interface PathspecEntry {
   /** True when the original pattern started with `!`. */
   readonly negated: boolean;
   /**
-   * True when the body (post-`!`) contains no glob metacharacters.
+   * True when the body (post-`!`) contains none of `* ? [ \`.
    * Literal entries match the exact path AND any descendant — Git's
    * `git add src` semantics where `src` covers everything under it.
    */
@@ -23,46 +24,28 @@ export interface PathspecEntry {
 export type Pathspec = ReadonlyArray<PathspecEntry>;
 
 // Compile a list of pathspec patterns. Each pattern may begin with `!`
-// to negate; the body is then auto-detected as a literal (no glob
-// characters) or a glob.
+// to negate; the body is then auto-detected as a literal (no `* ? [ \`)
+// or a wildcard.
 //
-// Literals are anchored at the start AND match descendants — `src`
-// becomes the regex `^src(/.*)?$`.
-//
-// Globs are anchored only when the pattern contains a `/` before any
-// glob character (mirrors `.gitignore`'s anchoring rule).
-//
-// See docs/adr/037-pathspec-auto-detect.md (detection) and
-// docs/adr/038-pathspec-exclusion.md (negation).
+// A body first matches verbatim: the path itself, or a directory above it.
+// A wildcard body then matches git's `wildmatch` (flags 0) over the path's
+// bytes: `*` and `?` cross `/`, `[...]` is a bracket expression and `\x`
+// escapes one byte.
 export const compilePathspec = (patterns: ReadonlyArray<string>): Pathspec =>
   patterns.map(compileOne);
 
 /** The whole tree — git's `.` once its `.` components collapse to the empty prefix. */
 const WHOLE_TREE: GlobMatcher = { test: () => true };
 
-/** A trailing-slash literal names a directory only: it matches the paths beneath it. */
-const compileDirectory = (body: string): GlobMatcher => ({
-  test: (path) => path.startsWith(body),
-});
-
 const compileLiteral = (body: string): GlobMatcher => {
   if (body === '') return WHOLE_TREE;
-  if (body.endsWith('/')) return compileDirectory(body);
-  return compileGlob(body, { anchored: true, withDirSuffix: true });
+  return { test: (path) => verbatimLevel(body, path) !== MATCH_LEVEL.NONE };
 };
 
 const compileOne = (raw: string): PathspecEntry => {
   const negated = raw.startsWith('!');
   const body = negated ? raw.slice(1) : raw;
-  const isLiteral = !containsGlob(body);
-  if (isLiteral) {
-    return { pattern: raw, body, negated, isLiteral: true, compiled: compileLiteral(body) };
-  }
-  return {
-    pattern: raw,
-    body,
-    negated,
-    isLiteral: false,
-    compiled: compileGlob(body, { anchored: body.includes('/') }),
-  };
+  const isLiteral = !hasGlobSpecial(body);
+  const compiled = isLiteral ? compileLiteral(body) : compileWildcard(body);
+  return { pattern: raw, body, negated, isLiteral, compiled };
 };
