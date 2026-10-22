@@ -4370,3 +4370,264 @@ describe('add refuses an unmatched pathspec before any object write', () => {
     });
   });
 });
+
+type TrackedCtx = Awaited<ReturnType<typeof seedFreshRepo>>;
+
+const writeWork = (ctx: TrackedCtx, path: string, text: string) =>
+  ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, text);
+
+/** Tracks `files`, then lays `.gitignore` down so the rule arrives after the entries. */
+const seedTrackedThenIgnored = async (files: Readonly<Record<string, string>>, rules: string) => {
+  const ctx = await seedFreshRepo(files);
+  await add(ctx, Object.keys(files));
+  await writeWork(ctx, '.gitignore', rules);
+  return ctx;
+};
+
+const rewriteEntries = async (ctx: TrackedCtx, edit: (entry: IndexEntry) => IndexEntry) => {
+  const index = await readIndex(ctx);
+  const rewritten: GitIndex = { ...index, entries: index.entries.map(edit) };
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync(rewritten, ctx),
+  );
+};
+
+const entryAt = async (ctx: TrackedCtx, path: string): Promise<IndexEntry | undefined> =>
+  (await readIndex(ctx)).entries.find((e) => e.path === path);
+
+const flagged = (path: string, flags: Partial<IndexEntry['flags']>) => (entry: IndexEntry) =>
+  entry.path === path ? { ...entry, flags: { ...entry.flags, ...flags } } : entry;
+
+describe('add over tracked entries that ignore rules hide from the walk', () => {
+  describe('Given a skip-worktree tracked file that was modified', () => {
+    describe('When add stages the whole tree', () => {
+      it('Then its index entry is left as it is', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a', k: 'k' }, '*.log\n');
+        await rewriteEntries(ctx, flagged('x.log', { skipWorktree: true }));
+        await writeWork(ctx, 'x.log', 'bb');
+        const before = await entryAt(ctx, 'x.log');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(await entryAt(ctx, 'x.log')).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a clean tracked file that an ignore rule hides', () => {
+    describe('When add names it by glob', () => {
+      it('Then nothing is modified', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.log']);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(result.removed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a tracked file replaced by a directory under an ignore rule', () => {
+    describe('When add names it by glob', () => {
+      it('Then the file is staged as removed', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await ctx.fs.rm(`${ctx.layout.workDir}/x.log`);
+        await writeWork(ctx, 'x.log/inner', 'i');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.log']);
+
+        // Assert
+        expect(result.removed).toEqual(['x.log']);
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a lossy tracked path under an ignore rule that was modified on disk', () => {
+    describe('When add stages the whole tree', () => {
+      it('Then it is not staged and the removal pass still owns it', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ [LOSSY_VIEW]: 'a' }, '*.txt\n');
+        await rewriteEntries(ctx, (entry) => ({ ...entry, pathBytes: LOSSY_NAME_BYTES }));
+        await writeWork(ctx, LOSSY_VIEW, 'bb');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(result.removed).toEqual([LOSSY_VIEW]);
+      });
+    });
+  });
+
+  describe('Given a gitlink entry under an ignore rule', () => {
+    describe('When add stages the whole tree', () => {
+      it('Then the entry is left as it is', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'd/f': 'a' }, 'd\n');
+        await rewriteEntries(ctx, (entry) =>
+          entry.path === 'd/f' ? { ...entry, mode: FILE_MODE.GITLINK } : entry,
+        );
+        await writeWork(ctx, 'd/f', 'bb');
+        const before = await entryAt(ctx, 'd/f');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(await entryAt(ctx, 'd/f')).toEqual(before);
+      });
+    });
+  });
+});
+
+const stagedBlobText = async (ctx: TrackedCtx, path: string): Promise<string> =>
+  dec((await readBlob(ctx, (await entryAt(ctx, path))?.id as ObjectId)).content);
+
+describe('add stages tracked entries that ignore rules hide from the walk', () => {
+  describe('Given a modified tracked file that a glob-matched ignore rule hides', () => {
+    describe('When add names it by glob', () => {
+      it('Then it is modified and the index holds the new content', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await writeWork(ctx, 'x.log', 'bb');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.log']);
+
+        // Assert
+        expect(result.modified).toEqual(['x.log']);
+        expect(result.removed).toEqual([]);
+        expect(await stagedBlobText(ctx, 'x.log')).toBe('bb');
+      });
+    });
+
+    describe('When add names it literally', () => {
+      it('Then it is modified', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await writeWork(ctx, 'x.log', 'bb');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x.log']);
+
+        // Assert
+        expect(result.modified).toEqual(['x.log']);
+      });
+    });
+  });
+
+  describe('Given a modified tracked file under an ignored directory', () => {
+    const arrange = async () => {
+      const ctx = await seedTrackedThenIgnored({ 'd/x.txt': 'a', k: 'k' }, 'd/\n');
+      await writeWork(ctx, 'd/x.txt', 'bb');
+      return ctx;
+    };
+
+    describe.each([
+      { label: 'the whole tree', pathspec: '.', added: ['.gitignore'] },
+      { label: 'a glob on the leaf', pathspec: '*.txt', added: [] },
+      { label: 'the directory', pathspec: 'd', added: [] },
+    ])('When add names $label', ({ pathspec, added }) => {
+      it('Then the leaf is modified and nothing else changes', async () => {
+        // Arrange
+        const ctx = await arrange();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [pathspec]);
+
+        // Assert
+        expect(result.added).toEqual(added);
+        expect(result.modified).toEqual(['d/x.txt']);
+        expect(result.removed).toEqual([]);
+        expect(await stagedBlobText(ctx, 'd/x.txt')).toBe('bb');
+      });
+    });
+  });
+
+  describe('Given a retargeted tracked symlink that an ignore rule hides', () => {
+    describe('When add names it by glob', () => {
+      it('Then it is modified and stays a symlink', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({});
+        await ctx.fs.symlink('first', `${ctx.layout.workDir}/l.log`);
+        await add(ctx, ['l.log']);
+        await writeWork(ctx, '.gitignore', '*.log\n');
+        await ctx.fs.rm(`${ctx.layout.workDir}/l.log`);
+        await ctx.fs.symlink('second', `${ctx.layout.workDir}/l.log`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.log']);
+
+        // Assert
+        expect(result.modified).toEqual(['l.log']);
+        expect((await entryAt(ctx, 'l.log'))?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(await stagedBlobText(ctx, 'l.log')).toBe('second');
+      });
+    });
+  });
+
+  describe('Given an intent-to-add file that an ignore rule hides', () => {
+    describe('When add names it by glob', () => {
+      it('Then it is staged with the file content and the flag clears', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await rewriteEntries(ctx, flagged('x.log', { intentToAdd: true }));
+        await writeWork(ctx, 'x.log', 'bb');
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['*.log']);
+
+        // Assert
+        expect((await entryAt(ctx, 'x.log'))?.flags.intentToAdd).toBe(false);
+        expect(await stagedBlobText(ctx, 'x.log')).toBe('bb');
+      });
+    });
+  });
+});
+
+describe('addAll stages tracked entries that ignore rules hide from the walk', () => {
+  describe.each([
+    { label: 'under an ignored directory', path: 'd/x.txt', rules: 'd/\n' },
+    { label: 'matched by an ignore glob', path: 'x.log', rules: '*.log\n' },
+  ])('Given a modified tracked file $label', ({ path, rules }) => {
+    describe('When addAll runs', () => {
+      it('Then it is modified and not removed', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ [path]: 'a' }, rules);
+        await writeWork(ctx, path, 'bb');
+        const sut = addAllInternal;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.modified).toEqual([path]);
+        expect(result.removed).toEqual([]);
+        expect(await stagedBlobText(ctx, path)).toBe('bb');
+      });
+    });
+  });
+});

@@ -929,6 +929,55 @@ const renormalizeOne = async (
   return indexEntryFromStat(fresh, mode, id, path);
 };
 
+/**
+ * git's `add` also runs an index-side pass that stages every matching tracked
+ * entry whatever the ignore rules say, so a tracked file the pruned walk never
+ * reached is still staged. What the removal pass owns (gone, replaced by a
+ * directory) and what the pass never stages (skip-worktree, lossy, gitlink,
+ * unmerged) is left out.
+ */
+const hiddenTracked = async (
+  ctx: Context,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  matcher: ResolvedPathspec['matcher'],
+  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+): Promise<WalkWorkingTreeEntry[]> => {
+  const walkedKeys = new Set(walked.map(({ path }) => keyOfPath(path)));
+  const candidates = [...existing].filter(
+    ([key, entry]) => !walkedKeys.has(key) && isHiddenCandidate(entry, matcher),
+  );
+  const scanner = createLeadingPathScanner(ctx);
+  const hidden = await boundedMapFor(ctx, 'ioBound', candidates, ([, entry]) =>
+    hiddenWalkEntryOf(ctx, scanner, entry),
+  );
+  return hidden.filter((walkEntry) => walkEntry !== undefined);
+};
+
+const isHiddenCandidate = (entry: IndexEntry, matcher: ResolvedPathspec['matcher']): boolean =>
+  entry.flags.stage === 0 &&
+  !entry.flags.skipWorktree &&
+  !isLossy(entry) &&
+  entry.mode !== FILE_MODE.GITLINK &&
+  matchesIndexPath(matcher, entry);
+
+/** The walk entry the walker would have yielded, from the file as it lies on disk. */
+const hiddenWalkEntryOf = async (
+  ctx: Context,
+  scanner: LeadingPathScanner,
+  { path }: IndexEntry,
+): Promise<WalkWorkingTreeEntry | undefined> => {
+  if (await scanner.hasSymlinkedLeadingPath(path)) return undefined;
+  const stat = await lstatOrBeneathFile(ctx, path);
+  if (stat === undefined || (stat.isDirectory && !stat.isSymbolicLink)) return undefined;
+  return {
+    path,
+    isFile: stat.isFile,
+    isDirectory: false,
+    isSymbolicLink: stat.isSymbolicLink,
+    stat: () => Promise.resolve(stat),
+  };
+};
+
 /** Read the index, then stage every walked entry `ignore` keeps. */
 const stageIgnoredWalk = async (
   ctx: Context,
@@ -954,9 +1003,10 @@ const stageIgnoredWalk = async (
   const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
   const walked = await collectWalk(walkWorkingTree(ctx, { ignore }));
   await refuseUnseenWalked(ctx, positives, sorted, walked);
+  const hidden = await hiddenTracked(ctx, existing, matcher, walked);
   const outcomes = await stageWalkedEntries(
     ctx,
-    walked,
+    [...walked, ...hidden],
     existing,
     new Set<IndexPathKey>(),
     { ...scope, indexRules },
@@ -1092,9 +1142,11 @@ export const addAll = async (
     // Walk-time pruning: the walker calls `ignore` on every directory
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
+    const walkedEntries = await collectWalk(walkWorkingTree(ctx, { ignore }));
+    const hidden = await hiddenTracked(ctx, existing, WHOLE_TREE_MATCHER, walkedEntries);
     const outcomes = await stageWalkedEntries(
       ctx,
-      walkWorkingTree(ctx, { ignore }),
+      [...walkedEntries, ...hidden],
       existing,
       seen,
       { ...scope, indexRules: state.indexRules },
