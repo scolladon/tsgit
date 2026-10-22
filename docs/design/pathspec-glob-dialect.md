@@ -483,7 +483,7 @@ Each pattern is compiled once per `buildRefFilter` (`compileRefGlob`), not per r
 `matchRefGlob` does today. Excludes test every suffix (N10/N11). `src/application/commands/name-rev.ts`
 sets `abbreviated: filter.abbreviates(ref)` on the result in `nameCommit` and `exactRefMatch`
 (candidate 8). `NameRevResult` gains `readonly abbreviated: boolean`, an additive public field.
-The interop renderer (`renderNameRev`) shortens with `git rev-parse --abbrev-ref <ref>` when it is
+The interop renderer (`renderNameRev`) shortens with `git rev-parse --abbrev-ref=loose <ref>` when it is
 set. N21 (`--tags --name-only`) stays the caller's own `tags && nameOnly` rule, as today.
 
 ### Part e — docs fold-in (documentation phase)
