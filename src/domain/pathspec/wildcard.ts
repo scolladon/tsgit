@@ -51,6 +51,7 @@ const literalSuffixOf = (body: string, specials: ReadonlyArray<string>): string 
 
 /** Splits a body into what string compares can decide (`prefix*suffix`) or its literal head and tail. */
 export const wildcardShape = (body: string): WildcardShape => {
+  // Stryker disable next-line ArrayDeclaration: equivalent — a body with no glob-special byte gives `literalPrefix` the whole body and an empty `literalSuffix` whether `specials` is empty or holds a stand-in, as `literalSuffixOf` returns '' for both.
   const specials = body.match(GLOB_SPECIAL_GLOBAL) ?? [];
   const first = globSpecialIndex(body);
   if (specials.length === 1 && specials[0] === STAR) {
