@@ -31,7 +31,7 @@ Each was probed against git 2.55.0 in a `mktemp -d` throwaway (scrubbed `GIT_*`,
    `resolvePathspec(['a\\b'])`, `(['a\\*b'])`, `(['a\\'])` each throw
    `{"code":"PATHSPEC_OUTSIDE_REPO","path":…}`; `(['[ab].txt'])` is accepted.
    **Decided: ADR-1044, option B** (candidate 1) — on a host without Windows path syntax the
-   pathspec intake accepts `\` for matching only; Part 9 lands it. D6, D17 and E2 get command-level
+   pathspec intake accepts `\` for matching only; Part 10 lands it. D6, D17 and E2 get command-level
    interop rows on POSIX hosts; D8b and E1 stay pinned follow-ups (they need a `\`-named
    working-tree file, which `validateWalkedEntryPath` refuses).
 2. **B11 as designed is unreachable**: its `.gitignore: nomatch[*]` needs `[…]` in the gitignore
@@ -60,20 +60,34 @@ Each was probed against git 2.55.0 in a `mktemp -d` throwaway (scrubbed `GIT_*`,
    src/application/commands/add.ts:647 collects every walked entry into a Map before yielding),
    so collecting the walk before the refusal costs no walk/hash overlap.
 
+8. **Pre-existing (reproduced identically on `main` 8dd442ee): `add` never stages a tracked file
+   that ignore rules hide from the walk.** Session pins, git 2.55.0 vs tsgit at HEAD:
+   tracked `x.log`, `.gitignore` `*.log`, `x.log` modified, `add '*.log'` → git `M  x.log`, tsgit
+   stages nothing (` M x.log`); same fixture `add 'x.log'` → both `M  x.log` (the literal fast
+   path reads the index); tracked `d/x.txt` + `k`, `.gitignore` `d/`, `d/x.txt` modified:
+   `add '.'` → git `A  .gitignore` + `M  d/x.txt`, tsgit only `.gitignore`; `add '*.txt'` → git
+   `M  d/x.txt`, tsgit nothing; `add 'd'` → git prints the ignored-paths advice, exits 1 AND
+   stages `M  d/x.txt`, tsgit nothing (the advice/exit is out of scope, B3l/B3m). Root cause:
+   git's `add_files_to_cache` runs `run_diff_files` over the index entries the pathspec matches,
+   whatever the ignore rules say; tsgit stages only the ignore-pruned walk. Part 9 fixes it; its
+   Context holds the planner's exception pins (skip-worktree, intent-to-add, gitlink, `-A`,
+   symlink, file→dir, clean).
+
 ## Requirement map
 
 | Req | Part(s) |
 |---|---|
-| R1 dialect (verbatim first, flags-0 wildmatch over bytes) | 1, 2 (fast paths), 9 (`\` bodies at command level, ADR-1044) |
+| R1 dialect (verbatim first, flags-0 wildmatch over bytes) | 1, 2 (fast paths), 10 (`\` bodies at command level, ADR-1044) |
 | R2 add / add --renormalize / rm refuse the first unmatched, before any write | 6 (rm), 7 (add); helpers: 5 |
 | R3 checkout refuses every unmatched, lock + index read first | 8; helpers: 5 |
 | R4 rm -r by match level | 6 |
 | R5 unmatched glob whose verbatim body exists is not refused | 7 |
 | R6 grep never refuses | 1 (GUARD rows) |
 | R7 describe flags-0 on the short name | 3 |
-| R8 name-rev suffix matching + abbreviation as data | 3 (filter), 10 (result field, every N interop row) |
+| R8 name-rev suffix matching + abbreviation as data | 3 (filter), 11 (result field, every N interop row) |
 | R9 gitignore/attributes/sparse unchanged | 4 |
-| R10 linear matchers, size, add-glob bench | 2, 11 |
+| R10 linear matchers, size, add-glob bench | 2, 12 |
+| R12 add (pathspec and `-A`) stages tracked entries that ignore rules hide from the walk, as git's index-side pass does | 9 |
 
 ## Decision candidates
 
@@ -108,23 +122,28 @@ as the audit trail.
 - tsgit's gitignore dialect has no `[…]` (compile-glob.ts header, R9): git ignores `nomatch*` under
   `nomatch[*]`, tsgit does not — prove with a twin `git check-ignore nomatch*` against tsgit's
   ignore predicate.
+- `add` never stages a gitlink whose submodule checkout moved (git 2.55: `add s`, `add .` and
+  `add '*'` all stage `M s`, ignored or not) — hunch for tsgit; prove with a twin where the
+  submodule commits after the superproject records it, then `add s` on both.
 - `rm` tolerates an unreadable index (`isIndexMissingCode`, src/application/commands/rm.ts:53)
   where git dies on it — hunch; prove with a twin `git rm 'x*'` over a 3-byte `.git/index`.
 
 ## Part 1 — Pathspec wildcards match with git's flags-0 wildmatch over the path's bytes
 
 ### Context
+**Status: landed as 63451e93.** Its file paths below are plain text: the part is history, not a pending unit of work.
+
 
 Files this part creates or edits (exactly these):
-- `src/domain/refs/ref-glob.ts` — add the bytes-taking compile.
-- `test/unit/domain/refs/ref-glob.test.ts` — rows for it.
-- `src/domain/pathspec/wildcard.ts` — CREATED: match levels, verbatim rule, glob-special test,
+- src/domain/refs/ref-glob.ts — add the bytes-taking compile.
+- test/unit/domain/refs/ref-glob.test.ts — rows for it.
+- src/domain/pathspec/wildcard.ts — CREATED: match levels, verbatim rule, glob-special test,
   the wildcard matcher. Part 2 adds the fast paths to it (a new module, so the two parts share no
   pre-existing file).
-- `test/unit/domain/pathspec/wildcard.test.ts` — CREATED; Part 2 extends it.
-- `src/domain/pathspec/compile-pathspec.ts` — `compileOne` delegates to wildcard.ts. This part is
+- test/unit/domain/pathspec/wildcard.test.ts — CREATED; Part 2 extends it.
+- src/domain/pathspec/compile-pathspec.ts — `compileOne` delegates to wildcard.ts. This part is
   its only editor in the run.
-- `test/integration/pathspec-glob-dialect-interop.test.ts` — CREATED here; Parts 6, 7, 8, 9 extend it
+- test/integration/pathspec-glob-dialect-interop.test.ts — CREATED here; Parts 6, 7, 8, 9 extend it
   (one interop file per pinned matrix, one twin-repo builder).
 
 Read-only references: src/domain/objects/encoding.ts (encodeEscaped at :205, encode),
@@ -184,7 +203,7 @@ Matrix rows this part makes pass (design `## Pin matrix (git 2.55.0)`): D2, D3, 
 D11b, D12, D16, E4, E5, C6, L1–L3, L5, L6, G3, R2, R4, R5, R6. GUARD rows (design marks them ok):
 D1, D4, D8a, D13, D14, E3, G1, G2, G4, G5, L4, R3. Not here: D7, D8c, D10 (refusals, Part 7).
 The matcher behaviour of D6, D17, E1, E2 (bodies holding a backslash) IS unit-tested here through
-`compileWildcard`; their command-level rows (D6, D17, E2) land in Part 9 once the intake accepts
+`compileWildcard`; their command-level rows (D6, D17, E2) land in Part 10 once the intake accepts
 the backslash on POSIX hosts (ADR-1044); D8b/E1 stay follow-ups.
 
 Interop file guidance: copy the header and the twin-repo builder shape from
@@ -290,15 +309,17 @@ Run after the last edit; the printed exit code must be 0. Wireit caveat: `npm ru
 ## Part 2 — Allocation-free wildcard fast paths and the pathspec property suite
 
 ### Context
+**Status: landed as e36108bb.** Its file paths below are plain text: the part is history, not a pending unit of work.
+
 
 Files this part creates or edits (exactly these):
-- `src/domain/pathspec/wildcard.ts` — fast paths inside `compileWildcard` (created by Part 1; a
+- src/domain/pathspec/wildcard.ts — fast paths inside `compileWildcard` (created by Part 1; a
   module new to this run, so the two parts share no pre-existing file).
-- `test/unit/domain/pathspec/wildcard.test.ts` — rows for the shape classifier and evaluator.
-- `test/unit/domain/pathspec/compile-pathspec.test.ts` — `isLiteral` and dialect rows through
+- test/unit/domain/pathspec/wildcard.test.ts — rows for the shape classifier and evaluator.
+- test/unit/domain/pathspec/compile-pathspec.test.ts — `isLiteral` and dialect rows through
   `compilePathspec`, and the two retitles. This part is the file's only editor in the run.
-- `test/unit/domain/pathspec/compile-pathspec.properties.test.ts` — extended.
-- `test/unit/domain/pathspec/arbitraries.ts` — new generators.
+- test/unit/domain/pathspec/compile-pathspec.properties.test.ts — extended.
+- test/unit/domain/pathspec/arbitraries.ts — new generators.
 
 Read-only references: src/domain/pathspec/compile-pathspec.ts (Part 1's `compileOne`),
 src/domain/refs/ref-glob.ts (`compileRefGlobBytes`, Part 1), src/domain/objects/encoding.ts
@@ -390,16 +411,18 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`.
 ## Part 3 — describe and name-rev patterns use git's wildmatch dialect
 
 ### Context
+**Status: landed as 6d5c93bf.** Its file paths below are plain text: the part is history, not a pending unit of work.
+
 
 Files this part creates or edits (exactly these):
-- `src/domain/describe/match.ts` — flags-0 matcher on the short tag name.
-- `test/unit/domain/describe/match.test.ts`
-- `test/integration/describe-interop.test.ts` — DS rows.
-- `src/domain/name-rev/ref-pattern.ts` — every-suffix matching, compile once, `abbreviates`.
-- `test/unit/domain/name-rev/ref-pattern.test.ts`
+- src/domain/describe/match.ts — flags-0 matcher on the short tag name.
+- test/unit/domain/describe/match.test.ts
+- test/integration/describe-interop.test.ts — DS rows.
+- src/domain/name-rev/ref-pattern.ts — every-suffix matching, compile once, `abbreviates`.
+- test/unit/domain/name-rev/ref-pattern.test.ts
 
-Every N interop row (name-rev-interop.test.ts) lands in Part 10, the run's only editor of that
-file: most N rows need the `abbreviated` field Part 10 adds, and one owner keeps the twin
+Every N interop row (name-rev-interop.test.ts) lands in Part 11, the run's only editor of that
+file: most N rows need the `abbreviated` field Part 11 adds, and one owner keeps the twin
 fixtures in one place. This part proves its filter with unit rows.
 
 Read-only references: src/domain/refs/ref-glob.ts (`compileRefGlob`), src/application/commands/
@@ -433,7 +456,7 @@ Target:
   Leave `matchRefGlob` exported in ref-glob.ts (its contract is kept; tests use it).
 
 Matrix rows: DS2–DS7, DS14 flip; DS1, DS8–DS13 GUARD. The N rows this filter flips (N7, N8,
-N10, N11, N12) are pinned at command level in Part 10.
+N10, N11, N12) are pinned at command level in Part 11.
 
 Fixtures: DS — `v1.0` annotated + `w2` lightweight on c1, "v1/rc1" annotated on c2, HEAD c3; git
 side `describe --tags --abbrev=0 [opts]` (DS14: no `--tags`); compare the tag name tsgit reports
@@ -493,14 +516,16 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`.
 ## Part 4 — compileGlob keeps only the gitignore dialect
 
 ### Context
+**Status: landed as bfb299eb.** Its file paths below are plain text: the part is history, not a pending unit of work.
+
 
 Files this part creates or edits (exactly these):
-- `src/domain/pathspec/compile-glob.ts` — remove the dead mode.
-- `test/unit/domain/pathspec/compile-glob.test.ts` — drop the removed mode's rows and `containsGlob`.
-- `test/unit/domain/pathspec/compile-glob.properties.test.ts` — CREATED (property sibling).
-- `src/domain/ignore/parse-gitignore.ts` — line 101 drops `pathname: true`.
-- `src/domain/attributes/parse-gitattributes.ts` — line 125 drops `pathname: true`.
-- `src/domain/sparse/non-cone.ts` — line ~29 drops `pathname: true`.
+- src/domain/pathspec/compile-glob.ts — remove the dead mode.
+- test/unit/domain/pathspec/compile-glob.test.ts — drop the removed mode's rows and `containsGlob`.
+- test/unit/domain/pathspec/compile-glob.properties.test.ts — CREATED (property sibling).
+- src/domain/ignore/parse-gitignore.ts — line 101 drops `pathname: true`.
+- src/domain/attributes/parse-gitattributes.ts — line 125 drops `pathname: true`.
+- src/domain/sparse/non-cone.ts — line ~29 drops `pathname: true`.
 
 Read-only references: test/unit/domain/pathspec/arbitraries.ts (`arbLiteralPattern`,
 `arbCandidatePath`), test/perf/domain/pathspec/compile-glob.perf.test.ts (uses
@@ -577,19 +602,21 @@ exist, drop it from the command (do not invent files).
 ## Part 5 — One command pathspec intake: positives in argument order, unmatched helper
 
 ### Context
+**Status: landed as 313eacae.** Its file paths below are plain text: the part is history, not a pending unit of work.
+
 
 Files this part creates or edits (exactly these):
-- `src/application/commands/internal/pathspec-intake.ts` — CREATED: the intake every command uses.
-- `test/unit/application/commands/internal/pathspec-intake.test.ts` — CREATED.
-- `src/application/commands/grep.ts` — switch its one `resolvePathspec` call (:198) to the intake.
-- `test/unit/application/commands/checkout-switch-target.test.ts` — shape assertion at :57.
-- `test/unit/application/commands/switch-and-tag-target-dwim.test.ts` — shape assertion at :168.
-- `test/integration/pathspec-dot-interop.test.ts` — shape assertions at :115 and :169.
+- src/application/commands/internal/pathspec-intake.ts — CREATED: the intake every command uses.
+- test/unit/application/commands/internal/pathspec-intake.test.ts — CREATED.
+- src/application/commands/grep.ts — switch its one `resolvePathspec` call (:198) to the intake.
+- test/unit/application/commands/checkout-switch-target.test.ts — shape assertion at :57.
+- test/unit/application/commands/switch-and-tag-target-dwim.test.ts — shape assertion at :168.
+- test/integration/pathspec-dot-interop.test.ts — shape assertions at :115 and :169.
 
 Why a new module instead of new `ResolvedPathspec` fields: src/application/commands/internal/
-resolve-pathspec.ts then has exactly one editor in the run (Part 9, which relaxes its validator and
+resolve-pathspec.ts then has exactly one editor in the run (Part 10, which relaxes its validator and
 deletes the helpers this run retires), and the host policy enters through one function that every
-command already calls from its own part (rm 6, add 7, checkout 8, grep here) — Part 9 changes no
+command already calls from its own part (rm 6, add 7, checkout 8, grep here) — Part 10 changes no
 command file.
 
 Why the shape edits live here: Part 8 adds `patterns` to `PATHSPEC_NO_MATCH`, which breaks every
@@ -631,7 +658,7 @@ Target (internal; not barrelled):
     ): ReadonlyArray<PositivePathspec>   // argument order
 
 Step 1 runs before `resolvePathspec`, so on a Windows host the intake — not the general validator —
-is what refuses a backslash; today the general validator also refuses it on every host (Part 9
+is what refuses a backslash; today the general validator also refuses it on every host (Part 10
 relaxes that for POSIX). The refusal data stays `{ code: 'PATHSPEC_OUTSIDE_REPO', path }`.
 
 House rules: one RED per function, run before its code; GUARD = already passes.
@@ -651,15 +678,15 @@ to change: grep's behaviour is identical through the intake (G rows stay green).
    spelling `.`; `['!x']` → none; the other `ResolvedPathspec` fields equal `resolvePathspec`'s.
    Fails: the module does not exist. GREEN — create it (steps 1–2 of the target, no host check yet).
 2. RED — "probesDisk": the positive built from the entry `compilePathspec(['a\\*b'])[0]` (call the
-   exported builder directly — the intake still refuses a backslash on every host until Part 9)
+   exported builder directly — the intake still refuses a backslash on every host until Part 10)
    has `probesDisk` false. Export the per-entry builder (`positiveOf(entry, spelling)`) for this.
    Fails: always true. GREEN — `probesDisk = !entry.body.includes('\\')`.
 3. GUARD — "Windows host": `resolveCommandPathspec({ windowsPathSyntax: true }, ['ok', '!a\\b'])`
    throws PATHSPEC_OUTSIDE_REPO with `path: 'a\\b'`; a backslash-free spec resolves. It passes
    today through the general validator (collapsePattern refuses every backslash before the budget
    check). REFACTOR under this GUARD: add the host check (target step 1) so the Windows refusal is
-   the intake's own; it becomes the only refusal once Part 9 relaxes the general validator, and
-   Part 9's POSIX-accept rows are the RED that make it observable (until then its mutants are
+   the intake's own; it becomes the only refusal once Part 10 relaxes the general validator, and
+   Part 10's POSIX-accept rows are the RED that make it observable (until then its mutants are
    equivalent — say so in the part report, add no suppression).
 4. RED — "unmatchedPositives": three positives, `isSeen` true for the second → first and third in
    order; all seen → empty. Fails: not exported. GREEN — add it.
@@ -686,14 +713,16 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`.
 ## Part 6 — rm refuses by match level
 
 ### Context
+**Status: landed as 165fafac.** Its file paths below are plain text: the part is history, not a pending unit of work.
+
 
 Files this part creates or edits (exactly these):
-- `src/application/commands/rm.ts`
-- `test/unit/application/commands/rm.test.ts` — this part is its only editor in the run (it also
+- src/application/commands/rm.ts
+- test/unit/application/commands/rm.test.ts — this part is its only editor in the run (it also
   converts the shape row at :125, see Part 5).
-- `src/domain/pathspec/match-pathspec.ts` — `pathspecMatchLevel`.
-- `test/unit/domain/pathspec/match-pathspec.test.ts`
-- `test/integration/pathspec-glob-dialect-interop.test.ts` — extend with the R refusal rows
+- src/domain/pathspec/match-pathspec.ts — `pathspecMatchLevel`.
+- test/unit/domain/pathspec/match-pathspec.test.ts
+- test/integration/pathspec-glob-dialect-interop.test.ts — extend with the R refusal rows
   (created by Part 1; a file new to this run).
 
 Read-only references: src/application/commands/internal/pathspec-intake.ts
@@ -724,7 +753,7 @@ Target (ADR-1042, fact 6):
 
 The whole tree (`.`, body `''`) is RECURSIVE for every path, so `rm .` without `recursive` still
 refuses naming `.` and an empty index refuses it as unmatched (rows at rm.test.ts:136-156 stay
-GUARDs). rm no longer calls `enforceLiteralMustMatch`; Part 9 deletes it once Parts 7 and 8 drop
+GUARDs). rm no longer calls `enforceLiteralMustMatch`; Part 10 deletes it once Parts 7 and 8 drop
 the other callers.
 
 Matrix rows: R1, R1b, R4b, R7, R8 flip; R4c, R2–R6 GUARD (R2–R6 landed in Part 1; R4 stays green
@@ -790,12 +819,14 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`.
 ## Part 7 — add refuses an unmatched pathspec before any object write
 
 ### Context
+**Status: landed as 830924e8.** Its file paths below are plain text: the part is history, not a pending unit of work.
+
 
 Files this part creates or edits (exactly these):
-- `src/application/commands/add.ts`
-- `test/unit/application/commands/add.test.ts`
-- `test/unit/application/commands/add-directory-file.test.ts` — the shape assertion at :1064 only.
-- `test/integration/pathspec-glob-dialect-interop.test.ts` — extend with the B, D7/D8c/D10, RN, K2
+- src/application/commands/add.ts
+- test/unit/application/commands/add.test.ts
+- test/unit/application/commands/add-directory-file.test.ts — the shape assertion at :1064 only.
+- test/integration/pathspec-glob-dialect-interop.test.ts — extend with the B, D7/D8c/D10, RN, K2
   rows (created by Part 1; a file new to this run).
 
 Read-only references: src/application/commands/internal/pathspec-intake.ts
@@ -949,7 +980,7 @@ Public surface (decided here): `PATHSPEC_NO_MATCH` is a member of the public `Co
 - every `toEqual({ code: 'PATHSPEC_NO_MATCH', pattern })` was converted in Parts 5, 6 and 7; the
   remaining ones are in this part's files (checkout.test.ts:1870, error.test.ts:147 and the
   `CommandError`-typed message table at error.test.ts:1706, which needs `patterns` to type-check);
-- reports/api.json changes — regenerated ONCE in Part 10 (which also changes the public surface),
+- reports/api.json changes — regenerated ONCE in Part 11 (which also changes the public surface),
   before any push; api.json is a prepush gate, not a validate gate.
 
 Target type and factory (ADR-1037; the tuple type makes "non-empty, `patterns[0] === pattern`"
@@ -1056,7 +1087,152 @@ tsconfig.json`, `npx cspell --no-progress <touched-files>`. `check:types` also p
 
 `fix(checkout): lock and read the index before refusing every unmatched pathspec`
 
-## Part 9 — A pathspec may hold a backslash on POSIX hosts, for matching only
+## Part 9 — add stages tracked files that ignore rules hide from the walk
+
+### Context
+
+A pre-existing data-integrity gap (fact 8: reproduced identically on `main` 8dd442ee), surfaced by
+Part 7. git's `add` runs an index-side pass (`add_files_to_cache` → `run_diff_files` over the
+index entries the pathspec matches) that stages modified tracked entries whatever the ignore rules
+say; tsgit stages only what the ignore-pruned walk yields, so a tracked file that is ignored, or
+sits under an ignored directory, is silently left unstaged (` M` where git shows `M `). Deletions
+are already handled by the removal set (B7 passes).
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts`
+- `test/unit/application/commands/add.test.ts` — unit rows, `add` and `addAll` (memory adapter).
+- `test/integration/add-tracked-under-ignore-interop.test.ts` — CREATED. A file of its own (not
+  pathspec-glob-dialect-interop.test.ts) so no pending part shares an interop file: Part 8
+  extends the dialect file right now, and plan-lint flags a file shared by pending parts. Copy the
+  `@proves` header and twin builder from test/integration/pathspec-glob-dialect-interop.test.ts
+  (surface/interopSurface: add); the design's row ids (B8, B13–B16 once the designer's revision
+  lands) go in this plan and the commit report, never in test text.
+
+Read-only references: src/application/primitives/types.ts:253 (`WalkWorkingTreeEntry { path,
+isFile, isDirectory, isSymbolicLink, stat: () => Promise<FileStat> }`),
+src/domain/git-index/index-entry.ts (`flags.stage`, `flags.skipWorktree`, `flags.intentToAdd`),
+src/domain/objects/file-mode.ts (`FILE_MODE.GITLINK`), src/domain/pathspec/matching-path.ts
+(`matchesIndexPath`), src/application/primitives/internal/symlinked-leading-path.ts
+(`createLeadingPathScanner`), src/application/commands/internal/pathspec-intake.ts.
+
+add.ts as landed by Part 7 (830924e8) — anchors:
+- `addByPathspec` :729 → `stageIgnoredWalk(ctx, repoIgnore, { matcher, positives }, scope, guard)`
+  then `tallyWalkOutcomes`, `collectMatchedRemovals` (:763), `settleWalkRemovals`, `commitStaged`.
+- `stageIgnoredWalk` :933 — `readExistingEntries` (:1226; gives `entries` = `existing`, one per
+  path, and `sorted`), `withPathspec(repoIgnore, matcher, unmergedStages)` (:973), `walked = await
+  collectWalk(walkWorkingTree(ctx, { ignore }))` (:812), `refuseUnseenWalked(ctx, positives,
+  sorted, walked)` (:853), then `stageWalkedEntries(ctx, walked, existing, new Set(), …)` (:631).
+- `stageWalkedEntries` → `walkedTrackedFirst` (:656: index order first, then walk order) →
+  `processWalkEntry` (:1175: marks `seen`, `stageFromStat(ctx, path, { isFile, isDirectory,
+  isSymbolicLink }, …)` (:1329) re-lstats and hashes through the EOL/attribute/promisor path,
+  returns added/modified/unchanged).
+- `addAll` :1079 (`-A`) streams `walkWorkingTree(ctx, { ignore })` straight into
+  `stageWalkedEntries`, then `collectRemovedEntries(ctx, existing, seen)` (:1159).
+- `presentOnDisk` :1133 (symlinked leading path → gone; missing → gone; a directory → gone unless
+  gitlink), `collectRemovedEntries` skips skip-worktree and lossy (`isLossy`) entries,
+  `lstatOrBeneathFile` :580, `lstatOrMissing` :598.
+
+Target — one helper chain, every function under ~20 lines:
+
+    // the stage-0 tracked entries the walk did not yield that the pass must still stage
+    const hiddenTracked = async (ctx, existing, matcher, walked): Promise<WalkWorkingTreeEntry[]>
+      // candidates: entry.flags.stage === 0 && !entry.flags.skipWorktree && !isLossy(entry)
+      //   && entry.mode !== FILE_MODE.GITLINK && matchesIndexPath(matcher, entry)
+      //   && its key is not among the walked paths
+      // per candidate (named helper `hiddenWalkEntryOf`): a symlinked leading path → skip;
+      //   stat = await lstatOrBeneathFile(ctx, path); missing or a directory → skip (the removal
+      //   pass owns it); else { path, isFile: stat.isFile, isDirectory: false,
+      //   isSymbolicLink: stat.isSymbolicLink, stat: () => Promise.resolve(stat) }
+    // stageIgnoredWalk: after refuseUnseenWalked, stage [...walked, ...hidden]
+    // addAll: collect its walk (collectWalk), append hiddenTracked(…, WHOLE_TREE_MATCHER, …)
+
+The hidden entries go through `processWalkEntry` exactly as walked ones (same hashing, EOL,
+attributes, promisor guard, `seen` marking — so the removal pass no longer sees them as missing);
+`walkedTrackedFirst` puts them in index order. Intent-to-add entries are stage-0 entries and are
+included (git stages their content); the staged entry is built from the stat, so its
+`intentToAdd` flag clears.
+
+git 2.55 pins (planner, scrubbed env, one `mktemp -d` twin per row; fact 8 holds the five
+session pins):
+- skip-worktree (SW2): tracked `x.log`, `k`; `update-index --skip-worktree x.log`, modify,
+  `add .` → exit 0, nothing staged. SW3 with `.gitignore` `*.log`: `add .` → only `A .gitignore`.
+  SW1 `add '*.log'` with the ignore → exit 1 with the sparse "outside of your sparse-checkout
+  definition" advice, nothing staged — the advice/exit is out of scope (sparse seen rules); the
+  row asserts only that nothing is staged.
+- intent-to-add (ITA): `add -N x.log`, `.gitignore` `*.log`, `add '*.log'` → exit 0, index
+  `100644 2e65efe… 0 x.log` (the real blob), status `A  x.log`. ITA2 under an ignored dir
+  `d/` with `add .` → `A  d/x.txt`.
+- gitlink (SUB): a submodule `s` whose checkout moved, `.gitignore` `s`; `add '*'`, `add .` and
+  `add s` all stage `M s`. tsgit does not stage gitlinks through `add` at all — a separate gap
+  (out-of-scope line below); this pass excludes gitlinks so it changes nothing there.
+- `add -A` (A1): tracked `d/x.txt`, `.gitignore` `d/`, modify → `M  d/x.txt`; (A2) tracked
+  `x.log`, `.gitignore` `*.log`, modify → `M  x.log`. Same gap in tsgit's `addAll` (same
+  ignore-pruned walk, :1079) — in scope.
+- symlink (MODE): tracked symlink `l.log` retargeted under `*.log` → `M  l.log`.
+- file→dir (TYPE): tracked `x.log` replaced by a directory under `*.log` → `D  x.log` (the
+  removal pass already does this — GUARD).
+- clean (CLEAN): an unmodified tracked ignored file → nothing staged (GUARD).
+
+Windows: symlink and `*`-free names only; the symlink rows sit under
+`describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')`.
+
+Environment: git 2.55.0 first on PATH for interop: `PATH="$HOME/.local/git-2.55.0/bin:$PATH"`.
+
+House rules: One RED per function, run before its code. A row that already passes is a GUARD,
+never a RED. Write each step's rows, run them, see them fail for the stated reason, then write the
+code — never batch several steps' REDs behind one GREEN. `git diff --no-ext-diff --stat` after
+scripted edits. Poll, never wait. Commit only these files. No provenance ids in code. No
+suppression directives.
+
+Re-pinning rule: When an existing test row breaks, decide whether the OLD expectation encoded the
+contract. If it did, fix the code, not the row, and say so. A changed row is re-pinned against real
+git 2.55 (or the design's matrix row id), never rewritten to match the new code.
+Expected: an existing add.test.ts or add-interop row that asserts a tracked ignored file stays
+unstaged encoded the gap, not git — re-pin it to git's `M` (cite the pin above).
+
+### TDD steps
+
+1. GUARD — add.test.ts, written and run before any code (all pass today because nothing hidden is
+   staged): skip-worktree entry modified, `add(['.'])` leaves its index entry unchanged; clean
+   tracked ignored file, `add(['*.log'])` → `modified: []`; tracked `x.log` replaced by a
+   directory under `*.log` → `removed: ['x.log']`; a lossy tracked entry under an ignored dir is
+   neither staged nor removed; a gitlink entry under an ignored path is left as it is. Interop:
+   SW2, SW3, SW1 (index only), TYPE, CLEAN.
+2. RED — `hiddenWalkEntryOf` / `hiddenTracked` through `add` (add.test.ts): B8 — tracked `x.log`,
+   `.gitignore` `*.log`, `x.log` modified, `add(['*.log'])` → `modified: ['x.log']` and the index
+   blob is the new content; `add(['.'])` over tracked `d/x.txt` + `k` with `.gitignore` `d/` →
+   `added: ['.gitignore']`, `modified: ['d/x.txt']`; `add(['*.txt'])` same fixture →
+   `modified: ['d/x.txt']`; `add(['d'])` → `modified: ['d/x.txt']`; a retargeted tracked symlink
+   under `*.log` → modified; an intent-to-add `x.log` under `*.log` → staged with the file's
+   blob and `intentToAdd` false. Interop rows for the same six shapes. Run: all fail —
+   `stageIgnoredWalk` stages only walked leaves. The literal `add(['x.log'])` row is a GUARD
+   (the literal fast path already stages it).
+   GREEN — `hiddenWalkEntryOf`, `hiddenTracked`, appended in `stageIgnoredWalk`. Step 1's GUARDs
+   stay green.
+3. RED — `addAll` (add.test.ts, via the `addAllInternal` import): A1 (`d/x.txt` under `d/`) and
+   A2 (`x.log` under `*.log`) → modified; interop `add -A` rows. Run: fail — `addAll` streams the
+   pruned walk. GREEN — `addAll` collects its walk and appends `hiddenTracked` with
+   `WHOLE_TREE_MATCHER`.
+4. REFACTOR — named helpers, comments say why (git's index-side pass). Gate.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/add.test.ts test/unit/application/commands/add-directory-file.test.ts test/unit/application/commands/add-unmerged.test.ts test/unit/application/commands/add-clean-order.test.ts test/unit/application/commands/add-big-file-threshold.test.ts test/integration/add-tracked-under-ignore-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/add-interop.test.ts test/integration/add-all.test.ts test/integration/add-unmerged-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts test/unit/application/commands/add.test.ts test/integration/add-tracked-under-ignore-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+Run after the last edit; exit code must be 0. Wireit caveat: `check:types` / `check:spelling` can
+print `Ran 0 scripts and skipped 1` on a cached result — bare oracles: `npx tsc --noEmit -p
+tsconfig.json`, `npx cspell --no-progress <touched-files>`.
+
+### Commit
+
+`fix(add): stage tracked files that ignore rules hide from the walk, as git's index pass does`
+
+## Part 10 — A pathspec may hold a backslash on POSIX hosts, for matching only
 
 ### Context
 
@@ -1069,7 +1245,9 @@ Files this part creates or edits (exactly these):
 - `test/unit/application/commands/internal/resolve-pathspec.test.ts` — likewise its only editor.
 - `test/unit/application/commands/internal/pathspec-intake.test.ts` — POSIX-accept rows (created
   by Part 5; a file new to this run).
-- `test/integration/pathspec-glob-dialect-interop.test.ts` — D6, D17, E2 rows and the Windows
+- `test/integration/pathspec-backslash-interop.test.ts` — CREATED (its own file so no pending part
+  shares an interop file; copy the header and twin builder from
+  test/integration/pathspec-glob-dialect-interop.test.ts) — D6, D17, E2 rows and the Windows
   refusal row (created by Part 1; a file new to this run).
 
 Read-only references: src/application/commands/internal/pathspec-intake.ts (Part 5:
@@ -1156,7 +1334,7 @@ git accepts the pathspec); rows refusing traversal, NUL or a leading "/" stay GU
      `['../a\\b']` and `['a\\b/../x']` still throw PATHSPEC_OUTSIDE_REPO.
    - `pathspec-intake.test.ts`, "POSIX host": `resolveCommandPathspec({}, ['a\\*b'])` resolves and
      its positive has `probesDisk` false; GUARD: Part 5's Windows-host row still refuses.
-   - `pathspec-glob-dialect-interop.test.ts`: D6, D17, E2 (POSIX only) and the Windows-only
+   - `pathspec-backslash-interop.test.ts`: D6, D17, E2 (POSIX only) and the Windows-only
      refusal row.
    Fails: `validatePath` refuses every backslash body. GREEN — relaxed body validation in
    `collapsePattern`. Part 5's host check is now the only Windows refusal (its mutants now die).
@@ -1170,10 +1348,10 @@ git accepts the pathspec); rows refusing traversal, NUL or a leading "/" stay GU
 ### Gate
 
 ```bash
-PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/internal test/unit/domain/working-tree-path.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/rm.test.ts test/unit/application/commands/checkout.test.ts test/unit/application/commands/grep.test.ts test/unit/application/commands/mv.test.ts test/unit/application/commands/blame.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/pathspec-dot-interop.test.ts \
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/internal test/unit/domain/working-tree-path.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/rm.test.ts test/unit/application/commands/checkout.test.ts test/unit/application/commands/grep.test.ts test/unit/application/commands/mv.test.ts test/unit/application/commands/blame.test.ts test/integration/pathspec-backslash-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/pathspec-dot-interop.test.ts \
   && npm run check:types \
-  && ./node_modules/.bin/biome check src/application/commands/internal/resolve-pathspec.ts test/unit/application/commands/internal/resolve-pathspec.test.ts test/unit/application/commands/internal/pathspec-intake.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
-  && npm run check:spelling; echo "gate exit=$?"
+  && ./node_modules/.bin/biome check src/application/commands/internal/resolve-pathspec.ts test/unit/application/commands/internal/resolve-pathspec.test.ts test/unit/application/commands/internal/pathspec-intake.test.ts test/integration/pathspec-backslash-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
 ```
 
 Run after the last edit; exit code must be 0. Drop a listed suite only if the file does not exist
@@ -1185,7 +1363,7 @@ and skipped 1` on a cached result — bare oracles: `npx tsc --noEmit -p tsconfi
 
 `fix(pathspec): accept a backslash in a pathspec on POSIX hosts, for matching only`
 
-## Part 10 — name-rev reports suffix-matched abbreviation as data
+## Part 11 — name-rev reports suffix-matched abbreviation as data
 
 ### Context
 
@@ -1280,7 +1458,7 @@ api.json is current.
 
 `fix(name-rev): report a suffix-matched ref abbreviation as data`
 
-## Part 11 — Bundle-size measurement, add-by-glob bench, byte-matcher linearity guard
+## Part 12 — Bundle-size measurement, add-by-glob bench, byte-matcher linearity guard
 
 ### Context
 
@@ -1329,8 +1507,8 @@ Size procedure (lesson 006 + ADR-1043):
 4. No row red → edit neither `.size-limit.json` nor the design doc.
 
 api.json drift check: `npm run docs:json && git diff --no-ext-diff --stat reports/api.json` must print nothing
-(Part 10 regenerated it after the last public change). A diff here means a later part changed the
-public surface — stop and report `{ unit: Part 11, reason, options }`, do not commit api.json.
+(Part 11 regenerated it after the last public change). A diff here means a later part changed the
+public surface — stop and report `{ unit: Part 12, reason, options }`, do not commit api.json.
 
 House rules: `git diff --no-ext-diff --stat` after edits. Poll, never wait (`check:size` builds — poll its
 output). Commit only this part's files. Never run two `npm run` scripts at once.
