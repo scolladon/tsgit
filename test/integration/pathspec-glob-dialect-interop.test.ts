@@ -558,6 +558,9 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       await writeFile(path.join(repo, name), body);
     };
 
+    /** git's `file_exists` escape: a literal naming an empty directory is not refused. */
+    const emptyDirectory = (name: string) => (repo: string) => mkdir(path.join(repo, name));
+
     const rows: ReadonlyArray<Row> = [
       {
         files: { 'real.txt': 'r\n' },
@@ -652,6 +655,8 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         args: ['untr*'],
         refused: 'untr*',
       },
+      { files: { k: 'k\n' }, prepare: emptyDirectory('e'), args: ['e'] },
+      { files: { k: 'k\n' }, prepare: emptyDirectory('e'), args: ['e', 'k*'] },
     ];
 
     describe.each(rows)('When git and tsgit add $args', (spec) => {

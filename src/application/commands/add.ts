@@ -852,6 +852,7 @@ const refuseUnseenRenormalized = async (
  */
 const refuseUnseenWalked = async (
   ctx: Context,
+  repoIgnore: IgnorePredicate,
   positives: ReadonlyArray<PositivePathspec>,
   sorted: ReadonlyArray<IndexEntry>,
   walked: ReadonlyArray<WalkWorkingTreeEntry>,
@@ -862,10 +863,32 @@ const refuseUnseenWalked = async (
       indexSees(positive, sorted) || walked.some(({ path }) => positive.entry.compiled.test(path)),
   );
   for (const positive of unseen) {
-    if (positive.entry.isLiteral || !(await namesOnDisk(ctx, positive))) {
+    if (!(await namesUnignoredDiskPath(ctx, repoIgnore, positive))) {
       throw pathspecNoMatch(positive.spelling);
     }
   }
+};
+
+/**
+ * git's `file_exists` escape: an unseen pathspec whose verbatim body names
+ * something on disk is not refused (an empty directory, a wildcard spelled like
+ * an ignored file). A literal naming an ignored path still is: git reports it
+ * as ignored and exits 1, a report this command does not carry yet, so the
+ * refusal keeps that failure visible.
+ */
+const namesUnignoredDiskPath = async (
+  ctx: Context,
+  repoIgnore: IgnorePredicate,
+  { entry, probesDisk }: PositivePathspec,
+): Promise<boolean> => {
+  if (!probesDisk) return false;
+  const body = entry.body as FilePath;
+  const stat = await lstatOrBeneathFile(ctx, body);
+  const directoryOnly = namesDirectoryOnly(body);
+  if (stat === undefined || (directoryOnly && !stat.isDirectory)) return false;
+  if (!entry.isLiteral) return true;
+  const queried = (directoryOnly ? body.slice(0, -1) : body) as FilePath;
+  return !(await repoIgnore(queried, stat.isDirectory));
 };
 
 /** Whether `add --renormalize` re-cleans this entry: a merged, checked-out file or symlink in the pathspec. */
@@ -1002,7 +1025,7 @@ const stageIgnoredWalk = async (
   } = await readExistingEntries(ctx);
   const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
   const walked = await collectWalk(walkWorkingTree(ctx, { ignore }));
-  await refuseUnseenWalked(ctx, positives, sorted, walked);
+  await refuseUnseenWalked(ctx, repoIgnore, positives, sorted, walked);
   const hidden = await hiddenTracked(ctx, existing, matcher, walked);
   const outcomes = await stageWalkedEntries(
     ctx,
