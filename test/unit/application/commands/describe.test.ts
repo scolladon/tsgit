@@ -1037,6 +1037,7 @@ describe('describe --contains', () => {
           ref: RefName.from('refs/tags/v1.0'),
           tagDeref: true,
           steps: [{ kind: 'ancestor', count: 1 }],
+          abbreviated: false,
         });
       });
     });
@@ -1079,7 +1080,13 @@ describe('describe --contains', () => {
         const result = await describeCmd(ctx, head, { contains: true, always: true });
 
         // Assert
-        expect(result).toEqual({ oid: head, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({
+          oid: head,
+          ref: undefined,
+          tagDeref: false,
+          steps: [],
+          abbreviated: false,
+        });
       });
     });
   });

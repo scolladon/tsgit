@@ -152,6 +152,7 @@ describe('nameRev tip table', () => {
           ref: RefName.from('refs/tags/v1'),
           tagDeref: true,
           steps: [],
+          abbreviated: false,
         });
         expect(logs).toEqual(expectedLogs);
       });
@@ -193,6 +194,7 @@ describe('nameRev tip table', () => {
           ref: RefName.from('refs/tags/tc'),
           tagDeref: false,
           steps: [],
+          abbreviated: false,
         });
       });
     });
@@ -216,6 +218,7 @@ describe('nameRev tip table', () => {
           ref: RefName.from('refs/tags/lt'),
           tagDeref: false,
           steps: [],
+          abbreviated: false,
         });
       });
     });
@@ -232,7 +235,13 @@ describe('nameRev tip table', () => {
         const result = await sut(ctx, tree, { refs: 'refs/heads/*' });
 
         // Assert
-        expect(result).toEqual({ oid: tree, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({
+          oid: tree,
+          ref: undefined,
+          tagDeref: false,
+          steps: [],
+          abbreviated: false,
+        });
       });
     });
 
@@ -273,6 +282,7 @@ describe('nameRev tip table', () => {
           ref: RefName.from('refs/tags/tc'),
           tagDeref: true,
           steps: [],
+          abbreviated: false,
         });
       });
     });
@@ -290,7 +300,13 @@ describe('nameRev tip table', () => {
         const result = await sut(ctx, blob);
 
         // Assert
-        expect(result).toEqual({ oid: blob, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({
+          oid: blob,
+          ref: undefined,
+          tagDeref: false,
+          steps: [],
+          abbreviated: false,
+        });
       });
     });
   });
