@@ -859,9 +859,7 @@ const refuseUnseenRenormalized = async (
   positives: ReadonlyArray<PositivePathspec>,
   entries: ReadonlyArray<IndexEntry>,
 ): Promise<void> => {
-  const unseen = unmatchedPositives(positives.filter(isNarrowerThanWholeTree), (positive) =>
-    indexSees(positive, entries),
-  );
+  const unseen = unmatchedPositives(positives, (positive) => indexSees(positive, entries));
   for (const positive of unseen) {
     if (!(await namesOnDisk(ctx, positive))) throw pathspecNoMatch(positive.spelling);
   }

@@ -2830,6 +2830,22 @@ describe('Given a work tree with nothing to add', () => {
   });
 });
 
+describe('Given a work tree whose every path is ignored', () => {
+  describe('When the whole tree is added with the `.` pathspec', () => {
+    it('Then nothing is staged and the whole-tree pathspec is not refused', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ '.gitignore': '*\n', a: 'a' });
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['.']);
+
+      // Assert
+      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+    });
+  });
+});
+
 describe('Given a nested work tree', () => {
   describe('When the whole tree is added with the `.` pathspec', () => {
     it('Then every file is staged', async () => {
@@ -4674,6 +4690,76 @@ describe('add of a literal beneath an ignored directory', () => {
         // Assert
         expect(err.data).toEqual(pathspecNoMatch('build/x').data);
         expect((await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`)).toEqual(before);
+      });
+    });
+  });
+});
+
+describe('add of an unseen pathspec whose spelled path exists on disk', () => {
+  const NOTHING_STAGED = { added: [], modified: [], removed: [], eolNotices: [] };
+
+  describe('Given an empty directory two levels deep and no ignore rule', () => {
+    describe('When add names it', () => {
+      it('Then it is not refused', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/d`);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/d/e`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d/e']);
+
+        // Assert
+        expect(result).toEqual(NOTHING_STAGED);
+      });
+    });
+  });
+
+  describe('Given a file x that only a directory-only rule names', () => {
+    describe('When add names x with a glob and excludes x', () => {
+      it('Then x is not refused, as the rule does not ignore a file', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ x: 'x', y: 'y', '.gitignore': 'x/\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x', 'y*', '!x']);
+
+        // Assert
+        expect(result.added).toEqual(['y']);
+      });
+    });
+  });
+
+  describe('Given a wildcard holding a backslash that matches nothing', () => {
+    describe('When add names it', () => {
+      it('Then it is refused with the pattern as typed', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ a: 'a' });
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['zz\\*']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('zz\\*').data);
+      });
+    });
+  });
+
+  describe('Given a file spelled like a backslash wildcard inside an ignored directory', () => {
+    describe('When add names that spelling', () => {
+      it('Then the spelling is never looked up on disk and is refused', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'd/x\\y': 'y', '.gitignore': 'd/\n' });
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['d/x\\y']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('d/x\\y').data);
       });
     });
   });
