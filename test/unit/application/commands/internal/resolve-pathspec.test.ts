@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   assertNoSymlinkedLeadingPath,
-  enforceLiteralMustMatch,
   resolvePathspec,
 } from '../../../../../src/application/commands/internal/resolve-pathspec.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
@@ -158,23 +157,6 @@ describe('resolvePathspec', () => {
       });
     });
 
-    describe('When the literal spellings are read', () => {
-      it('Then each collapsed literal maps to the first pattern spelling it', () => {
-        // Arrange
-        const sut = resolvePathspec;
-
-        // Act
-        const result = sut(['./a.txt', 'a.txt', 'd/./', '!./n', 'b']);
-
-        // Assert
-        expect([...result.literalSpellings]).toEqual([
-          ['a.txt', './a.txt'],
-          ['d/', 'd/./'],
-          ['b', 'b'],
-        ]);
-      });
-    });
-
     describe('When the whole-tree pattern is matched', () => {
       it('Then it selects every path, nested ones included', () => {
         // Arrange
@@ -202,6 +184,81 @@ describe('resolvePathspec', () => {
         expect(result.matcher[0]?.compiled.test('a.txt')).toBe(true);
         expect(result.literalMustMatch).toEqual([]);
         expect(result.symlinkScanTargets).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given a pattern holding a backslash', () => {
+    describe('When resolved', () => {
+      it('Then it is one wildcard entry that is never a must-match literal', () => {
+        // Arrange
+        const sut = resolvePathspec;
+
+        // Act
+        const result = sut(['a\\*b']);
+
+        // Assert
+        expect(result.matcher.map((e) => [e.body, e.isLiteral])).toEqual([['a\\*b', false]]);
+        expect(result.literalMustMatch).toEqual([]);
+        expect(result.hasGlob).toBe(true);
+      });
+
+      it.each([
+        { pattern: '../a\\b', label: 'a leading `..` component' },
+        { pattern: 'a\\b/../x', label: 'an inner `..` component' },
+        { pattern: '/a\\b', label: 'a leading `/`' },
+        { pattern: 'a\\b\0', label: 'a NUL byte' },
+        { pattern: 'a\\b\u0001', label: 'a control byte' },
+        { pattern: 'a\\b/.git/x', label: 'a `.git` component' },
+        { pattern: `a\\${'b'.repeat(5000)}`, label: 'an over-long body' },
+      ])('Then $label is still refused', ({ pattern }) => {
+        // Arrange + Assert
+        expectError(() => resolvePathspec([pattern]), 'PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
+  describe('Given a backslash body refused for another rule', () => {
+    describe('When resolved', () => {
+      it('Then the refusal names the body as typed', () => {
+        // Arrange
+        const sut = resolvePathspec;
+        let caught: unknown;
+
+        // Act
+        try {
+          sut(['a\\b/../x']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: 'a\\b/../x',
+        });
+      });
+    });
+  });
+
+  describe('Given backslash bodies, for the leading-symlink scan targets', () => {
+    describe('When resolved', () => {
+      it.each([
+        { patterns: ['d/a\\b'], targets: ['d/a'], label: 'the bytes before the backslash' },
+        { patterns: ['a\\b'], targets: ['a'], label: 'a bare prefix' },
+        { patterns: ['\\x'], targets: [], label: 'an empty prefix, dropped' },
+        { patterns: ['d/a*b\\c'], targets: ['d/a'], label: 'the bytes before the first wildcard' },
+        { patterns: ['d/x\\*'], targets: ['d/x'], label: 'the prefix of an escaped wildcard' },
+        { patterns: ['link/*.ts'], targets: ['link/*.ts'], label: 'a backslash-free body, whole' },
+      ])('Then $label', ({ patterns, targets }) => {
+        // Arrange
+        const sut = resolvePathspec;
+
+        // Act
+        const result = sut(patterns);
+
+        // Assert
+        expect(result.symlinkScanTargets).toEqual(targets);
       });
     });
   });
@@ -320,130 +377,6 @@ describe('resolvePathspec', () => {
 });
 
 const PATTERN_BYTE_LENGTH = (s: string): number => new TextEncoder().encode(s).byteLength;
-
-describe('enforceLiteralMustMatch', () => {
-  describe('Given literals and matched paths that satisfy every literal', () => {
-    describe('When checked', () => {
-      it.each([
-        {
-          literals: [path('src/foo.ts')],
-          matched: [path('src/foo.ts'), path('other')],
-          label: 'a literal that appears verbatim in matched',
-        },
-        {
-          literals: [path('src')],
-          matched: [path('src/foo.ts')],
-          label: 'a literal whose descendant appears in matched (literal acts as dir prefix)',
-        },
-        { literals: [], matched: [], label: 'no literals (empty list), regardless of matched' },
-      ])('Then $label: no throw', ({ literals, matched }) => {
-        // Arrange + Assert
-        expect(() => enforceLiteralMustMatch(literals, matched)).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given a literal with no direct or prefix match', () => {
-    describe('When checked', () => {
-      it('Then throws PATHSPEC_NO_MATCH with the missing literal', () => {
-        // Arrange + Assert
-        const err = expectError(
-          () => enforceLiteralMustMatch([path('nope.txt')], [path('other.ts')]),
-          'PATHSPEC_NO_MATCH',
-        );
-        expect((err.data as { pattern: string }).pattern).toBe('nope.txt');
-      });
-    });
-  });
-
-  describe('Given the whole-tree literal', () => {
-    describe('When any path matched', () => {
-      it('Then it is satisfied', () => {
-        // Arrange
-        const sut = enforceLiteralMustMatch;
-
-        // Act
-        const result = () => sut([path('')], [path('d/b')]);
-
-        // Assert
-        expect(result).not.toThrow();
-      });
-    });
-
-    describe('When nothing matched', () => {
-      it('Then throws PATHSPEC_NO_MATCH naming `.`', () => {
-        // Arrange + Assert
-        const err = expectError(() => enforceLiteralMustMatch([path('')], []), 'PATHSPEC_NO_MATCH');
-        expect((err.data as { pattern: string }).pattern).toBe('.');
-      });
-    });
-  });
-
-  describe('Given a directory literal', () => {
-    describe('When a path beneath it matched', () => {
-      it('Then it is satisfied', () => {
-        // Arrange
-        const sut = enforceLiteralMustMatch;
-
-        // Act
-        const result = () => sut([path('d/')], [path('d/b')]);
-
-        // Assert
-        expect(result).not.toThrow();
-      });
-    });
-
-    describe('When only a file of that name matched', () => {
-      it('Then throws PATHSPEC_NO_MATCH naming the directory', () => {
-        // Arrange + Assert
-        const err = expectError(
-          () => enforceLiteralMustMatch([path('d/')], [path('d'), path('db')]),
-          'PATHSPEC_NO_MATCH',
-        );
-        expect((err.data as { pattern: string }).pattern).toBe('d/');
-      });
-    });
-  });
-
-  describe('Given literals spelled otherwise by the pattern', () => {
-    describe('When one is missing', () => {
-      it('Then throws PATHSPEC_NO_MATCH naming its spelling', () => {
-        // Arrange
-        const sut = enforceLiteralMustMatch;
-        const spellings = new Map([[path('x'), './x']]);
-
-        // Act + Assert
-        const err = expectError(() => sut([path('x')], [], spellings), 'PATHSPEC_NO_MATCH');
-        expect((err.data as { pattern: string }).pattern).toBe('./x');
-      });
-    });
-
-    describe('When the whole tree is missing', () => {
-      it('Then throws PATHSPEC_NO_MATCH naming its spelling', () => {
-        // Arrange
-        const sut = enforceLiteralMustMatch;
-        const spellings = new Map([[path(''), './.']]);
-
-        // Act + Assert
-        const err = expectError(() => sut([path('')], [], spellings), 'PATHSPEC_NO_MATCH');
-        expect((err.data as { pattern: string }).pattern).toBe('./.');
-      });
-    });
-  });
-
-  describe('Given multiple literals where one is missing', () => {
-    describe('When checked', () => {
-      it('Then throws with the missing one', () => {
-        // Arrange + Assert
-        const err = expectError(
-          () => enforceLiteralMustMatch([path('found'), path('missing')], [path('found/x')]),
-          'PATHSPEC_NO_MATCH',
-        );
-        expect((err.data as { pattern: string }).pattern).toBe('missing');
-      });
-    });
-  });
-});
 
 const expectAsyncError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
   let caught: unknown;

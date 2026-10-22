@@ -49,7 +49,6 @@ describe('resolveCommandPathspec', () => {
           expected.matcher.map((e) => e.pattern),
         );
         expect(result.literalMustMatch).toEqual(expected.literalMustMatch);
-        expect(result.literalSpellings).toEqual(expected.literalSpellings);
         expect(result.hasGlob).toBe(expected.hasGlob);
         expect(result.symlinkScanTargets).toEqual(expected.symlinkScanTargets);
       });
@@ -100,6 +99,23 @@ describe('positiveOf', () => {
 
         // Assert
         expect(result.probesDisk).toBe(false);
+      });
+    });
+  });
+});
+
+describe('resolveCommandPathspec on a POSIX host', () => {
+  describe('Given a pattern holding a backslash', () => {
+    describe('When resolved', () => {
+      it('Then it resolves and its positive never probes the disk', () => {
+        // Arrange
+        const sut = resolveCommandPathspec;
+
+        // Act
+        const result = sut({}, ['a\\*b']);
+
+        // Assert
+        expect(result.positives.map((p) => [p.spelling, p.probesDisk])).toEqual([['a\\*b', false]]);
       });
     });
   });
