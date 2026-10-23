@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { gitlinkHeadOf } from '../../../../../src/application/commands/internal/gitlink-head.js';
+import {
+  gitlinkHeadOf,
+  probeGitlinkCheckout,
+} from '../../../../../src/application/commands/internal/gitlink-head.js';
 import { permissionDenied, TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -169,6 +172,135 @@ describe('gitlinkHeadOf', () => {
 
         // Assert
         expect((err as Error).message).toBe('disk on fire');
+      });
+    });
+  });
+});
+
+describe('probeGitlinkCheckout', () => {
+  describe('Given no .git at the path', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is none', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'none' });
+      });
+    });
+  });
+
+  describe('Given a dangling .git symlink', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is none', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/sub/.git`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'none' });
+      });
+    });
+  });
+
+  describe('Given a repository checked out at the path', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is a repository whose head is the branch id', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await layOutRepository(ctx, `${ctx.layout.workDir}/sub/.git`, HEAD_COMMIT);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind).toBe('repository');
+        const head = checkout.kind === 'repository' ? await checkout.head() : undefined;
+        expect(head).toBe(HEAD_COMMIT);
+      });
+    });
+  });
+
+  describe('Given a gitfile that does not parse', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is broken, shown as the .git path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.git`, 'garbage\n');
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
+      });
+    });
+  });
+
+  describe('Given a .git directory whose HEAD is garbage', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is broken, shown as the .git path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dotGit = `${ctx.layout.workDir}/sub/.git`;
+        await layOutRepository(ctx, dotGit, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${dotGit}/HEAD`, 'garbage\n');
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
+      });
+    });
+  });
+
+  describe('Given a gitfile to an admin dir whose commondir holds zero bytes', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is broken, shown as the gitfile names the directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { gitDir, workDir } = ctx.layout;
+        await layOutRepository(ctx, `${gitDir}/modules/sub`, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${gitDir}/modules/sub/commondir`, '');
+        await ctx.fs.writeUtf8(`${workDir}/sub/.git`, 'gitdir: ../.git/modules/sub\n');
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/../.git/modules/sub' });
+      });
+    });
+  });
+
+  describe('Given a .git directory without objects', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is broken, shown as the .git path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dotGit = `${ctx.layout.workDir}/sub/.git`;
+        await ctx.fs.writeUtf8(`${dotGit}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.mkdir(`${dotGit}/refs`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
       });
     });
   });
