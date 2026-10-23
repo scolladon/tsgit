@@ -90,6 +90,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'PACK_ARTIFACT_MISMATCH':
     case 'SHALLOW_FILE_MALFORMED':
     case 'NOT_A_REPOSITORY':
+    case 'NO_COMMIT_CHECKED_OUT':
     case 'DUBIOUS_OWNERSHIP':
     case 'IMPLICIT_BARE_REPOSITORY':
     case 'BARE_REPOSITORY':
