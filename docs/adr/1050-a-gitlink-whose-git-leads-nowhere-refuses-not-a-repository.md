@@ -30,4 +30,6 @@ the index unchanged. tsgit today succeeds and leaves the entry alone.
 ## Consequences
 
 - The error table documents the gitlink case under `NOT_A_REPOSITORY`.
-- Both rows are cross-tool interop tests.
+- Both rows are cross-tool interop tests, as are the shapes the review round added: a `commondir`
+  leading nowhere or to a directory without `objects/` and `refs/`, a `.git` symlink to a directory
+  with no HEAD, and a gitdir whose `objects/` is missing — each refused with the path git prints.
