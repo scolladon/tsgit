@@ -182,26 +182,31 @@ const embeddedReftable: Setup = async (repo) => {
 };
 
 /** `sub/.git` a gitfile naming a linked worktree's admin dir, whose branch the common dir moved past the recorded commit. */
-const linkedWorktreeCheckout: Setup = async (repo) => {
-  const ext = `${repo}-ext`;
-  const worktree = `${repo}-linked-worktree`;
-  runGit(['init', '-q', '-b', 'main', ext]);
-  commitIn(ext, 'A');
-  const recorded = runGit(['-C', ext, 'rev-parse', 'HEAD']).trim();
-  commitIn(ext, 'B');
-  const moved = runGit(['-C', ext, 'rev-parse', 'HEAD']).trim();
-  runGit(['-C', ext, 'worktree', 'add', '-q', '-b', 'wt', worktree, recorded]);
-  runGit(['-C', ext, 'update-ref', 'refs/heads/wt', moved]);
-  await writeFiles(repo, { k: 'k\n' });
-  runGit(['-C', repo, 'add', 'k']);
-  runGit(['-C', repo, 'update-index', '--add', '--cacheinfo', `160000,${recorded},sub`]);
-  commitIn(repo, 'super');
-  await mkdir(path.join(repo, 'sub'));
-  await writeFile(
-    path.join(repo, 'sub', '.git'),
-    `gitdir: ${path.join(ext, '.git', 'worktrees', path.basename(worktree))}\n`,
-  );
-};
+const linkedWorktreeOn =
+  (init: ReadonlyArray<string>): Setup =>
+  async (repo) => {
+    const ext = `${repo}-ext`;
+    const worktree = `${repo}-linked-worktree`;
+    runGit(['init', '-q', '-b', 'main', ...init, ext]);
+    commitIn(ext, 'A');
+    const recorded = runGit(['-C', ext, 'rev-parse', 'HEAD']).trim();
+    commitIn(ext, 'B');
+    const moved = runGit(['-C', ext, 'rev-parse', 'HEAD']).trim();
+    runGit(['-C', ext, 'worktree', 'add', '-q', '-b', 'wt', worktree, recorded]);
+    runGit(['-C', ext, 'update-ref', 'refs/heads/wt', moved]);
+    await writeFiles(repo, { k: 'k\n' });
+    runGit(['-C', repo, 'add', 'k']);
+    runGit(['-C', repo, 'update-index', '--add', '--cacheinfo', `160000,${recorded},sub`]);
+    commitIn(repo, 'super');
+    await mkdir(path.join(repo, 'sub'));
+    await writeFile(
+      path.join(repo, 'sub', '.git'),
+      `gitdir: ${path.join(ext, '.git', 'worktrees', path.basename(worktree))}\n`,
+    );
+  };
+
+const linkedWorktreeCheckout = linkedWorktreeOn([]);
+const linkedReftableWorktreeCheckout = linkedWorktreeOn(['--ref-format=reftable']);
 
 const movedUnderAnotherName: Setup = async (repo, upstream) => {
   await writeFiles(repo, { k: 'k\n' });
@@ -425,6 +430,18 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       {
         label: 'a .git that is a gitfile to a linked worktree whose branch moved, added by name',
         setup: linkedWorktreeCheckout,
+        spec: ['sub'],
+      },
+      {
+        label:
+          'a .git that is a gitfile to a linked worktree of a reftable repository, added by dot',
+        setup: linkedReftableWorktreeCheckout,
+        spec: ['.'],
+      },
+      {
+        label:
+          'a .git that is a gitfile to a linked worktree of a reftable repository, added by name',
+        setup: linkedReftableWorktreeCheckout,
         spec: ['sub'],
       },
       {

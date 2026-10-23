@@ -5,6 +5,11 @@ import { serializeAndHash } from '../../../../src/application/primitives/interna
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE, type ObjectId } from '../../../../src/domain/objects/index.js';
+import {
+  buildRefBlock,
+  buildReftable,
+  buildReftableHeader,
+} from '../../../fixtures/refs/reftable-writers.js';
 import { seedIndex } from './add-index-fixtures.js';
 import { seedRepo } from './fixtures.js';
 
@@ -23,6 +28,7 @@ type Checkout =
   | 'pointed-away'
   | 'worktree-admin'
   | 'worktree-admin-absolute'
+  | 'worktree-admin-reftable'
   | 'dangling'
   | 'self-looping';
 
@@ -63,6 +69,57 @@ const layOutModule = async (
   }
 };
 
+const REFTABLE_CONFIG =
+  '[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefStorage = reftable\n';
+const REFTABLE_HEAD = 'ref: refs/heads/.invalid\n';
+const TABLE_NAME = '0x000000000001-0x000000000001-66a63dbb.ref';
+
+type ReftableRecord = Parameters<typeof buildRefBlock>[0]['records'][number];
+
+const reftableHolding = (...records: ReadonlyArray<ReftableRecord>): Uint8Array => {
+  const spec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+  const block = buildRefBlock({
+    records,
+    restartIndices: [0],
+    isFirstBlock: true,
+    headerLength: buildReftableHeader(spec).length,
+  });
+  return buildReftable({ ...spec, blocks: [block] });
+};
+
+const layOutStack = async (ctx: Ctx, dir: string, table: Uint8Array): Promise<void> => {
+  await ctx.fs.writeUtf8(`${dir}/tables.list`, `${TABLE_NAME}\n`);
+  await ctx.fs.write(`${dir}/${TABLE_NAME}`, table);
+};
+
+/**
+ * As a real linked worktree on reftable: the admin dir holds `HEAD`, `commondir`,
+ * `gitdir` and its own stack for the per-worktree `HEAD`, but no config; the
+ * common dir holds the config and the stack of the shared branches.
+ */
+const layOutReftableWorktreeAdmin = async (ctx: Ctx): Promise<void> => {
+  const admin = `${ctx.layout.gitDir}/admin`;
+  const common = `${ctx.layout.gitDir}/common`;
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.git`, 'gitdir: ../.git/admin\n');
+  await ctx.fs.writeUtf8(`${admin}/HEAD`, REFTABLE_HEAD);
+  await ctx.fs.writeUtf8(`${admin}/commondir`, '../common\n');
+  await ctx.fs.writeUtf8(`${admin}/gitdir`, `${ctx.layout.workDir}/sub/.git\n`);
+  await layOutStack(
+    ctx,
+    `${admin}/reftable`,
+    reftableHolding({ name: 'HEAD', value: { kind: 'symbolic', target: 'refs/heads/main' } }),
+  );
+  await ctx.fs.writeUtf8(`${common}/config`, REFTABLE_CONFIG);
+  await layOutStack(
+    ctx,
+    `${common}/reftable`,
+    reftableHolding({
+      name: 'refs/heads/main',
+      value: { kind: 'direct', id: new Uint8Array(20).fill(0xbb) },
+    }),
+  );
+};
+
 const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
   const { checkout = 'absorbed', module = 'sub' } = setup;
   const sub = `${ctx.layout.workDir}/sub`;
@@ -93,6 +150,7 @@ const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
     );
     await ctx.fs.writeUtf8(`${common}/refs/heads/main`, `${setup.branch ?? MOVED_HEAD}\n`);
   }
+  if (checkout === 'worktree-admin-reftable') await layOutReftableWorktreeAdmin(ctx);
   if (checkout === 'dangling') {
     await ctx.fs.mkdir(sub);
     await ctx.fs.symlink(`${ctx.layout.workDir}/nowhere`, `${sub}/.git`);
@@ -336,11 +394,6 @@ describe('add over a gitlink whose .git is a symlink that loops', () => {
   });
 });
 
-const REFTABLE_CONFIG =
-  '[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefStorage = reftable\n';
-const REFTABLE_HEAD = 'ref: refs/heads/.invalid\n';
-const TABLE_NAME = '0x000000000001-0x000000000001-66a63dbb.ref';
-
 describe('add over a gitlink whose HEAD cannot be resolved', () => {
   describe.each([
     {
@@ -403,6 +456,10 @@ describe('add over a gitlink whose .git is a linked worktree admin directory', (
   describe.each([
     { label: 'a relative commondir', checkout: 'worktree-admin' as const },
     { label: 'an absolute commondir', checkout: 'worktree-admin-absolute' as const },
+    {
+      label: 'a reftable stack and config in the common dir alone',
+      checkout: 'worktree-admin-reftable' as const,
+    },
   ])('Given $label holding the branch at another commit than recorded', ({ checkout }) => {
     describe('When the whole tree is added', () => {
       it('Then the gitlink is staged at the commit the common dir holds', async () => {
