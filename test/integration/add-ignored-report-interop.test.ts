@@ -88,6 +88,14 @@ const trackedLogBesideUntrackedLog: Setup = trackedThen({ 't.log': 'a\n', k: 'k\
   'u.log': 'u\n',
 });
 
+/** Two ignored logs whose names sort differently by UTF-16 code unit and by byte. */
+const nonBmpLogs: Setup = (repo) =>
+  writeFiles(repo, { '.gitignore': '*.log\n', '😀.log': 'a\n', '！.log': 'b\n' });
+
+/** Two ignored directories whose names sort differently by UTF-16 code unit and by byte. */
+const nonBmpDirectories: Setup = (repo) =>
+  writeFiles(repo, { '.gitignore': '！/\n😀/\n', '😀/q': 'a\n', '！/q': 'b\n' });
+
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'add reporting the ignored entries a pathspec reaches',
   () => {
@@ -291,6 +299,16 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         label: 'a tracked log a rule hides, by single-character wildcard',
         setup: trackedHiddenLog,
         spec: ['?.log'],
+      },
+      {
+        label: 'ignored literals named beyond the basic plane',
+        setup: nonBmpLogs,
+        spec: ['😀.log', '！.log'],
+      },
+      {
+        label: 'ignored directories named beyond the basic plane',
+        setup: nonBmpDirectories,
+        spec: ['😀/', '！/'],
       },
     ])('Given $label', ({ setup, spec }) => {
       describe('When git and tsgit add it', () => {

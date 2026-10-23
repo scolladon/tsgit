@@ -343,11 +343,14 @@ const splitIgnoredLiterals = async (
     const tracked = entries.has(keyOfPath(body));
     const hidden = tracked
       ? await firstIgnoredAncestorOf(repoIgnore, body)
-      : await firstIgnoredOf(repoIgnore, body, false);
+      : await firstIgnoredLeafOf(repoIgnore, body);
     if (hidden !== undefined) reported.add(hidden);
     if (tracked || hidden === undefined) stageable.push(body);
   }
-  return { ignored: [...reported].sort(), stageable: { ...resolved, literalMustMatch: stageable } };
+  return {
+    ignored: [...reported].sort(comparePaths),
+    stageable: { ...resolved, literalMustMatch: stageable },
+  };
 };
 
 /** The shallowest proper ancestor directory a rule hides: git prunes there. */
@@ -363,13 +366,13 @@ const firstIgnoredAncestorOf = async (
   return undefined;
 };
 
-const firstIgnoredOf = async (
+/** The ignored ancestor of a literal, else the literal itself when a rule hides it as a non-directory. */
+const firstIgnoredLeafOf = async (
   repoIgnore: IgnorePredicate,
   path: FilePath,
-  isDirectory: boolean,
 ): Promise<FilePath | undefined> =>
   (await firstIgnoredAncestorOf(repoIgnore, path)) ??
-  ((await repoIgnore(path, isDirectory)) ? path : undefined);
+  ((await repoIgnore(path, false)) ? path : undefined);
 
 /** Stage the literals, then drop what a non-directory they inserted now replaces. */
 const stageLiteralsOver = async (
@@ -953,17 +956,24 @@ const isStageZeroSkipWorktree = (entry: IndexEntry): boolean =>
 const skipWorktreeOf = (existing: ReadonlyMap<IndexPathKey, IndexEntry>): IndexEntry[] =>
   [...existing.values()].filter(isStageZeroSkipWorktree);
 
-const withoutSkipWorktreeEntries = (
-  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
-): ReadonlyMap<IndexPathKey, IndexEntry> =>
-  new Map([...existing].filter(([, entry]) => !entry.flags.skipWorktree));
-
 /** One matcher pass over the index, shared by the refusal, the hidden pass and the removals. */
 const verdictsOf = (
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   verdictOf: (path: FilePath) => PathspecVerdict,
 ): ReadonlyMap<IndexPathKey, PathspecVerdict> =>
   new Map([...existing].map(([key, entry]) => [key, verdictOf(escapedPathOf(entry))]));
+
+/** The walk route's pass: a skip-worktree entry takes no verdict, and no copy of the index is made. */
+const verdictsBesideSkipWorktree = (
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  verdictOf: (path: FilePath) => PathspecVerdict,
+): ReadonlyMap<IndexPathKey, PathspecVerdict> => {
+  const verdicts = new Map<IndexPathKey, PathspecVerdict>();
+  for (const [key, entry] of existing) {
+    if (!entry.flags.skipWorktree) verdicts.set(key, verdictOf(escapedPathOf(entry)));
+  }
+  return verdicts;
+};
 
 const indexVerdicts = (
   matcher: ResolvedPathspec['matcher'],
@@ -1194,9 +1204,7 @@ const stageIgnoredWalk = async (
     indexRules,
   } = await readExistingEntries(ctx);
   const tracker = trackPositives(matcher, positives);
-  const verdicts = verdictsOf(withoutSkipWorktreeEntries(existing), (path) =>
-    tracker.observe(path),
-  );
+  const verdicts = verdictsBesideSkipWorktree(existing, (path) => tracker.observe(path));
   const collector = collectIgnored(repoIgnore, existing, positives);
   const ignore = withPathspec(collector.ignore, matcher, unmergedStages);
   const walked = withoutSkipWorktree(await collectWalk(walkWorkingTree(ctx, { ignore })), existing);
@@ -1323,7 +1331,7 @@ const collectIgnored = (
     if (verdict && !existing.has(keyOfPath(path)) && reached(path)) recorded.add(path);
     return verdict;
   };
-  return { ignore, ignored: () => [...recorded].sort() };
+  return { ignore, ignored: () => [...recorded].sort(comparePaths) };
 };
 
 /**

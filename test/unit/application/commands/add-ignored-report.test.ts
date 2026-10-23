@@ -472,4 +472,44 @@ describe('add reporting the ignored entries a pathspec reaches', () => {
       });
     });
   });
+
+  describe.each([
+    {
+      label: 'literals',
+      ignore: '*.log\n',
+      names: ['😀.log', '！.log'],
+      spec: ['😀.log', '！.log'],
+      ignored: ['！.log', '😀.log'],
+    },
+    {
+      label: 'directory spellings',
+      ignore: '！/\n😀/\n',
+      names: ['😀/q', '！/q'],
+      spec: ['😀/', '！/'],
+      ignored: ['！', '😀'],
+    },
+  ])(
+    'Given ignored names beyond the basic plane and $label',
+    ({ ignore, names, spec, ignored }) => {
+      describe('When they are added', () => {
+        it('Then the ignored entries are reported in byte order, not UTF-16 order', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            workingTree: {
+              '.gitignore': ignore,
+              ...Object.fromEntries(names.map((n) => [n, 'x\n'])),
+            },
+          });
+          const sut = add;
+
+          // Act
+          const result = await sut(ctx, spec);
+
+          // Assert
+          expect(result.ignored).toEqual(ignored);
+        });
+      });
+    },
+  );
 });
