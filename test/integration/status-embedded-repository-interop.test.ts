@@ -115,6 +115,23 @@ const withDotGit =
     await make(path.join(repo, 'sub', '.git'));
   };
 
+/** Past the 512 MiB a JavaScript string can hold, yet no real bytes on disk. */
+const PAST_STRING_LIMIT_BYTES = 600 * (1 << 20);
+
+const withAdminFile =
+  (name: string, body: string): Setup =>
+  async (repo) => {
+    const dotGit = path.join(repo, 'sub', '.git');
+    await writeFiles(repo, {
+      'sub/u': 'u\n',
+      'sub/.git/HEAD': 'ref: refs/heads/main\n',
+      [`sub/.git/${name}`]: body,
+    });
+    await mkdir(path.join(dotGit, 'objects'));
+    await mkdir(path.join(dotGit, 'refs'));
+    makeSparseFile(path.join(dotGit, name), PAST_STRING_LIMIT_BYTES);
+  };
+
 const ROWS: ReadonlyArray<readonly [string, Setup]> = [
   ['a repository holding a committed file', repositoryWithFile],
   ['a .git that is a symlink to an outside repository', linkedGitDir],
@@ -129,6 +146,8 @@ const ROWS: ReadonlyArray<readonly [string, Setup]> = [
     'a .git file past 1 MiB',
     withDotGit((dotGit) => makeSparseFile(dotGit, OVERSIZED_GITFILE_BYTES)),
   ],
+  ['a commondir past 512 MiB', withAdminFile('commondir', '../x\n')],
+  ['a HEAD past 512 MiB with a valid start', withAdminFile('HEAD', 'ref: refs/heads/main\n')],
 ];
 
 const gitUntracked = (repo: string): ReadonlyArray<string> =>

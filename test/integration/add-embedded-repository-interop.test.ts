@@ -206,6 +206,24 @@ const withLinkToDevice = brokenDotGit((_repo, dotGit) => symlink('/dev/zero', do
 const withOversizedGitfile = brokenDotGit(async (_repo, dotGit) =>
   makeSparseFile(dotGit, OVERSIZED_GITFILE_BYTES),
 );
+/** Past the 512 MiB a JavaScript string can hold, yet no real bytes on disk. */
+const PAST_STRING_LIMIT_BYTES = 600 * (1 << 20);
+
+const layOutAdminDirs = async (dotGit: string, head: string): Promise<void> => {
+  await writeFiles(dotGit, { HEAD: head });
+  await mkdir(path.join(dotGit, 'objects'));
+  await mkdir(path.join(dotGit, 'refs'));
+};
+
+const withBoundlessCommondir = brokenDotGit(async (_repo, dotGit) => {
+  await layOutAdminDirs(dotGit, 'ref: refs/heads/main\n');
+  await writeFiles(dotGit, { commondir: '../x\n' });
+  makeSparseFile(path.join(dotGit, 'commondir'), PAST_STRING_LIMIT_BYTES);
+});
+const withBoundlessHead = brokenDotGit(async (_repo, dotGit) => {
+  await layOutAdminDirs(dotGit, 'ref: refs/heads/main\n');
+  makeSparseFile(path.join(dotGit, 'HEAD'), PAST_STRING_LIMIT_BYTES);
+});
 const withEmptyGitfile = brokenDotGit((_repo, dotGit) => writeFile(dotGit, ''));
 const withGitfileToNothing = brokenDotGit((_repo, dotGit) => gitfile(dotGit, '../nothing'));
 const withAdminFilesAtTheTop: Setup = async (repo) => {
@@ -366,6 +384,23 @@ const SUB_ROWS: ReadonlyArray<Row> = [
 ];
 
 const NO_COMMIT = { code: 'NO_COMMIT_CHECKED_OUT', path: 'sub/' };
+
+/** Admin files git reads in bounded buffers, however long the file is. */
+const BOUNDLESS_ROWS: ReadonlyArray<Row> = [
+  ...BROKEN_DOT_GIT_SPECS.map((spec) => ({
+    label: `a commondir past 512 MiB, which is no repository, added by ${spec[0]}`,
+    setup: withBoundlessCommondir,
+    spec,
+    timeoutMs: NON_BLOCKING_TIMEOUT_MS,
+  })),
+  ...[['.'], ['sub'], ['sub/'], ['s*']].map((spec) => ({
+    label: `a HEAD past 512 MiB with a valid start, which is a repository with no commit, added by ${spec[0]}`,
+    setup: withBoundlessHead,
+    spec,
+    refusal: NO_COMMIT,
+    timeoutMs: NON_BLOCKING_TIMEOUT_MS,
+  })),
+];
 
 const NO_COMMIT_SETUPS: ReadonlyArray<readonly [string, Setup]> = [
   ['a repository with no commit', unborn()],
@@ -589,6 +624,13 @@ const ALL_TREE_ROWS: ReadonlyArray<Row> = [
   ...NO_REPOSITORY_SETUPS.map(([label, setup]) =>
     everythingRow(`${label}, which is no repository`, setup),
   ),
+  everythingRow('a commondir past 512 MiB, which is no repository', withBoundlessCommondir, {
+    timeoutMs: NON_BLOCKING_TIMEOUT_MS,
+  }),
+  everythingRow('a HEAD past 512 MiB with a valid start', withBoundlessHead, {
+    refusal: NO_COMMIT,
+    timeoutMs: NON_BLOCKING_TIMEOUT_MS,
+  }),
   everythingRow('a repository with a commit', committed()),
   everythingRow('a repository with no files', committed('sub', {})),
   everythingRow('a gitfile naming an absolute path', absoluteGitfile(committed())),
@@ -744,6 +786,7 @@ const LITERAL_ROWS: ReadonlyArray<Row> = [
 const ALL_ROWS: ReadonlyArray<Row> = [
   ...SUB_ROWS,
   ...NO_COMMIT_ROWS,
+  ...BOUNDLESS_ROWS,
   ...IGNORED_ROWS,
   ...EXCLUDED_ROWS,
   ...NESTED_ROWS,

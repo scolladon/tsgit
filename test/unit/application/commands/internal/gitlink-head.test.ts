@@ -97,6 +97,26 @@ const reportingDotGit = (
   return { ...ctx, fs } as Context;
 };
 
+const WHOLE_READS = ['read', 'readUtf8', 'tryReadUtf8', 'openWithNoFollow'] as const;
+
+/** Reads of `leaf` that take the whole file are refused, so only a bounded slice can answer. */
+const refusingWholeReadsOf = (ctx: Context, leaf: string): Context => {
+  const refusing = Object.fromEntries(
+    WHOLE_READS.map((method) => [
+      method,
+      async (path: string, ...rest: unknown[]) => {
+        if (path.endsWith(leaf)) throw new Error(`whole read of ${path}`);
+        return (ctx.fs[method] as (...args: unknown[]) => Promise<unknown>).call(
+          ctx.fs,
+          path,
+          ...rest,
+        );
+      },
+    ]),
+  );
+  return { ...ctx, fs: Object.assign(Object.create(ctx.fs), refusing) } as Context;
+};
+
 const NOT_A_REGULAR_FILE = { isFile: false, isDirectory: false, isSymbolicLink: false };
 
 describe('gitlinkHeadOf', () => {
@@ -479,6 +499,137 @@ describe('a .git file past the size git reads', () => {
 
         // Assert
         expect((err as TsgitError).data).toEqual({ code: 'GITFILE_TOO_LARGE', path: 'sub/.git' });
+      });
+    });
+  });
+});
+
+describe('a nested repository whose commondir and HEAD git reads in bounded buffers', () => {
+  const MAX_PATH_BYTES = 4096;
+  const encoder = new TextEncoder();
+
+  const layOutLinked = async (
+    ctx: Context,
+    commondir: string,
+  ): Promise<{ readonly gitDir: string }> => {
+    const { gitDir, workDir } = ctx.layout;
+    await ctx.fs.writeUtf8(`${workDir}/sub/.git`, 'gitdir: ../.git/admin\n');
+    await ctx.fs.writeUtf8(`${gitDir}/admin/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.write(`${gitDir}/admin/commondir`, encoder.encode(commondir));
+    await layOutRepository(ctx, `${gitDir}/common`, HEAD_COMMIT);
+    return { gitDir };
+  };
+
+  describe('Given a commondir naming the common dir then padded with NULs past any path length', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then the name stops at the first NUL and the file is never read whole', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        await layOutLinked(memory, `../common\0${'\0'.repeat(MAX_PATH_BYTES * 2)}`);
+        const ctx = refusingWholeReadsOf(memory, '/admin/commondir');
+        const sut = gitlinkHeadOf;
+
+        // Act
+        const head = await sut(ctx, SUB);
+
+        // Assert
+        expect(head).toBe(HEAD_COMMIT);
+      });
+    });
+  });
+
+  describe('Given a commondir whose newline precedes a NUL', () => {
+    describe('When the checkout is probed', () => {
+      it('Then the newline stays part of the name and no repository is found', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await layOutLinked(ctx, '../common\n\0');
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/../.git/admin' });
+      });
+    });
+  });
+
+  describe('Given a NUL-free commondir of exactly the path length bound', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it names the common dir', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const name = `../common${'/.'.repeat((MAX_PATH_BYTES - 9 - 1) / 2)}/`;
+        await layOutLinked(ctx, name);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(name).toHaveLength(MAX_PATH_BYTES - 0);
+        expect(checkout.kind).toBe('repository');
+      });
+    });
+  });
+
+  describe('Given a NUL-free commondir a byte past the path length bound', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it can name no repository and is broken', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await layOutLinked(ctx, `../common${'/.'.repeat((MAX_PATH_BYTES - 10) / 2)}//`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/../.git/admin' });
+      });
+    });
+  });
+
+  describe('Given a HEAD whose first 255 bytes are valid and whose rest is enormous', () => {
+    describe('When the checkout is probed and its head asked', () => {
+      it('Then the repository is accepted, HEAD is never read whole, and no commit resolves as in git', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        const dotGit = `${memory.layout.workDir}/sub/.git`;
+        await layOutRepository(memory, dotGit, HEAD_COMMIT);
+        await memory.fs.write(
+          `${dotGit}/HEAD`,
+          encoder.encode(`ref: refs/heads/main\n${'\0'.repeat(MAX_PATH_BYTES * 2)}`),
+        );
+        const ctx = refusingWholeReadsOf(memory, '/sub/.git/HEAD');
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind).toBe('repository');
+        expect(checkout.kind === 'repository' && (await checkout.head())).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a HEAD that turns valid only after its 255th byte', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is broken as git reads no further', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dotGit = `${ctx.layout.workDir}/sub/.git`;
+        await layOutRepository(ctx, dotGit, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${dotGit}/HEAD`, `${' '.repeat(255)}ref: refs/heads/main\n`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
       });
     });
   });

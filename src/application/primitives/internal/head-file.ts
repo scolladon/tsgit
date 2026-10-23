@@ -169,6 +169,11 @@ export const readHeadFile = async (ctx: Context): Promise<HeadFile> => {
   return outcome.head;
 };
 
+/** Serve `head` to `ctx` as already read, for a caller that judged it from a bounded read. */
+export const seedHeadFile = (ctx: Context, head: HeadFile): void => {
+  slots.set(ctx, { identity: undefined, head, trusted: true });
+};
+
 /** Drop `ctx`'s slot — called after any write to `${gitDir}/HEAD`. */
 export const invalidateHeadSlot = (ctx: Context): void => {
   slots.delete(ctx);

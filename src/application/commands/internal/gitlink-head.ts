@@ -1,4 +1,5 @@
 import { TsgitError } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import { gitfileTooLarge, notARepository } from '../../../domain/repository/error.js';
 import { parseCommondir, parseGitfilePointer } from '../../../domain/worktree/gitfile.js';
@@ -6,10 +7,10 @@ import { resolveWorktreePath } from '../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileStat, FileSystem } from '../../../ports/file-system.js';
 import type { AlternatePathProbe } from '../../../ports/object-source-access.js';
-import { readUtf8IfPresent } from '../../primitives/internal/fs-probes.js';
 import { refStorageOf } from '../../primitives/internal/gitlink-ref-storage.js';
+import { type HeadFile, seedHeadFile } from '../../primitives/internal/head-file.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
-import { hasUsableHead, requireWorkTree } from '../../primitives/internal/repo-state.js';
+import { isUsableHead, requireWorkTree } from '../../primitives/internal/repo-state.js';
 import { deriveGitlinkContext } from '../../primitives/internal/submodule-context.js';
 import { worktreeScopedFs } from '../../primitives/internal/worktree-context.js';
 import { narrowAlternatePathProbe } from '../../primitives/object-store.js';
@@ -20,6 +21,12 @@ const COMMONDIR_FILE = 'commondir';
 const SEPARATOR = '/';
 // Mirrors git's cap on a gitfile (`read_gitfile_gently`): a larger `.git` file is refused unread.
 const MAX_GITFILE_SIZE = 1 << 20;
+// git reads a repository's HEAD into a 256-byte buffer, one of which terminates the string.
+const HEAD_PREFIX_BYTES = 255;
+// A path longer than the platform's PATH_MAX cannot name a directory, so a NUL-free commondir past it names nothing.
+const COMMONDIR_MAX_BYTES = 4096;
+const NUL = 0;
+const TEXT_DECODER = new TextDecoder();
 const UNFOLLOWED_LINK_CODES: ReadonlySet<string> = new Set(['FILE_NOT_FOUND', 'PERMISSION_DENIED']);
 const NOT_A_DIRECTORY_CODES: ReadonlySet<string> = new Set([
   ...UNFOLLOWED_LINK_CODES,
@@ -75,20 +82,21 @@ export const probeGitlinkCheckout = async (
   if (located.kind === 'broken' || located.kind === 'oversized') return located;
   const { gitDir } = located;
   // HEAD is a plain file under either ref backend, so it is judged before the config is read.
-  const unread = deriveGitlinkContext(ctx, gitDir, path, { fs: located.fs });
-  if (!(await hasUsableHead(unread))) return broken(located.shown);
+  const headFile = await boundedHeadFile(located.fs, gitDir);
+  if (!isUsableHead(headFile)) return broken(located.shown);
   const reached = await reaching(ctx, located);
   if (reached.kind === 'broken') return reached;
   const { commonDir, fs } = reached;
   if (!(await holdsObjectsAndRefs(fs, commonDir))) return broken(located.shown);
-  const head = async (): Promise<ObjectId | undefined> =>
-    resolveGitlinkHead(
-      deriveGitlinkContext(ctx, gitDir, path, {
-        fs,
-        commonDir,
-        refStorage: await refStorageOf(fs, commonDir),
-      }),
-    );
+  const head = async (): Promise<ObjectId | undefined> => {
+    const child = deriveGitlinkContext(ctx, gitDir, path, {
+      fs,
+      commonDir,
+      refStorage: await refStorageOf(fs, commonDir),
+    });
+    seedHeadFile(child, headFile);
+    return resolveGitlinkHead(child);
+  };
   return { kind: 'repository', head };
 };
 
@@ -118,13 +126,52 @@ const reaching = async (
 ): Promise<
   Broken | { readonly kind: 'reached'; readonly commonDir: string; readonly fs: FileSystem }
 > => {
-  const declared = await readUtf8IfPresent(fs, `${gitDir}${SEPARATOR}${COMMONDIR_FILE}`);
+  const declared = await commondirBytes(fs, `${gitDir}${SEPARATOR}${COMMONDIR_FILE}`);
   // git reads the file into a buffer and fails on a zero-byte one, unlike a bare newline.
-  if (declared === '') return broken(shown);
-  const value = declared === undefined ? undefined : parseCommondir(declared);
+  if (declared?.length === 0) return broken(shown);
+  const value = declared === undefined ? undefined : commondirValue(declared);
+  if (value === 'unnameable') return broken(shown);
   if (value?.kind !== 'ok') return { kind: 'reached', commonDir: gitDir, fs };
   const commonDir = resolveWorktreePath(gitDir, value.path);
   return { kind: 'reached', commonDir, fs: worktreeScopedFs(ctx, [gitDir, commonDir]) };
+};
+
+/** One byte past the bound tells a path that fits from one that does not, without reading the rest. */
+const commondirBytes = async (fs: FileSystem, path: string): Promise<Uint8Array | undefined> => {
+  try {
+    return await fs.readSlice(path, 0, COMMONDIR_MAX_BYTES + 1);
+  } catch (err) {
+    if (errorDataCode(err) === 'FILE_NOT_FOUND') return undefined;
+    throw err;
+  }
+};
+
+/**
+ * git takes the file as a C string: it ends at the first NUL, and only a newline ending
+ * the whole file is trimmed, so one before a NUL stays part of the name.
+ */
+const commondirValue = (bytes: Uint8Array): ReturnType<typeof parseCommondir> | 'unnameable' => {
+  const nul = bytes.indexOf(NUL);
+  if (nul !== -1) return nameOrEmpty(TEXT_DECODER.decode(bytes.subarray(0, nul)));
+  if (bytes.length > COMMONDIR_MAX_BYTES) return 'unnameable';
+  return parseCommondir(TEXT_DECODER.decode(bytes));
+};
+
+const nameOrEmpty = (name: string): ReturnType<typeof parseCommondir> =>
+  name === '' ? { kind: 'empty' } : { kind: 'ok', path: name };
+
+/** git's `validate_headref` looks at a symlink's text or at the first bytes of the file, never at the rest. */
+const boundedHeadFile = async (fs: FileSystem, gitDir: string): Promise<HeadFile> => {
+  const head = `${gitDir}${SEPARATOR}HEAD`;
+  try {
+    const stat = await fs.lstat(head);
+    if (stat.isSymbolicLink) return { kind: 'symlink', linkText: await fs.readlink(head) };
+    const prefix = await fs.readSlice(head, 0, HEAD_PREFIX_BYTES);
+    return { kind: 'file', content: TEXT_DECODER.decode(prefix) };
+  } catch (cause) {
+    if (cause instanceof TsgitError) return { kind: 'unusable', cause };
+    throw cause;
+  }
 };
 
 /** git's `is_git_directory`: a repository directory holds `objects` and `refs`, searchable. */

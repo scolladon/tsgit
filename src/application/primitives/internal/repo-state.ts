@@ -52,7 +52,7 @@ import {
   type ValuelessEntry,
 } from '../config-read.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
-import { validateHead } from './head-file.js';
+import { type HeadFile, validateHead } from './head-file.js';
 import { assertRepoSettingsValid } from './repo-settings-gate.js';
 import { rootRefExists } from './root-ref.js';
 
@@ -139,8 +139,10 @@ const assertDiscoveryAndRoot = async (ctx: Context): Promise<FilePath> => {
  * failed `open`, so the refusal outcome matches regardless of the failure
  * class.
  */
-export const hasUsableHead = async (ctx: Context): Promise<boolean> => {
-  const head = await validateHead(ctx);
+export const hasUsableHead = async (ctx: Context): Promise<boolean> =>
+  isUsableHead(await validateHead(ctx));
+
+export const isUsableHead = (head: HeadFile): boolean => {
   if (head.kind === 'symlink') return isRefsLinkText(head.linkText);
   if (head.kind === 'file') return isValidHeadContent(head.content);
   return false;
