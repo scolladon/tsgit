@@ -115,6 +115,7 @@ const locateCheckout = async (
   const stat = await lstatOrMissing(ctx, dotGit);
   if (stat === undefined) return undefined;
   if (stat.isDirectory) return directoryCheckout(ctx, checkout, path);
+  // Stryker disable next-line ConditionalExpression: equivalent — a regular `.git` file stats as a non-directory, so `symlinkCheckout` falls through to `gitfileCheckout` exactly as the direct call does.
   if (stat.isSymbolicLink) return symlinkCheckout(ctx, checkout, path);
   return gitfileCheckout(ctx, checkout, path);
 };
