@@ -94,5 +94,19 @@ describe('pruneGitlinkDirectories', () => {
         expect(verdict).toBe(true);
       });
     });
+
+    describe('When the walk asks about a directory of its name and the wrapped predicate keeps it', () => {
+      it('Then the directory is not pruned', async () => {
+        // Arrange
+        const sut = pruneGitlinkDirectories;
+        const ignore = sut(keepEverything, [entry('sub', FILE_MODE.REGULAR)]);
+
+        // Act
+        const verdict = await ignore('sub' as FilePath, true);
+
+        // Assert
+        expect(verdict).toBe(false);
+      });
+    });
   });
 });

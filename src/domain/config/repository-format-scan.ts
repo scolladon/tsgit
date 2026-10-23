@@ -112,7 +112,9 @@ export const refStorageReadBeforeMalformedVersion = (
   tokens: ReadonlyArray<ConfigToken>,
 ): boolean => {
   const declared = lastTopLevelEntry(tokens, EXTENSIONS_SECTION, REFSTORAGE_KEY);
-  return declared !== undefined && declared.line < firstMalformedVersionLine(tokens);
+  if (declared === undefined) return false;
+  // Stryker disable next-line EqualityOperator: equivalent — two entries never share a line, so `declared.line` never equals a malformed version's line and `<=` answers as `<`.
+  return declared.line < firstMalformedVersionLine(tokens);
 };
 
 /**

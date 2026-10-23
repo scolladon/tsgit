@@ -315,7 +315,7 @@ describe('Given a gitlink repository reached through its own filesystem', () => 
       const child = sut(ctx, '/elsewhere/.git', 'sub' as FilePath);
 
       // Assert
-      expect(child.layout.commonDir).toBeUndefined();
+      expect(Object.keys(child.layout)).not.toContain('commonDir');
     });
   });
 });
