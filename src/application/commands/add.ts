@@ -97,6 +97,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import {
   type CommandPathspec,
   type PositivePathspec,
+  reachesSkipWorktree,
   resolveCommandPathspec,
   trackPositives,
   unmatchedPositives,
@@ -148,6 +149,12 @@ export interface AddResult {
   readonly modified: ReadonlyArray<FilePath>;
   readonly removed: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
+  /**
+   * Pathspecs, as typed and in argument order, that matched only skip-worktree
+   * entries. git lists them under 'outside of your sparse-checkout definition'
+   * and exits 1. Empty when none.
+   */
+  readonly sparse: ReadonlyArray<string>;
 }
 
 /**
@@ -268,7 +275,7 @@ const addLiteralOnly = async (
       stats,
     );
     await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
-    return result;
+    return { ...result, sparse: [] };
   } finally {
     await lock.release();
   }
@@ -768,7 +775,7 @@ const addByPathspec = async (
       removedEntries,
     );
     await commitStaged(lock, staged, settled.remaining, tally.restagedPaths);
-    return sortedResult(tally, settled.removed);
+    return sortedResult(tally, settled.removed, staged.sparse);
   } finally {
     await lock.release();
   }
@@ -813,7 +820,7 @@ const addRenormalized = async (
     await commitIfChanged(lock, entries.length, renormalized.entries, {
       restagedPaths: renormalized.restagedPaths,
     });
-    return { added: [], modified: renormalized.modified, removed: [], eolNotices: [] };
+    return { added: [], modified: renormalized.modified, removed: [], eolNotices: [], sparse: [] };
   } finally {
     await lock.release();
   }
@@ -835,6 +842,21 @@ const isNarrowerThanWholeTree = ({ entry }: PositivePathspec): boolean =>
 /** Whether some index entry reaches the positive: `--renormalize` has no walk and no shared pass. */
 const indexSees = ({ entry }: PositivePathspec, entries: ReadonlyArray<IndexEntry>): boolean =>
   entries.some((indexed) => entry.compiled.test(escapedPathOf(indexed)));
+
+/** git never stages a skip-worktree entry from the working tree: the file there is not the entry's content. */
+const withoutSkipWorktree = (
+  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): WalkWorkingTreeEntry[] =>
+  walked.filter(({ path }) => existing.get(keyOfPath(path))?.flags.skipWorktree !== true);
+
+const skipWorktreeOf = (existing: ReadonlyMap<IndexPathKey, IndexEntry>): IndexEntry[] =>
+  [...existing.values()].filter((entry) => entry.flags.skipWorktree && entry.flags.stage === 0);
+
+const withoutSkipWorktreeEntries = (
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): ReadonlyMap<IndexPathKey, IndexEntry> =>
+  new Map([...existing].filter(([, entry]) => !entry.flags.skipWorktree));
 
 /** One matcher pass over the index, shared by the refusal, the hidden pass and the removals. */
 const verdictsOf = (
@@ -868,24 +890,29 @@ const refuseUnseenRenormalized = async (
   }
 };
 
+/** Every pathspec, in argument order, that neither the index pass nor the walk reaches. */
+const unseenWalked = (
+  positives: ReadonlyArray<PositivePathspec>,
+  seenByIndexPass: (positive: PositivePathspec) => boolean,
+  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+): ReadonlyArray<PositivePathspec> =>
+  unmatchedPositives(
+    positives,
+    (positive) =>
+      seenByIndexPass(positive) || walked.some(({ path }) => positive.entry.compiled.test(path)),
+  );
+
 /**
- * The first pathspec, in argument order, that neither the index nor the walk
- * reaches. A wildcard whose verbatim body names a file on disk is accepted, as
- * git's `file_exists` escape does.
+ * The first unseen pathspec, in argument order, git refuses. A wildcard whose
+ * verbatim body names a file on disk is accepted, as git's `file_exists` escape
+ * does; the whole tree is never refused.
  */
 const refuseUnseenWalked = async (
   ctx: Context,
   repoIgnore: IgnorePredicate,
-  positives: ReadonlyArray<PositivePathspec>,
-  seenByIndexPass: (positive: PositivePathspec) => boolean,
-  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+  unseen: ReadonlyArray<PositivePathspec>,
 ): Promise<void> => {
-  const unseen = unmatchedPositives(
-    positives.filter(isNarrowerThanWholeTree),
-    (positive) =>
-      seenByIndexPass(positive) || walked.some(({ path }) => positive.entry.compiled.test(path)),
-  );
-  for (const positive of unseen) {
+  for (const positive of unseen.filter(isNarrowerThanWholeTree)) {
     if (!(await namesUnignoredDiskPath(ctx, repoIgnore, positive))) {
       throw pathspecNoMatch(positive.spelling);
     }
@@ -1070,6 +1097,7 @@ const stageIgnoredWalk = async (
   readonly sorted: ReadonlyArray<IndexEntry>;
   readonly outcomes: ReadonlyArray<WalkOutcome>;
   readonly verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>;
+  readonly sparse: ReadonlyArray<string>;
 }> => {
   const {
     entries: existing,
@@ -1080,15 +1108,18 @@ const stageIgnoredWalk = async (
     indexRules,
   } = await readExistingEntries(ctx);
   const tracker = trackPositives(matcher, positives);
-  const verdicts = verdictsOf(existing, (path) => tracker.observe(path));
+  const verdicts = verdictsOf(withoutSkipWorktreeEntries(existing), (path) =>
+    tracker.observe(path),
+  );
   const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
-  const walked = await collectWalk(walkWorkingTree(ctx, { ignore }));
+  const walked = withoutSkipWorktree(await collectWalk(walkWorkingTree(ctx, { ignore })), existing);
+  const unseen = unseenWalked(positives, (positive) => tracker.seen(positive), walked);
+  const skipped = skipWorktreeOf(existing);
+  const sparse = unseen.filter((positive) => reachesSkipWorktree(positive, skipped));
   await refuseUnseenWalked(
     ctx,
     repoIgnore,
-    positives,
-    (positive) => tracker.seen(positive),
-    walked,
+    unseen.filter((positive) => !sparse.includes(positive)),
   );
   const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages, verdicts);
   const outcomes = await stageWalkedEntries(
@@ -1100,7 +1131,15 @@ const stageIgnoredWalk = async (
     indexMtime,
     ensurePromisorConfigValid,
   );
-  return { existing, unmergedStages, stageZeroBeside, sorted, outcomes, verdicts };
+  return {
+    existing,
+    unmergedStages,
+    stageZeroBeside,
+    sorted,
+    outcomes,
+    verdicts,
+    sparse: sparse.map(({ spelling }) => spelling),
+  };
 };
 
 /**
@@ -1202,11 +1241,13 @@ const sortedResult = (
     eolNotices,
   }: Pick<ReturnType<typeof tallyWalkOutcomes>, 'added' | 'modified' | 'eolNotices'>,
   removed: ReadonlyArray<FilePath>,
+  sparse: ReadonlyArray<string>,
 ): AddResult => ({
   added: [...added].sort(),
   modified: [...modified].sort(),
   removed: [...removed].sort(),
   eolNotices,
+  sparse,
 });
 
 /**
@@ -1229,7 +1270,10 @@ export const addAll = async (
     // Walk-time pruning: the walker calls `ignore` on every directory
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
-    const walkedEntries = await collectWalk(walkWorkingTree(ctx, { ignore }));
+    const walkedEntries = withoutSkipWorktree(
+      await collectWalk(walkWorkingTree(ctx, { ignore })),
+      existing,
+    );
     const hidden = await hiddenTracked(
       ctx,
       existing,
@@ -1258,7 +1302,7 @@ export const addAll = async (
       removedEntries,
     );
     await commitStaged(lock, state, settled.remaining, tally.restagedPaths);
-    return sortedResult(tally, settled.removed);
+    return sortedResult(tally, settled.removed, []);
   } finally {
     await lock.release();
   }

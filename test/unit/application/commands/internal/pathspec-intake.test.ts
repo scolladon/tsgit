@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   type PositivePathspec,
   positiveOf,
+  reachesSkipWorktree,
   resolveCommandPathspec,
   trackPositives,
   unmatchedPositives,
 } from '../../../../../src/application/commands/internal/pathspec-intake.js';
 import { resolvePathspec } from '../../../../../src/application/commands/internal/resolve-pathspec.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
-import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
+import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
+import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import { compilePathspec, type PathspecEntry } from '../../../../../src/domain/pathspec/index.js';
 import { MATCH_LEVEL } from '../../../../../src/domain/pathspec/wildcard.js';
 
@@ -325,6 +328,57 @@ describe('trackPositives', () => {
 
         // Act
         const result = sut.seen(foreign);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+const skipWorktreeEntry = (path: string): IndexEntry => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode: FILE_MODE.REGULAR,
+  uid: 0,
+  gid: 0,
+  fileSize: 0,
+  id: '0'.repeat(40) as ObjectId,
+  flags: { ...STAGE0_FLAGS, skipWorktree: true },
+  path: path as FilePath,
+});
+
+const positiveFor = (pattern: string): PositivePathspec =>
+  positiveOf(compilePathspec([pattern])[0] as PathspecEntry, pattern);
+
+describe('reachesSkipWorktree', () => {
+  describe('Given a wildcard positive and a skip-worktree entry it matches', () => {
+    describe('When asked', () => {
+      it('Then it reaches it', () => {
+        // Arrange
+        const sut = reachesSkipWorktree;
+
+        // Act
+        const result = sut(positiveFor('*.log'), [skipWorktreeEntry('x.log')]);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a positive that matches no skip-worktree entry', () => {
+    describe('When asked', () => {
+      it('Then it does not reach one', () => {
+        // Arrange
+        const sut = reachesSkipWorktree;
+
+        // Act
+        const result = sut(positiveFor('k*'), [skipWorktreeEntry('x.log')]);
 
         // Assert
         expect(result).toBe(false);

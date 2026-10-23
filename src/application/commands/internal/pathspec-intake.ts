@@ -1,4 +1,6 @@
 import { pathspecOutsideRepo } from '../../../domain/commands/error.js';
+import type { IndexEntry } from '../../../domain/git-index/index.js';
+import { escapedPathOf } from '../../../domain/git-index/index-path-key.js';
 import { wellFormed } from '../../../domain/objects/encoding.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Pathspec, PathspecEntry } from '../../../domain/pathspec/index.js';
@@ -97,3 +99,12 @@ export const trackPositives = (
     highest: () => highest,
   };
 };
+
+/**
+ * git's sparse rule: a positive reaches a skip-worktree entry through its own
+ * pattern alone, ignoring the exclusions beside it.
+ */
+export const reachesSkipWorktree = (
+  positive: PositivePathspec,
+  skipped: ReadonlyArray<IndexEntry>,
+): boolean => skipped.some((entry) => positive.entry.compiled.test(escapedPathOf(entry)));

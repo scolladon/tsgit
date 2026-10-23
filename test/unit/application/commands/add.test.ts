@@ -700,7 +700,13 @@ describe('add', () => {
         const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(result).toEqual({
+          added: [],
+          modified: [],
+          removed: [],
+          eolNotices: [],
+          sparse: [],
+        });
       });
     });
   });
@@ -2825,7 +2831,7 @@ describe('Given a work tree with nothing to add', () => {
       const result = await sut(ctx, ['.']);
 
       // Assert
-      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [], sparse: [] });
     });
   });
 });
@@ -2841,7 +2847,7 @@ describe('Given a work tree whose every path is ignored', () => {
       const result = await sut(ctx, ['.']);
 
       // Assert
-      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [], sparse: [] });
     });
   });
 });
@@ -3292,6 +3298,7 @@ describe('add renormalize option', () => {
           modified: ['f.txt'],
           removed: [],
           eolNotices: [],
+          sparse: [],
         });
       });
     });
@@ -3479,7 +3486,13 @@ describe('add renormalize option', () => {
         const result = await sut(ctx, ['u.txt'], RENORMALIZE);
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(result).toEqual({
+          added: [],
+          modified: [],
+          removed: [],
+          eolNotices: [],
+          sparse: [],
+        });
       });
     });
   });
@@ -3514,6 +3527,7 @@ describe('add renormalize option', () => {
           modified: ['f.txt'],
           removed: [],
           eolNotices: [],
+          sparse: [],
         });
       });
     });
@@ -3676,7 +3690,13 @@ describe('add renormalize option', () => {
         const result = await sut(ctx, ['.'], RENORMALIZE);
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(result).toEqual({
+          added: [],
+          modified: [],
+          removed: [],
+          eolNotices: [],
+          sparse: [],
+        });
       });
     });
   });
@@ -4380,7 +4400,13 @@ describe('add refuses an unmatched pathspec before any object write', () => {
         const result = await sut(ctx, ['nomatch*'], RENORMALIZE);
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(result).toEqual({
+          added: [],
+          modified: [],
+          removed: [],
+          eolNotices: [],
+          sparse: [],
+        });
         expect(await idsByPath(ctx)).toEqual(before);
       });
     });
@@ -4696,7 +4722,7 @@ describe('add of a literal beneath an ignored directory', () => {
 });
 
 describe('add of an unseen pathspec whose spelled path exists on disk', () => {
-  const NOTHING_STAGED = { added: [], modified: [], removed: [], eolNotices: [] };
+  const NOTHING_STAGED = { added: [], modified: [], removed: [], eolNotices: [], sparse: [] };
 
   describe('Given an empty directory two levels deep and no ignore rule', () => {
     describe('When add names it', () => {
