@@ -1303,7 +1303,7 @@ const stageIgnoredWalk = async (
       await collectWalk(walkWorkingTree(ctx, { ignore, isNestedRepository: repositories.holds })),
       existing,
     ),
-    { existing, unmergedStages, matcher },
+    { existing, matcher },
   );
   const sparse = await settleUnseenPositives(
     ctx,
@@ -1367,17 +1367,10 @@ interface ReachedWalk {
 const isRepositoryLeaf = ({ isDirectory }: Pick<WalkWorkingTreeEntry, 'isDirectory'>): boolean =>
   isDirectory;
 
-const isGitlinkAtAnyStage = (
+const isTrackedGitlink = (
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
-  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
   path: FilePath,
-): boolean => {
-  const key = keyOfPath(path);
-  return (
-    existing.get(key)?.mode === FILE_MODE.GITLINK ||
-    (unmergedStages.get(key)?.some(({ mode }) => mode === FILE_MODE.GITLINK) ?? false)
-  );
-};
+): boolean => existing.get(keyOfPath(path))?.mode === FILE_MODE.GITLINK;
 
 /**
  * git matches a repository as a directory, so the pathspec is tested against `<dir>/`.
@@ -1385,17 +1378,13 @@ const isGitlinkAtAnyStage = (
  */
 const reachedWalk = (
   walked: ReadonlyArray<WalkWorkingTreeEntry>,
-  {
-    existing,
-    unmergedStages,
-    matcher,
-  }: Pick<WalkSelection, 'existing' | 'unmergedStages' | 'matcher'>,
+  { existing, matcher }: Pick<WalkSelection, 'existing' | 'matcher'>,
 ): ReachedWalk => ({
   files: walked.filter((entry) => !isRepositoryLeaf(entry)),
   leaves: walked.filter(
     (entry) =>
       isRepositoryLeaf(entry) &&
-      !isGitlinkAtAnyStage(existing, unmergedStages, entry.path) &&
+      !isTrackedGitlink(existing, entry.path) &&
       pathspecVerdict(matcher, `${entry.path}${SEPARATOR}` as FilePath).matched,
   ),
 });
@@ -1746,7 +1735,7 @@ const walkEverything = async (
   ctx: Context,
   ignore: IgnorePredicate,
   repositories: EmbeddedRepositories,
-  { entries: existing, unmergedStages }: ExistingIndexState,
+  { entries: existing }: ExistingIndexState,
 ): Promise<ReachedWalk> => {
   const walkIgnore = pruneGitlinkDirectories(ignore, existing.values());
   const walkedEntries = await collectWalk(
@@ -1754,7 +1743,6 @@ const walkEverything = async (
   );
   return reachedWalk(withoutSkipWorktree(walkedEntries, existing), {
     existing,
-    unmergedStages,
     matcher: WHOLE_TREE_MATCHER,
   });
 };
