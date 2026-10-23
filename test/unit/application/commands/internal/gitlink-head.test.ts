@@ -123,6 +123,9 @@ const refusingWholeReadsOf = (ctx: Context, leaf: string): Context => {
   return { ...ctx, fs: Object.assign(Object.create(ctx.fs), refusing) } as Context;
 };
 
+// The longest HEAD line that can name a ref: PATH_MAX for the name plus `ref: `.
+const HEAD_READ_BOUND = 4096 + 'ref: '.length;
+
 const NOT_A_REGULAR_FILE = { isFile: false, isDirectory: false, isSymbolicLink: false };
 
 describe('gitlinkHeadOf', () => {
@@ -762,6 +765,73 @@ describe('a nested repository whose commondir and HEAD git reads in bounded buff
         await ctx.fs.mkdir(`${dotGit}/${branch.slice(0, branch.lastIndexOf('/'))}`);
         await ctx.fs.writeUtf8(`${dotGit}/${branch}`, `${HEAD_COMMIT}\n`);
         await ctx.fs.writeUtf8(`${dotGit}/HEAD`, `ref: ${branch}\n`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind === 'repository' && (await checkout.head())).toBe(HEAD_COMMIT);
+      });
+    });
+  });
+
+  describe('Given a HEAD whose branch name fills the read bound exactly', () => {
+    describe('When the checkout is probed and its head asked', () => {
+      it('Then no commit resolves, the line is too long to name a ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dotGit = `${ctx.layout.workDir}/sub/.git`;
+        const branch = `refs/heads/${'a'.repeat(HEAD_READ_BOUND - 'ref: refs/heads/'.length)}`;
+        await layOutRepository(ctx, dotGit, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${dotGit}/${branch}`, `${HEAD_COMMIT}\n`);
+        await ctx.fs.writeUtf8(`${dotGit}/HEAD`, `ref: ${branch}`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind).toBe('repository');
+        expect(checkout.kind === 'repository' && (await checkout.head())).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('a nested repository whose HEAD is a symlink', () => {
+  const layOutLinkedHead = async (ctx: Context, target: string): Promise<void> => {
+    const dotGit = `${ctx.layout.workDir}/sub/.git`;
+    await ctx.fs.mkdir(`${dotGit}/objects`);
+    await ctx.fs.mkdir(`${dotGit}/refs/heads`);
+    await ctx.fs.writeUtf8(`${dotGit}/refs/heads/main`, `${HEAD_COMMIT}\n`);
+    await ctx.fs.symlink(target, `${dotGit}/HEAD`);
+  };
+
+  describe('Given a link to a branch that does not exist', () => {
+    describe('When the checkout is probed and its head asked', () => {
+      it('Then it is a repository without a commit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await layOutLinkedHead(ctx, 'refs/heads/gone');
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind).toBe('repository');
+        expect(checkout.kind === 'repository' && (await checkout.head())).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a link to a branch', () => {
+    describe('When the checkout is probed and its head asked', () => {
+      it('Then the commit of that branch resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await layOutLinkedHead(ctx, 'refs/heads/main');
         const sut = probeGitlinkCheckout;
 
         // Act
