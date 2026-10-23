@@ -1,6 +1,6 @@
 # Plan — pathspec glob dialect, unmatched-pathspec refusal, describe/name-rev patterns
 
-> Source: design doc `docs/design/pathspec-glob-dialect.md` · ADRs 1033, 1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1043, 1044 (binding); pre-existing 038, 077, 226, 249, 866, 980, 1000, 1012
+> Source: design doc `docs/design/pathspec-glob-dialect.md` · ADRs 1033–1053 (binding; 1046–1053 drive the fold revision, Parts 13–22); pre-existing 038, 077, 226, 249, 866, 980, 1000, 1012
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
@@ -73,6 +73,60 @@ Each was probed against git 2.55.0 in a `mktemp -d` throwaway (scrubbed `GIT_*`,
    Context holds the planner's exception pins (skip-worktree, intent-to-add, gitlink, `-A`,
    symlink, file→dir, clean).
 
+Fold revision (2026-10-23, Parts 13–22). Probed against git 2.55.0 in `mktemp -d` throwaways with
+the same scrubbed procedure, or read from the code at `039599ad`:
+
+9. **I13, I14 and I16 on the full I fixture also stage `y.log`.** The design's index column for
+   I12–I16 omits it (those rows ran on a fixture without `y.log`). Probe on `.gitignore` = `*.log`
+   + `d/`, untracked `x.log y.log real.txt d/q.txt`: `add -f '*.log'` → exit 0, `x.log y.log`;
+   `add -f .` → `.gitignore d/q.txt real.txt x.log y.log`. Interop twins compare against git, so
+   only the unit rows must spell the full list.
+10. **Sparse report order** (S fixture plus `y.log`, both skip-worktree and rewritten):
+    P1 `add 'y*' 'x*' '*.log' x.log` → exit 1, advice lists `y*`, `x*`, `*.log`, `x.log` in
+    argument order. P2 `add '*.log' '*.log'` → `*.log` listed twice (duplicates kept).
+    P3 a repo whose only tracked file `x.log` is skip-worktree and rewritten: `add .` → exit 1,
+    advice lists `.`. git checks skip-worktree before its "don't complain at `add .`" rule, so the
+    whole-tree positive is reported and only the refusal skips it.
+11. **Ignored report order and the interim re-pin.** P4 tracked `k`, `.gitignore` `build/`,
+    untracked build/x, `k` rewritten: `add build/x 'k*'` → exit 1, advice lists `build`, status
+    `M  k`. This re-pins add.test.ts "add of a literal beneath an ignored directory" (today a
+    `PATHSPEC_NO_MATCH 'build/x'` refusal, the ADR-1045 interim that ADR-1046 supersedes).
+    P5 I fixture, `add y.log x.log y.log d/q.txt d` → advice lists `d`, `x.log`, `y.log`: sorted
+    and deduplicated.
+12. **Broken gitlink variants** (GL fixture, `add .`): G1 `sub/.git` holding `garbage` → 128
+    `fatal: invalid gitfile format: sub/.git`; G2 `sub/.git` an empty directory → 128
+    `fatal: 'sub/.git' not recognized as a git repository`; G3 `sub/.git` a directory whose HEAD is
+    `garbage` → 128, same line; G4 `gitdir: /nonexistent/abs` → 128
+    `fatal: not a git repository: /nonexistent/abs`; G5 GL20's broken pointer with `add k` and
+    `add 'k*'` → exit 0 (the check runs only for a gitlink the pathspec matches). Index unchanged
+    in every refusal. Under ADR-1050 all four refusals are `NOT_A_REPOSITORY { path }`, `path`
+    being the path git prints (`sub/.git` for G1–G3, the absolute pointer verbatim for G4); the
+    message wording is display.
+13. **A path that holds an index entry is never reported ignored.** GL7–GL10 (`.gitignore: sub`
+    over a tracked gitlink) exit 0 with no advice. git's `dir_add_ignored` drops a path
+    `index_name_is_other` says is tracked. Part 17's collector applies that rule to directories
+    and leaves alike.
+14. **Anchors moved since the design's `98c84b01`.** At `039599ad` (add.ts): `AddOptions` :139,
+    `AddResult` :146, `add` :168, `addInScope` :200, `dispatchPathspec` :230, `addLiteralOnly`
+    :243, `stageLiteralsOver` :275, `stageLiterals` :323, `literalStats` :567,
+    `lstatOrBeneathFile` :587, `stageWalkedEntries` :638, `addByPathspec` :736,
+    `addRenormalized` :792, `collectWalk` :820, `isNarrowerThanWholeTree` :829, `indexSees` :833,
+    `verdictsOf` :837, `indexVerdicts` :843, `namesOnDisk` :850, `refuseUnseenRenormalized` :857,
+    `refuseUnseenWalked` :873, `namesUnignoredDiskPath` :899, `ignoredWithAncestors` :915,
+    `hiddenTracked` :995, `isHiddenCandidate` :1016, `stageIgnoredWalk` :1057, `withPathspec`
+    :1107, `tallyWalkOutcomes` :1142, `sortedResult` :1195, `addAll` :1213, `WalkOutcome` :1264,
+    `collectRemovedEntries` :1302, `readExistingEntries` :1369. checkout.ts: `restoreUnderIndexLock`
+    :372, `selectFromUniverse` :394, `refuseUnmatched` :408, `enumerateSourcePaths` :482. Each part
+    shifts them again: grep the symbol name before editing.
+15. **The design's two fast-path bench rows already exist** in test/bench/add.bench.ts:
+    "When add() re-stages one modified tracked file" and "When add() stages one new file" (both a
+    single literal over a 10 000-file index). Part 18 adds no bench row; the session runs
+    `bench:ab` on them after Part 18's commit.
+16. **Only add.test.ts asserts the whole `AddResult`**: nine `toEqual({ … eolNotices: [] })`
+    sites (grep `eolNotices: \[\]`) plus the `NOTHING_STAGED` constant in "add of an unseen pathspec
+    whose spelled path exists on disk". Each new result field adds `[]` there. The fold's new
+    suites assert fields one by one, so a later field never breaks them.
+
 ## Requirement map
 
 | Req | Part(s) |
@@ -88,6 +142,13 @@ Each was probed against git 2.55.0 in a `mktemp -d` throwaway (scrubbed `GIT_*`,
 | R9 gitignore/attributes/sparse unchanged | 4 |
 | R10 linear matchers, size, add-glob bench | 2, 12 |
 | R12 add (pathspec and `-A`) stages tracked entries that ignore rules hide from the walk, as git's index-side pass does | 9 |
+| R13 add leaves skip-worktree entries unstaged and reports pathspecs only they match | 14 (walk, `addAll`, the `sparse` field), 15 (literal route, `--renormalize`) |
+| R14 checkout leaves skip-worktree paths out of the path-restore universe | 16 |
+| R15 add stages a gitlink whose checkout HEAD moved; a broken `<path>/.git` refuses | 19 |
+| R16 add reports ignored entries a pathspec reaches; `force` is git's `-f` | 17 (walk route, `addAll`, the `ignored` field), 18 (literal route) |
+| R17 the walk admits `\`-named entries on POSIX; rm removes them | 20 (walk), 21 (rm) |
+| R18 a literal-only add honours exclusions | 13 |
+| Fold size caps | 22 |
 
 ## Decision candidates
 
@@ -101,6 +162,19 @@ as the audit trail.
 | 3 | `add` walk-seen source when a `!` element is present | **A** test each positive element against the leaves the walk yields (already filtered by the whole spec) · **B** test against every non-ignored leaf before the pathspec filter (git's positive pass marks `seen` before excludes) | A | Only specs combining `!` with an otherwise-unmatched element differ; `!` semantics are backlog 32.11b. |
 | 4 | On-disk escape scope under `add --renormalize` | **A** every unseen positive (literal or wildcard) whose verbatim body `lstat`s is accepted — git's `file_exists` (RN4, RN5) · **B** wildcard only, as ADR-1036 states for the walk | A | RN5 is today's pinned literal behaviour and RN4 is git's; ADR-1036's literal exclusion exists because the walk's ignored-literal advice is unbuilt, which `--renormalize` never prints. |
 | 5 | checkout when every positive is seen but the spec selects nothing (a `!` removes all) | **A** release the lock without writing the index (today's no-op, now under the lock) · **B** commit the index as git's `checkout_paths` does after taking the lock | A | Unpinned; only reachable through `!` (32.11b). |
+
+Fold revision candidates (Parts 13–22). Parts 13–22 are written to the recommendation; the session
+may override any of them before implementation starts.
+
+| # | Choice | Alternatives (≤3) | Recommendation | Why |
+|---|---|---|---|---|
+| 6 | Where the fold's interop rows live | **A** one new focused file per part (add-skip-worktree, checkout-skip-worktree, add-ignored-report, add-gitlink, pathspec-literal-exclusion) · **B** extend the files the design names (add-tracked-under-ignore-interop, pathspec-glob-dialect-interop) | A | The file ceiling (6 per part) and the 926-line dialect file. The design-named files stay green untouched. pathspec-backslash-interop (104 lines) is extended, as designed. |
+| 7 | How a gitlink's repository is judged valid (GL20, GL21, G1–G4) | **A** export `hasUsableHead` from primitives/internal/repo-state.ts (git's `validate_headref`) and refuse when it is false · **B** infer from `resolveRef` errors | A | G2 (empty `.git` directory) refuses in git, but `resolveRefOrMissing` would read it as unborn and stage nothing. git's gate is `is_git_directory` → `validate_headref`; A reuses the predicate discovery already applies. |
+| 8 | The child context's ref storage | **A** `refStorage: 'files'`, as `buildChildContext` sets it · **B** read the child's `extensions.refStorage` | A | B needs src/repository/read-repository-format.ts, which commands may not import (dependency rule). No GL row uses reftable; out-of-scope line below. |
+| 9 | Which refusal wins when several matched gitlinks are broken | **A** the first in index order: settle every probe, then `firstFailureOrValues` · **B** whichever rejects first (`boundedMapFor`'s plain contract) | A | git walks the index in order and dies at the first. B makes the error depend on I/O timing. Unpinned with two broken gitlinks. |
+| 10 | When the result fields land | **A** `sparse` in Part 14 and `ignored` in Part 17, each with its api.json regeneration · **B** both in Part 14, `ignored` always `[]` until Part 17 | A | B ships a field that misreports for three commits. A costs one extra `docs:json` run. |
+| 11 | Shape of rm's host-gated validator (ADR-1052) | **A** a new `validateWorkingTreePathOn(input, host)`; `validateWorkingTreePath` keeps refusing `\` for every other caller · **B** an optional `host` parameter on `validateWorkingTreePath` | A | ADR-1052 scopes the gate to `removeFile`. A required host on a separately named function cannot widen to `mv` or `materializeFile` by accident. |
+| 12 | How the walk route learns which ignored entries a positive reached | **A** a recording ignore predicate wrapped around `repoIgnore` inside `withPathspec`, local to one `stageIgnoredWalk` call · **B** a second pass over the pruned directories | A | Design Part h: the walk prunes at the shallowest ignored directory, so the predicate sees exactly git's reported entry with no ancestor loop. B re-reads directories. |
 
 ## Deferred to documentation phase
 
@@ -116,6 +190,25 @@ as the audit trail.
   docs/use/commands/add.md, rm.md and checkout.md need the Windows-only qualifier.
 - `docs/design/pathspec-glob-dialect.md` Test strategy names `rev-parse --abbrev-ref`; fact 3
   corrects it to `--abbrev-ref=loose`.
+- Fold docs/use targets (Parts 13–21):
+  - docs/use/commands/add.md: `AddResult.sparse` (pathspecs as typed, argument order, duplicates
+    kept) and `AddResult.ignored` (paths, sorted). A non-empty list is git's exit 1, and the caller
+    rebuilds the advice text from it (ADR-1046). `force` is git's `-f` on every route, no longer a
+    no-op (ADR-1047). An ignored untracked literal is reported, not staged: name this for consumers
+    who relied on the bypass, and point them to `force` (ADR-1048). Skip-worktree entries are never
+    restaged. A gitlink whose checkout HEAD moved is staged. `!` exclusions apply to literal-only
+    calls.
+  - docs/use/commands/rm.md: on a POSIX host a `\`-named working-tree file is removed (ADR-1052).
+  - docs/use/commands/checkout.md: a path restore leaves skip-worktree paths alone. A pathspec that
+    matches only such paths refuses `PATHSPEC_NO_MATCH`.
+  - docs/use/errors.md: `NOT_A_REPOSITORY` from `add` for a matched gitlink whose `<path>/.git`
+    leads to no repository, with `path` as git prints it (ADR-1050). `PATHSPEC_OUTSIDE_REPO` is no
+    longer raised by the working-tree walk (add, status, stash) or by rm's removal for a `\`-named
+    entry on POSIX hosts (ADR-1051, ADR-1052).
+  - docs/use/commands/status.md: check for wording that says a `\`-named file is refused (W7, W16).
+- `docs/design/pathspec-glob-dialect.md` I12–I16 index column: fact 9 adds `y.log` on the full
+  fixture. Its fold test table names add-tracked-under-ignore-interop and pathspec-glob-dialect-interop;
+  decision candidate 6 moved those rows to new files.
 
 ## Out of scope, proven (one line each, not acted on)
 
@@ -127,6 +220,63 @@ as the audit trail.
   submodule commits after the superproject records it, then `add s` on both.
 - `rm` tolerates an unreadable index (`isIndexMissingCode`, src/application/commands/rm.ts:53)
   where git dies on it — hunch; prove with a twin `git rm 'x*'` over a 3-byte `.git/index`.
+- A reftable submodule's HEAD (candidate 8 A reads it as `files`): no GL row covers it. Hunch; to
+  prove it, twin GL1 with `git -c init.defaultRefFormat=reftable` inside the submodule, then
+  `add .` on both.
+- A symlinked `<path>/.git` over a tracked gitlink: unpinned. Part 19 reads it as a gitfile. To
+  prove a gap, twin GL1 with `sub/.git` replaced by a symlink to `../.git/modules/sub`.
+
+## Fold revision — house rules for Parts 13–22
+
+Parts 1–12 are landed. Parts 13–22 implement design Parts f–j (R13–R18) under ADRs 1046–1053, in
+this order: 13 (R18) → 14, 15 (R13) → 16 (R14) → 17, 18 (R16) → 19 (R15) → 20, 21 (R17) → 22
+(size). Each builds on the previous ones in one working tree.
+
+- **Environment.** git 2.55.0 first on PATH for every interop run:
+  `PATH="$HOME/.local/git-2.55.0/bin:$PATH"`. Pass `--no-ext-diff` to every `git diff`/`git show`.
+  Implementers have no MCP tools: re-anchor each symbol with `grep -n '<name>'` (fact 14), and never
+  trust a line number blindly.
+- **One RED per function per step.** Write the step's row, run it, see it fail for the stated
+  reason, then write the code. A row that passes at its step is a GUARD. Never batch several steps'
+  REDs behind one GREEN.
+- **Re-pinning rule.** When an existing row breaks, decide whether the old expectation encoded the
+  contract. If it did, fix the code. A changed row is re-pinned against git 2.55 (cite the design
+  row or the planner fact), never rewritten to match new code. Each part lists the rows it expects
+  to re-pin.
+- **Every pinned row is a cross-tool interop row** (scrubbed env via `runGit`, `runGitEnv`,
+  `tryRunGitWithExit` from test/integration/interop-helpers.ts; pinned commit dates
+  `@1700000000 +0000`), plus memory-adapter unit rows in the part's focused suite. add.test.ts is
+  already 4766 lines, and a 256 MiB row there times out under load, so new add rows go in the new
+  sibling suites, never in add.test.ts. add.test.ts is touched only for re-pins and the whole-result
+  sites (fact 16).
+- **Test conventions** (`check:test-pyramid`): `describe('Given …')` > `describe('When …')` >
+  `it('Then …')`, AAA comments, `const sut = add` (bind the function, never a call result:
+  `sutBindsResult`), no `describe.each<T>` generic, no row ids (S1, GL4, …) or ADR numbers in test
+  titles or code. Every new interop file opens with a `@proves` header (surface, bucket
+  `cross-tool-interop`, a `unique:` line no other file uses, interopSurface). Copy the header and
+  twin builder from test/integration/add-tracked-under-ignore-interop.test.ts (`twins`,
+  `writeFiles`, `commitAll`, `snapshotOf`). Assert result fields one by one, never the whole
+  `AddResult`.
+- **Mutation-resistant asserts.** Assert error data with try/catch (`refusalOf` /
+  `expectError` shape), never `toThrow(Class)` alone.
+- **No suppression directives, no provenance ids in code, no swallowed errors.** Commit only the
+  part's files, one `fix(<scope>): …` commit, subject ≤ 100 characters.
+- **Public surface.** `AddResult` and `AddOptions` are public: they are re-exported by
+  src/application/commands/index.ts:23 and reach the package entry. A part that changes either
+  type, or the JSDoc of `add`, `AddOptions` or `AddResult`, regenerates `reports/api.json` with
+  `npm run docs:json` and commits it. `check:doc-typedoc` is a prepush gate, not a validate gate.
+  The huge typedoc-id diff is normal. No fold part adds a command, a barrel name or an
+  error-union member: ADR-1050 reuses `NOT_A_REPOSITORY`. So the facade, the
+  `Object.keys(sut)` snapshot, `check:doc-coverage`, `audit-browser-surface`, the README count and
+  the exhaustiveness switches are untouched. Every other new symbol is internal.
+- **Size caps** sit at the headroom floor. Parts 13–21 never touch them. Part 22 measures once
+  from a clean build and raises by the measured delta (lesson 006).
+- **Never run `npm run validate`.** The session owns it. Never run two `npm run` scripts at once.
+- **Why parts share files** (plan-lint's overlap warnings). add.ts, add.test.ts and api.json are
+  the one command's surface, edited by sequential parts that the 6-file ceiling keeps apart. Parts
+  20 and 21 share working-tree-path.ts and its test because the ceiling splits the walk from rm,
+  and ADR-1051 and ADR-1052 are separate decisions. Part 22 repeats Part 12's size procedure over
+  the fold's bytes. Parts 10 and 14 share pathspec-intake.test.ts: Part 10 is landed.
 
 ## Part 1 — Pathspec wildcards match with git's flags-0 wildmatch over the path's bytes
 
@@ -1546,3 +1696,1001 @@ skipped 1` on a cached result — bare oracles: `npx tsc --noEmit -p tsconfig.js
 Exactly one commit, one of:
 - no cap raised: `test(pathspec): bench add by glob and guard the byte matcher's linearity`
 - a cap raised: `fix(pathspec): raise the size caps by the measured glob-dialect delta`
+
+## Part 13 — A literal-only add holding an exclusion takes the walk route
+
+### Context
+
+R18, ADR-1053 (candidate 20 A). This part is first because it narrows the literal fast path that
+Parts 15 and 18 extend. Read "Fold revision — house rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts` — `dispatchPathspec` only.
+- `test/unit/application/commands/add-literal-exclusion.test.ts` — CREATED (memory adapter).
+- `test/integration/pathspec-literal-exclusion-interop.test.ts` — CREATED. `@proves` surface and
+  interopSurface `add, rm, checkout`; unique line "literal pathspecs honour exclusions as git's :!
+  does". Gate it with `describe.skipIf(!GIT_AVAILABLE)` (no special characters in the names).
+
+Read-only references: src/application/commands/internal/resolve-pathspec.ts (`ResolvedPathspec`:
+`matcher: Pathspec`, `literalMustMatch`, `hasGlob`; `isPositiveGlob` sets `hasGlob` from positive
+entries only, so `['x', '!x']` has `hasGlob: false`), src/domain/pathspec/index.ts
+(`PathspecEntry { pattern, body, negated, isLiteral, compiled }`),
+src/application/commands/internal/pathspec-intake.ts (`trackPositives`: exclusions apply before a
+positive is marked seen), test/unit/application/commands/fixtures.ts (`seedRepo(ctx, { workingTree })`),
+test/unit/application/commands/add.test.ts :2903 (`blobExists` — copy it locally: hash the content
+with `serializeAndHash` and probe the loose path), test/integration/pathspec-glob-dialect-interop.test.ts
+:515 (`looseCountOf`) and :545 (`refusalOf`).
+
+Current code (add.ts `dispatchPathspec`, :230 at `039599ad`):
+
+    const resolved = resolveCommandPathspec(ctx, paths);
+    const { literalMustMatch } = resolved;
+    await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
+    const stats = resolved.hasGlob ? undefined : await literalStats(ctx, literalMustMatch);
+    if (stats !== undefined) return addLiteralOnly(ctx, resolved, stats, scope);
+    return addByPathspec(ctx, resolved, scope);
+
+`addLiteralOnly` stages every `literalMustMatch` entry, and the matcher is read only by
+`dropBeneathInserted`, so exclusions never apply there. Target: a named predicate
+`holdsExclusion(matcher) = matcher.some((entry) => entry.negated)`; the call skips `literalStats`
+and walks when `hasGlob || holdsExclusion(matcher)`. The comment above `dispatchPathspec` already
+says negations walk, and this makes it true. Do not touch resolve-pathspec.ts: `hasGlob` keeps
+its meaning.
+
+The walk route already gives git's result (X6, X13, X15–X19): exclusion runs before seen-marking
+(`trackPositives`), and git's `file_exists` escape (`namesOnDisk` / `namesUnignoredDiskPath`) runs
+after it. That order is why X1 is not refused and X15 is.
+
+Pins (design matrix X; tsgit `!p` ≡ git `:!p`). Fixture U: untracked `x`, `y`, 'd/x', `a.txt`,
+0 loose objects. Fixture M: the same four committed, then each rewritten, 7 loose objects.
+
+| Row | Fixture · args | git |
+|---|---|---|
+| X1 | U · `x !x` | exit 0, nothing staged, 0 loose |
+| X2 | U · `d/x !d` | nothing staged |
+| X3 | U · `a.txt !*.txt` | nothing staged |
+| X4 | U · `x !y` | `A  x`, 1 loose |
+| X5 | U · `x y !x` | `A  y` only |
+| X6 | U · `x *.txt !x` | `A  a.txt` |
+| X7 | U · `!x x` | nothing staged |
+| X8–X10 | M · as X1–X3 | ` M` kept, 7 loose |
+| X11 | M · `x !y` | `M  x`, 8 loose |
+| X12 | M · `x y !x` | `M  y` only |
+| X13 | M · `x *.txt !x` | `M  a.txt` |
+| X14 | M · `!x x` | ` M x` kept |
+| X15 | U · `missing !missing` | 128 `fatal: pathspec 'missing' did not match any files` |
+| X16 / X17 / X18 | U · `x* !x` / `q* !q*` / `x !x nomatch*` | 128 naming `x*` / `q*` / `nomatch*` |
+| X19 | U · `d !d/x` | exit 0, nothing staged |
+| X20–X23 | M · `rm --cached` with `x !x` / `x y !x` / `d/x !d` / `a.txt !*.txt` | index unchanged / `y` removed / unchanged / unchanged |
+| X24–X26 | M · `checkout --` with `x !x` / `x y !x` / `x !y` | `x` stays rewritten / `y` restored, `x` kept / `x` restored, `y` kept |
+
+Interop shape: twin repos built by the same git commands. Compare `ls-files -s`,
+`status --porcelain --untracked-files=all`, the loose-object count, and on refusal the
+`PATHSPEC_NO_MATCH` data against git's `fatal:` line. X20–X26 call `rm(ctx, paths, { cached: true })`
+and `checkout(ctx, { paths })`. They are GUARDs that pin the other two commands.
+
+No public-surface change: behaviour only, no type or JSDoc edit, no api.json.
+
+### TDD steps
+
+1. RED: X1 in add-literal-exclusion.test.ts, through `dispatchPathspec`. `add(ctx, ['x', '!x'])`
+   over fixture U gives `added: []`, an empty index, and no loose blob for `x`'s content. Add the
+   X1 interop row in the same step. Fails: the fast path stages `x` (`added: ['x']`, one blob).
+   GREEN: `holdsExclusion` routes the call to `addByPathspec`.
+2. GUARD (unit rows and interop rows): X2–X5 and X7 on U, X8–X12 and X14 on M (the walk route
+   applies the matcher), X6 and X13, and the refusals X15–X18 (refusal data plus zero loose
+   objects). X19. X20–X26 interop only. They pass because the walk route already holds git's
+   order.
+3. REFACTOR: the predicate is named; `dispatchPathspec` stays under 20 lines.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/add-literal-exclusion.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-directory-file.test.ts test/integration/pathspec-literal-exclusion-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/add-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts test/unit/application/commands/add-literal-exclusion.test.ts test/integration/pathspec-literal-exclusion-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+Exit code must be 0. Wireit caveat: a cached `check:types` / `check:spelling` prints
+`Ran 0 scripts and skipped 1`. The bare oracles are `npx tsc --noEmit -p tsconfig.json` and
+`npx cspell --no-progress <touched-files>`.
+
+### Commit
+
+`fix(add): honour exclusions when every positive pathspec is a literal, as git does`
+
+## Part 14 — add leaves skip-worktree entries alone on the walk and in addAll, and reports sparse-only pathspecs
+
+### Context
+
+R13 (walk route and `add({ all: true })`), ADR-1046 (the `sparse` field), ADR-1048 (ships as
+`fix`). Part 15 covers the literal route, `--renormalize` and the interop file. Read "Fold revision —
+house rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts`
+- `src/application/commands/internal/pathspec-intake.ts` — new `reachesSkipWorktree`.
+- `test/unit/application/commands/internal/pathspec-intake.test.ts`
+- `test/unit/application/commands/add-skip-worktree.test.ts` — CREATED.
+- `test/unit/application/commands/add.test.ts` — only the whole-result sites (fact 16) gain
+  `sparse: []`. That is additive under ADR-1046, not a re-pin.
+- `reports/api.json` — regenerated (`npm run docs:json`).
+
+Public-surface decisions:
+- `AddResult.sparse: ReadonlyArray<string>` is PUBLIC. Gate to pre-pay here: api.json. There is no
+  new export name, so the barrel, facade, doc-coverage, browser-surface and README count are
+  untouched. JSDoc: "Pathspecs, as typed and in argument order, that matched only skip-worktree
+  entries. git lists them under 'outside of your sparse-checkout definition' and exits 1. Empty
+  when none." docs/use/commands/add.md is deferred.
+- `reachesSkipWorktree` is INTERNAL (pathspec-intake.ts, consumed by add.ts).
+
+Read-only references: src/domain/git-index/index.ts (`IndexEntry.flags.skipWorktree`,
+`flags.stage`), src/domain/git-index/index-path-key.ts (`escapedPathOf`, `keyOfPath`,
+`indexPathKey`), test/unit/application/commands/add-index-fixtures.ts (`seedIndex(ctx, rows)` with
+`{ path, text, skipWorktree: true }` writes a version-3 index with zeroed stats; `stagesOf`),
+test/unit/application/commands/fixtures.ts (`seedRepo`), add.test.ts :4403 (`rewriteEntries`,
+`flagged`) and :2903 (`blobExists`) as shapes to copy, and its skip-worktree rows "Given a
+skip-worktree entry absent from disk and all: true" (:830) and "add over tracked entries that
+ignore rules hide from the walk" (:4418), which must stay green.
+
+Current walk route (add.ts at `039599ad`):
+- `stageIgnoredWalk` (:1057) reads `existing` (one entry per path), builds
+  `tracker = trackPositives(matcher, positives)` and `verdicts = verdictsOf(existing, (path) =>
+  tracker.observe(path))`. That observes skip-worktree entries too, so `*.log` counts as seen
+  (S2). Then `walked = await collectWalk(walkWorkingTree(ctx, { ignore }))`, then
+  `refuseUnseenWalked(ctx, repoIgnore, positives, (positive) => tracker.seen(positive), walked)`,
+  then `hiddenTracked` (already skips skip-worktree through `isHiddenCandidate`), then
+  `stageWalkedEntries([...walked, ...hidden], …)`. The walk yields the skip-worktree file `x.log`
+  as an ordinary leaf, so it is restaged with its bit cleared (S1).
+- `refuseUnseenWalked` (:873) computes `unmatchedPositives(positives.filter(isNarrowerThanWholeTree), …)`,
+  then throws `pathspecNoMatch(spelling)` for the first one that `namesUnignoredDiskPath` does not
+  escape.
+- `addAll` (:1213) stages `collectWalk(…)` plus `hiddenTracked`. `collectRemovedEntries` already
+  skips skip-worktree (S11, S13 pass today).
+- Every result is built by `sortedResult(tally, removed)` (:1195), by `addLiteralOnly`'s
+  `{ added, modified, removed, eolNotices }`, or by `addRenormalized`'s literal object. All three
+  gain `sparse` (`[]` on the literal and renormalize routes until Part 15).
+
+Target (every function under ~20 lines, named for git's rule):
+
+    // pathspec-intake.ts — git's matches_skip_worktree: the positive's own matcher, no exclusions
+    export const reachesSkipWorktree = (positive, skipped: ReadonlyArray<IndexEntry>): boolean =>
+      skipped.some((entry) => positive.entry.compiled.test(escapedPathOf(entry)))
+    // add.ts
+    skipWorktreeOf(existing): IndexEntry[]           // stage 0 with flags.skipWorktree
+    withoutSkipWorktree(walked, existing)            // drop leaves whose existing entry has the bit
+    // stageIgnoredWalk: verdicts only over entries without the bit (absent key = not matched, so
+    //   collectMatchedRemovals and hiddenTracked keep leaving them); walked = withoutSkipWorktree(…)
+    //   unseen = unseenWalked(positives, seenByIndexPass, walked)        query, ALL positives
+    //   sparse = unseen.filter((p) => reachesSkipWorktree(p, skipped))  query
+    //   await refuseUnseenWalked(ctx, repoIgnore, rest narrower than the whole tree)  command
+    // addAll: walkedEntries = withoutSkipWorktree(…); never reports (no positives)
+
+git checks skip-worktree BEFORE its "don't complain at `add .`" rule (fact 10, P3). So `sparse`
+is computed over every unseen positive, the whole-tree `.` included, and only the refusal keeps the
+`isNarrowerThanWholeTree` filter. CQS: the refusal stays a command that throws, and the report is a
+query result that `stageIgnoredWalk` returns beside `outcomes`. `addByPathspec` passes it to
+`sortedResult`.
+
+Pins (design S; fixture: tracked `x.log`, `k`, `s.txt`; `x.log` skip-worktree and rewritten to
+`changed\n`; `s.txt` rewritten to `s2\n`). The sparse advice text, for the interop file in Part 15,
+is in the design's S section.
+
+| Row | args | git |
+|---|---|---|
+| S1 | `.` | exit 0; `x.log` keeps the bit and its old blob; `M  s.txt` |
+| S2 / S4 | `*.log` / `x*` | exit 1; reports the spelling; index unchanged; no new blob |
+| S5 / S7 | `*.log s.txt` / `x* s*` | exit 1; reports `*.log` / `x*`; `M  s.txt` only |
+| S8 | `*` | exit 0; no report (the spec also reached `k`, `s.txt`); `x.log` kept |
+| S9 | `x.log nomatch*` | 128 naming `nomatch*`, no report, nothing written |
+| S10 | `-A` | exit 0; `M  s.txt`; `x.log` kept |
+| S11 / S13 | `x.log` deleted; `.` / `-A` | exit 0; `x.log` kept (pass today) |
+| S12 | `x.log` deleted; `x.log` | exit 1; reports `x.log` (the literal misses on disk, so it walks) |
+| P1 / P2 / P3 | fact 10 | argument order; duplicates kept; `.` reported when only skip-worktree entries match |
+
+Expected re-pins: none. The whole-result sites gain a field; they keep their meaning.
+
+### TDD steps
+
+1. RED: `reachesSkipWorktree` (pathspec-intake.test.ts). Given positive `*.log` (built with
+   `positiveOf`) and a stage-0 skip-worktree entry `x.log`, it returns true. Fails: not exported.
+   GREEN: the helper. GUARD: positive `k*` returns false.
+2. RED: S1 in add-skip-worktree.test.ts. `add(ctx, ['.'])` gives `modified: ['s.txt']`, and the
+   `x.log` entry keeps `flags.skipWorktree === true` and its old id, with no blob for `changed\n`.
+   Fails: `x.log` is restaged with its bit cleared (`modified: ['s.txt', 'x.log']`). GREEN:
+   `withoutSkipWorktree` plus bit-free verdicts in `stageIgnoredWalk`. GUARD: S8, S11.
+3. RED: S2. `add(ctx, ['*.log'])` gives `sparse: ['*.log']`, the index unchanged and no new blob.
+   Fails: after step 2 the walk no longer sees `x.log`, so it refuses
+   `PATHSPEC_NO_MATCH '*.log'`. GREEN: the unseen split, the `sparse` field on every result
+   builder, the fact-16 sites, and `npm run docs:json`. GUARD: S4, S5, S7, S9 (refusal data, no
+   new blob), S12, P1, P2, P3.
+4. RED: S10. `add(ctx, [], { all: true })` gives `modified: ['s.txt']`, and `x.log` keeps the bit
+   and its id. Fails: `addAll` restages it. GREEN: `withoutSkipWorktree` in `addAll`. GUARD: S13.
+5. REFACTOR: name the helpers, and write comments that say why (git's sparse rule). Regenerate
+   api.json if the JSDoc moved.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/internal/pathspec-intake.test.ts test/unit/application/commands/add-skip-worktree.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-directory-file.test.ts test/unit/application/commands/add-unmerged.test.ts test/unit/application/commands/add-clean-order.test.ts test/unit/application/commands/add-big-file-threshold.test.ts test/unit/application/commands/add-literal-exclusion.test.ts test/integration/add-tracked-under-ignore-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/add-interop.test.ts test/integration/add-all.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts src/application/commands/internal/pathspec-intake.ts test/unit/application/commands/internal/pathspec-intake.test.ts test/unit/application/commands/add-skip-worktree.test.ts test/unit/application/commands/add.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+Exit code must be 0 (wireit caveat as in Part 13). Before committing, `npm run docs:json`, then
+check that `git diff --no-ext-diff --stat` lists `reports/api.json`.
+
+### Commit
+
+`fix(add): leave skip-worktree entries unstaged on the walk and report sparse-only pathspecs`
+
+## Part 15 — add reports a skip-worktree literal and leaves it alone under --renormalize too
+
+### Context
+
+R13 (literal fast path and `--renormalize`), plus the S interop file for every S row. It needs
+Part 14's `reachesSkipWorktree` and `sparse` field. Read "Fold revision — house rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts`
+- `test/unit/application/commands/add-skip-worktree.test.ts`
+- `test/integration/add-skip-worktree-interop.test.ts` — CREATED. `@proves` surface and
+  interopSurface `add`; unique line "skip-worktree entries stay unstaged and sparse-only pathspecs
+  are reported as git does". Gate it with `describe.skipIf(!GIT_AVAILABLE)`: no fixture name
+  holds `*`, `?` or `\`, and wildcards appear only in arguments.
+
+No public-surface change: the field exists, so no api.json, unless the `add` JSDoc is edited, in
+which case regenerate.
+
+Read-only references: Part 14's helpers in add.ts (`skipWorktreeOf`, `withoutSkipWorktree`, the
+unseen split), src/application/commands/internal/pathspec-intake.ts (`CommandPathspec.positives`,
+`PositivePathspec.spelling`, `reachesSkipWorktree`), test/integration/add-tracked-under-ignore-interop.test.ts
+(`twins`, `trackedThen`, `snapshotOf`).
+
+Current code (re-anchor by name):
+- `dispatchPathspec` passes the whole `CommandPathspec` as `resolved` to
+  `addLiteralOnly(ctx, resolved: ResolvedPathspec, stats, scope)`, which reads the index
+  (`readExistingEntries` → `entries`) and calls `stageLiteralsOver(staging, sorted, resolved, stats)`
+  → `stageLiterals(staging, literalMustMatch, stats)`. Every literal is staged, the skip-worktree
+  one included (S3, S6).
+- `addRenormalized` → `refuseUnseenRenormalized(ctx, positives, entries)`.
+  `indexSees(positive, entries)` counts skip-worktree entries, so S15's literal is seen and nothing
+  is reported. `isRecleaned` already skips skip-worktree (S14 passes).
+
+Target:
+- `addLiteralOnly` takes `CommandPathspec`. After reading the index, the literal positives whose
+  entry is skip-worktree (`reachesSkipWorktree(positive, skipWorktreeOf(entries))` — a fast-path
+  literal names a file, so it matches only itself) give `sparse` (their spellings, argument
+  order, duplicates kept). Their bodies are dropped from `literalMustMatch` before
+  `stageLiteralsOver`. When every literal is dropped, nothing is staged, and the index commit must
+  leave `ls-files -s -v` unchanged (S3).
+- `--renormalize`: split as on the walk route. `unseen` comes from `indexSees` over the entries
+  without the bit. `sparse = unseen.filter(reachesSkipWorktree)`. The rest refuses or escapes
+  through `namesOnDisk` as today. git checks skip-worktree before `file_exists`, so S15 reports
+  even though `x.log` is on disk. `addRenormalized` returns `sparse`.
+
+Pins (fixture as in Part 14): S3 `add x.log` → exit 1, reports `x.log`, index unchanged, no new blob.
+S6 `add x.log s.txt` → exit 1, reports `x.log`, `M  s.txt` only. S14 `add --renormalize .` →
+exit 0, `M  s.txt`, `x.log` kept. S15 `add --renormalize x.log` → exit 1, reports `x.log`, index
+unchanged.
+
+Interop (all of S1–S15 and P1–P3): each twin is built by git (commit, then
+`git update-index --skip-worktree x.log`, then the rewrites). Compare `ls-files -s -v` (the
+`S`/`H` tags), `status --porcelain` and the loose count. For report rows, git's exit code 1 ↔
+`result.sparse.length > 0`. git's stderr equals the advice rebuilt from `sparse`:
+
+    The following paths and/or pathspecs matched paths that exist
+    outside of your sparse-checkout definition, so will not be
+    updated in the index:
+    <one spelling per line>
+    hint: If you intend to update such entries, try one of the following:
+    hint: * Use the --sparse option.
+    hint: * Disable or modify the sparsity rules.
+    hint: Disable this message with "git config set advice.updateSparsePath false"
+
+S9 compares the refusal data with `fatal: pathspec 'nomatch*' did not match any files`, with no
+advice.
+
+### TDD steps
+
+1. RED: S3 (add-skip-worktree.test.ts, plus its interop row). `add(ctx, ['x.log'])` with `x.log`
+   on disk gives `sparse: ['x.log']`, an unchanged entry and no blob for `changed\n`. Fails: the
+   fast path restages `x.log` with its bit cleared, and `sparse` is `[]`. GREEN: the fast-path
+   split. GUARD: S6 (unit and interop).
+2. RED: S15 (unit and interop). `add(ctx, ['x.log'], { renormalize: true })` gives
+   `sparse: ['x.log']` and an unchanged index. Fails: `sparse` is `[]` (`indexSees` counts the
+   skip-worktree entry). GREEN: the renormalize split. GUARD: S14.
+3. GUARD: interop rows S1, S2, S4, S5, S7–S13 and P1–P3. They pass since Part 14.
+4. REFACTOR.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/add-skip-worktree.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-literal-exclusion.test.ts test/unit/application/commands/add-directory-file.test.ts test/integration/add-skip-worktree-interop.test.ts test/integration/add-tracked-under-ignore-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts test/unit/application/commands/add-skip-worktree.test.ts test/integration/add-skip-worktree-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(add): report a skip-worktree literal instead of restaging it, under --renormalize too`
+
+## Part 16 — checkout leaves skip-worktree paths out of a path restore
+
+### Context
+
+R14. Independent of Parts 13–15 except for the shared working tree. Read "Fold revision — house
+rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/checkout.ts`
+- `test/unit/application/commands/checkout-skip-worktree.test.ts` — CREATED (memory adapter).
+- `test/integration/checkout-skip-worktree-interop.test.ts` — CREATED. `@proves` surface and
+  interopSurface `checkout`; unique line "a path restore leaves skip-worktree paths as git does".
+
+No public-surface change (behaviour only).
+
+Read-only references: test/unit/application/commands/checkout.test.ts :40 (`refusalOf`), :48
+(`seedWithBranches`: `init`, `add`, `commit` with a fixed `author`), its sparse rows (:1318–:1430,
+switch-side, must stay green). Also test/unit/application/primitives/fixtures.ts
+(`serializeIndexFixtureAsync`) to rewrite the index with `flags.skipWorktree` set, as add.test.ts
+:4403 `rewriteEntries` does. src/domain/commands/error.ts :595
+(`pathspecNoMatch(pattern, ...others)` → `{ code, pattern, patterns }`),
+src/domain/git-index/index-path-key.ts (`indexPathKey`, `IndexPathKey`; checkout.ts imports
+`escapedPathOf` and `IndexPath` from it at :11).
+
+Current code (checkout.ts at `039599ad`): `restoreUnderIndexLock` (:372) takes the lock, then
+`currentIndex = await readIndex(ctx)`, then
+`universe = await enumerateSourcePaths(ctx, source, currentIndex)` (:482; the index entries, or
+the source tree's non-directory entries). Then `selectFromUniverse(pathspec, universe)` (:394) →
+`refuseUnmatched(unmatched)` (:408) → `materializePathRestoreFromIndex` /
+`materializePathRestoreLocked` with `pathSet`.
+
+Target: a pure helper `outsideSkipWorktree(universe, currentIndex)`. It builds the
+`Set<IndexPathKey>` of `currentIndex.entries` that carry `flags.skipWorktree` (key with
+`indexPathKey`, so a lossy name compares through the same view `selectFromUniverse` uses), then
+drops every universe entry whose `indexPathKey` is in the set. Apply it to the universe whatever
+the source. `refuseUnmatched` then refuses SC1–SC4 and SC9–SC12, and neither `materializePathRestore*` function sees
+the path (SC5–SC8). `materializeTree`'s own skip-worktree carry is unchanged.
+
+Pins (design SC; fixture: tracked `sw.txt`, `n.txt` committed; `sw.txt` skip-worktree; `sw.txt` →
+`sw-dirty`, `n.txt` → `n-dirty`. Each row runs with no source and with `HEAD`, same result):
+
+| Rows | args | git |
+|---|---|---|
+| SC1/SC2 | `sw*` | exit 1 `error: pathspec 'sw*' did not match any file(s) known to git`; both files dirty; `S` kept |
+| SC3/SC4 | `sw.txt` | same, for `'sw.txt'` |
+| SC5/SC6 | `*.txt` | exit 0; `n.txt` restored, `sw.txt` still `sw-dirty`, `S` kept |
+| SC7/SC8 | `.` | as SC5 |
+| SC9/SC10 | `sw.txt n.txt` | exit 1, error for `'sw.txt'`; both still dirty |
+| SC11/SC12 | `sw* n*` | exit 1, error for `'sw*'`; both still dirty |
+
+tsgit's refusal: `PATHSPEC_NO_MATCH` with `patterns` equal to every unmatched spelling (git prints
+one `error:` line per unmatched pathspec). Interop compares file bytes, `ls-files -v` and the
+patterns against git's `error:` lines.
+
+### TDD steps
+
+1. RED: SC1 (checkout-skip-worktree.test.ts, plus the SC1 interop row). `checkout(ctx, { paths:
+   ['sw*'] })` refuses with `pathspecNoMatch('sw*').data`, `sw.txt` still reads `sw-dirty`, and its
+   entry keeps `flags.skipWorktree`. Fails: today `sw.txt` is restored to `sw` and its bit cleared.
+   GREEN: `outsideSkipWorktree` in `restoreUnderIndexLock`.
+2. GUARD (unit and interop): SC2 (`source: 'HEAD'`), SC3–SC12. They pass because the filter applies
+   to both sources.
+3. REFACTOR.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/checkout-skip-worktree.test.ts test/unit/application/commands/checkout.test.ts test/integration/checkout-skip-worktree-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/checkout.ts test/unit/application/commands/checkout-skip-worktree.test.ts test/integration/checkout-skip-worktree-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(checkout): leave skip-worktree paths out of a path restore, as git does`
+
+## Part 17 — add reports the ignored entries a pathspec reaches on the walk, and force is git's -f there
+
+### Context
+
+R16 on the walk route and in `addAll`. Covers ADR-1046 (the `ignored` field; it retires
+ADR-1045's ignored-literal interim), ADR-1047 (`force`) and ADR-1048 (`fix`). Part 18 covers the
+literal fast path. Read "Fold revision — house rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts`
+- `test/unit/application/commands/add.test.ts`. Two re-pins (below), plus `ignored: []` on the
+  whole-result sites (fact 16).
+- `test/unit/application/commands/add-ignored-report.test.ts` — CREATED (memory adapter).
+- `test/integration/add-ignored-report-interop.test.ts` — CREATED. `@proves` surface and
+  interopSurface `add`; unique line "add reports ignored entries a pathspec reaches as git does".
+  Gate it with `describe.skipIf(!GIT_AVAILABLE)`.
+- `reports/api.json` — regenerated.
+
+Public-surface decisions:
+- `AddResult.ignored: ReadonlyArray<FilePath>` is PUBLIC. JSDoc: "Ignored entries a positive
+  pathspec reached, sorted and deduplicated. git lists them under 'The following paths are ignored
+  by one of your .gitignore files' and exits 1. A tracked path is never listed. Always empty with
+  `force`."
+- The `AddOptions.force` JSDoc changes from a declared no-op to "git's `-f`: no ignore rule applies,
+  on any route." It is PUBLIC; api.json is the only gate to pre-pay, and
+  docs/use/commands/add.md is deferred.
+- `NEVER_IGNORED`, the collector and `repoIgnoreOf` are INTERNAL (add.ts module scope).
+
+Read-only references: src/domain/pathspec/wildcard.ts :24 (`globSpecialIndex(body)`, -1 when the
+body holds no `* ? [ \`), src/application/commands/internal/add-ignore.ts (`IgnorePredicate =
+(path, isDirectory) => boolean | Promise<boolean>`), src/application/commands/internal/build-ignore-evaluator.ts
+(`buildRepoIgnorePredicate`), src/application/commands/internal/resolve-pathspec.ts
+(`namesDirectoryOnly`), test/integration/pathspec-glob-dialect-interop.test.ts :515 / :545.
+
+Current code (re-anchor by name):
+- `addByPathspec` builds `repoIgnore = await buildRepoIgnorePredicate(ctx)` before taking the lock
+  (keep that order), then calls `stageIgnoredWalk(ctx, repoIgnore, …)`, which builds
+  `ignore = withPathspec(repoIgnore, matcher, unmergedStages)`. `withPathspec` calls
+  `ignore(path, isDirectory)` first for every directory and leaf.
+- `refuseUnseenWalked(ctx, repoIgnore, …)` → `namesUnignoredDiskPath(ctx, repoIgnore, positive)`.
+  An unseen literal naming an ignored path is refused (the ADR-1045 interim), through
+  `ignoredWithAncestors` (:915).
+- `addInScope` reads `opts.all` / `opts.renormalize`. `opts.force` is read nowhere.
+  `addAll(ctx, ignoreOverride?, givenScope?)`.
+
+Target:
+- `NEVER_IGNORED: IgnorePredicate = () => false`.
+  `repoIgnoreOf(ctx, opts) = opts.force === true ? NEVER_IGNORED : buildRepoIgnorePredicate(ctx)`.
+  The predicate is built only when `force` is off. `dispatchPathspec` receives `opts`, and
+  `addByPathspec` takes the predicate instead of building it. `addInScope` passes
+  `opts.force === true ? NEVER_IGNORED : undefined` to `addAll`. The walk's .git exclusion
+  (`isDotGitWalkEntry`) is not an ignore rule and stays.
+- Escape: `namesUnignoredDiskPath` becomes "names something on disk". Its stat must exist, and a
+  trailing-slash literal must name a directory. Drop the `repoIgnore` parameter and the
+  ignored-literal branch, then delete `ignoredWithAncestors` (dead; Part 18 adds
+  `firstIgnoredOf`). Bodies holding `\` still never probe (`probesDisk`).
+- Collector (decision candidate 12 A), built inside `stageIgnoredWalk`. It wraps `repoIgnore`,
+  and the wrapper goes into `withPathspec`. Each positive's no-wildcard prefix `P` is computed once:
+  `index === -1 ? body : body.slice(0, index)` over `positive.entry.body`. When
+  `repoIgnore(path, isDirectory)` is true, `existing` holds no entry at `keyOfPath(path)` (fact 13,
+  directories and leaves alike), and some `P === path || P.startsWith(path + '/')`, the wrapper
+  records `path` and returns the verdict unchanged. The walk prunes at the shallowest ignored
+  directory, so a literal like 'd/q.txt' records `d` with no ancestor loop. `.` has `P = ''`
+  and never reports. `stageIgnoredWalk` returns `ignored` = the recorded paths, deduplicated and
+  sorted (`[...set].sort()`, as `sortedResult` sorts). On a refusal it throws first, so nothing is
+  reported (I5, I6, I24). `addAll` (no positives) and `addRenormalized` always return
+  `ignored: []`; `addLiteralOnly` does until Part 18.
+
+Pins. Fixture I: .gitignore = `*.log` and `'d/'`; untracked `x.log`, `y.log`, `real.txt`, 'd/q.txt'.
+Fixture D: tracked 'd/x.txt' and `k` committed, then .gitignore = `'d/'`, 'd/x.txt' rewritten,
+untracked 'd/new.txt'. Fixture T: tracked `t.log` and `k`, then .gitignore = `*.log`, `t.log`
+rewritten, untracked `u.log`. These walk-route rows belong here: I5 (128 `nomatch*`, no report),
+I6 (128 `missing`), I7 (`d` → reports `d`, nothing staged), I8 (`'d/'` → `d`), I10 (`x.log *.txt`
+→ reports `x.log`, stages `real.txt`), I11 (128 `x.lo?`), I13 (`-f *.log` → `x.log y.log`, fact 9),
+I14 (`-f .` → .gitignore, 'd/q.txt', `real.txt`, `x.log`, `y.log`), I15 (`-f d` → 'd/q.txt'), I16
+(`-A -f` → as I14), and on D: I20 (`d` → reports `d`, `M` on 'd/x.txt'), I21 (`'d/*.txt'`), I22
+(`d*`), I23 (`'d/x*'`) all report `d` and stage 'd/x.txt'. I24 (`'d/n*'` → 128). I25 (`?` → nothing),
+I26 (`*` → `A .gitignore`, `M` 'd/x.txt'), and on T: I27 (`*.log` → `M  t.log`, no report), I28
+(`.`), I30 (`?.log`). Plus fact 11's P4 and P5. The report text git prints is:
+
+    The following paths are ignored by one of your .gitignore files:
+    <one path per line>
+    hint: Use -f if you really want to add them.
+    hint: Disable this message with "git config set advice.addIgnoredFile false"
+
+Interop: twins, then compare `ls-files -s`, `status --porcelain --untracked-files=all`, the loose
+count, and on report rows git's exit 1 ↔ `ignored.length > 0` with git's stderr equal to the
+rebuilt text. A tsgit `{ force: true }` ↔ git `-f`. B16 is I20.
+
+Expected re-pins in add.test.ts (each encoded ADR-1045's interim, which ADR-1046 supersedes):
+- "Given a missing literal and a gitignored existing literal" (`keep.txt` ignored, `gone.txt`
+  missing). Re-pin to I6: the refusal names `gone.txt`.
+- "add of a literal beneath an ignored directory" ('build/x' with `k*`). Re-pin to fact 11's P4:
+  no refusal, `modified: ['k']`, `ignored: ['build']`.
+
+### TDD steps
+
+1. RED: I10 (add-ignored-report.test.ts, plus the interop row). `add(ctx, ['x.log', '*.txt'])`
+   on fixture I gives `added: ['real.txt']` with no refusal. Fails: `PATHSPEC_NO_MATCH 'x.log'`
+   (the interim). GREEN: the escape drops the ignored branch; delete `ignoredWithAncestors`.
+   Re-pin the two add.test.ts rows above (the P4 row asserts `ignored` from step 2 on). GUARD:
+   I5, I6, I11, I24 (refusal data, zero loose objects).
+2. RED: I7. `add(ctx, ['d'])` gives `ignored: ['d']` and an empty index. Fails: `result.ignored`
+   is undefined (no such field). GREEN: the collector, the field on every result builder, the
+   fact-16 sites, `npm run docs:json`. GUARD: I8, I10's `ignored: ['x.log']`, I20–I23, I25–I28,
+   I30, P4, P5, and a tracked gitlink the walk prunes (index entry `sub` with mode
+   `FILE_MODE.GITLINK`, a 'sub/f' file, .gitignore `sub`, `add(ctx, ['sub'])` gives
+   `ignored: []`, fact 13).
+3. RED: I13. `add(ctx, ['*.log'], { force: true })` gives `added: ['x.log', 'y.log']` and
+   `ignored: []`. Fails: `PATHSPEC_NO_MATCH '*.log'` (force unread). GREEN: `repoIgnoreOf` on the
+   walk route. GUARD: I14, I15.
+4. RED: I16. `add(ctx, [], { all: true, force: true })` stages .gitignore, 'd/q.txt',
+   `real.txt`, `x.log`, `y.log`. Fails: only .gitignore and `real.txt`. GREEN: `addInScope`
+   passes `NEVER_IGNORED` to `addAll`.
+5. REFACTOR: the force JSDoc, comments that say why, `npm run docs:json`.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/add-ignored-report.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-skip-worktree.test.ts test/unit/application/commands/add-literal-exclusion.test.ts test/unit/application/commands/add-directory-file.test.ts test/unit/application/commands/add-unmerged.test.ts test/integration/add-ignored-report-interop.test.ts test/integration/add-tracked-under-ignore-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/add-skip-worktree-interop.test.ts test/integration/add-interop.test.ts test/integration/add-all.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-ignored-report.test.ts test/integration/add-ignored-report-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(add): report ignored entries a pathspec reaches and honour force on the walk, as git does`
+
+## Part 18 — add reports an ignored untracked literal instead of staging it; force still stages it
+
+### Context
+
+R16 on the literal fast path. Covers ADR-1046 and ADR-1047, and ADR-1048: this is the behaviour
+change a consumer may notice, so the commit subject names it. It needs Part 17's `ignored` field,
+`NEVER_IGNORED` and `repoIgnoreOf`. Read "Fold revision — house rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts`, including the `add` JSDoc. Its "Literal-path mode" bullet says
+  every path is staged; it must now say that an untracked path the ignore rules exclude is reported
+  in `ignored` instead, unless `force`.
+- `test/unit/application/commands/add.test.ts` — one re-pin (below).
+- `test/unit/application/commands/add-ignored-report.test.ts`
+- `test/integration/add-ignored-report-interop.test.ts`
+- `reports/api.json` — regenerated (the `add` JSDoc is public).
+
+Public-surface decisions: no new symbol is public. `firstIgnoredOf` and `firstIgnoredAncestorOf`
+are INTERNAL (add.ts). The `add` JSDoc change is the only public delta, and api.json is its gate.
+
+Read-only references: Part 17's `repoIgnoreOf`, the collector's prefix rule and
+`SEPARATOR = '/'` in add.ts, test/bench/add.bench.ts (fact 15: the two rows that measure this path
+already exist).
+
+Current code (re-anchor by name): `dispatchPathspec` → `literalStats` (every literal `lstat`s as a
+file or symlink) → `addLiteralOnly(ctx, resolved, stats, scope)`. It never consults ignore rules,
+so I1–I4, I9, I18, I19 and I29 stage the ignored file, and I17 and I29 report nothing.
+
+Target:
+- `firstIgnoredAncestorOf(repoIgnore, path)`: the shallowest proper ancestor directory that
+  `repoIgnore(ancestor, true)` ignores, else `undefined`. `firstIgnoredOf(repoIgnore, path,
+  isDirectory)`: that ancestor, else `path` itself when `repoIgnore(path, isDirectory)`. Two
+  functions, no boolean parameter.
+- The fast path gets `repoIgnore = await repoIgnoreOf(ctx, opts)`. With `force` it is
+  `NEVER_IGNORED`, so nothing is built and nothing is reported. After reading the index, for each
+  literal in `literalMustMatch`:
+  - a literal whose path holds an index entry (tracked) reports `firstIgnoredAncestorOf` and is
+    still staged (I17; B13: a tracked ignored file itself is never reported);
+  - an untracked literal reports `firstIgnoredOf(path, false)` and is dropped from staging when it
+    has one (I1, I9 → `d`).
+  `ignored` is deduplicated and sorted, as in Part 17. A skip-worktree literal is tracked: Part 15
+  already drops it into `sparse`.
+- Hot path: the fast path now builds the repo ignore predicate unless `force` (I17 makes that
+  necessary even for a tracked literal). Fact 15: the session runs `npm run bench:ab` on the rows
+  "When add() re-stages one modified tracked file" and "When add() stages one new file" after this
+  commit. Do not run it inside the part.
+
+Pins (fixtures I, D, T as in Part 17):
+
+| Row | args | git |
+|---|---|---|
+| I1 | `x.log` | 1 · reports `x.log` · index empty · 0 loose |
+| I2 / I3 | `x.log real.txt` / `real.txt x.log` | 1 · `x.log` · `real.txt` staged |
+| I4 | `y.log x.log` | 1 · `x.log`, `y.log` sorted · index empty |
+| I9 | 'd/q.txt' | 1 · `d` (the ignored ancestor) · index empty |
+| I12 | `-f x.log` | 0 · stages `x.log` |
+| I17 | D · 'd/x.txt' | 1 · `d` · `M` on 'd/x.txt' |
+| I18 / I19 | D · 'd/new.txt' / both | 1 · `d` · nothing / only 'd/x.txt' staged |
+| I29 | T · `t.log u.log` | 1 · `u.log` · `M  t.log` |
+| B13 | tracked ignored `x.log` modified · `x.log` | 0 · no report · `M  x.log` |
+
+B3l = I1 and B3m = I2: one interop row each.
+
+Expected re-pin in add.test.ts: "Given a literal path that .gitignore would exclude" (~:1728). It
+pins the literal bypass that ADR-1046/1048 retire. Re-pin it to I1's shape: `added: []`,
+`ignored: ['ignored.txt']`, empty index.
+
+### TDD steps
+
+1. RED: I1 (add-ignored-report.test.ts, plus the I1 interop row). `add(ctx, ['x.log'])` on
+   fixture I gives `added: []`, `ignored: ['x.log']` and no blob for `x.log`'s content. Fails: the
+   fast path stages it. GREEN: the fast path takes `repoIgnoreOf(ctx, opts)` (Part 17), and
+   untracked literals go through `firstIgnoredOf`. Re-pin the add.test.ts row. GUARD: I2, I3, I4,
+   I9, I18, I19, I29 (`t.log` has no ignored ancestor), B13, and I12 (`force` yields
+   `NEVER_IGNORED`, so `x.log` is staged with `ignored: []`).
+2. RED: I17 on fixture D. `add(ctx, ['d/x.txt'])` gives `modified: ['d/x.txt']` and
+   `ignored: ['d']`. Fails: `ignored` is `[]`, because tracked literals skip the ignore check.
+   GREEN: tracked literals report `firstIgnoredAncestorOf` and stay staged.
+3. GUARD interop rows: I2, I3, I4, I9, I12, I17 (written with step 2, before its GREEN), I18, I19,
+   I29, B13.
+4. REFACTOR: the `add` JSDoc, then `npm run docs:json`.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/add-ignored-report.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-skip-worktree.test.ts test/unit/application/commands/add-literal-exclusion.test.ts test/unit/application/commands/add-directory-file.test.ts test/unit/application/commands/add-clean-order.test.ts test/unit/application/commands/add-big-file-threshold.test.ts test/integration/add-ignored-report-interop.test.ts test/integration/add-skip-worktree-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts test/integration/add-interop.test.ts test/integration/eol-conversion-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-ignored-report.test.ts test/integration/add-ignored-report-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(add): report an ignored untracked literal instead of staging it; force still stages it`
+
+## Part 19 — add stages a gitlink whose submodule checkout moved; a broken one refuses
+
+### Context
+
+R15. Covers ADR-1049 (HEAD read through `<path>/.git` and a child Context) and ADR-1050 (a
+`<path>/.git` that leads to no repository refuses `NOT_A_REPOSITORY { path }` before any write).
+Decision candidates 7, 8 and 9 apply. Read "Fold revision — house rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts`
+- `src/application/commands/internal/gitlink-head.ts` — CREATED.
+- `src/application/primitives/internal/submodule-context.ts`. Extract the body of the private
+  `buildChildContext(ctx, name, treeRelPath)` into an exported
+  `deriveGitlinkContext(ctx, gitDir, treeRelPath)`; `buildChildContext` then calls it with
+  the modules/<name> gitdir. Behaviour is unchanged: `refStorage: 'files'`, `promisor` and
+  `hooks` dropped, a fresh session through `deriveContext`.
+- `src/application/primitives/internal/repo-state.ts` — export the existing `hasUsableHead(ctx)`
+  (:142, git's `validate_headref`: a symlinked HEAD by its link text, a file by its content).
+- `test/unit/application/commands/add-gitlink.test.ts` — CREATED (memory adapter).
+- `test/integration/add-gitlink-interop.test.ts` — CREATED. `@proves` surface and interopSurface
+  `add`; unique line "add stages a moved gitlink and refuses a broken one as git does". Gate it
+  with `describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')` (GL15 needs a symlink).
+
+Public-surface decisions: every new symbol is INTERNAL (`gitlinkHeadOf`, `deriveGitlinkContext`,
+the `hasUsableHead` export, `stagedGitlinks`). No type or JSDoc change, so no api.json.
+`NOT_A_REPOSITORY` already exists (src/domain/repository/error.ts :25 `notARepository(path)`), so
+no error-union member is added.
+
+Read-only references: src/domain/worktree/gitfile.ts :30 (`parseGitfilePointer(content)` →
+`{ kind: 'ok', path } | { kind: 'invalid-format' } | { kind: 'no-path' }`),
+src/domain/worktree/resolve-path.ts (`resolveWorktreePath(cwd, input)`: an absolute input wins,
+a relative one is joined and collapsed), src/application/primitives/resolve-ref.ts :105
+(`resolveRefOrMissing(ctx, 'HEAD')` → `undefined` for an unborn HEAD),
+src/application/primitives/internal/head-file.ts :131 (`validateHead`),
+src/application/primitives/internal/clean-order.ts :173 (`Settled<R>`) and :200
+(`firstFailureOrValues`), src/application/primitives/internal/concurrency.ts :53
+(`boundedMapFor`: rejection propagates by timing, hence candidate 9),
+src/application/commands/submodule.ts (`stageSubmodule`: the
+`indexEntryFromStat(stat, FILE_MODE.GITLINK, head, path)` shape), add.test.ts :3917 (a hand-built
+gitlink `IndexEntry` serialized with `serializeIndexFixtureAsync`; copy the shape),
+test/integration/submodule-init-sync-deinit-interop.test.ts :40
+(`git -c protocol.file.allow=always`).
+
+Current code (re-anchor by name): no gitlink reaches staging. The walk's embedded-repository gate
+yields nothing under 'sub'. `isHiddenCandidate` excludes `FILE_MODE.GITLINK`, and
+`presentOnDisk` keeps the entry. `--renormalize` excludes gitlinks (`RECLEANED_MODES`; GL22 stays
+green). The equivalence comment in `restagesAsIs` ("deriveWorkingMode never returns GITLINK")
+stays true, because gitlinks never go through `stagePromisorChecked`.
+
+Target:
+
+    // gitlink-head.ts — the commit checked out at a gitlink, undefined when nothing is
+    export const gitlinkHeadOf = async (ctx, path: FilePath): Promise<ObjectId | undefined>
+      // lstat <workDir>/<path>/.git; FILE_NOT_FOUND -> undefined (GL13: deinit left it empty)
+      // a directory -> gitDir is that directory, shown as path + '/.git'
+      // otherwise read it as a gitfile: parseGitfilePointer; not 'ok' -> notARepository(path + '/.git') (G1)
+      //   'ok' -> gitDir = resolveWorktreePath(joinPath(workDir, path), pointer)
+      //           shown = pointer when absolute (G4), else path + '/' + pointer (GL20, GL21)
+      // child = deriveGitlinkContext(ctx, gitDir, path)
+      // !(await hasUsableHead(child)) -> notARepository(shown)        (GL20, GL21, G2, G3, G4)
+      // return resolveRefOrMissing(child, 'HEAD')                     (GL16: unborn -> undefined)
+    // add.ts
+    const stagedGitlinks = async (ctx, existing, verdicts): Promise<WalkOutcome[]>
+      // candidates: stage 0, FILE_MODE.GITLINK, !flags.skipWorktree (GL23), !isLossy, verdict matched
+      // boundedMapFor(ctx, 'ioBound', candidates, settle(movedGitlinkOf)) then firstFailureOrValues
+    const movedGitlinkOf = async (ctx, entry): Promise<WalkOutcome | undefined>
+      // stat = lstatOrBeneathFile; not a real directory -> undefined (GL14, GL15: the walk stages it)
+      // head = gitlinkHeadOf; undefined or head === entry.id -> undefined (GL11, GL12, GL16)
+      // { kind: 'modified', path, entry: indexEntryFromStat(stat, FILE_MODE.GITLINK, head, path) }
+
+`stageIgnoredWalk` calls `stagedGitlinks(ctx, existing, verdicts)` after `refuseUnseenWalked` and
+before `stageWalkedEntries`, so a refusal leaves zero loose objects (ADR-1035).
+`addAll` calls it with the `indexVerdicts(WHOLE_TREE_MATCHER, existing)` it already builds for
+`hiddenTracked`: hoist that value into a const. Prepend the outcomes to the staged ones before
+`tallyWalkOutcomes`, so `modified`, `restagedPaths` and the index commit need no new code. Literal
+routing needs nothing: `literalStats` sends a directory literal ('sub', 'sub/') to the walk. The
+security review checks that a pointer outside the work tree is followed read-only; nothing here
+writes through the child context. Every path segment comes from the index entry or the gitfile, as
+in git.
+
+Pins (design GL plus fact 12). Fixture: an upstream repo with one commit, and a superproject
+holding `k` and `git -c protocol.file.allow=always submodule add <up> sub`, committed, with commit
+dates pinned to `@1700000000 +0000`. "Moved" means a new commit inside 'sub'.
+
+| Rows | Setup · args | git |
+|---|---|---|
+| GL1–GL6 | moved · `.` / `sub` / `s*` / `-A` / `'sub/'` / `sub k` | 0 · `M  sub` at the new HEAD (GL6 also stages `k`) |
+| GL7–GL10 | moved, a `sub` ignore rule · `.` / `sub` / `s*` / `-A` | 0 · `M  sub`, no ignored report (fact 13) |
+| GL11 / GL12 | file edited inside, HEAD not moved / untouched · the four | 0 · unchanged |
+| GL13 | `submodule deinit -f sub` | 0 · unchanged |
+| GL14 / GL15 | 'sub' replaced by a file / a symlink to `k` | 0 · `T  sub` (passes today) |
+| GL16 | 'sub' replaced by `git init` with no commit | 0 · unchanged |
+| GL17 / GL18 / GL19 | embedded clone (a .git directory, no .gitmodules) / `--name other` / an unrelated repo with one commit | 0 · the repository's HEAD staged |
+| GL20 / GL21 | pointer to '../.git/modules/nowhere' / the module HEAD is `garbage` | 128 · `NOT_A_REPOSITORY` with path 'sub/../.git/modules/nowhere' / 'sub/../.git/modules/sub' · unchanged |
+| GL22 | moved · `--renormalize .` | 0 · unchanged |
+| GL23 | moved, `update-index --skip-worktree sub` · `.` | 0 · `S` unchanged |
+| G1–G5 | fact 12 | G1–G4 refuse with the path git prints; G5 (`k`, `k*`) succeed |
+
+Interop: build `up` once per test with pinned dates, and clone it into both twins so the ids
+match. Compare `ls-files -s` (plus `-v` for GL23), git's exit code, and for refusals the
+`NOT_A_REPOSITORY` path against the path in git's `fatal:` line. Unit fixture (memory adapter):
+'sub/.git' holds `gitdir: ../.git/modules/sub` plus a newline; under the gitdir, a HEAD holds
+`ref: refs/heads/main` plus a newline, and refs/heads/main holds a 40-hex id. The index is a
+hand-built gitlink entry 'sub' at another id. A directory-.git variant covers GL17.
+
+### TDD steps
+
+1. RED: GL1 (add-gitlink.test.ts, plus the interop row). `add(ctx, ['.'])` gives
+   `modified: ['sub']` and the 'sub' entry at the module HEAD id with mode `FILE_MODE.GITLINK`.
+   Fails: `modified: []`, because gitlinks never stage. GREEN: `gitlinkHeadOf` WITHOUT the
+   usable-HEAD check (a pointer that does not parse, or a HEAD that does not resolve, leaves the
+   entry), plus `deriveGitlinkContext` and `stagedGitlinks` in `stageIgnoredWalk`. GUARD: GL2, GL3,
+   GL5, GL6, GL7–GL9, GL11–GL17, GL18, GL19, GL22, GL23, and G5.
+2. RED: GL4. `add(ctx, [], { all: true })` gives `modified: ['sub']`. Fails: `addAll` never runs
+   the step. GREEN: `addAll` calls `stagedGitlinks`. GUARD: GL10.
+3. RED: GL20. `add(ctx, ['.'])` throws `NOT_A_REPOSITORY` with
+   `path: 'sub/../.git/modules/nowhere'`; also lay down an untracked `n` and prove its blob was not
+   written. Fails: no `NOT_A_REPOSITORY` (the entry is left unchanged, or a
+   different error surfaces from the missing gitdir). GREEN: export `hasUsableHead`, add the
+   usable-HEAD check, and refuse a pointer that does not parse; settle the probes and use
+   `firstFailureOrValues`. GUARD: GL21, G1, G2, G3, G4.
+4. REFACTOR: comments that say why (git's `resolve_gitlink_ref` through `<path>/.git`).
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/add-gitlink.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-ignored-report.test.ts test/unit/application/commands/add-skip-worktree.test.ts test/unit/application/primitives/internal/submodule-context.test.ts test/unit/application/commands/submodule.test.ts test/integration/add-gitlink-interop.test.ts test/integration/add-tracked-under-ignore-interop.test.ts test/integration/submodule-init-sync-deinit-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts src/application/commands/internal/gitlink-head.ts src/application/primitives/internal/submodule-context.ts src/application/primitives/internal/repo-state.ts test/unit/application/commands/add-gitlink.test.ts test/integration/add-gitlink-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(add): stage a gitlink whose submodule checkout moved, and refuse a broken one, as git does`
+
+## Part 20 — the working-tree walk yields a backslash-named entry on POSIX hosts
+
+### Context
+
+R17 for the walk. Covers ADR-1051 (decision candidate 18 A): `validateWalkedEntryPath` refuses `\`
+only under `windowsPathSyntax`. Every `walkWorkingTree` consumer inherits the change: `add`,
+`status`, `stash`, the snapshot enumerator and the repository facade. Read "Fold revision — house
+rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/domain/working-tree-path.ts`
+- `test/unit/domain/working-tree-path.test.ts`
+- `src/application/primitives/walk-working-tree.ts` — the one call site, in `stepEntry` (:102 at
+  `039599ad`).
+- `test/unit/application/primitives/walk-working-tree.test.ts`
+- `test/integration/pathspec-backslash-interop.test.ts` — extend the POSIX block (:31) and its
+  header's unique line. The Windows block (:76) is unchanged, because NTFS cannot hold `a\b`; the
+  unit row pins the Windows walk refusal.
+
+Public-surface decisions: `PathSyntaxHost` and the new `validateWalkedEntryPath` signature are
+INTERNAL. src/domain/working-tree-path.ts is not re-exported by src/domain/index.ts or the package
+entry. No api.json.
+
+Read-only references: src/ports/context.ts :358 (`windowsPathSyntax?: boolean`; a `Context`
+satisfies the host shape), src/application/commands/internal/pathspec-intake.ts (`PathspecHost`,
+the same shape on the application side; the domain cannot import it),
+src/application/primitives/internal/index-path-rules.ts (`validateIndexPath` already admits `\` on
+POSIX, so `add` stages the entry), test/integration/status-interop.test.ts (how status output is
+compared with `git status --porcelain`).
+
+Current code (working-tree-path.ts at `039599ad`): `validateWorkingTreePath` (:28) and
+`validateWalkedEntryPath` (:52) both call `rejectInputShape` (:71), whose
+`if (input.includes('\\')) reject(input)` refuses on every host. Keep the existing
+equivalent-mutant comments on the other guards in `rejectInputShape` intact, and add none.
+
+Target:
+
+    /** What path validation reads of the host: a Context satisfies it. */
+    export interface PathSyntaxHost { readonly windowsPathSyntax?: boolean }
+    const rejectBackslash = (input) => { if (input.includes(BACKSLASH)) reject(input) }
+    // rejectInputShape loses the backslash test.
+    // validateWorkingTreePath calls rejectBackslash itself (unchanged for every caller).
+    export const validateWalkedEntryPath = (input: string, host: PathSyntaxHost): FilePath
+      // rejectBackslash only when host.windowsPathSyntax === true, then the rest as today
+
+The host parameter is required (types over runtime). The walk passes `config.ctx`
+(`validateWalkedEntryPath(path, config.ctx)`), which is one property read per entry, so `WalkConfig`
+needs no new field. In the test file, `expectWalkedEntryReject` and every direct call pass a POSIX
+host `{}`.
+
+Pins (design W; POSIX, run on macOS APFS). Untracked fixture: files `a\b` (content `a`), `ab`,
+`k`. Tracked fixture: the same three committed, then `a\b` rewritten to `dirty`. `ls-files` quotes
+the name as `"a\\b"`.
+
+| Row | Fixture · command | git |
+|---|---|---|
+| W1 / W5 | untracked · `add .` / `add -A` | 0 · `a\b`, `ab`, `k` staged |
+| W2 | untracked · `add 'a\\b'` (escaped) | 0 · `a\b` |
+| W3 | untracked · `add 'a?'` | 0 · `ab` (today the walk aborts first) |
+| W4 (= E1) | untracked · `add 'a\b'` | 0 · `a\b`, `ab` |
+| D8b | files `a\` and `ab` · `add 'a\'` | 0 · `a\` |
+| W6 | untracked · `add ab` | 0 · `ab` (literal fast path; passes today) |
+| W7 | untracked · `status --porcelain` | `?? "a\\b"`, `?? ab`, `?? k` |
+| W12 / W13 | tracked · `checkout -- 'a\\b'` / `'a?'` | `a\b` back to `a` / stays `dirty` (pass today) |
+| W14 / W15 | tracked · `grep -l . -- 'a??'` / `grep -l .` | lists `a\b` (pass today) |
+| W16 | tracked · `status --porcelain` | ` M "a\\b"` |
+
+Today tsgit throws `PATHSPEC_OUTSIDE_REPO { path: 'a\\b' }` from the walk for W1–W5, D8b, W7
+and W16.
+
+### TDD steps
+
+1. RED: working-tree-path.test.ts. `validateWalkedEntryPath('a\\b', {})` returns `'a\\b'`. Fails:
+   it throws `PATHSPEC_OUTSIDE_REPO`. GREEN: split out `rejectBackslash` and add the host
+   parameter. Re-pin the existing walked row "Given a backslash in the path" (ADR-1051): it now
+   passes `{ windowsPathSyntax: true }` and still refuses. GUARD: `validateWorkingTreePath('a\\b')`
+   still refuses (unchanged).
+2. RED: walk-working-tree.test.ts. A memory working tree holding a file named `a\b` and `ab` is
+   walked to both paths. If the memory adapter cannot hold that name, wrap `ctx.fs` so `readdir`
+   returns a `DirEntry` named `a\b` (a Proxy, as add.test.ts :65 `staleLockCtx` wraps `lstat`).
+   JS source doubles every backslash: the file is `'a\\b'`, and W2's escaped pathspec is
+   `'a\\\\b'`. Fails: the walk throws `PATHSPEC_OUTSIDE_REPO`. GREEN: the call site
+   passes `config.ctx`. GUARD: the same tree under `{ ...ctx, windowsPathSyntax: true }` throws
+   `PATHSPEC_OUTSIDE_REPO` with path `'a\\b'`.
+3. GUARD (interop, POSIX block): W1–W7, D8b, W12–W16. They pass after step 2; W6 and W12–W15
+   passed already. For W7 and W16, compare tsgit `status()` (`untracked`, `changes[].path`) with
+   the paths of `git status --porcelain -z`.
+4. REFACTOR.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/domain/working-tree-path.test.ts test/unit/application/primitives/walk-working-tree.test.ts test/unit/application/primitives/walk-working-tree.properties.test.ts test/unit/application/commands/stash.test.ts test/unit/application/commands/add.test.ts test/integration/pathspec-backslash-interop.test.ts test/integration/status-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/domain/working-tree-path.ts src/application/primitives/walk-working-tree.ts test/unit/domain/working-tree-path.test.ts test/unit/application/primitives/walk-working-tree.test.ts test/integration/pathspec-backslash-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(walk): yield working-tree entries named with a backslash on POSIX hosts, as git does`
+
+## Part 21 — rm removes a backslash-named working-tree file on POSIX hosts
+
+### Context
+
+R17 for `rm`. Covers ADR-1052 (decision candidate 19 A) and decision candidate 11 A. It needs
+Part 20's `PathSyntaxHost` and `rejectBackslash`. Read "Fold revision — house rules" above.
+
+Files this part creates or edits (exactly these):
+- `src/domain/working-tree-path.ts` — new `validateWorkingTreePathOn(input, host)`.
+- `test/unit/domain/working-tree-path.test.ts`
+- `src/application/commands/internal/working-tree.ts` — `removeFile` (:84 at `039599ad`) only.
+- `test/unit/application/commands/internal/working-tree.test.ts` — the `removeFile` describe
+  (:472).
+- `test/unit/application/commands/rm.test.ts`
+- `test/integration/pathspec-backslash-interop.test.ts` — the W8–W11 rows (POSIX block).
+
+Public-surface decisions: `validateWorkingTreePathOn` is INTERNAL. The `validatePath` alias
+(working-tree.ts :19, `= validateWorkingTreePath`) keeps refusing `\` for every other caller:
+`mv`, `materializeFile` and the pathspec intake. ADR-1052 scopes the gate to `removeFile`. The
+existing working-tree.test.ts row that expects `validatePath('a\\b')` to refuse stays as it is.
+
+Read-only references: src/application/commands/rm.ts :126 (`removeFile(ctx, path)` for each
+removed, non-lossy entry; FILE_NOT_FOUND tolerated), test/unit/application/commands/rm.test.ts :95
+(`seedAndStage(workingTree)`).
+
+Current code: `removeFile(ctx, rawPath)` starts with `const path = validatePath(rawPath)`.
+
+Target:
+
+    // working-tree-path.ts
+    export const validateWorkingTreePathOn = (input: string, host: PathSyntaxHost): FilePath
+      // every validateWorkingTreePath rule, with the backslash refusal only under host.windowsPathSyntax
+    // working-tree.ts removeFile
+    const path = validateWorkingTreePathOn(rawPath, ctx)
+
+Share the component checks with `validateWorkingTreePath`, without a boolean parameter. For
+example, `validateWorkingTreePath = (input) => { rejectBackslash(input); return
+validateWorkingTreePathOn(input, POSIX_HOST) }`, where `POSIX_HOST` is a named `{}`.
+
+Pins (design W, tracked fixture as in Part 20):
+
+| Row | command | git |
+|---|---|---|
+| W8 | `rm -f 'a\\b'` | 0 · index `ab k`, file deleted (today `PATHSPEC_OUTSIDE_REPO` from `removeFile`, index and file unchanged) |
+| W9 | `rm -f 'a??'` | 0 · index `ab k`, file deleted (same today) |
+| W10 | `rm --cached 'a\\b'` | 0 · index `ab k` (passes today) |
+| W11 | `rm -f 'a?'` | 0 · removes `ab` only (passes today) |
+
+### TDD steps
+
+1. RED: working-tree-path.test.ts. `validateWorkingTreePathOn('a\\b', {})` returns `'a\\b'`.
+   Fails: no such export. GREEN: the function. GUARD: under `{ windowsPathSyntax: true }` it
+   refuses `PATHSPEC_OUTSIDE_REPO`; a '.git' component and a leading `:` still refuse on a POSIX
+   host.
+2. RED: working-tree.test.ts. `removeFile(ctx, 'a\\b')` on a memory context holding that file
+   removes it. Fails: `PATHSPEC_OUTSIDE_REPO { path: 'a\\b' }`. GREEN: `removeFile` uses
+   `validateWorkingTreePathOn(rawPath, ctx)`. GUARD: `{ ...ctx, windowsPathSyntax: true }` still
+   refuses.
+3. GUARD: W8 and W9 in rm.test.ts (`rm(ctx, ['a\\\\b'], { force: true })` gives
+   `removed: ['a\\b']` and the file is gone), plus interop W8–W11. Seed the tracked `a\b` with
+   `add(ctx, ['.'])` (the walk admits it since Part 20) or `seedIndex`, never with the pathspec
+   `'a\\b'`: that spelling is a wildcard that also matches `ab` (E1).
+4. REFACTOR.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/domain/working-tree-path.test.ts test/unit/application/commands/internal/working-tree.test.ts test/unit/application/commands/rm.test.ts test/unit/application/commands/mv.test.ts test/integration/pathspec-backslash-interop.test.ts test/integration/pathspec-glob-dialect-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/domain/working-tree-path.ts src/application/commands/internal/working-tree.ts test/unit/domain/working-tree-path.test.ts test/unit/application/commands/internal/working-tree.test.ts test/unit/application/commands/rm.test.ts test/integration/pathspec-backslash-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(rm): remove a backslash-named working-tree file on POSIX hosts, as git does`
+
+## Part 22 — Raise the size caps by the measured delta of the fold
+
+### Context
+
+There is no src/ delta: this is a config and docs part, standalone under the sizing rules. It runs
+after Parts 13–21 and before the review round (lesson 006). The design estimates +400 to +740 B gzip
+against caps that commit `0287b658` raised to the floor.
+
+Files this part creates or edits (each only if its check is red):
+- `.size-limit.json`
+- `tooling/verify-tarball.sh` — the cap and its attribution comment.
+- `docs/design/bundle-size-optimization.md` — a new "Size-limit raise — …" section, in the format
+  of "Size-limit raise — the pathspec glob dialect" (:673).
+
+Read-only references: docs/lessons/006-size-caps-at-the-headroom-floor-trip-again-on-the-review-round.md
+(read it first), commit `0287b658` (`git show --no-ext-diff 0287b658` shows the last raise across
+all three files), Part 12 above (the same procedure).
+
+Procedure:
+1. `rm -rf dist .wireit && npm run check:size`, then `npm run check:tarball`. Read EVERY row of
+   both outputs, not only the browser bundle; stale dist chunks fake reds, and the clean rebuild is
+   the measurement.
+2. Baseline = the tree just before Part 13:
+   `pre=$(git log --format=%h -1 --grep='honour exclusions when every positive pathspec')^`.
+   Without touching repo state: `base=$(mktemp -d)`,
+   `git archive "$pre" | tar -x -C "$base"`, `ln -s "$PWD/node_modules" "$base/node_modules"`, then
+   in `$base` run `npm run build && npx size-limit --json > <scratch>/pre-fold-size.json`.
+3. For each red row: delta = fold − baseline (gzip bytes). Raise that row's limit by exactly the
+   delta, rounded up to the next 0.1 kB, and confirm the new limit is ≥ the fold measurement.
+   Record each raise (row, baseline, fold, delta, attribution: the skip-worktree filters and the
+   sparse split, the checkout universe filter, the ignored collector and `force` wiring,
+   `firstIgnoredOf`, the gitlink step and `gitlinkHeadOf`, the host-gated validators) in the design
+   doc, and in the tarball cap comment if that cap moved.
+4. No row red → edit nothing and commit nothing; report the measured headroom per row instead.
+5. api.json drift check: `npm run docs:json && git diff --no-ext-diff --stat reports/api.json` must
+   print nothing (Parts 14, 17 and 18 regenerated it). A diff means a part changed the public
+   surface without regenerating: stop and report `{ unit: Part 22, reason, options }`.
+
+House rules: poll, never wait (`check:size` builds). Never run two `npm run` scripts at once.
+Commit only this part's files.
+
+### TDD steps
+
+1. Measure per the procedure (no test rows: config only).
+2. Raise only the red rows by the measured delta; record each raise.
+3. api.json drift check.
+
+### Gate
+
+```bash
+rm -rf dist .wireit && npm run check:size && npm run check:tarball \
+  && ./node_modules/.bin/biome check .size-limit.json \
+  && npx cspell --no-progress docs/design/bundle-size-optimization.md; echo "gate exit=$?"
+```
+
+Drop a file from the biome/cspell arguments when this part did not edit it.
+
+### Commit
+
+`fix(pathspec): raise the size caps by the measured delta of the folded add, checkout and rm fixes`
