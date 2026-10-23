@@ -303,6 +303,17 @@ const gitlinkConflictedWithFile: Setup = async (repo) => {
   });
 };
 
+/** `sub` unmerged at stages 1, 2 and 3 with `sub/u` tracked beneath it, then ignored and made a repository. */
+const unmergedAboveTrackedFile: Setup = async (repo) => {
+  const blob = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'x\n' }).trim();
+  runGit(['-C', repo, 'update-index', '--index-info'], {
+    input: [1, 2, 3, 0]
+      .map((stage) => `100644 ${blob} ${stage}\tsub${stage === 0 ? '/u' : ''}\n`)
+      .join(''),
+  });
+  await together(ignoring('sub\n'), committed())(repo);
+};
+
 const repositoryInside: Setup = async (repo) => {
   await committed()(repo);
   await committed('sub/inner', { v: 'v\n' })(repo);
@@ -747,6 +758,12 @@ const ALL_TREE_ROWS: ReadonlyArray<Row> = [
 ];
 
 const INDEX_PASS_ROWS: ReadonlyArray<Row> = [
+  {
+    label:
+      'an ignored path unmerged above a tracked file, now a directory holding a repository, added by .',
+    setup: unmergedAboveTrackedFile,
+    spec: ['.'],
+  },
   ...[['.'], ['sub'], ['s*']].map((spec) => ({
     label: `a gitlink at stage 2 and a file at stage 3 with a repository checked out, added by ${spec[0]}`,
     setup: gitlinkConflictedWithFile,
