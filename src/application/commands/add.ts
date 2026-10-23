@@ -50,6 +50,7 @@ import {
 } from '../../domain/pathspec/match-pathspec.js';
 import { matchesIndexPath, matchesUnmergedIndexPath } from '../../domain/pathspec/matching-path.js';
 import { globSpecialIndex } from '../../domain/pathspec/wildcard.js';
+import { noCommitCheckedOut } from '../../domain/repository/error.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -94,6 +95,7 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { writeObject } from '../primitives/write-object.js';
 import type { IgnorePredicate } from './internal/add-ignore.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
+import { type EmbeddedRepositories, embeddedRepositories } from './internal/embedded-repository.js';
 import { gitlinkHeadOf } from './internal/gitlink-head.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -1027,12 +1029,12 @@ const refuseUnseenRenormalized = async (
 const unseenWalked = (
   positives: ReadonlyArray<PositivePathspec>,
   seenByIndexPass: (positive: PositivePathspec) => boolean,
-  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+  walked: ReadonlyArray<FilePath>,
 ): ReadonlyArray<PositivePathspec> =>
   unmatchedPositives(
     positives,
     (positive) =>
-      seenByIndexPass(positive) || walked.some(({ path }) => positive.entry.compiled.test(path)),
+      seenByIndexPass(positive) || walked.some((path) => positive.entry.compiled.test(path)),
   );
 
 /**
@@ -1230,11 +1232,24 @@ const stageIgnoredWalk = async (
     withPathspec(collector.ignore, matcher, unmergedStages),
     existing.values(),
   );
-  const walked = withoutSkipWorktree(await collectWalk(walkWorkingTree(ctx, { ignore })), existing);
-  const sparse = await settleUnseenPositives(ctx, tracker, positives, walked, existing);
+  const repositories = embeddedRepositories(ctx, sorted);
+  const walked = reachedWalk(
+    withoutSkipWorktree(
+      await collectWalk(walkWorkingTree(ctx, { ignore, isNestedRepository: repositories.holds })),
+      existing,
+    ),
+    { existing, unmergedStages, matcher },
+  );
+  const sparse = await settleUnseenPositives(
+    ctx,
+    tracker,
+    positives,
+    walkedSpellings(walked),
+    existing,
+  );
   const outcomes = await stageSelectedEntries(
     ctx,
-    { existing, matcher, walked, unmergedStages, verdicts },
+    { existing, matcher, walked, repositories, unmergedStages, verdicts },
     { ...scope, indexRules },
     indexMtime,
     ensurePromisorConfigValid,
@@ -1256,7 +1271,7 @@ const settleUnseenPositives = async (
   ctx: Context,
   tracker: PositiveTracker,
   positives: ReadonlyArray<PositivePathspec>,
-  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+  walked: ReadonlyArray<FilePath>,
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): Promise<ReadonlyArray<PositivePathspec>> => {
   const unseen = unseenWalked(positives, (positive) => tracker.seen(positive), walked);
@@ -1272,31 +1287,114 @@ const settleUnseenPositives = async (
 interface WalkSelection {
   readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly matcher: ResolvedPathspec['matcher'];
-  readonly walked: ReadonlyArray<WalkWorkingTreeEntry>;
+  readonly walked: ReachedWalk;
+  readonly repositories: EmbeddedRepositories;
   readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
   readonly verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>;
 }
 
+/** The walk split into what is staged as content and the repositories the pathspec reaches. */
+interface ReachedWalk {
+  readonly files: ReadonlyArray<WalkWorkingTreeEntry>;
+  readonly leaves: ReadonlyArray<WalkWorkingTreeEntry>;
+}
+
+const isRepositoryLeaf = ({ isDirectory, isSymbolicLink }: WalkWorkingTreeEntry): boolean =>
+  isDirectory && !isSymbolicLink;
+
+const isGitlinkAtAnyStage = (
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  path: FilePath,
+): boolean => {
+  const key = keyOfPath(path);
+  return (
+    existing.get(key)?.mode === FILE_MODE.GITLINK ||
+    (unmergedStages.get(key)?.some(({ mode }) => mode === FILE_MODE.GITLINK) ?? false)
+  );
+};
+
+/**
+ * git matches a repository as a directory, so the pathspec is tested against `<dir>/`.
+ * A tracked gitlink is left to the index-side pass, which restages it at its HEAD.
+ */
+const reachedWalk = (
+  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+  {
+    existing,
+    unmergedStages,
+    matcher,
+  }: Pick<WalkSelection, 'existing' | 'unmergedStages' | 'matcher'>,
+): ReachedWalk => ({
+  files: walked.filter((entry) => !isRepositoryLeaf(entry)),
+  leaves: walked.filter(
+    (entry) =>
+      isRepositoryLeaf(entry) &&
+      !isGitlinkAtAnyStage(existing, unmergedStages, entry.path) &&
+      pathspecVerdict(matcher, `${entry.path}${SEPARATOR}` as FilePath).matched,
+  ),
+});
+
+/** What the pathspecs are tested against: each file, and each reached repository as a directory. */
+const walkedSpellings = ({ files, leaves }: ReachedWalk): FilePath[] => [
+  ...files.map(({ path }) => path),
+  ...leaves.map(({ path }) => `${path}${SEPARATOR}` as FilePath),
+];
+
 /** The index-side gitlink restages come first, then the walked and hidden tracked entries. */
 const stageSelectedEntries = async (
   ctx: Context,
-  { existing, matcher, walked, unmergedStages, verdicts }: WalkSelection,
+  { existing, matcher, walked, repositories, unmergedStages, verdicts }: WalkSelection,
   scope: StagingScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<ReadonlyArray<WalkOutcome>> => {
   const gitlinks = await stagedGitlinks(ctx, existing, matcher);
-  const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages, verdicts);
+  const embedded = await stagedEmbeddedRepositories(ctx, repositories, walked.leaves, existing);
+  const reached = [...walked.files, ...walked.leaves];
+  const hidden = await hiddenTracked(ctx, existing, matcher, reached, unmergedStages, verdicts);
   const staged = await stageWalkedEntries(
     ctx,
-    [...walked, ...hidden],
+    [...walked.files, ...hidden],
     existing,
     new Set<IndexPathKey>(),
     scope,
     indexMtime,
     ensurePromisorConfigValid,
   );
-  return [...gitlinks, ...staged];
+  return [...gitlinks, ...embedded, ...staged];
+};
+
+/** The reached repositories staged as gitlinks at the commit each has checked out. */
+const stagedEmbeddedRepositories = async (
+  ctx: Context,
+  repositories: EmbeddedRepositories,
+  leaves: ReadonlyArray<WalkWorkingTreeEntry>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): Promise<WalkOutcome[]> => {
+  const ordered = [...leaves].sort((a, b) => comparePaths(a.path, b.path));
+  const probed = await boundedMapFor(ctx, 'ioBound', ordered, (leaf) =>
+    settled(embeddedOutcomeOf(repositories, leaf, existing)),
+  );
+  const outcomes = firstFailureOrValues(probed);
+  // git dies at the first repository without a commit, in path order, before it writes any blob.
+  const headless = ordered.find((_, index) => outcomes[index] === undefined);
+  if (headless !== undefined) throw noCommitCheckedOut(`${headless.path}${SEPARATOR}` as FilePath);
+  return outcomes.filter((outcome) => outcome !== undefined);
+};
+
+const embeddedOutcomeOf = async (
+  repositories: EmbeddedRepositories,
+  leaf: WalkWorkingTreeEntry,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): Promise<WalkOutcome | undefined> => {
+  const head = await repositories.headOf(leaf.path);
+  if (head === undefined) return undefined;
+  return {
+    kind: existing.has(keyOfPath(leaf.path)) ? 'modified' : 'added',
+    path: leaf.path,
+    entry: indexEntryFromStat(await leaf.stat(), FILE_MODE.GITLINK, head, leaf.path),
+  };
 };
 
 /**
