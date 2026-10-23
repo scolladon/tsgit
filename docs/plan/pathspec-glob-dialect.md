@@ -127,6 +127,90 @@ the same scrubbed procedure, or read from the code at `039599ad`:
     whose spelled path exists on disk". Each new result field adds `[]` there. The fold's new
     suites assert fields one by one, so a later field never breaks them.
 
+Review round (2026-10-23, after Parts 13–22). Pinned against git 2.55.0 by the implementers and
+reviewers, each in the interop suite named, with the same procedure. The documentation revision
+re-took the rows marked "throwaway" as git-and-tsgit twins, with tsgit run through jiti.
+
+17. **A literal's sparse report is exact-path only** (test/integration/add-interop.test.ts, the
+    replaced-directory table). Tracked `a/b a/c a/x/y real/b top` with `a/b` skip-worktree, then
+    `a` replaced by a symlink to `real`. `add a` exits 0 with no advice and stages `120000 a`.
+    `a/b`, `a/c` and `a/x/y` all leave the index. `-v` prints `remove` for `a/c` and `a/x/y`
+    only, so tsgit's `removed` is `[a/c, a/x/y]`. Re-taken in a throwaway: same.
+18. **`sub/` reaches a gitlink** (add-gitlink-interop.test.ts). git's `ce_path_match` passes
+    `is_dir` for a gitlink, so a directory-only body matches `<path>/`. Shipped as
+    `selectsGitlink` in add.ts.
+19. **`<path>/.git` is read with a stat that follows symlinks** (add-gitlink-interop.test.ts).
+    These stage the checkout's HEAD:
+    - an absolute gitfile pointer outside the superproject;
+    - a symlink to a repository directory, inside `.git` or outside (relative in the unit row);
+    - two hops, or a symlink to a gitfile (throwaway: git stages).
+    A dangling or self-looping `.git` symlink is "nothing checked out": exit 0, entry unchanged.
+    The suite's upstream is one empty commit, so its `sub` holds no file. With files committed in
+    `sub` (throwaway), git keeps `160000 sub` in every one of these cases. tsgit drops the gitlink
+    and stages `sub/<file>`, because the walk's `isEmbeddedGitMarker` does not treat a `.git`
+    symlink as a marker and descends. That rule predates the fold (same at `8dd442ee`).
+20. **A gitlink under a symlinked parent** (add-gitlink-interop.test.ts, plus a throwaway for
+    `-A`). Gitlink `d/sub`, then `d -> ../out` holding a moved clone. `add '*sub'` gives
+    `D  d/sub` with `d` untracked; `add .` gives `A  d` and `D  d/sub`; `add -A` gives
+    `120000 d` with `d/sub` dropped. This is git's `has_symlink_leading_path`.
+21. **Common dir and `is_git_directory`** (add-gitlink-interop.test.ts).
+    - A gitfile to a linked worktree's admin dir reads HEAD's branch from `commondir` and stages
+      it, on a reftable repository too. An embedded `--ref-format=reftable` clone stages.
+    - These refuse 128 `fatal: not a git repository: sub/../.git/modules/sub`, tsgit
+      `NOT_A_REPOSITORY` with that path: a `commondir` naming `/nonexistent`, `/`, an empty
+      directory, a refs-only or objects-only directory, or a regular file; a module missing
+      `objects/` or `refs/`.
+    - A zero-byte `commondir` also refuses 128, with git's wording
+      `fatal: failed to read sub/../.git/modules/sub/commondir: No such file or directory`; tsgit
+      reports the same `NOT_A_REPOSITORY` path. A bare-newline `commondir` is ignored: exit 0.
+    - A `.git` symlink to a directory with no HEAD refuses 128
+      `fatal: 'sub/.git' not recognized as a git repository`.
+22. **Repository-format gate** (add-gitlink-interop.test.ts, gitlink-ref-storage.test.ts). Every
+    pinned layout dies with exit 128: `.git/modules`, an embedded directory, a linked worktree.
+    - `refStorage = bogus` or valueless, at any version: `CONFIG_INVALID_ENUM_VALUE` /
+      `CONFIG_MISSING_VALUE`.
+    - v0 plus any v1-only extension: "repo version is 0, but v1-only extension found".
+    - v2: "Expected git repo version <= 1, found 2".
+    - An unknown extension at v1, or a subsectioned `[extensions "x"] refStorage` at v1:
+      "unknown repository extension found", `x.refstorage`.
+    - A valueless or malformed `repositoryformatversion`: "bad numeric config value".
+    The first malformed entry by line is the one reported. Accepted, exit 0:
+    - no version key with `refStorage = reftable` (the extension is ignored and files refs are
+      read);
+    - an unknown extension at v0 and `noop` at v1 (throwaway twins).
+    The refusals reuse the main repository's existing codes, so no error-union member is added.
+23. **An unresolvable HEAD keeps the recorded commit** (add-gitlink-interop.test.ts). Once the
+    repository is usable, these exit 0 with the gitlink as recorded and no error:
+    - a reftable `tables.list` naming a missing table, a garbage `tables.list`, a 4-byte table;
+    - `chmod 000 refs/heads`;
+    - a loose ref that is a symlink to non-ref content.
+24. **Size and bench, measured.** Part 22 (`01162abc`) raised the caps for +1 042 B gzip on the
+    browser bundle (`add` 4 983 → 5 693 B). The review round added +587 B (`2ccbbffd`; domain
+    +719 B for the hoisted format scan, commands-internal +458 B for the gitlink rules), and
+    `add` ended at 5 712 B. `bench:ab` on fact 15's literal rows moved at most 0.12 ms on about
+    16 ms, because the ignore predicate is lazy. A literal plus an exclusion now walks: 18–19 →
+    35–37 ms on a flat 10k repository, accepted under ADR-1053.
+25. **checkout restores a skip-worktree path from a differing tree** (checkout-skip-worktree
+    suites). `checkout HEAD~1 -- sw.txt`, where `HEAD~1` holds another blob, exits 0. The file
+    is written at v1, the index takes the v1 blob, and the bit is cleared (`H`). The same holds
+    for `sw*`, for `sw.txt n.txt`, and for a mode-only difference (index `100755`, tree
+    `100644`, result `H 100644`). Equal (mode, id) still refuses `PATHSPEC_NO_MATCH` and keeps
+    `S`. The index source drops every skip-worktree path.
+26. **Ignored report order and `?`** (add-ignored-report-interop.test.ts). The list is sorted by
+    bytes on both routes: `！.log` before `😀.log`, and `！` before `😀`. `add '?'` on the full I
+    fixture (untracked only) is refused 128, as is tsgit's `PATHSPEC_NO_MATCH '?'` (throwaway). It
+    exits 0 only on fixture D, where `?` also matches the tracked `k`.
+27. **`!x x` (exclusion before the positive) is not delivered.** git stages nothing. tsgit stages
+    `x`, because `matchesPathspec`/`pathspecVerdict` are last-match-wins (ADR-038). The same
+    holds for `rm`, `checkout` and `grep`. Superseding ADR-038 is the `!` alias question, fenced
+    out to 32.11b, so the suites dropped design rows X7 and X14.
+28. **git 2.56 rewords one broken-gitlink shape** (throwaway against
+    `git version 2.56.0`). `not a git repository: <pointer>` becomes
+    `gitfile does not point to a valid repository: sub/.git` for a pointer to nothing, a garbage
+    module HEAD and a `commondir` naming `/nonexistent`. `invalid gitfile format`,
+    `not recognized as a git repository` and the zero-byte `commondir` line keep their wording.
+    The suites pin 2.55, and the wording is display.
+
 ## Requirement map
 
 | Req | Part(s) |
@@ -1961,9 +2045,12 @@ Current code (re-anchor by name):
 
 Target:
 - `addLiteralOnly` takes `CommandPathspec`. After reading the index, the literal positives whose
-  entry is skip-worktree (`reachesSkipWorktree(positive, skipWorktreeOf(entries))` — a fast-path
-  literal names a file, so it matches only itself) give `sparse` (their spellings, argument
-  order, duplicates kept). Their bodies are dropped from `literalMustMatch` before
+  body is the exact path of a stage-0 skip-worktree entry give `sparse` (their spellings, argument
+  order, duplicates kept). Corrected after the fact: the planned test was
+  `reachesSkipWorktree(positive, skipWorktreeOf(entries))`, on the premise that "a fast-path
+  literal names a file, so it matches only itself". That premise is wrong. A literal naming a
+  symlink that replaced a directory reaches the skip-worktree entries beneath it, and git stages
+  their removal with no advice (design S16, fact 17). Shipped as `splitSparseLiterals`. Their bodies are dropped from `literalMustMatch` before
   `stageLiteralsOver`. When every literal is dropped, nothing is staged, and the index commit must
   leave `ls-files -s -v` unchanged (S3).
 - `--renormalize`: split as on the walk route. `unseen` comes from `indexSees` over the entries
@@ -2399,6 +2486,23 @@ security review checks that a pointer outside the work tree is followed read-onl
 writes through the child context. Every path segment comes from the index entry or the gitfile, as
 in git.
 
+As shipped (corrected after the review round, facts 19–23). The target above landed in Part 19.
+The review fixes then added these rules:
+- Reftable: the child's ref backend is its own `extensions.refStorage`, read from its common
+  dir's config (`primitives/internal/gitlink-ref-storage.ts` `refStorageOf`), not the fixed
+  `refStorage: 'files'` above. `deriveGitlinkContext` takes `fs`, `commonDir` and `refStorage`
+  options.
+- `sub/` reaches the gitlink only through the directory form of the matcher (`selectsGitlink`
+  tests `<path>/` for a directory-only body). The bare `verdict matched` filter missed it (fact
+  18).
+- `<path>/.git` as a symlink is followed with a stat, and a dangling or looping one is "nothing
+  checked out". `commondir` is honoured. A gitdir whose common dir lacks `objects/` or `refs/`
+  refuses `NOT_A_REPOSITORY`. Once the repository is usable, an unresolvable HEAD keeps the
+  recorded commit. The repository-format scan is shared with the main repository through
+  `src/domain/config/repository-format-scan.ts`. None of this was in this part. Each rule landed
+  in a review fix commit (`b14394b3`, `21ef755a`, `30cc573f`, `e9d58e0b`, `a0296ca4`,
+  `b67bcb41`, `8c464a5c`). The rows are design GL24–GL51.
+
 Pins (design GL plus fact 12). Fixture: an upstream repo with one commit, and a superproject
 holding `k` and `git -c protocol.file.allow=always submodule add <up> sub`, committed, with commit
 dates pinned to `@1700000000 +0000`. "Moved" means a new commit inside 'sub'.
@@ -2639,7 +2743,11 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/domain/working
 ### Context
 
 There is no src/ delta: this is a config and docs part, standalone under the sizing rules. It runs
-after Parts 13–21 and before the review round (lesson 006). The design estimates +400 to +740 B gzip
+after Parts 13–21 and before the review round. Lesson 006 says the opposite: measure after the
+review round. Placing the part here went against it, and the lesson held again. Part 22 landed
+at `01162abc` (+1 042 B gzip on the browser bundle). The review round's fixes then crossed the
+caps a second time (+587 B on the browser bundle, domain +719 B, commands-internal +458 B), and
+a second raise landed at `2ccbbffd` (fact 24). The design estimates +400 to +740 B gzip
 against caps that commit `0287b658` raised to the floor.
 
 Files this part creates or edits (each only if its check is red):
