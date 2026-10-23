@@ -336,7 +336,7 @@ const splitSparseLiterals = (
 ): { readonly sparse: ReadonlyArray<PositivePathspec>; readonly stageable: ResolvedPathspec } => {
   const namesSkipWorktree = ({ entry }: PositivePathspec): boolean => {
     const named = entries.get(keyOfPath(entry.body as FilePath));
-    return named !== undefined && isStageZeroSkipWorktree(named);
+    return named !== undefined && isSkipWorktree(named);
   };
   const sparse = resolved.positives.filter(namesSkipWorktree);
   const sparseBodies = new Set(sparse.map(({ entry }) => entry.body));
@@ -966,11 +966,11 @@ const withoutSkipWorktree = (
 ): WalkWorkingTreeEntry[] =>
   walked.filter(({ path }) => existing.get(keyOfPath(path))?.flags.skipWorktree !== true);
 
-const isStageZeroSkipWorktree = (entry: IndexEntry): boolean =>
-  entry.flags.skipWorktree && entry.flags.stage === 0;
+const isSkipWorktree = (entry: IndexEntry): boolean => entry.flags.skipWorktree;
 
 const skipWorktreeOf = (existing: ReadonlyMap<IndexPathKey, IndexEntry>): IndexEntry[] =>
-  [...existing.values()].filter(isStageZeroSkipWorktree);
+  // Stryker disable next-line MethodExpression: equivalent — a pathspec neither the tracker nor the walk saw matches no entry outside skip-worktree, so widening the list to every entry leaves `reachesSkipWorktree` unchanged.
+  [...existing.values()].filter(isSkipWorktree);
 
 /** One matcher pass over the index, shared by the refusal, the hidden pass and the removals. */
 const verdictsOf = (
@@ -1014,7 +1014,8 @@ const refuseUnseenRenormalized = async (
 ): Promise<ReadonlyArray<PositivePathspec>> => {
   const notSkipped = entries.filter((entry) => !entry.flags.skipWorktree);
   const unseen = unmatchedPositives(positives, (positive) => indexSees(positive, notSkipped));
-  const skipped = entries.filter(isStageZeroSkipWorktree);
+  // Stryker disable next-line MethodExpression: equivalent — `unseen` holds only pathspecs matching no entry outside skip-worktree (`indexSees` over `notSkipped`), so widening the list to every entry leaves `reachesSkipWorktree` unchanged.
+  const skipped = entries.filter(isSkipWorktree);
   const sparse = unseen.filter((positive) => reachesSkipWorktree(positive, skipped));
   for (const positive of unseen.filter((candidate) => !sparse.includes(candidate))) {
     if (!(await namesOnDisk(ctx, positive))) throw pathspecNoMatch(positive.spelling);
@@ -1043,6 +1044,7 @@ const refuseUnseenWalked = async (
   ctx: Context,
   unseen: ReadonlyArray<PositivePathspec>,
 ): Promise<void> => {
+  // Stryker disable next-line MethodExpression: equivalent — the whole tree has an empty body, which probes the working tree root; that always exists, so `namesDiskPath` accepts it and the filter only spares the probe.
   for (const positive of unseen.filter(isNarrowerThanWholeTree)) {
     if (!(await namesDiskPath(ctx, positive))) {
       throw pathspecNoMatch(positive.spelling);
@@ -1310,7 +1312,6 @@ const stagedGitlinks = async (
   const candidates = [...existing.values()].filter(
     (entry) =>
       entry.mode === FILE_MODE.GITLINK &&
-      entry.flags.stage === 0 &&
       !entry.flags.skipWorktree &&
       !isLossy(entry) &&
       selectsGitlink(matcher, entry.path),
@@ -1344,18 +1345,19 @@ const selectsGitlink = (matcher: ResolvedPathspec['matcher'], path: FilePath): b
  * The gitlink restaged at its checkout's HEAD, as git's `resolve_gitlink_ref` reads it.
  * `undefined` when the path is no longer a directory (the walk stages what replaced it) or
  * lies behind a symlinked directory (git's `check_removed` stages its removal),
- * when nothing is checked out, or when the checkout still holds the recorded commit.
+ * when nothing is checked out, or when the checkout still holds the commit a merged entry
+ * records. An unmerged gitlink is resolved at the checkout's HEAD whatever it holds.
  */
 const movedGitlinkOf = async (
   ctx: Context,
   scanner: LeadingPathScanner,
-  { path, id }: IndexEntry,
+  { path, id, flags }: IndexEntry,
 ): Promise<WalkOutcome | undefined> => {
   if (await scanner.hasSymlinkedLeadingPath(path)) return undefined;
   const stat = await lstatOrBeneathFile(ctx, path);
   if (stat === undefined || !stat.isDirectory) return undefined;
   const head = await gitlinkHeadOf(ctx, path);
-  if (head === undefined || head === id) return undefined;
+  if (head === undefined || (head === id && flags.stage === 0)) return undefined;
   return {
     kind: 'modified',
     path,

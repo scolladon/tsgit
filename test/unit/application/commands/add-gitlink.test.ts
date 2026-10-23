@@ -1065,3 +1065,86 @@ describe('add over a gitlink whose probing fails for a reason that is no missing
     });
   });
 });
+
+const unmergedGitlinkRows = (textOf: (stage: number) => string) => [
+  { path: 'k', text: 'k\n' },
+  ...[1, 2, 3].map((stage) => ({
+    path: 'sub',
+    text: textOf(stage),
+    mode: FILE_MODE.GITLINK,
+    stage: stage as 1 | 2 | 3,
+  })),
+];
+
+const stagesOfSub = async (ctx: Ctx): Promise<string[]> =>
+  (await readIndex(ctx)).entries
+    .filter((entry) => entry.path === 'sub')
+    .map((entry) => `${entry.flags.stage}:${entry.id}`);
+
+describe('add over an unmerged gitlink', () => {
+  describe('Given a conflicted gitlink whose checkout holds another commit than any stage', () => {
+    describe('When it is added by name', () => {
+      it('Then the conflict is resolved at the checkout HEAD', async () => {
+        // Arrange
+        const ctx = await superproject();
+        await seedIndex(
+          ctx,
+          unmergedGitlinkRows((stage) => `stage ${stage}\n`),
+        );
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['sub']);
+
+        // Assert
+        expect(result.modified).toEqual(['sub']);
+        expect(await stagesOfSub(ctx)).toEqual([`0:${MOVED_HEAD}`]);
+      });
+    });
+  });
+
+  describe('Given a conflicted gitlink whose stages all record the commit its checkout holds', () => {
+    describe('When it is added by name', () => {
+      it('Then the conflict is still resolved at the checkout HEAD', async () => {
+        // Arrange
+        const ctx = await superproject();
+        await seedIndex(
+          ctx,
+          unmergedGitlinkRows(() => 'shared\n'),
+        );
+        const [first] = (await readIndex(ctx)).entries.filter((entry) => entry.path === 'sub');
+        const ours = first?.id as ObjectId;
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/modules/sub/refs/heads/main`, `${ours}\n`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['sub']);
+
+        // Assert
+        expect(result.modified).toEqual(['sub']);
+        expect(await stagesOfSub(ctx)).toEqual([`0:${ours}`]);
+      });
+    });
+  });
+});
+
+describe('add over a moved gitlink beside an unrelated directory pathspec', () => {
+  describe('Given a moved gitlink and a directory pathspec that does not reach it', () => {
+    describe('When only the directory is added', () => {
+      it('Then the gitlink keeps its recorded commit', async () => {
+        // Arrange
+        const ctx = await superproject({ tree: { 'other/f': 'f\n' } });
+        const recorded = (await entryOf(ctx, 'sub'))?.id;
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['other/']);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(result.added).toEqual(['other/f']);
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(recorded);
+      });
+    });
+  });
+});

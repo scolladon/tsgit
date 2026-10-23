@@ -395,3 +395,57 @@ describe('add over a skip-worktree entry', () => {
     });
   });
 });
+
+describe('add over a skip-worktree entry absent from disk, renormalized', () => {
+  describe.each([
+    { label: 'by name', spec: 'x.log' },
+    { label: 'by wildcard', spec: 'x*' },
+  ])('Given a skip-worktree file absent from disk', ({ label, spec }) => {
+    describe(`When it is renormalized ${label}`, () => {
+      it('Then it is reported as sparse and the add succeeds', async () => {
+        // Arrange
+        const ctx = await sparseRepo();
+        await ctx.fs.rm(`${ctx.layout.workDir}/x.log`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [spec], { renormalize: true });
+
+        // Assert
+        expect(result.sparse).toEqual([spec]);
+        expect((await entryOf(ctx, 'x.log'))?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+});
+
+describe('add over a skip-worktree flag carried by an unmerged entry', () => {
+  describe.each([
+    { label: 'by name', spec: 'u.txt', options: {} },
+    { label: 'by wildcard', spec: 'u*', options: {} },
+    { label: 'by name, renormalized', spec: 'u.txt', options: { renormalize: true } },
+    { label: 'by wildcard, renormalized', spec: 'u*', options: { renormalize: true } },
+  ])(
+    'Given an unmerged entry flagged skip-worktree and absent from disk',
+    ({ label, spec, options }) => {
+      describe(`When it is added ${label}`, () => {
+        it('Then it is reported as sparse, as git reads the flag whatever the stage', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, { workingTree: { k: 'k\n' } });
+          await seedIndex(ctx, [
+            { path: 'k', text: 'k\n' },
+            { path: 'u.txt', text: 'u\n', stage: 2, skipWorktree: true },
+          ]);
+          const sut = add;
+
+          // Act
+          const result = await sut(ctx, [spec], options);
+
+          // Assert
+          expect(result.sparse).toEqual([spec]);
+        });
+      });
+    },
+  );
+});
