@@ -46,7 +46,7 @@ interface SectionedEntry {
  * Expressing each as its own filter over one generator makes that difference
  * the visible part.
  */
-export function* sectionedEntries(tokens: ReadonlyArray<ConfigToken>): Generator<SectionedEntry> {
+function* sectionedEntries(tokens: ReadonlyArray<ConfigToken>): Generator<SectionedEntry> {
   // Stryker disable next-line StringLiteral: equivalent — the tokenizer emits `entry` tokens even for lines before any header, and every consumer compares this against a non-empty section literal ('core' or 'extensions'), so a mutated initial value is never observable.
   let section = '';
   let subsection: string | undefined;
@@ -88,6 +88,33 @@ export const lastTopLevelEntry = (
   return found;
 };
 
+function* versionEntries(tokens: ReadonlyArray<ConfigToken>): Generator<SectionedEntry> {
+  for (const entry of sectionedEntries(tokens)) {
+    if (entry.subsection !== undefined) continue;
+    if (entry.section === CORE_SECTION && entry.key === VERSION_KEY) yield entry;
+  }
+}
+
+const firstMalformedVersionLine = (tokens: ReadonlyArray<ConfigToken>): number => {
+  for (const entry of versionEntries(tokens)) {
+    if (!parseGitInt(entry.value).ok) return entry.line;
+  }
+  return Number.POSITIVE_INFINITY;
+};
+
+/**
+ * Whether git's streaming parse reaches the declared `extensions.refStorage`
+ * entry before the first `core.repositoryformatversion` entry that is not an
+ * integer — the one it reports is the one that comes first by line. With no
+ * malformed version there is nothing to order, and either answer reads alike.
+ */
+export const refStorageReadBeforeMalformedVersion = (
+  tokens: ReadonlyArray<ConfigToken>,
+): boolean => {
+  const declared = lastTopLevelEntry(tokens, EXTENSIONS_SECTION, REFSTORAGE_KEY);
+  return declared !== undefined && declared.line < firstMalformedVersionLine(tokens);
+};
+
 /**
  * `core.repositoryformatversion`'s two-model resolution, streamed over
  * `tokens` in file order (case-insensitive on section and key, top-level
@@ -107,9 +134,7 @@ export const resolveFormatVersion = (
   source: string,
 ): number | undefined => {
   let version: number | undefined;
-  for (const token of sectionedEntries(tokens)) {
-    if (token.subsection !== undefined) continue;
-    if (token.section !== CORE_SECTION || token.key !== VERSION_KEY) continue;
+  for (const token of versionEntries(tokens)) {
     const parsed = parseGitInt(token.value);
     // A valueless entry is git's internal NULL, reported by git as value ''.
     if (!parsed.ok) {
@@ -166,7 +191,7 @@ export const honoursExtensions = (version: number | undefined): boolean =>
   version !== undefined && version >= MIN_EXTENSION_VERSION;
 
 // git 2.55.0's legal `extensions.refStorage` literals — the same grammar
-// shape as `OBJECT_FORMAT_VALUES` above (case-sensitive, `resolveEnum` is
+// shape as `OBJECT_FORMAT_VALUES` in read-repository-format.ts (case-sensitive, `resolveEnum` is
 // general for both).
 export const REF_STORAGE_VALUES = ['files', 'reftable'] as const;
 export type RefStorage = (typeof REF_STORAGE_VALUES)[number];
@@ -175,8 +200,7 @@ export type RefStorage = (typeof REF_STORAGE_VALUES)[number];
  * The repository-format acceptance verdict — git's `core.repositoryformatversion`
  * / `extensions.*` gate. Absent means accepted. `version` is always the
  * PARSED integer (`1k` carries `1024`, `0777` carries `511`), never the
- * config literal. The domain cannot import the port, so the port's
- * `RepositoryFormatRefusal` restates this shape; assignment keeps them in step.
+ * config literal. The port's `RepositoryFormatRefusal` is this type.
  */
 export type FormatRefusal =
   | { readonly kind: 'version'; readonly version: number }

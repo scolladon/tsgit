@@ -54,7 +54,7 @@ const WORKTREE_CONFIG_FILE = 'config.worktree';
 
 // git 2.55.0's legal `extensions.objectFormat` literals — case-sensitive,
 // never touched by the key's own lower-casing. `extensions.refStorage`
-// shares this exact grammar shape (`resolveEnum` below is general for it).
+// shares this exact grammar shape (`resolveEnum` in repository-format-scan.ts is general for it).
 const OBJECT_FORMAT_VALUES = ['sha1', 'sha256'] as const;
 type ObjectFormat = (typeof OBJECT_FORMAT_VALUES)[number];
 

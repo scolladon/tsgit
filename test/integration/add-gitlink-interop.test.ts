@@ -966,6 +966,24 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           `error: missing value for 'extensions.refstorage'\nfatal: bad config line ${line} in file ${source}\n`,
       },
       {
+        label: 'an unknown ref storage before a malformed format version',
+        config: '[extensions]\n\trefStorage = bogus\n[core]\n\trepositoryformatversion = x\n',
+        stderr: (source: string, line: number) =>
+          `error: invalid value for 'extensions.refstorage': 'bogus'\nfatal: bad config line ${line} in file ${source}\n`,
+      },
+      {
+        label: 'a valueless ref storage before a valueless format version',
+        config: '[extensions]\n\trefStorage\n[core]\n\trepositoryformatversion\n',
+        stderr: (source: string, line: number) =>
+          `error: missing value for 'extensions.refstorage'\nfatal: bad config line ${line} in file ${source}\n`,
+      },
+      {
+        label: 'a malformed format version before an unknown ref storage',
+        config: '[core]\n\trepositoryformatversion = x\n[extensions]\n\trefStorage = bogus\n',
+        stderr: (source: string) =>
+          `fatal: bad numeric config value 'x' for 'core.repositoryformatversion' in file ${source}: invalid unit\n`,
+      },
+      {
         label: 'a valueless format version',
         config: '[core]\n\trepositoryformatversion\n',
         stderr: (source: string) =>

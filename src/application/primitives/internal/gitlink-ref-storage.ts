@@ -1,4 +1,4 @@
-import { tokenizeConfig } from '../../../domain/config/config-ini.js';
+import { type ConfigToken, tokenizeConfig } from '../../../domain/config/config-ini.js';
 import {
   EXTENSIONS_SECTION,
   enumerateExtensionEntries,
@@ -8,6 +8,7 @@ import {
   REF_STORAGE_VALUES,
   REFSTORAGE_KEY,
   type RefStorage,
+  refStorageReadBeforeMalformedVersion,
   resolveEnum,
   resolveFormatVersion,
 } from '../../../domain/config/repository-format-scan.js';
@@ -16,6 +17,25 @@ import { readUtf8IfPresent } from './fs-probes.js';
 import { throwFormatRefusal } from './repo-state.js';
 
 const CONFIG_FILE = 'config';
+
+const declaredRefStorage = (tokens: ReadonlyArray<ConfigToken>, source: string): RefStorage =>
+  resolveEnum(
+    lastTopLevelEntry(tokens, EXTENSIONS_SECTION, REFSTORAGE_KEY),
+    source,
+    `${EXTENSIONS_SECTION}.${REFSTORAGE_KEY}`,
+    REF_STORAGE_VALUES,
+    'files',
+  );
+
+/** Malformed entries are reported in the order git's streaming parse meets them. */
+const readDeclarations = (tokens: ReadonlyArray<ConfigToken>, source: string) => {
+  if (refStorageReadBeforeMalformedVersion(tokens)) {
+    const declared = declaredRefStorage(tokens, source);
+    return { declared, version: resolveFormatVersion(tokens, source) };
+  }
+  const version = resolveFormatVersion(tokens, source);
+  return { version, declared: declaredRefStorage(tokens, source) };
+};
 
 /**
  * The ref backend a repository declares in `<commonDir>/config`, as git honours it:
@@ -31,15 +51,7 @@ export const refStorageOf = async (fs: FileSystem, commonDir: string): Promise<R
   const text = await readUtf8IfPresent(fs, source);
   if (text === undefined) return 'files';
   const tokens = tokenizeConfig(text, source);
-  const version = resolveFormatVersion(tokens, source);
-  const entry = lastTopLevelEntry(tokens, EXTENSIONS_SECTION, REFSTORAGE_KEY);
-  const declared = resolveEnum(
-    entry,
-    source,
-    `${EXTENSIONS_SECTION}.${REFSTORAGE_KEY}`,
-    REF_STORAGE_VALUES,
-    'files',
-  );
+  const { version, declared } = readDeclarations(tokens, source);
   const refusal = formatRefusal(version, enumerateExtensionEntries(tokens));
   if (refusal !== undefined) throwFormatRefusal(refusal);
   return honoursExtensions(version) ? declared : 'files';

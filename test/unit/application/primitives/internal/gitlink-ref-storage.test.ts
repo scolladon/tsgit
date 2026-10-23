@@ -194,6 +194,56 @@ describe('refStorageOf over a repository format git refuses', () => {
       },
     },
     {
+      label: 'an unknown backend before a malformed format version',
+      config: '[extensions]\n\trefStorage = bogus\n[core]\n\trepositoryformatversion = x\n',
+      refusal: {
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: 'extensions.refstorage',
+        value: 'bogus',
+        line: 2,
+      },
+    },
+    {
+      label: 'an unknown backend after a well-formed version and before a malformed one',
+      config: `${VERSION_1}[extensions]\n\trefStorage = bogus\n[core]\n\trepositoryformatversion = x\n`,
+      refusal: {
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: 'extensions.refstorage',
+        value: 'bogus',
+        line: 4,
+      },
+    },
+    {
+      label: 'a malformed format version before an unknown backend',
+      config: '[core]\n\trepositoryformatversion = x\n[extensions]\n\trefStorage = bogus\n',
+      refusal: {
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.repositoryformatversion',
+        value: 'x',
+        reason: 'invalid unit',
+      },
+    },
+    {
+      label: 'a well-formed backend before a malformed format version',
+      config: '[extensions]\n\trefStorage = files\n[core]\n\trepositoryformatversion = x\n',
+      refusal: {
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.repositoryformatversion',
+        value: 'x',
+        reason: 'invalid unit',
+      },
+    },
+    {
+      label: 'a malformed format version and no backend declared',
+      config: '[core]\n\trepositoryformatversion = x\n',
+      refusal: {
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.repositoryformatversion',
+        value: 'x',
+        reason: 'invalid unit',
+      },
+    },
+    {
       label: 'a valueless format version',
       config: '[core]\n\trepositoryformatversion\n[extensions]\n\trefStorage = reftable\n',
       refusal: {
