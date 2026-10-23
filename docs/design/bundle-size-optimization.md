@@ -699,3 +699,18 @@ cap block.
 | Chunks: domain | 126 289 | 126 480 | +191 | 126.4 kB | 126.5 kB | the one-pass `pathspecVerdict`, the literal-suffix post-filter on the general wildcard shape, and the ping-pong rows with their all-zero early exit in the ref-glob matcher |
 | Chunks: commands-internal | 82 203 | 82 326 | +123 | 82.3 kB | 82.4 kB | the shared positive tracker (`trackPositives`), whose fail-closed `seen` replaced the per-command bookkeeping of `rm`, `add` and `checkout` |
 | Command (add) | 4 707 | 4 991 | +284 | 4.9 kB | 5 kB | the literal on-disk escape with git's ancestor-ignore check and the directory-only trailing-slash rule, and the index-side pass staging a hidden conflicted path |
+
+The folded add, checkout and rm fixes crossed five rows again, measured the same way on a clean
+build against the tree before the fold; each is raised by its measured delta, rounded up to the
+next 0.1 kB. The tarball cap moved 1444 → 1447 KiB (1 481 458 B measured); its attribution lives
+in `tooling/verify-tarball.sh`'s cap block.
+
+| Row | before the fold | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 342 920 | 343 962 | +1 042 | 343 kB | 344.1 kB | every layer below |
+| Full library | 400 509 | 401 828 | +1 319 | 400.7 kB | 402.1 kB | every layer below |
+| Chunks: domain | 126 480 | 126 552 | +72 | 126.5 kB | 126.6 kB | the host-gated validators and the skip-worktree filters |
+| Chunks: commands-internal | 82 291 | 82 571 | +280 | 82.4 kB | 82.7 kB | the checkout universe filter, the ignored collector with its `force` wiring, `firstIgnoredOf`, and the gitlink step with `gitlinkHeadOf` |
+| Command (add) | 4 983 | 5 693 | +710 | 5 kB | 5.8 kB | the skip-worktree filters with the sparse split, the ignored collector with `force`, and the gitlink step |
+
+Every other row grew by at most 9 B and stays under its cap (largest: mv +9, rev-list +8, archive +8).

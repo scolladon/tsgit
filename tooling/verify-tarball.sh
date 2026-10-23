@@ -376,7 +376,14 @@ done
 # ancestor-aware literal escape and the hidden conflicted-path staging pass —
 # runtime code shipped in every distribution form, none removable without
 # dropping the behaviour.
-SIZE_CAP=$((1444 * 1024))
+# Raised 1444 -> 1447 KiB by the folded add, checkout and rm fixes of the same
+# work: the measured pack landed at 1 481 458 B, 2 802 B over the old cap,
+# attributable to the skip-worktree filters and the sparse split, the checkout
+# universe filter, the ignored collector with its `force` wiring,
+# `firstIgnoredOf`, the gitlink step with `gitlinkHeadOf`, and the host-gated
+# validators — runtime code shipped in every distribution form, none removable
+# without dropping the behaviour.
+SIZE_CAP=$((1447 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
