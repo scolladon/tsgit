@@ -534,3 +534,23 @@ describe('add reporting the ignored entries a pathspec reaches', () => {
     },
   );
 });
+
+describe('add of an untracked literal that only a directory rule matches', () => {
+  describe('Given a file named like a directory a rule hides', () => {
+    describe('When it is added by name', () => {
+      it('Then the file is staged and nothing is reported ignored', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { '.gitignore': 'build/\n', build: 'file\n' } });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['build']);
+
+        // Assert
+        expect(result.added).toEqual(['build']);
+        expect(result.ignored).toEqual([]);
+      });
+    });
+  });
+});
