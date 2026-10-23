@@ -296,13 +296,10 @@ const addLiteralOnly = async (
       stageZeroBeside,
       ensurePromisorConfigValid,
     };
-    const reported = await splitReportedLiterals(resolved, state.entries, repoIgnore);
+    const repositories = embeddedRepositories(ctx, sorted);
+    const reported = await splitReportedLiterals(resolved, state.entries, repoIgnore, repositories);
     const { sparse, ignored } = reported;
-    const stageable = await withoutRepositoryLiterals(
-      embeddedRepositories(ctx, sorted),
-      state.entries,
-      reported.stageable,
-    );
+    const stageable = await withoutRepositoryLiterals(repositories, reported.stageable);
     const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
       staging,
       sorted,
@@ -321,13 +318,19 @@ const splitReportedLiterals = async (
   resolved: CommandPathspec,
   entries: ReadonlyMap<IndexPathKey, IndexEntry>,
   repoIgnore: IgnorePredicate,
+  repositories: EmbeddedRepositories,
 ): Promise<{
   readonly sparse: ReadonlyArray<string>;
   readonly ignored: ReadonlyArray<FilePath>;
   readonly stageable: ResolvedPathspec;
 }> => {
   const { sparse, stageable: unfiltered } = splitSparseLiterals(resolved, entries);
-  const { ignored, stageable } = await splitIgnoredLiterals(unfiltered, entries, repoIgnore);
+  const { ignored, stageable } = await splitIgnoredLiterals(
+    unfiltered,
+    entries,
+    repoIgnore,
+    repositories,
+  );
   return { sparse: sparse.map(({ spelling }) => spelling), ignored, stageable };
 };
 
@@ -352,12 +355,14 @@ const splitSparseLiterals = (
 
 /**
  * A tracked literal stays staged and reports the ignored directory above it; an
- * untracked one that a rule hides is reported and left out of staging.
+ * untracked one that a rule hides is reported and left out of staging, unless the rule
+ * hides something strictly inside an untracked repository, which git never looks into.
  */
 const splitIgnoredLiterals = async (
   resolved: ResolvedPathspec,
   entries: ReadonlyMap<IndexPathKey, IndexEntry>,
   repoIgnore: IgnorePredicate,
+  repositories: EmbeddedRepositories,
 ): Promise<{ readonly ignored: FilePath[]; readonly stageable: ResolvedPathspec }> => {
   const reported = new Set<FilePath>();
   const stageable: FilePath[] = [];
@@ -366,7 +371,8 @@ const splitIgnoredLiterals = async (
     const hidden = tracked
       ? await firstIgnoredAncestorOf(repoIgnore, body)
       : await firstIgnoredLeafOf(repoIgnore, body);
-    if (hidden !== undefined) reported.add(hidden);
+    if (hidden !== undefined && (tracked || !(await isInsideRepository(repositories, hidden))))
+      reported.add(hidden);
     if (tracked || hidden === undefined) stageable.push(body);
   }
   return {
@@ -395,21 +401,22 @@ const firstIgnoredAncestorOf = (
 ): Promise<FilePath | undefined> =>
   firstAncestorWhere(path, (ancestor) => repoIgnore(ancestor, true));
 
+const isInsideRepository = async (
+  repositories: EmbeddedRepositories,
+  path: FilePath,
+): Promise<boolean> => (await firstAncestorWhere(path, repositories.holds)) !== undefined;
+
 /**
  * git never looks inside an untracked repository: a literal there is neither staged,
  * reported nor refused. A tracked literal is restaged whatever stands above it.
  */
 const withoutRepositoryLiterals = async (
   repositories: EmbeddedRepositories,
-  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
   resolved: ResolvedPathspec,
 ): Promise<ResolvedPathspec> => {
   const literalMustMatch: FilePath[] = [];
   for (const body of resolved.literalMustMatch) {
-    const inside =
-      !entries.has(keyOfPath(body)) &&
-      (await firstAncestorWhere(body, repositories.holds)) !== undefined;
-    if (!inside) literalMustMatch.push(body);
+    if (!(await isInsideRepository(repositories, body))) literalMustMatch.push(body);
   }
   return { ...resolved, literalMustMatch };
 };
@@ -1357,8 +1364,8 @@ interface ReachedWalk {
   readonly leaves: ReadonlyArray<WalkWorkingTreeEntry>;
 }
 
-const isRepositoryLeaf = ({ isDirectory, isSymbolicLink }: WalkWorkingTreeEntry): boolean =>
-  isDirectory && !isSymbolicLink;
+const isRepositoryLeaf = ({ isDirectory }: Pick<WalkWorkingTreeEntry, 'isDirectory'>): boolean =>
+  isDirectory;
 
 const isGitlinkAtAnyStage = (
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,

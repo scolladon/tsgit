@@ -483,3 +483,55 @@ describe('add of a literal beneath a tracked path, with a repository above', () 
     });
   });
 });
+
+describe('add of a literal beneath an untracked repository, with an ignore rule', () => {
+  describe.each([
+    { label: 'with a commit', head: BRANCH_HEAD },
+    { label: 'with no commit', head: null },
+  ])('Given an untracked repository $label', ({ head }) => {
+    describe('When a rule hides the named file inside it', () => {
+      it('Then nothing is staged and nothing is reported', async () => {
+        // Arrange
+        const ctx = await embedded({ 'sub/u': 'u\n', '.gitignore': 'u\n' }, head);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['sub/u']);
+
+        // Assert
+        expect(result.added).toEqual([]);
+        expect(result.ignored).toEqual([]);
+      });
+    });
+
+    describe('When a rule hides a directory inside it that holds the named file', () => {
+      it('Then only the file beside the repository is staged and nothing is reported', async () => {
+        // Arrange
+        const ctx = await embedded({ a: 'a\n', 'sub/x/y': 'y\n', '.gitignore': 'x/\n' }, head);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['a', 'sub/x/y']);
+
+        // Assert
+        expect(result.added).toEqual(['a']);
+        expect(result.ignored).toEqual([]);
+      });
+    });
+
+    describe('When a rule hides the repository itself and a file inside it is named', () => {
+      it('Then the repository is reported', async () => {
+        // Arrange
+        const ctx = await embedded({ 'sub/u': 'u\n', '.gitignore': 'sub/\n' }, head);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['sub/u']);
+
+        // Assert
+        expect(result.added).toEqual([]);
+        expect(result.ignored).toEqual(['sub']);
+      });
+    });
+  });
+});

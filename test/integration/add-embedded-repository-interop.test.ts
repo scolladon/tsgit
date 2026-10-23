@@ -265,6 +265,8 @@ interface Row {
   readonly refusal?: Readonly<Record<string, unknown>>;
   /** git exits 1 with a hint when a pathspec names an ignored path, yet stages what it can. */
   readonly ignoredHint?: boolean;
+  /** The paths git's hint names, which tsgit reports as `ignored`. */
+  readonly ignored?: ReadonlyArray<string>;
   /** A guard so a regression that blocks on a pipe fails instead of hanging. */
   readonly timeoutMs?: number;
 }
@@ -423,6 +425,7 @@ const IGNORED_ROWS: ReadonlyArray<Row> = [
     setup: together(committed(), ignoring('sub\n')),
     spec: ['sub'],
     ignoredHint: true,
+    ignored: ['sub'],
   },
   {
     label: 'a repository beneath an ignored directory, added by dot',
@@ -457,6 +460,7 @@ const IGNORED_ROWS: ReadonlyArray<Row> = [
     setup: together(unborn(), ignoring('sub/\n')),
     spec: ['sub'],
     ignoredHint: true,
+    ignored: ['sub'],
   },
   {
     label: 'an ignored repository with no commit, added by dot with force',
@@ -633,6 +637,32 @@ const INDEX_PASS_ROWS: ReadonlyArray<Row> = [
 
 const LITERAL_ROWS: ReadonlyArray<Row> = [
   { label: 'a file inside a repository', setup: committed(), spec: ['sub/u'] },
+  ...[
+    ['a commit', committed],
+    ['no commit', unborn],
+  ].flatMap(([commit, repository]) => [
+    {
+      label: `a file inside a repository with ${commit as string}, hidden by a rule on the file`,
+      setup: together((repository as typeof committed)(), ignoring('u\n')),
+      spec: ['sub/u'],
+    },
+    {
+      label: `a file inside a repository with ${commit as string}, beneath a directory a rule hides`,
+      setup: together(
+        (repository as typeof committed)('sub', { 'x/y': 'y\n' }),
+        ignoring('x/\n'),
+        (repo: string) => writeFiles(repo, { a: 'a\n' }),
+      ),
+      spec: ['a', 'sub/x/y'],
+    },
+    {
+      label: `a file inside a repository with ${commit as string}, which a rule on the repository hides`,
+      setup: together((repository as typeof committed)(), ignoring('sub/\n')),
+      spec: ['sub/u'],
+      ignoredHint: true,
+      ignored: ['sub'],
+    },
+  ]),
   { label: 'a file inside a repository with no commit', setup: unborn(), spec: ['sub/u'] },
   {
     label: 'a file inside a repository inside a repository',
@@ -737,12 +767,13 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               '--',
               ...(row.gitSpec ?? row.spec),
             ]);
-            const refusal = await refusalOf(() =>
-              sut(createNodeContext({ workDir: tsgitRepo }), row.spec, {
+            let result: Awaited<ReturnType<typeof add>> | undefined;
+            const refusal = await refusalOf(async () => {
+              result = await sut(createNodeContext({ workDir: tsgitRepo }), row.spec, {
                 force: row.force === true,
                 all: row.all === true,
-              }),
-            );
+              });
+            });
 
             // Assert
             const refused = gitRun.exitCode === REFUSED_EXIT;
@@ -751,6 +782,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             if (row.refusal !== undefined) expect(refusal).toMatchObject(row.refusal);
             expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
             if (!refused) expect(await looseCountOf(tsgitRepo)).toBe(await looseCountOf(gitRepo));
+            if (!refused) expect(result?.ignored).toEqual(row.ignored ?? []);
           },
           row.timeoutMs,
         );

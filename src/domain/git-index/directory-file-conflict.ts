@@ -17,21 +17,34 @@ const lowerBound = (sorted: ReadonlyArray<IndexEntry>, probe: { readonly path: F
   return low;
 };
 
+const beneathPredicate = (path: FilePath): ((entry: IndexEntry) => boolean) => {
+  const directory = `${path}${SEPARATOR}`;
+  const directoryBytes = encode(path);
+  return (entry) =>
+    isLossy(entry)
+      ? hasBytePrefix(entry.pathBytes as Uint8Array, directoryBytes)
+      : entry.path.startsWith(directory);
+};
+
+const firstBeneath = (sorted: ReadonlyArray<IndexEntry>, path: FilePath): number =>
+  lowerBound(sorted, { path: `${path}${SEPARATOR}` as FilePath });
+
 /** Entries beneath path/ (every stage), in index order; `sorted` is in index order. */
 export const entriesBeneath = (
   sorted: ReadonlyArray<IndexEntry>,
   path: FilePath,
 ): ReadonlyArray<IndexEntry> => {
-  const directory = `${path}${SEPARATOR}`;
-  const directoryBytes = encode(path);
-  const isBeneath = (entry: IndexEntry): boolean =>
-    isLossy(entry)
-      ? hasBytePrefix(entry.pathBytes as Uint8Array, directoryBytes)
-      : entry.path.startsWith(directory);
-  const first = lowerBound(sorted, { path: directory as FilePath });
+  const isBeneath = beneathPredicate(path);
+  const first = firstBeneath(sorted, path);
   let end = first;
   while (end < sorted.length && isBeneath(sorted[end] as IndexEntry)) end++;
   return sorted.slice(first, end);
+};
+
+/** Whether any entry lies beneath path/: a single lookup, for callers that only need the answer. */
+export const hasEntryBeneath = (sorted: ReadonlyArray<IndexEntry>, path: FilePath): boolean => {
+  const first = sorted[firstBeneath(sorted, path)];
+  return first !== undefined && beneathPredicate(path)(first);
 };
 
 /** Stage-0 entries at a leading directory of `path` (`a` and a/x for a/x/y). */

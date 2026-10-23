@@ -44,6 +44,7 @@ import {
 } from '../primitives/internal/scan-tracked-entries.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
+import type { WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { embeddedRepositories } from './internal/embedded-repository.js';
@@ -314,16 +315,14 @@ const scanUntracked = async (
   return untracked.sort(comparePaths);
 };
 
+const SEPARATOR = '/';
+
 /** A repository directory is listed as git's `-uall` porcelain lists it: with a trailing slash. */
 const untrackedSpelling = ({
   path,
   isDirectory,
-  isSymbolicLink,
-}: {
-  readonly path: FilePath;
-  readonly isDirectory: boolean;
-  readonly isSymbolicLink: boolean;
-}): FilePath => (isDirectory && !isSymbolicLink ? (`${path}/` as FilePath) : path);
+}: Pick<WalkWorkingTreeEntry, 'path' | 'isDirectory'>): FilePath =>
+  isDirectory ? (`${path}${SEPARATOR}` as FilePath) : path;
 
 /**
  * Staged pass: project the index-vs-HEAD diff onto staged kinds, dropping

@@ -1,5 +1,5 @@
 import { TsgitError } from '../../../domain/error.js';
-import { entriesBeneath } from '../../../domain/git-index/directory-file-conflict.js';
+import { hasEntryBeneath } from '../../../domain/git-index/directory-file-conflict.js';
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
@@ -27,7 +27,7 @@ export const embeddedRepositories = (
   };
   const holds = async (directory: FilePath): Promise<boolean> => {
     // An indexed entry beneath the directory means git tracks it as a tree, so its .git is never looked at.
-    if (entriesBeneath(sorted, directory).length > 0) return false;
+    if (hasEntryBeneath(sorted, directory)) return false;
     return (await checkoutOf(directory)).kind === 'repository';
   };
   const headOf = async (directory: FilePath): Promise<ObjectId | undefined> => {
