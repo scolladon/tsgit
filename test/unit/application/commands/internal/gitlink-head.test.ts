@@ -69,7 +69,11 @@ const asDotGit = (stat: FileStat, overrides: Partial<FileStat>): FileStat => ({
 /** `sub/.git` as the kernel reports it, whatever the memory filesystem holds there; the file is never read when it is not a regular one. */
 const reportingDotGit = (
   ctx: Context,
-  reported: { readonly lstat?: Partial<FileStat>; readonly stat?: Partial<FileStat> },
+  reported: {
+    readonly lstat?: Partial<FileStat>;
+    readonly stat?: Partial<FileStat>;
+    readonly forbidRead?: boolean;
+  },
 ): Context => {
   const reporting =
     (method: 'lstat' | 'stat', overrides: Partial<FileStat> | undefined) =>
@@ -82,8 +86,8 @@ const reportingDotGit = (
   const readUtf8 = async (path: string) => {
     if (
       path.endsWith(DOT_GIT_OF_SUB) &&
-      reported.lstat?.isFile !== true &&
-      reported.stat?.isFile !== true
+      (reported.forbidRead === true ||
+        (reported.lstat?.isFile !== true && reported.stat?.isFile !== true))
     ) {
       throw new Error(`read ${path}`);
     }
@@ -454,7 +458,10 @@ describe('a .git file past the size git reads', () => {
         // Arrange
         const memory = createMemoryContext();
         await layOutPointer(memory);
-        const ctx = reportingDotGit(memory, { lstat: { isFile: true, size: MIB + 1 } });
+        const ctx = reportingDotGit(memory, {
+          lstat: { isFile: true, size: MIB + 1 },
+          forbidRead: true,
+        });
         const sut = probeGitlinkCheckout;
 
         // Act
@@ -473,7 +480,10 @@ describe('a .git file past the size git reads', () => {
         const memory = createMemoryContext();
         await memory.fs.writeUtf8(`${memory.layout.workDir}/sub/target`, 'x\n');
         await memory.fs.symlink('target', `${memory.layout.workDir}/sub/.git`);
-        const ctx = reportingDotGit(memory, { stat: { isFile: true, size: MIB + 1 } });
+        const ctx = reportingDotGit(memory, {
+          stat: { isFile: true, size: MIB + 1 },
+          forbidRead: true,
+        });
         const sut = probeGitlinkCheckout;
 
         // Act
@@ -491,7 +501,10 @@ describe('a .git file past the size git reads', () => {
         // Arrange
         const memory = createMemoryContext();
         await layOutPointer(memory);
-        const ctx = reportingDotGit(memory, { lstat: { isFile: true, size: MIB + 1 } });
+        const ctx = reportingDotGit(memory, {
+          lstat: { isFile: true, size: MIB + 1 },
+          forbidRead: true,
+        });
         const sut = gitlinkHeadOf;
 
         // Act

@@ -371,7 +371,7 @@ const splitIgnoredLiterals = async (
     const hidden = tracked
       ? await firstIgnoredAncestorOf(repoIgnore, body)
       : await firstIgnoredLeafOf(repoIgnore, body);
-    if (hidden !== undefined && (tracked || !(await isInsideRepository(repositories, hidden))))
+    if (hidden !== undefined && !(await isInsideRepository(repositories, hidden)))
       reported.add(hidden);
     if (tracked || hidden === undefined) stageable.push(body);
   }
