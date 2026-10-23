@@ -62,4 +62,4 @@ for await (const entry of repo.primitives.walkWorkingTree()) {
 
 - Tier-1: [`add`](../commands/add.md), [`status`](../commands/status.md)
 - Related primitives: [`readIndex`](read-index.md), [`walkTree`](walk-tree.md)
-- ADRs: [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [035](../../adr/035-walk-ignore-pruning.md), [633](../../adr/633-walk-working-tree-lazy-stat.md)
+- ADRs: [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [1054](../../adr/1054-add-stages-an-embedded-repository-as-a-gitlink-as-git-does.md), [035](../../adr/035-walk-ignore-pruning.md), [633](../../adr/633-walk-working-tree-lazy-stat.md)

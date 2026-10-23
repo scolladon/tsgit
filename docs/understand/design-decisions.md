@@ -44,7 +44,7 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 
 - [ADR-029 — `add --all` ignore stub](../adr/029-add-all-ignore-stub.md)
 - [ADR-030 — `add --all` walk strategy](../adr/030-add-all-walk-strategy.md)
-- [ADR-031 — `add --all` symlink/gitlink policy](../adr/031-add-all-symlink-gitlink-policy.md)
+- [ADR-1054 — `add` stages an embedded repository as a gitlink, as git does](../adr/1054-add-stages-an-embedded-repository-as-a-gitlink-as-git-does.md)
 - [ADR-032 — `add --all` large-file guard](../adr/032-add-all-large-file-guard.md)
 - [ADR-033 — `.gitignore` sources & ordering](../adr/033-gitignore-sources.md)
 - [ADR-034 — `homeDir` injection for ignore evaluation](../adr/034-homedir-injection.md)
