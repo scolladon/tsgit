@@ -1,6 +1,8 @@
 import { tokenizeConfig } from '../../../domain/config/config-ini.js';
 import {
   EXTENSIONS_SECTION,
+  enumerateExtensionEntries,
+  formatRefusal,
   honoursExtensions,
   lastTopLevelEntry,
   REF_STORAGE_VALUES,
@@ -9,18 +11,18 @@ import {
   resolveEnum,
   resolveFormatVersion,
 } from '../../../domain/config/repository-format-scan.js';
-import { repositoryExtensionsUnsupported } from '../../../domain/repository/error.js';
 import type { FileSystem } from '../../../ports/file-system.js';
 import { readUtf8IfPresent } from './fs-probes.js';
+import { throwFormatRefusal } from './repo-state.js';
 
 const CONFIG_FILE = 'config';
-const V1_ONLY_VERSION = 0;
 
 /**
  * The ref backend a repository declares in `<commonDir>/config`, as git honours it:
  * `extensions.refStorage` counts from `core.repositoryformatversion` 1 up. The
- * value and the version are refused when malformed, whatever the version, and a
- * version 0 repository naming the extension is refused as git refuses it.
+ * value and the version are refused when malformed, whatever the version, and the
+ * repository-format gate refuses what git refuses: a version above 1, an unknown
+ * extension at version 1, a v1-only extension at version 0.
  * Read through `fs`, which must reach `commonDir`, where a linked worktree keeps
  * its config — a gitlink's repository is its own, never the parent's.
  */
@@ -38,8 +40,7 @@ export const refStorageOf = async (fs: FileSystem, commonDir: string): Promise<R
     REF_STORAGE_VALUES,
     'files',
   );
-  if (entry !== undefined && version === V1_ONLY_VERSION) {
-    throw repositoryExtensionsUnsupported(V1_ONLY_VERSION, [REFSTORAGE_KEY]);
-  }
+  const refusal = formatRefusal(version, enumerateExtensionEntries(tokens));
+  if (refusal !== undefined) throwFormatRefusal(refusal);
   return honoursExtensions(version) ? declared : 'files';
 };

@@ -11,6 +11,7 @@
  */
 import {
   appendFile,
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -22,7 +23,7 @@ import {
 } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { TsgitError } from '../../src/domain/index.js';
@@ -265,6 +266,34 @@ const danglingDotGit: Setup = async (repo, upstream) => {
   await writeFiles(repo, { k: 'k2\n' });
 };
 
+/** The submodule's `.git` replaced by a symlink to itself, beside an edited file. */
+const selfLoopingDotGit: Setup = async (repo, upstream) => {
+  await withSubmodule(repo, upstream);
+  await replaceDotGit(repo, (dotGit) => symlink('.git', dotGit));
+  await writeFiles(repo, { k: 'k2\n' });
+};
+
+/** The reftable embedded repository that moved, its stack then damaged by `damage`. */
+const reftableStackDamagedBy =
+  (damage: (stack: string, table: string) => Promise<void>): Setup =>
+  async (repo, upstream) => {
+    await embeddedReftable(repo, upstream);
+    const stack = path.join(repo, 'sub', '.git', 'reftable');
+    const [table] = (await readdir(stack)).filter((name) => name.endsWith('.ref'));
+    await damage(stack, path.join(stack, table as string));
+  };
+
+const damagedStackList = (body: string) =>
+  reftableStackDamagedBy((stack) => writeFile(path.join(stack, 'tables.list'), body));
+
+/** The embedded repository that moved, its `main` branch a symlink to a file that holds no ref. */
+const looseRefLinkedToContent: Setup = async (repo, upstream) => {
+  await embedded(repo, upstream);
+  const branch = path.join(repo, 'sub', '.git', 'refs', 'heads', 'main');
+  await removeTree(branch);
+  await symlink(path.join(repo, 'k'), branch);
+};
+
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'add over a gitlink whose submodule checkout moved',
   () => {
@@ -401,6 +430,37 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       {
         label: 'an embedded repository on reftable that moved',
         setup: embeddedReftable,
+        spec: ['.'],
+      },
+      { label: 'a self-looping .git symlink, added by dot', setup: selfLoopingDotGit, spec: ['.'] },
+      {
+        label: 'a self-looping .git symlink, added by name and a file',
+        setup: selfLoopingDotGit,
+        spec: ['k', 'sub'],
+      },
+      {
+        label: 'a reftable stack naming a missing table, added by dot',
+        setup: damagedStackList('0x000000000001-0x000000000009-deadbeef.ref\n'),
+        spec: ['.'],
+      },
+      {
+        label: 'a reftable stack naming a missing table, added by name',
+        setup: damagedStackList('0x000000000001-0x000000000009-deadbeef.ref\n'),
+        spec: ['sub'],
+      },
+      {
+        label: 'a reftable stack list that is garbage',
+        setup: damagedStackList('garbage\n'),
+        spec: ['.'],
+      },
+      {
+        label: 'a reftable table of four bytes',
+        setup: reftableStackDamagedBy((_stack, table) => writeFile(table, 'REFT')),
+        spec: ['.'],
+      },
+      {
+        label: 'a loose ref that is a symlink to something holding no ref',
+        setup: looseRefLinkedToContent,
         spec: ['.'],
       },
       {
@@ -584,6 +644,82 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
       });
     });
+
+    describe.skipIf(process.getuid?.() === 0)(
+      'Given a moved repository whose refs/heads is unreadable',
+      () => {
+        const unreadable: string[] = [];
+
+        afterEach(async () => {
+          await Promise.all(unreadable.splice(0).map((dir) => chmod(dir, 0o755)));
+        });
+
+        describe.each([{ spec: ['.'] }, { spec: ['sub'] }])('And $spec is added', ({ spec }) => {
+          describe('When git and tsgit add it', () => {
+            it('Then both leave the gitlink as recorded and exit cleanly', async () => {
+              // Arrange
+              const { gitRepo, tsgitRepo } = await twins(async (repo, upstream) => {
+                await embedded(repo, upstream);
+                const heads = path.join(repo, 'sub', '.git', 'refs', 'heads');
+                await chmod(heads, 0o000);
+                unreadable.push(heads);
+              });
+              const sut = add;
+
+              // Act
+              const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', ...spec]);
+              await sut(createNodeContext({ workDir: tsgitRepo }), spec);
+
+              // Assert
+              expect(gitRun.exitCode).toBe(0);
+              expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
+            });
+          });
+        });
+      },
+    );
+
+    describe.each([
+      {
+        label: 'a format version above 1',
+        config: '[core]\n\trepositoryformatversion = 2\n',
+        stderr: 'fatal: Expected git repo version <= 1, found 2\n',
+        refusal: { code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED', version: 2 },
+      },
+      {
+        label: 'an unknown extension at format version 1',
+        config: `${FORMAT_1}[extensions]\n\tbogus = x\n`,
+        stderr: 'fatal: unknown repository extension found:\n\tbogus\n',
+        refusal: { code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED', version: 1, extensions: ['bogus'] },
+      },
+    ])(
+      'Given a submodule config holding $label and an untracked file',
+      ({ config, stderr, refusal }) => {
+        describe('When git and tsgit add the whole tree', () => {
+          it('Then both refuse the repository format and leave the index and objects alone', async () => {
+            // Arrange
+            const { gitRepo, tsgitRepo } = await twins(withModuleConfig(config));
+            const before = indexOf(gitRepo);
+            const looseBefore = await looseCountOf(gitRepo);
+            const sut = add;
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', '.']);
+            const thrown = await sut(createNodeContext({ workDir: tsgitRepo }), ['.']).then(
+              () => undefined,
+              (error: unknown) => (error instanceof TsgitError ? error.data : error),
+            );
+
+            // Assert
+            expect(gitRun.exitCode).toBe(128);
+            expect(gitRun.stderr).toContain(stderr);
+            expect(thrown).toEqual(refusal);
+            expect(indexOf(tsgitRepo)).toBe(before);
+            expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
+          });
+        });
+      },
+    );
 
     describe.each([
       {

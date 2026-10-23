@@ -23,7 +23,8 @@ type Checkout =
   | 'pointed-away'
   | 'worktree-admin'
   | 'worktree-admin-absolute'
-  | 'dangling';
+  | 'dangling'
+  | 'self-looping';
 
 interface Superproject {
   /** What `sub` holds in the working tree. */
@@ -36,6 +37,10 @@ interface Superproject {
   readonly gitfile?: string;
   /** The commit `refs/heads/main` holds in the module; absent leaves the branch unborn. */
   readonly branch?: string | null;
+  /** Files laid in the module's gitdir, by path under it. */
+  readonly moduleFiles?: Readonly<Record<string, string>>;
+  /** Where a symlink standing for `refs/heads/main` leads, instead of a commit. */
+  readonly branchSymlink?: string;
   readonly skipWorktree?: boolean;
   /** Extra working-tree files laid over `k`. */
   readonly tree?: Readonly<Record<string, string>>;
@@ -44,11 +49,18 @@ interface Superproject {
 const layOutModule = async (
   ctx: Ctx,
   gitDir: string,
-  { head = MODULE_HEAD, branch = MOVED_HEAD }: Superproject,
+  { head = MODULE_HEAD, branch = MOVED_HEAD, moduleFiles = {}, branchSymlink }: Superproject,
 ): Promise<void> => {
   if (head === null) await ctx.fs.mkdir(gitDir);
   else await ctx.fs.writeUtf8(`${gitDir}/HEAD`, head);
   if (branch !== null) await ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, `${branch}\n`);
+  for (const [name, body] of Object.entries(moduleFiles)) {
+    await ctx.fs.writeUtf8(`${gitDir}/${name}`, body);
+  }
+  if (branchSymlink !== undefined) {
+    await ctx.fs.mkdir(`${gitDir}/refs/heads`);
+    await ctx.fs.symlink(branchSymlink, `${gitDir}/refs/heads/main`);
+  }
 };
 
 const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
@@ -84,6 +96,10 @@ const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
   if (checkout === 'dangling') {
     await ctx.fs.mkdir(sub);
     await ctx.fs.symlink(`${ctx.layout.workDir}/nowhere`, `${sub}/.git`);
+  }
+  if (checkout === 'self-looping') {
+    await ctx.fs.mkdir(sub);
+    await ctx.fs.symlink('.git', `${sub}/.git`);
   }
   if (checkout === 'deinitialised') await ctx.fs.mkdir(sub);
   if (checkout === 'file') await ctx.fs.writeUtf8(sub, 'plain\n');
@@ -284,6 +300,90 @@ describe('add over a gitlink whose .git is a dangling symlink', () => {
       it('Then the file is staged and the gitlink is left as recorded', async () => {
         // Arrange
         const ctx = await superproject({ checkout: 'dangling', tree: { k: 'k2\n' } });
+        const recorded = (await entryOf(ctx, 'sub'))?.id;
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual(['k']);
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(recorded);
+        expect((await entryOf(ctx, 'sub'))?.mode).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+});
+
+describe('add over a gitlink whose .git is a symlink that loops', () => {
+  describe('Given a gitlink with nothing checked out behind a self-looping .git and an edited file', () => {
+    describe('When the whole tree is added', () => {
+      it('Then the file is staged and the gitlink is left as recorded', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout: 'self-looping', tree: { k: 'k2\n' } });
+        const recorded = (await entryOf(ctx, 'sub'))?.id;
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual(['k']);
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(recorded);
+        expect((await entryOf(ctx, 'sub'))?.mode).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+});
+
+const REFTABLE_CONFIG =
+  '[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefStorage = reftable\n';
+const REFTABLE_HEAD = 'ref: refs/heads/.invalid\n';
+const TABLE_NAME = '0x000000000001-0x000000000001-66a63dbb.ref';
+
+describe('add over a gitlink whose HEAD cannot be resolved', () => {
+  describe.each([
+    {
+      label: 'a reftable stack naming a table that is missing',
+      setup: {
+        head: REFTABLE_HEAD,
+        branch: null,
+        moduleFiles: { config: REFTABLE_CONFIG, 'reftable/tables.list': `${TABLE_NAME}\n` },
+      },
+    },
+    {
+      label: 'a reftable stack list that is garbage',
+      setup: {
+        head: REFTABLE_HEAD,
+        branch: null,
+        moduleFiles: { config: REFTABLE_CONFIG, 'reftable/tables.list': 'garbage\n' },
+      },
+    },
+    {
+      label: 'a reftable table of four bytes',
+      setup: {
+        head: REFTABLE_HEAD,
+        branch: null,
+        moduleFiles: {
+          config: REFTABLE_CONFIG,
+          'reftable/tables.list': `${TABLE_NAME}\n`,
+          [`reftable/${TABLE_NAME}`]: 'REFT',
+        },
+      },
+    },
+    {
+      label: 'a loose ref that is a symlink to something that is not a ref',
+      setup: {
+        branch: null,
+        moduleFiles: { 'not-a-ref': 'plain text\n' },
+        branchSymlink: '../../not-a-ref',
+      },
+    },
+  ])('Given $label and an edited file', ({ setup }) => {
+    describe('When the whole tree is added', () => {
+      it('Then the file is staged and the gitlink is left as recorded', async () => {
+        // Arrange
+        const ctx = await superproject({ ...setup, checkout: 'embedded', tree: { k: 'k2\n' } });
         const recorded = (await entryOf(ctx, 'sub'))?.id;
         const sut = add;
 

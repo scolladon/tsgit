@@ -307,7 +307,7 @@ const autoSetupRebaseCandidates = async (
   ];
 };
 
-const throwFormatRefusal = (refusal: RepositoryFormatRefusal): never => {
+export const throwFormatRefusal = (refusal: RepositoryFormatRefusal): never => {
   if (refusal.kind === 'version') throw repositoryFormatVersionUnsupported(refusal.version);
   throw repositoryExtensionsUnsupported(refusal.version, refusal.extensions);
 };

@@ -5,6 +5,9 @@ import { parseGitBoolean, tokenizeConfig } from '../domain/config/config-ini.js'
 import {
   CORE_SECTION,
   EXTENSIONS_SECTION,
+  type ExtensionEntry,
+  enumerateExtensionEntries,
+  formatRefusal,
   honoursExtensions,
   lastTopLevelEntry,
   REF_STORAGE_VALUES,
@@ -13,7 +16,6 @@ import {
   resolveEnum,
   resolveFormatVersion,
   type ScannedEntry,
-  sectionedEntries,
 } from '../domain/config/repository-format-scan.js';
 import { repositoryExtensionUnsupported } from '../domain/repository/error.js';
 import type { RepositoryFormatRefusal } from '../ports/context.js';
@@ -56,75 +58,6 @@ const WORKTREE_CONFIG_FILE = 'config.worktree';
 const OBJECT_FORMAT_VALUES = ['sha1', 'sha256'] as const;
 type ObjectFormat = (typeof OBJECT_FORMAT_VALUES)[number];
 
-// git's format gate: the effective (last-wins) core.repositoryformatversion
-// must not exceed this. A named ceiling, never membership in a set — `-1` is
-// accepted by `> MAX_REPOSITORY_FORMAT_VERSION` but refused by `{0, 1}`.
-const MAX_REPOSITORY_FORMAT_VERSION = 1;
-
-/**
- * One `[extensions]` entry: the reported name (`subsection === undefined ?
- * key : `${subsection}.${key}``, key ALWAYS lower-cased, subsection ALWAYS
- * verbatim), the bare lower-cased key alone (registry lookups use this and
- * only when `subsection` is `undefined`), the raw subsection, the raw
- * value, and the entry's 1-based line.
- */
-export interface ExtensionEntry {
-  readonly name: string;
-  readonly key: string;
-  readonly subsection: string | undefined;
-  readonly value: string | null;
-  readonly line: number;
-}
-
-/**
- * Every `[extensions]` entry in `tokens`, subsectioned ones included, in
- * file order, duplicates preserved. `lastTopLevelEntry` cannot serve here:
- * it skips subsections and keeps only the last match for one key. Exported
- * for the property-test sibling — `__resetSectionsCacheForTests` in
- * `config-scoped-read.ts` is the live precedent for a test-only `src` export.
- */
-export const enumerateExtensionEntries = (
-  tokens: ReadonlyArray<ConfigToken>,
-): ReadonlyArray<ExtensionEntry> =>
-  [...sectionedEntries(tokens)]
-    .filter((entry) => entry.section === EXTENSIONS_SECTION)
-    // Subsectioned entries are KEPT here, unlike the two `[core]` readers: git
-    // reports `[extensions "X"] bogus` as the offending name `X.bogus`.
-    .map(({ key, subsection, value, line }) => ({
-      name: subsection === undefined ? key : `${subsection}.${key}`,
-      key,
-      subsection,
-      value,
-      line,
-    }));
-
-const lowerCasedSet = (names: ReadonlyArray<string>): ReadonlySet<string> =>
-  new Set(names.map((name) => name.toLowerCase()));
-
-// git 2.55.0 knows exactly these nine. This describes GIT, not tsgit's
-// capabilities — it neither shrinks when tsgit lacks a name nor grows when
-// tsgit gains one; only a new git release moves it.
-const GIT_KNOWN_EXTENSIONS = lowerCasedSet([
-  'noop',
-  'noop-v1',
-  'worktreeConfig',
-  'preciousObjects',
-  'partialClone',
-  'relativeWorktrees',
-  'objectFormat',
-  'compatObjectFormat',
-  'refStorage',
-]);
-
-// The five names git refuses at version 0.
-const GIT_V1_ONLY_EXTENSIONS = lowerCasedSet([
-  'noop-v1',
-  'objectFormat',
-  'compatObjectFormat',
-  'refStorage',
-  'relativeWorktrees',
-]);
-
 /**
  * Extension names git accepts that tsgit accepts at the gate but cannot yet
  * act on. Each is refused precisely at open rather than misread. DELETE an
@@ -132,50 +65,6 @@ const GIT_V1_ONLY_EXTENSIONS = lowerCasedSet([
  * the entry IS the promise that nothing reads the repository wrong.
  */
 const UNBACKED_EXTENSIONS: ReadonlyArray<string> = ['compatobjectformat'];
-
-// A subsectioned spelling of a known name is not known — membership is
-// keyed on the bare key only when `subsection` is `undefined`.
-const isUnknownExtension = (entry: ExtensionEntry): boolean =>
-  entry.subsection !== undefined || !GIT_KNOWN_EXTENSIONS.has(entry.key);
-
-const isV1OnlyExtension = (entry: ExtensionEntry): boolean =>
-  entry.subsection === undefined && GIT_V1_ONLY_EXTENSIONS.has(entry.key);
-
-const namesWhere = (
-  entries: ReadonlyArray<ExtensionEntry>,
-  predicate: (entry: ExtensionEntry) => boolean,
-): ReadonlyArray<string> => entries.filter(predicate).map((entry) => entry.name);
-
-/**
- * The extensions arm — version-selected, independent of the version-ceiling
- * arm: `version === 0` refuses v1-only names, `version >= 1` refuses
- * unknown names (in practice `=== 1` here, since a caller only reaches this
- * once the version arm has already returned `undefined` for `version <=
- * MAX_REPOSITORY_FORMAT_VERSION`). A negative version refuses neither.
- */
-const extensionsRefusal = (
-  version: number,
-  entries: ReadonlyArray<ExtensionEntry>,
-): RepositoryFormatRefusal | undefined => {
-  if (version === 0) {
-    const names = namesWhere(entries, isV1OnlyExtension);
-    return names.length > 0 ? { kind: 'extensions', version, extensions: names } : undefined;
-  }
-  if (version >= 1) {
-    const names = namesWhere(entries, isUnknownExtension);
-    return names.length > 0 ? { kind: 'extensions', version, extensions: names } : undefined;
-  }
-  return undefined;
-};
-
-/** The carried verdict — the version ceiling wins outright over the extension arms. */
-const formatRefusal = (
-  version: number | undefined,
-  entries: ReadonlyArray<ExtensionEntry>,
-): RepositoryFormatRefusal | undefined => {
-  if (version === undefined) return undefined;
-  return versionRefusal(version) ?? extensionsRefusal(version, entries);
-};
 
 /**
  * The refuse-set arm: a top-level, accepted `extensions.*` entry tsgit
@@ -250,12 +139,6 @@ const scanConfigFile = async (
     tokens,
   };
 };
-
-/** The version arm of the acceptance verdict — refuse strictly above the named ceiling. */
-const versionRefusal = (version: number | undefined): RepositoryFormatRefusal | undefined =>
-  version !== undefined && version > MAX_REPOSITORY_FORMAT_VERSION
-    ? { kind: 'version', version }
-    : undefined;
 
 /** `core.bare`'s resolved value, throwing `CONFIG_BAD_BOOLEAN_VALUE` on a malformed one. */
 const resolveBare = (entry: ScannedEntry | undefined, source: string): boolean | undefined => {

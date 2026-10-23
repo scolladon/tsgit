@@ -51,11 +51,6 @@ describe('refStorageOf', () => {
         '[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefStorage = files\n\trefStorage = reftable\n',
       expected: 'reftable',
     },
-    {
-      label: 'reftable declared under a subsection',
-      config: '[core]\n\trepositoryformatversion = 1\n[extensions "x"]\n\trefStorage = reftable\n',
-      expected: 'files',
-    },
   ])('Given $label', ({ config, expected }) => {
     describe('When the declared ref storage is read', () => {
       it(`Then it is ${'$expected'}`, async () => {
@@ -163,6 +158,39 @@ describe('refStorageOf over a repository format git refuses', () => {
         code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED',
         version: 0,
         extensions: ['refstorage'],
+      },
+    },
+    {
+      label: 'format version 2',
+      config: '[core]\n\trepositoryformatversion = 2\n',
+      refusal: { code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED', version: 2 },
+    },
+    {
+      label: 'format version 2 declaring reftable',
+      config: '[core]\n\trepositoryformatversion = 2\n[extensions]\n\trefStorage = reftable\n',
+      refusal: { code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED', version: 2 },
+    },
+    {
+      label: 'format version 1 with an unknown extension',
+      config: `${VERSION_1}[extensions]\n\tbogus = x\n`,
+      refusal: { code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED', version: 1, extensions: ['bogus'] },
+    },
+    {
+      label: 'format version 1 declaring reftable under a subsection',
+      config: `${VERSION_1}[extensions "x"]\n\trefStorage = reftable\n`,
+      refusal: {
+        code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED',
+        version: 1,
+        extensions: ['x.refstorage'],
+      },
+    },
+    {
+      label: 'format version 0 with another v1-only extension',
+      config: '[core]\n\trepositoryformatversion = 0\n[extensions]\n\tobjectFormat = sha1\n',
+      refusal: {
+        code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED',
+        version: 0,
+        extensions: ['objectformat'],
       },
     },
     {

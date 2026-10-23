@@ -18,6 +18,7 @@ import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 const DOT_GIT = '.git';
 const COMMONDIR_FILE = 'commondir';
 const SEPARATOR = '/';
+const UNFOLLOWED_LINK_CODES: ReadonlySet<string> = new Set(['FILE_NOT_FOUND', 'PERMISSION_DENIED']);
 
 /** Where a checkout's repository lies on disk, the path git names it by when it is broken, and the filesystem that reaches it. */
 interface Located {
@@ -50,7 +51,22 @@ export const gitlinkHeadOf = async (
     commonDir,
     refStorage: await refStorageOf(fs, commonDir),
   });
-  return resolveRefOrMissing(child, 'HEAD');
+  return resolveGitlinkHead(child);
+};
+
+/**
+ * git's `resolve_gitlink_ref` reports a HEAD it cannot read as a plain failure and
+ * `add` then keeps the recorded commit; only a `.git` that leads to no repository, or
+ * a malformed repository format, dies. Every failure of the resolution itself is
+ * therefore "no resolvable HEAD", while anything that is not a tsgit refusal is a bug.
+ */
+const resolveGitlinkHead = async (child: Context): Promise<ObjectId | undefined> => {
+  try {
+    return await resolveRefOrMissing(child, 'HEAD');
+  } catch (err) {
+    if (err instanceof TsgitError) return undefined;
+    throw err;
+  }
 };
 
 /**
@@ -90,7 +106,7 @@ const directoryCheckout = (ctx: Context, checkout: string, path: FilePath): Loca
 
 /**
  * git `stat`s `.git`, so a link to a repository directory is that directory, wherever it
- * lies, and a link to nothing is no checkout at all; a link to a file is a gitfile.
+ * lies, and a link to nothing, or one that loops, is no checkout at all; a link to a file is a gitfile.
  */
 const symlinkCheckout = async (
   ctx: Context,
@@ -98,17 +114,21 @@ const symlinkCheckout = async (
   path: FilePath,
 ): Promise<Located | undefined> => {
   const dotGit = `${checkout}${SEPARATOR}${DOT_GIT}`;
-  const target = await statOrMissing(ctx, dotGit);
+  const target = await statOrUnreachable(ctx, dotGit);
   if (target === undefined) return undefined;
   if (target.isDirectory) return linkedCheckout(ctx, checkout, path);
   return gitfileCheckout(ctx, checkout, path);
 };
 
-const statOrMissing = async (ctx: Context, dotGit: string) => {
+/**
+ * A `.git` link that cannot be followed leaves nothing checked out: a dangling link, or a
+ * loop or unsearchable target, which the adapters report alike as PERMISSION_DENIED.
+ */
+const statOrUnreachable = async (ctx: Context, dotGit: string) => {
   try {
     return await metadataOf(ctx, dotGit).stat(dotGit);
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
+    if (err instanceof TsgitError && UNFOLLOWED_LINK_CODES.has(err.data.code)) return undefined;
     throw err;
   }
 };
