@@ -101,7 +101,7 @@ describe.each(SOURCES)(
       { spec: ['sw.txt', 'n.txt'], unmatched: ['sw.txt'] },
       { spec: ['sw*', 'n*'], unmatched: ['sw*'] },
     ])('Given a skip-worktree file and a plain one, both modified', ({ spec, unmatched }) => {
-      describe(`When ${'$spec'} is restored`, () => {
+      describe(`When ${JSON.stringify(spec)} is restored`, () => {
         it('Then it refuses and leaves both files and the bit alone', async () => {
           // Arrange
           const ctx = await seedSkipWorktree();
@@ -123,7 +123,7 @@ describe.each(SOURCES)(
     describe.each([{ spec: ['*.txt'] }, { spec: ['.'] }])(
       'Given a skip-worktree file and a plain one, both modified',
       ({ spec }) => {
-        describe(`When ${'$spec'} is restored`, () => {
+        describe(`When ${JSON.stringify(spec)} is restored`, () => {
           it('Then only the plain file is restored and the bit stays', async () => {
             // Arrange
             const ctx = await seedSkipWorktree();
@@ -150,7 +150,7 @@ describe.each([
 ])(
   'Given a skip-worktree file whose blob differs in the tree source',
   ({ spec, restoredPlain }) => {
-    describe(`When ${'$spec'} is restored from HEAD~1`, () => {
+    describe(`When ${JSON.stringify(spec)} is restored from HEAD~1`, () => {
       it('Then the file is written, its index blob is the source blob and the bit is cleared', async () => {
         // Arrange
         const ctx = await seedSkipWorktreeOverTwoCommits();
