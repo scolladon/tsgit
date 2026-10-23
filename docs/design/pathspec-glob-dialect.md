@@ -10,7 +10,9 @@
 > Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22) → folded the tracked-under-ignore staging gap (2026-10-22) → review pins folded: empty-directory literal, hidden conflicted path (2026-10-22) → folded the
 > skip-worktree, gitlink, ignored-report and backslash-name gaps: R13–R17, Parts f–i, candidates 13–19 (2026-10-23) → folded literal positives
 > honouring exclusions: R18, Part j, candidate 20 (2026-10-23) → recorded the review-round pins
-> of the shipped fold: S16, SC13–SC16, GL24–GL51, I31–I33, X7/X14 left open (2026-10-23)
+> of the shipped fold: S16, SC13–SC16, GL24–GL51, I31–I33, X7/X14 left open (2026-10-23) → folded
+> embedded repositories staged as gitlinks, superseding ADR-031's embedded stance: R19, R20,
+> Part k, EM1–EM82, candidates 21–28 (2026-10-23)
 
 ## Context
 
@@ -45,6 +47,21 @@ Consumers of the compiled `Pathspec` (all inherit the dialect change): `add.ts`,
 `compilePathspec` and `compileGlob` are not public; the `Pathspec` type is (`src/public-types.ts:85`),
 so the `PathspecEntry` shape (`pattern`, `body`, `negated`, `isLiteral`, `compiled.test`) is kept.
 
+Embedded repositories (R19, R20; line numbers at `f2fbe050`):
+
+| Surface | File / symbol | Today |
+|---|---|---|
+| Walk gate | `src/application/primitives/walk-working-tree.ts:64-77` `enterSubdirectory` → `:206-219` `isEmbeddedGitMarker` | a directory whose `readdir` holds a `.git` directory or regular file yields nothing; a `.git` symlink is no marker, so the walk descends. The kind bits come from the directory entry: no `lstat`, no probe of what `.git` leads to |
+| Walk options | `src/application/primitives/types.ts:267-282` `WalkWorkingTreeOptions` (`maxDepth`, `maxEntries`, `ignore`) | public (`reports/api.json`, `repository.ts:1087`); consumed by `add.ts:1233`, `add.ts:1528`, `status.ts:305`, `stash.ts:388`, `fs-workdir-enumerator.ts:63` |
+| Tracked gitlink pruning | `src/application/commands/internal/prune-gitlink-directories.ts` `pruneGitlinkDirectories` | a stage-0 gitlink's directory is pruned before the walk enters it |
+| Gitlink HEAD | `src/application/commands/internal/gitlink-head.ts:41` `gitlinkHeadOf` (`locateCheckout` `:109`, `reaching` `:82`, `holdsObjectsAndRefs` `:96`, `resolveGitlinkHead` `:68`) | R15's probe: `undefined` when nothing is checked out or HEAD does not resolve; `NOT_A_REPOSITORY` or a format code when `.git` leads to a broken repository |
+| Gitlink staging | `src/application/commands/add.ts:1307` `stagedGitlinks` → `:1351` `movedGitlinkOf`; `:1334` `selectsGitlink` | stage-0 gitlinks only; nothing creates a new `160000` entry |
+| Index side | `add.ts:1138` `hiddenTracked` → `:1182` `hiddenWalkEntryOf` (drops a directory); `:1579` `presentOnDisk` (a directory over a non-gitlink entry is gone) | a tracked file replaced by a repository is staged as a removal |
+
+Tests that pin today's skip: `test/unit/application/commands/add.test.ts:933` (`vendor/lib/.git/HEAD`
+only), `:1239` (`sub/.git` = `gitdir: /elsewhere`), `:1261` (a dangling `.git` symlink);
+`test/unit/application/primitives/walk-working-tree.test.ts:210`, `:651`, `:827`, `:847`.
+
 ### Binding decisions
 
 - ADR-226 / CLAUDE.md prime directive — byte-for-byte git behaviour; ADR-249 — structured data, the
@@ -56,6 +73,13 @@ so the `PathspecEntry` shape (`pattern`, `body`, `negated`, `isLiteral`, `compil
   matcher) was rejected; its Consequences leave "valid multi-byte `?`" open. Candidate 1 reopens
   that choice for the wildcard part only.
 - ADR-038 (`!` negation) stays. ADR-1000 (`withoutExactly`) is untouched.
+- ADR-031: its symlink stance (the walk `lstat`s, never descends through a symlink) stays binding.
+  Its embedded-repository stance (option 3, "silently skip a directory holding `.git`", chosen
+  while tsgit could not stage gitlinks) is **superseded by user decision (2026-10-23)**: R19 and
+  R20 replace it, and the decisions phase writes the superseding ADR from candidates 21–28.
+- ADR-1049 (a gitlink's HEAD is read from the repository under `<path>/.git`) and ADR-1035 (refuse
+  before any object write) bind Part k. Candidate 28 asks how ADR-1035 covers R19's refusal, which
+  git raises after it has written blobs.
 
 ### Pinning procedure used
 
@@ -83,6 +107,13 @@ interop suite its section names. Their tsgit column is the shipped result at `f8
 documentation revision re-took some rows in a throwaway, as git-and-tsgit twins with tsgit run
 through jiti: GL27, GL28, GL33, GL45, I31 and S16, which no interop suite pins or which the suite
 words differently, and GL25–GL30 with files inside `sub`. It also took GL51's git 2.56 wording.
+
+Embedded-repository rows (EM1–EM82; 2026-10-23) used the same procedure, on git 2.55.0 with
+commit dates pinned to `@1700000000 +0000`. Each scenario was built once in a `mktemp -d`
+throwaway and copied (`cp -Rp`) into a git twin and a tsgit twin. The tsgit column was **run**:
+a jiti script called `add`, `status`, `rm` and `checkout` through `createNodeContext` against
+`git archive f2fbe050 src` extracted to a scratch directory. Every row ran once. EM4, EM40 and
+EM66 ran a second time, with identical results.
 
 ## Requirements
 
@@ -227,6 +258,42 @@ words differently, and GL25–GL30 with files inside `sub`. It also took GL51's 
   on disk: exclusion runs before the seen-marking and git's `file_exists` escape runs after it
   (X1, X15). A wildcard positive whose matches are all excluded still refuses (X16, X17). `rm`
   and `checkout` already honour exclusions on literals (X20–X26).
+- R19. `add` stages an untracked directory that holds a repository as a `160000` gitlink at that
+  repository's HEAD, as git's directory walk does. This holds for `.`, `<dir>`, `<dir>/`, a
+  glob, `add({ all: true })` and `force` (EM1–EM5, EM13–EM23, EM56–EM58). The path lands in
+  `added`. This replaces ADR-031's "skip the directory".
+  - "Holds a repository" is git's test for a non-bare repository directory, which its
+    `treat_directory` runs. `<dir>/.git` must be a directory, a gitfile, or (candidate 21) a
+    symlink to either, and it must lead to a usable repository: HEAD, `objects/` and `refs/`,
+    through `commondir`. That is R15's probe without R15's refusals. A `.git` that leads to no repository leaves `<dir>` an ordinary directory:
+    it is walked and its files are staged. `.git` itself never is (EM28, EM29, EM31–EM36).
+  - A directory with an index entry beneath it (`<dir>/…`, any stage) is walked as today,
+    whatever `.git` it holds (git's `directory_exists_in_index`, EM74–EM76). A stage-0 gitlink at
+    `<dir>` stays under R15.
+  - The directory is matched as `<dir>/`. So `sub`, `sub/`, `s*`, `su?/`, `*sub*` and `*sub/`
+    reach it, and `*b`, `su?` and `*sub` do not (EM5–EM7, EM22, EM23).
+  - Nothing beneath the repository is staged, a nested repository included (EM63–EM65). A
+    literal naming a path beneath it stages nothing and is not refused (EM8, EM49, EM65;
+    candidate 26).
+  - A selected repository whose HEAD does not resolve refuses, and the index is unchanged
+    (EM40–EM45, EM50, EM60). The cases are an unborn branch, an unparsable ref, and a repository
+    format git refuses. git exits 128 naming the first such directory in **path** order, not
+    argument order. The unmatched-pathspec refusal and R15's tracked-gitlink refusals come first
+    (EM47, EM51). An excluded or unselected repository never refuses (EM46, EM48). Error
+    member: candidate 23. Object writes before the refusal: candidate 28.
+  - A HEAD naming a missing object is staged as is (EM19).
+  - Ignore rules prune before the probe. An ignored repository is reported by R16 and staged
+    only under `force` (EM53–EM60).
+  - git's `warning: adding embedded git repository` advice: candidate 22.
+  - `--renormalize`, `rm` and `checkout` are unchanged (EM10–EM12, EM52, EM80, EM82). `status`:
+    candidate 27 (EM9, EM30, EM38, EM76).
+- R20. A tracked stage-0 regular file or symlink whose path is now a directory holding a
+  repository with a commit is staged as a type change to `160000` at that HEAD (`T`). This holds
+  ignored or not, whenever the pathspec selects the tracked path. The index pass matches it by
+  its own path, so `*b` reaches it (EM66–EM69). Report shape: candidate 24. When the repository
+  has no commit, R19's refusal applies if the walk lists the directory (EM70, EM72). If an ignore
+  rule hides the directory, the entry is removed, as today (EM71). A `.git` that leads to no
+  repository gives the removal plus the directory's files (EM73).
 
 ## Design
 
@@ -732,9 +799,157 @@ wins whatever its position, and tsgit's matcher is last-match-wins on every rout
 command (`rm`, `checkout`, `grep` too). No suite pins them. Changing the order rule supersedes
 ADR-038, which is 32.11b.
 
+#### EM — embedded repositories (R19, R20)
+
+Fixture: the superproject holds `k`, committed (3 loose objects). "Repo" = `git init -b main`
+in the directory, then `u` (`s1`) committed there: HEAD `5eeb23f`. The git column shows exit ·
+stderr (the 14-line `hint:` block after the warning is abbreviated `+hint`) · `ls-files -s` or
+`status --porcelain`. Refusal rows also show "loose". The tsgit column is the result at
+`f2fbe050`.
+
+Untracked repository `sub` (`sub/u` committed inside it):
+
+| # | Setup | Command | git 2.55: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|---|
+| EM1 | repo `sub` | `add .` | 0 · `warning: adding embedded git repository: sub` +hint · `160000 5eeb23f sub` (`A  sub`) · loose 3 | ✗ `added: []`, `?? sub/` |
+| EM2 | same | `add sub` | 0 · same | ✗ success, nothing staged |
+| EM3 | same | `add sub/` | 0 · same | ✗ as EM2 |
+| EM4 | same | `add -A` | 0 · same | ✗ as EM2 |
+| EM5 | same | `add 's*'` | 0 · same | ✗ `PATHSPEC_NO_MATCH 's*'` |
+| EM6 | same | `add 'su?/'` | 0 · same (the directory is matched as `sub/`) | ✗ `PATHSPEC_NO_MATCH 'su?/'` |
+| EM7 | same | `add '*b'`, `add 'su?'` | 128 · `pathspec … did not match any files` | ok |
+| EM8 | same | `add sub/u` | 0 · no output · nothing staged (`?? sub/`) | ✗ `added: [sub/u]` (literal fast path) |
+| EM9 | same | `status --porcelain`, `-uall` too | 0 · `?? sub/` | ✗ `untracked: []` |
+| EM10 | same | `rm --cached sub`, `rm -r --cached sub` | 128 · `pathspec 'sub' did not match any files` | ok |
+| EM11 | same | `checkout -- sub` | 1 · `error: pathspec 'sub' did not match any file(s) known to git` | ok (`PATHSPEC_NO_MATCH`) |
+| EM12 | same | `add --renormalize .`, `add --renormalize sub` | 0 · nothing | ok |
+
+Layouts that are a repository (`add .`, `add -A`, `add 's*'` unless the row says otherwise):
+
+| # | Setup | git 2.55: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|
+| EM13 | `sub` holds only `.git`, one empty commit `e735bd3` | 0 · +hint · `160000 e735bd3 sub` | ✗ as EM1/EM4/EM5 |
+| EM14 | gitfile, absolute: `init --separate-git-dir <outside>` | 0 · `5eeb23f` | ✗ |
+| EM15 | gitfile, relative: `gitdir: ../.git/xs` | 0 · `5eeb23f` | ✗ |
+| EM16 | detached HEAD | 0 · `5eeb23f` | ✗ |
+| EM17 | `--ref-format=reftable` (`add .`) | 0 · `5eeb23f` | ✗ |
+| EM18 | linked worktree of an outside repository (gitfile → admin dir with `commondir`), branch `wt` (`add .`) | 0 · `413c2fe` | ✗ |
+| EM19 | `refs/heads/main` naming a missing object `1111…` (`add .`) | 0 · `160000 1111111 sub`: no object check | ✗ |
+| EM20 | repos `sub` and `sub2` | 0 · one warning line each · both gitlinks | ✗ |
+| EM21 | repo `d/sub` inside untracked `d`, beside `d/f`: `.`, `-A`, `add d`; `add d/sub` | 0 · `d/f` and `160000 d/sub`; `add d/sub`: `d/sub` only | ✗ `d/f` only; `add d/sub`: nothing |
+| EM22 | same: `add 's*'`, `add sub`, `add '*sub'` | 128 · `pathspec … did not match any files` (`*sub` against `d/sub/`) | ok |
+| EM23 | same: `add '*sub*'`, `add '*sub/'` | 0 · `d/sub` | ✗ `PATHSPEC_NO_MATCH` |
+
+`sub/.git` a symlink (`sub/u` beside it, a plain file):
+
+| # | Setup | Command | git 2.55: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|---|
+| EM24 | → `<outside repository>/.git` | `.`, `sub`, `-A`, `'s*'` | 0 · +hint · `160000 5eeb23f sub` | ✗ `added: [sub/u]` (the walk descends) |
+| EM25 | → `../.git/<repository>/.git` (relative, inside the superproject's `.git`) | `add .` | 0 · `5eeb23f` | ✗ `sub/u` |
+| EM26 | → a gitfile `gitdir: <outside repository>/.git` | `add .` | 0 · `5eeb23f` | ✗ `sub/u` |
+| EM27 | → a repository with no commit | `add .` | 128 · `error: 'sub/' does not have a commit checked out` (EM40's lines) · loose 3 | ✗ `sub/u` staged · 4 |
+| EM28 | dangling | `.`, `sub`, `-A`, `'s*'` | 0 · `A  sub/u` | ok |
+| EM29 | → `../k` (a regular file) | `add .` | 0 · `A  sub/u` | ok |
+| EM30 | EM24 | `status --porcelain` | 0 · `?? sub/` | ✗ `untracked: [sub/u]` |
+
+A `.git` that leads to no repository (`sub/u` beside it; `add .`, `add sub`, `add -A`,
+`add 's*'`):
+
+| # | Setup | git 2.55: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|
+| EM31 | empty `.git` directory | 0 · no warning · `A  sub/u` | ✗ nothing staged; `'s*'`: `PATHSPEC_NO_MATCH` |
+| EM32 | repo with `.git/HEAD` = `garbage` | 0 · `A  sub/u` | ✗ as EM31 |
+| EM33 | repo with `.git/objects` removed | 0 · `A  sub/u` | ✗ as EM31 |
+| EM34 | `.git` a file holding `garbage` | 0 · `A  sub/u` (GL51 refuses the same file for a tracked gitlink) | ✗ as EM31 |
+| EM35 | `.git` an empty file | 0 · `A  sub/u` | ✗ as EM31 |
+| EM36 | `.git` = `gitdir: <missing>` | 0 · `A  sub/u` | ✗ as EM31 |
+| EM37 | EM32 · `add sub/u` | 0 · `A  sub/u` | ok |
+| EM38 | EM32 · `status --porcelain -uall` | 0 · `?? sub/u` (plain `--porcelain`: `?? sub/`) | ✗ `untracked: []` |
+| EM39 | `sub` holds a repository's admin files at its top (`cp -R .git/. sub/`), no `.git` | 0 · every file staged (`sub/HEAD`, `sub/config`, …) | ok |
+
+A repository whose HEAD does not resolve. EM40's stderr is the three lines
+`error: 'sub/' does not have a commit checked out`, `error: unable to index file 'sub/'` and
+`fatal: adding files failed`:
+
+| # | Setup | Command | git 2.55: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|---|
+| EM40 | `git init` in `sub`, untracked `sub/u` | `.`, `sub`, `sub/`, `-A`, `'s*'` | 128 · EM40's lines · index unchanged · loose 3 | ✗ success, nothing staged; `'s*'`: `PATHSPEC_NO_MATCH` |
+| EM41 | `git init` only | `.`, `sub`, `-A`, `'s*'` | 128 · as EM40 | ✗ as EM40 |
+| EM42 | EM1 + `core.repositoryformatversion = 2` | `add .` | 128 · `warning: Expected git repo version <= 1, found 2`, then EM40's lines (not GL39's fatal) | ✗ success |
+| EM43 | EM1 + v1 + `extensions.bogus` | `add .` | 128 · `warning: unknown repository extension found:` / `bogus`, then EM40's lines | ✗ success |
+| EM44 | EM1 with `refs/heads/main` = `garbage` (no packed copy) | `add .` | 128 · EM40's lines | ✗ success |
+| EM45 | EM40 + untracked `a`, `z` | `.`, `-A`, `a sub z` | 128 · index unchanged · loose **4**: `a`'s blob is written before git dies, `z`'s is not | ✗ stages `a`, `z` · 5 |
+| EM46 | same | `add a z` | 0 · `a`, `z` staged | ok |
+| EM47 | same | `add . 'nomatch*'` | 128 · `pathspec 'nomatch*' did not match any files` · loose 3 | ok |
+| EM48 | EM40 | `add . ':!sub'` | 0 · nothing | ok (`!sub`) |
+| EM49 | EM40 | `add sub/u` | 0 · nothing staged | ✗ `added: [sub/u]` |
+| EM50 | untracked repos `a` and `b`, both without a commit | `add .`, `add b a` | 128 · names `'a/'` in both | ✗ success |
+| EM51 | tracked gitlink `tail` whose gitfile names nothing (GL20) + EM50's `a` | `add .` | 128 · `fatal: not a git repository: tail/../.git/modules/nowhere`: R15's refusal wins although `a` sorts first | ok (`NOT_A_REPOSITORY`) |
+| EM52 | EM40 | `add --renormalize .` | 0 · nothing | ok |
+
+Ignore rules, `force` and exclusions:
+
+| # | Setup | Command | git 2.55: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|---|
+| EM53 | EM1 + `.gitignore` `sub/` (or `sub`) | `.`, `-A` | 0 · no warning · `A  .gitignore` | ok |
+| EM54 | same | `add sub` | 1 · ignored report `sub` | ok (`ignored: [sub]`) |
+| EM55 | repo `d/sub` + `.gitignore` `d/` | `.`, `-A`; `add d/sub`; `add sub` | 0 · `.gitignore` only; 1 · reports `d`; 128 · no match | ok |
+| EM56 | EM53 (`sub/`) | `add -f .`, `add -A -f` | 0 · +hint · `.gitignore` and `160000 sub` | ✗ `.gitignore` only |
+| EM57 | same | `add -f sub` | 0 · +hint · `160000 sub` | ✗ nothing |
+| EM58 | EM55 | `add -f d` | 0 · +hint · `160000 d/sub` | ✗ nothing |
+| EM59 | EM40 + `.gitignore` `sub/` | `.`, `-A`; `add sub` | 0 · `.gitignore`; 1 · reports `sub` | ok |
+| EM60 | same | `add -f .` | 128 · EM40's lines · loose **4** (`.gitignore`'s blob) | ✗ stages `.gitignore` |
+| EM61 | EM1 | `add . ':!sub'`, `add sub ':!sub'` | 0 · nothing | ok (`!sub`) |
+| EM62 | EM1 | `add 's*' ':!sub'` | 128 · `pathspec 's*' did not match any files` | ok |
+
+Nested: repo `sub/inner` (its own `u` committed) inside EM1's repo `sub`:
+
+| # | Command | git 2.55: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|
+| EM63 | `.`, `-A` | 0 · `160000 5eeb23f sub` only, the outer HEAD (status `AM sub`) | ✗ nothing |
+| EM64 | `add sub/inner` | 0 · nothing | ok |
+| EM65 | `add sub/inner/u` | 0 · nothing | ✗ `added: [sub/inner/u]` |
+
+Tracked paths replaced on disk. A tracked file `sub` (`100644 f73f309`) or symlink `sub -> k`
+is committed, then removed and replaced by a directory:
+
+| # | Setup | Command | git 2.55: exit · result | tsgit at HEAD (run) |
+|---|---|---|---|---|
+| EM66 | file → EM1's repo | `.`, `sub`, `sub/`, `-A`, `'s*'` | 0 · +hint · `160000 5eeb23f sub` (`T  sub`) | ✗ `removed: [sub]` (`D  sub`); `sub/`: nothing staged, `100644` kept |
+| EM67 | same | `add '*b'` | 0 · no warning · `T  sub` (the index pass matches `sub`) | ✗ `removed: [sub]` |
+| EM68 | symlink → EM1's repo | `.`, `sub`, `sub/`, `-A`, `'s*'` | 0 · +hint · `T  sub` | ✗ as EM66 |
+| EM69 | EM66 + `.gitignore` `sub` | `.`, `sub`, `-A` | 0 · no warning · `T  sub` | ✗ `removed: [sub]` |
+| EM70 | file → EM40's repo | `.`, `sub`, `-A` | 128 · EM40's lines · index unchanged | ✗ `removed: [sub]` |
+| EM71 | EM70 + `.gitignore` `sub` | `.`; `sub` | 0 · `D  sub` (and `A  .gitignore`); 0 · `D  sub` | ok |
+| EM72 | EM70 + untracked no-commit repo `a`; or `z` instead of `a` | `add .` | 128 · names `'a/'`; with `z`, names `'sub/'` (walk order) | ✗ `removed: [sub]` |
+| EM73 | file → a directory with an empty `.git` and `u` | `.`, `sub` | 0 · `D  sub`, `A  sub/u` | ✗ `D  sub` only |
+| EM74 | tracked `sub/u`, then `git init` + commit inside `sub` | `.`, `sub`, `-A`, `status` | 0 · unchanged, clean: git walks a directory the index has entries beneath | ok |
+| EM75 | EM74 with `sub/u` rewritten | `.`, `sub`, `-A` | 0 · `M  sub/u` | ok |
+| EM76 | EM74 + untracked `sub/new` | `.`, `sub`, `-A`; `status` | 0 · `A  sub/new`; `?? sub/new` | ✗ nothing staged; `untracked: []` |
+| EM77 | tracked file `f` → symlink `f -> k` (report-shape control) | `.`, `f` | 0 · `T  f` | ok, `modified: [f]` |
+| EM78 | EM66 | `status --porcelain=v2` | 0 · `1 .T SC.. 100644 100644 160000 …` | ✗ `worktree.mode: '100755'` (out of scope) |
+| EM79 | EM66 | `checkout -- sub` | 0 · git deletes the repository directory and writes the file | ✗ `DIRECTORY_NOT_EMPTY`; same for a plain non-empty directory (out of scope) |
+| EM80 | EM1 after `git add sub` (`A  sub`) | `rm --cached sub` | 1 · `staged content different from both the file and the HEAD` | ok (`RM_STAGED_AND_LOCAL_CHANGES`) |
+| EM81 | same | `status --porcelain=v2` | 0 · `1 A. S... 000000 160000 160000` | ✗ `unstaged: 'modified'`, `worktree.mode: '100755'` (out of scope) |
+| EM82 | same | `checkout -- sub` | 0 · nothing changes | ok (index unchanged) |
+
+What the rows show about git's rule (the design follows them, not git's source):
+
+- The walk decides "repository" by what `.git` leads to, and stats through a `.git` symlink
+  (EM24–EM29). A `.git` leading nowhere is not a marker at all (EM31–EM36). tsgit's gate is the
+  directory entry kind alone.
+- The no-commit refusal is raised while git adds the walked paths in path order, after the blobs
+  of the paths before it are written (EM45, EM60). R15's refusals come from the index pass, which
+  runs first (EM51). The tracked type change takes the index pass. With no commit, that pass stages
+  the removal (EM71), and only the walk's listing of `sub/` refuses (EM70, EM72).
+- An untracked repository is matched as `<dir>/` (EM6, EM7, EM22, EM23). A tracked path replaced
+  by one is matched by its index path (EM67).
+- git prints the warning only for a directory its walk listed, never for the index pass's type
+  change (EM67, EM69).
+
 **Row count** (D 23 + E 5 + L 6 + B 31 + R 11 + C 10 + G 5 + K 6 + DS 14 + N 28 = 139, plus the
-fold: S 16 + SC 16 + GL 51 + I 33 + W 16 + X 26 = 158; total 297. B3l/B3m are counted once, in B; I1/I2
-repeat them with the tsgit column run. GL37 and GL39–GL51 each group several setups under one
+fold: S 16 + SC 16 + GL 51 + I 33 + W 16 + X 26 + EM 82 = 240; total 379. B3l/B3m are counted once, in B; I1/I2
+repeat them with the tsgit column run. GL37, GL39–GL51 and most EM rows each group several setups or commands under one
 id). B8 and B13–B16 were re-run on 2026-10-22 with
 the same procedure. Their tsgit column comes from a session pin that ran tsgit through jiti at
 this branch's HEAD and at `main` (`8dd442ee`). Both gave the same result, so the gap predates this
@@ -1177,6 +1392,103 @@ the memory adapter, asserting the result and no `writeObject` for the excluded p
 `test/integration/pathspec-glob-dialect-interop.test.ts`, where tsgit `!p` is twinned with
 git `:!p`, X1–X19.
 
+### Part k — embedded repositories staged as gitlinks (R19, R20)
+
+Line numbers at `f2fbe050`. The shape below follows candidate 25A, the recommendation.
+
+**Where the directory becomes a candidate: the walk.** It already scans each directory's
+entries for `.git` (`enterSubdirectory`, `walk-working-tree.ts:64-77`). Only the walk sees the
+directory at the moment the decision is due, before it descends or prunes.
+
+- `src/application/primitives/types.ts:267` `WalkWorkingTreeOptions` gains an optional
+  `nestedRepository?: (path: FilePath) => Promise<boolean>` (the name is the planner's to fix).
+  When it is set, `enterSubdirectory` asks it about every directory whose entries hold a `.git`
+  entry of any kind: directory, file, or symlink (candidate 21).
+  - `true`: the walk yields the directory as a leaf
+    `{ path, isFile: false, isDirectory: true, isSymbolicLink: false, stat }`, counted against
+    `maxEntries`.
+  - `false`: the frame is pushed and walked. The `.git` directory entry itself stays skipped by
+    `isDotGitWalkEntry` (`:180`).
+  - When the option is unset, `isEmbeddedGitMarker` (`:206`) rules exactly as today. `status`,
+    `stash`, `fs-workdir-enumerator` and the public primitive see no change (candidate 27).
+  - `StackStep` (`:79`) already has a `yield` arm, so `stepEntry` (`:90`) returns it for the
+    leaf. The ignore predicate has already run for the directory (`:105`), so ignored and pruned
+    gitlink directories never reach the hook.
+  - The option is public, so `reports/api.json` changes additively.
+- `src/application/commands/internal/gitlink-head.ts`: split `gitlinkHeadOf` (`:41-60`) into a
+  probe that returns data, for example
+  `{ kind: 'none' } | { kind: 'broken'; shown } | { kind: 'repository'; head: ObjectId | undefined }`.
+  The probe is `locateCheckout` → `hasUsableHead` → `reaching` → `holdsObjectsAndRefs` →
+  `refStorageOf` → `resolveGitlinkHead`.
+  - `gitlinkHeadOf` keeps its contract: `broken` and the format codes throw (GL20, GL21,
+    GL39–GL51), and `none` or no head gives `undefined`.
+  - The embedded reader maps `none` and `broken` to "not a repository" (EM31–EM36) and
+    `repository` to "repository". A refused format or an unresolvable HEAD maps to
+    `head: undefined`, which refuses (EM42–EM44).
+  - The probe runs once per directory. Its result is kept by path for the staging step, so
+    HEAD is never resolved twice.
+  - The hook runs before pathspec selection, so it never throws a tsgit refusal: a broken,
+    unborn or format-refused repository is data. Only the staging step refuses, and only for a
+    selected leaf (EM46, EM48). Errors that are not tsgit refusals, such as an I/O failure,
+    propagate.
+- `src/application/commands/add.ts`:
+  - The hook is `embeddedRepositoryOf(ctx, sorted)`, passed to the walk in `stageIgnoredWalk`
+    (`:1233`) and `addAll` (`:1528`).
+    - It first searches `sorted`, the byte-ordered index entries of every stage
+      (`readExistingEntries`), for the first path ≥ `<dir>/`, with `comparePaths`. If that path
+      starts with `<dir>/`, the answer is `false` (EM74–EM76).
+    - Otherwise it probes. `pruneGitlinkDirectories` and `collectIgnored` are unchanged and run
+      first, through the ignore predicate (EM53–EM55, EM59).
+  - Selection: a repository leaf is tested as `${path}/` through `pathspecVerdict` (last match
+    wins, so `!sub` excludes it: EM61). The same `${path}/` spelling goes to `unseenWalked`
+    (`:1027`). Its `compiled.test(path)` on the bare path would miss `su?/` and `*sub/` (EM6,
+    EM23) and wrongly accept `*b`, `su?` and `*sub` (EM7, EM22). `selectsGitlink` (`:1334`) is
+    not reused, because it also accepts the bare `path`.
+  - The new step is `stagedEmbeddedRepositories`, in `stageSelectedEntries` (`:1281`) and
+    `addAll`.
+    - It runs after `stagedGitlinks` (R15's refusals first, EM51) and before
+      `stageWalkedEntries`, so no blob is written before it can refuse (candidate 28A).
+    - It partitions the walked leaves into files and repository leaves (`isDirectory &&
+      !isSymbolicLink`). Selected leaves are taken in path order, through `firstFailureOrValues`.
+    - With a head, it emits
+      `{ kind: previous === undefined ? 'added' : 'modified', path, entry: indexEntryFromStat(stat, FILE_MODE.GITLINK, head, path) }`,
+      the shape `movedGitlinkOf` (`:1351`) builds. A head-less leaf throws candidate 23's error
+      for the first path (EM50).
+  - `addAll` marks each repository leaf's key in `seen`. Otherwise `collectRemovedEntries` →
+    `presentOnDisk` (`:1579`) treats a directory over a tracked file as gone and removes the
+    type change (EM66 under `-A`). `addByPathspec` needs nothing: `collectMatchedRemovals` skips
+    every outcome path through `matched`.
+  - R20, index side (EM67, EM69): `hiddenWalkEntryOf` (`:1182`) returns `undefined` for a
+    directory today.
+    - For a non-gitlink entry whose path is a real directory, ask the embedded reader. A
+      repository with a head gives a `modified` gitlink outcome. Anything else stays
+      `undefined`, which keeps today's removal (EM71, EM73).
+    - This pass never refuses, because git's index pass does not (EM71). The walk's leaf, when
+      the walk listed the path, takes precedence: `hiddenTracked` (`:1138`) already drops walked
+      keys.
+  - Literal fast path (candidate 26A): `dispatchPathspec` (`:258`) → `literalStats` (`:686`) →
+    `addLiteralOnly` (`:276`).
+    - For an untracked literal, take each proper ancestor directory with no index entry beneath
+      it (the same `sorted` search), shallowest first, and ask the embedded reader.
+    - The first ancestor that holds a repository drops the literal: nothing is staged and nothing
+      is refused (EM8, EM49, EM65). EM37 still stages.
+  - Refusal order under ADR-1035: `settleUnseenPositives` (`:1255`, unmatched pathspec), then
+    `stagedGitlinks` (R15), then the embedded refusal, then the blob writes. The error's data is
+    candidate 23. Its factory goes beside `notARepository` in `src/domain/repository/error.ts`,
+    and its message case beside `NOT_A_REPOSITORY` in `src/domain/error.ts:428`.
+  - `AddResult` (`:152`) gains a field only under candidate 22B. The type change reports under
+    candidate 24.
+- Unchanged: `--renormalize` (EM12, EM52: `addRenormalized` runs no walk), `rm`, `checkout` and
+  `prune-gitlink-directories.ts`.
+
+Tests to re-pin, never edit to fit:
+- `add.test.ts:933`: `vendor/lib/.git/HEAD` alone is not a repository by git's test, so
+  `vendor/lib/src/x.ts` is staged (EM32/EM33 class).
+- `add.test.ts:1239`: `gitdir: /elsewhere` names nothing, so `sub/normal.txt` is staged (EM36).
+- `add.test.ts:1261` (dangling symlink, EM28) stays green.
+- The walk rows `walk-working-tree.test.ts:210`, `:651`, `:827` and `:847` pin the default
+  (option unset) and stay green. The new option gets its own rows.
+
 ### Size and hot path
 
 - Removed: `scanStar`, the `pathname` option, `containsGlob`, `compileLiteral`/`compileDirectory`,
@@ -1217,6 +1529,21 @@ git `:!p`, X1–X19.
   leaf (f; `walkedTrackedFirst` already does that lookup, so the filter can sit there). The
   gitlink step is one pass over the index entries already in memory, plus one `lstat` and one
   HEAD read per gitlink, and a superproject holds few gitlinks.
+- Part k, hot path. The walk stats no `.git` entry today: the gate reads the directory entry kind bits
+  `readdir` already returned. The new cost is per directory, not per entry, and only for a
+  directory whose directory entries hold a `.git` entry. That directory pays an O(log n) search of the
+  sorted index, then the repository probe: one `lstat` of `.git`, a HEAD read, two `stat`s, a
+  config read, and a gitfile or `commondir` read for those layouts. A tree with no nested `.git`
+  pays nothing: `frame.entries.some(…)` already runs per directory. HEAD resolution is paid only
+  for a selected repository, once. On the literal route (candidate 26A), an untracked literal
+  pays one index search per ancestor, plus one `lstat` of `<ancestor>/.git` for each ancestor
+  with no index entry beneath it. A tracked literal, or one inside a tracked directory, pays
+  nothing new. Bench rows: the existing `add.bench.ts` single-literal rows (untracked) and an
+  `add -A` row on the fixture, under `bench:ab`.
+- Part k, size, estimated before any code exists: +300 to +500 B gzip. That covers the walk
+  option and leaf, the probe split, the embedded step and the index-side type change, the literal
+  ancestor probe, and under 23A one error member with its message (about 60 B). Candidate 11A's
+  route applies: measure after `rm -rf dist .wireit`, then raise by the measured delta.
 
 ## Decision candidates
 
@@ -1242,6 +1569,15 @@ git `:!p`, X1–X19.
 | 18 | Admitting a `\`-named entry in the working-tree walk (R17) | **A** host-gate it: `validateWalkedEntryPath` refuses `\` only under `windowsPathSyntax`, the key ADR-1044 uses · **B** admit it on every host · **C** keep refusing, but skip the entry instead of throwing | A | A matches W1–W5, W7 and W16 on POSIX and keeps ADR-1044's Windows stance in one place. B admits a separator-bearing name under Windows path syntax, which ADR-1044 refused. C stops `status` from throwing but still hides the file from `add` (W1–W5 stay divergent), against git. |
 | 19 | `rm` removing a `\`-named working-tree file (W8, W9) | **A** extend the same host gate to `removeFile` (`internal/working-tree.ts:84`), the only writer these rows reach · **B** leave `rm` as a pinned follow-up (its refusal is atomic: index and file unchanged) · **C** gate `validateWorkingTreePath` itself for every caller (`mv`, `materializeFile`, the pathspec intake) | A | W8/W9 are a refusal-condition mismatch on POSIX, and A closes them with the gate Part i already builds. C widens the change to `mv` and `materializeFile`, which nothing here pinned. B is the fallback if the security review rejects A. |
 | 20 | How the literal fast path honours exclusions (R18) | **A** route every call that holds a negated entry to the walk route (`addByPathspec`), which already matches X6/X13/X15–X19 · **B** keep the fast path and filter `literalMustMatch` through the full matcher, then refuse or escape each fully-excluded literal in the fast path · **C** lift the exclusion check into `resolvePathspec`, so `literalMustMatch` arrives pre-filtered | A | A reuses the one implementation of git's exclusion, seen and escape order, so X1/X15 cannot drift between routes. Its cost is a walk for literal-plus-exclusion calls, which are rare, and the size cost is a few bytes. B duplicates the refusal and escape logic in a second route. C gives resolve-pathspec knowledge of the disk (the escape), which belongs to the command. |
+
+| 21 | An untracked directory whose `.git` is a **symlink** (EM24–EM30). The walk never descends through a symlink (ADR-031's symlink stance stays) | **A** classify it with a read-only `stat` through the link, as git does and as R15's probe already does for tracked gitlinks (GL25–GL28): a link to a repository is a gitlink, a link to nothing or to a non-repository leaves the directory walked · **B** keep today: a `.git` symlink is no marker, the walk descends and stages the files (EM24–EM27 stay ✗) · **C** treat every `.git` symlink as opaque: skip the directory without following | A | A never descends through the link. It reads the target only to answer "is this a repository", with code that already ships and was reviewed for GL24–GL28 (targets outside the work tree are read, never written). ADR-031's attack, a planted `.git` symlink hiding its siblings, needs a real repository at the target under A, and then git hides them too. B stages files git does not. C hides files git stages (EM28, EM29), which is the attack ADR-031 refused. |
+| 22 | A structured analogue of git's `warning: adding embedded git repository: <path>` advice | **A** none: the gitlink is in `added` (or `modified` under R20) and the index holds its mode · **B** an additive `AddResult.embedded: ReadonlyArray<FilePath>`, sorted: the walk-listed directories staged as gitlinks, never the index pass's type change (EM67, EM69 print no warning) · **C** an `EolNotice`-style notice list | A | The advice never changes git's exit code or index (EM1: exit 0), unlike R16's report (exit 1), so ADR-249 asks for no field. The data is already in the result and the index. B costs about 50 B gzip and a public field whose population rule has to follow git's walk-versus-index split. C mixes advice into a channel defined for conversion warnings. |
+| 23 | The error raised when a selected repository's HEAD does not resolve (EM40–EM45, EM50, EM60, EM70, EM72) | **A** a new member `NO_COMMIT_CHECKED_OUT { path }` in `src/domain/repository/error.ts`, `path` without the trailing `/`, rendered as git's `'<path>/' does not have a commit checked out` · **B** reuse `NOT_A_REPOSITORY { path }` · **C** reuse `REF_NOT_FOUND { name: 'HEAD' }` | A | It is a repository, and git says so: B's code is the GL20/GL51 one, for a `.git` that leads to none, and under R19 such a directory is walked instead (EM31–EM36). C loses which directory refused. A costs one union member (about 30 B gzip plus the message). No existing member carries "repository without a commit". |
+| 24 | What `AddResult` reports for R20's type change (file or symlink → gitlink) | **A** `modified`, as it does today for file → symlink (EM77: `modified: [f]`) and for gitlink → file (GL14) · **B** a new `typeChanged` list · **C** `removed` plus `added` | A | It mirrors the two type changes tsgit already reports. B splits one git status letter (`T`) into a field no other type change uses. C contradicts the index, which holds one entry at `sub`. |
+| 25 | Where an untracked repository directory becomes a staging candidate | **A** a walk option: the walk asks a caller-supplied predicate about each directory holding a `.git` directory entry and yields a directory leaf on `true`; when unset, today's gate · **B** the walk reports each directory its gate collapsed through a callback, and `add` probes and stages them after the walk · **C** `add`'s ignore-predicate wrapper `lstat`s `<dir>/.git` for every directory it is asked about | A | A decides once, where the walk already holds the directory entries. It keeps the index-unaware walk generic, because the predicate carries the index rule (EM74–EM76), and it leaves every other consumer byte-identical. B cannot express EM31–EM36: a collapsed directory with a broken `.git` must be walked, so the walk has to ask before it collapses. C adds an `lstat` per directory on every `add`, and the walk's own gate would still collapse the directory first. |
+| 26 | A literal naming a path beneath an untracked repository (EM8, EM49, EM65: git stages nothing, exit 0) | **A** on the literal fast path, probe the untracked literal's ancestors that have no index entry beneath them; the first repository drops the literal · **B** route every untracked literal holding `/` to the walk route · **C** leave it: a pinned follow-up | A | A matches the rows and costs nothing for tracked literals (Size and hot path). B gives up the fast path for every new file in a subdirectory, the common `add src/new.ts`. C keeps staging files git leaves inside another repository: those files end up committed into the superproject. |
+| 27 | `status` over an untracked repository (EM9, EM30, EM38, EM76: git lists `sub/`, or the files of a directory whose `.git` leads nowhere, or a new file in a tracked directory turned repository; tsgit lists nothing or the files) | **A** fold it: `status` passes the same hook, and `untracked` lists a repository directory as `sub/`, the spelling git's `-uall` porcelain gives it, and walks the rest · **B** fold only the walk half: broken `.git` directories and tracked directories are walked (EM38, EM76), and a repository directory stays unlisted · **C** out of this PR: the default walk keeps `status` unchanged, and EM9/EM30/EM38/EM76 become a backlog item | A | The prime directive and the fold-gaps rule favour A, and the hook makes it a few lines in `status.ts:305`. Its one design question is the spelling: git's `-uall` keeps the trailing `/` for a repository, and that is the only directory `untracked` would ever hold. B leaves `?? sub/` missing. C is the smallest diff but keeps four proven `status` gaps. The user decides scope. |
+| 28 | Object writes before R19's refusal. git writes the blobs of the paths it adds before the repository, then dies (EM45: loose 4; EM60) | **A** refuse before any blob write, as ADR-1035 does for every other `add` refusal; the index and refusal match git, and the extra unreachable blobs git leaves are not replicated · **B** replicate git's order: stage and write blobs for the walked paths sorting before the repository, then refuse without committing the index | A | The index, exit and error match git under both. The difference is unreachable loose objects, which `gc` prunes and no ref names. ADR-1035 and every shipped `add` refusal guarantee "a throw writes nothing". B would break that contract for one refusal and couple the error to pool ordering. The superseding ADR records this divergence. |
 
 **Blockers:** none. None of the four IN parts needs magic pathspecs, `:(exclude)` or a change to
 the `!` alias to match the pinned rows.
@@ -1350,7 +1686,7 @@ sites.
 | unit | `test/unit/application/primitives/internal/submodule-context.test.ts` | `deriveGitlinkContext`, common dir and ref storage options |
 | unit | `test/unit/application/commands/add-ignored-report.test.ts` | I1–I30, I32, I33, P4, P5 (re-pins of `add.test.ts:1728` → I1 and `:1750` → I6 landed in `add.test.ts`) |
 | unit | `test/unit/application/commands/add-literal-exclusion.test.ts` | X1–X5, X8–X12, X15–X19 |
-| unit | `test/unit/domain/working-tree-path.test.ts`, `test/unit/application/primitives/walk-working-tree.test.ts` | the host-gated validators; a `\`-named dirent yielded on POSIX, refused under `windowsPathSyntax` |
+| unit | `test/unit/domain/working-tree-path.test.ts`, `test/unit/application/primitives/walk-working-tree.test.ts` | the host-gated validators; a `\`-named directory entry yielded on POSIX, refused under `windowsPathSyntax` |
 | unit | `test/unit/application/commands/rm.test.ts`, `test/unit/application/commands/internal/working-tree.test.ts` | W8, W9 under candidate 19A |
 | interop | `test/integration/add-skip-worktree-interop.test.ts` | S1–S15, P1–P3 |
 | interop | `test/integration/add-interop.test.ts` | S16 (the replaced-directory table) |
@@ -1360,6 +1696,13 @@ sites.
 | interop | `test/integration/pathspec-literal-exclusion-interop.test.ts` | X1–X6, X8–X13, X15–X19; X20–X26 as `rm --cached` / `checkout --` guards |
 | interop | `test/integration/pathspec-backslash-interop.test.ts` | W1–W16, D8b, E1 under the POSIX gate; the Windows block keeps the walk refusal |
 | bench | `test/bench/add.bench.ts` | the two existing single-literal rows (plan fact 15), `bench:ab` after the implementation commit |
+| unit | `test/unit/application/commands/add-embedded-repository.test.ts` (new) | EM1–EM8, EM12–EM29, EM31–EM37, EM39–EM77 on the memory adapter (it holds symlinks and gitfiles, as `add-gitlink.test.ts` does). Assert the index entries, `added`/`modified`/`removed`, the error data (candidate 23), and zero `writeObject` calls before every refusal (EM40–EM45, EM50, EM60, EM70, EM72) |
+| unit | `test/unit/application/commands/add.test.ts` | re-pins only: `:933` and `:1239` (Part k); `:1261` stays green |
+| unit | `test/unit/application/primitives/walk-working-tree.test.ts` | the option: a repository directory yields one directory leaf; `false` descends and skips `.git`; a `.git` symlink, file or directory each asks the hook; unset keeps `:210`, `:651`, `:827`, `:847` |
+| unit | `test/unit/application/commands/internal/gitlink-head.test.ts` | the probe split: `none`, `broken`, `repository` with and without a head; `gitlinkHeadOf`'s existing rows unchanged |
+| unit | `test/unit/application/commands/status.test.ts` | EM9, EM30, EM38, EM76 under candidate 27A/B |
+| interop | `test/integration/add-embedded-repository-interop.test.ts` (new) | EM1–EM77 with real git twins, pinned dates and `protocol.file.allow=always` for EM51; compare `ls-files -s`, the loose-object count (EM45 and EM60 assert git's 4 against tsgit's 3 under candidate 28A), error code and path. The `.git`-symlink rows (EM24–EM30) run under `describe.skipIf(!GIT_AVAILABLE \|\| process.platform === 'win32')` |
+| interop | `test/integration/status-interop.test.ts` | EM9, EM30, EM38, EM76 under candidate 27A/B |
 
 Interop-only rows: these have a cross-tool twin and no command-level memory-adapter row.
 - X20–X26: the unchanged `rm`/`checkout` routes, already covered by their own unit suites.
@@ -1367,7 +1710,13 @@ Interop-only rows: these have a cross-tool twin and no command-level memory-adap
   routes cover them; only the walk, `removeFile` and `rm` W8/W9 have unit rows.
 - GL11, GL19 and GL26.
 - GL27, GL28, GL33, GL45 (v0 unknown extension, v1 `noop`) and I31 have no suite row at all.
+- EM10, EM11, EM80 and EM82 (`rm`/`checkout` guards; their routes do not change) are interop
+  only. EM78, EM79 and EM81 are out of scope and get no suite row.
   They were pinned only in the documentation revision's throwaway twins (Pinning procedure).
+
+Mutation (Part k): the narrowed buckets gain `walk-working-tree.ts` (the hook branch),
+`internal/gitlink-head.ts` (the probe split) and the touched `add.ts` functions, with the module's own suites
+only (`.claude/workflow/mutation.md`).
 
 Mutation: the narrowed buckets gain `src/domain/working-tree-path.ts`,
 `src/application/primitives/walk-working-tree.ts` and the touched `checkout.ts` functions. No
@@ -1387,10 +1736,16 @@ split and the gate are predicates over existing matchers).
 - `add --sparse`, `add -n`, `checkout --ignore-skip-worktree-bits`: options tsgit does not
   have. Pinned in passing: `git add --sparse x.log` on S's fixture exits 0 and leaves `S x.log`
   unchanged.
-- `status` for a moved submodule: not pinned here. To prove a gap, twin GL1's fixture through
-  `git status --porcelain` and tsgit `status()`.
-- An untracked embedded repository under `add({ all: true })`: `add.test.ts:927` pins no
-  gitlink. To prove a gap, twin `git add -A` over an untracked clone.
+- `status` for a gitlink: proven, not folded. EM81 (a gitlink just staged: git `A.`, mW
+  `160000`; tsgit `unstaged: 'modified'`, `worktree.mode: '100755'`) and EM78 (git mW `160000`;
+  tsgit `100755`). Faulty site to locate in `status.ts`'s worktree-mode derivation for a
+  directory; one backlog line.
+- `checkout -- <path>` over a tracked file that a non-empty directory replaced: git deletes the
+  directory and writes the file, while tsgit throws `DIRECTORY_NOT_EMPTY`. This holds for a
+  repository (EM79) and for a plain directory, so the gap is general, not R19's. One backlog line.
+- `stash -u` over an untracked repository: not pinned. The walk default stays unchanged under
+  candidate 25A. To prove a gap, twin `git stash -u` over EM1's fixture.
+- Folded on 2026-10-23: the untracked embedded repository under `add({ all: true })` (R19, EM4).
 - The gitignore/gitattributes dialect's own `[…]`/`\` support: R9 keeps it unchanged. Unproven
   hunch; to prove it, pin `printf '[ab].log\n' > .gitignore` against `git check-ignore`.
 - The `MAX_PATHSPEC_PATTERN_BYTES` / `**`-count budget: kept unless candidate 11 B is chosen.
