@@ -8,7 +8,12 @@ import {
 } from '../../domain/commands/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { GitIndex } from '../../domain/git-index/index.js';
-import { escapedPathOf, type IndexPath } from '../../domain/git-index/index-path-key.js';
+import {
+  escapedPathOf,
+  type IndexPath,
+  type IndexPathKey,
+  indexPathKey,
+} from '../../domain/git-index/index-path-key.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -377,7 +382,10 @@ const restoreUnderIndexLock = async (
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
-    const universe = await enumerateSourcePaths(ctx, source, currentIndex);
+    const universe = outsideSkipWorktree(
+      await enumerateSourcePaths(ctx, source, currentIndex),
+      currentIndex,
+    );
     const { matched, unmatched } = selectFromUniverse(pathspec, universe);
     refuseUnmatched(unmatched);
     const pathSet = new Set<FilePath>(matched.map(escapedPathOf));
@@ -387,6 +395,18 @@ const restoreUnderIndexLock = async (
   } finally {
     await lock.release();
   }
+};
+
+// Git's checkout_paths skips skip-worktree entries before it matches the
+// pathspec, so a path only they name is refused like any unknown one.
+const outsideSkipWorktree = (
+  universe: ReadonlyArray<IndexPath>,
+  currentIndex: GitIndex,
+): ReadonlyArray<IndexPath> => {
+  const skipped = new Set<IndexPathKey>(
+    currentIndex.entries.filter((entry) => entry.flags.skipWorktree).map(indexPathKey),
+  );
+  return universe.filter((entry) => !skipped.has(indexPathKey(entry)));
 };
 
 // One matcher pass over the universe: what the spec selects, and which
