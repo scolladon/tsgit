@@ -6,6 +6,7 @@ import { resolveWorktreePath } from '../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileSystem } from '../../../ports/file-system.js';
 import type { AlternatePathProbe } from '../../../ports/object-source-access.js';
+import { refStorageOf } from '../../primitives/internal/gitlink-ref-storage.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { hasUsableHead, requireWorkTree } from '../../primitives/internal/repo-state.js';
 import { deriveGitlinkContext } from '../../primitives/internal/submodule-context.js';
@@ -37,8 +38,14 @@ export const gitlinkHeadOf = async (
   const checkout = joinPath(requireWorkTree(ctx, 'add'), path);
   const located = await locateCheckout(ctx, checkout, path);
   if (located === undefined) return undefined;
-  const child = deriveGitlinkContext(ctx, located.gitDir, path, { fs: located.fs });
-  if (!(await hasUsableHead(child))) throw notARepository(located.shown);
+  const { gitDir, fs } = located;
+  // HEAD is a plain file under either ref backend, so it is judged before the config is read.
+  const unread = deriveGitlinkContext(ctx, gitDir, path, { fs });
+  if (!(await hasUsableHead(unread))) throw notARepository(located.shown);
+  const child = deriveGitlinkContext(ctx, gitDir, path, {
+    fs,
+    refStorage: await refStorageOf(fs, gitDir),
+  });
   return resolveRefOrMissing(child, 'HEAD');
 };
 

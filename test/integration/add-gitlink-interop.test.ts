@@ -167,6 +167,17 @@ const behindSymlinkedParent: Setup = async (repo, upstream) => {
   await symlink(`../${path.basename(out)}`, path.join(repo, 'd'));
 };
 
+/** An embedded repository whose refs live in reftable, recorded as a gitlink and then moved. */
+const embeddedReftable: Setup = async (repo) => {
+  await writeFiles(repo, { k: 'k\n' });
+  const sub = path.join(repo, 'sub');
+  runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', sub]);
+  commitIn(sub, 'first');
+  runGit(['-C', repo, 'add', '.']);
+  commitIn(repo, 'super');
+  commitIn(sub, 'moved');
+};
+
 const movedUnderAnotherName: Setup = async (repo, upstream) => {
   await writeFiles(repo, { k: 'k\n' });
   runGit(['-C', repo, 'add', 'k']);
@@ -315,6 +326,11 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       {
         label: 'a moved repository whose .git is a symlink outside the superproject',
         setup: movedGitdirReachedBy(outsideTheSuperproject, linkTo),
+        spec: ['.'],
+      },
+      {
+        label: 'an embedded repository on reftable that moved',
+        setup: embeddedReftable,
         spec: ['.'],
       },
       {

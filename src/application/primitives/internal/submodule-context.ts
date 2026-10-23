@@ -1,6 +1,6 @@
 import { NO_PARSER_OFFSET } from '../../../domain/git-index/path-validator.js';
 import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
-import type { Context } from '../../../ports/context.js';
+import type { Context, RepositoryLayout } from '../../../ports/context.js';
 import type { FileSystem } from '../../../ports/file-system.js';
 import { deriveContext } from '../derive-context.js';
 import { indexPathRulesOf } from './index-path-rules.js';
@@ -29,6 +29,8 @@ const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): C
 /** What a gitlink's repository needs beyond the parent's own: the filesystem that reaches it. */
 interface GitlinkReach {
   readonly fs?: FileSystem;
+  /** The ref backend the repository declares; a submodule command assumes `files`. */
+  readonly refStorage?: RepositoryLayout['refStorage'];
 }
 
 /**
@@ -56,7 +58,8 @@ export const deriveGitlinkContext = (
       // derivation does not run the Stage-2 scan, so it defaults to
       // 'files' by explicit assignment rather than copying the parent's
       // value (unlike the worktree derivation, which shares one repository).
-      refStorage: 'files',
+      // A caller that has read the child's config passes what it declares.
+      refStorage: reach.refStorage ?? 'files',
       // Stryker disable next-line ConditionalExpression,BooleanLiteral,EqualityOperator,ObjectLiteral: equivalent — when `homeDir` is undefined the always-true mutant yields `{ homeDir: undefined }`, indistinguishable from the `{}` branch on `layout.homeDir`; the conditional only exists to satisfy `exactOptionalPropertyTypes`. The killable always-`{}` half is covered by the homeDir-propagation tests.
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
       ...inheritedAcceptanceVerdicts(ctx.layout),
