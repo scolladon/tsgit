@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { serializeAndHash } from '../../../../src/application/primitives/internal/serialize-and-hash.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { notADirectory, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   buildRefBlock,
@@ -411,28 +411,26 @@ describe('add over a gitlink whose .git is a symlink that loops', () => {
 });
 
 describe('add over a gitlink whose HEAD cannot be resolved', () => {
+  // The loose branch is left as a files backend would resolve it, so a stack that is never consulted stages the moved commit.
   describe.each([
     {
       label: 'a reftable stack naming a table that is missing',
       setup: {
-        head: REFTABLE_HEAD,
-        branch: null,
+        head: MODULE_HEAD,
         moduleFiles: { config: REFTABLE_CONFIG, 'reftable/tables.list': `${TABLE_NAME}\n` },
       },
     },
     {
       label: 'a reftable stack list that is garbage',
       setup: {
-        head: REFTABLE_HEAD,
-        branch: null,
+        head: MODULE_HEAD,
         moduleFiles: { config: REFTABLE_CONFIG, 'reftable/tables.list': 'garbage\n' },
       },
     },
     {
       label: 'a reftable table of four bytes',
       setup: {
-        head: REFTABLE_HEAD,
-        branch: null,
+        head: MODULE_HEAD,
         moduleFiles: {
           config: REFTABLE_CONFIG,
           'reftable/tables.list': `${TABLE_NAME}\n`,
@@ -463,6 +461,40 @@ describe('add over a gitlink whose HEAD cannot be resolved', () => {
         expect(result.modified).toEqual(['k']);
         expect((await entryOf(ctx, 'sub'))?.id).toBe(recorded);
         expect((await entryOf(ctx, 'sub'))?.mode).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+});
+
+describe('add over a gitlink whose repository keeps its refs in a reftable stack', () => {
+  describe('Given an embedded repository whose intact stack names the branch at another commit than recorded', () => {
+    describe('When the whole tree is added', () => {
+      it('Then the gitlink is staged at the commit the stack holds', async () => {
+        // Arrange
+        const ctx = await superproject({
+          checkout: 'embedded',
+          head: REFTABLE_HEAD,
+          branch: null,
+          moduleFiles: { config: REFTABLE_CONFIG },
+        });
+        await layOutStack(
+          ctx,
+          `${ctx.layout.workDir}/sub/.git/reftable`,
+          reftableHolding(
+            { name: 'HEAD', value: { kind: 'symbolic', target: 'refs/heads/main' } },
+            {
+              name: 'refs/heads/main',
+              value: { kind: 'direct', id: new Uint8Array(20).fill(0xbb) },
+            },
+          ),
+        );
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['.']);
+
+        // Assert
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(MOVED_HEAD);
       });
     });
   });
@@ -946,6 +978,58 @@ describe('add over a gitlink whose repository lacks objects or refs', () => {
 
         // Assert
         expect((await entryOf(ctx, 'sub'))?.id).toBe(MOVED_HEAD);
+      });
+    });
+  });
+});
+
+describe('add over a gitlink whose probing fails for a reason that is no missing repository', () => {
+  describe('Given a module branch whose read fails with a plain error', () => {
+    describe('When the whole tree is added', () => {
+      it('Then that failure surfaces untouched and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout: 'embedded' });
+        const failure = new Error('disk gone');
+        const open = ctx.fs.openWithNoFollow.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'openWithNoFollow').mockImplementation((target, mode) =>
+          target.endsWith('/sub/.git/refs/heads/main')
+            ? Promise.reject(failure)
+            : open(target, mode),
+        );
+        const before = (await readIndex(ctx)).entries.map(({ id }) => id);
+        const sut = add;
+
+        // Act
+        const outcome = sut(ctx, ['.']);
+
+        // Assert
+        await expect(outcome).rejects.toBe(failure);
+        expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a .git symlink whose stat fails with another refusal than a missing target', () => {
+    describe('When the whole tree is added', () => {
+      it('Then that refusal surfaces with its data and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout: 'linked' });
+        const stat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation((target) =>
+          target.endsWith('/sub/.git') ? Promise.reject(notADirectory(target)) : stat(target),
+        );
+        const before = (await readIndex(ctx)).entries.map(({ id }) => id);
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['.']));
+
+        // Assert
+        expect(refusal).toEqual({
+          code: 'NOT_A_DIRECTORY',
+          path: `${ctx.layout.workDir}/sub/.git`,
+        });
+        expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
       });
     });
   });

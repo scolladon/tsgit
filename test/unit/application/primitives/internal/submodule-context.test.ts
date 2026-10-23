@@ -274,26 +274,36 @@ describe('Given a gitlink repository reached through its own filesystem', () => 
   });
 
   describe.each([
-    { label: 'another directory', commonDir: '/shared/.git', expected: '/shared/.git' },
+    {
+      label: 'another directory',
+      commonDir: '/shared/.git',
+      expected: '/shared/.git',
+      named: '/shared/.git',
+    },
     {
       label: 'the git directory itself',
       commonDir: '/elsewhere/.git',
       expected: '/elsewhere/.git',
+      named: undefined,
     },
-  ])('When the gitlink context is given $label as its common dir', ({ commonDir, expected }) => {
-    it('Then the child resolves shared refs there', () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      const sut = deriveGitlinkContext;
+  ])(
+    'When the gitlink context is given $label as its common dir',
+    ({ commonDir, expected, named }) => {
+      it('Then the child resolves shared refs there', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = deriveGitlinkContext;
 
-      // Act
-      const child = sut(ctx, '/elsewhere/.git', 'sub' as FilePath, { commonDir });
+        // Act
+        const child = sut(ctx, '/elsewhere/.git', 'sub' as FilePath, { commonDir });
 
-      // Assert
-      expect(commonGitDir(child)).toBe(expected);
-      expect(child.layout.gitDir).toBe('/elsewhere/.git');
-    });
-  });
+        // Assert
+        expect(commonGitDir(child)).toBe(expected);
+        expect(child.layout.commonDir).toBe(named);
+        expect(child.layout.gitDir).toBe('/elsewhere/.git');
+      });
+    },
+  );
 
   describe('When the gitlink context is derived without a common dir', () => {
     it('Then the child layout names none', () => {
