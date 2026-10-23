@@ -169,8 +169,9 @@ export interface AddResult {
  * Stage paths in the index. Two modes:
  *
  * - **Literal-path mode** (`paths` non-empty, `all` falsy): every path is
- *  validated, read, hashed, and staged. Untracked missing paths reject the whole
- *  call; a tracked path missing from disk is staged as a deletion and lands in
+ *  validated, read, hashed, and staged, except an untracked path the ignore
+ *  rules exclude, which is reported in `ignored` instead unless `force`.
+ *  Untracked missing paths reject the whole call; a tracked path missing from disk is staged as a deletion and lands in
  *  `removed`, as are the tracked paths a glob or directory names.
  * - **Bulk mode** (`paths` empty, `all === true`): walk the working tree,
  *  stage every modified/new tracked file plus every untracked, non-ignored
@@ -262,8 +263,9 @@ const dispatchPathspec = async (
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
   const walks = resolved.hasGlob || holdsExclusion(resolved.matcher);
   const stats = walks ? undefined : await literalStats(ctx, literalMustMatch);
-  if (stats !== undefined) return addLiteralOnly(ctx, resolved, stats, scope);
-  return addByPathspec(ctx, resolved, await repoIgnoreOf(ctx, opts), scope);
+  const repoIgnore = await repoIgnoreOf(ctx, opts);
+  if (stats !== undefined) return addLiteralOnly(ctx, resolved, stats, repoIgnore, scope);
+  return addByPathspec(ctx, resolved, repoIgnore, scope);
 };
 
 const holdsExclusion = (matcher: Pathspec): boolean => matcher.some((entry) => entry.negated);
@@ -272,6 +274,7 @@ const addLiteralOnly = async (
   ctx: Context,
   resolved: CommandPathspec,
   stats: LiteralStats,
+  repoIgnore: IgnorePredicate,
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
@@ -286,7 +289,12 @@ const addLiteralOnly = async (
       stageZeroBeside,
       ensurePromisorConfigValid,
     };
-    const { sparse, stageable } = splitSparseLiterals(resolved, state.entries);
+    const { sparse, stageable: unfiltered } = splitSparseLiterals(resolved, state.entries);
+    const { ignored, stageable } = await splitIgnoredLiterals(
+      unfiltered,
+      state.entries,
+      repoIgnore,
+    );
     const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
       staging,
       sorted,
@@ -294,7 +302,7 @@ const addLiteralOnly = async (
       stats,
     );
     await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
-    return { ...result, sparse: sparse.map(({ spelling }) => spelling), ignored: [] };
+    return { ...result, sparse: sparse.map(({ spelling }) => spelling), ignored };
   } finally {
     await lock.release();
   }
@@ -318,6 +326,49 @@ const splitSparseLiterals = (
   const literalMustMatch = resolved.literalMustMatch.filter((body) => !sparseBodies.has(body));
   return { sparse, stageable: { ...resolved, literalMustMatch } };
 };
+
+/**
+ * A tracked literal stays staged and reports the ignored directory above it; an
+ * untracked one that a rule hides is reported and left out of staging.
+ */
+const splitIgnoredLiterals = async (
+  resolved: ResolvedPathspec,
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  repoIgnore: IgnorePredicate,
+): Promise<{ readonly ignored: FilePath[]; readonly stageable: ResolvedPathspec }> => {
+  const reported = new Set<FilePath>();
+  const stageable: FilePath[] = [];
+  for (const body of resolved.literalMustMatch) {
+    const tracked = entries.has(keyOfPath(body));
+    const hidden = tracked
+      ? await firstIgnoredAncestorOf(repoIgnore, body)
+      : await firstIgnoredOf(repoIgnore, body, false);
+    if (hidden !== undefined) reported.add(hidden);
+    if (tracked || hidden === undefined) stageable.push(body);
+  }
+  return { ignored: [...reported].sort(), stageable: { ...resolved, literalMustMatch: stageable } };
+};
+
+/** The shallowest proper ancestor directory a rule hides: git prunes there. */
+const firstIgnoredAncestorOf = async (
+  repoIgnore: IgnorePredicate,
+  path: FilePath,
+): Promise<FilePath | undefined> => {
+  const segments = path.split(SEPARATOR);
+  for (let depth = 1; depth < segments.length; depth++) {
+    const ancestor = segments.slice(0, depth).join(SEPARATOR) as FilePath;
+    if (await repoIgnore(ancestor, true)) return ancestor;
+  }
+  return undefined;
+};
+
+const firstIgnoredOf = async (
+  repoIgnore: IgnorePredicate,
+  path: FilePath,
+  isDirectory: boolean,
+): Promise<FilePath | undefined> =>
+  (await firstIgnoredAncestorOf(repoIgnore, path)) ??
+  ((await repoIgnore(path, isDirectory)) ? path : undefined);
 
 /** Stage the literals, then drop what a non-directory they inserted now replaces. */
 const stageLiteralsOver = async (

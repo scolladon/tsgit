@@ -1734,12 +1734,9 @@ describe('add', () => {
 
   describe('Given a literal path that .gitignore would exclude', () => {
     describe('When add', () => {
-      it('Then it is staged anyway (literal-path mode bypasses ignore)', async () => {
-        // Arrange — `ignored.txt` is a pure literal that names an existing
-        // file, so dispatchPathspec routes through addLiteralOnly which does
-        // NOT consult .gitignore. Kills L86 (`!hasGlob &&` guard + block) and
-        // L148 routing: a mutant that always falls through to addByPathspec
-        // would let the ignore predicate filter `ignored.txt` out.
+      it('Then it is reported as ignored and not staged', async () => {
+        // Arrange — `ignored.txt` is an untracked pure literal, so it routes
+        // through addLiteralOnly, which consults the ignore rules as git does.
         const ctx = await seedFreshRepo({ 'ignored.txt': 'secret' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ignored.txt\n');
 
@@ -1747,9 +1744,10 @@ describe('add', () => {
         const result = await add(ctx, ['ignored.txt']);
 
         // Assert
-        expect(result.added).toEqual(['ignored.txt']);
+        expect(result.added).toEqual([]);
+        expect(result.ignored).toEqual(['ignored.txt']);
         const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual(['ignored.txt']);
+        expect(idx.entries.map((e) => e.path)).toEqual([]);
       });
     });
   });

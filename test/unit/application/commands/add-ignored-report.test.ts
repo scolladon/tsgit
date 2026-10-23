@@ -175,6 +175,147 @@ describe('add reporting the ignored entries a pathspec reaches', () => {
     });
   });
 
+  describe('Given an ignored log', () => {
+    describe('When the log is added as the only literal', () => {
+      it('Then it is reported and nothing is staged', async () => {
+        // Arrange
+        const ctx = await untrackedRepo();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x.log']);
+
+        // Assert
+        expect(result.added).toEqual([]);
+        expect(result.ignored).toEqual(['x.log']);
+        expect(await indexPaths(ctx)).toEqual([]);
+        expect(await looseObjectCount(ctx)).toBe(0);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'an ignored log then a text file', spec: ['x.log', 'real.txt'], ignored: ['x.log'] },
+    { label: 'a text file then an ignored log', spec: ['real.txt', 'x.log'], ignored: ['x.log'] },
+    { label: 'two ignored logs, unsorted', spec: ['y.log', 'x.log'], ignored: ['x.log', 'y.log'] },
+    { label: 'a file beneath the ignored directory', spec: ['d/q.txt'], ignored: ['d'] },
+  ])('Given nothing tracked and the literals $label', ({ spec, ignored }) => {
+    describe('When they are added', () => {
+      it('Then only the unignored literal is staged and the ignored ones are reported sorted', async () => {
+        // Arrange
+        const ctx = await untrackedRepo();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, spec);
+
+        // Assert
+        expect(result.ignored).toEqual(ignored);
+        expect(await indexPaths(ctx)).toEqual(spec.includes('real.txt') ? ['real.txt'] : []);
+      });
+    });
+  });
+
+  describe('Given an ignored log', () => {
+    describe('When the log is added as the only literal with force', () => {
+      it('Then it is staged and nothing is reported', async () => {
+        // Arrange
+        const ctx = await untrackedRepo();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x.log'], { force: true });
+
+        // Assert
+        expect(result.added).toEqual(['x.log']);
+        expect(result.ignored).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a tracked file beneath an ignored directory and an untracked sibling', () => {
+    describe('When the tracked file is added as the only literal', () => {
+      it('Then the directory is reported and the tracked file is restaged', async () => {
+        // Arrange
+        const ctx = await trackedUnderIgnoredDirectory();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d/x.txt']);
+
+        // Assert
+        expect(result.ignored).toEqual(['d']);
+        expect(result.modified).toEqual(['d/x.txt']);
+        expect(result.added).toEqual([]);
+      });
+    });
+
+    describe('When the untracked sibling is added as the only literal', () => {
+      it('Then the directory is reported and nothing is staged', async () => {
+        // Arrange
+        const ctx = await trackedUnderIgnoredDirectory();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d/new.txt']);
+
+        // Assert
+        expect(result.ignored).toEqual(['d']);
+        expect(result.added).toEqual([]);
+        expect(result.modified).toEqual([]);
+      });
+    });
+
+    describe('When both are added', () => {
+      it('Then the directory is reported once and only the tracked file is restaged', async () => {
+        // Arrange
+        const ctx = await trackedUnderIgnoredDirectory();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d/x.txt', 'd/new.txt']);
+
+        // Assert
+        expect(result.ignored).toEqual(['d']);
+        expect(result.modified).toEqual(['d/x.txt']);
+        expect(result.added).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a tracked log and an untracked log that a rule hides', () => {
+    describe('When both are added as literals', () => {
+      it('Then the untracked one is reported and the tracked one is restaged', async () => {
+        // Arrange
+        const ctx = await trackedUnderIgnoredLog();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['t.log', 'u.log']);
+
+        // Assert
+        expect(result.ignored).toEqual(['u.log']);
+        expect(result.modified).toEqual(['t.log']);
+        expect(result.added).toEqual([]);
+      });
+    });
+
+    describe('When only the tracked one is added as a literal', () => {
+      it('Then it is restaged and nothing is reported', async () => {
+        // Arrange
+        const ctx = await trackedUnderIgnoredLog();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['t.log']);
+
+        // Assert
+        expect(result.ignored).toEqual([]);
+        expect(result.modified).toEqual(['t.log']);
+      });
+    });
+  });
+
   describe('Given a tracked file beneath an ignored directory', () => {
     describe('When a single-character wildcard reaching only the directory and a clean file is added', () => {
       it('Then nothing is reported and nothing is staged', async () => {

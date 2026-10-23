@@ -154362,7 +154362,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " falsy): every path is\n validated, read, hashed, and staged. Untracked missing paths reject the whole\n call; a tracked path missing from disk is staged as a deletion and lands in\n "
+										"text": " falsy): every path is\n validated, read, hashed, and staged, except an untracked path the ignore\n rules exclude, which is reported in "
+									},
+									{
+										"kind": "code",
+										"text": "`ignored`"
+									},
+									{
+										"kind": "text",
+										"text": " instead unless "
+									},
+									{
+										"kind": "code",
+										"text": "`force`"
+									},
+									{
+										"kind": "text",
+										"text": ".\n Untracked missing paths reject the whole call; a tracked path missing from disk is staged as a deletion and lands in\n "
 									},
 									{
 										"kind": "code",

@@ -82,6 +82,12 @@ const trackedUnderIgnoredDirectory: Setup = trackedThen({ 'd/x.txt': 'a\n', k: '
   'd/new.txt': 'n\n',
 });
 
+/** t.log and k tracked, then every log hidden, t.log rewritten and u.log untracked. */
+const trackedLogBesideUntrackedLog: Setup = trackedThen({ 't.log': 'a\n', k: 'k\n' }, '*.log\n', {
+  't.log': 'bb\n',
+  'u.log': 'u\n',
+});
+
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'add reporting the ignored entries a pathspec reaches',
   () => {
@@ -195,6 +201,44 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         setup: untracked,
         spec: ['x.log', '*.txt'],
       },
+      { label: 'an ignored literal alone', setup: untracked, spec: ['x.log'] },
+      {
+        label: 'an ignored literal then a text file',
+        setup: untracked,
+        spec: ['x.log', 'real.txt'],
+      },
+      {
+        label: 'a text file then an ignored literal',
+        setup: untracked,
+        spec: ['real.txt', 'x.log'],
+      },
+      { label: 'two unsorted ignored literals', setup: untracked, spec: ['y.log', 'x.log'] },
+      { label: 'a literal beneath the ignored directory', setup: untracked, spec: ['d/q.txt'] },
+      {
+        label: 'a tracked literal beneath the ignored directory',
+        setup: trackedUnderIgnoredDirectory,
+        spec: ['d/x.txt'],
+      },
+      {
+        label: 'an untracked literal beneath the ignored directory over a tracked file',
+        setup: trackedUnderIgnoredDirectory,
+        spec: ['d/new.txt'],
+      },
+      {
+        label: 'both of those literals',
+        setup: trackedUnderIgnoredDirectory,
+        spec: ['d/x.txt', 'd/new.txt'],
+      },
+      {
+        label: 'a tracked and an untracked log that a rule hides',
+        setup: trackedLogBesideUntrackedLog,
+        spec: ['t.log', 'u.log'],
+      },
+      {
+        label: 'a tracked log that a rule hides, as the only literal',
+        setup: trackedLogBesideUntrackedLog,
+        spec: ['t.log'],
+      },
       { label: 'the ignored directory', setup: untracked, spec: ['d'] },
       { label: 'the ignored directory spelled with a slash', setup: untracked, spec: ['d/'] },
       {
@@ -286,6 +330,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     describe.each([
       { label: 'a wildcard on the ignored suffix', setup: untracked, spec: ['*.log'] },
       { label: 'the whole tree', setup: untracked, spec: ['.'] },
+      { label: 'an ignored literal alone', setup: untracked, spec: ['x.log'] },
       { label: 'the ignored directory', setup: untracked, spec: ['d'] },
       { label: 'an ignored literal beside a wildcard', setup: untracked, spec: ['x.log', '*.txt'] },
     ])('Given every log and a directory are ignored and $label', ({ setup, spec }) => {
