@@ -77,7 +77,7 @@ const result = await repo.add([], { all: true });
 console.log(result.added, result.modified, result.removed);
 ```
 
-Walks the working tree, stages every change. The host `.git` is skipped; embedded clones (directories with a `.git` child) are not auto-staged. Symlinks stage as mode `120000` (lstat-only, never followed). Files larger than 256 MiB throw `WORKING_TREE_FILE_TOO_LARGE` with no partial index commit.
+Walks the working tree, stages every change. The host `.git` is skipped; an embedded repository (a directory holding another repository) stages as a `160000` gitlink at its checked-out commit, as git does — see [add](commands/add.md#embedded-repositories). Symlinks stage as mode `120000` (lstat-only, never followed). Files larger than 256 MiB throw `WORKING_TREE_FILE_TOO_LARGE` with no partial index commit.
 
 Ignore evaluation honours the standard sources in order: `core.excludesFile`, `.git/info/exclude`, repo-root `.gitignore`, nested `.gitignore` per directory.
 
