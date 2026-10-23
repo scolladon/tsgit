@@ -139,7 +139,7 @@ const assertDiscoveryAndRoot = async (ctx: Context): Promise<FilePath> => {
  * failed `open`, so the refusal outcome matches regardless of the failure
  * class.
  */
-const hasUsableHead = async (ctx: Context): Promise<boolean> => {
+export const hasUsableHead = async (ctx: Context): Promise<boolean> => {
   const head = await validateHead(ctx);
   if (head.kind === 'symlink') return isRefsLinkText(head.linkText);
   if (head.kind === 'file') return isValidHeadContent(head.content);

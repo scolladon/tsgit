@@ -94,6 +94,7 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { writeObject } from '../primitives/write-object.js';
 import type { IgnorePredicate } from './internal/add-ignore.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
+import { gitlinkHeadOf } from './internal/gitlink-head.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   type CommandPathspec,
@@ -1206,8 +1207,9 @@ const stageIgnoredWalk = async (
     ctx,
     unseen.filter((positive) => !sparse.includes(positive)),
   );
+  const gitlinks = await stagedGitlinks(ctx, existing, matcher);
   const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages, verdicts);
-  const outcomes = await stageWalkedEntries(
+  const staged = await stageWalkedEntries(
     ctx,
     [...walked, ...hidden],
     existing,
@@ -1216,6 +1218,7 @@ const stageIgnoredWalk = async (
     indexMtime,
     ensurePromisorConfigValid,
   );
+  const outcomes = [...gitlinks, ...staged];
   return {
     existing,
     unmergedStages,
@@ -1225,6 +1228,68 @@ const stageIgnoredWalk = async (
     verdicts,
     sparse: sparse.map(({ spelling }) => spelling),
     ignored: collector.ignored(),
+  };
+};
+
+/**
+ * git's index-side pass restages a gitlink whose checkout holds another commit
+ * than the one recorded. A skip-worktree or lossy entry is never probed; the
+ * earliest entry's refusal surfaces, whichever probe settles first.
+ */
+const stagedGitlinks = async (
+  ctx: Context,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  matcher: ResolvedPathspec['matcher'],
+): Promise<WalkOutcome[]> => {
+  const candidates = [...existing.values()].filter(
+    (entry) =>
+      entry.mode === FILE_MODE.GITLINK &&
+      entry.flags.stage === 0 &&
+      !entry.flags.skipWorktree &&
+      !isLossy(entry) &&
+      selectsGitlink(matcher, entry.path),
+  );
+  const probed = await boundedMapFor(ctx, 'ioBound', candidates, (entry) =>
+    settled(movedGitlinkOf(ctx, entry)),
+  );
+  return firstFailureOrValues(probed).filter((outcome) => outcome !== undefined);
+};
+
+/** The probe's result as a value, so the pool's timing never picks which refusal surfaces. */
+const settled = <R>(task: Promise<R>): Promise<Settled<R>> =>
+  task.then(
+    (value): Settled<R> => ({ kind: 'done', value }),
+    (error: unknown): Settled<R> => ({ kind: 'failed', error }),
+  );
+
+/** git matches a gitlink as a directory, so `sub/` reaches it as well as `sub`; the last entry to match wins. */
+const selectsGitlink = (matcher: ResolvedPathspec['matcher'], path: FilePath): boolean =>
+  matcher.reduce(
+    (selected, spec) =>
+      spec.compiled.test(path) ||
+      (namesDirectoryOnly(spec.body as FilePath) && spec.compiled.test(`${path}${SEPARATOR}`))
+        ? !spec.negated
+        : selected,
+    false,
+  );
+
+/**
+ * The gitlink restaged at its checkout's HEAD, as git's `resolve_gitlink_ref` reads it.
+ * `undefined` when the path is no longer a directory (the walk stages what replaced it),
+ * when nothing is checked out, or when the checkout still holds the recorded commit.
+ */
+const movedGitlinkOf = async (
+  ctx: Context,
+  { path, id }: IndexEntry,
+): Promise<WalkOutcome | undefined> => {
+  const stat = await lstatOrBeneathFile(ctx, path);
+  if (stat === undefined || !stat.isDirectory) return undefined;
+  const head = await gitlinkHeadOf(ctx, path);
+  if (head === undefined || head === id) return undefined;
+  return {
+    kind: 'modified',
+    path,
+    entry: indexEntryFromStat(stat, FILE_MODE.GITLINK, head, path),
   };
 };
 
@@ -1398,7 +1463,8 @@ export const addAll = async (
       state.unmergedStages,
       indexVerdicts(WHOLE_TREE_MATCHER, existing),
     );
-    const outcomes = await stageWalkedEntries(
+    const gitlinks = await stagedGitlinks(ctx, existing, WHOLE_TREE_MATCHER);
+    const staged = await stageWalkedEntries(
       ctx,
       [...walkedEntries, ...hidden],
       existing,
@@ -1407,6 +1473,7 @@ export const addAll = async (
       state.indexMtime,
       ensurePromisorConfigValid,
     );
+    const outcomes = [...gitlinks, ...staged];
     const tally = tallyWalkOutcomes(existing, outcomes, state.stageZeroBeside);
     const removedEntries = await collectRemovedEntries(ctx, existing, seen);
     const walked = { sorted, existing, outcomes };

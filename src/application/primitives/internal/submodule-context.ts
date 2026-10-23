@@ -22,8 +22,19 @@ import { requireWorkTree } from './repo-state.js';
  * session and every identity-keyed cache starts cold, unlike the worktree
  * derivation above.
  */
-const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): Context => {
-  const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
+const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): Context =>
+  deriveGitlinkContext(ctx, `${ctx.layout.gitDir}/modules/${name}`, treeRelPath);
+
+/**
+ * Derive a child `Context` for the repository a gitlink's checkout leads to:
+ * working tree at `${workDir}/<treeRelPath>`, object store at `gitDir`, wherever
+ * that is. The caller vouches for `gitDir`; nothing is probed here.
+ */
+export const deriveGitlinkContext = (
+  ctx: Context,
+  gitDir: string,
+  treeRelPath: FilePath,
+): Context => {
   const workDir = joinPath(requireWorkTree(ctx, 'deriveSubmoduleContext'), treeRelPath);
   const { promisor: _promisor, hooks: _hooks, ...rest } = ctx;
   return deriveContext(rest, {
