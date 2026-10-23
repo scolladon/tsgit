@@ -17,7 +17,7 @@
  *   unique:         tsgit's status columns reconstruct canonical `git status --porcelain`
  *   interopSurface: status
  */
-import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -443,5 +443,66 @@ describe.skipIf(!GIT_AVAILABLE)('status interop — porcelain v2', () => {
       },
       SETUP_TIMEOUT,
     );
+  });
+});
+
+/** A recorded gitlink `sub` holding committed `u` and `x`, its `.git` moved out and then reached through `reach`. */
+const gitlinkHoldingFiles = async (
+  slug: string,
+  reach: (dotGit: string, moved: string) => Promise<void>,
+): Promise<{ dir: string; ctx: Context }> => {
+  const { dir, ctx } = await baseRepo(slug);
+  const sub = path.join(dir, 'sub');
+  git(dir, 'init', '-q', '-b', 'main', sub);
+  git(sub, 'config', 'user.name', 'A U Thor');
+  git(sub, 'config', 'user.email', 'author@example.com');
+  await writeFile(path.join(sub, 'u'), 'u\n');
+  await writeFile(path.join(sub, 'x'), 'x\n');
+  git(sub, 'add', 'u', 'x');
+  runGit(['-C', sub, 'commit', '-q', '-m', 'files'], { env: datedEnv() });
+  git(dir, 'add', 'sub');
+  runGit(['-C', dir, 'commit', '-q', '-m', 'record'], { env: datedEnv() });
+  const moved = `${dir}-gitdir`;
+  createdDirs.push(moved);
+  await rename(path.join(sub, '.git'), moved);
+  await reach(path.join(sub, '.git'), moved);
+  return { dir, ctx };
+};
+
+describe.skipIf(!GIT_AVAILABLE)('status interop — gitlink directory', () => {
+  describe.each([
+    {
+      label: 'a symlink to a repository',
+      slug: 'link',
+      reach: (dotGit: string, moved: string) => symlink(moved, dotGit),
+    },
+    { label: 'no .git at all', slug: 'bare', reach: async () => undefined },
+    {
+      label: 'a gitfile',
+      slug: 'file',
+      reach: (dotGit: string, moved: string) => writeFile(dotGit, `gitdir: ${moved}\n`),
+    },
+  ])('Given a recorded gitlink holding committed files behind $label', ({ slug, reach }) => {
+    describe('When status runs', () => {
+      it(
+        'Then it lists the same untracked paths as git',
+        async () => {
+          // Arrange
+          const { dir, ctx } = await gitlinkHoldingFiles(`gitlink-${slug}`, reach);
+          const sut = statusCmd;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          const untrackedByGit = gitPorcelain(dir)
+            .split('\n')
+            .filter((line) => line.startsWith('?? '))
+            .map((line) => line.slice(3));
+          expect([...result.untracked].sort()).toEqual(untrackedByGit);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
   });
 });

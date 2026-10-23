@@ -9,7 +9,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { tokenizeConfig } from '../../../src/domain/config/config-ini.js';
-import { enumerateExtensionEntries } from '../../../src/repository/read-repository-format.js';
+import { enumerateExtensionEntries } from '../../../src/domain/config/repository-format-scan.js';
 import { arbConfigKey, arbSegment } from './arbitraries.js';
 
 const COMPOSITION_NUM_RUNS = 100;

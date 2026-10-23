@@ -13,7 +13,7 @@ evidence:
 source: { run: gc-size-lying-loose-blob, phase: review, date: 2026-10-21 }
 status: active
 supersedes: []
-last-verified: 2026-10-21
+last-verified: 2026-10-23
 ---
 # 006 — Size caps at the headroom floor trip again on the review round
 
@@ -46,3 +46,4 @@ Record each raise in the design's raise section and the tarball cap's comment, w
 `.size-limit.json` — the rows raised twice on this branch.
 `docs/design/bundle-size-optimization.md` — the two raise blocks of the gc size-lying change.
 `tooling/verify-tarball.sh` — the cap block's attribution lines.
+`docs/design/bundle-size-optimization.md` — the pathspec-glob-dialect raises: a plan part raised the caps before the review round, and the review fixes crossed three rows again by 26–47 B ("Size-limit raise — the embedded-repository review fixes").

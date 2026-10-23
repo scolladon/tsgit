@@ -669,3 +669,105 @@ measured against 1 440 KiB).
 | Browser bundle (no-build) | 341 961 | 342 003 | +42 | 342.0 kB | 342.1 kB | every layer below |
 | Full library | 399 490 | 399 645 | +155 | 399.5 kB | 399.7 kB | every layer below |
 | Chunks: primitives | 108 066 | 108 128 | +62 | 108.1 kB | 108.2 kB | the local header peek (`peekDeclaredObjectHeader`, no fetch, no rescan), the peeled want's kind carried out of the tag-chain resolver so the closure probes a want once, and the header-only blob hop in `peel` |
+
+## Size-limit raise — the pathspec glob dialect
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`),
+gzip bytes, against `main` (`8dd442ee`) at the same toolchain. Each failing row is raised by
+its measured delta, rounded up to the next 0.1 kB; every other row is unchanged.
+
+| Row | main | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 342 024 | 342 413 | +389 | 342.1 kB | 342.5 kB | every layer below |
+| Full library | 399 484 | 400 108 | +624 | 399.7 kB | 400.4 kB | every layer below |
+| Chunks: domain | 126 169 | 126 289 | +120 | 126.2 kB | 126.4 kB | the dialect matcher and its fast paths, the refusal helpers, `subpathOffset`, offset by the removed `scanStar`, `containsGlob` and `compileLiteral`/`compileDirectory` |
+| Chunks: commands-internal | 82 088 | 82 203 | +115 | 82.1 kB | 82.3 kB | the index-side glob pass, offset by the removed `enforceLiteralMustMatch` |
+| Command (add) | 4 416 | 4 707 | +291 | 4.6 kB | 4.9 kB | the glob-aware staging pass and its refusal helpers |
+
+The npm tarball cap moved 1440 → 1442 KiB (1 476 231 B measured); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.
+
+The review and refactoring rounds of the same change crossed all five rows again, measured the
+same way on a clean build; each is raised once more to the next 0.1 kB. The tarball cap moved
+1442 → 1444 KiB (1 477 954 B measured); its attribution lives in `tooling/verify-tarball.sh`'s
+cap block.
+
+| Row | before the fixes | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 342 413 | 342 984 | +571 | 342.5 kB | 343 kB | every layer below |
+| Full library | 400 108 | 400 646 | +538 | 400.4 kB | 400.7 kB | every layer below |
+| Chunks: domain | 126 289 | 126 480 | +191 | 126.4 kB | 126.5 kB | the one-pass `pathspecVerdict`, the literal-suffix post-filter on the general wildcard shape, and the ping-pong rows with their all-zero early exit in the ref-glob matcher |
+| Chunks: commands-internal | 82 203 | 82 326 | +123 | 82.3 kB | 82.4 kB | the shared positive tracker (`trackPositives`), whose fail-closed `seen` replaced the per-command bookkeeping of `rm`, `add` and `checkout` |
+| Command (add) | 4 707 | 4 991 | +284 | 4.9 kB | 5 kB | the literal on-disk escape with git's ancestor-ignore check and the directory-only trailing-slash rule, and the index-side pass staging a hidden conflicted path |
+
+The folded add, checkout and rm fixes crossed five rows again, measured the same way on a clean
+build against the tree before the fold; each is raised by its measured delta, rounded up to the
+next 0.1 kB. The tarball cap moved 1444 → 1447 KiB (1 481 458 B measured); its attribution lives
+in `tooling/verify-tarball.sh`'s cap block.
+
+| Row | before the fold | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 342 920 | 343 962 | +1 042 | 343 kB | 344.1 kB | every layer below |
+| Full library | 400 509 | 401 828 | +1 319 | 400.7 kB | 402.1 kB | every layer below |
+| Chunks: domain | 126 480 | 126 552 | +72 | 126.5 kB | 126.6 kB | the host-gated validators and the skip-worktree filters |
+| Chunks: commands-internal | 82 291 | 82 571 | +280 | 82.4 kB | 82.7 kB | the checkout universe filter, the ignored collector with its `force` wiring, `firstIgnoredOf`, and the gitlink step with `gitlinkHeadOf` |
+| Command (add) | 4 983 | 5 693 | +710 | 5 kB | 5.8 kB | the skip-worktree filters with the sparse split, the ignored collector with `force`, and the gitlink step |
+
+Every other row grew by at most 9 B and stays under its cap (largest: mv +9, rev-list +8, archive +8).
+
+The review round of the fold (five fix batches: the tree-source skip-worktree restore, the gitlink
+probe read through a confined derived filesystem with its symlink, common-dir, objects/refs and
+unresolvable-HEAD rules, the repository-format scan hoisted into the domain and shared with the
+gitlink reader) crossed the rows below again, measured the same way on a clean build; each is
+raised once more to the next 0.1 kB. The tarball cap moved 1447 → 1450 KiB (1 484 245 B measured).
+
+| Row | before the review | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 343 962 | 344 549 | +587 | 344.1 kB | 344.6 kB | every layer below |
+| Full library | 401 828 | 402 577 | +749 | 402.1 kB | 402.6 kB | every layer below |
+| Chunks: domain | 126 552 | 127 271 | +719 | 126.6 kB | 127.3 kB | the repository-format scan hoisted beside the config parser (`repository-format-scan.ts`) and the malformed-entry ordering rule |
+| Chunks: primitives | — | 108 306 | — | 108.2 kB | 108.4 kB | `gitlink-ref-storage.ts` and the gitlink child context's common-dir and ref-storage options |
+| Chunks: commands-internal | 82 571 | 83 029 | +458 | 82.7 kB | 83.1 kB | the gitlink probe's symlink, common-dir, objects/refs and unresolvable-HEAD rules (`gitlink-head.ts`) |
+
+## Size-limit raise — embedded-repository staging
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`),
+gzip bytes, against the tree just before the nested-repository walk leaf (`b180eee4^`) built the
+same way at the same toolchain. Each failing row is raised by measurement − cap, rounded up to
+the next 0.1 kB, and the raise is recorded as two parts: the baseline − cap overage the branch
+already carried before the change (the triage and refactor commits), and the measurement −
+baseline delta of this round (the walk hook and leaf, the probe split, the reader, the error
+member and its message, the embedded step and the index-side type change, the literal ancestor
+probe, the status spelling). Every other row stays under its cap.
+
+| Row | baseline | measured | old limit | overage before | Δ this round | new limit |
+|---|--:|--:|--:|--:|--:|--:|
+| Browser bundle (no-build) | 344 642 | 345 625 | 344.6 kB | +42 | +983 | 345.7 kB |
+| Full library | 402 642 | 403 838 | 402.6 kB | +42 | +1 196 | 403.9 kB |
+| Chunks: domain | 127 271 | 127 307 | 127.3 kB | none | +36 | 127.4 kB |
+| Chunks: commands-internal | 83 114 | 83 367 | 83.1 kB | +14 | +253 | 83.4 kB |
+| Command (add) | 5 810 | 6 398 | 5.8 kB | +10 | +588 | 6.4 kB |
+
+The npm tarball cap moved 1450 → 1454 KiB (1 488 266 B measured; the baseline pack is
+1 484 486 B, under the old cap, so the whole 3 466 B overage is this round's); its attribution
+lives in `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — the embedded-repository review fixes
+
+Measured on a clean build (`rm -rf dist .wireit && npm run check:size`, `npx size-limit --json`),
+gzip bytes, against the tree of the previous raise (`f16a2778`) built the same way at the same
+toolchain. Each failing row is raised to its measurement rounded up to the next 0.1 kB; every
+other row stays under its cap, the `Command (add)` row included (6 361 B against 6.4 kB, below
+its baseline of 6 398 B).
+
+| Row | old limit | baseline | measured | Δ | new limit | attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 345.7 kB | 345 625 | 346 059 | +434 | 346.1 kB | the sum of the rows below, shipped to the browser |
+| Full library | 403.9 kB | 403 838 | 404 229 | +391 | 404.3 kB | the sum of the rows below |
+| Chunks: domain | 127.4 kB | 127 307 | 127 426 | +119 | 127.5 kB | the `GITFILE_TOO_LARGE` error member and its message, and `hasEntryBeneath` |
+| Chunks: primitives | 108.4 kB | 108 369 | 108 403 | +34 | 108.5 kB | the HEAD slot seeding and the exported HEAD-usability judgement the bounded reads share |
+| Chunks: commands-internal | 83.4 kB | 83 367 | 83 723 | +356 | 83.8 kB | the oversized kind and regular-file gate of the gitlink probe, the bounded nested HEAD and commondir reads, and the ignored-inside-repository filter |
+
+The npm tarball cap moved 1454 → 1455 KiB (1 489 535 B measured, 639 B over the old cap; the
+baseline pack is 1 488 266 B, so the round adds 1 269 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.

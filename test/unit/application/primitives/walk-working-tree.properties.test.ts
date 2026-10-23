@@ -97,7 +97,7 @@ async function* visitEntryOracle(
   entry: DirEntry,
 ): AsyncIterable<WalkWorkingTreeEntry> {
   const path = joinPathSegment(prefix, entry.name) as FilePath;
-  validateWalkedEntryPath(path);
+  validateWalkedEntryPath(path, config.ctx);
   if (entry.isDirectory && !entry.isSymbolicLink) {
     if (config.ignore !== undefined && (await config.ignore(path, true))) return;
     yield* walkInternalOracle(config, counter, path, depth + 1, /* isRoot */ false);

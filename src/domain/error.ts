@@ -427,6 +427,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `bad shallow file at line ${data.lineNumber}: ${data.reason}`;
     case 'NOT_A_REPOSITORY':
       return `not a git repository: ${basename(data.path)}`;
+    case 'NO_COMMIT_CHECKED_OUT':
+      return `does not have a commit checked out: ${data.path}`;
+    case 'GITFILE_TOO_LARGE':
+      return `too large to be a .git file: '${data.path}'`;
     case 'DUBIOUS_OWNERSHIP':
       return data.foreignPath === undefined
         ? `dubious ownership in repository at ${basename(data.path)}`

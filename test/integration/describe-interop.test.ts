@@ -508,4 +508,78 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
       SETUP_TIMEOUT,
     );
   });
+  describe('Given tags v1.0 (annotated) and w2 (light) on c1 and v1/rc1 (annotated) on c2', () => {
+    const NO_NAMES_STDERR = 'No names found, cannot describe anything.';
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('dialect');
+      await commitFile(dir, 'c1');
+      annotate(dir, 'v1.0', clock + 30);
+      git(dir, 'tag', 'w2');
+      await commitFile(dir, 'c2');
+      annotate(dir, 'v1/rc1', clock + 30);
+      await commitFile(dir, 'c3');
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const PATTERN_ROWS: ReadonlyArray<{
+      label: string;
+      match?: string;
+      exclude?: string;
+      tags: boolean;
+    }> = [
+      { label: 'no pattern', tags: true },
+      { label: "--match 'v*'", match: 'v*', tags: true },
+      { label: "--match 'v[0-9].*'", match: 'v[0-9].*', tags: true },
+      { label: "--match 'v1?rc1'", match: 'v1?rc1', tags: true },
+      { label: "--match 'v1\\.*'", match: 'v1\\.*', tags: true },
+      { label: "--match 'v1\\/*'", match: 'v1\\/*', tags: true },
+      { label: "--match '[v]1.0'", match: '[v]1.0', tags: true },
+      { label: "--match 'v*' --exclude 'v1/*'", match: 'v*', exclude: 'v1/*', tags: true },
+      { label: "--match 'v*' --exclude 'v1*'", match: 'v*', exclude: 'v1*', tags: true },
+      { label: "--match 'v1['", match: 'v1[', tags: true },
+      { label: "--match 'v1\\'", match: 'v1\\', tags: true },
+      { label: "--match '*/*'", match: '*/*', tags: true },
+      { label: "--match 'refs/tags/v*'", match: 'refs/tags/v*', tags: true },
+      { label: "annotated only --match 'v*'", match: 'v*', tags: false },
+    ];
+
+    describe('When describeCmd runs with a --match / --exclude pattern', () => {
+      it.each(PATTERN_ROWS)('Then $label agrees with git describe', async (row) => {
+        // Arrange
+        const gitArgs = [
+          'describe',
+          ...(row.tags ? ['--tags'] : []),
+          '--abbrev=0',
+          ...(row.match === undefined ? [] : ['--match', row.match]),
+          ...(row.exclude === undefined ? [] : ['--exclude', row.exclude]),
+        ];
+        const gitResult = tryRunGit(['-C', dir, ...gitArgs]);
+
+        // Act
+        const outcome = await describeCmd(ctx, undefined, {
+          tags: row.tags,
+          ...(row.match === undefined ? {} : { match: row.match }),
+          ...(row.exclude === undefined ? {} : { exclude: row.exclude }),
+        }).then(
+          (r) => ({ name: r.name, code: undefined }),
+          (e: { data?: { code?: string } }) => ({ name: undefined, code: e.data?.code }),
+        );
+
+        // Assert
+        if (gitResult.ok) {
+          expect(outcome).toEqual({ name: gitResult.stdout.trim(), code: undefined });
+          return;
+        }
+        expect(gitResult.stderr).toContain(NO_NAMES_STDERR);
+        expect(outcome).toEqual({ name: undefined, code: 'NO_NAMES' });
+      });
+    });
+  });
 });

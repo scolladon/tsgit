@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   entriesAtLeadingDirectories,
   entriesBeneath,
+  hasEntryBeneath,
 } from '../../../../src/domain/git-index/directory-file-conflict.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
@@ -38,6 +39,56 @@ const pathsOf = (entries: ReadonlyArray<IndexEntry>): string[] =>
 
 const mapOf = (entries: ReadonlyArray<IndexEntry>): ReadonlyMap<IndexPathKey, IndexEntry> =>
   new Map(entries.map((e) => [indexPathKey(e), e]));
+
+describe('hasEntryBeneath', () => {
+  describe.each([
+    { label: 'an empty index', sorted: [], path: 'a', expected: false },
+    { label: 'no entry beneath the path', sorted: [at('a'), at('b')], path: 'a', expected: false },
+    {
+      label: 'only a sibling sharing the path as a prefix',
+      sorted: [at('a'), at('a-b'), at('a.txt'), at('ab')],
+      path: 'a',
+      expected: false,
+    },
+    {
+      label: 'the first entry beneath the path',
+      sorted: [at('a'), at('a/b'), at('z')],
+      path: 'a',
+      expected: true,
+    },
+    {
+      label: 'only a deep entry beneath the path',
+      sorted: [at('a-b'), at('a/x/y/z'), at('b')],
+      path: 'a',
+      expected: true,
+    },
+    {
+      label: 'an unmerged entry beneath the path',
+      sorted: [at('a/b', 2)],
+      path: 'a',
+      expected: true,
+    },
+    {
+      label: 'a lossy entry beneath the path',
+      sorted: [entryOf(indexPathOfBytes(Uint8Array.of(0x61, 0x2f, 0xff)))],
+      path: 'a',
+      expected: true,
+    },
+  ])('Given $label', ({ sorted, path, expected }) => {
+    describe('When asked whether anything lies beneath the path', () => {
+      it(`Then the answer is ${expected}`, () => {
+        // Arrange
+        const sut = hasEntryBeneath;
+
+        // Act
+        const result = sut(sorted, path as FilePath);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
 
 describe('entriesBeneath', () => {
   describe('Given an empty index', () => {

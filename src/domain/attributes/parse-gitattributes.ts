@@ -122,7 +122,7 @@ const buildRule = (pattern: string, rest: string, lineNumber: number): Attribute
     anchored,
     directoryOnly,
     lineNumber,
-    compiled: compileGlob(body, { anchored, pathname: true }),
+    compiled: compileGlob(body, { anchored }),
     attributes: parseAttributeTokens(splitWhitespace(rest)),
   };
 };

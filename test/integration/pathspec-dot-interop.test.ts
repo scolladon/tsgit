@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { pathspecNoMatch } from '../../src/domain/commands/error.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
@@ -112,7 +113,7 @@ describe.skipIf(!GIT_AVAILABLE)('Given pathspecs carrying `.` components', () =>
       // Assert
       expect(git.exitCode).toBe(1);
       expect(git.stderr).toContain("error: pathspec '.' did not match any file(s) known to git");
-      expect((result as TsgitError).data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: '.' });
+      expect((result as TsgitError).data).toEqual(pathspecNoMatch('.').data);
     });
   });
 
@@ -166,7 +167,7 @@ describe.skipIf(!GIT_AVAILABLE)('Given pathspecs carrying `.` components', () =>
       expect(git.stderr).toContain(
         `error: pathspec '${data.pattern}' did not match any file(s) known to git`,
       );
-      expect(data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: pathspec });
+      expect(data).toEqual(pathspecNoMatch(pathspec).data);
     });
   });
 

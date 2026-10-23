@@ -16,8 +16,8 @@ import { add } from '../../src/application/commands/add.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
 
 describe('integration — add --all', () => {
-  describe('Given a populated working tree with an embedded repo, When add --all', () => {
-    it('Then every non-embedded path is staged in sorted order', async () => {
+  describe('Given a populated working tree with a .git holding only a HEAD file, When add --all', () => {
+    it('Then every path is staged in sorted order, none as a gitlink', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
@@ -38,7 +38,7 @@ describe('integration — add --all', () => {
       // Act
       const result = await add(ctx, [], { all: true });
 
-      // Assert — bulk-mode added paths are sorted and exclude the embedded repo.
+      // Assert — bulk-mode added paths are sorted; a HEAD-only .git is no repository.
       expect(result.added).toEqual([
         'README.md',
         'dist/main.js',
@@ -46,6 +46,7 @@ describe('integration — add --all', () => {
         'node_modules/foo/index.js',
         'src/a.ts',
         'src/b.ts',
+        'vendor/lib/src/x.ts',
       ]);
       expect(result.modified).toEqual([]);
       expect(result.removed).toEqual([]);
@@ -60,10 +61,11 @@ describe('integration — add --all', () => {
         'node_modules/foo/index.js',
         'src/a.ts',
         'src/b.ts',
+        'vendor/lib/src/x.ts',
       ]);
       // The symlink entry uses git's symlink mode.
       expect(idx.entries.find((e) => e.path === 'link')?.mode).toBe('120000');
-      // No gitlink (160000) for the embedded repo.
+      // No gitlink (160000): the HEAD-only .git is no repository.
       expect(idx.entries.filter((e) => e.mode === '160000')).toEqual([]);
     });
   });

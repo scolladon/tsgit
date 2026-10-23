@@ -1,8 +1,13 @@
 # ADR-031: Symlinks stage as `120000`; embedded `.git` directories are skipped
 
+> **Superseded by [ADR-1054](1054-add-stages-an-embedded-repository-as-a-gitlink-as-git-does.md)** for the embedded-repository scope: an untracked directory holding a repository is staged as a gitlink and a tracked file replaced by one becomes a type change, as git does.
+> The `lstat`-only symlink rule (never follow a symlink in the walk, stage the link itself
+> as `120000`) is carried forward.
+
 ## Status
 
-Accepted (at `5ecd61a`)
+- **Status:** superseded by ADR-1054
+- Accepted at `5ecd61a`.
 
 ## Context
 

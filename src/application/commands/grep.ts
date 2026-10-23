@@ -14,8 +14,8 @@ import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
+import { resolveCommandPathspec } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
-import { resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
 
 export interface GrepLineHit {
@@ -195,7 +195,9 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
   });
 
   const pathspecMatcher =
-    opts.paths !== undefined && opts.paths.length > 0 ? resolvePathspec(opts.paths) : undefined;
+    opts.paths !== undefined && opts.paths.length > 0
+      ? resolveCommandPathspec(ctx, opts.paths)
+      : undefined;
 
   const candidates = await enumerateCandidates(ctx, opts);
 

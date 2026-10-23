@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   compilePathnameGlob,
   compileRefGlob,
+  compileRefGlobBytes,
   matchRefGlob,
 } from '../../../../src/domain/refs/ref-glob.js';
 
@@ -437,6 +438,45 @@ describe('compilePathnameGlob', () => {
         // Act
         const result = sut(pattern)(text);
 
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('compileRefGlobBytes', () => {
+  describe.each([
+    { pattern: 'refs/tags/*', text: 'refs/tags/rel/v1' },
+    { pattern: 'm[a-z]in', text: 'main' },
+    { pattern: 'm\\*in', text: 'm*in' },
+    { pattern: 'm[a', text: 'main' },
+  ])('Given the pattern $pattern and the well-formed text $text', ({ pattern, text }) => {
+    describe('When matching its bytes', () => {
+      it('Then the verdict equals the string matcher', () => {
+        // Arrange
+        const sut = compileRefGlobBytes;
+        // Act
+        const result = sut(pattern)(new TextEncoder().encode(text));
+        // Assert
+        expect(result).toBe(compileRefGlob(pattern)(text));
+      });
+    });
+  });
+
+  describe.each([
+    { pattern: 'a?', bytes: [0x61, 0xff], expected: true },
+    { pattern: 'a?', bytes: [0x61, 0xc3, 0xa9], expected: false },
+    { pattern: 'a??', bytes: [0x61, 0xc3, 0xa9], expected: true },
+    { pattern: 'a[^b]', bytes: [0x61, 0xff], expected: true },
+    { pattern: 'a[[:alpha:]]', bytes: [0x61, 0xff], expected: false },
+  ])('Given the pattern $pattern and raw bytes $bytes', ({ pattern, bytes, expected }) => {
+    describe('When matching', () => {
+      it('Then the verdict is the expected one', () => {
+        // Arrange
+        const sut = compileRefGlobBytes;
+        // Act
+        const result = sut(pattern)(Uint8Array.from(bytes));
         // Assert
         expect(result).toBe(expected);
       });

@@ -1,6 +1,6 @@
 # `rm`
 
-Remove files from the index, and by default from the working tree. Accepts the same pathspec syntax as [`add`](add.md).
+Remove files from the index, and by default from the working tree. Accepts the same pathspec syntax as [`add`](add.md#pathspec-syntax): git's pathspec glob, where `*` and `?` cross `/`.
 
 ## Signature
 
@@ -48,6 +48,9 @@ working file in every case; `force` overrides the valve entirely.
 
 ## Byte-exact paths and the work tree
 
+- A glob that matches a tracked path by wildcard (`d*` against `dir/f`) removes it without `recursive`; one that reaches a directory only by the verbatim-prefix rule (`a?` against `a?/f`, no `ab`) is refused `RM_RECURSIVE_WITHOUT_R`, as git's `not removing … recursively without -r`.
+- On a POSIX host a `\` in a pathspec is a matching escape; under Windows path syntax it is refused `PATHSPEC_OUTSIDE_REPO`.
+- On a POSIX host a tracked file whose name holds `\` is removed, from the index and from disk; under Windows path syntax that name is refused `PATHSPEC_OUTSIDE_REPO`.
 - A literal pathspec never selects a lossy twin: an entry whose name is not valid UTF-8 is matched only by a pathspec that decodes to the same bytes, never by its U+FFFD view alone.
 - A lossy entry is never unlinked on disk; only its index entry is removed.
 - Without `cached`, directories the removal leaves empty are pruned, as git does.
@@ -74,8 +77,8 @@ await repo.rm(['*.log']);
 
 ## Throws
 
-- `PATHSPEC_NO_MATCH` — a literal pattern matched nothing. (Glob no-match is a silent no-op.)
-- `RM_RECURSIVE_WITHOUT_R` — a literal pathspec reached only paths beneath a directory and `recursive` was not set; `data.pattern` is the pathspec as given. Nothing is removed.
+- `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive pathspec, literal or glob, matched no index entry; the first failing pathspec in argument order wins. Nothing is removed.
+- `RM_RECURSIVE_WITHOUT_R` — a pathspec reached only paths beneath a directory (a literal, or a glob matching a directory through the verbatim-prefix rule) and `recursive` was not set; `data.pattern` is the pathspec as given. Nothing is removed.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `RM_STAGED_CHANGES` / `RM_LOCAL_MODIFICATIONS` / `RM_STAGED_AND_LOCAL_CHANGES` — the safety valve refused (see above); each `data.paths` lists the refused paths.
 

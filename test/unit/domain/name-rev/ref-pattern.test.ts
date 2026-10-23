@@ -93,4 +93,81 @@ describe('buildRefFilter', () => {
       });
     });
   });
+  describe('Given an include pattern matching a suffix of the ref', () => {
+    describe('When qualifying', () => {
+      it.each([
+        { refs: ['v*'], ref: 'refs/tags/v1.0', expected: true, label: 'a bare name pattern' },
+        {
+          refs: ['tags/*'],
+          ref: 'refs/tags/v1.0',
+          expected: true,
+          label: 'a partial path pattern',
+        },
+        { refs: ['main'], ref: 'refs/heads/main', expected: true, label: 'a branch short name' },
+        {
+          refs: ['ags/v1.0'],
+          ref: 'refs/tags/v1.0',
+          expected: false,
+          label: 'a mid-segment suffix',
+        },
+      ])('Then $label', ({ refs, ref, expected }) => {
+        // Arrange
+        const sut = buildRefFilter({ tags: false, refs, exclude: [] });
+
+        // Act
+        const result = sut.qualifies(ref);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given an exclude pattern matching a suffix of the ref', () => {
+    describe('When qualifying', () => {
+      it.each([
+        { exclude: ['tags/*'], label: 'a partial path pattern' },
+        { exclude: ['v*'], label: 'a bare name pattern' },
+      ])('Then $label drops it', ({ exclude }) => {
+        // Arrange
+        const sut = buildRefFilter({ tags: false, refs: [], exclude });
+
+        // Act
+        const result = sut.qualifies('refs/tags/v1.0');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+  describe('Given include patterns and a tag ref', () => {
+    describe('When asking whether the name is abbreviated', () => {
+      it.each([
+        { refs: ['v*'], expected: true, label: 'a suffix match abbreviates' },
+        { refs: ['refs/tags/*'], expected: false, label: 'a full-ref match does not' },
+        {
+          refs: ['refs/tags/v*', 'v1.*'],
+          expected: true,
+          label: 'any suffix-matching include abbreviates',
+        },
+        { refs: ['*1.0'], expected: false, label: 'a first match at offset 0 does not' },
+        { refs: [], expected: false, label: 'no include does not' },
+        { refs: ['zzz'], expected: false, label: 'an include matching nowhere does not' },
+        {
+          refs: ['zzz', 'v*'],
+          expected: true,
+          label: 'an include matching nowhere is skipped over a suffix match',
+        },
+      ])('Then $label', ({ refs, expected }) => {
+        // Arrange
+        const sut = buildRefFilter({ tags: false, refs, exclude: [] });
+
+        // Act
+        const result = sut.abbreviates('refs/tags/v1.0');
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
 });

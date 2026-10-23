@@ -12,6 +12,8 @@ import { requireWorkTree } from './internal/repo-state.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import type { WalkIgnorePredicate, WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
 
+type WalkNestedRepositoryPredicate = NonNullable<WalkWorkingTreeOptions['isNestedRepository']>;
+
 interface WalkConfig {
   readonly ctx: Context;
   /** Resolved once per walk via `requireWorkTree` — every caller of this
@@ -22,6 +24,7 @@ interface WalkConfig {
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly ignore: WalkIgnorePredicate | undefined;
+  readonly isNestedRepository: WalkNestedRepositoryPredicate | undefined;
 }
 
 interface Counter {
@@ -63,17 +66,23 @@ async function readDirectoryFrame(
  */
 async function enterSubdirectory(
   config: WalkConfig,
+  counter: Counter,
   prefix: string,
   depth: number,
-): Promise<WalkFrame | undefined> {
+): Promise<StackStep> {
   const frame = await readDirectoryFrame(config, prefix, depth);
+  const pushFrame: StackStep = { kind: 'push', frame };
   // Embedded-repo gate: a directory containing a `.git` DIRECTORY (or a
   // `.git` regular file pointing at a worktree gitdir) is treated as an
   // embedded clone and yields nothing. A spurious file literally named
   // `.git` is filtered by `isDotGitWalkEntry` in the main loop but must NOT
   // collapse the parent directory.
-  if (frame.entries.some(isEmbeddedGitMarker)) return undefined;
-  return frame;
+  if (config.isNestedRepository === undefined) {
+    return frame.entries.some(isEmbeddedGitMarker) ? { kind: 'skip' } : pushFrame;
+  }
+  if (!frame.entries.some((entry) => isDotGitWalkEntry(entry.name))) return pushFrame;
+  if (!(await config.isNestedRepository(prefix as FilePath))) return pushFrame;
+  return leafStep(config, counter, prefix as FilePath, DIRECTORY_KIND);
 }
 
 type StackStep =
@@ -99,15 +108,26 @@ async function stepEntry(
   // on-disk `git~1`/`.git:stream`/HFS-alias entry is not a traversal hazard
   // and must reach the yield below, exactly as git's own directory walk
   // treats it.
-  validateWalkedEntryPath(path);
+  validateWalkedEntryPath(path, config.ctx);
 
   if (entry.isDirectory && !entry.isSymbolicLink) {
     if (config.ignore !== undefined && (await config.ignore(path, true))) return { kind: 'skip' };
-    const childFrame = await enterSubdirectory(config, path, frame.depth + 1);
-    return childFrame === undefined ? { kind: 'skip' } : { kind: 'push', frame: childFrame };
+    return enterSubdirectory(config, counter, path, frame.depth + 1);
   }
   if (!entry.isFile && !entry.isSymbolicLink) return { kind: 'skip' };
   if (config.ignore !== undefined && (await config.ignore(path, false))) return { kind: 'skip' };
+  return leafStep(config, counter, path, entry);
+}
+
+const DIRECTORY_KIND = { isFile: false, isDirectory: true, isSymbolicLink: false } as const;
+
+/** Count one leaf against `maxEntries` and surface it; shared by files, symlinks and nested repositories. */
+function leafStep(
+  config: WalkConfig,
+  counter: Counter,
+  path: FilePath,
+  kind: Pick<DirEntry, 'isFile' | 'isDirectory' | 'isSymbolicLink'>,
+): StackStep {
   counter.value += 1;
   if (counter.value > config.maxEntries) {
     throw treeEntryLimitExceeded(counter.value, config.maxEntries);
@@ -116,9 +136,9 @@ async function stepEntry(
     kind: 'yield',
     entry: {
       path,
-      isFile: entry.isFile,
-      isDirectory: entry.isDirectory,
-      isSymbolicLink: entry.isSymbolicLink,
+      isFile: kind.isFile,
+      isDirectory: kind.isDirectory,
+      isSymbolicLink: kind.isSymbolicLink,
       stat: lazyStat(config, path),
     },
   };
@@ -139,7 +159,9 @@ async function stepEntry(
  * real git's directory walk does; that widened matrix applies only at the
  * index-write boundary (`verifyPath`), not here. Embedded repositories
  * (directories containing a `.git` child) are skipped entirely — yields
- * nothing under them. Symlinks are surfaced via `lstat` (no follow); a
+ * nothing under them — unless the caller passes `isNestedRepository`: it is
+ * asked about each such directory (a `.git` of any kind, symlink included,
+ * never walked through) and `true` yields the directory as one leaf. Symlinks are surfaced via `lstat` (no follow); a
  * symlink to a directory is yielded as a leaf, not descended into.
  *
  * The host repository's own `.git` is NOT treated as an embedded-repo
@@ -164,6 +186,7 @@ export async function* walkWorkingTree(
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     ignore: options?.ignore,
+    isNestedRepository: options?.isNestedRepository,
   };
   const counter: Counter = { value: 0 };
   const stack: WalkFrame[] = [await readDirectoryFrame(config, '', 0)];

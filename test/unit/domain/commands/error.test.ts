@@ -146,7 +146,23 @@ describe('domain commands error — factory data', () => {
         expect(pathspecNoMatch('*.zzz').data).toEqual({
           code: 'PATHSPEC_NO_MATCH',
           pattern: '*.zzz',
+          patterns: ['*.zzz'],
         });
+      });
+    });
+
+    describe('When called with several patterns', () => {
+      it('Then the first is the pattern and all are listed in order', () => {
+        // Arrange + Act
+        const result = pathspecNoMatch('n1*', 'n2*');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'PATHSPEC_NO_MATCH',
+          pattern: 'n1*',
+          patterns: ['n1*', 'n2*'],
+        });
+        expect(result.message).toBe('PATHSPEC_NO_MATCH: pathspec did not match any files: n1*');
       });
     });
   });
@@ -1703,7 +1719,7 @@ describe('domain commands error — extractDetail message formatting', () => {
       'WORKING_TREE_DIRTY: working tree has uncommitted changes: 2 files',
     ],
     [
-      { code: 'PATHSPEC_NO_MATCH', pattern: '*.zzz' },
+      { code: 'PATHSPEC_NO_MATCH', pattern: '*.zzz', patterns: ['*.zzz'] },
       'PATHSPEC_NO_MATCH: pathspec did not match any files: *.zzz',
     ],
     [

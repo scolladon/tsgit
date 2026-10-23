@@ -15,7 +15,7 @@ import {
   type IndexEntry,
   STAGE0_FLAGS,
 } from '../../../../src/domain/git-index/index.js';
-import { permissionDenied, TsgitError } from '../../../../src/domain/index.js';
+import { pathspecNoMatch, permissionDenied, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { type FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
@@ -157,7 +157,7 @@ describe('add', () => {
         const err = await expectError(() => sut(ctx, ['./nomatch']), 'PATHSPEC_NO_MATCH');
 
         // Assert
-        expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: './nomatch' });
+        expect(err.data).toEqual(pathspecNoMatch('./nomatch').data);
       });
     });
   });
@@ -173,7 +173,7 @@ describe('add', () => {
         const err = await expectError(() => sut(ctx, ['f/']), 'PATHSPEC_NO_MATCH');
 
         // Assert
-        expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'f/' });
+        expect(err.data).toEqual(pathspecNoMatch('f/').data);
       });
     });
   });
@@ -292,15 +292,16 @@ describe('add', () => {
 
   describe('Given a glob whose magic sits in the leading path component and no literal directory exists there', () => {
     describe('When add', () => {
-      it('Then it does not throw PATHSPEC_BEYOND_SYMLINK — verified against real git 2.55, which falls through to a plain no-match instead', async () => {
+      it('Then it refuses PATHSPEC_NO_MATCH, not PATHSPEC_BEYOND_SYMLINK — verified against real git 2.55, which falls through to a plain no-match', async () => {
         // Arrange
         const ctx = await seedFreshRepo();
+        const sut = add;
 
         // Act
-        const result = await add(ctx, ['li*/x.ts']);
+        const err = await expectError(() => sut(ctx, ['li*/x.ts']), 'PATHSPEC_NO_MATCH');
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(err.data).toEqual(pathspecNoMatch('li*/x.ts').data);
       });
     });
   });
@@ -699,7 +700,14 @@ describe('add', () => {
         const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(result).toEqual({
+          added: [],
+          modified: [],
+          removed: [],
+          eolNotices: [],
+          sparse: [],
+          ignored: [],
+        });
       });
     });
   });
@@ -922,9 +930,9 @@ describe('add', () => {
     });
   });
 
-  describe('Given an embedded.git subdirectory (nested repo) and all: true', () => {
+  describe('Given a subdirectory whose .git holds only a HEAD file (no objects or refs) and all: true', () => {
     describe('When add', () => {
-      it('Then nothing under it is staged and no 160000 entry is created', async () => {
+      it('Then it is no repository: its files are staged and no 160000 entry is created', async () => {
         // Arrange
         const ctx = await seedFreshRepo({
           'a.txt': 'a',
@@ -938,7 +946,7 @@ describe('add', () => {
         // Assert
         const idx = await readIndex(ctx);
         const paths = idx.entries.map((e) => e.path);
-        expect(paths).toEqual(['a.txt']);
+        expect(paths).toEqual(['a.txt', 'vendor/lib/src/x.ts']);
         const gitlinks = idx.entries.filter((e) => e.mode === '160000');
         expect(gitlinks).toEqual([]);
       });
@@ -1228,11 +1236,11 @@ describe('add', () => {
     });
   });
 
-  describe('Given a plain regular file literally named.git inside a subdirectory (worktree pointer)', () => {
+  describe('Given a plain regular file literally named.git inside a subdirectory naming nothing', () => {
     describe('When add({ all: true })', () => {
-      it('Then the whole subdirectory is skipped', async () => {
-        // Arrange — `.git` regular file is git's worktree gitdir pointer
-        // (`gitdir: /path/...`). Treated as an embedded-repo marker.
+      it('Then it is no repository: the siblings are staged and the .git file is not', async () => {
+        // Arrange — `gitdir: /elsewhere` leads to no repository, so the
+        // directory is walked like any other.
         const ctx = await seedFreshRepo({
           'sub/normal.txt': 'x',
           'sub/.git': 'gitdir: /elsewhere',
@@ -1241,9 +1249,9 @@ describe('add', () => {
         // Act
         await add(ctx, [], { all: true });
 
-        // Assert — siblings inside `sub/` are not staged.
+        // Assert
         const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual([]);
+        expect(idx.entries.map((e) => e.path)).toEqual(['sub/normal.txt']);
       });
     });
   });
@@ -1651,15 +1659,17 @@ describe('add', () => {
 
   describe('Given a glob with no match', () => {
     describe('When add', () => {
-      it('Then returns added=[] without throwing', async () => {
+      it('Then it refuses PATHSPEC_NO_MATCH and leaves the index unchanged', async () => {
         // Arrange
         const ctx = await seedFreshRepo({ 'README.md': '# r' });
+        const sut = add;
 
         // Act
-        const result = await add(ctx, ['*.ts']);
+        const err = await expectError(() => sut(ctx, ['*.ts']), 'PATHSPEC_NO_MATCH');
 
         // Assert
-        expect(result.added).toEqual([]);
+        expect(err.data).toEqual(pathspecNoMatch('*.ts').data);
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
       });
     });
   });
@@ -1724,12 +1734,9 @@ describe('add', () => {
 
   describe('Given a literal path that .gitignore would exclude', () => {
     describe('When add', () => {
-      it('Then it is staged anyway (literal-path mode bypasses ignore)', async () => {
-        // Arrange — `ignored.txt` is a pure literal that names an existing
-        // file, so dispatchPathspec routes through addLiteralOnly which does
-        // NOT consult .gitignore. Kills L86 (`!hasGlob &&` guard + block) and
-        // L148 routing: a mutant that always falls through to addByPathspec
-        // would let the ignore predicate filter `ignored.txt` out.
+      it('Then it is reported as ignored and not staged', async () => {
+        // Arrange — `ignored.txt` is an untracked pure literal, so it routes
+        // through addLiteralOnly, which consults the ignore rules as git does.
         const ctx = await seedFreshRepo({ 'ignored.txt': 'secret' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ignored.txt\n');
 
@@ -1737,22 +1744,20 @@ describe('add', () => {
         const result = await add(ctx, ['ignored.txt']);
 
         // Assert
-        expect(result.added).toEqual(['ignored.txt']);
+        expect(result.added).toEqual([]);
+        expect(result.ignored).toEqual(['ignored.txt']);
         const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual(['ignored.txt']);
+        expect(idx.entries.map((e) => e.path)).toEqual([]);
       });
     });
   });
 
   describe('Given a missing literal and a gitignored existing literal', () => {
     describe('When add', () => {
-      it('Then PATHSPEC_NO_MATCH names the gitignored literal (routes through addByPathspec)', async () => {
+      it('Then PATHSPEC_NO_MATCH names the missing literal (routes through addByPathspec)', async () => {
         // Arrange — `keep.txt` exists but is gitignored; `gone.txt` is absent.
-        // Real code: allLiteralsAreFiles sees `gone.txt` undefined -> returns
-        // false -> addByPathspec -> walk applies .gitignore -> nothing matched
-        // -> enforceLiteralMustMatch throws for the FIRST literal `keep.txt`.
-        // Mutant on L128 (`stat === undefined` -> true) would treat the
-        // missing path as a file -> addLiteralOnly -> throws for `gone.txt`.
+        // git refuses the missing pathspec and reports the ignored one only
+        // when nothing is refused, so the refusal names `gone.txt`.
         const ctx = await seedFreshRepo({ 'keep.txt': 'k' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'keep.txt\n');
 
@@ -1762,9 +1767,8 @@ describe('add', () => {
           'PATHSPEC_NO_MATCH',
         );
 
-        // Assert — the unmatched pattern is the gitignored literal, proving
-        // the call routed through addByPathspec, not addLiteralOnly.
-        expect((err.data as { pattern: string }).pattern).toBe('keep.txt');
+        // Assert
+        expect((err.data as { pattern: string }).pattern).toBe('gone.txt');
       });
     });
   });
@@ -2822,7 +2826,37 @@ describe('Given a work tree with nothing to add', () => {
       const result = await sut(ctx, ['.']);
 
       // Assert
-      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+      expect(result).toEqual({
+        added: [],
+        modified: [],
+        removed: [],
+        eolNotices: [],
+        sparse: [],
+        ignored: [],
+      });
+    });
+  });
+});
+
+describe('Given a work tree whose every path is ignored', () => {
+  describe('When the whole tree is added with the `.` pathspec', () => {
+    it('Then nothing is staged and the whole-tree pathspec is not refused', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ '.gitignore': '*\n', a: 'a' });
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['.']);
+
+      // Assert
+      expect(result).toEqual({
+        added: [],
+        modified: [],
+        removed: [],
+        eolNotices: [],
+        sparse: [],
+        ignored: [],
+      });
     });
   });
 });
@@ -3273,6 +3307,8 @@ describe('add renormalize option', () => {
           modified: ['f.txt'],
           removed: [],
           eolNotices: [],
+          sparse: [],
+          ignored: [],
         });
       });
     });
@@ -3429,10 +3465,7 @@ describe('add renormalize option', () => {
         }
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'PATHSPEC_NO_MATCH',
-          pattern: 'g.txt',
-        });
+        expect((caught as TsgitError).data).toEqual(pathspecNoMatch('g.txt').data);
         expect(await idsByPath(ctx)).toEqual(before);
       });
     });
@@ -3463,7 +3496,14 @@ describe('add renormalize option', () => {
         const result = await sut(ctx, ['u.txt'], RENORMALIZE);
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(result).toEqual({
+          added: [],
+          modified: [],
+          removed: [],
+          eolNotices: [],
+          sparse: [],
+          ignored: [],
+        });
       });
     });
   });
@@ -3498,6 +3538,8 @@ describe('add renormalize option', () => {
           modified: ['f.txt'],
           removed: [],
           eolNotices: [],
+          sparse: [],
+          ignored: [],
         });
       });
     });
@@ -3660,7 +3702,14 @@ describe('add renormalize option', () => {
         const result = await sut(ctx, ['.'], RENORMALIZE);
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+        expect(result).toEqual({
+          added: [],
+          modified: [],
+          removed: [],
+          eolNotices: [],
+          sparse: [],
+          ignored: [],
+        });
       });
     });
   });
@@ -4021,10 +4070,7 @@ describe('add on an index holding entries whose decoded paths collide', () => {
 
         // Assert
         expect(thrown).toBeInstanceOf(TsgitError);
-        expect((thrown as TsgitError).data).toEqual({
-          code: 'PATHSPEC_NO_MATCH',
-          pattern: LOSSY_VIEW,
-        });
+        expect((thrown as TsgitError).data).toEqual(pathspecNoMatch(LOSSY_VIEW).data);
         const { entries } = await readIndex(ctx);
         expect(entries.map((e) => e.pathBytes)).toEqual([undefined, undefined, LOSSY_NAME_BYTES]);
         expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z', 'y', 'x']);
@@ -4233,3 +4279,536 @@ const withProbedSize = (ctx: Context, name: string, size: number): Context['fs']
     },
   });
 };
+
+describe('add refuses an unmatched pathspec before any object write', () => {
+  const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  describe('Given a real file and a glob matching nothing', () => {
+    describe('When add names the glob first', () => {
+      it('Then it refuses the glob, stages nothing and writes no blob', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'real.txt': 'real content' });
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['nomatch*', 'real.txt']));
+
+        // Assert
+        expect(refusal).toEqual(pathspecNoMatch('nomatch*').data);
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
+        expect(await blobExists(ctx, 'real content')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tracked file deleted from disk', () => {
+    describe('When add names it by a glob', () => {
+      it('Then the deletion is staged and nothing is refused', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'gone.txt': 'g', 'keep.txt': 'k' });
+        await add(ctx, ['gone.txt', 'keep.txt']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/gone.txt`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['gone*']);
+
+        // Assert
+        expect(result.removed).toEqual(['gone.txt']);
+      });
+    });
+  });
+
+  describe('Given a glob and a missing literal both unmatched', () => {
+    describe('When add names the glob first', () => {
+      it('Then the glob is the one refused', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ a: 'a' });
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['n1*', 'missing']));
+
+        // Assert
+        expect(refusal).toEqual(pathspecNoMatch('n1*').data);
+      });
+    });
+  });
+
+  describe('Given the whole tree and a glob matching nothing', () => {
+    describe('When add names them together', () => {
+      it('Then the glob is refused and the whole tree stages nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a content' });
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['.', 'nomatch*']));
+
+        // Assert
+        expect(refusal).toEqual(pathspecNoMatch('nomatch*').data);
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
+        expect(await blobExists(ctx, 'a content')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a file literally named like the glob and ignored by another pattern', () => {
+    describe('When add names the glob', () => {
+      it('Then nothing is refused and nothing is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'nomatch*': 'n', '.gitignore': 'nomatch?\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['nomatch*']);
+
+        // Assert
+        expect(result.added).toEqual([]);
+        expect((await readIndex(ctx)).entries).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a tracked file and the renormalize option', () => {
+    describe.each([
+      { args: ['nomatch*'], pattern: 'nomatch*' },
+      { args: ['a*', 'nomatch*'], pattern: 'nomatch*' },
+      { args: ['untr*'], pattern: 'untr*' },
+    ])('When add renormalize names $args', ({ args, pattern }) => {
+      it('Then it refuses the glob, leaves the index and writes no blob', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a\r\nb\r\n', 'untracked.txt': 'u' });
+        await add(ctx, ['a.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* text=auto\n');
+        const before = await idsByPath(ctx);
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, args, RENORMALIZE));
+
+        // Assert
+        expect(refusal).toEqual(pathspecNoMatch(pattern).data);
+        expect(await idsByPath(ctx)).toEqual(before);
+        expect(await blobExists(ctx, 'a\nb\n')).toBe(false);
+      });
+    });
+
+    describe('When add renormalize names a glob spelled as an untracked file on disk', () => {
+      it('Then it accepts and changes nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'nomatch*': 'n' });
+        await add(ctx, ['a.txt']);
+        const before = await idsByPath(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['nomatch*'], RENORMALIZE);
+
+        // Assert
+        expect(result).toEqual({
+          added: [],
+          modified: [],
+          removed: [],
+          eolNotices: [],
+          sparse: [],
+          ignored: [],
+        });
+        expect(await idsByPath(ctx)).toEqual(before);
+      });
+    });
+  });
+});
+
+type TrackedCtx = Awaited<ReturnType<typeof seedFreshRepo>>;
+
+const writeWork = (ctx: TrackedCtx, path: string, text: string) =>
+  ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, text);
+
+/** Tracks `files`, then lays `.gitignore` down so the rule arrives after the entries. */
+const seedTrackedThenIgnored = async (files: Readonly<Record<string, string>>, rules: string) => {
+  const ctx = await seedFreshRepo(files);
+  await add(ctx, Object.keys(files));
+  await writeWork(ctx, '.gitignore', rules);
+  return ctx;
+};
+
+const rewriteEntries = async (ctx: TrackedCtx, edit: (entry: IndexEntry) => IndexEntry) => {
+  const index = await readIndex(ctx);
+  const rewritten: GitIndex = { ...index, entries: index.entries.map(edit) };
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync(rewritten, ctx),
+  );
+};
+
+const entryAt = async (ctx: TrackedCtx, path: string): Promise<IndexEntry | undefined> =>
+  (await readIndex(ctx)).entries.find((e) => e.path === path);
+
+const flagged = (path: string, flags: Partial<IndexEntry['flags']>) => (entry: IndexEntry) =>
+  entry.path === path ? { ...entry, flags: { ...entry.flags, ...flags } } : entry;
+
+describe('add over tracked entries that ignore rules hide from the walk', () => {
+  describe('Given a skip-worktree tracked file that was modified', () => {
+    describe('When add stages the whole tree', () => {
+      it('Then its index entry is left as it is', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a', k: 'k' }, '*.log\n');
+        await rewriteEntries(ctx, flagged('x.log', { skipWorktree: true }));
+        await writeWork(ctx, 'x.log', 'bb');
+        const before = await entryAt(ctx, 'x.log');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(await entryAt(ctx, 'x.log')).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a clean tracked file that an ignore rule hides', () => {
+    describe('When add names it by glob', () => {
+      it('Then nothing is modified', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.log']);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(result.removed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a tracked file replaced by a directory under an ignore rule', () => {
+    describe('When add names it by glob', () => {
+      it('Then the file is staged as removed', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await ctx.fs.rm(`${ctx.layout.workDir}/x.log`);
+        await writeWork(ctx, 'x.log/inner', 'i');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.log']);
+
+        // Assert
+        expect(result.removed).toEqual(['x.log']);
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a lossy tracked path under an ignore rule that was modified on disk', () => {
+    describe('When add stages the whole tree', () => {
+      it('Then it is not staged and the removal pass still owns it', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ [LOSSY_VIEW]: 'a' }, '*.txt\n');
+        await rewriteEntries(ctx, (entry) => ({ ...entry, pathBytes: LOSSY_NAME_BYTES }));
+        await writeWork(ctx, LOSSY_VIEW, 'bb');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.added).toEqual(['.gitignore']);
+        expect(result.modified).toEqual([]);
+        expect(result.removed).toEqual([LOSSY_VIEW]);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['.gitignore']);
+      });
+    });
+  });
+
+  describe('Given a gitlink entry under an ignore rule', () => {
+    describe('When add stages the whole tree', () => {
+      it('Then the entry is left as it is', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'd/f': 'a' }, 'd\n');
+        await rewriteEntries(ctx, (entry) =>
+          entry.path === 'd/f' ? { ...entry, mode: FILE_MODE.GITLINK } : entry,
+        );
+        await writeWork(ctx, 'd/f', 'bb');
+        const before = await entryAt(ctx, 'd/f');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(await entryAt(ctx, 'd/f')).toEqual(before);
+      });
+    });
+  });
+});
+
+const stagedBlobText = async (ctx: TrackedCtx, path: string): Promise<string> =>
+  dec((await readBlob(ctx, (await entryAt(ctx, path))?.id as ObjectId)).content);
+
+describe('add stages tracked entries that ignore rules hide from the walk', () => {
+  describe('Given a modified tracked file that a glob-matched ignore rule hides', () => {
+    describe('When add names it by glob', () => {
+      it('Then it is modified and the index holds the new content', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await writeWork(ctx, 'x.log', 'bb');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.log']);
+
+        // Assert
+        expect(result.modified).toEqual(['x.log']);
+        expect(result.removed).toEqual([]);
+        expect(await stagedBlobText(ctx, 'x.log')).toBe('bb');
+      });
+    });
+
+    describe('When add names it literally', () => {
+      it('Then it is modified', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await writeWork(ctx, 'x.log', 'bb');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x.log']);
+
+        // Assert
+        expect(result.modified).toEqual(['x.log']);
+      });
+    });
+  });
+
+  describe('Given a modified tracked file under an ignored directory', () => {
+    const arrange = async () => {
+      const ctx = await seedTrackedThenIgnored({ 'd/x.txt': 'a', k: 'k' }, 'd/\n');
+      await writeWork(ctx, 'd/x.txt', 'bb');
+      return ctx;
+    };
+
+    describe.each([
+      { label: 'the whole tree', pathspec: '.', added: ['.gitignore'] },
+      { label: 'a glob on the leaf', pathspec: '*.txt', added: [] },
+      { label: 'the directory', pathspec: 'd', added: [] },
+    ])('When add names $label', ({ pathspec, added }) => {
+      it('Then the leaf is modified and nothing else changes', async () => {
+        // Arrange
+        const ctx = await arrange();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [pathspec]);
+
+        // Assert
+        expect(result.added).toEqual(added);
+        expect(result.modified).toEqual(['d/x.txt']);
+        expect(result.removed).toEqual([]);
+        expect(await stagedBlobText(ctx, 'd/x.txt')).toBe('bb');
+      });
+    });
+  });
+
+  describe('Given a retargeted tracked symlink that an ignore rule hides', () => {
+    describe('When add names it by glob', () => {
+      it('Then it is modified and stays a symlink', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({});
+        await ctx.fs.symlink('first', `${ctx.layout.workDir}/l.log`);
+        await add(ctx, ['l.log']);
+        await writeWork(ctx, '.gitignore', '*.log\n');
+        await ctx.fs.rm(`${ctx.layout.workDir}/l.log`);
+        await ctx.fs.symlink('second', `${ctx.layout.workDir}/l.log`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.log']);
+
+        // Assert
+        expect(result.modified).toEqual(['l.log']);
+        expect((await entryAt(ctx, 'l.log'))?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(await stagedBlobText(ctx, 'l.log')).toBe('second');
+      });
+    });
+  });
+
+  describe('Given an intent-to-add file that an ignore rule hides', () => {
+    describe('When add names it by glob', () => {
+      it('Then it is staged with the file content and the flag clears', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await rewriteEntries(ctx, flagged('x.log', { intentToAdd: true }));
+        await writeWork(ctx, 'x.log', 'bb');
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['*.log']);
+
+        // Assert
+        expect((await entryAt(ctx, 'x.log'))?.flags.intentToAdd).toBe(false);
+        expect(await stagedBlobText(ctx, 'x.log')).toBe('bb');
+      });
+    });
+  });
+});
+
+describe('addAll stages tracked entries that ignore rules hide from the walk', () => {
+  describe.each([
+    { label: 'under an ignored directory', path: 'd/x.txt', rules: 'd/\n' },
+    { label: 'matched by an ignore glob', path: 'x.log', rules: '*.log\n' },
+  ])('Given a modified tracked file $label', ({ path, rules }) => {
+    describe('When addAll runs', () => {
+      it('Then it is modified and not removed', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ [path]: 'a' }, rules);
+        await writeWork(ctx, path, 'bb');
+        const sut = addAllInternal;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.modified).toEqual([path]);
+        expect(result.removed).toEqual([]);
+        expect(await stagedBlobText(ctx, path)).toBe('bb');
+      });
+    });
+  });
+});
+
+describe('add against a held index.lock', () => {
+  describe('Given index.lock held by another process and a glob that matches nothing', () => {
+    describe('When add names the glob', () => {
+      it('Then the lock refusal wins over the no-match refusal and the lock is kept', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'real.txt': 'r' }, '');
+        const lockPath = `${ctx.layout.gitDir}/index.lock`;
+        const held = new Uint8Array([0x68]);
+        await ctx.fs.writeExclusive(lockPath, held);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['nomatch*']), 'RESOURCE_LOCKED');
+
+        // Assert
+        if (err.data.code !== 'RESOURCE_LOCKED') throw new Error('unexpected error shape');
+        expect(err.data.resource).toBe('index');
+        expect(await ctx.fs.read(lockPath)).toEqual(held);
+      });
+    });
+  });
+});
+
+describe('add of a literal beneath an ignored directory', () => {
+  describe('Given .gitignore hides build/ and an untracked build/x beside a modified tracked k', () => {
+    describe('When add names build/x and a glob reaching k', () => {
+      it('Then the literal is not refused and k is staged', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ k: 'k' }, 'build/\n');
+        await writeWork(ctx, 'build/x', 'x');
+        await writeWork(ctx, 'k', 'kk');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['build/x', 'k*']);
+
+        // Assert
+        expect(result.modified).toEqual(['k']);
+        expect(result.ignored).toEqual(['build']);
+        expect(result.added).toEqual([]);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['k']);
+      });
+    });
+  });
+});
+
+describe('add of an unseen pathspec whose spelled path exists on disk', () => {
+  const NOTHING_STAGED = {
+    added: [],
+    modified: [],
+    removed: [],
+    eolNotices: [],
+    sparse: [],
+    ignored: [],
+  };
+
+  describe('Given an empty directory two levels deep and no ignore rule', () => {
+    describe('When add names it', () => {
+      it('Then it is not refused', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/d`);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/d/e`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d/e']);
+
+        // Assert
+        expect(result).toEqual(NOTHING_STAGED);
+      });
+    });
+  });
+
+  describe('Given a file x that only a directory-only rule names', () => {
+    describe('When add names x with a glob and excludes x', () => {
+      it('Then x is not refused, as the rule does not ignore a file', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ x: 'x', y: 'y', '.gitignore': 'x/\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x', 'y*', '!x']);
+
+        // Assert
+        expect(result.added).toEqual(['y']);
+      });
+    });
+  });
+
+  describe('Given a wildcard holding a backslash that matches nothing', () => {
+    describe('When add names it', () => {
+      it('Then it is refused with the pattern as typed', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ a: 'a' });
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['zz\\*']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('zz\\*').data);
+      });
+    });
+  });
+
+  describe('Given a file spelled like a backslash wildcard inside an ignored directory', () => {
+    describe('When add names that spelling', () => {
+      it('Then the spelling is never looked up on disk and is refused', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'd/x\\y': 'y', '.gitignore': 'd/\n' });
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['d/x\\y']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('d/x\\y').data);
+      });
+    });
+  });
+});

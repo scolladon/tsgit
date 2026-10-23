@@ -1,8 +1,15 @@
 # ADR-037: Pathspec strings are classified as glob vs literal by content
 
+
+> **Superseded by [ADR-1034](1034-a-pathspec-is-a-wildcard-when-it-holds-star-question-bracket-or-backslash.md)**
+> for the glob-special character set: a pathspec is a wildcard when it holds `*`, `?`, `[` or `\`
+> (git's `is_glob_special`). Classification by content, the literal-as-directory-prefix rule and
+> the `!` strip before detection are carried forward.
+
 ## Status
 
-Accepted (at `49a147e`)
+- **Status:** superseded by ADR-1034
+- Accepted at `49a147e`.
 
 ## Context
 

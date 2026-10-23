@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import type { WalkWorkingTreeEntry } from '../../../../src/application/primitives/types.js';
 import { walkWorkingTree } from '../../../../src/application/primitives/walk-working-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -69,6 +70,38 @@ describe('walkWorkingTree', () => {
 
         // Assert
         expect(result.sort()).toEqual(['a.txt', 'b.txt']);
+      });
+    });
+  });
+
+  describe('Given a file named with a backslash on a POSIX host', () => {
+    describe('When walked', () => {
+      it('Then yields it next to its backslash-free sibling', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'a\\b': '1', ab: '2' });
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collect(sut(ctx));
+
+        // Assert
+        expect(result.sort()).toEqual(['a\\b', 'ab']);
+      });
+    });
+  });
+
+  describe('Given a file named with a backslash on a Windows path-syntax host', () => {
+    describe('When walked', () => {
+      it('Then refuses it as outside the repository', async () => {
+        // Arrange
+        const ctx = { ...(await seedFs({ 'a\\b': '1', ab: '2' })), windowsPathSyntax: true };
+        const sut = walkWorkingTree;
+
+        // Act
+        const err = await expectError(() => collect(sut(ctx)), 'PATHSPEC_OUTSIDE_REPO');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: 'a\\b' });
       });
     });
   });
@@ -845,6 +878,158 @@ describe('walkWorkingTree', () => {
 
         // Assert
         expect(result).toEqual(['checkout/file.txt']);
+      });
+    });
+  });
+});
+
+describe('walkWorkingTree isNestedRepository', () => {
+  const collectEntries = async (it: AsyncIterable<WalkWorkingTreeEntry>) => {
+    const out: WalkWorkingTreeEntry[] = [];
+    for await (const entry of it) out.push(entry);
+    return out;
+  };
+  const nested = {
+    'a.txt': 'a',
+    'vendor/lib/.git/HEAD': 'ref: refs/heads/main\n',
+    'vendor/lib/src/x.ts': 'x',
+  };
+
+  describe('Given a nested repository and a hook answering true', () => {
+    describe('When walked', () => {
+      it('Then the repository is one directory leaf with its kind bits', async () => {
+        // Arrange
+        const ctx = await seedFs(nested);
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collectEntries(sut(ctx, { isNestedRepository: async () => true }));
+
+        // Assert
+        expect(result.map((e) => [e.path, e.isFile, e.isDirectory, e.isSymbolicLink])).toEqual([
+          ['a.txt', true, false, false],
+          ['vendor/lib', false, true, false],
+        ]);
+      });
+
+      it('Then the leaf stat reports a directory', async () => {
+        // Arrange
+        const ctx = await seedFs(nested);
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collectEntries(sut(ctx, { isNestedRepository: () => true }));
+        const stat = await result[1]!.stat();
+
+        // Assert
+        expect(stat.isDirectory).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a nested repository and a hook answering false', () => {
+    describe('When walked', () => {
+      it('Then it walks in and skips .git', async () => {
+        // Arrange
+        const ctx = await seedFs(nested);
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collect(sut(ctx, { isNestedRepository: async () => false }));
+
+        // Assert
+        expect(result).toEqual(['a.txt', 'vendor/lib/src/x.ts']);
+      });
+    });
+  });
+
+  describe('Given a directory whose .git is a regular file', () => {
+    describe('When walked with a recording hook', () => {
+      it('Then the hook is asked about it', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'sub/.git': 'gitdir: /elsewhere\n', 'sub/k.txt': 'k' });
+        const asked: string[] = [];
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collect(
+          sut(ctx, {
+            isNestedRepository: (dir) => {
+              asked.push(dir);
+              return true;
+            },
+          }),
+        );
+
+        // Assert
+        expect(asked).toEqual(['sub']);
+        expect(result).toEqual(['sub']);
+      });
+    });
+  });
+
+  describe('Given a directory whose .git is a symlink', () => {
+    describe('When walked with a hook answering true', () => {
+      it('Then only the directory leaf is yielded', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'sub/keep.txt': 'k' });
+        await ctx.fs.symlink('/elsewhere', `${ctx.layout.workDir}/sub/.git`);
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collect(sut(ctx, { isNestedRepository: async () => true }));
+
+        // Assert
+        expect(result).toEqual(['sub']);
+      });
+    });
+  });
+
+  describe('Given a mix of directories, an ignored one holding .git and a plain one', () => {
+    describe('When walked with a recording hook', () => {
+      it('Then only non-root, kept directories holding .git are asked', async () => {
+        // Arrange
+        const ctx = await seedFs({
+          '.git/HEAD': 'x',
+          'plain/f.txt': 'f',
+          'kept/.git/HEAD': 'x',
+          'dropped/.git/HEAD': 'x',
+        });
+        const asked: string[] = [];
+        const sut = walkWorkingTree;
+
+        // Act
+        await collect(
+          sut(ctx, {
+            ignore: (path) => path === 'dropped',
+            isNestedRepository: (dir) => {
+              asked.push(dir);
+              return false;
+            },
+          }),
+        );
+
+        // Assert
+        expect(asked).toEqual(['kept']);
+      });
+    });
+  });
+
+  describe('Given maxEntries 1 over a file and a repository leaf', () => {
+    describe('When walked', () => {
+      it('Then the leaf is counted and the limit refuses', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'a.txt': 'a', 'vendor/lib/.git/HEAD': 'x' });
+        const sut = walkWorkingTree;
+
+        // Act
+        const error = await expectError(
+          () => collect(sut(ctx, { maxEntries: 1, isNestedRepository: async () => true })),
+          'TREE_ENTRY_LIMIT_EXCEEDED',
+        );
+
+        // Assert
+        expect(error.data).toMatchObject({ count: 2, limit: 1 });
       });
     });
   });

@@ -6,7 +6,9 @@ import {
   alreadyInitialized,
   bareRepository,
   dubiousOwnership,
+  gitfileTooLarge,
   implicitBareRepository,
+  noCommitCheckedOut,
   notARepository,
   type RepositoryError,
   repositoryExtensionsUnsupported,
@@ -27,6 +29,30 @@ describe('domain repository error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'NOT_A_REPOSITORY', path: '/some/path' });
+        });
+      });
+    });
+
+    describe('Given noCommitCheckedOut("d/sub/")', () => {
+      describe('When checking data', () => {
+        it('Then code and path preserved', () => {
+          // Arrange & Act
+          const result = noCommitCheckedOut('d/sub/' as FilePath);
+
+          // Assert
+          expect(result.data).toEqual({ code: 'NO_COMMIT_CHECKED_OUT', path: 'd/sub/' });
+        });
+      });
+    });
+
+    describe('Given gitfileTooLarge("big/.git")', () => {
+      describe('When checking data', () => {
+        it('Then code and path preserved', () => {
+          // Arrange & Act
+          const result = gitfileTooLarge('big/.git' as FilePath);
+
+          // Assert
+          expect(result.data).toEqual({ code: 'GITFILE_TOO_LARGE', path: 'big/.git' });
         });
       });
     });
@@ -209,6 +235,14 @@ describe('domain repository error', () => {
       [
         { code: 'NOT_A_REPOSITORY', path: '/foo/bar' as FilePath },
         'NOT_A_REPOSITORY: not a git repository: bar',
+      ],
+      [
+        { code: 'NO_COMMIT_CHECKED_OUT', path: 'd/sub/' as FilePath },
+        'NO_COMMIT_CHECKED_OUT: does not have a commit checked out: d/sub/',
+      ],
+      [
+        { code: 'GITFILE_TOO_LARGE', path: 'big/.git' as FilePath },
+        "GITFILE_TOO_LARGE: too large to be a .git file: 'big/.git'",
       ],
       [
         { code: 'BARE_REPOSITORY', operation: 'add' },

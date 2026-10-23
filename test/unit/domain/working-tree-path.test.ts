@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../src/domain/error.js';
 import { isDotGitAlias } from '../../../src/domain/path/verify-path.js';
 import {
+  type PathSyntaxHost,
   validateWalkedEntryPath,
   validateWorkingTreePath,
+  validateWorkingTreePathOn,
 } from '../../../src/domain/working-tree-path.js';
+
+const POSIX_HOST: PathSyntaxHost = {};
+const WINDOWS_HOST: PathSyntaxHost = { windowsPathSyntax: true };
 
 const expectReject = (input: string): TsgitError => {
   let caught: unknown;
@@ -18,10 +23,10 @@ const expectReject = (input: string): TsgitError => {
   return caught as TsgitError;
 };
 
-const expectWalkedEntryReject = (input: string): TsgitError => {
+const expectWalkedEntryReject = (input: string, host: PathSyntaxHost = POSIX_HOST): TsgitError => {
   let caught: unknown;
   try {
-    validateWalkedEntryPath(input);
+    validateWalkedEntryPath(input, host);
   } catch (err) {
     caught = err;
   }
@@ -471,7 +476,7 @@ describe('validateWalkedEntryPath', () => {
     describe('When validated', () => {
       it('Then returns the branded FilePath', () => {
         // Arrange & Act
-        const result = validateWalkedEntryPath('a/b.txt');
+        const result = validateWalkedEntryPath('a/b.txt', POSIX_HOST);
 
         // Assert
         expect(result).toBe('a/b.txt');
@@ -498,7 +503,7 @@ describe('validateWalkedEntryPath', () => {
         // point: an on-disk entry shaped like a `.git` alias is not a
         // traversal hazard, so a real `readdir` result must reach the
         // walker's yield, exactly as git's own directory walk does.
-        expect(validateWalkedEntryPath(path)).toBe(path);
+        expect(validateWalkedEntryPath(path, POSIX_HOST)).toBe(path);
       });
     });
   });
@@ -536,11 +541,26 @@ describe('validateWalkedEntryPath', () => {
     });
   });
 
-  describe('Given a backslash in the path', () => {
+  describe('Given a backslash in the path on a Windows path-syntax host', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
         // Arrange & Act + Assert
-        expectWalkedEntryReject('a\\b');
+        expectWalkedEntryReject('a\\b', WINDOWS_HOST);
+      });
+    });
+  });
+
+  describe('Given a backslash in the path on a POSIX host', () => {
+    describe('When validated', () => {
+      it('Then returns the path, a legal file name byte', () => {
+        // Arrange
+        const sut = validateWalkedEntryPath;
+
+        // Act
+        const result = sut('a\\b', POSIX_HOST);
+
+        // Assert
+        expect(result).toBe('a\\b');
       });
     });
   });
@@ -611,7 +631,7 @@ describe('validateWalkedEntryPath', () => {
         const nonAscii = '€'.repeat(85);
 
         // Act + Assert
-        expect(validateWalkedEntryPath(`a/${nonAscii}/c`)).toBe(`a/${nonAscii}/c`);
+        expect(validateWalkedEntryPath(`a/${nonAscii}/c`, POSIX_HOST)).toBe(`a/${nonAscii}/c`);
       });
     });
   });
@@ -632,7 +652,73 @@ describe('validateWalkedEntryPath', () => {
     describe('When validated', () => {
       it('Then accepts — the NTFS ADS/drive-letter guard is a pathspec-input concern, not a walk hazard', () => {
         // Arrange & Act + Assert
-        expect(validateWalkedEntryPath('a:b')).toBe('a:b');
+        expect(validateWalkedEntryPath('a:b', POSIX_HOST)).toBe('a:b');
+      });
+    });
+  });
+});
+
+describe('validateWorkingTreePathOn', () => {
+  describe('Given a backslash in the path on a POSIX host', () => {
+    describe('When validated', () => {
+      it('Then returns the path — a backslash is an ordinary file-name byte', () => {
+        // Arrange
+        const sut = validateWorkingTreePathOn;
+
+        // Act
+        const result = sut('a\\b', POSIX_HOST);
+
+        // Assert
+        expect(result).toBe('a\\b');
+      });
+    });
+  });
+
+  describe('Given a backslash in the path on a Windows path-syntax host', () => {
+    describe('When validated', () => {
+      it('Then refuses with PATHSPEC_OUTSIDE_REPO carrying the path', () => {
+        // Arrange
+        const sut = validateWorkingTreePathOn;
+        let caught: unknown;
+
+        // Act
+        try {
+          sut('a\\b', WINDOWS_HOST);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: 'a\\b',
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a .git component', input: 'a/.git/b' },
+    { label: 'a leading colon', input: ':magic' },
+  ])('Given $label on a POSIX host', ({ input }) => {
+    describe('When validated', () => {
+      it('Then still refuses with PATHSPEC_OUTSIDE_REPO carrying the path', () => {
+        // Arrange
+        const sut = validateWorkingTreePathOn;
+        let caught: unknown;
+
+        // Act
+        try {
+          sut(input, POSIX_HOST);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: input,
+        });
       });
     });
   });

@@ -17,7 +17,7 @@ import { readTree } from '../../../../src/application/primitives/read-tree.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { pathspecNoMatch, TsgitError } from '../../../../src/domain/index.js';
 import type {
   AuthorIdentity,
   FilePath,
@@ -36,6 +36,16 @@ const author: AuthorIdentity = {
 };
 
 const REF_PREFIX = 'ref: refs/heads/';
+
+const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+  } catch (err) {
+    if (err instanceof TsgitError) return err.data;
+    throw err;
+  }
+  return undefined;
+};
 
 const seedWithBranches = async () => {
   const ctx = createMemoryContext();
@@ -532,6 +542,35 @@ describe('checkout', () => {
         expect(Array.from(await ctx.fs.read(lockPath))).toEqual([0x53, 0x45, 0x4e, 0x54]);
       });
     });
+
+    describe.each([
+      ['a glob that matches nothing', 'nomatch*'],
+      ['a literal that matches nothing', 'missing'],
+    ])('When path-restore names %s', (_title, pathspec) => {
+      it('Then it refuses with RESOURCE_LOCKED before naming the pathspec and keeps the lock', async () => {
+        // Arrange
+        const { ctx } = await seedWithBranches();
+        const lockPath = `${ctx.layout.gitDir}/index.lock`;
+        await ctx.fs.writeExclusive(lockPath, new Uint8Array([0x53, 0x45, 0x4e, 0x54]));
+        const sut = checkout;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { paths: [pathspec] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'RESOURCE_LOCKED',
+          resource: 'index',
+          path: lockPath,
+        });
+        expect(Array.from(await ctx.fs.read(lockPath))).toEqual([0x53, 0x45, 0x4e, 0x54]);
+      });
+    });
   });
 });
 
@@ -966,52 +1005,125 @@ describe('checkout — mutation hardening', () => {
 
   describe('Given a glob with no match on the index source', () => {
     describe('When path-restore', () => {
-      it('Then changedPaths is 0 and HEAD is unchanged (L145 zero-match branch)', async () => {
-        // Arrange — default source 'index'; a glob matching nothing exits via the
-        // L145 `pathSet.size === 0` early return. A ConditionalExpression→false
-        // mutant would skip the early return and call materialize with an empty
-        // set; the BlockStatement mutant would drop the early return body.
+      it('Then it refuses PATHSPEC_NO_MATCH naming the glob', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a');
         await add(ctx, ['a.ts']);
-        const c = await commit(ctx, { message: 'baseline', author });
+        await commit(ctx, { message: 'baseline', author });
+        const sut = checkout;
 
         // Act
-        const result = await checkout(ctx, { paths: ['*.nomatch'] });
+        const result = await refusalOf(() => sut(ctx, { paths: ['*.nomatch'] }));
 
-        // Assert — zero-match no-op; result resolves current HEAD, detached false.
-        expect(result.changedPaths).toBe(0);
-        expect(result.detached).toBe(false);
-        expect(result.branch).toBeUndefined();
-        expect(result.id).toBe(c.id);
+        // Assert
+        expect(result).toEqual(pathspecNoMatch('*.nomatch').data);
+      });
+    });
+  });
+
+  describe('Given several pathspecs that match nothing', () => {
+    describe.each([
+      ['two globs', ['n1*', 'n2*'], ['n1*', 'n2*']],
+      ['a glob then a literal', ['n1*', 'missing'], ['n1*', 'missing']],
+      ['a matching glob then an unmatched one', ['a*', 'n1*'], ['n1*']],
+    ])('When path-restore names %s', (_title, paths, unmatched) => {
+      it('Then it refuses naming the first and listing every unmatched one', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'baseline', author });
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, { paths }));
+
+        // Assert
+        const [first, ...rest] = unmatched as [string, ...string[]];
+        expect(result).toEqual(pathspecNoMatch(first, ...rest).data);
+      });
+    });
+  });
+
+  describe('Given a dirty file and a pathspec that matches nothing', () => {
+    describe('When path-restore names both', () => {
+      it('Then it refuses and leaves the dirty file and the index untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dirty.txt`, 'clean');
+        await add(ctx, ['dirty.txt']);
+        await commit(ctx, { message: 'baseline', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dirty.txt`, 'dirty');
+        const before = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, { paths: ['d*', 'nomatch*'] }));
+
+        // Assert
+        expect(result).toEqual(pathspecNoMatch('nomatch*').data);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/dirty.txt`)).toBe('dirty');
+        expect(Array.from(await ctx.fs.read(`${ctx.layout.gitDir}/index`))).toEqual(
+          Array.from(before),
+        );
+      });
+    });
+  });
+
+  describe('Given a file staged but absent from HEAD', () => {
+    describe('When path-restore from HEAD names it by glob', () => {
+      it('Then the tree is the universe: it refuses and the index is unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'baseline', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/new.txt`, 'n');
+        await add(ctx, ['new.txt']);
+        const before = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, { paths: ['new*'], source: 'HEAD' }));
+
+        // Assert
+        expect(result).toEqual(pathspecNoMatch('new*').data);
+        expect(Array.from(await ctx.fs.read(`${ctx.layout.gitDir}/index`))).toEqual(
+          Array.from(before),
+        );
       });
     });
   });
 
   describe('Given a zero-match glob from HEAD AND a corrupted index', () => {
     describe('When path-restore', () => {
-      it('Then the early return short-circuits before readIndex (L145 branch + body)', async () => {
-        // Arrange — glob `*.nomatch` yields an empty pathSet. The L145
-        // `pathSet.size === 0` early return must fire BEFORE materialize touches
-        // the index. Corrupt the index so that a mutant — either the
-        // ConditionalExpression→false (skip the return) or the BlockStatement→{}
-        // (drop the return body) — would fall through to
-        // materializePathRestoreLocked → readIndex and throw a parse error.
+      it('Then it refuses with the index read error and leaves no index.lock', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a');
         await add(ctx, ['a.ts']);
-        const c = await commit(ctx, { message: 'baseline', author });
+        await commit(ctx, { message: 'baseline', author });
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([0, 0, 0, 0]));
+        const sut = checkout;
 
-        // Act — must succeed: the early return never reads the corrupt index.
-        const result = await checkout(ctx, { paths: ['*.nomatch'], source: 'HEAD' });
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { paths: ['*.nomatch'], source: 'HEAD' });
+        } catch (err) {
+          caught = err;
+        }
 
-        // Assert — no-op result, no parse error surfaced.
-        expect(result.changedPaths).toBe(0);
-        expect(result.id).toBe(c.id);
-        expect(result.detached).toBe(false);
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
+        expect((caught as TsgitError).message).toMatch(/shorter than/);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
       });
     });
   });
@@ -1379,19 +1491,20 @@ describe('checkout — progress reporting', () => {
 
   describe('Given a glob pathspec with no match', () => {
     describe('When checkout', () => {
-      it('Then changedPaths is 0 and nothing throws', async () => {
+      it('Then it refuses PATHSPEC_NO_MATCH naming the glob', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a');
         await add(ctx, ['a.ts']);
         await commit(ctx, { message: 'baseline', author });
+        const sut = checkout;
 
         // Act
-        const result = await checkout(ctx, { paths: ['*.nope'], source: 'HEAD' });
+        const result = await refusalOf(() => sut(ctx, { paths: ['*.nope'], source: 'HEAD' }));
 
         // Assert
-        expect(result.changedPaths).toBe(0);
+        expect(result).toEqual(pathspecNoMatch('*.nope').data);
       });
     });
   });
@@ -1554,8 +1667,36 @@ describe('checkout — post-checkout hook', () => {
     });
   });
 
+  describe.each([
+    { algorithm: 'sha1' as const, width: 40 },
+    { algorithm: 'sha256' as const, width: 64 },
+  ])('Given an unborn branch with a staged file ($algorithm)', ({ algorithm, width }) => {
+    describe('When checkout restores the modified path from the index', () => {
+      it('Then the file is restored, the result id is the null oid and post-checkout gets it twice', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner, algorithm });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'a');
+        await add(ctx, ['f']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'b');
+        const nullOid = '0'.repeat(width);
+
+        // Act
+        const result = await checkout(ctx, { paths: ['f'] });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('a');
+        expect(result.id).toBe(nullOid);
+        expect(postCheckoutSince(runner, 0).map((call) => call.args)).toEqual([
+          [nullOid, nullOid, '0'],
+        ]);
+      });
+    });
+  });
+
   describe('Given a path restore whose glob matches nothing', () => {
-    describe('When checkout is a no-op', () => {
+    describe('When checkout refuses', () => {
       it('Then post-checkout does not fire', async () => {
         // Arrange
         const runner = new MemoryHookRunner();
@@ -1567,9 +1708,10 @@ describe('checkout — post-checkout hook', () => {
         const before = runner.calls.length;
 
         // Act
-        await checkout(ctx, { paths: ['*.nomatch'] });
+        const refusal = await refusalOf(() => checkout(ctx, { paths: ['*.nomatch'] }));
 
         // Assert
+        expect(refusal).toEqual(pathspecNoMatch('*.nomatch').data);
         expect(postCheckoutSince(runner, before)).toHaveLength(0);
       });
     });
@@ -1869,6 +2011,7 @@ describe('Given a path restore whose pathspec is spelled with `.` components', (
       expect((caught as TsgitError).data).toEqual({
         code: 'PATHSPEC_NO_MATCH',
         pattern: './nomatch',
+        patterns: ['./nomatch'],
       });
     });
   });
@@ -2234,6 +2377,64 @@ describe('checkout — staged changes on a branch switch', () => {
         // Assert
         expect((await readIndex(ctx)).entries).toHaveLength(0);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/f`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('checkout of a glob whose only match an exclusion removes', () => {
+  describe('Given only skip.ts tracked', () => {
+    describe('When checkout names *.ts and excludes skip.ts', () => {
+      it('Then the glob counts as matched and nothing is refused or restored', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/skip.ts`, 'v1');
+        await add(ctx, ['skip.ts']);
+        await commit(ctx, { message: 'v1', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/skip.ts`, 'v2');
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { paths: ['*.ts', '!skip.ts'] });
+
+        // Assert
+        expect(result.changedPaths).toBe(0);
+        expect(new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/skip.ts`))).toBe(
+          'v2',
+        );
+      });
+    });
+  });
+});
+
+describe('checkout of a glob whose only match an exclusion removes, with a post-checkout hook', () => {
+  describe('Given only skip.ts tracked and modified', () => {
+    describe('When checkout names *.ts and excludes skip.ts', () => {
+      it('Then the result reports the unmoved HEAD and post-checkout fires with the file flag', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/skip.ts`, 'v1');
+        await add(ctx, ['skip.ts']);
+        const tip = await commit(ctx, { message: 'v1', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/skip.ts`, 'v2');
+        const before = runner.calls.length;
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { paths: ['*.ts', '!skip.ts'] });
+
+        // Assert
+        expect(result).toEqual({
+          branch: undefined,
+          id: tip.id,
+          detached: false,
+          changedPaths: 0,
+        });
+        const post = runner.calls.slice(before).filter((call) => call.name === 'post-checkout');
+        expect(post.map((call) => call.args)).toEqual([[tip.id, tip.id, '0']]);
       });
     });
   });

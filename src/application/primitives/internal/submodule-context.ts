@@ -1,6 +1,7 @@
 import { NO_PARSER_OFFSET } from '../../../domain/git-index/path-validator.js';
 import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
-import type { Context } from '../../../ports/context.js';
+import type { Context, RepositoryLayout } from '../../../ports/context.js';
+import type { FileSystem } from '../../../ports/file-system.js';
 import { deriveContext } from '../derive-context.js';
 import { indexPathRulesOf } from './index-path-rules.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -22,21 +23,48 @@ import { requireWorkTree } from './repo-state.js';
  * session and every identity-keyed cache starts cold, unlike the worktree
  * derivation above.
  */
-const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): Context => {
-  const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
+const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): Context =>
+  deriveGitlinkContext(ctx, `${ctx.layout.gitDir}/modules/${name}`, treeRelPath);
+
+/** What a gitlink's repository needs beyond the parent's own: the filesystem that reaches it. */
+interface GitlinkReach {
+  readonly fs?: FileSystem;
+  /** Where the repository keeps shared refs and config when that is not its `gitDir` (a linked worktree's admin dir). */
+  readonly commonDir?: string;
+  /** The ref backend the repository declares; a submodule command assumes `files`. */
+  readonly refStorage?: RepositoryLayout['refStorage'];
+}
+
+/**
+ * Derive a child `Context` for the repository a gitlink's checkout leads to:
+ * working tree at `${workDir}/<treeRelPath>`, object store at `gitDir`, wherever
+ * that is. The caller vouches for `gitDir`; nothing is probed here. A `gitDir`
+ * outside the parent's containment roots is reached through `reach.fs`.
+ */
+export const deriveGitlinkContext = (
+  ctx: Context,
+  gitDir: string,
+  treeRelPath: FilePath,
+  reach: GitlinkReach = {},
+): Context => {
   const workDir = joinPath(requireWorkTree(ctx, 'deriveSubmoduleContext'), treeRelPath);
   const { promisor: _promisor, hooks: _hooks, ...rest } = ctx;
   return deriveContext(rest, {
+    ...(reach.fs !== undefined ? { fs: reach.fs } : {}),
     layout: Object.freeze({
       workDir,
       gitDir,
+      ...(reach.commonDir !== undefined && reach.commonDir !== gitDir
+        ? { commonDir: reach.commonDir }
+        : {}),
       bare: false,
       // A submodule is its own repository and can declare its own
       // `extensions.refStorage`, independent of the parent's — this
       // derivation does not run the Stage-2 scan, so it defaults to
       // 'files' by explicit assignment rather than copying the parent's
       // value (unlike the worktree derivation, which shares one repository).
-      refStorage: 'files',
+      // A caller that has read the child's config passes what it declares.
+      refStorage: reach.refStorage ?? 'files',
       // Stryker disable next-line ConditionalExpression,BooleanLiteral,EqualityOperator,ObjectLiteral: equivalent — when `homeDir` is undefined the always-true mutant yields `{ homeDir: undefined }`, indistinguishable from the `{}` branch on `layout.homeDir`; the conditional only exists to satisfy `exactOptionalPropertyTypes`. The killable always-`{}` half is covered by the homeDir-propagation tests.
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
       ...inheritedAcceptanceVerdicts(ctx.layout),

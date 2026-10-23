@@ -362,7 +362,47 @@ done
 # Raised 1436 -> 1439 KiB by the review fixes of that work: the measured pack
 # landed at 1 472 330 B, attributable to the cache-tree repair abort, the
 # pruned HEAD/target walk of a branch switch and the bounded literal read.
-SIZE_CAP=$((1440 * 1024))
+# Raised 1440 -> 1442 KiB by the pathspec glob-dialect work: the measured pack
+# landed at 1 476 231 B, 1 671 B over the old cap, attributable to the dialect
+# matcher, its fast paths, the refusal helpers, the index-side pass and
+# `subpathOffset`, offset by the removed `scanStar`, `containsGlob`,
+# `compileLiteral`/`compileDirectory` and `enforceLiteralMustMatch` — runtime
+# code shipped in every distribution form, none removable without dropping the
+# behaviour.
+# Raised 1442 -> 1444 KiB by the review and refactoring rounds of the pathspec
+# glob-dialect work: the measured pack landed at 1 477 954 B, 1 346 B over the
+# old cap, attributable to the one-pass pathspec verdict, the literal-suffix
+# post-filter, the ping-pong matcher rows, the shared positive tracker, the
+# ancestor-aware literal escape and the hidden conflicted-path staging pass —
+# runtime code shipped in every distribution form, none removable without
+# dropping the behaviour.
+# Raised 1444 -> 1447 KiB by the folded add, checkout and rm fixes of the same
+# work: the measured pack landed at 1 481 458 B, 2 802 B over the old cap,
+# attributable to the skip-worktree filters and the sparse split, the checkout
+# universe filter, the ignored collector with its `force` wiring,
+# `firstIgnoredOf`, the gitlink step with `gitlinkHeadOf`, and the host-gated
+# validators — runtime code shipped in every distribution form, none removable
+# without dropping the behaviour.
+# Raised 1447 -> 1450 KiB by the review round of the folded add, checkout and rm
+# fixes: the measured pack landed at 1 484 245 B, 2 517 B over the old cap,
+# attributable to the gitlink probe's symlink, common-dir, objects/refs and
+# unresolvable-HEAD rules, the repository-format scan shared with the gitlink
+# reader, and the tree-source skip-worktree restore — runtime code shipped in
+# every distribution form, none removable without dropping the behaviour.
+# Raised 1450 -> 1454 KiB by the embedded-repository staging work: the measured
+# pack landed at 1 488 266 B, 3 466 B over the old cap, attributable to the
+# nested-repository walk hook and leaf, the probe split, the embedded-repository
+# reader, the error member with its message, the embedded step and the
+# index-side type change, and the literal ancestor probe — runtime code shipped
+# in every distribution form, none removable without dropping the behaviour.
+# Raised 1454 -> 1455 KiB by the embedded-repository review fixes: the measured
+# pack landed at 1 489 535 B, 639 B over the old cap and 1 269 B over the
+# pack before them, attributable to the oversized-gitfile error member with its
+# message, the oversized kind and regular-file gate of the gitlink probe, the
+# beneath-an-entry lookup, the bounded reads of a nested HEAD and commondir,
+# and the ignored-inside-repository filter — runtime code shipped in every
+# distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1455 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

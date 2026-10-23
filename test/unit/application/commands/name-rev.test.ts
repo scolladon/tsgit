@@ -130,6 +130,7 @@ describe('nameRev', () => {
           ref: RefName.from('refs/tags/v1.0'),
           tagDeref: true,
           steps: [],
+          abbreviated: false,
         });
       });
     });
@@ -152,6 +153,7 @@ describe('nameRev', () => {
           ref: RefName.from('refs/tags/light'),
           tagDeref: false,
           steps: [],
+          abbreviated: false,
         });
       });
     });
@@ -173,6 +175,7 @@ describe('nameRev', () => {
           ref: RefName.from('refs/heads/main'),
           tagDeref: false,
           steps: [],
+          abbreviated: false,
         });
       });
     });
@@ -338,7 +341,13 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, head, { tags: true });
 
         // Assert
-        expect(result).toEqual({ oid: head, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({
+          oid: head,
+          ref: undefined,
+          tagDeref: false,
+          steps: [],
+          abbreviated: false,
+        });
       });
     });
   });
@@ -356,6 +365,77 @@ describe('nameRev', () => {
 
         // Assert
         expect(result?.ref).toBe(RefName.from('refs/tags/pick'));
+      });
+    });
+
+    describe('When name-rev runs with a refs include matching only a suffix of the ref', () => {
+      it('Then the result is flagged abbreviated', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock + 10);
+
+        // Act
+        const result = await nameRev(ctx, head, { refs: 'v*' });
+
+        // Assert
+        expect(result).toEqual({
+          oid: head,
+          ref: RefName.from('refs/tags/v1.0'),
+          tagDeref: true,
+          steps: [],
+          abbreviated: true,
+        });
+      });
+    });
+
+    describe('When name-rev runs with a refs include matching the whole ref', () => {
+      it('Then the result is not flagged abbreviated', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        await annotatedTag(ctx, 'v1.0', head, clock + 10);
+
+        // Act
+        const result = await nameRev(ctx, head, { refs: 'refs/tags/*' });
+
+        // Assert
+        expect(result?.abbreviated).toBe(false);
+      });
+    });
+
+    describe('When name-rev names a tag object by a suffix-matching include', () => {
+      it('Then the exact ref match is flagged abbreviated', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+        const tagOid = await annotatedTag(ctx, 'v1.0', head, clock + 10);
+
+        // Act
+        const result = await nameRev(ctx, tagOid, { refs: 'v*' });
+
+        // Assert
+        expect(result).toEqual({
+          oid: tagOid,
+          ref: RefName.from('refs/tags/v1.0'),
+          tagDeref: false,
+          steps: [],
+          abbreviated: true,
+        });
+      });
+    });
+
+    describe('When name-rev finds no naming ref', () => {
+      it('Then the unnamed result is not flagged abbreviated', async () => {
+        // Arrange
+        const ctx = await seed();
+        const head = await commitFile(ctx, 'c1');
+
+        // Act
+        const result = await nameRev(ctx, head, { refs: 'nope' });
+
+        // Assert
+        expect(result?.abbreviated).toBe(false);
       });
     });
 
@@ -387,7 +467,13 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, orphan);
 
         // Assert
-        expect(result).toEqual({ oid: orphan, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({
+          oid: orphan,
+          ref: undefined,
+          tagDeref: false,
+          steps: [],
+          abbreviated: false,
+        });
       });
     });
   });
@@ -521,7 +607,13 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, root);
 
         // Assert
-        expect(result).toEqual({ oid: root, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({
+          oid: root,
+          ref: undefined,
+          tagDeref: false,
+          steps: [],
+          abbreviated: false,
+        });
       });
     });
   });

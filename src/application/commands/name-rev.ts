@@ -20,6 +20,7 @@ import {
   nameRevCutoff,
   type RevName,
 } from '../../domain/name-rev/index.js';
+import type { RefFilter } from '../../domain/name-rev/ref-pattern.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
@@ -48,6 +49,11 @@ export interface NameRevResult {
   readonly tagDeref: boolean;
   /** Navigation from the ref's commit down to `oid` (`~count` / `^number`). */
   readonly steps: ReadonlyArray<NameRevStep>;
+  /**
+   * `true` when an include pattern matched the naming ref only through a suffix — git then
+   * prints the ref shortened (the caller shortens; the library returns the full ref).
+   */
+  readonly abbreviated: boolean;
 }
 
 const DEFAULT_REV = 'HEAD';
@@ -94,8 +100,8 @@ const nameRevOf = async (
   // returns refs in name order, so this `.sort()` is a defensive no-op (the
   // reverse-alphabetical tie test names the same ref with or without it).
   const refs = [...(await enumerateRefs(ctx))].filter((ref) => filter.qualifies(ref)).sort();
-  if (!target.isCommit) return exactRefMatch(ctx, refs, target.id);
-  return nameCommit(ctx, refs, target.id);
+  if (!target.isCommit) return exactRefMatch(ctx, refs, target.id, filter);
+  return nameCommit(ctx, refs, target.id, filter);
 };
 
 /** Flood every naming ref down to `target` and fold the best name it received. */
@@ -103,14 +109,21 @@ const nameCommit = async (
   ctx: Context,
   refs: ReadonlyArray<RefName>,
   target: ObjectId,
+  filter: RefFilter,
 ): Promise<NameRevResult> => {
   const cutoff = nameRevCutoff((await readCommitMeta(ctx, target)) as CommitMeta);
   const revNames = new Map<ObjectId, RevName>();
   const metas: MetaReader = boundedReaderFor(ctx, 'ioBound', (id) => readCommitMeta(ctx, id));
   for (const ref of refs) await walkRef(ctx, ref, revNames, cutoff, metas);
   const name = revNames.get(target);
-  if (name === undefined) return { oid: target, ref: undefined, tagDeref: false, steps: [] };
-  return { oid: target, ref: name.ref, tagDeref: name.tagDeref, steps: foldSteps(name) };
+  if (name === undefined) return unnamed(target);
+  return {
+    oid: target,
+    ref: name.ref,
+    tagDeref: name.tagDeref,
+    steps: foldSteps(name),
+    abbreviated: filter.abbreviates(name.ref),
+  };
 };
 
 /** git's `get_exact_ref_match`: the first naming ref whose own value is `target`. */
@@ -118,16 +131,25 @@ const exactRefMatch = async (
   ctx: Context,
   refs: ReadonlyArray<RefName>,
   target: ObjectId,
+  filter: RefFilter,
 ): Promise<NameRevResult> => {
   const store = getRefStore(ctx);
   for (const ref of refs) {
     const resolved = await store.resolveDirect(ref);
     if (resolved.kind === 'direct' && resolved.id === target) {
-      return { oid: target, ref, tagDeref: false, steps: [] };
+      return { oid: target, ref, tagDeref: false, steps: [], abbreviated: filter.abbreviates(ref) };
     }
   }
-  return { oid: target, ref: undefined, tagDeref: false, steps: [] };
+  return unnamed(target);
 };
+
+const unnamed = (target: ObjectId): NameRevResult => ({
+  oid: target,
+  ref: undefined,
+  tagDeref: false,
+  steps: [],
+  abbreviated: false,
+});
 
 /** The codes a `repo_get_oid` that read no object refuses with. */
 const UNREAD_ARGUMENT_CODES: ReadonlySet<string | undefined> = new Set([

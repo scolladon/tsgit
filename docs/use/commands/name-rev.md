@@ -30,6 +30,7 @@ interface NameRevResult {
   readonly ref: RefName | undefined;            // naming ref (full name); undefined when unnameable
   readonly tagDeref: boolean;                   // ref is an annotated tag (render `^0` at the tip)
   readonly steps: ReadonlyArray<NameRevStep>;   // navigation from the ref's commit down to oid
+  readonly abbreviated: boolean;                // an include matched only a `/`-suffix of `ref` (git's can_abbreviate_output)
 }
 ```
 
@@ -37,9 +38,11 @@ interface NameRevResult {
 
 - **All refs by default:** every ref under `refs/` (branches, remotes, tags) is a
   naming source; `HEAD` is never used. `tags: true` restricts to `refs/tags/*`;
-  `refs`/`exclude` filter by full-refname glob (git's `name-rev --refs`/`--exclude`;
-  a different dialect from `describe`'s anchored short-name `match`,
-  [ADR-285](../../adr/285-name-rev-ref-glob-dialect.md)).
+  `refs`/`exclude` filter by refname glob (git's `name-rev --refs`/`--exclude`),
+  tested against the full refname and against the text after each `/`
+  (`refs/tags/v1`, `tags/v1`, `v1`); excludes are tested first. The dialect is the
+  one `describe`'s `match`/`exclude` and the pathspec globs share
+  ([ADR-285](../../adr/285-name-rev-ref-glob-dialect.md)).
 - **Glob dialect:** git's `wildmatch(pattern, ref, 0)` — matched over UTF-8
   bytes, anchored at both ends, case-sensitive. `*` and `?` **cross `/`**, and a
   run of `*` is no wider than a single one. `[…]` is a POSIX bracket expression:
@@ -73,7 +76,10 @@ interface NameRevResult {
 - **Caller renders the string** — the full `ref`, `tagDeref`, and `steps` are
   enough to reconstruct git's line under either short-name rule (plain
   `name-rev`'s `tags/…`/bare-branch, or `describe --contains`'s `refs/tags/`-stripped
-  form). The library never abbreviates.
+  form). The library never abbreviates: `abbreviated` is `true` when an include
+  matched only through a `/`-suffix (git then prints the unambiguous short name
+  of `ref`) and `false` for a full-refname match or when no `refs` was given; the
+  caller shortens.
 
 ## `describe --contains`
 

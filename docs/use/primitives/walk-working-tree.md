@@ -1,6 +1,6 @@
 # `walkWorkingTree`
 
-`AsyncIterable<WalkWorkingTreeEntry>` walker. DFS through `FileSystem.readdir`, lazily `lstat`ing a leaf only when a consumer reads its stat. Skips `.git`, embedded clones, and ignored directories (when an `ignore` predicate is supplied).
+`AsyncIterable<WalkWorkingTreeEntry>` walker. DFS through `FileSystem.readdir`, lazily `lstat`ing a leaf only when a consumer reads its stat. Skips `.git`, embedded clones (unless the caller classifies them with `isNestedRepository`), and ignored directories (when an `ignore` predicate is supplied).
 
 ## Signature
 
@@ -13,6 +13,7 @@ interface WalkWorkingTreeOptions {
   readonly maxDepth?: number;     // default core.maxTreeDepth (2048 when unset), honoured unclamped
   readonly maxEntries?: number;   // default MAX_FLAT_TREE_ENTRIES
   readonly ignore?: WalkIgnorePredicate;
+  readonly isNestedRepository?: (directory: FilePath) => boolean | Promise<boolean>;
 }
 
 type WalkIgnorePredicate = (
@@ -33,7 +34,7 @@ interface WalkWorkingTreeEntry {
 
 - **`stat` is lazy.** The three kind bits (`isFile`/`isDirectory`/`isSymbolicLink`) come straight off the underlying `readdir` batch — free, no syscall. `stat` is a memoised per-entry accessor: the `lstat` fires on first call, not at yield time, so a consumer that only reads `path` (or just the kind bits) never pays it — the shape `status`'s untracked pass relies on. Calling `stat()` more than once on the same entry issues exactly one `lstat`.
 - **`.git` is always skipped** — folded only by case (matching `core.ignorecase`). An NTFS/HFS-obscured alias on disk (`git~1`, a `.git:`-stream name, an HFS+ ignorable-codepoint spelling) is walked like any other entry, exactly as git's own directory walk treats it; the wider rejection matrix applies only at the index-write boundary, never here.
-- **Embedded clones** (directories with a `.git` child) and worktree-pointer files mark their parent as opaque; no `160000` gitlink is materialised.
+- **Embedded clones** (directories holding a `.git` entry of any kind) and worktree-pointer files mark their parent as opaque: nothing beneath is yielded. When `isNestedRepository` is supplied it is asked about each such directory below the root, once `ignore` has kept it (the `.git` is never walked through, symlink included). `true` yields the directory as one leaf (`isDirectory: true`, counted against `maxEntries`) and walks nothing beneath it; `false` walks into it, `.git` still skipped. [`add`](../commands/add.md#embedded-repositories) uses this to stage the leaf as a `160000` gitlink and [`status`](../commands/status.md) to list it once as `<dir>/`. Unset, the walk itself materialises no gitlink.
 - **Symlinks are never followed** — a symlink to a directory is yielded as a leaf, not descended into; staged as mode `120000` upstream by `add`.
 - **Walk-time ignore pruning:** when `ignore` is supplied, ignored directories are not descended into — big perf win on `node_modules`.
 - **Depth/entry caps:** `maxDepth` throws `TREE_DEPTH_EXCEEDED`; `maxEntries` throws `TREE_ENTRY_LIMIT_EXCEEDED`. `maxDepth` defaults to `core.maxTreeDepth`, read from the repository-local config only (default 2048 when unset) and honoured unclamped at any configured value.
@@ -62,4 +63,4 @@ for await (const entry of repo.primitives.walkWorkingTree()) {
 
 - Tier-1: [`add`](../commands/add.md), [`status`](../commands/status.md)
 - Related primitives: [`readIndex`](read-index.md), [`walkTree`](walk-tree.md)
-- ADRs: [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [035](../../adr/035-walk-ignore-pruning.md), [633](../../adr/633-walk-working-tree-lazy-stat.md)
+- ADRs: [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [1054](../../adr/1054-add-stages-an-embedded-repository-as-a-gitlink-as-git-does.md), [035](../../adr/035-walk-ignore-pruning.md), [633](../../adr/633-walk-working-tree-lazy-stat.md)

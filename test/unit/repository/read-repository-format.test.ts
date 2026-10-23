@@ -2,13 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
 import { tokenizeConfig } from '../../../src/domain/config/config-ini.js';
+import { enumerateExtensionEntries } from '../../../src/domain/config/repository-format-scan.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import type { LayoutProbe } from '../../../src/ports/layout-probe.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
-import {
-  enumerateExtensionEntries,
-  readRepositoryFormat,
-} from '../../../src/repository/read-repository-format.js';
+import { readRepositoryFormat } from '../../../src/repository/read-repository-format.js';
 
 // `readRepositoryFormat` is Stage 2 of layout resolution: it reads exactly
 // `<commonDir>/config` (plus `<gitDir>/config.worktree` when

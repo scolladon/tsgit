@@ -545,7 +545,7 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
             await writeFile(path.join(dir, '.gitignore'), '*.log\n');
             await writeFile(path.join(dir, 'a.log'), 'x\n');
           }
-          await repo.add(['a.log']);
+          await repo.add(['a.log'], { force: true });
           runGit(['-C', pair.peer, 'add', '-f', 'a.log']);
           await repo.add(['.gitignore']);
           runGit(['-C', pair.peer, 'add', '.gitignore']);

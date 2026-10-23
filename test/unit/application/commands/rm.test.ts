@@ -8,9 +8,10 @@ import { indexEntryFromStat } from '../../../../src/application/primitives/inter
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { rmRecursiveWithoutR } from '../../../../src/domain/commands/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
-import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
+import { fileNotFound, pathspecNoMatch, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -122,7 +123,7 @@ describe('Given a tracked file and a pathspec spelled with a `./` component', ()
       const err = await expectError(() => sut(ctx, ['./nomatch']), 'PATHSPEC_NO_MATCH');
 
       // Assert
-      expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: './nomatch' });
+      expect(err.data).toEqual(pathspecNoMatch('./nomatch').data);
     });
   });
 });
@@ -388,7 +389,7 @@ describe('rm', () => {
 
   describe('Given a glob "*.log" with two matching tracked files', () => {
     describe('When rm', () => {
-      it('Then both are removed (no PATHSPEC_NO_MATCH for globs)', async () => {
+      it('Then both are removed', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.log': 'a', 'b.log': 'b', 'keep.ts': 'k' });
 
@@ -404,15 +405,84 @@ describe('rm', () => {
 
   describe('Given a glob "*.nope" with no matches', () => {
     describe('When rm', () => {
-      it('Then returns removed=[] without throwing', async () => {
+      it('Then it refuses PATHSPEC_NO_MATCH naming the glob', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const sut = rm;
 
         // Act
-        const result = await rm(ctx, ['*.nope']);
+        const err = await expectError(() => sut(ctx, ['*.nope']), 'PATHSPEC_NO_MATCH');
 
-        // Assert — glob no-match is a no-op, not an error (Git semantics).
-        expect(result.removed).toEqual([]);
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('*.nope').data);
+      });
+    });
+  });
+
+  describe.each([
+    ['nomatch*', 'tracked.txt'],
+    ['tracked.txt', 'nomatch*'],
+  ])('Given the pathspecs %j then %j and only tracked.txt tracked', (first, second) => {
+    describe('When rm', () => {
+      it('Then the unmatched glob refuses and tracked.txt stays indexed and on disk', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'tracked.txt': 't' });
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, [first, second]), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('nomatch*').data);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['tracked.txt']);
+        expect(await ctx.fs.exists(work(ctx, 'tracked.txt'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tracked a?/f and zz', () => {
+    describe('When rm names the glob a? without recursive', () => {
+      it('Then it refuses RM_RECURSIVE_WITHOUT_R and removes nothing', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a?/f': 'f', zz: 'z' });
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['a?']), 'RM_RECURSIVE_WITHOUT_R');
+
+        // Assert
+        expect(err.data).toEqual(rmRecursiveWithoutR('a?').data);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['a?/f', 'zz']);
+      });
+    });
+
+    describe('When rm names the glob a? with recursive', () => {
+      it('Then it removes a?/f only', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a?/f': 'f', zz: 'z' });
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['a?'], { recursive: true });
+
+        // Assert
+        expect(result.removed).toEqual(['a?/f']);
+      });
+    });
+  });
+
+  describe('Given a tracked a?/f and ab', () => {
+    describe('When rm names the glob a? without recursive', () => {
+      it('Then the wildcard match outranks the directory and both a?/f and ab are removed', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a?/f': 'f', ab: 'b' });
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['a?']);
+
+        // Assert
+        expect([...result.removed].sort()).toEqual(['a?/f', 'ab']);
       });
     });
   });
@@ -454,26 +524,26 @@ describe('rm', () => {
 
   describe('Given a corrupt index (INVALID_INDEX_HEADER) and a glob', () => {
     describe('When rm', () => {
-      it('Then the parse error is tolerated and removed is empty', async () => {
+      it('Then the parse error is tolerated and the glob refuses as unmatched', async () => {
         // Arrange — an index file shorter than the hash trailer makes readIndex
         // throw INVALID_INDEX_HEADER. rm tolerates it via INDEX_MISSING_CODES.
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([1, 2, 3]));
 
-        // Act — glob never triggers PATHSPEC_NO_MATCH, so the only path to a throw
-        // is rm re-throwing the parse error (which it must NOT do).
-        const result = await rm(ctx, ['*.nope']);
+        // Act — the empty index leaves the glob unmatched; a surfaced parse error
+        // would carry another code.
+        const err = await expectError(() => rm(ctx, ['*.nope']), 'PATHSPEC_NO_MATCH');
 
         // Assert — kills `'INVALID_INDEX_HEADER'` -> `''` in INDEX_MISSING_CODES.
-        expect(result.removed).toEqual([]);
+        expect(err.data).toEqual(pathspecNoMatch('*.nope').data);
       });
     });
   });
 
   describe('Given a corrupt index (INVALID_INDEX_ENTRY) and a glob', () => {
     describe('When rm', () => {
-      it('Then the parse error is tolerated and removed is empty', async () => {
+      it('Then the parse error is tolerated and the glob refuses as unmatched', async () => {
         // Arrange — checksum-valid index whose single entry has no NUL terminator,
         // so parseIndex throws INVALID_INDEX_ENTRY (reached only after the checksum
         // passes).
@@ -494,17 +564,17 @@ describe('rm', () => {
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, indexBytes);
 
         // Act
-        const result = await rm(ctx, ['*.nope']);
+        const err = await expectError(() => rm(ctx, ['*.nope']), 'PATHSPEC_NO_MATCH');
 
         // Assert — kills `'INVALID_INDEX_ENTRY'` -> `''` in INDEX_MISSING_CODES.
-        expect(result.removed).toEqual([]);
+        expect(err.data).toEqual(pathspecNoMatch('*.nope').data);
       });
     });
   });
 
   describe('Given readIndex stat racing to FILE_NOT_FOUND and a glob', () => {
     describe('When rm', () => {
-      it('Then the error is tolerated and removed is empty', async () => {
+      it('Then the error is tolerated and the glob refuses as unmatched', async () => {
         // Arrange — index file exists (so readIndex passes the exists() guard) but
         // ctx.fs.stat throws FILE_NOT_FOUND, simulating the file vanishing between
         // exists() and stat(). readIndex propagates FILE_NOT_FOUND.
@@ -524,10 +594,10 @@ describe('rm', () => {
         };
 
         // Act
-        const result = await rm(racingCtx, ['*.nope']);
+        const err = await expectError(() => rm(racingCtx, ['*.nope']), 'PATHSPEC_NO_MATCH');
 
         // Assert — kills `'FILE_NOT_FOUND'` -> `''` in INDEX_MISSING_CODES.
-        expect(result.removed).toEqual([]);
+        expect(err.data).toEqual(pathspecNoMatch('*.nope').data);
       });
     });
   });
@@ -659,6 +729,27 @@ describe('rm', () => {
         const err = await expectError(() => rm(ctx, ['a.txt']), 'RESOURCE_LOCKED');
         if (err.data.code !== 'RESOURCE_LOCKED') throw new Error('unexpected error shape');
         expect(err.data.resource).toBe('index');
+      });
+    });
+  });
+
+  describe('Given a held lock and a glob that matches nothing', () => {
+    describe('When rm names the glob', () => {
+      it('Then the lock refusal wins over the no-match refusal and the lock is kept', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const lockPath = `${ctx.layout.gitDir}/index.lock`;
+        const held = new Uint8Array([0x68]);
+        await ctx.fs.writeExclusive(lockPath, held);
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['nomatch*']), 'RESOURCE_LOCKED');
+
+        // Assert
+        if (err.data.code !== 'RESOURCE_LOCKED') throw new Error('unexpected error shape');
+        expect(err.data.resource).toBe('index');
+        expect(await ctx.fs.read(lockPath)).toEqual(held);
       });
     });
   });
@@ -1423,6 +1514,31 @@ describe('Given a merge stopped on a conflicted a/f and a merged b', () => {
       // Assert
       expect(result.removed).toEqual(['a/f', 'b']);
       expect(await recordedStages(ctx)).toEqual([['a/f', [1, 2, 3]]]);
+    });
+  });
+});
+
+describe('Given a tracked backslash-named file a\\b beside a tracked ab', () => {
+  describe.each([
+    { label: 'an escaped backslash', spec: 'a\\\\b' },
+    { label: 'question marks', spec: 'a??' },
+  ])('When rm force-removes it with $label', ({ spec }) => {
+    it('Then only the backslash-named file leaves the index and the working tree', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { workingTree: { 'a\\b': 'x\n', ab: 'y\n' } });
+      await add(ctx, ['.']);
+      await commit(ctx, { message: 'seed', author: AUTHOR });
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, [spec], { force: true });
+
+      // Assert
+      expect(result.removed).toEqual(['a\\b']);
+      expect(await ctx.fs.exists(work(ctx, 'a\\b'))).toBe(false);
+      expect(await ctx.fs.exists(work(ctx, 'ab'))).toBe(true);
+      expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['ab']);
     });
   });
 });

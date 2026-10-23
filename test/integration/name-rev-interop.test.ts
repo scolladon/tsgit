@@ -18,6 +18,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { describe as describeCmd } from '../../src/application/commands/describe.js';
 import {
+  type NameRevOptions,
   type NameRevResult,
   nameRev as nameRevCmd,
 } from '../../src/application/commands/name-rev.js';
@@ -56,6 +57,14 @@ const renderNameRev = (r: NameRevResult | undefined): string => {
   const base = r.ref.startsWith('refs/heads/')
     ? r.ref.slice('refs/heads/'.length)
     : r.ref.replace(/^refs\//, '');
+  if (r.steps.length === 0) return r.tagDeref ? `${base}^0` : base;
+  return base + suffix(r);
+};
+
+/** `renderNameRev`, but an abbreviated result takes git's loose shortening of the full ref. */
+const renderAbbreviatedNameRev = (dir: string, r: NameRevResult | undefined): string => {
+  if (r === undefined || r.ref === undefined || !r.abbreviated) return renderNameRev(r);
+  const base = git(dir, 'rev-parse', '--abbrev-ref=loose', r.ref).trim();
   if (r.steps.length === 0) return r.tagDeref ? `${base}^0` : base;
   return base + suffix(r);
 };
@@ -814,6 +823,307 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         // Assert
         expect(result).toBe(gitNameRev(dir, tagged));
         expect(result).toBe('tags/B^0');
+      });
+    });
+  });
+
+  describe('Given a tag fixture where ref patterns may match only a suffix of the ref name', () => {
+    let dir = '';
+    let ctx: Context;
+    let c1 = '';
+    let c2 = '';
+
+    beforeAll(async () => {
+      dir = await makeRepo('suffix-patterns');
+      c1 = await commitFile(dir, 'c1');
+      annotate(dir, 'v1.0', clock - 1); // older than w2, so it wins the tagger-date tie
+      git(dir, 'tag', 'w2');
+      c2 = await commitFile(dir, 'c2');
+      annotate(dir, 'v1/rc1', clock + 10);
+      await commitFile(dir, 'c3');
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    interface SuffixRow {
+      readonly label: string;
+      readonly options: NameRevOptions;
+      readonly args: ReadonlyArray<string>;
+      readonly named: string;
+    }
+
+    /** The name git prints without `--name-only`, where `--tags` keeps the `tags/` prefix. */
+    const gitPrintedName = (sha: string, ...args: string[]): string =>
+      git(dir, 'name-rev', ...args, sha)
+        .trim()
+        .split(' ')
+        .pop() as string;
+
+    const FULL_FORM_MATRIX: ReadonlyArray<SuffixRow> = [
+      { label: 'no option', options: {}, args: [], named: 'tags/v1.0^0' },
+      {
+        label: 'a refs pattern spelling the full ref',
+        options: { refs: 'refs/tags/*' },
+        args: ['--refs=refs/tags/*'],
+        named: 'tags/v1.0^0',
+      },
+      {
+        label: 'a refs pattern on the heads suffix',
+        options: { refs: 'heads/*' },
+        args: ['--refs=heads/*'],
+        named: 'main~2',
+      },
+      {
+        label: 'a refs pattern on the branch name',
+        options: { refs: 'main' },
+        args: ['--refs=main'],
+        named: 'main~2',
+      },
+      {
+        label: 'a refs pattern spelling the full branch ref',
+        options: { refs: 'refs/heads/*' },
+        args: ['--refs=refs/heads/*'],
+        named: 'main~2',
+      },
+      {
+        label: 'an exclude on the tags suffix',
+        options: { exclude: 'tags/*' },
+        args: ['--exclude=tags/*'],
+        named: 'main~2',
+      },
+      {
+        label: 'an exclude on a name prefix',
+        options: { exclude: 'v*' },
+        args: ['--exclude=v*'],
+        named: 'tags/w2',
+      },
+      {
+        label: 'two excludes',
+        options: { exclude: ['v*', 'w*'] },
+        args: ['--exclude=v*', '--exclude=w*'],
+        named: 'main~2',
+      },
+      {
+        label: 'a refs pattern starting mid-segment',
+        options: { refs: 'ags/v1.0' },
+        args: ['--refs=ags/v1.0'],
+        named: 'undefined',
+      },
+      {
+        label: 'a refs pattern matching the full tail',
+        options: { refs: '*1.0' },
+        args: ['--refs=*1.0'],
+        named: 'tags/v1.0^0',
+      },
+    ];
+
+    const TAGS_ONLY_MATRIX: ReadonlyArray<SuffixRow> = [
+      { label: 'tags only', options: { tags: true }, args: ['--tags'], named: 'tags/v1.0^0' },
+      {
+        label: 'tags only with a full-ref include',
+        options: { tags: true, refs: 'refs/tags/w*' },
+        args: ['--tags', '--refs=refs/tags/w*'],
+        named: 'tags/w2',
+      },
+    ];
+
+    describe('When nameRevCmd names the first commit', () => {
+      it.each(FULL_FORM_MATRIX)('Then $label prints as git does', async (row) => {
+        // Arrange
+        const sut = nameRevCmd;
+
+        // Act
+        const result = renderNameRev(await sut(ctx, c1, row.options));
+
+        // Assert
+        expect(result).toBe(gitNameRev(dir, c1, ...row.args));
+        expect(result).toBe(row.named);
+      });
+
+      it.each(TAGS_ONLY_MATRIX)('Then $label prints as git does', async (row) => {
+        // Arrange
+        const sut = nameRevCmd;
+
+        // Act
+        const result = renderNameRev(await sut(ctx, c1, row.options));
+
+        // Assert
+        expect(result).toBe(gitPrintedName(c1, ...row.args));
+        expect(result).toBe(row.named);
+      });
+    });
+
+    interface AbbreviatedRow {
+      readonly label: string;
+      readonly options: NameRevOptions;
+      readonly args: ReadonlyArray<string>;
+      readonly named: string;
+      readonly target: () => string;
+    }
+
+    const ABBREVIATED_MATRIX: ReadonlyArray<AbbreviatedRow> = [
+      {
+        label: 'a subpath include',
+        options: { refs: 'v*' },
+        args: ['--refs=v*'],
+        named: 'v1.0^0',
+        target: () => c1,
+      },
+      {
+        label: 'an include spelling the bare name',
+        options: { refs: 'v1.0' },
+        args: ['--refs=v1.0'],
+        named: 'v1.0^0',
+        target: () => c1,
+      },
+      {
+        label: 'an include on the tags suffix',
+        options: { refs: 'tags/*' },
+        args: ['--refs=tags/*'],
+        named: 'v1.0^0',
+        target: () => c1,
+      },
+      {
+        label: 'a full include beside a subpath include',
+        options: { refs: ['refs/tags/v*', 'v1.*'] },
+        args: ['--refs=refs/tags/v*', '--refs=v1.*'],
+        named: 'v1.0^0',
+        target: () => c1,
+      },
+      {
+        label: 'an include with an exclude of the first match',
+        options: { refs: 'v*', exclude: 'v1.0' },
+        args: ['--refs=v*', '--exclude=v1.0'],
+        named: 'v1/rc1~1',
+        target: () => c1,
+      },
+      {
+        label: 'a single-character wildcard include',
+        options: { refs: 'v1?0' },
+        args: ['--refs=v1?0'],
+        named: 'v1.0^0',
+        target: () => c1,
+      },
+      {
+        label: 'an include on a nested name',
+        options: { refs: 'v1/*' },
+        args: ['--refs=v1/*'],
+        named: 'v1/rc1^0',
+        target: () => c2,
+      },
+      {
+        label: 'an include on the last segment',
+        options: { refs: 'rc1' },
+        args: ['--refs=rc1'],
+        named: 'v1/rc1^0',
+        target: () => c2,
+      },
+    ];
+
+    describe('When nameRevCmd runs with an include matching only a suffix of the ref', () => {
+      it.each(ABBREVIATED_MATRIX)(
+        'Then $label prints the shortened ref as git does',
+        async (row) => {
+          // Arrange
+          const sut = nameRevCmd;
+
+          // Act
+          const result = renderAbbreviatedNameRev(dir, await sut(ctx, row.target(), row.options));
+
+          // Assert
+          expect(result).toBe(gitNameRev(dir, row.target(), ...row.args));
+          expect(result).toBe(row.named);
+        },
+      );
+    });
+  });
+
+  describe('Given a branch and a tag sharing the name v1.0 on one commit', () => {
+    let dir = '';
+    let ctx: Context;
+    let c1 = '';
+
+    beforeAll(async () => {
+      dir = await makeRepo('shared-name');
+      c1 = await commitFile(dir, 'c1');
+      annotate(dir, 'v1.0', clock + 10);
+      git(dir, 'branch', 'v1.0');
+      await commitFile(dir, 'c2');
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const SHARED_NAME_MATRIX: ReadonlyArray<{ label: string; pattern: string; named: string }> = [
+      { label: 'the bare name', pattern: 'v1.0', named: 'v1.0^0' },
+      { label: 'the full tag ref', pattern: 'refs/tags/v1.0', named: 'tags/v1.0^0' },
+    ];
+
+    describe('When nameRevCmd runs with an include', () => {
+      it.each(SHARED_NAME_MATRIX)('Then $label prints as git does', async ({ pattern, named }) => {
+        // Arrange
+        const sut = nameRevCmd;
+
+        // Act
+        const result = renderAbbreviatedNameRev(dir, await sut(ctx, c1, { refs: pattern }));
+
+        // Assert
+        expect(result).toBe(gitNameRev(dir, c1, `--refs=${pattern}`));
+        expect(result).toBe(named);
+      });
+    });
+  });
+
+  describe('Given a tag and a branch both named x on different commits', () => {
+    let dir = '';
+    let ctx: Context;
+    let c1 = '';
+    let c2 = '';
+
+    beforeAll(async () => {
+      dir = await makeRepo('same-name');
+      c1 = await commitFile(dir, 'c1');
+      git(dir, 'tag', 'x');
+      c2 = await commitFile(dir, 'c2');
+      git(dir, 'branch', 'x');
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const SAME_NAME_MATRIX: ReadonlyArray<{
+      label: string;
+      pattern: string;
+      target: () => string;
+      named: string;
+    }> = [
+      { label: 'the bare name on the branch', pattern: 'x', target: () => c2, named: 'heads/x' },
+      { label: 'the heads suffix', pattern: 'heads/x', target: () => c2, named: 'heads/x' },
+      { label: 'the full branch ref', pattern: 'refs/heads/x', target: () => c2, named: 'x' },
+      { label: 'the bare name on the tag', pattern: 'x', target: () => c1, named: 'x' },
+    ];
+
+    describe('When nameRevCmd runs with an include', () => {
+      it.each(SAME_NAME_MATRIX)('Then $label prints as git does', async (row) => {
+        // Arrange
+        const sut = nameRevCmd;
+
+        // Act
+        const result = renderAbbreviatedNameRev(
+          dir,
+          await sut(ctx, row.target(), { refs: row.pattern }),
+        );
+
+        // Assert
+        expect(result).toBe(gitNameRev(dir, row.target(), `--refs=${row.pattern}`));
+        expect(result).toBe(row.named);
       });
     });
   });

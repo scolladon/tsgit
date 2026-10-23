@@ -529,6 +529,39 @@ describe('internal/working-tree', () => {
       });
     });
 
+    describe('Given a backslash-named file on a POSIX host', () => {
+      describe('When removeFile', () => {
+        it('Then it is removed — the backslash is an ordinary file-name byte', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a\\b`, 'data');
+          const sut = removeFile;
+
+          // Act
+          await sut(ctx, 'a\\b');
+
+          // Assert
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/a\\b`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a backslash path on a Windows path-syntax host', () => {
+      describe('When removeFile', () => {
+        it('Then throws PATHSPEC_OUTSIDE_REPO carrying the path', async () => {
+          // Arrange
+          const ctx = { ...createMemoryContext(), windowsPathSyntax: true };
+          const sut = removeFile;
+
+          // Act
+          const err = await expectError(() => sut(ctx, 'a\\b'), 'PATHSPEC_OUTSIDE_REPO');
+
+          // Assert
+          expect(err.data).toMatchObject({ path: 'a\\b' });
+        });
+      });
+    });
+
     describe('Given a symlink at the path', () => {
       describe('When removeFile', () => {
         it('Then it is removed (covers the !isSymbolicLink guard)', async () => {

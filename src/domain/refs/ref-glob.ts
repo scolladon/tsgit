@@ -276,10 +276,12 @@ const tokenize = (bytes: Uint8Array, dialect: Dialect): ReadonlyArray<RefGlobTok
   return tokens;
 };
 
+// Each step derives `cur` — the row for the tokens from this one on — from
+// `next`, the row for the tokens after it. The caller hands in a zeroed `cur`.
+
 // `star` matches zero or more of ANY byte — `wildmatch`'s `*`/`**` under
 // flags 0, where a single `*` already crosses `/`.
-const stepStar = (text: Uint8Array, next: Uint8Array): Uint8Array => {
-  const cur = new Uint8Array(text.length + 1);
+const stepStar = (text: Uint8Array, next: Uint8Array, cur: Uint8Array): Uint8Array => {
   cur[text.length] = next[text.length] === 1 ? 1 : 0;
   // Stryker disable next-line ArithmeticOperator: equivalent — `cur` holds `text.length + 1` slots, so the extra turn writes past the end (a silent no-op on a typed array) and reads `undefined`; the turn at `text.length` then recomputes the value the line above already stored.
   for (let j = text.length - 1; j >= 0; j--) {
@@ -289,8 +291,7 @@ const stepStar = (text: Uint8Array, next: Uint8Array): Uint8Array => {
 };
 
 // `segment` — `star` that stops at the first `/` it would have to consume.
-const stepSegment = (text: Uint8Array, next: Uint8Array): Uint8Array => {
-  const cur = new Uint8Array(text.length + 1);
+const stepSegment = (text: Uint8Array, next: Uint8Array, cur: Uint8Array): Uint8Array => {
   cur[text.length] = next[text.length] === 1 ? 1 : 0;
   // Stryker disable next-line ArithmeticOperator: equivalent — `cur` holds `text.length + 1` slots, so the extra turn writes past the end (a silent no-op on a typed array); the turn at `text.length` then reads `undefined` past both arrays and recomputes the value the line above already stored.
   for (let j = text.length - 1; j >= 0; j--) {
@@ -301,21 +302,37 @@ const stepSegment = (text: Uint8Array, next: Uint8Array): Uint8Array => {
 
 const isSlash: ByteTest = (byte) => byte === SLASH;
 
-// `dirs` — nothing at all, or any run ending in a `/`.
-const stepDirs = (text: Uint8Array, next: Uint8Array): Uint8Array => {
-  const throughSlash = stepStar(text, stepMatch(isSlash, text, next));
-  return throughSlash.map((cell, j) => (cell === 1 || next[j] === 1 ? 1 : 0));
+// `dirs` — nothing at all, or any run ending in a `/`. Rare (the WM_PATHNAME
+// dialect only), so it keeps its own two rows.
+const stepDirs = (text: Uint8Array, next: Uint8Array, cur: Uint8Array): Uint8Array => {
+  const size = text.length + 1;
+  const throughSlash = stepStar(
+    text,
+    stepMatch(isSlash, text, next, new Uint8Array(size)),
+    new Uint8Array(size),
+  );
+  for (let j = 0; j < size; j++) cur[j] = throughSlash[j] === 1 || next[j] === 1 ? 1 : 0;
+  return cur;
 };
 
-const stepToken = (token: RefGlobToken, text: Uint8Array, next: Uint8Array): Uint8Array => {
-  if (token.kind === 'star') return stepStar(text, next);
-  if (token.kind === 'segment') return stepSegment(text, next);
-  if (token.kind === 'dirs') return stepDirs(text, next);
-  return stepMatch(token.test, text, next);
+const stepToken = (
+  token: RefGlobToken,
+  text: Uint8Array,
+  next: Uint8Array,
+  cur: Uint8Array,
+): Uint8Array => {
+  if (token.kind === 'star') return stepStar(text, next, cur);
+  if (token.kind === 'segment') return stepSegment(text, next, cur);
+  if (token.kind === 'dirs') return stepDirs(text, next, cur);
+  return stepMatch(token.test, text, next, cur);
 };
 
-const stepMatch = (test: ByteTest, text: Uint8Array, next: Uint8Array): Uint8Array => {
-  const cur = new Uint8Array(text.length + 1);
+const stepMatch = (
+  test: ByteTest,
+  text: Uint8Array,
+  next: Uint8Array,
+  cur: Uint8Array,
+): Uint8Array => {
   // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the extra turn reads `next[text.length + 1]` past the end, which is never `1`, so no cell is written whatever `test` answers for the undefined byte beyond the text.
   for (let j = 0; j < text.length; j++) {
     if (test(text[j] as number) && next[j + 1] === 1) cur[j] = 1;
@@ -323,20 +340,36 @@ const stepMatch = (test: ByteTest, text: Uint8Array, next: Uint8Array): Uint8Arr
   return cur;
 };
 
+// Two rows swap roles per token instead of one allocation each; a row with no
+// reachable cell ends the match, since every step only reads reachable cells.
 const matchTokens = (tokens: ReadonlyArray<RefGlobToken>, text: Uint8Array): boolean => {
-  let dp: Uint8Array = new Uint8Array(text.length + 1);
-  dp[text.length] = 1;
+  let next = new Uint8Array(text.length + 1);
+  let cur = new Uint8Array(text.length + 1);
+  next[text.length] = 1;
   for (let i = tokens.length - 1; i >= 0; i--) {
-    dp = stepToken(tokens[i] as RefGlobToken, text, dp);
+    cur.fill(0);
+    stepToken(tokens[i] as RefGlobToken, text, next, cur);
+    if (!cur.includes(1)) return false;
+    [next, cur] = [cur, next];
   }
-  return dp[0] === 1;
+  return next[0] === 1;
+};
+
+const compileBytesWith = (pattern: string, dialect: Dialect): ((text: Uint8Array) => boolean) => {
+  const tokens = tokenize(encode(pattern), dialect);
+  if (tokens === undefined) return () => false;
+  return (text: Uint8Array): boolean => matchTokens(tokens, text);
 };
 
 const compileWith = (pattern: string, dialect: Dialect): ((text: string) => boolean) => {
-  const tokens = tokenize(encode(pattern), dialect);
-  if (tokens === undefined) return () => false;
-  return (text: string): boolean => matchTokens(tokens, encode(text));
+  const matchBytes = compileBytesWith(pattern, dialect);
+  return (text: string): boolean => matchBytes(encode(text));
 };
+
+/** {@link compileRefGlob} over raw bytes: for text that is not valid UTF-8, where
+ *  a string round-trip would lose the bytes `wildmatch` compares. */
+export const compileRefGlobBytes = (pattern: string): ((text: Uint8Array) => boolean) =>
+  compileBytesWith(pattern, REF_DIALECT);
 
 /** Compiles `pattern` once into a matcher `wildmatch(pattern, ref, 0)`
  *  agrees with byte-for-byte — full match, case-sensitive, `*`/`?` crossing

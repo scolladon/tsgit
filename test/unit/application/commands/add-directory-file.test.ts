@@ -6,7 +6,7 @@ import {
   readIndex,
 } from '../../../../src/application/primitives/read-index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { pathspecNoMatch, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { indexExtensionsOf } from '../primitives/helpers/index-extensions.js';
@@ -1061,8 +1061,83 @@ describe('Given an existing file and a regular file named with a trailing slash'
       );
 
       // Assert
-      expect(outcome).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'f/' });
+      expect(outcome).toEqual(pathspecNoMatch('f/').data);
       expect(await indexPaths(ctx)).toEqual([]);
+    });
+  });
+});
+
+describe('add — an ignored tracked file that a plain directory replaced', () => {
+  describe('Given the directory holds no repository', () => {
+    describe.each([
+      { how: 'add .', paths: ['.'], options: undefined },
+      { how: 'add -A', paths: [] as string[], options: { all: true } },
+    ])('When $how', ({ paths, options }) => {
+      it('Then the entry is removed and no entry stands for the directory', async () => {
+        // Arrange
+        const ctx = await trackedFile();
+        await ctx.fs.write(`${ctx.layout.workDir}/.gitignore`, new TextEncoder().encode('a\n'));
+        await replaceWithDirectory(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, paths, options);
+
+        // Assert
+        expect(result.removed).toEqual(['a']);
+        expect(await indexPaths(ctx)).toEqual([
+          '.gitignore@0:100644',
+          'real/b@0:100644',
+          'top@0:100644',
+        ]);
+      });
+    });
+  });
+});
+
+describe('add — an ignored unmerged path that a directory holding a repository replaced', () => {
+  const COMMIT = 'e'.repeat(40);
+
+  const replaceWithDirectoryHoldingRepository = async (ctx: Ctx): Promise<void> => {
+    const dotGit = `${ctx.layout.workDir}/a/.git`;
+    await ctx.fs.rmRecursive(`${ctx.layout.workDir}/a`);
+    await ctx.fs.write(`${ctx.layout.workDir}/a/b`, new TextEncoder().encode('b'));
+    await ctx.fs.write(`${ctx.layout.workDir}/a/c`, new TextEncoder().encode('c'));
+    await ctx.fs.mkdir(`${dotGit}/objects`);
+    await ctx.fs.write(`${dotGit}/HEAD`, new TextEncoder().encode('ref: refs/heads/main\n'));
+    await ctx.fs.write(`${dotGit}/refs/heads/main`, new TextEncoder().encode(`${COMMIT}\n`));
+  };
+
+  describe('Given entries beneath the path', () => {
+    describe('When add stages everything', () => {
+      it('Then the path is no gitlink: the unmerged entry goes and those beneath it are restaged', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await seedIndex(ctx, [
+          { path: 'a', text: 'base', stage: 1 },
+          { path: 'a', text: 'ours', stage: 2 },
+          { path: 'a', text: 'theirs', stage: 3 },
+          { path: 'a/b', text: 'b' },
+          { path: 'a/c', text: 'c' },
+          { path: 'real/b', text: 'rb' },
+          { path: 'top', text: 'top' },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/.gitignore`, new TextEncoder().encode('a\n'));
+        await replaceWithDirectoryHoldingRepository(ctx);
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['.']);
+
+        // Assert
+        expect(await indexPaths(ctx)).toEqual([
+          '.gitignore@0:100644',
+          'a/b@0:100644',
+          'a/c@0:100644',
+          'real/b@0:100644',
+          'top@0:100644',
+        ]);
+      });
     });
   });
 });

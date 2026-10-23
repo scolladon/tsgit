@@ -68,7 +68,7 @@ await repo.add(['src']);
 await repo.add(['src/**', '!src/legacy/**']);
 ```
 
-Literal-no-match throws `PATHSPEC_NO_MATCH`. Glob-no-match is a silent no-op — matches git's behaviour. Character classes (`[abc]`) and magic prefixes (`:(top)`, `:(literal)`) are not supported in v1.
+Pathspecs use git's glob: `*` and `?` cross `/`, `[abc]` is a character class, `\` escapes. A pathspec that matches nothing throws `PATHSPEC_NO_MATCH` before anything is staged. Magic prefixes (`:(top)`, `:(literal)`) are not supported. See [pathspec syntax](commands/add.md#pathspec-syntax).
 
 ## Bulk `add --all`
 
@@ -77,7 +77,7 @@ const result = await repo.add([], { all: true });
 console.log(result.added, result.modified, result.removed);
 ```
 
-Walks the working tree, stages every change. The host `.git` is skipped; embedded clones (directories with a `.git` child) are not auto-staged. Symlinks stage as mode `120000` (lstat-only, never followed). Files larger than 256 MiB throw `WORKING_TREE_FILE_TOO_LARGE` with no partial index commit.
+Walks the working tree, stages every change. The host `.git` is skipped; an embedded repository (a directory holding another repository) stages as a `160000` gitlink at its checked-out commit, as git does — see [add](commands/add.md#embedded-repositories). Symlinks stage as mode `120000` (lstat-only, never followed). Files larger than 256 MiB throw `WORKING_TREE_FILE_TOO_LARGE` with no partial index commit.
 
 Ignore evaluation honours the standard sources in order: `core.excludesFile`, `.git/info/exclude`, repo-root `.gitignore`, nested `.gitignore` per directory.
 

@@ -44,9 +44,12 @@ import {
 } from '../primitives/internal/scan-tracked-entries.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
+import type { WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
+import { embeddedRepositories } from './internal/embedded-repository.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
+import { pruneGitlinkDirectories } from './internal/prune-gitlink-directories.js';
 import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 
@@ -133,7 +136,8 @@ const STATUS_SCAN_GRANULARITY = 100;
  * (index vs HEAD-tree, git's "Changes to be committed") and **working-tree** column
  * (index vs working tree) together with the blob endpoints of each side — the
  * structured form of `git status --porcelain=v2`'s ordinary line. `untracked` is
- * the separate set of untracked paths (git's `?` lines); `unmerged` is the
+ * the separate set of untracked paths (git's `?` lines; a directory holding another
+ * repository is listed once, with a trailing slash); `unmerged` is the
  * conflicted column (stage 1/2/3 blobs, git's "Unmerged paths"). A conflicted path
  * is reported only under `unmerged`. `clean` is true only when all three are empty.
  *
@@ -178,7 +182,7 @@ const reportUnderLock = async (
   { index, tracked, trackedScan, workDir, lock }: LockedScan,
 ): Promise<StatusReport> => {
   try {
-    const untracked = await scanUntracked(ctx, tracked.trackedPaths);
+    const untracked = await scanUntracked(ctx, index, tracked.trackedPaths);
     const scanned = { workingMap: trackedScan.workingMap, untracked };
     const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
     if (lock) await updateIndexIfAble(lock, index, trackedScan);
@@ -291,20 +295,34 @@ const reportStatus = async (
  * path not tracked (stage-0 or unmerged). Tracked-but-ignored entries stay
  * tracked; the ignore filter affects untracked emission only. The walk stays
  * sequential (a stateful ignore stack, and its emission order is a pinned
- * contract) — this pass never reads a leaf's stat at all, destructuring only
- * `path` from each walk entry, so it pays zero `lstat`s regardless.
+ * contract) — this pass never reads a leaf's stat, only its path and kind bits,
+ * so it pays zero `lstat`s regardless.
  */
 const scanUntracked = async (
   ctx: Context,
+  index: GitIndex,
   trackedPaths: ReadonlySet<IndexPathKey>,
 ): Promise<FilePath[]> => {
-  const ignore = await buildRepoIgnorePredicate(ctx);
+  const ignore = pruneGitlinkDirectories(await buildRepoIgnorePredicate(ctx), index.entries);
+  const repositories = embeddedRepositories(ctx, index.entries);
   const untracked: FilePath[] = [];
-  for await (const { path } of walkWorkingTree(ctx, { ignore })) {
-    if (!trackedPaths.has(keyOfPath(path))) untracked.push(path);
+  for await (const entry of walkWorkingTree(ctx, {
+    ignore,
+    isNestedRepository: repositories.holds,
+  })) {
+    if (!trackedPaths.has(keyOfPath(entry.path))) untracked.push(untrackedSpelling(entry));
   }
   return untracked.sort(comparePaths);
 };
+
+const SEPARATOR = '/';
+
+/** A repository directory is listed as git's `-uall` porcelain lists it: with a trailing slash. */
+const untrackedSpelling = ({
+  path,
+  isDirectory,
+}: Pick<WalkWorkingTreeEntry, 'path' | 'isDirectory'>): FilePath =>
+  isDirectory ? (`${path}${SEPARATOR}` as FilePath) : path;
 
 /**
  * Staged pass: project the index-vs-HEAD diff onto staged kinds, dropping

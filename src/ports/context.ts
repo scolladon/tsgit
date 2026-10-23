@@ -1,4 +1,5 @@
 import type { ConcurrencyLimits } from '../domain/concurrency/derive-limits.js';
+import type { FormatRefusal } from '../domain/config/repository-format-scan.js';
 import type { HashConfig } from '../domain/objects/hash-config.js';
 import type { ObjectContent } from '../domain/objects/index.js';
 import type { RefName } from '../domain/objects/object-id.js';
@@ -21,15 +22,9 @@ import type { SshTransport } from './ssh-channel.js';
  * The repository-format acceptance verdict — git's `core.repositoryformatversion`
  * / `extensions.*` gate. Absent means accepted. `version` is always the
  * PARSED integer (`1k` carries `1024`, `0777` carries `511`), never the
- * config literal. `kind: 'extensions'` is not yet populated by any reader.
+ * config literal.
  */
-export type RepositoryFormatRefusal =
-  | { readonly kind: 'version'; readonly version: number }
-  | {
-      readonly kind: 'extensions';
-      readonly version: number;
-      readonly extensions: ReadonlyArray<string>;
-    };
+export type RepositoryFormatRefusal = FormatRefusal;
 
 /**
  * Repository physical layout — where the working tree and `.git` directory live.
