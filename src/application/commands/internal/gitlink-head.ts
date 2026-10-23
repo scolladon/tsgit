@@ -25,6 +25,8 @@ const MAX_GITFILE_SIZE = 1 << 20;
 const HEAD_PREFIX_BYTES = 255;
 // A path longer than the platform's PATH_MAX cannot name a directory, so a NUL-free commondir past it names nothing.
 const COMMONDIR_MAX_BYTES = 4096;
+// Resolving HEAD reads the whole file, which a ref line cannot outgrow: PATH_MAX for the name plus `ref: `.
+const HEAD_REF_LINE_MAX_BYTES = COMMONDIR_MAX_BYTES + 'ref: '.length;
 const NUL = 0;
 const TEXT_DECODER = new TextDecoder();
 const UNFOLLOWED_LINK_CODES: ReadonlySet<string> = new Set(['FILE_NOT_FOUND', 'PERMISSION_DENIED']);
@@ -82,8 +84,8 @@ export const probeGitlinkCheckout = async (
   if (located.kind === 'broken' || located.kind === 'oversized') return located;
   const { gitDir } = located;
   // HEAD is a plain file under either ref backend, so it is judged before the config is read.
-  const headFile = await boundedHeadFile(located.fs, gitDir);
-  if (!isUsableHead(headFile)) return broken(located.shown);
+  const { judged, resolved } = await boundedHeadFile(located.fs, gitDir);
+  if (!isUsableHead(judged)) return broken(located.shown);
   const reached = await reaching(ctx, located);
   if (reached.kind === 'broken') return reached;
   const { commonDir, fs } = reached;
@@ -94,7 +96,7 @@ export const probeGitlinkCheckout = async (
       commonDir,
       refStorage: await refStorageOf(fs, commonDir),
     });
-    seedHeadFile(child, headFile);
+    seedHeadFile(child, resolved);
     return resolveGitlinkHead(child);
   };
   return { kind: 'repository', head };
@@ -160,19 +162,40 @@ const commondirValue = (bytes: Uint8Array): ReturnType<typeof parseCommondir> | 
 const nameOrEmpty = (name: string): ReturnType<typeof parseCommondir> =>
   name === '' ? { kind: 'empty' } : { kind: 'ok', path: name };
 
-/** git's `validate_headref` looks at a symlink's text or at the first bytes of the file, never at the rest. */
-const boundedHeadFile = async (fs: FileSystem, gitDir: string): Promise<HeadFile> => {
+interface BoundedHead {
+  readonly judged: HeadFile;
+  readonly resolved: HeadFile;
+}
+
+/**
+ * git's `validate_headref` looks at a symlink's text or at the first bytes of the file, never
+ * at the rest, yet resolves the ref from the whole file; a file that fills the read bound
+ * is too long to name a ref, so only the judged prefix is kept for resolution.
+ */
+const boundedHeadFile = async (fs: FileSystem, gitDir: string): Promise<BoundedHead> => {
   const head = `${gitDir}${SEPARATOR}HEAD`;
   try {
     const stat = await fs.lstat(head);
-    if (stat.isSymbolicLink) return { kind: 'symlink', linkText: await fs.readlink(head) };
-    const prefix = await fs.readSlice(head, 0, HEAD_PREFIX_BYTES);
-    return { kind: 'file', content: TEXT_DECODER.decode(prefix) };
+    if (stat.isSymbolicLink) {
+      const link: HeadFile = { kind: 'symlink', linkText: await fs.readlink(head) };
+      return { judged: link, resolved: link };
+    }
+    const bytes = await fs.readSlice(head, 0, HEAD_REF_LINE_MAX_BYTES);
+    const judged = fileOf(bytes.subarray(0, HEAD_PREFIX_BYTES));
+    return { judged, resolved: bytes.length < HEAD_REF_LINE_MAX_BYTES ? fileOf(bytes) : judged };
   } catch (cause) {
-    if (cause instanceof TsgitError) return { kind: 'unusable', cause };
+    if (cause instanceof TsgitError) {
+      const unusable: HeadFile = { kind: 'unusable', cause };
+      return { judged: unusable, resolved: unusable };
+    }
     throw cause;
   }
 };
+
+const fileOf = (bytes: Uint8Array): HeadFile => ({
+  kind: 'file',
+  content: TEXT_DECODER.decode(bytes),
+});
 
 /** git's `is_git_directory`: a repository directory holds `objects` and `refs`, searchable. */
 const holdsObjectsAndRefs = async (fs: FileSystem, commonDir: string): Promise<boolean> =>

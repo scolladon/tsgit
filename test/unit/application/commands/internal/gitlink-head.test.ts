@@ -646,4 +646,26 @@ describe('a nested repository whose commondir and HEAD git reads in bounded buff
       });
     });
   });
+
+  describe('Given a HEAD naming a branch whose line is past 255 bytes', () => {
+    describe('When the checkout is probed and its head asked', () => {
+      it('Then the commit of that branch resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dotGit = `${ctx.layout.workDir}/sub/.git`;
+        const branch = `refs/heads/${'b'.repeat(120)}/${'c'.repeat(150)}`;
+        await layOutRepository(ctx, dotGit, HEAD_COMMIT);
+        await ctx.fs.mkdir(`${dotGit}/${branch.slice(0, branch.lastIndexOf('/'))}`);
+        await ctx.fs.writeUtf8(`${dotGit}/${branch}`, `${HEAD_COMMIT}\n`);
+        await ctx.fs.writeUtf8(`${dotGit}/HEAD`, `ref: ${branch}\n`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind === 'repository' && (await checkout.head())).toBe(HEAD_COMMIT);
+      });
+    });
+  });
 });

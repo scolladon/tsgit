@@ -139,6 +139,14 @@ const detached: Setup = async (repo) => {
   runGit(['-C', path.join(repo, 'sub'), 'checkout', '-q', '--detach']);
 };
 
+/** A branch name past the 255 bytes git judges HEAD by, each component short enough for any filesystem. */
+const LONG_BRANCH = `${'b'.repeat(120)}/${'c'.repeat(150)}`;
+
+const onLongBranch: Setup = async (repo) => {
+  await committed()(repo);
+  runGit(['-C', path.join(repo, 'sub'), 'checkout', '-q', '-b', LONG_BRANCH]);
+};
+
 const reftable: Setup = async (repo) => {
   runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', path.join(repo, 'sub')]);
   commitIn(path.join(repo, 'sub'));
@@ -337,6 +345,7 @@ const SUB_ROWS: ReadonlyArray<Row> = [
   { label: 'a gitfile naming an absolute path', setup: absoluteGitfile(committed()), spec: ['.'] },
   { label: 'a gitfile naming a relative path', setup: relativeGitfile(committed()), spec: ['.'] },
   { label: 'a detached HEAD', setup: detached, spec: ['.'] },
+  { label: 'a branch whose HEAD line is past 255 bytes', setup: onLongBranch, spec: ['.'] },
   { label: 'a reftable repository', setup: reftable, spec: ['.'] },
   { label: 'a linked worktree', setup: linkedWorktree, spec: ['.'] },
   { label: 'a branch naming a missing object', setup: missingObjectBranch, spec: ['.'] },
@@ -636,6 +645,7 @@ const ALL_TREE_ROWS: ReadonlyArray<Row> = [
   everythingRow('a gitfile naming an absolute path', absoluteGitfile(committed())),
   everythingRow('a .git symlink to a repository', linkedTo(committed())),
   everythingRow('a detached HEAD', detached),
+  everythingRow('a branch whose HEAD line is past 255 bytes', onLongBranch),
   everythingRow('a linked worktree', linkedWorktree),
   everythingRow('two repositories', together(committed('sub'), committed('sub2'))),
   everythingRow(
