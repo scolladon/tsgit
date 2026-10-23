@@ -89,7 +89,7 @@ await repo.checkout({ rev: 'main', force: true });
 - `BRANCH_NOT_FOUND` — switch mode where `rev` names no branch and resolves to nothing on the revision ladder either; `name` carries `refs/heads/<rev>`, the branch git names in its own refusal.
 - `INVALID_REF` — `rev` cannot be spelled as a ref name and does not resolve as an object id.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `rev` matches more than one object.
-- `REF_NOT_FOUND` — HEAD itself does not resolve (an unborn branch).
+- `REF_NOT_FOUND` — switch mode where HEAD itself does not resolve (an unborn branch). A path restore from the index on an unborn branch succeeds, as git's does: `id` is the null object id, also passed twice to `post-checkout`.
 - `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive path pattern, literal or glob, matched nothing. The refusal is atomic and lists every unmatched positive pathspec in command-line order in `patterns` (`pattern` is the first); nothing is restored.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 
