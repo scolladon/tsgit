@@ -258,6 +258,22 @@ const withModuleConfig = (text: string) =>
 
 const FORMAT_1 = '[core]\n\trepositoryformatversion = 1\n';
 
+/** The embedded repository that moved, its own config then extended by `text`. */
+const embeddedWithConfig =
+  (text: string): Setup =>
+  async (repo, upstream) => {
+    await embedded(repo, upstream);
+    await appendFile(path.join(repo, 'sub', '.git', 'config'), text);
+  };
+
+/** The linked-worktree checkout, whose common dir's config is then extended by `text`. */
+const linkedWorktreeWithConfig =
+  (text: string): Setup =>
+  async (repo, upstream) => {
+    await linkedWorktreeCheckout(repo, upstream);
+    await appendFile(path.join(`${repo}-ext`, '.git', 'config'), text);
+  };
+
 const replaceDotGit = async (repo: string, make: (dotGit: string) => Promise<void>) => {
   const dotGit = path.join(repo, 'sub', '.git');
   await removeTree(dotGit, { force: true });
@@ -737,6 +753,63 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
       },
     );
+
+    describe.each([
+      {
+        label: 'an unknown extension at format version 1',
+        config: `${FORMAT_1}[extensions]\n\tbogus = x\n`,
+        stderr: 'fatal: unknown repository extension found:\n\tbogus\n',
+        refusal: { code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED', version: 1, extensions: ['bogus'] },
+      },
+      {
+        label: 'a format version above 1',
+        config: '[core]\n\trepositoryformatversion = 2\n',
+        stderr: 'fatal: Expected git repo version <= 1, found 2\n',
+        refusal: { code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED', version: 2 },
+      },
+      {
+        label: 'a v1-only extension at format version 0',
+        config: '[extensions]\n\trefStorage = reftable\n',
+        stderr: 'fatal: repo version is 0, but v1-only extension found:\n\trefstorage\n',
+        refusal: {
+          code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED',
+          version: 0,
+          extensions: ['refstorage'],
+        },
+      },
+    ])('Given a repository config holding $label', ({ config, stderr, refusal }) => {
+      describe.each([
+        { layout: 'an embedded repository', setup: embeddedWithConfig(config) },
+        { layout: 'a linked worktree admin directory', setup: linkedWorktreeWithConfig(config) },
+      ])('And $layout behind a moved gitlink', ({ setup }) => {
+        describe('When git and tsgit add the whole tree', () => {
+          it('Then both refuse the repository format and leave the index and objects alone', async () => {
+            // Arrange
+            const { gitRepo, tsgitRepo } = await twins(setup);
+            await writeFiles(gitRepo, { n: 'untracked\n' });
+            await writeFiles(tsgitRepo, { n: 'untracked\n' });
+            const before = indexOf(gitRepo);
+            const looseBefore = await looseCountOf(gitRepo);
+            const sut = add;
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', '.']);
+            const thrown = await sut(createNodeContext({ workDir: tsgitRepo }), ['.']).then(
+              () => undefined,
+              (error: unknown) => (error instanceof TsgitError ? error.data : error),
+            );
+
+            // Assert
+            expect(gitRun.exitCode).toBe(128);
+            expect(gitRun.stderr).toContain(stderr);
+            expect(thrown).toEqual(refusal);
+            expect(indexOf(gitRepo)).toBe(before);
+            expect(indexOf(tsgitRepo)).toBe(before);
+            expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
+          });
+        });
+      });
+    });
 
     describe.each([
       {

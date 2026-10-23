@@ -45,6 +45,8 @@ interface Superproject {
   readonly branch?: string | null;
   /** Files laid in the module's gitdir, by path under it. */
   readonly moduleFiles?: Readonly<Record<string, string>>;
+  /** Files laid in a linked worktree's common dir, by path under it. */
+  readonly commonFiles?: Readonly<Record<string, string>>;
   /** Where a symlink standing for `refs/heads/main` leads, instead of a commit. */
   readonly branchSymlink?: string;
   readonly skipWorktree?: boolean;
@@ -149,6 +151,9 @@ const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
       checkout === 'worktree-admin' ? '../common\n' : `${common}\n`,
     );
     await ctx.fs.writeUtf8(`${common}/refs/heads/main`, `${setup.branch ?? MOVED_HEAD}\n`);
+    for (const [name, body] of Object.entries(setup.commonFiles ?? {})) {
+      await ctx.fs.writeUtf8(`${common}/${name}`, body);
+    }
   }
   if (checkout === 'worktree-admin-reftable') await layOutReftableWorktreeAdmin(ctx);
   if (checkout === 'dangling') {
@@ -756,6 +761,58 @@ describe('add over a gitlink whose checkout is broken', () => {
         expect(refusal).toEqual({ code: 'NOT_A_REPOSITORY', path });
         expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
         expect(await blobExists(ctx, 'untracked\n')).toBe(false);
+      });
+    });
+  });
+});
+
+describe('add over a gitlink whose repository fails the format gate', () => {
+  describe.each([
+    {
+      label: 'an unknown extension at format version 1',
+      config: '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tbogus = x\n',
+      refusal: { code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED', version: 1, extensions: ['bogus'] },
+    },
+    {
+      label: 'a format version above 1',
+      config: '[core]\n\trepositoryformatversion = 2\n',
+      refusal: { code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED', version: 2 },
+    },
+    {
+      label: 'a v1-only extension at format version 0',
+      config: '[core]\n\trepositoryformatversion = 0\n[extensions]\n\trefStorage = reftable\n',
+      refusal: {
+        code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED',
+        version: 0,
+        extensions: ['refstorage'],
+      },
+    },
+  ])('Given $label', ({ config, refusal }) => {
+    describe.each([
+      {
+        layout: 'an embedded repository',
+        setup: { checkout: 'embedded' as const, moduleFiles: { config } },
+      },
+      {
+        layout: 'a linked worktree admin directory',
+        setup: { checkout: 'worktree-admin' as const, commonFiles: { config } },
+      },
+    ])('And $layout behind a moved gitlink with an untracked file', ({ setup }) => {
+      describe('When the whole tree is added', () => {
+        it('Then it refuses the format, as git dies on it, and stages nothing', async () => {
+          // Arrange
+          const ctx = await superproject({ ...setup, tree: { n: 'untracked\n' } });
+          const before = (await readIndex(ctx)).entries.map(({ id }) => id);
+          const sut = add;
+
+          // Act
+          const thrown = await refusalOf(() => sut(ctx, ['.']));
+
+          // Assert
+          expect(thrown).toEqual(refusal);
+          expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
+          expect(await blobExists(ctx, 'untracked\n')).toBe(false);
+        });
       });
     });
   });
