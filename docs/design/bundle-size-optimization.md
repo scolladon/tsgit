@@ -728,3 +728,26 @@ raised once more to the next 0.1 kB. The tarball cap moved 1447 → 1450 KiB (1 
 | Chunks: domain | 126 552 | 127 271 | +719 | 126.6 kB | 127.3 kB | the repository-format scan hoisted beside the config parser (`repository-format-scan.ts`) and the malformed-entry ordering rule |
 | Chunks: primitives | — | 108 306 | — | 108.2 kB | 108.4 kB | `gitlink-ref-storage.ts` and the gitlink child context's common-dir and ref-storage options |
 | Chunks: commands-internal | 82 571 | 83 029 | +458 | 82.7 kB | 83.1 kB | the gitlink probe's symlink, common-dir, objects/refs and unresolvable-HEAD rules (`gitlink-head.ts`) |
+
+## Size-limit raise — embedded-repository staging
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`),
+gzip bytes, against the tree just before the nested-repository walk leaf (`b180eee4^`) built the
+same way at the same toolchain. Each failing row is raised by measurement − cap, rounded up to
+the next 0.1 kB, and the raise is recorded as two parts: the baseline − cap overage the branch
+already carried before the change (the triage and refactor commits), and the measurement −
+baseline delta of this round (the walk hook and leaf, the probe split, the reader, the error
+member and its message, the embedded step and the index-side type change, the literal ancestor
+probe, the status spelling). Every other row stays under its cap.
+
+| Row | baseline | measured | old limit | overage before | Δ this round | new limit |
+|---|--:|--:|--:|--:|--:|--:|
+| Browser bundle (no-build) | 344 642 | 345 625 | 344.6 kB | +42 | +983 | 345.7 kB |
+| Full library | 402 642 | 403 838 | 402.6 kB | +42 | +1 196 | 403.9 kB |
+| Chunks: domain | 127 271 | 127 307 | 127.3 kB | none | +36 | 127.4 kB |
+| Chunks: commands-internal | 83 114 | 83 367 | 83.1 kB | +14 | +253 | 83.4 kB |
+| Command (add) | 5 810 | 6 398 | 5.8 kB | +10 | +588 | 6.4 kB |
+
+The npm tarball cap moved 1450 → 1454 KiB (1 488 266 B measured; the baseline pack is
+1 484 486 B, under the old cap, so the whole 3 466 B overage is this round's); its attribution
+lives in `tooling/verify-tarball.sh`'s cap block.

@@ -389,7 +389,13 @@ done
 # unresolvable-HEAD rules, the repository-format scan shared with the gitlink
 # reader, and the tree-source skip-worktree restore — runtime code shipped in
 # every distribution form  none removable without dropping the behaviour.
-SIZE_CAP=$((1450 * 1024))
+# Raised 1450 -> 1454 KiB by the embedded-repository staging work: the measured
+# pack landed at 1 488 266 B, 3 466 B over the old cap, attributable to the
+# nested-repository walk hook and leaf, the probe split, the embedded-repository
+# reader, the error member with its message, the embedded step and the
+# index-side type change, and the literal ancestor probe — runtime code shipped
+# in every distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1454 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
