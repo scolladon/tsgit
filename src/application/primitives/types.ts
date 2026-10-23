@@ -279,6 +279,14 @@ export interface WalkWorkingTreeOptions {
    * the leaf). May be sync or async.
    */
   readonly ignore?: WalkIgnorePredicate;
+  /**
+   * Asked about each directory below the root whose entries hold a .git entry of any
+   * kind (directory, file or symlink), once `ignore` has kept the directory. `true` yields
+   * the directory as one leaf (`isDirectory: true`, counted against `maxEntries`) and walks
+   * nothing beneath it; `false` walks into it, .git still skipped. Unset, a directory
+   * holding a .git directory or regular file yields nothing, as before.
+   */
+  readonly isNestedRepository?: (directory: FilePath) => boolean | Promise<boolean>;
 }
 
 export interface CreateCommitInput {
