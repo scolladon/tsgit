@@ -105,6 +105,7 @@ import {
   trackPositives,
   unmatchedPositives,
 } from './internal/pathspec-intake.js';
+import { pruneGitlinkDirectories } from './internal/prune-gitlink-directories.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepository,
@@ -1223,7 +1224,10 @@ const stageIgnoredWalk = async (
   const tracker = trackPositives(matcher, positives);
   const verdicts = verdictsBesideSkipWorktree(existing, (path) => tracker.observe(path));
   const collector = collectIgnored(repoIgnore, existing, positives);
-  const ignore = withPathspec(collector.ignore, matcher, unmergedStages);
+  const ignore = pruneGitlinkDirectories(
+    withPathspec(collector.ignore, matcher, unmergedStages),
+    existing.values(),
+  );
   const walked = withoutSkipWorktree(await collectWalk(walkWorkingTree(ctx, { ignore })), existing);
   const sparse = await settleUnseenPositives(ctx, tracker, positives, walked, existing);
   const outcomes = await stageSelectedEntries(
@@ -1513,12 +1517,13 @@ export const addAll = async (
   try {
     const state = await readExistingEntries(ctx);
     const { entries: existing, sorted } = state;
+    const walkIgnore = pruneGitlinkDirectories(ignore, existing.values());
     const seen = new Set<IndexPathKey>();
     // Walk-time pruning: the walker calls `ignore` on every directory
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
     const walkedEntries = withoutSkipWorktree(
-      await collectWalk(walkWorkingTree(ctx, { ignore })),
+      await collectWalk(walkWorkingTree(ctx, { ignore: walkIgnore })),
       existing,
     );
     const hidden = await hiddenTracked(

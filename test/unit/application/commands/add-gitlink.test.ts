@@ -368,6 +368,37 @@ describe('add over a gitlink whose .git leads out of the superproject or through
   });
 });
 
+describe('add over a gitlink whose directory holds files behind a symlinked .git', () => {
+  describe.each([
+    { label: 'the whole tree', spec: ['.'] },
+    { label: 'the gitlink by name', spec: ['sub'] },
+  ])(
+    'Given a symlinked .git and committed files inside the gitlink directory',
+    ({ spec, label }) => {
+      describe(`When ${label} is added`, () => {
+        it('Then only the gitlink is staged, at that repository HEAD', async () => {
+          // Arrange
+          const ctx = await superproject({
+            checkout: 'linked',
+            tree: { 'sub/u': 'u\n', 'sub/x': 'x\n' },
+          });
+          const sut = add;
+
+          // Act
+          const result = await sut(ctx, spec);
+
+          // Assert
+          expect(result.modified).toEqual(['sub']);
+          expect(result.added).toEqual([]);
+          expect((await entryOf(ctx, 'sub'))?.id).toBe(MOVED_HEAD);
+          expect(await entryOf(ctx, 'sub/u')).toBeUndefined();
+          expect(await entryOf(ctx, 'sub/x')).toBeUndefined();
+        });
+      });
+    },
+  );
+});
+
 describe('add over a gitlink whose .git is a dangling symlink', () => {
   describe('Given a gitlink with nothing checked out behind a dangling .git and an edited file', () => {
     describe('When the whole tree is added', () => {

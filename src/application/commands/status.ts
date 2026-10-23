@@ -47,6 +47,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
+import { pruneGitlinkDirectories } from './internal/prune-gitlink-directories.js';
 import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 
@@ -178,7 +179,7 @@ const reportUnderLock = async (
   { index, tracked, trackedScan, workDir, lock }: LockedScan,
 ): Promise<StatusReport> => {
   try {
-    const untracked = await scanUntracked(ctx, tracked.trackedPaths);
+    const untracked = await scanUntracked(ctx, index, tracked.trackedPaths);
     const scanned = { workingMap: trackedScan.workingMap, untracked };
     const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
     if (lock) await updateIndexIfAble(lock, index, trackedScan);
@@ -296,9 +297,10 @@ const reportStatus = async (
  */
 const scanUntracked = async (
   ctx: Context,
+  index: GitIndex,
   trackedPaths: ReadonlySet<IndexPathKey>,
 ): Promise<FilePath[]> => {
-  const ignore = await buildRepoIgnorePredicate(ctx);
+  const ignore = pruneGitlinkDirectories(await buildRepoIgnorePredicate(ctx), index.entries);
   const untracked: FilePath[] = [];
   for await (const { path } of walkWorkingTree(ctx, { ignore })) {
     if (!trackedPaths.has(keyOfPath(path))) untracked.push(path);

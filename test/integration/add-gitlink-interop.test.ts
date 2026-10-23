@@ -171,6 +171,31 @@ const behindSymlinkedParent: Setup = async (repo, upstream) => {
   await symlink(`../${path.basename(out)}`, path.join(repo, 'd'));
 };
 
+/** The embedded repository holding committed files `u` and `x`, its `.git` then made to be what `reach` builds. */
+const holdingFilesBehind =
+  (reach: (repo: string, dotGit: string, moved: string) => Promise<void>): Setup =>
+  async (repo, upstream) => {
+    await embedded(repo, upstream);
+    const sub = path.join(repo, 'sub');
+    await writeFiles(sub, { u: 'u\n', x: 'x\n' });
+    runGit(['-C', sub, 'add', 'u', 'x']);
+    commitIn(sub, 'files');
+    const dotGit = path.join(sub, '.git');
+    const moved = outsideTheSuperproject(repo);
+    await rename(dotGit, moved);
+    await reach(repo, dotGit, moved);
+  };
+
+const symlinkedToRepository = holdingFilesBehind((_repo, dotGit, moved) => linkTo(dotGit, moved));
+
+const symlinkedToGitfile = holdingFilesBehind(async (repo, dotGit, moved) => {
+  const gitfile = `${repo}-gitfile`;
+  await pointerTo(gitfile, moved);
+  await linkTo(dotGit, gitfile);
+});
+
+const withoutDotGit = holdingFilesBehind(async () => undefined);
+
 /** An embedded repository whose refs live in reftable, recorded as a gitlink and then moved. */
 const embeddedReftable: Setup = async (repo) => {
   await writeFiles(repo, { k: 'k\n' });
@@ -642,6 +667,40 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           expect(gitRun.exitCode).toBe(0);
           expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
           expect(verbose(tsgitRepo)).toBe(verbose(gitRepo));
+        });
+      });
+    });
+
+    describe.each([
+      {
+        label: 'a symlink to a repository, added by dot',
+        setup: symlinkedToRepository,
+        spec: ['.'],
+      },
+      {
+        label: 'a symlink to a repository, added by name',
+        setup: symlinkedToRepository,
+        spec: ['sub'],
+      },
+      { label: 'a symlink to a gitfile, added by dot', setup: symlinkedToGitfile, spec: ['.'] },
+      { label: 'no .git at all, added by dot', setup: withoutDotGit, spec: ['.'] },
+    ])('Given a recorded gitlink holding committed files behind $label', ({ setup, spec }) => {
+      describe('When git and tsgit add it', () => {
+        it('Then both keep the gitlink alone and write the same objects', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(setup);
+          const looseBefore = await looseCountOf(gitRepo);
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', ...spec]);
+          await sut(createNodeContext({ workDir: tsgitRepo }), spec);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
+          expect(await looseCountOf(tsgitRepo)).toBe(await looseCountOf(gitRepo));
+          expect(await looseCountOf(gitRepo)).toBe(looseBefore);
         });
       });
     });
