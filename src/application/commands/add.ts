@@ -41,7 +41,7 @@ import {
   type ObjectId,
 } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import { matchesPathspec } from '../../domain/pathspec/index.js';
+import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import {
   matchesUnmergedPath,
   type PathspecVerdict,
@@ -235,10 +235,13 @@ const dispatchPathspec = async (
   const resolved = resolveCommandPathspec(ctx, paths);
   const { literalMustMatch } = resolved;
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
-  const stats = resolved.hasGlob ? undefined : await literalStats(ctx, literalMustMatch);
+  const walks = resolved.hasGlob || holdsExclusion(resolved.matcher);
+  const stats = walks ? undefined : await literalStats(ctx, literalMustMatch);
   if (stats !== undefined) return addLiteralOnly(ctx, resolved, stats, scope);
   return addByPathspec(ctx, resolved, scope);
 };
+
+const holdsExclusion = (matcher: Pathspec): boolean => matcher.some((entry) => entry.negated);
 
 const addLiteralOnly = async (
   ctx: Context,
