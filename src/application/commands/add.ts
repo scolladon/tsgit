@@ -49,6 +49,7 @@ import {
   withoutExactly,
 } from '../../domain/pathspec/match-pathspec.js';
 import { matchesIndexPath, matchesUnmergedIndexPath } from '../../domain/pathspec/matching-path.js';
+import { globSpecialIndex } from '../../domain/pathspec/wildcard.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -138,6 +139,7 @@ const INDEX_MISSING_CODES = new Set([
 ]);
 
 export interface AddOptions {
+  /** git's `-f`: no ignore rule applies, on any route. */
   readonly force?: boolean;
   readonly all?: boolean;
   /** Re-clean every tracked path the pathspec names under the current attributes; never adds or removes. */
@@ -155,6 +157,12 @@ export interface AddResult {
    * and exits 1. Empty when none.
    */
   readonly sparse: ReadonlyArray<string>;
+  /**
+   * Ignored entries a positive pathspec reached, sorted and deduplicated. git lists
+   * them under 'The following paths are ignored by one of your .gitignore files' and
+   * exits 1. A tracked path is never listed. Always empty with `force`.
+   */
+  readonly ignored: ReadonlyArray<FilePath>;
 }
 
 /**
@@ -202,6 +210,15 @@ const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => (
 
 const WHOLE_TREE_PATHSPEC = '.';
 
+/** `force` is git's `-f`: no ignore rule applies, so nothing is ever ignored. */
+const NEVER_IGNORED: IgnorePredicate = () => false;
+
+const repoIgnoreOf = (
+  ctx: Context,
+  opts: AddOptions,
+): Promise<IgnorePredicate> | IgnorePredicate =>
+  opts.force === true ? NEVER_IGNORED : buildRepoIgnorePredicate(ctx);
+
 const WHOLE_TREE_MATCHER = resolvePathspec([WHOLE_TREE_PATHSPEC]).matcher;
 
 const addInScope = async (
@@ -223,11 +240,11 @@ const addInScope = async (
     }
     return opts.renormalize === true
       ? addRenormalized(ctx, [WHOLE_TREE_PATHSPEC], scope)
-      : addAll(ctx, undefined, scope);
+      : addAll(ctx, opts.force === true ? NEVER_IGNORED : undefined, scope);
   }
   if (paths.length === 0) throw emptyPathspec();
   if (opts.renormalize === true) return addRenormalized(ctx, paths, scope);
-  return dispatchPathspec(ctx, paths, scope);
+  return dispatchPathspec(ctx, paths, opts, scope);
 };
 
 // Branch on the resolved pathspec: pure literals that each name an
@@ -237,6 +254,7 @@ const addInScope = async (
 const dispatchPathspec = async (
   ctx: Context,
   paths: ReadonlyArray<string>,
+  opts: AddOptions,
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const resolved = resolveCommandPathspec(ctx, paths);
@@ -245,7 +263,7 @@ const dispatchPathspec = async (
   const walks = resolved.hasGlob || holdsExclusion(resolved.matcher);
   const stats = walks ? undefined : await literalStats(ctx, literalMustMatch);
   if (stats !== undefined) return addLiteralOnly(ctx, resolved, stats, scope);
-  return addByPathspec(ctx, resolved, scope);
+  return addByPathspec(ctx, resolved, await repoIgnoreOf(ctx, opts), scope);
 };
 
 const holdsExclusion = (matcher: Pathspec): boolean => matcher.some((entry) => entry.negated);
@@ -276,7 +294,7 @@ const addLiteralOnly = async (
       stats,
     );
     await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
-    return { ...result, sparse: sparse.map(({ spelling }) => spelling) };
+    return { ...result, sparse: sparse.map(({ spelling }) => spelling), ignored: [] };
   } finally {
     await lock.release();
   }
@@ -766,9 +784,9 @@ const dispatchWalkEntry = <T extends Named, R>(
 const addByPathspec = async (
   ctx: Context,
   { matcher, positives }: CommandPathspec,
+  repoIgnore: IgnorePredicate,
   scope: ConversionScope,
 ): Promise<AddResult> => {
-  const repoIgnore = await buildRepoIgnorePredicate(ctx);
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
@@ -795,7 +813,7 @@ const addByPathspec = async (
       removedEntries,
     );
     await commitStaged(lock, staged, settled.remaining, tally.restagedPaths);
-    return sortedResult(tally, settled.removed, staged.sparse);
+    return sortedResult(tally, settled.removed, staged);
   } finally {
     await lock.release();
   }
@@ -846,6 +864,7 @@ const addRenormalized = async (
       removed: [],
       eolNotices: [],
       sparse: sparse.map(({ spelling }) => spelling),
+      ignored: [],
     };
   } finally {
     await lock.release();
@@ -944,11 +963,10 @@ const unseenWalked = (
  */
 const refuseUnseenWalked = async (
   ctx: Context,
-  repoIgnore: IgnorePredicate,
   unseen: ReadonlyArray<PositivePathspec>,
 ): Promise<void> => {
   for (const positive of unseen.filter(isNarrowerThanWholeTree)) {
-    if (!(await namesUnignoredDiskPath(ctx, repoIgnore, positive))) {
+    if (!(await namesDiskPath(ctx, positive))) {
       throw pathspecNoMatch(positive.spelling);
     }
   }
@@ -957,36 +975,16 @@ const refuseUnseenWalked = async (
 /**
  * git's `file_exists` escape: an unseen pathspec whose verbatim body names
  * something on disk is not refused (an empty directory, a wildcard spelled like
- * an ignored file). A literal naming an ignored path still is: git reports it
- * as ignored and exits 1, a report this command does not carry yet, so the
- * refusal keeps that failure visible.
+ * an ignored file, a literal an ignore rule hides).
  */
-const namesUnignoredDiskPath = async (
+const namesDiskPath = async (
   ctx: Context,
-  repoIgnore: IgnorePredicate,
   { entry, probesDisk }: PositivePathspec,
 ): Promise<boolean> => {
   if (!probesDisk) return false;
   const body = entry.body as FilePath;
   const stat = await lstatOrBeneathFile(ctx, body);
-  const directoryOnly = namesDirectoryOnly(body);
-  if (stat === undefined || (directoryOnly && !stat.isDirectory)) return false;
-  if (!entry.isLiteral) return true;
-  const queried = (directoryOnly ? body.slice(0, -1) : body) as FilePath;
-  return !(await ignoredWithAncestors(repoIgnore, queried, stat.isDirectory));
-};
-
-/** git's `is_excluded`: a path is ignored when it or any directory above it is. */
-const ignoredWithAncestors = async (
-  repoIgnore: IgnorePredicate,
-  path: FilePath,
-  isDirectory: boolean,
-): Promise<boolean> => {
-  const segments = path.split(SEPARATOR);
-  for (let depth = 1; depth < segments.length; depth += 1) {
-    if (await repoIgnore(segments.slice(0, depth).join(SEPARATOR) as FilePath, true)) return true;
-  }
-  return repoIgnore(path, isDirectory);
+  return stat !== undefined && (!namesDirectoryOnly(body) || stat.isDirectory);
 };
 
 /** Whether `add --renormalize` re-cleans this entry: a merged, checked-out file or symlink in the pathspec. */
@@ -1133,6 +1131,7 @@ const stageIgnoredWalk = async (
   readonly outcomes: ReadonlyArray<WalkOutcome>;
   readonly verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>;
   readonly sparse: ReadonlyArray<string>;
+  readonly ignored: ReadonlyArray<FilePath>;
 }> => {
   const {
     entries: existing,
@@ -1146,14 +1145,14 @@ const stageIgnoredWalk = async (
   const verdicts = verdictsOf(withoutSkipWorktreeEntries(existing), (path) =>
     tracker.observe(path),
   );
-  const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
+  const collector = collectIgnored(repoIgnore, existing, positives);
+  const ignore = withPathspec(collector.ignore, matcher, unmergedStages);
   const walked = withoutSkipWorktree(await collectWalk(walkWorkingTree(ctx, { ignore })), existing);
   const unseen = unseenWalked(positives, (positive) => tracker.seen(positive), walked);
   const skipped = skipWorktreeOf(existing);
   const sparse = unseen.filter((positive) => reachesSkipWorktree(positive, skipped));
   await refuseUnseenWalked(
     ctx,
-    repoIgnore,
     unseen.filter((positive) => !sparse.includes(positive)),
   );
   const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages, verdicts);
@@ -1174,7 +1173,37 @@ const stageIgnoredWalk = async (
     outcomes,
     verdicts,
     sparse: sparse.map(({ spelling }) => spelling),
+    ignored: collector.ignored(),
   };
+};
+
+/** The no-wildcard prefix of a pathspec body: the part git reads as a path before any pattern. */
+const literalPrefixOf = ({ entry }: PositivePathspec): string => {
+  const index = globSpecialIndex(entry.body);
+  return index === -1 ? entry.body : entry.body.slice(0, index);
+};
+
+/**
+ * Wraps the repository's ignore verdicts to remember the untracked paths a
+ * positive pathspec reaches that a rule hides, as git reports them. The walk
+ * prunes at the shallowest ignored directory, so that directory is what is
+ * recorded; a tracked path is never reported.
+ */
+const collectIgnored = (
+  repoIgnore: IgnorePredicate,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  positives: ReadonlyArray<PositivePathspec>,
+): { readonly ignore: IgnorePredicate; readonly ignored: () => FilePath[] } => {
+  const prefixes = positives.map(literalPrefixOf);
+  const reached = (path: FilePath): boolean =>
+    prefixes.some((prefix) => prefix === path || prefix.startsWith(path + SEPARATOR));
+  const recorded = new Set<FilePath>();
+  const ignore: IgnorePredicate = async (path, isDirectory) => {
+    const verdict = await repoIgnore(path, isDirectory);
+    if (verdict && !existing.has(keyOfPath(path)) && reached(path)) recorded.add(path);
+    return verdict;
+  };
+  return { ignore, ignored: () => [...recorded].sort() };
 };
 
 /**
@@ -1276,13 +1305,14 @@ const sortedResult = (
     eolNotices,
   }: Pick<ReturnType<typeof tallyWalkOutcomes>, 'added' | 'modified' | 'eolNotices'>,
   removed: ReadonlyArray<FilePath>,
-  sparse: ReadonlyArray<string>,
+  { sparse, ignored }: Pick<AddResult, 'sparse' | 'ignored'>,
 ): AddResult => ({
   added: [...added].sort(),
   modified: [...modified].sort(),
   removed: [...removed].sort(),
   eolNotices,
   sparse,
+  ignored,
 });
 
 /**
@@ -1337,7 +1367,7 @@ export const addAll = async (
       removedEntries,
     );
     await commitStaged(lock, state, settled.remaining, tally.restagedPaths);
-    return sortedResult(tally, settled.removed, []);
+    return sortedResult(tally, settled.removed, { sparse: [], ignored: [] });
   } finally {
     await lock.release();
   }

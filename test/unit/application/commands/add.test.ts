@@ -706,6 +706,7 @@ describe('add', () => {
           removed: [],
           eolNotices: [],
           sparse: [],
+          ignored: [],
         });
       });
     });
@@ -1755,13 +1756,10 @@ describe('add', () => {
 
   describe('Given a missing literal and a gitignored existing literal', () => {
     describe('When add', () => {
-      it('Then PATHSPEC_NO_MATCH names the gitignored literal (routes through addByPathspec)', async () => {
+      it('Then PATHSPEC_NO_MATCH names the missing literal (routes through addByPathspec)', async () => {
         // Arrange — `keep.txt` exists but is gitignored; `gone.txt` is absent.
-        // Real code: allLiteralsAreFiles sees `gone.txt` undefined -> returns
-        // false -> addByPathspec -> walk applies .gitignore -> nothing matched
-        // -> enforceLiteralMustMatch throws for the FIRST literal `keep.txt`.
-        // Mutant on L128 (`stat === undefined` -> true) would treat the
-        // missing path as a file -> addLiteralOnly -> throws for `gone.txt`.
+        // git refuses the missing pathspec and reports the ignored one only
+        // when nothing is refused, so the refusal names `gone.txt`.
         const ctx = await seedFreshRepo({ 'keep.txt': 'k' });
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'keep.txt\n');
 
@@ -1771,9 +1769,8 @@ describe('add', () => {
           'PATHSPEC_NO_MATCH',
         );
 
-        // Assert — the unmatched pattern is the gitignored literal, proving
-        // the call routed through addByPathspec, not addLiteralOnly.
-        expect((err.data as { pattern: string }).pattern).toBe('keep.txt');
+        // Assert
+        expect((err.data as { pattern: string }).pattern).toBe('gone.txt');
       });
     });
   });
@@ -2831,7 +2828,14 @@ describe('Given a work tree with nothing to add', () => {
       const result = await sut(ctx, ['.']);
 
       // Assert
-      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [], sparse: [] });
+      expect(result).toEqual({
+        added: [],
+        modified: [],
+        removed: [],
+        eolNotices: [],
+        sparse: [],
+        ignored: [],
+      });
     });
   });
 });
@@ -2847,7 +2851,14 @@ describe('Given a work tree whose every path is ignored', () => {
       const result = await sut(ctx, ['.']);
 
       // Assert
-      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [], sparse: [] });
+      expect(result).toEqual({
+        added: [],
+        modified: [],
+        removed: [],
+        eolNotices: [],
+        sparse: [],
+        ignored: [],
+      });
     });
   });
 });
@@ -3299,6 +3310,7 @@ describe('add renormalize option', () => {
           removed: [],
           eolNotices: [],
           sparse: [],
+          ignored: [],
         });
       });
     });
@@ -3492,6 +3504,7 @@ describe('add renormalize option', () => {
           removed: [],
           eolNotices: [],
           sparse: [],
+          ignored: [],
         });
       });
     });
@@ -3528,6 +3541,7 @@ describe('add renormalize option', () => {
           removed: [],
           eolNotices: [],
           sparse: [],
+          ignored: [],
         });
       });
     });
@@ -3696,6 +3710,7 @@ describe('add renormalize option', () => {
           removed: [],
           eolNotices: [],
           sparse: [],
+          ignored: [],
         });
       });
     });
@@ -4406,6 +4421,7 @@ describe('add refuses an unmatched pathspec before any object write', () => {
           removed: [],
           eolNotices: [],
           sparse: [],
+          ignored: [],
         });
         expect(await idsByPath(ctx)).toEqual(before);
       });
@@ -4702,27 +4718,35 @@ describe('add against a held index.lock', () => {
 describe('add of a literal beneath an ignored directory', () => {
   describe('Given .gitignore hides build/ and an untracked build/x beside a modified tracked k', () => {
     describe('When add names build/x and a glob reaching k', () => {
-      it('Then the literal is refused as unmatched and k stays unstaged', async () => {
+      it('Then the literal is not refused and k is staged', async () => {
         // Arrange
         const ctx = await seedTrackedThenIgnored({ k: 'k' }, 'build/\n');
         await writeWork(ctx, 'build/x', 'x');
         await writeWork(ctx, 'k', 'kk');
-        const before = (await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`);
         const sut = add;
 
         // Act
-        const err = await expectError(() => sut(ctx, ['build/x', 'k*']), 'PATHSPEC_NO_MATCH');
+        const result = await sut(ctx, ['build/x', 'k*']);
 
         // Assert
-        expect(err.data).toEqual(pathspecNoMatch('build/x').data);
-        expect((await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`)).toEqual(before);
+        expect(result.modified).toEqual(['k']);
+        expect(result.ignored).toEqual(['build']);
+        expect(result.added).toEqual([]);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['k']);
       });
     });
   });
 });
 
 describe('add of an unseen pathspec whose spelled path exists on disk', () => {
-  const NOTHING_STAGED = { added: [], modified: [], removed: [], eolNotices: [], sparse: [] };
+  const NOTHING_STAGED = {
+    added: [],
+    modified: [],
+    removed: [],
+    eolNotices: [],
+    sparse: [],
+    ignored: [],
+  };
 
   describe('Given an empty directory two levels deep and no ignore rule', () => {
     describe('When add names it', () => {
