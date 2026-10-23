@@ -10,6 +10,7 @@ import type { Context } from '../../../../../src/ports/context.js';
 import type { FileStat, FileSystem } from '../../../../../src/ports/file-system.js';
 
 const HEAD_COMMIT = 'c'.repeat(40);
+const ADMIN_COMMIT = 'd'.repeat(40);
 const SUB = 'sub' as FilePath;
 
 const guarded = (fs: FileSystem, allows: (path: string) => boolean): FileSystem =>
@@ -596,6 +597,24 @@ describe('a nested repository whose commondir and HEAD git reads in bounded buff
 
         // Assert
         expect(head).toBe(HEAD_COMMIT);
+      });
+    });
+  });
+
+  describe('Given a commondir that opens with a NUL', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then the admin dir is the common dir', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { gitDir } = await layOutLinked(ctx, '\0../common');
+        await layOutRepository(ctx, `${gitDir}/admin`, ADMIN_COMMIT);
+        const sut = gitlinkHeadOf;
+
+        // Act
+        const head = await sut(ctx, SUB);
+
+        // Assert
+        expect(head).toBe(ADMIN_COMMIT);
       });
     });
   });

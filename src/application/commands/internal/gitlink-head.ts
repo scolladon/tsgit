@@ -150,17 +150,15 @@ const commondirBytes = async (fs: FileSystem, path: string): Promise<Uint8Array 
 
 /**
  * git takes the file as a C string: it ends at the first NUL, and only a newline ending
- * the whole file is trimmed, so one before a NUL stays part of the name.
+ * the whole file is trimmed, so one before a NUL stays part of the name. A name emptied
+ * by a leading NUL resolves to the admin dir itself, as git's realpath of `<gitdir>/` does.
  */
 const commondirValue = (bytes: Uint8Array): ReturnType<typeof parseCommondir> | 'unnameable' => {
   const nul = bytes.indexOf(NUL);
-  if (nul !== -1) return nameOrEmpty(TEXT_DECODER.decode(bytes.subarray(0, nul)));
+  if (nul !== -1) return { kind: 'ok', path: TEXT_DECODER.decode(bytes.subarray(0, nul)) };
   if (bytes.length > COMMONDIR_MAX_BYTES) return 'unnameable';
   return parseCommondir(TEXT_DECODER.decode(bytes));
 };
-
-const nameOrEmpty = (name: string): ReturnType<typeof parseCommondir> =>
-  name === '' ? { kind: 'empty' } : { kind: 'ok', path: name };
 
 interface BoundedHead {
   readonly judged: HeadFile;

@@ -1205,6 +1205,24 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
+    describe('Given a commondir file opening with a NUL and an untracked file', () => {
+      describe('When git and tsgit add the whole tree', () => {
+        it('Then both take the admin dir for the common dir, stage the untracked file and the moved gitlink alike', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(commondirNaming(() => '\0/nonexistent\n'));
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', '.']);
+          await sut(createNodeContext({ workDir: tsgitRepo }), ['.']);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
+        });
+      });
+    });
+
     describe.each(CONFIG_ERROR_ROWS)(
       'Given a submodule config holding $label and an untracked file',
       ({ config, refusal }) => {
