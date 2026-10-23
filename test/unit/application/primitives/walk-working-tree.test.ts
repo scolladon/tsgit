@@ -73,6 +73,38 @@ describe('walkWorkingTree', () => {
     });
   });
 
+  describe('Given a file named with a backslash on a POSIX host', () => {
+    describe('When walked', () => {
+      it('Then yields it next to its backslash-free sibling', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'a\\b': '1', ab: '2' });
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collect(sut(ctx));
+
+        // Assert
+        expect(result.sort()).toEqual(['a\\b', 'ab']);
+      });
+    });
+  });
+
+  describe('Given a file named with a backslash on a Windows path-syntax host', () => {
+    describe('When walked', () => {
+      it('Then refuses it as outside the repository', async () => {
+        // Arrange
+        const ctx = { ...(await seedFs({ 'a\\b': '1', ab: '2' })), windowsPathSyntax: true };
+        const sut = walkWorkingTree;
+
+        // Act
+        const err = await expectError(() => collect(sut(ctx)), 'PATHSPEC_OUTSIDE_REPO');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: 'a\\b' });
+      });
+    });
+  });
+
   describe('Given nested directories', () => {
     describe('When walked', () => {
       it('Then DFS yields every leaf', async () => {

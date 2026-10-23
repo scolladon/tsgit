@@ -99,7 +99,7 @@ async function stepEntry(
   // on-disk `git~1`/`.git:stream`/HFS-alias entry is not a traversal hazard
   // and must reach the yield below, exactly as git's own directory walk
   // treats it.
-  validateWalkedEntryPath(path);
+  validateWalkedEntryPath(path, config.ctx);
 
   if (entry.isDirectory && !entry.isSymbolicLink) {
     if (config.ignore !== undefined && (await config.ignore(path, true))) return { kind: 'skip' };

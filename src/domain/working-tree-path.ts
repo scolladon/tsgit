@@ -2,9 +2,15 @@ import { pathspecOutsideRepo } from './commands/error.js';
 import type { FilePath } from './objects/object-id.js';
 import { isDotGitAlias } from './path/verify-path.js';
 
+const BACKSLASH = '\\';
 const MAX_PATH_BYTES = 4096;
 const MAX_COMPONENT_BYTES = 255;
 const PATH_ENCODER = new TextEncoder();
+
+/** What path validation reads of the host: a `Context` satisfies it. */
+export interface PathSyntaxHost {
+  readonly windowsPathSyntax?: boolean;
+}
 
 /**
  * Validate a working-tree path. Throws `PATHSPEC_OUTSIDE_REPO` for any policy
@@ -26,6 +32,7 @@ const PATH_ENCODER = new TextEncoder();
  * - Length caps: total path ≤ 4096 bytes; each component ≤ 255 bytes.
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
+  rejectBackslash(input);
   rejectInputShape(input);
   rejectLeadingColon(input);
   const components = input.split('/');
@@ -38,8 +45,9 @@ export const validateWorkingTreePath = (input: string): FilePath => {
 /**
  * Narrow defence-in-depth for a walker consuming raw `readdir` entries
  * (`walk-working-tree.ts`): the same traversal/injection protections as
- * {@link validateWorkingTreePath} — absolute path, backslash, NUL,
- * dot/dotdot/empty component, control characters, length caps — MINUS the
+ * {@link validateWorkingTreePath} — absolute path, NUL,
+ * dot/dotdot/empty component, control characters, length caps, and a
+ * backslash on a Windows path-syntax host — MINUS the
  * `.git`-alias and `:` rejections. A directory a real filesystem legitimately
  * returns named `git~1`, `.git:stream`, or carrying an HFS ignorable
  * codepoint is not a traversal hazard; the walk boundary must surface it
@@ -49,7 +57,8 @@ export const validateWorkingTreePath = (input: string): FilePath => {
  * `validateWorkingTreePath`'s other callers (user pathspec input,
  * tree/index boundaries), where they are the correct, intentional refusal.
  */
-export const validateWalkedEntryPath = (input: string): FilePath => {
+export const validateWalkedEntryPath = (input: string, host: PathSyntaxHost): FilePath => {
+  if (host.windowsPathSyntax === true) rejectBackslash(input);
   rejectInputShape(input);
   const components = input.split('/');
   for (const component of components) {
@@ -62,13 +71,18 @@ const reject = (input: string): never => {
   throw pathspecOutsideRepo(input as FilePath);
 };
 
+// A backslash is a legal file-name byte on a POSIX host; only a Windows path
+// syntax reads it as a separator.
+const rejectBackslash = (input: string): void => {
+  if (input.includes(BACKSLASH)) reject(input);
+};
+
 const rejectInputShape = (input: string): void => {
   // Stryker disable next-line ConditionalExpression: equivalent — when this fast-path guard is removed (`if (false)`), the empty string still splits to `['']`, whose empty component is rejected by `rejectTraversalShape` with the identical `pathspecOutsideRepo('')` error.
   if (input === '') reject(input);
   if (byteLength(input) > MAX_PATH_BYTES) reject(input);
   // Stryker disable next-line ConditionalExpression,MethodExpression: equivalent — a leading or trailing `/` always produces an empty path component, which `rejectTraversalShape` rejects regardless; this guard only changes which line throws, not the accept/reject verdict or the error data.
   if (input.startsWith('/')) reject(input);
-  if (input.includes('\\')) reject(input);
   // Stryker disable next-line ConditionalExpression: equivalent — a NUL byte is code 0x00, always `<= 0x1f`, so the per-component control-char scan rejects it regardless of this fast-path guard.
   if (input.includes('\0')) reject(input);
 };
