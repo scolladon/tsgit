@@ -589,10 +589,46 @@ describe('a nested repository whose commondir and HEAD git reads in bounded buff
 
   describe('Given a NUL-free commondir a byte past the path length bound', () => {
     describe('When the checkout is probed', () => {
-      it('Then it can name no repository and is broken', async () => {
+      it('Then it names the common dir as git reads the file whole', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await layOutLinked(ctx, `../common${'/.'.repeat((MAX_PATH_BYTES - 10) / 2)}//`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind).toBe('repository');
+      });
+    });
+  });
+
+  describe('Given a NUL-free commondir of exactly the gitfile size cap', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it names the common dir', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const prefix = '../common';
+        await layOutLinked(ctx, `${prefix}${'/.'.repeat((MIB - prefix.length - 1) / 2)}/`);
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind).toBe('repository');
+      });
+    });
+  });
+
+  describe('Given a NUL-free commondir a byte past the gitfile size cap', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it can name no repository and is broken', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const prefix = '../common';
+        await layOutLinked(ctx, `${prefix}${'/.'.repeat((MIB - prefix.length - 1) / 2)}//`);
         const sut = probeGitlinkCheckout;
 
         // Act
@@ -616,6 +652,28 @@ describe('a nested repository whose commondir and HEAD git reads in bounded buff
           encoder.encode(`ref: refs/heads/main\n${'\0'.repeat(MAX_PATH_BYTES * 2)}`),
         );
         const ctx = refusingWholeReadsOf(memory, '/sub/.git/HEAD');
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind).toBe('repository');
+        expect(checkout.kind === 'repository' && (await checkout.head())).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a HEAD naming a branch then running past the read bound', () => {
+    describe('When the checkout is probed and its head asked', () => {
+      it('Then no commit resolves, the name is not cut to the judged prefix', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dotGit = `${ctx.layout.workDir}/sub/.git`;
+        const branch = `refs/heads/${'a'.repeat(239)}`;
+        await layOutRepository(ctx, dotGit, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${dotGit}/${branch}`, `${HEAD_COMMIT}\n`);
+        await ctx.fs.writeUtf8(`${dotGit}/HEAD`, `ref: ${branch}${'b'.repeat(5000)}`);
         const sut = probeGitlinkCheckout;
 
         // Act

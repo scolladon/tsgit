@@ -23,10 +23,10 @@ const SEPARATOR = '/';
 const MAX_GITFILE_SIZE = 1 << 20;
 // git reads a repository's HEAD into a 256-byte buffer, one of which terminates the string.
 const HEAD_PREFIX_BYTES = 255;
-// A path longer than the platform's PATH_MAX cannot name a directory, so a NUL-free commondir past it names nothing.
-const COMMONDIR_MAX_BYTES = 4096;
+// git reads a commondir whole and resolves it as a path, so only a file past the gitfile cap is left unnamed.
+const COMMONDIR_MAX_BYTES = MAX_GITFILE_SIZE;
 // Resolving HEAD reads the whole file, which a ref line cannot outgrow: PATH_MAX for the name plus `ref: `.
-const HEAD_REF_LINE_MAX_BYTES = COMMONDIR_MAX_BYTES + 'ref: '.length;
+const HEAD_REF_LINE_MAX_BYTES = 4096 + 'ref: '.length;
 const NUL = 0;
 const TEXT_DECODER = new TextDecoder();
 const UNFOLLOWED_LINK_CODES: ReadonlySet<string> = new Set(['FILE_NOT_FOUND', 'PERMISSION_DENIED']);
@@ -170,7 +170,7 @@ interface BoundedHead {
 /**
  * git's `validate_headref` looks at a symlink's text or at the first bytes of the file, never
  * at the rest, yet resolves the ref from the whole file; a file that fills the read bound
- * is too long to name a ref, so only the judged prefix is kept for resolution.
+ * is too long to name a ref, so it resolves to no commit rather than from the judged prefix.
  */
 const boundedHeadFile = async (fs: FileSystem, gitDir: string): Promise<BoundedHead> => {
   const head = `${gitDir}${SEPARATOR}HEAD`;
@@ -182,7 +182,7 @@ const boundedHeadFile = async (fs: FileSystem, gitDir: string): Promise<BoundedH
     }
     const bytes = await fs.readSlice(head, 0, HEAD_REF_LINE_MAX_BYTES);
     const judged = fileOf(bytes.subarray(0, HEAD_PREFIX_BYTES));
-    return { judged, resolved: bytes.length < HEAD_REF_LINE_MAX_BYTES ? fileOf(bytes) : judged };
+    return { judged, resolved: bytes.length < HEAD_REF_LINE_MAX_BYTES ? fileOf(bytes) : NO_REF };
   } catch (cause) {
     if (cause instanceof TsgitError) {
       const unusable: HeadFile = { kind: 'unusable', cause };
@@ -191,6 +191,9 @@ const boundedHeadFile = async (fs: FileSystem, gitDir: string): Promise<BoundedH
     throw cause;
   }
 };
+
+// An empty HEAD names no ref, so resolving it ends in no commit.
+const NO_REF: HeadFile = { kind: 'file', content: '' };
 
 const fileOf = (bytes: Uint8Array): HeadFile => ({
   kind: 'file',

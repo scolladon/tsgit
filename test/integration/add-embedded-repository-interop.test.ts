@@ -232,6 +232,26 @@ const withBoundlessHead = brokenDotGit(async (_repo, dotGit) => {
   await layOutAdminDirs(dotGit, 'ref: refs/heads/main\n');
   makeSparseFile(path.join(dotGit, 'HEAD'), PAST_STRING_LIMIT_BYTES);
 });
+
+const HEAD_READ_BOUND_BYTES = 4101;
+const LONGEST_BRANCH = 'a'.repeat(239);
+
+/** A branch named at its longest, then a HEAD that names it and runs on past every read bound. */
+const withHeadPastTheReadBound: Setup = async (repo) => {
+  await committed()(repo);
+  const dotGit = dotGitOf(repo);
+  runGit(['-C', path.join(repo, 'sub'), 'checkout', '-q', '-b', LONGEST_BRANCH]);
+  await writeFile(
+    path.join(dotGit, 'HEAD'),
+    `ref: refs/heads/${LONGEST_BRANCH}${'b'.repeat(HEAD_READ_BOUND_BYTES + 899)}`,
+  );
+};
+
+/** A commondir that spells the admin dir itself, in more bytes than any path may hold. */
+const withCommondirPastPathMax: Setup = async (repo) => {
+  await committed()(repo);
+  await writeFile(path.join(dotGitOf(repo), 'commondir'), `.${'/.'.repeat(2048)}\n`);
+};
 const withEmptyGitfile = brokenDotGit((_repo, dotGit) => writeFile(dotGit, ''));
 const withGitfileToNothing = brokenDotGit((_repo, dotGit) => gitfile(dotGit, '../nothing'));
 const withAdminFilesAtTheTop: Setup = async (repo) => {
@@ -409,6 +429,17 @@ const BOUNDLESS_ROWS: ReadonlyArray<Row> = [
     refusal: NO_COMMIT,
     timeoutMs: NON_BLOCKING_TIMEOUT_MS,
   })),
+  {
+    label: 'a HEAD naming the longest branch then running past the read bound',
+    setup: withHeadPastTheReadBound,
+    spec: ['.'],
+    refusal: NO_COMMIT,
+  },
+  {
+    label: 'a commondir spelling the admin dir in more bytes than PATH_MAX',
+    setup: withCommondirPastPathMax,
+    spec: ['.'],
+  },
 ];
 
 const NO_COMMIT_SETUPS: ReadonlyArray<readonly [string, Setup]> = [
@@ -640,6 +671,15 @@ const ALL_TREE_ROWS: ReadonlyArray<Row> = [
     refusal: NO_COMMIT,
     timeoutMs: NON_BLOCKING_TIMEOUT_MS,
   }),
+  everythingRow(
+    'a HEAD naming the longest branch then running past the read bound',
+    withHeadPastTheReadBound,
+    { refusal: NO_COMMIT },
+  ),
+  everythingRow(
+    'a commondir spelling the admin dir in more bytes than PATH_MAX',
+    withCommondirPastPathMax,
+  ),
   everythingRow('a repository with a commit', committed()),
   everythingRow('a repository with no files', committed('sub', {})),
   everythingRow('a gitfile naming an absolute path', absoluteGitfile(committed())),
