@@ -174179,7 +174179,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " lines); "
+										"text": " lines; a directory holding another\nrepository is listed once, with a trailing slash); "
 									},
 									{
 										"kind": "code",
