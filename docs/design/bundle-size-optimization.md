@@ -714,3 +714,17 @@ in `tooling/verify-tarball.sh`'s cap block.
 | Command (add) | 4 983 | 5 693 | +710 | 5 kB | 5.8 kB | the skip-worktree filters with the sparse split, the ignored collector with `force`, and the gitlink step |
 
 Every other row grew by at most 9 B and stays under its cap (largest: mv +9, rev-list +8, archive +8).
+
+The review round of the fold (five fix batches: the tree-source skip-worktree restore, the gitlink
+probe read through a confined derived filesystem with its symlink, common-dir, objects/refs and
+unresolvable-HEAD rules  the repository-format scan hoisted into the domain and shared with the
+gitlink reader) crossed the rows below again  measured the same way on a clean build; each is
+raised once more to the next 0.1 kB. The tarball cap moved 1447 → 1450 KiB (1 484 245 B measured).
+
+| Row | before the review | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 343 962 | 344 549 | +587 | 344.1 kB | 344.6 kB | every layer below |
+| Full library | 401 828 | 402 577 | +749 | 402.1 kB | 402.6 kB | every layer below |
+| Chunks: domain | 126 552 | 127 271 | +719 | 126.6 kB | 127.3 kB | the repository-format scan hoisted beside the config parser (`repository-format-scan.ts`) and the malformed-entry ordering rule |
+| Chunks: primitives | — | 108 306 | — | 108.2 kB | 108.4 kB | `gitlink-ref-storage.ts` and the gitlink child context's common-dir and ref-storage options |
+| Chunks: commands-internal | 82 571 | 83 029 | +458 | 82.7 kB | 83.1 kB | the gitlink probe's symlink, common-dir, objects/refs and unresolvable-HEAD rules (`gitlink-head.ts`) |

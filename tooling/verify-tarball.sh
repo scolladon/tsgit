@@ -383,7 +383,13 @@ done
 # `firstIgnoredOf`, the gitlink step with `gitlinkHeadOf`, and the host-gated
 # validators — runtime code shipped in every distribution form, none removable
 # without dropping the behaviour.
-SIZE_CAP=$((1447 * 1024))
+# Raised 1447 -> 1450 KiB by the review round of the folded add  checkout and rm
+# fixes: the measured pack landed at 1 484 245 B  2 517 B over the old cap 
+# attributable to the gitlink probe's symlink, common-dir, objects/refs and
+# unresolvable-HEAD rules, the repository-format scan shared with the gitlink
+# reader, and the tree-source skip-worktree restore — runtime code shipped in
+# every distribution form  none removable without dropping the behaviour.
+SIZE_CAP=$((1450 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
