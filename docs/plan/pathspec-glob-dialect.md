@@ -1,6 +1,6 @@
 # Plan — pathspec glob dialect, unmatched-pathspec refusal, describe/name-rev patterns
 
-> Source: design doc `docs/design/pathspec-glob-dialect.md` · ADRs 1033–1053 (binding; 1046–1053 drive the fold revision, Parts 13–22); pre-existing 038, 077, 226, 249, 866, 980, 1000, 1012
+> Source: design doc `docs/design/pathspec-glob-dialect.md` · ADRs 1033–1062 (binding; 1046–1053 drive the fold revision, Parts 13–22; 1054–1062 the embedded-repository revision, Parts 23–29); pre-existing 038, 077, 226, 249, 866, 980, 1000, 1012
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
@@ -210,6 +210,57 @@ re-took the rows marked "throwaway" as git-and-tsgit twins, with tsgit run throu
     module HEAD and a `commondir` naming `/nonexistent`. `invalid gitfile format`,
     `not recognized as a git repository` and the zero-byte `commondir` line keep their wording.
     The suites pin 2.55, and the wording is display.
+29. **The refusal's `path` is git's spelling** (ADR-1057). `NO_COMMIT_CHECKED_OUT.path` is
+    'sub/', as in git's `error: 'sub/' does not have a commit checked out`. Design candidate 23
+    wrote "without the trailing `/`"; the ADR binds.
+30. **The walk gate at `a85a6386`.** `enterSubdirectory` (walk-working-tree.ts :64–77) returns
+    `undefined` when `frame.entries.some(isEmbeddedGitMarker)` (:206–219: a `.git` directory, or
+    a `.git` regular file that is no symlink). `stepEntry` (:90–125) runs the directory's ignore
+    check (:105) before it, and the root frame never passes through it. `WalkWorkingTreeOptions`
+    (types.ts :267–282) reaches the package through `export type *` (primitives/index.ts :101 →
+    public-types.ts :10) and the facade (repository.ts :1085 forwards `options` as is). A new
+    option therefore changes reports/api.json and nothing else.
+31. **An unmerged gitlink is not pruned.** `pruneGitlinkDirectories` keeps out stage-0 gitlinks
+    only. The rows "add over an unmerged gitlink" (add-gitlink.test.ts :1084) hold a checkout at
+    'sub', so a walk given the hook lists 'sub' as a repository leaf beside R15's
+    `stagedGitlinks` outcome for the same path. Those rows are the guard for candidate 32. git's
+    `directory_exists_in_index` answers `index_gitdir` for a gitlink at any stage and lists
+    nothing there (dir.c, read, not probed).
+32. **Seen is decided after exclusion.** EM61 (`add sub '!sub'`) exits 0 only through the
+    `file_exists` escape, and EM62 (`add 's*' '!sub'`) refuses `s*`. So `unseenWalked` must see the
+    SELECTED repository leaves only, spelled `<dir>/`. The walked files already are post-exclusion
+    (`withPathspec` drops the leaves the matcher does not select).
+33. **The index pass drops every walked key** (`hiddenTracked`, add.ts :1148). If an unselected
+    repository leaf reached it, EM67 (`add '*b'` over a tracked file 'sub' turned repository)
+    would lose its index pass and stage the removal. The pass gets the files plus the selected
+    leaves.
+34. **`addAll` removes what it did not see.** `collectRemovedEntries` → `presentOnDisk` (add.ts
+    :1579–1619) treats a directory over a non-gitlink entry as gone unless its key is in `seen`,
+    and `processWalkEntry` is the only writer of `seen`. Every gitlink outcome that replaces a
+    tracked file must be marked: the walk leaf (EM66 under `-A`) and the index pass (EM69 under
+    `-A`).
+35. **Three rows pin today's skip; the design names two.** add.test.ts :933 (`vendor/lib/.git/HEAD`
+    alone) and test/integration/add-all.test.ts :19 (the same shape) hold no `objects/` or `refs/`,
+    so neither is a repository by git's test (EM33 class): 'vendor/lib/src/x.ts' is staged once
+    `addAll` passes the hook. add.test.ts :1239 (`gitdir: /elsewhere`) is EM36: 'sub/normal.txt'
+    is staged. add.test.ts :1261 (a dangling `.git` symlink, EM28) and the walk rows :210, :651,
+    :827 and :847 (hook unset) stay green.
+36. **Classification is cheaper than HEAD.** The probe's repository test is `locateCheckout` →
+    `hasUsableHead` → `reaching` → `holdsObjectsAndRefs`, git's test for a non-bare repository directory.
+    `refStorageOf` (the format gate, GL39–GL44) and `resolveGitlinkHead` run only when HEAD is
+    asked for. A format git refuses is still a repository (EM42 and EM43 refuse "no commit", not
+    the format), so the embedded reader maps a TsgitError from the HEAD read to "no commit", while
+    `gitlinkHeadOf` keeps throwing it.
+37. **Three JSDoc sentences go stale.** `add` (add.ts :174, "`.git` and embedded repositories are
+    skipped"), `walkWorkingTree` (walk-working-tree.ts :140–143) and `status` (status.ts :130–137,
+    `untracked` holds paths). Each is in reports/api.json, so the part that changes the behaviour
+    rewrites the sentence and regenerates the report.
+38. **plan-lint counts every span in backticks holding a `/` as a file** (craft plan-lint
+    `isPathShaped`). Part 19's as-shipped note was re-spelled for that reason; Parts 23–29 quote
+    fixture paths ('sub/u') instead of putting them in backticks.
+39. **Size before Part 23.** The session reports four size rows 10–42 B over their caps after the
+    triage and refactor commits. Part 29 measures both the pre-Part-23 overage and this round's
+    delta from clean builds and raises once.
 
 ## Requirement map
 
@@ -233,6 +284,10 @@ re-took the rows marked "throwaway" as git-and-tsgit twins, with tsgit run throu
 | R17 the walk admits `\`-named entries on POSIX; rm removes them | 20 (walk), 21 (rm) |
 | R18 a literal-only add honours exclusions | 13 |
 | Fold size caps | 22 |
+| R19 add stages an untracked repository as a gitlink (walk route, `-A`, literals beneath it, the no-commit refusal) | 23 (walk hook), 24 (probe as data, reader), 25 (error member), 26 (pathspec route), 27 (`-A`, literal ancestors) |
+| R20 a tracked file or symlink turned repository is a type change to a gitlink | 26 (the walk lists it), 27 (the index pass, `-A`) |
+| ADR-1061 status lists an untracked repository as `sub/` | 28 |
+| Embedded-repository size caps | 29 |
 
 ## Decision candidates
 
@@ -259,6 +314,17 @@ may override any of them before implementation starts.
 | 10 | When the result fields land | **A** `sparse` in Part 14 and `ignored` in Part 17, each with its api.json regeneration · **B** both in Part 14, `ignored` always `[]` until Part 17 | A | B ships a field that misreports for three commits. A costs one extra `docs:json` run. |
 | 11 | Shape of rm's host-gated validator (ADR-1052) | **A** a new `validateWorkingTreePathOn(input, host)`; `validateWorkingTreePath` keeps refusing `\` for every other caller · **B** an optional `host` parameter on `validateWorkingTreePath` | A | ADR-1052 scopes the gate to `removeFile`. A required host on a separately named function cannot widen to `mv` or `materializeFile` by accident. |
 | 12 | How the walk route learns which ignored entries a positive reached | **A** a recording ignore predicate wrapped around `repoIgnore` inside `withPathspec`, local to one `stageIgnoredWalk` call · **B** a second pass over the pruned directories | A | Design Part h: the walk prunes at the shallowest ignored directory, so the predicate sees exactly git's reported entry with no ancestor loop. B re-reads directories. |
+
+Embedded-repository candidates (Parts 23–29). The parts are written to the recommendation; the
+session may override any of them before Part 23 starts.
+
+| # | Choice | Alternatives (≤3) | Recommendation | Why |
+|---|---|---|---|---|
+| 29 | Shape of the non-throwing probe (design Part k: "for example") | **A** `none` · `broken { shown }` · `repository { head: () => Promise<ObjectId \| undefined> }`; `head()` reads the format and HEAD on demand, a refused format throws from it · **B** the head resolved eagerly in the union, plus a fourth `refused { error }` kind for the format · **C** two exports, `locateGitlinkRepository` returning the internal `Located` record and `headOfRepository(located)` | A | The design wants HEAD paid only for a selected repository (Size and hot path), and status never needs it. B resolves HEAD for every probed directory. C exports the internal record. A keeps `gitlinkHeadOf`'s format refusal where it is today. |
+| 30 | The public walk option's name and type | **A** `isNestedRepository?: (directory: FilePath) => boolean \| Promise<boolean>`, inline, like `ignore` may be sync or async · **B** a named exported `WalkNestedRepositoryPredicate` type · **C** `nestedRepository` (the design's placeholder) | A | A predicate reads as a question. A named type adds a public name to api.json and every `export type *` consumer for no caller need. |
+| 31 | Where the per-call reader lives | **A** src/application/commands/internal/embedded-repository.ts, shared by `add` and `status` · **B** inside add.ts (the design's sketch), with `status` repeating it · **C** primitives/internal | A | `status` needs the same hook (ADR-1061). The index search and the probe are command concerns (gitlink-head.ts already lives in commands/internal). |
+| 32 | A walk leaf at a path whose index entry is a gitlink at a conflict stage (fact 31) | **A** the embedded step skips it; `stagedGitlinks` (R15) owns that path · **B** widen `pruneGitlinkDirectories` to every stage · **C** have the hook answer false there | A | git lists nothing at `index_gitdir`. B changes a file the design keeps unchanged and also changes `status`. C walks into the submodule and stages its files. |
+| 33 | Where the status rows live | **A** new focused files status-embedded-repository.test.ts and status-embedded-repository-interop.test.ts · **B** the design-named status.test.ts (1 700 lines) and status-interop.test.ts | A | Candidate 6's precedent. status-interop compares plain `--porcelain`, while these rows need `-uall`. |
 
 ## Deferred to documentation phase
 
@@ -293,6 +359,17 @@ may override any of them before implementation starts.
 - `docs/design/pathspec-glob-dialect.md` I12–I16 index column: fact 9 adds `y.log` on the full
   fixture. Its fold test table names add-tracked-under-ignore-interop and pathspec-glob-dialect-interop;
   decision candidate 6 moved those rows to new files.
+- Embedded-repository docs/use targets (Parts 23–28):
+  - docs/use/primitives/walk-working-tree.md: the `isNestedRepository` option (ADR-1059).
+  - docs/use/commands/add.md: an untracked repository is staged as a `160000` gitlink in `added`;
+    a tracked file or symlink turned repository is a type change in `modified` (ADR-1058); a literal
+    inside an untracked repository stages nothing and is not refused (ADR-1060); a selected
+    repository with no commit refuses `NO_COMMIT_CHECKED_OUT` before any write (ADR-1057, 1062);
+    no hint field: a caller derives git's embedded-repository hint from the staged entry's mode
+    (ADR-1056).
+  - docs/use/commands/status.md: `untracked` lists an untracked repository once, as 'sub/'
+    (ADR-1061).
+  - docs/use/errors.md: the `NO_COMMIT_CHECKED_OUT` row, `path` spelled 'sub/'.
 
 ## Out of scope, proven (one line each, not acted on)
 
@@ -309,6 +386,10 @@ may override any of them before implementation starts.
   `add .` on both.
 - A symlinked `<path>/.git` over a tracked gitlink: unpinned. Part 19 reads it as a gitfile. To
   prove a gap, twin GL1 with `sub/.git` replaced by a symlink to `../.git/modules/sub`.
+- EM78, EM79 and EM81 (status v2 worktree mode of a gitlink, `checkout -- sub` over a directory):
+  proven in the design's Out of scope, one backlog line each, not planned.
+- `stash -u` over an untracked repository: unpinned (design Out of scope); the walk default stays
+  unchanged for `stash` under ADR-1059.
 
 ## Fold revision — house rules for Parts 13–22
 
@@ -361,6 +442,50 @@ this order: 13 (R18) → 14, 15 (R13) → 16 (R14) → 17, 18 (R16) → 19 (R15)
   20 and 21 share working-tree-path.ts and its test because the ceiling splits the walk from rm,
   and ADR-1051 and ADR-1052 are separate decisions. Part 22 repeats Part 12's size procedure over
   the fold's bytes. Parts 10 and 14 share pathspec-intake.test.ts: Part 10 is landed.
+
+## Embedded-repository revision — house rules for Parts 23–29
+
+Parts 1–22 are landed, with the review, triage and refactor commits on top; the plan was revised
+at `a85a6386`. Parts 23–29 implement design Part k (R19, R20, rows EM1–EM82) under ADRs
+1054–1062, in this order: 23 (walk hook) → 24 (probe as data, reader) → 25 (error member) → 26
+(pathspec route) → 27 (`-A`, the index pass, literals) → 28 (status) → 29 (size). Each builds on
+the previous ones in one working tree.
+
+- **Every fold house rule above applies**: environment, one RED per function per step, the
+  re-pinning rule, interop twins plus memory-adapter rows in focused suites, test conventions,
+  mutation-resistant asserts, no suppression, no provenance ids, never `npm run validate`.
+- **Line numbers are at `a85a6386`.** Re-anchor every symbol with `command grep -n '<name>'`
+  before editing; earlier parts of this round move them.
+- **Fixtures.** The design's "Repo": the superproject holds `k`, committed; the repository is
+  `git init -q -b main <dir>` with `u` committed inside, dates pinned to `@1700000000 +0000`.
+  Build each twin by running the same setup in it (pinned env and identity give both twins the
+  same ids), as add-gitlink-interop.test.ts `twins` does; copy its `commitIn`, `writeFiles`,
+  `looseCountOf` and pinned env. Memory rows lay a repository out as gitlink-head.test.ts
+  `layOutRepository` does ('sub/.git/HEAD' = 'ref: refs/heads/main\n', 'objects' and 'refs'
+  directories, the branch file holding a 40-hex id); an unborn repository omits the branch file.
+- **What a twin compares.** `ls-files -s` and git's exit code. A refusal compares the error code
+  and `path` with the path in git's `error: '<dir>/' does not have a commit checked out` line,
+  and both indexes unchanged. Under ADR-1062, EM45 and EM60 do not compare loose-object counts:
+  git writes the blobs that sort before the repository, tsgit writes none. The tsgit twin's count
+  stays at its pre-call value (ADR-1035), and memory rows prove an untracked file's blob was not
+  written (`blobExists` in add-gitlink.test.ts :746).
+- **Positive controls.** Every "stages nothing" row has a sibling on the same fixture that does
+  stage: EM37 for EM8, EM75 for EM74, EM66 for EM71, EM61's `add .` over EM1 without the
+  exclusion.
+- **`-f` and `:!`.** git's `add -f` is `{ force: true }`; git's `:!sub` is tsgit's `!sub`
+  (ADR-038).
+- **Public surface.** Part 23 (the walk option and its JSDoc), Part 25 (the union member), Part 27
+  (the `add` JSDoc) and Part 28 (the `status` JSDoc) regenerate reports/api.json with
+  `npm run docs:json` and commit it. Every other new symbol is internal. No part adds a command, a
+  barrel name or a facade binding, so the `Object.keys` snapshot, check:doc-coverage,
+  audit-browser-surface and the README count are untouched.
+- **Why parts share files.** add.ts and the two add-embedded-repository suites are edited by 26
+  and 27: the 6-file ceiling puts the re-pinned suites and the `add` JSDoc in 27. reports/api.json
+  is regenerated by each part that changes the public surface.
+- **Session-owned, not part steps:** mutation (narrowed buckets gain walk-working-tree.ts,
+  gitlink-head.ts, embedded-repository.ts and the touched add.ts and status.ts functions) and
+  `bench:ab` on add.bench.ts (the untracked single-literal rows and an `add -A` row), after Part
+  27's commit.
 
 ## Part 1 — Pathspec wildcards match with git's flags-0 wildmatch over the path's bytes
 
@@ -2489,17 +2614,17 @@ in git.
 As shipped (corrected after the review round, facts 19–23). The target above landed in Part 19.
 The review fixes then added these rules:
 - Reftable: the child's ref backend is its own `extensions.refStorage`, read from its common
-  dir's config (`primitives/internal/gitlink-ref-storage.ts` `refStorageOf`), not the fixed
+  dir's config (primitives/internal/gitlink-ref-storage.ts `refStorageOf`), not the fixed
   `refStorage: 'files'` above. `deriveGitlinkContext` takes `fs`, `commonDir` and `refStorage`
   options.
-- `sub/` reaches the gitlink only through the directory form of the matcher (`selectsGitlink`
+- 'sub/' reaches the gitlink only through the directory form of the matcher (`selectsGitlink`
   tests `<path>/` for a directory-only body). The bare `verdict matched` filter missed it (fact
   18).
 - `<path>/.git` as a symlink is followed with a stat, and a dangling or looping one is "nothing
-  checked out". `commondir` is honoured. A gitdir whose common dir lacks `objects/` or `refs/`
+  checked out". `commondir` is honoured. A gitdir whose common dir lacks objects/ or refs/
   refuses `NOT_A_REPOSITORY`. Once the repository is usable, an unresolvable HEAD keeps the
   recorded commit. The repository-format scan is shared with the main repository through
-  `src/domain/config/repository-format-scan.ts`. None of this was in this part. Each rule landed
+  src/domain/config/repository-format-scan.ts. None of this was in this part. Each rule landed
   in a review fix commit (`b14394b3`, `21ef755a`, `30cc573f`, `e9d58e0b`, `a0296ca4`,
   `b67bcb41`, `8c464a5c`). The rows are design GL24–GL51.
 
@@ -2802,3 +2927,673 @@ Drop a file from the biome/cspell arguments when this part did not edit it.
 ### Commit
 
 `fix(pathspec): raise the size caps by the measured delta of the folded add, checkout and rm fixes`
+
+## Part 23 — The working-tree walk yields a nested repository as one directory leaf when asked
+
+### Context
+
+R19's walk half. Covers ADR-1059 (an opt-in hook on the public walk options; every caller that
+does not pass it keeps today's gate) and ADR-1055's half that binds the walk: a .git symlink is
+never walked through, the walk only asks. Decision candidate 30 fixes the name. Facts 30 and 37.
+Read both house-rules sections above.
+
+Files this part creates or edits (exactly these):
+- `src/application/primitives/types.ts` — `WalkWorkingTreeOptions` (:267–282).
+- `src/application/primitives/walk-working-tree.ts` — `WalkConfig` (:15–25), `enterSubdirectory`
+  (:64–77), `stepEntry` (:90–125), `walkWorkingTree` (:157–186) and its JSDoc (:127–156).
+- `test/unit/application/primitives/walk-working-tree.test.ts` — a new top-level describe at the
+  end (the file is 883 lines); reuse `seedFs`, `collect` and `expectError` (:13–44).
+- `reports/api.json` — regenerate with `npm run docs:json`.
+
+Public-surface decisions: `WalkWorkingTreeOptions.isNestedRepository` is PUBLIC (ADR-1059).
+Its surface gates: reports/api.json, and nothing else. The options type is public through
+`export type *` and the facade forwards options as they are (fact 30). The function type is inline,
+so there is no new type name, barrel entry or `Object.keys` change. check:doc-coverage counts
+pages per binding, not options. docs/use/primitives/walk-working-tree.md is the documentation
+phase's.
+
+Read-only references: src/domain/path/verify-path.ts `isDotGitWalkEntry` (the case-folded .git
+name test the main loop already skips with),
+test/unit/application/primitives/walk-working-tree.properties.test.ts (its oracle is a verbatim
+copy of the pre-rewrite walk and takes no hook; run it as a GUARD and leave it unedited),
+src/ports/file-system.ts `DirEntry`.
+
+Current code: `enterSubdirectory(config, prefix, depth)` reads the frame and returns `undefined`
+when `frame.entries.some(isEmbeddedGitMarker)`; `stepEntry` maps that to `skip`. A file or symlink
+leaf goes through the shared counter and the `maxEntries` refusal (:111–114), then a `yield` step
+whose `stat` is `lazyStat(config, path)`.
+
+Target:
+
+    // types.ts, inside WalkWorkingTreeOptions
+    /**
+     * Asked about each directory below the root whose entries hold a .git entry of any
+     * kind (directory, file or symlink), once `ignore` has kept the directory. `true` yields
+     * the directory as one leaf (`isDirectory: true`, counted against `maxEntries`) and walks
+     * nothing beneath it; `false` walks into it, .git still skipped. Unset, a directory
+     * holding a .git directory or regular file yields nothing, as before.
+     */
+    readonly isNestedRepository?: (directory: FilePath) => boolean | Promise<boolean>;
+
+    // walk-working-tree.ts
+    // WalkConfig gains `isNestedRepository` (undefined when unset).
+    // enterSubdirectory(config, counter, prefix, depth): Promise<StackStep>
+    //   frame = await readDirectoryFrame(config, prefix, depth)   (depth guard and readdir unchanged)
+    //   hook unset              -> today: some(isEmbeddedGitMarker) ? skip : push
+    //   no entry named .git     -> push
+    //   await hook(prefix)      -> the leaf step for prefix (isFile false, isDirectory true, isSymbolicLink false)
+    //   otherwise               -> push
+    // The leaf step (counter, maxEntries refusal, lazyStat) is shared with files and symlinks:
+    // extract it, for example leafStep(config, counter, path, kind), never copy it.
+
+The root frame never reaches `enterSubdirectory`, so the hook is never asked about the work tree
+itself. Rewrite the JSDoc sentence "Embedded repositories ... are skipped entirely" (:140–143) to
+say what the hook changes.
+
+### TDD steps
+
+1. RED: walk-working-tree.test.ts. A tree holding 'a.txt', 'vendor/lib/.git/HEAD' and
+   'vendor/lib/src/x.ts', walked with `isNestedRepository: async () => true`, yields 'a.txt' and
+   one entry 'vendor/lib' with `isDirectory: true`, `isFile: false`, `isSymbolicLink: false`
+   (assert each entry's kind bits, not only the paths). Fails: it yields 'a.txt' only; the option
+   is ignored and the gate collapses 'vendor/lib'. GREEN: the narrowest change: ask the hook where
+   `isEmbeddedGitMarker` holds; `true` gives the leaf step, `false` pushes the frame. GUARD:
+   `async () => false` yields 'a.txt' and 'vendor/lib/src/x.ts' and nothing under '.git'; a .git
+   regular file ('sub/.git' holding 'gitdir: /elsewhere\n') asks the hook too; a sync
+   `() => true` works; the leaf's `stat()` reports a directory.
+2. RED: a directory 'sub' holding 'keep.txt' and a .git symlink
+   (`ctx.fs.symlink('/elsewhere', <workDir>/sub/.git)`), walked with a hook answering true,
+   yields the leaf 'sub' only. Fails: the hook is never asked, because a symlink is no marker, and
+   the walk yields 'sub/keep.txt'. GREEN: with the hook set, find the .git entry by name alone
+   (`isDotGitWalkEntry`), whatever its kind.
+3. GUARD rows, each isolated: a recording hook is asked about exactly the non-root directories
+   that hold .git, never the root and never a directory without one; a directory the `ignore`
+   predicate drops is never asked; `maxEntries: 1` over 'a.txt' plus a repository leaf refuses
+   `TREE_ENTRY_LIMIT_EXCEEDED` (assert the count and the limit in `data`); with the hook unset,
+   rows :210, :651, :827 and :847 stay green; the properties suite stays green.
+4. REFACTOR: the JSDoc. Regenerate api.json (`npm run docs:json`); the option and the JSDoc are
+   the expected diff, beside the usual typedoc-id churn.
+
+### Gate
+
+```bash
+npx vitest run test/unit/application/primitives/walk-working-tree.test.ts test/unit/application/primitives/walk-working-tree.properties.test.ts test/unit/adapters/snapshot-resolvers/fs-workdir-enumerator.test.ts test/unit/application/commands/stash.test.ts test/unit/application/commands/add.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/primitives/types.ts src/application/primitives/walk-working-tree.ts test/unit/application/primitives/walk-working-tree.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(walk): yield a nested repository as one directory leaf when the caller asks for it`
+
+## Part 24 — A nested repository's checkout is read as data, and one reader answers the walk hook
+
+### Context
+
+R19's classification. Covers ADR-1054 ("a .git that leads to no repository makes the directory
+ordinary"), ADR-1055 (a .git symlink is classified by one read-only stat through the facade's
+path probe: the probe's existing `symlinkCheckout` → `statOrUnreachable` →
+`metadataOf(ctx, dotGit).stat`, kept as is) and design Part k's probe that returns data. Decision
+candidates 29 and 31; facts 31 and 36. `gitlinkHeadOf`'s contract (GL20–GL51) does not change.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/internal/gitlink-head.ts`
+- `test/unit/application/commands/internal/gitlink-head.test.ts` — reuse `layOutRepository`,
+  `confiningOutside` and `failingLstatOfDotGit` (:9–56); one new describe per new export.
+- `src/application/commands/internal/embedded-repository.ts` — CREATED.
+- `test/unit/application/commands/internal/embedded-repository.test.ts` — CREATED (memory
+  adapter).
+
+Public-surface decisions: every new symbol is INTERNAL (`GitlinkCheckout`,
+`probeGitlinkCheckout`, `EmbeddedRepositories`, `embeddedRepositories`). commands/internal is not
+re-exported: src/application/commands/index.ts re-exports commands only. No api.json.
+
+Read-only references: add.ts `movedGitlinkOf` (the one `gitlinkHeadOf` caller);
+src/domain/git-index/directory-file-conflict.ts :21 `entriesBeneath(sorted, path)` (a lower-bound
+search over the byte-sorted index, every stage, lossy-aware); src/application/primitives/internal/gitlink-ref-storage.ts
+:49 `refStorageOf` (throws the format refusals); add-gitlink.test.ts (the GL rows that must stay
+green).
+
+Current code (gitlink-head.ts at `a85a6386`): `gitlinkHeadOf(ctx, path)` (:41–60) throws
+`notARepository(shown)` from four sites: `gitfileCheckout` (:178, a gitfile that does not parse,
+shown as path + '/.git'), the usable-HEAD check (:51), `reaching` (:88, a zero-byte `commondir`)
+and `holdsObjectsAndRefs` (:53). `refStorageOf` (:57) throws a refused format.
+`resolveGitlinkHead` (:68) maps every TsgitError of the HEAD resolution to `undefined`.
+
+Target:
+
+    // gitlink-head.ts
+    /** What <path>/.git leads to: nothing, a repository git refuses to read (named as git names it), or one whose HEAD is read on demand. */
+    export type GitlinkCheckout =
+      | { readonly kind: 'none' }
+      | { readonly kind: 'broken'; readonly shown: FilePath }
+      | { readonly kind: 'repository'; readonly head: () => Promise<ObjectId | undefined> };
+    export const probeGitlinkCheckout = async (ctx: Context, path: FilePath): Promise<GitlinkCheckout>
+      // the four refusal sites become { kind: 'broken', shown }, each with today's shown spelling
+      // head(): refStorageOf (a refused format throws, as today), then resolveGitlinkHead
+    export const gitlinkHeadOf = async (ctx: Context, path: FilePath): Promise<ObjectId | undefined>
+      // broken -> throw notARepository(shown); none -> undefined; repository -> head()
+
+    // embedded-repository.ts
+    /** The repositories one command call meets, each classified once. */
+    export interface EmbeddedRepositories {
+      /** The walk hook: no index entry lies beneath `directory`, and its .git leads to a repository. */
+      readonly holds: (directory: FilePath) => Promise<boolean>;
+      /** The commit checked out there; undefined when it is no repository, its HEAD does not resolve, or git refuses its format. */
+      readonly headOf: (directory: FilePath) => Promise<ObjectId | undefined>;
+    }
+    export const embeddedRepositories = (ctx: Context, sorted: ReadonlyArray<IndexEntry>): EmbeddedRepositories
+      // a Map<FilePath, Promise<GitlinkCheckout>> local to the call memoises the probe
+      // holds: entriesBeneath(sorted, directory).length === 0 first (no probe), then kind === 'repository'
+      // headOf: a repository's head(); a TsgitError there -> undefined (an unborn branch, an
+      //         unparsable ref and a refused format are all git's "no commit checked out": EM40-EM44);
+      //         anything else rethrows
+
+`entriesBeneath` slices the entries beneath a directory, once per directory that holds .git.
+A non-allocating "any entry beneath" test is a refactoring for a profile to justify, not for this
+part.
+
+### TDD steps
+
+1. RED: gitlink-head.test.ts. `probeGitlinkCheckout(ctx, 'sub')` over a laid-out repository
+   returns `kind: 'repository'`, and its `head()` resolves to the branch id. Fails: no such
+   export. GREEN: extract the probe; its broken arms may still throw for now; `gitlinkHeadOf`
+   delegates to it. GUARD: no .git gives `{ kind: 'none' }`, and so does a dangling .git
+   symlink; every existing gitlink-head row; add-gitlink.test.ts as a whole.
+2. RED: one row per refusal site, each returning `{ kind: 'broken', shown }` instead of throwing:
+   a gitfile holding 'garbage\n' (shown 'sub/.git'); a .git directory whose HEAD holds
+   'garbage\n' ('sub/.git'); a gitfile to an admin dir whose `commondir` is zero bytes; a .git
+   directory with no 'objects'. Fails: the probe throws `NOT_A_REPOSITORY`. GREEN: each site
+   returns data. GUARD: `gitlinkHeadOf` still throws `NOT_A_REPOSITORY` with the same paths
+   (add-gitlink GL20, GL21, GL46–GL51), and still throws `REPOSITORY_FORMAT_VERSION_UNSUPPORTED`
+   for `core.repositoryformatversion = 2`.
+3. RED: embedded-repository.test.ts. `holds('sub')` is true for a repository at 'sub' and an
+   empty index. Fails: no module. GREEN: the module, with the memoised probe. GUARD: `none` and each
+   `broken` layout answer false (the EM28 and EM31–EM36 shapes); a .git symlink to a repository
+   directory answers true (EM24's shape, through the memory adapter's symlink).
+4. RED: with `sorted` holding 'sub/u', `holds('sub')` is false and 'sub/.git' is never
+   `lstat`ed (wrap `ctx.fs.lstat` to count). Fails: true, because nothing reads the index. GREEN:
+   the `entriesBeneath` test, ahead of the probe.
+5. RED: `headOf('sub')` gives the branch id; an unborn branch gives `undefined`; a repository
+   whose config holds `[core]\n\trepositoryformatversion = 2\n` gives `undefined` instead of
+   throwing. Fails: no `headOf`. GREEN: `headOf`. GUARD: `holds` then `headOf` `lstat`
+   'sub/.git' once (the memo); a non-TsgitError thrown by the HEAD read propagates (message
+   asserted); `headOf` of a directory that is no repository gives `undefined`.
+6. REFACTOR: comments that say why (git's test for a non-bare repository directory, and its "no commit checked out"
+   for every HEAD it cannot resolve).
+
+### Gate
+
+```bash
+npx vitest run test/unit/application/commands/internal/gitlink-head.test.ts test/unit/application/commands/internal/embedded-repository.test.ts test/unit/application/commands/add-gitlink.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/internal/gitlink-head.ts src/application/commands/internal/embedded-repository.ts test/unit/application/commands/internal/gitlink-head.test.ts test/unit/application/commands/internal/embedded-repository.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(add): read a nested repository's checkout as data, without refusing`
+
+## Part 25 — NO_COMMIT_CHECKED_OUT joins the error union
+
+### Context
+
+ADR-1057 and fact 29. The member's surface gates are separate tooling, so it lands in its own
+slice before Part 26 throws it. It earns the slice: the union, two exhaustive switches, the
+message table and api.json are five files that would push Part 26 past the ceiling.
+
+Files this part creates or edits (exactly these):
+- `src/domain/repository/error.ts` — the member in `RepositoryError` (:4–23), beside
+  `NOT_A_REPOSITORY`, and the factory `noCommitCheckedOut(path)` beside `notARepository` (:25).
+- `src/domain/error.ts` — the message case beside `case 'NOT_A_REPOSITORY'` (:428). The switch
+  ends in an exhaustive `never` (:822).
+- `test/unit/domain/exhaustiveness.ts` — the case beside `'NOT_A_REPOSITORY'` (:92).
+- `test/unit/domain/repository/error.test.ts` — a factory describe (copy the `notARepository` one
+  at :22) and a row in the table "extractDetail message formatting (exact match)" (:205).
+- `reports/api.json` — regenerate with `npm run docs:json`.
+
+Public-surface decisions: the union member is PUBLIC: `RepositoryError` is part of
+`TsgitErrorData`, which reports/api.json lists, and a consumer switches on `code`. Its gates: the
+union, the message switch, the test exhaustiveness switch, the message table and api.json. The
+factory is INTERNAL: do NOT add it to src/domain/repository/index.ts, a barrel that reaches the
+package through src/domain/index.ts. Part 26 imports it from the module, as gitlink-head.ts
+imports `notARepository`. docs/use/errors.md is the documentation phase's.
+
+Target:
+
+    // RepositoryError
+    | { readonly code: 'NO_COMMIT_CHECKED_OUT'; readonly path: FilePath }   // git's spelling: 'sub/'
+    // beside notARepository
+    export const noCommitCheckedOut = (path: FilePath): TsgitError =>
+      new TsgitError({ code: 'NO_COMMIT_CHECKED_OUT', path });
+    // message switch
+    case 'NO_COMMIT_CHECKED_OUT':
+      return `does not have a commit checked out: ${data.path}`;
+
+The path is repo-relative and never absolute, so the message carries it whole, as
+`PATHSPEC_NO_MATCH` carries its pattern. `basename` would drop both the slash and the parent
+('d/sub/' → 'sub').
+
+### TDD steps
+
+1. RED: error.test.ts. `noCommitCheckedOut('d/sub/' as FilePath).data` equals
+   `{ code: 'NO_COMMIT_CHECKED_OUT', path: 'd/sub/' }`, and the table row renders
+   `'NO_COMMIT_CHECKED_OUT: does not have a commit checked out: d/sub/'`. Fails: no such export,
+   and the type rejects the code. GREEN: the member, the factory, the message case and the
+   exhaustiveness case. GUARD: the rest of error.test.ts and every domain suite that calls
+   `assertExhaustiveSwitch`.
+2. REFACTOR: `npm run docs:json`; the member is the expected diff.
+
+### Gate
+
+```bash
+npx vitest run test/unit/domain/repository/error.test.ts test/unit/domain/error.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/domain/repository/error.ts src/domain/error.ts test/unit/domain/exhaustiveness.ts test/unit/domain/repository/error.test.ts \
+  && npm run check:spelling; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(repository): add the refusal git raises for a repository with no commit checked out`
+
+## Part 26 — add stages an untracked repository a pathspec reaches as a gitlink, and refuses one with no commit
+
+### Context
+
+R19 on the pathspec (walk) route, and R20 where the walk lists the replaced path. Covers ADR-1054
+(stage, match as `<dir>/`, nothing beneath, refusal order), ADR-1055 (through Part 24's reader),
+ADR-1056 (no hint field, so `AddResult` is unchanged), ADR-1057, ADR-1058 (a type change reports
+in `modified`) and ADR-1062. Decision candidate 32; facts 31–33. Needs Parts 23–25.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts`
+- `test/unit/application/commands/add-embedded-repository.test.ts` — CREATED (memory adapter).
+- `test/integration/add-embedded-repository-interop.test.ts` — CREATED. `@proves` surface and
+  interopSurface `add`; unique line "add stages an untracked repository as a gitlink and refuses
+  one with no commit as git does". Gate the whole file with
+  `describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')` (EM24–EM29 need symlinks).
+
+Public-surface decisions: no new public symbol. `AddResult`, `AddOptions` and the `add` JSDoc do
+not change in this part (Part 27 rewrites the JSDoc), so no api.json. INTERNAL:
+`stagedEmbeddedRepositories`, `embeddedOutcomeOf`, the leaf partition and the `<dir>/` spelling
+helper.
+
+Read-only references: Part 24's `embeddedRepositories` (embedded-repository.ts) and Part 25's
+`noCommitCheckedOut` (src/domain/repository/error.ts); in add.ts, `stagedGitlinks` (:1307),
+`settled` (:1327) and `movedGitlinkOf` (:1351) for the settle-then-`firstFailureOrValues` shape
+and the `indexEntryFromStat(stat, FILE_MODE.GITLINK, head, path)` entry; add-gitlink.test.ts
+(`layOutModule` :62, `blobExists` :746, `refusalOf`, and the rows "add over an unmerged gitlink"
+:1084); test/unit/application/commands/fixtures.ts `seedRepo`; add-index-fixtures.ts `seedIndex`;
+add-gitlink-interop.test.ts (`commitIn`, `writeFiles`, `twins`, `looseCountOf`, pinned env).
+
+Current code (add.ts at `a85a6386`): `stageIgnoredWalk` (:1211–1253) collects the walk with
+`{ ignore }`, drops skip-worktree leaves (`withoutSkipWorktree`), settles the unseen positives
+(`settleUnseenPositives` :1255 → `unseenWalked` :1027, which tests
+`positive.entry.compiled.test(path)` on each walked path) and calls `stageSelectedEntries`
+(:1281–1301): `stagedGitlinks`, then `hiddenTracked(..., walked, ...)`, then
+`stageWalkedEntries([...walked, ...hidden])`.
+
+Target:
+
+    // stageIgnoredWalk
+    const repositories = embeddedRepositories(ctx, sorted);
+    const walked = withoutSkipWorktree(
+      await collectWalk(walkWorkingTree(ctx, { ignore, isNestedRepository: repositories.holds })),
+      existing,
+    );
+    // partition: a repository leaf is isDirectory && !isSymbolicLink. Drop a leaf whose index
+    //   entry is a gitlink at any stage: R15 owns it (candidate 32, fact 31).
+    // selected = the leaves pathspecVerdict(matcher, `${path}/`).matched (EM5-EM7, EM22, EM23, EM61)
+    // settleUnseenPositives and unseenWalked take the walked spellings: each file's path, and
+    //   each SELECTED leaf as `${path}/` (fact 32)
+    // stageSelectedEntries: stagedGitlinks -> stagedEmbeddedRepositories(selected)
+    //   -> hiddenTracked(files and selected leaves: fact 33) -> stageWalkedEntries(files and hidden)
+    //   outcomes = [...gitlinks, ...embedded, ...staged]
+
+    const stagedEmbeddedRepositories = async (ctx, repositories, leaves, existing): Promise<WalkOutcome[]>
+      // leaves in path order (comparePaths), probed through boundedMapFor + settled,
+      // then firstFailureOrValues; the first leaf in path order whose head is undefined
+      // refuses noCommitCheckedOut(`${path}/`) (EM50, EM72)
+    const embeddedOutcomeOf = async (repositories, leaf, existing): Promise<WalkOutcome | undefined>
+      // head = await repositories.headOf(leaf.path); undefined -> undefined
+      // { kind: existing.has(keyOfPath(path)) ? 'modified' : 'added', path,
+      //   entry: indexEntryFromStat(await leaf.stat(), FILE_MODE.GITLINK, head, path) }
+
+Refusal order (ADR-1054, ADR-1035): the unmatched pathspec (`settleUnseenPositives`), then R15
+(`stagedGitlinks`), then this refusal, then the first blob write in `stageWalkedEntries`.
+`tallyWalkOutcomes`, the removal pass (`collectMatchedRemovals` skips the matched path) and the
+index commit need no change. `addAll`, `hiddenWalkEntryOf` and the literal route belong to Part 27.
+
+Pins (design EM; walk-route arguments only; `-A` rows are Part 27's):
+
+| Rows | Setup · args | git 2.55 |
+|---|---|---|
+| EM1–EM3, EM5, EM6 | repo 'sub' · `.`, `sub`, 'sub/', `s*`, `su?/` | 0 · `160000 <HEAD> sub`, `added: ['sub']` |
+| EM7 | same · `*b`; `su?` | 128 · `PATHSPEC_NO_MATCH` with that pattern |
+| EM13–EM20 | only .git with one empty commit; gitfile absolute; gitfile relative; detached; reftable; linked worktree; a branch naming a missing object; 'sub' and 'sub2' | 0 · each repository's HEAD staged, no object check (EM19) |
+| EM21–EM23 | repo 'd/sub' beside 'd/f' · `.`, `d`, 'd/sub'; `s*`, `sub`, `*sub`; `*sub*`, '*sub/' | 0 · 'd/f' and the gitlink ('d/sub' alone for `add d/sub`); 128 no match; 0 · the gitlink |
+| EM24–EM26 | .git a symlink to a repository, a relative one, one to a gitfile | 0 · the gitlink |
+| EM27 | .git a symlink to a repository with no commit | 128 · `NO_COMMIT_CHECKED_OUT` 'sub/' |
+| EM28, EM29, EM31–EM36, EM39 | dangling link; link to a file; empty .git dir; HEAD 'garbage'; no 'objects'; gitfile 'garbage'; empty gitfile; gitfile to nothing; admin files at the top | 0 · `A sub/u` (EM39: every file) |
+| EM40–EM44 | `git init` with 'sub/u'; `git init` only; format v2; unknown v1 extension; branch 'garbage' · `.`, `sub`, 'sub/', `s*` | 128 · `NO_COMMIT_CHECKED_OUT` 'sub/', index unchanged |
+| EM45 / EM46 / EM47 / EM48 | EM40 plus untracked 'a', 'z' · `.`, `a sub z` / `a z` / `. nomatch*` / `. !sub` | 128 refusal, no blob written / 0 · 'a', 'z' / 128 `PATHSPEC_NO_MATCH` 'nomatch*' / 0 · nothing |
+| EM50 | repos 'a' and 'b', no commit · `.`; `b a` | 128 · 'a/' both times |
+| EM51 | tracked gitlink 'tail' whose gitfile names nothing, plus EM50's 'a' · `.` | 128 · `NOT_A_REPOSITORY` 'tail/../.git/modules/nowhere' |
+| EM53–EM55 | ignore rule 'sub/' (or `sub`) · `.`; `sub`; repo 'd/sub' with rule 'd/' | 0 .gitignore only; `ignored: ['sub']`; as design |
+| EM56 (`add -f .` only), EM57, EM58 | the ignored repository · `{ force: true }` with `.`, `sub`, `d` | 0 · the gitlink |
+| EM59, EM60 | EM40 with rule 'sub/' · `.`, `sub`; `-f .` | 0 · .gitignore, `ignored: ['sub']`; 128 refusal |
+| EM61, EM62 | EM1 · `. !sub`, `sub !sub`; `s* !sub` | 0 · nothing; 128 `PATHSPEC_NO_MATCH` 's*' |
+| EM63, EM64 | repo 'sub/inner' inside EM1's 'sub' · `.`; 'sub/inner' | 0 · the outer HEAD only; 0 · nothing |
+| EM66, EM68 | tracked file / symlink 'sub' replaced by EM1's repo · `.`, `sub`, 'sub/', `s*` | 0 · `T sub`: `modified: ['sub']`, `removed: []` |
+| EM70, EM72 | tracked file replaced by EM40's repo · `.`, `sub`; plus repo 'a' (or 'z') with no commit | 128 · 'sub/'; 'a/' (with 'z': 'sub/') |
+| EM74–EM76 | tracked 'sub/u', then a repository made inside 'sub' · `.`, `sub` (EM75 'sub/u' rewritten, EM76 untracked 'sub/new') | 0 · unchanged; `M sub/u`; `A sub/new` |
+| EM10–EM12, EM52, EM80, EM82 | rm, checkout, `--renormalize` over EM1 or EM40 | interop rows only: these routes do not change |
+
+### TDD steps
+
+1. RED: EM1 (add-embedded-repository.test.ts, plus the interop row). `add(ctx, ['.'])` gives
+   `added: ['sub']`, and the 'sub' entry has mode `FILE_MODE.GITLINK` and the repository's branch
+   id. Fails: `added: []`, because the walk is not given the hook and collapses 'sub'. GREEN: wire
+   the reader, partition the walk, select the leaves as `${path}/`, and add
+   `stagedEmbeddedRepositories` WITHOUT the refusal (a leaf with no head is left out for now).
+   Feed `hiddenTracked` the files and the selected leaves, and `stageWalkedEntries` the files.
+   GUARD: EM2, EM3, EM5, EM13–EM21 (`add d/sub` included), EM24–EM26, EM28, EM29, EM31–EM36,
+   EM39, EM46, EM48, EM51, EM53–EM58, EM61, EM63, EM64, EM66, EM68, EM74–EM76, and the rows "add
+   over an unmerged gitlink" (one 'sub' outcome, not two).
+2. RED: EM6 and EM7. `add(ctx, ['su?/'])` stages the gitlink; `add(ctx, ['su?'])` refuses
+   `PATHSPEC_NO_MATCH` with pattern 'su?'. Fails: 'su?/' refuses, because `unseenWalked` tests
+   the bare 'sub'; 'su?' succeeds and stages nothing, because the bare 'sub' satisfies it. GREEN:
+   `settleUnseenPositives` and `unseenWalked` take the walked spellings. GUARD: EM22, EM23, EM62.
+3. RED: EM40. `add(ctx, ['.'])` over 'sub' (a repository with no commit, plus 'sub/u') and an
+   untracked 'a' throws `NO_COMMIT_CHECKED_OUT` with `path: 'sub/'` (try/catch, assert `data`),
+   the index is unchanged and the blob of 'a' was not written (`blobExists`). Fails: it succeeds
+   and stages 'a'. GREEN: the refusal for the first head-less leaf in path order. GUARD: EM27,
+   EM41–EM45, EM47, EM50, EM59, EM60, EM70, EM72.
+4. GUARD (interop): every row of the table above against git 2.55. EM45 and EM60 compare the
+   index and the refusal, not loose counts (ADR-1062). EM10–EM12, EM52, EM80 and EM82 call tsgit's
+   `rm`, `checkout` and `add({ renormalize: true })` (EM80 and EM82 stage 'sub' with tsgit's `add`
+   first).
+5. REFACTOR: comments that say why (git matches a repository as a directory; it dies at the
+   first one with no commit, in path order).
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/add-embedded-repository.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-gitlink.test.ts test/unit/application/commands/add-ignored-report.test.ts test/unit/application/commands/add-skip-worktree.test.ts test/integration/add-embedded-repository-interop.test.ts test/integration/add-gitlink-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts test/unit/application/commands/add-embedded-repository.test.ts test/integration/add-embedded-repository-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(add): stage an untracked repository a pathspec reaches as a gitlink, as git does`
+
+## Part 27 — add -A stages repositories too, the index pass stages a type change, and a literal inside a repository stages nothing
+
+### Context
+
+R19 under `add({ all: true })` and on the literal route, and R20 on the index pass. Covers
+ADR-1054, ADR-1058 and ADR-1060 (the ancestor probe runs only for untracked literals). Facts 33–35
+and 37. Needs Part 26's partition, `stagedEmbeddedRepositories` and `embeddedOutcomeOf`.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/add.ts` — `addAll` (:1510), `hiddenTracked` (:1138),
+  `hiddenWalkEntryOf` (:1182), `stageSelectedEntries` (:1281), `addLiteralOnly` (:276), and the
+  `add` JSDoc (:171–186, fact 37).
+- `test/unit/application/commands/add-embedded-repository.test.ts`
+- `test/integration/add-embedded-repository-interop.test.ts`
+- `test/unit/application/commands/add.test.ts` — re-pins only: :933 and :1239 (fact 35).
+- `test/integration/add-all.test.ts` — the re-pin at :19 (fact 35).
+- `reports/api.json` — regenerate with `npm run docs:json` after the JSDoc change.
+
+Public-surface decisions: no new public symbol. The `add` JSDoc changes, so api.json is
+regenerated. INTERNAL: the literal split and the ancestor search.
+
+Read-only references: add.ts `splitReportedLiterals` (:314) and `firstIgnoredAncestorOf` (:373,
+the shallowest-first ancestor loop to mirror), `collectRemovedEntries` (:1605), `presentOnDisk`
+(:1579), `processWalkEntry` (:1621, the only writer of `seen` today); Part 24's
+`embeddedRepositories`.
+
+Current code: `addAll` collects the walk with `{ ignore: walkIgnore }`, runs `hiddenTracked`
+with `WHOLE_TREE_MATCHER`, then `stagedGitlinks`, then `stageWalkedEntries(..., seen, ...)`, then
+`collectRemovedEntries(ctx, existing, seen)`. `hiddenWalkEntryOf` returns `undefined` for a real
+directory. `addLiteralOnly` reads the index (`sorted` included), splits the sparse and ignored
+literals, and stages the rest.
+
+Target:
+
+    // addAll
+    // const repositories = embeddedRepositories(ctx, sorted); the walk gets isNestedRepository
+    // the same partition as Part 26; every leaf is selected (the whole tree)
+    // order: stagedGitlinks -> stagedEmbeddedRepositories(leaves) -> hiddenTracked(files and leaves)
+    //        -> stageWalkedEntries(files and hidden files)
+    // mark each embedded outcome's key, and each index-pass gitlink outcome's key, in `seen` (fact 34)
+
+    // hiddenWalkEntryOf, for a real directory: `await repositories.holds(path)` gives
+    //   { path, isFile: false, isDirectory: true, isSymbolicLink: false, stat: () => Promise.resolve(stat) };
+    //   anything else stays undefined (EM71, EM73 keep the removal)
+    // the callers (stageSelectedEntries, addAll) split the hidden entries: the directories go
+    //   through embeddedOutcomeOf, dropping undefined, and never refuse (git's index pass does
+    //   not: EM71); the files go to stageWalkedEntries as today
+    // hiddenTracked gains the reader; if its parameter list passes six, fold verdicts and
+    //   unmergedStages into one record
+
+    // addLiteralOnly, after splitReportedLiterals
+    // drop each UNTRACKED literal with a proper ancestor, shallowest first, that
+    //   repositories.holds; it is neither staged, nor reported, nor refused (EM8, EM49, EM65)
+    // a tracked literal is never probed (ADR-1060)
+
+    // add JSDoc: ".git and embedded repositories are skipped" becomes: .git is skipped; an
+    // untracked repository is staged as a gitlink and nothing beneath it is; a literal inside
+    // an untracked repository stages nothing.
+
+Re-pins (each against its design row, never to fit the code):
+- add.test.ts :933 "Given an embedded.git subdirectory (nested repo) and all: true":
+  'vendor/lib/.git/HEAD' alone has no objects or refs directory, so it is no repository by git's
+  test (EM33 class). The index becomes 'a.txt' and 'vendor/lib/src/x.ts', still with no 160000
+  entry. Retitle it to say so.
+- add.test.ts :1239 "Given a plain regular file literally named.git …": 'gitdir: /elsewhere' names
+  nothing (EM36), so 'sub/normal.txt' is staged.
+- add-all.test.ts :19: the same shape as :933, so 'vendor/lib/src/x.ts' joins `added` and the
+  index; still no 160000 entry.
+- add.test.ts :1261 (a dangling .git symlink, EM28) stays green unchanged.
+
+Pins (design EM):
+
+| Rows | Setup · args | git 2.55 |
+|---|---|---|
+| EM4, and EM13–EM29 under `-A` | the Part 26 fixtures · `{ all: true }` | as the `.` rows |
+| EM40, EM41, EM45 under `-A` | no commit | 128 · `NO_COMMIT_CHECKED_OUT` 'sub/' |
+| EM53, EM59 under `-A`; EM56 under `-A -f` | the ignored repository | .gitignore only; with force, plus the gitlink |
+| EM63, EM74–EM76 under `-A` | nested; tracked directory turned repository | the outer HEAD only; unchanged, `M sub/u`, `A sub/new` |
+| EM66, EM68 under `-A` | tracked file / symlink turned repository | `T sub`: `modified: ['sub']`, `removed: []` |
+| EM67 | tracked file turned repository · `*b` | `T sub` (the index pass matches 'sub') |
+| EM69 | EM66 plus rule `sub` · `.`, `sub`, `-A` | `T sub`, no ignored report |
+| EM70 under `-A` | tracked file turned EM40's repository | 128 · 'sub/' |
+| EM71 | EM70 plus rule `sub` · `.`; `sub` | 0 · `D sub` (and `A .gitignore`); never refuses |
+| EM73 | tracked file turned a directory with an empty .git and 'u' · `.`, `sub` | 0 · `D sub`, `A sub/u` |
+| EM77 | tracked file 'f' turned symlink to 'k' (report-shape control) · `.`, `f` | `modified: ['f']` |
+| EM8, EM49, EM65 | literal inside EM1 / EM40 / the nested repo · 'sub/u', 'sub/inner/u' | 0 · nothing staged, no refusal |
+| EM37 | EM32 (broken HEAD) · 'sub/u' | 0 · `A sub/u` (positive control) |
+| EM46 | EM40 plus 'a', 'z' · `a z` | 0 · 'a', 'z' |
+| EM75, EM76 literal controls | 'sub/u' tracked and rewritten; untracked 'sub/new' | `M sub/u`; `A sub/new` (entries beneath: no probe) |
+
+### TDD steps
+
+1. RED: EM4. `add(ctx, [], { all: true })` gives `added: ['sub']` and the gitlink entry. Fails:
+   `added: []`, because `addAll` passes no hook. GREEN: `addAll` builds the reader, passes the
+   hook, partitions the walk, and runs `stagedEmbeddedRepositories` after `stagedGitlinks`. The
+   files and leaves go to `hiddenTracked`, the files to `stageWalkedEntries`. Re-pin :933, :1239 and
+   add-all.test.ts :19. GUARD: EM13–EM29, EM40, EM41, EM45, EM53, EM56, EM59, EM63 and EM74–EM76
+   under `-A`, and :1261.
+2. RED: EM66 under `-A`. `add(ctx, [], { all: true })` gives `modified: ['sub']`, `removed: []`
+   and a 160000 'sub'. Fails: `removed: ['sub']` as well, and the index loses 'sub', because
+   `presentOnDisk` treats the directory over the 100644 entry as gone (fact 34). GREEN: mark each
+   embedded outcome's key in `seen`. GUARD: EM68 and EM70 under `-A`.
+3. RED: EM67. `add(ctx, ['*b'])` gives `modified: ['sub']` and the gitlink entry. Fails:
+   `removed: ['sub']`, because the walk's leaf is not selected by '*b' and the index pass drops a
+   directory. GREEN: the directory arm of `hiddenWalkEntryOf`, the split in both callers, and
+   `seen` marking for the index-pass outcomes in `addAll`. GUARD: EM69 (`.`, `sub`, `-A`), EM71,
+   EM73, EM77.
+4. RED: EM8. `add(ctx, ['sub/u'])` over EM1 returns empty `added`, `modified` and `removed`,
+   leaves the index unchanged, and does not throw. Fails: `added: ['sub/u']` (the literal route
+   stages it). GREEN: the untracked-literal ancestor drop in `addLiteralOnly`. GUARD: EM49, EM65,
+   EM37, EM46, and the EM75 and EM76 literal controls.
+5. REFACTOR: the `add` JSDoc (fact 37); `npm run docs:json`.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/add-embedded-repository.test.ts test/unit/application/commands/add.test.ts test/unit/application/commands/add-gitlink.test.ts test/unit/application/commands/add-ignored-report.test.ts test/unit/application/commands/add-skip-worktree.test.ts test/integration/add-all.test.ts test/integration/add-embedded-repository-interop.test.ts test/integration/add-gitlink-interop.test.ts test/integration/add-tracked-under-ignore-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/add.ts test/unit/application/commands/add-embedded-repository.test.ts test/integration/add-embedded-repository-interop.test.ts test/unit/application/commands/add.test.ts test/integration/add-all.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(add): stage repositories under -A and over tracked files, and skip literals inside them`
+
+## Part 28 — status lists an untracked repository as its directory
+
+### Context
+
+ADR-1061 (design candidate 27 A): `status` passes the same hook and lists a repository directory
+once, spelled as git's `-uall` porcelain spells it ('sub/'); a directory whose .git leads to no
+repository, or one with index entries beneath it, is walked. Decision candidate 33; facts 37 and
+38. Needs Parts 23 and 24.
+
+Files this part creates or edits (exactly these):
+- `src/application/commands/status.ts` — `scanUntracked` (:298–309) and the `status` JSDoc
+  sentence on `untracked` (:130–137).
+- `test/unit/application/commands/status-embedded-repository.test.ts` — CREATED (memory adapter).
+- `test/integration/status-embedded-repository-interop.test.ts` — CREATED. `@proves` surface and
+  interopSurface `status`; unique line "status lists an untracked repository as its directory as
+  git does". Gate it with `describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')` (EM30
+  needs a symlink).
+- `reports/api.json` — regenerate with `npm run docs:json` after the JSDoc change.
+
+Public-surface decisions: no new symbol. `StatusResult.untracked` keeps its type
+(`ReadonlyArray<FilePath>`); only its content and the JSDoc change, hence api.json. The new
+spelling helper is INTERNAL.
+
+Read-only references: Part 24's `embeddedRepositories`; status.ts `pruneGitlinkDirectories`
+use (:303) and the `trackedPaths` filter (:306); test/integration/status-interop.test.ts (helpers
+`git`, the scrubbed env), test/integration/git-parity-containment-interop.test.ts :1234 (a `-uall`
+comparison that must stay green); test/unit/application/commands/status.test.ts `seedClean` (:43).
+
+Current code: `scanUntracked(ctx, index, trackedPaths)` walks with `{ ignore }` and pushes every
+walked path that is not tracked; it never reads `stat`.
+
+Target:
+
+    const repositories = embeddedRepositories(ctx, index.entries);   // the index is byte-sorted
+    for await (const entry of walkWorkingTree(ctx, { ignore, isNestedRepository: repositories.holds })) {
+      if (!trackedPaths.has(keyOfPath(entry.path))) untracked.push(untrackedSpelling(entry));
+    }
+    // untrackedSpelling: a directory leaf (isDirectory && !isSymbolicLink) is `${path}/`, else path
+
+A tracked file that became a repository is listed by the walk as 'sub' and dropped by
+`trackedPaths`, so it is never untracked (EM78's worktree column is out of scope). The JSDoc says
+that a directory holding another repository is listed once, with a trailing slash.
+
+Pins (design EM, compared with `git status --porcelain -uall -z`, the `??` entries):
+
+| Row | Setup | git 2.55 |
+|---|---|---|
+| EM9 | EM1 (repository 'sub' with 'sub/u' committed inside) | `?? sub/` |
+| EM30 | 'sub/.git' a symlink to an outside repository, 'sub/u' beside it | `?? sub/` |
+| EM38 | EM32 (HEAD 'garbage') | `?? sub/u` |
+| EM76 | tracked 'sub/u', a repository made inside 'sub', untracked 'sub/new' | `?? sub/new` |
+| EM74 | tracked 'sub/u', a repository made inside 'sub' | clean |
+| EM53 | EM1 plus rule 'sub/' | `?? .gitignore` only |
+| EM66 | tracked file 'sub' turned EM1's repository | 'sub' is not untracked (control) |
+
+### TDD steps
+
+1. RED: EM9 (status-embedded-repository.test.ts plus the interop row). `status(ctx)` gives
+   `untracked: ['sub/']` and `clean: false`. Fails: `untracked: []`, because the default gate
+   collapses 'sub'. GREEN: the reader, the hook and the spelling. GUARD: EM30 ('sub/', not
+   'sub/u'), EM38, EM76, EM74 (`clean: true`), EM53, EM66; status.test.ts, status-interop and the
+   git~1 containment row stay green.
+2. REFACTOR: the JSDoc; `npm run docs:json`.
+
+### Gate
+
+```bash
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/status-embedded-repository.test.ts test/unit/application/commands/status.test.ts test/integration/status-embedded-repository-interop.test.ts test/integration/status-interop.test.ts test/integration/git-parity-containment-interop.test.ts \
+  && npm run check:types \
+  && ./node_modules/.bin/biome check src/application/commands/status.ts test/unit/application/commands/status-embedded-repository.test.ts test/integration/status-embedded-repository-interop.test.ts \
+  && npm run check:spelling && npm run check:test-pyramid; echo "gate exit=$?"
+```
+
+### Commit
+
+`fix(status): list an untracked repository as its directory, as git does`
+
+## Part 29 — Raise the size caps by the measured delta of embedded-repository staging
+
+### Context
+
+No src/ delta: a config and docs part, standalone under the sizing rules, after Parts 23–28 and
+before the review round (lesson 006 says the review round may cross the caps again; the session
+re-runs this procedure then if it does). The design estimates +300 to +500 B gzip (Part k, size).
+Fact 39: four rows were already 10–42 B over their caps before Part 23.
+
+Files this part creates or edits (each only if its check is red):
+- `.size-limit.json`
+- `tooling/verify-tarball.sh` — the cap and its attribution comment, in the format of the last
+  raise there.
+- `docs/design/bundle-size-optimization.md` — a new "Size-limit raise — …" section after "Size-limit
+  raise — the pathspec glob dialect" (:673), in its format.
+
+Read-only references: docs/lessons/006-size-caps-at-the-headroom-floor-trip-again-on-the-review-round.md
+(read it first); commit `2ccbbffd` (`git show --no-ext-diff 2ccbbffd` shows the last raise across
+the three files); Part 22 (the same procedure).
+
+Procedure:
+1. `rm -rf dist .wireit && npm run check:size`, then `npm run check:tarball`. Read EVERY row of
+   both outputs. Stale dist chunks fake reds, so the clean rebuild is the measurement.
+2. Baseline = the tree just before Part 23:
+   `pre=$(git log --format=%h -1 --grep='nested repository as one directory leaf')^`. Without
+   touching repo state: `base=$(mktemp -d)`, `git archive "$pre" | tar -x -C "$base"`,
+   `ln -s "$PWD/node_modules" "$base/node_modules"`, then in `$base` run
+   `npm run build && npx size-limit --json > <scratch>/pre-embedded-size.json`, and the tarball
+   check the same way.
+3. For each red row, take three numbers in gzip bytes: the cap, the baseline and this round's
+   measurement. The raise is measurement − cap, rounded up to the next 0.1 kB. Record it as two
+   parts: the baseline − cap overage (the triage and refactor commits before Part 23) and the
+   measurement − baseline delta (this round: the walk hook and leaf, the probe split, the reader,
+   the error member and its message, the embedded step and the index-side type change, the literal
+   ancestor probe, the status spelling). Confirm each new limit is ≥ the measurement.
+4. No row red → edit nothing and commit nothing; report the measured headroom per row instead.
+5. api.json drift: `npm run docs:json && git diff --no-ext-diff --stat reports/api.json` prints
+   nothing (Parts 23, 25, 27 and 28 regenerated it). A diff means a part changed the public
+   surface without regenerating: stop and report `{ unit: Part 29, reason, options }`.
+
+House rules: poll, never wait (`check:size` builds). Never run two `npm run` scripts at once.
+Commit only this part's files.
+
+### TDD steps
+
+1. Measure per the procedure (no test rows: config only).
+2. Raise only the red rows by the measured amount; record both parts of each raise.
+3. The api.json drift check.
+
+### Gate
+
+```bash
+rm -rf dist .wireit && npm run check:size && npm run check:tarball \
+  && ./node_modules/.bin/biome check .size-limit.json \
+  && npx cspell --no-progress docs/design/bundle-size-optimization.md; echo "gate exit=$?"
+```
+
+Drop a file from the biome/cspell arguments when this part did not edit it.
+
+### Commit
+
+`fix(add): raise the size caps by the measured delta of embedded-repository staging`
