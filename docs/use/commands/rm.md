@@ -50,6 +50,7 @@ working file in every case; `force` overrides the valve entirely.
 
 - A glob that matches a tracked path by wildcard (`d*` against `dir/f`) removes it without `recursive`; one that reaches a directory only by the verbatim-prefix rule (`a?` against `a?/f`, no `ab`) is refused `RM_RECURSIVE_WITHOUT_R`, as git's `not removing … recursively without -r`.
 - On a POSIX host a `\` in a pathspec is a matching escape; under Windows path syntax it is refused `PATHSPEC_OUTSIDE_REPO`.
+- On a POSIX host a tracked file whose name holds `\` is removed, from the index and from disk; under Windows path syntax that name is refused `PATHSPEC_OUTSIDE_REPO`.
 - A literal pathspec never selects a lossy twin: an entry whose name is not valid UTF-8 is matched only by a pathspec that decodes to the same bytes, never by its U+FFFD view alone.
 - A lossy entry is never unlinked on disk; only its index entry is removed.
 - Without `cached`, directories the removal leaves empty are pruned, as git does.

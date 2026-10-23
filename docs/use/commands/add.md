@@ -15,6 +15,10 @@ interface AddResult {
   readonly modified: ReadonlyArray<FilePath>;
   readonly removed: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
+  // pathspecs, as typed and in argument order, that matched only skip-worktree entries
+  readonly sparse: ReadonlyArray<string>;
+  // ignored entries a positive pathspec reached: sorted by bytes, deduplicated, never a tracked path
+  readonly ignored: ReadonlyArray<FilePath>;
 }
 
 // core.safecrlf=warn notice: one per path whose line endings would not round-trip
@@ -32,7 +36,7 @@ interface EolNotice {
 |---|---|---|---|
 | `paths` | `ReadonlyArray<string>` | (required) | Literal paths or [pathspec globs](#pathspec-syntax). **MUST be empty when `all: true`.** |
 | `opts.all` | `boolean` | `false` | Bulk mode — walk the working tree and stage every change. |
-| `opts.force` | `boolean` | `false` | Stage ignored paths anyway. |
+| `opts.force` | `boolean` | `false` | git's `-f`: no ignore rule applies, on any route. `ignored` is then `[]`. |
 | `opts.renormalize` | `boolean` | `false` | Re-clean every tracked path the pathspec names under the current attributes and config (`git add --renormalize`). See [Renormalize](#renormalize). |
 
 > Breaking a stale `.git/index.lock` is repository-environment policy, set once on `openRepository({ config: { breakStaleLockMs } })` — not a per-call option. It applies to every index-mutating command.
@@ -43,7 +47,32 @@ A pathspec is a literal unless it holds `*`, `?`, `[` or `\`. A literal matches 
 
 On a POSIX host a `\` in a pathspec is a matching escape only: it is never looked up on disk. Under Windows path syntax a pathspec holding `\` is refused with `PATHSPEC_OUTSIDE_REPO`.
 
-An unmatched positive pathspec refuses the whole call with `PATHSPEC_NO_MATCH` under the index lock, before any object write: the index is unchanged and no loose object is left behind. A pathspec whose spelled path exists on disk is not refused when it is a glob, or a literal that ignore rules do not hide (an empty directory stages nothing and succeeds); a literal naming an ignored path is still refused. Index entries count as matches, so a glob also selects tracked paths under an ignored directory and conflicted (unmerged) paths, which `add` stages as git's index-side pass does.
+An unmatched positive pathspec refuses the whole call with `PATHSPEC_NO_MATCH` under the index lock, before any object write: the index is unchanged and no loose object is left behind. A pathspec whose spelled path exists on disk is not refused when it is a glob, or a literal that ignore rules do not hide (an empty directory stages nothing and succeeds); a literal naming an ignored path is reported in `ignored` rather than staged (see [Ignored paths](#ignored-paths)). Index entries count as matches, so a glob also selects tracked paths under an ignored directory and conflicted (unmerged) paths, which `add` stages as git's index-side pass does.
+
+## Skip-worktree entries
+
+Skip-worktree entries are never restaged, removed or cleared, on any route (literal, glob, `.`, `all: true`). A positive pathspec that matches only skip-worktree entries is not refused: it is listed in `sparse` (spelling as typed, argument order, duplicates kept, `.` included) and every other match is staged. git prints the sparse-checkout advice for these and exits 1.
+
+## Ignored paths
+
+Ignored entries a positive pathspec reaches (an ignored directory, or an ignored untracked file; never a tracked path) are not staged. They are listed in `ignored` (paths, sorted by bytes, deduplicated) and everything else the call matched is staged. This includes an ignored untracked literal, which is reported instead of staged. `force: true` disables every ignore rule on every route, so nothing is reported.
+
+An unmatched positive pathspec still refuses first with `PATHSPEC_NO_MATCH`, ahead of both reports; a refused call stages nothing.
+
+`add` returns normally when `sparse` or `ignored` is non-empty. git exits 1 in those cases; deriving that status from the two fields is the caller's job, as is rendering git's advice:
+
+```ts
+const { sparse, ignored } = await repo.add(['.']);
+if (sparse.length > 0 || ignored.length > 0) process.exitCode = 1; // caller policy
+```
+
+A literal-only pathspec carrying a `!` exclusion takes the walk route and honours the exclusion.
+
+## Gitlinks
+
+A gitlink (submodule) entry whose checked-out HEAD differs from the recorded id is staged and reported in `modified` by `.`, `<path>`, `<path>/`, a glob or `all: true`, whether or not an ignore rule names it. HEAD is read from the repository `<path>/.git` leads to (a directory or a gitfile), not from the `.gitmodules` name. Nothing is staged when HEAD equals the recorded id, the directory is empty, the checkout has no commit, or HEAD cannot be resolved. A skip-worktree gitlink is left alone.
+
+A `<path>/.git` that leads to no repository (missing gitdir, garbage HEAD, unparsable gitfile, a gitdir or common dir lacking `objects/` or `refs/`, an invalid repository format) refuses with `NOT_A_REPOSITORY`, before any write. A malformed config refuses with its config error instead.
 
 ## Examples
 
@@ -62,6 +91,7 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 ## Throws
 
 - `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive pathspec, literal or glob, matched nothing; `pattern` is the first unmatched spelling and `patterns` holds it alone. Nothing is staged or written.
+- `NOT_A_REPOSITORY { path }` — a gitlink's `<path>/.git` leads to no repository; `path` is git's spelling (`sub/.git`, `sub/../.git/modules/sub`, or the absolute pointer). Nothing is staged.
 - `PATHSPEC_BEYOND_SYMLINK` — a literal or glob pathspec whose leading directory is a symbolic link. Not raised in bulk (`all: true`) mode.
 - `INVALID_INDEX_ENTRY` — a path this call would stage fails git's own index-entry name rules. Aborts the whole call; nothing is staged.
 - `INVALID_OPTION { option: 'all' }` — `all: true` with a non-empty pathspec.
@@ -210,4 +240,4 @@ section.
 - Primitives: [`walkWorkingTree`](../primitives/walk-working-tree.md), [`readIndex`](../primitives/read-index.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`rm`](rm.md), [`checkout`](checkout.md) — share the pathspec syntax
 - Recipes: [stage with globs](../recipes.md#stage-with-globs), [bulk add --all](../recipes.md#bulk-add---all)
-- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [625](../../adr/625-git-parity-containment-posture.md), [626](../../adr/626-pathspec-beyond-symlink-error-code.md), [950](../../adr/950-conversion-extends-the-clean-smudge-pipeline.md), [952](../../adr/952-the-safecrlf-refusal-carries-path-loss-and-line-ending-counts.md), [953](../../adr/953-safecrlf-warnings-are-notices-on-the-command-result.md), [954](../../adr/954-safecrlf-true-serialises-conversion-and-object-writes-in-index-order.md), [956](../../adr/956-renormalize-covers-every-merge-ort-consumer-and-add-renormalize.md), [990](../../adr/990-add-applies-the-directory-file-replacement-on-every-route.md), [991](../../adr/991-add-folds-the-mirror-directory-file-replacement.md), [992](../../adr/992-the-directory-file-rule-is-a-pure-domain-module.md), [993](../../adr/993-add-stages-the-removal-beneath-a-regular-file.md), [994](../../adr/994-add-removed-lists-only-what-git-reports.md), [995](../../adr/995-add-bench-covers-a-large-index.md), [996](../../adr/996-add-keeps-every-stage-of-other-unmerged-paths.md), [997](../../adr/997-add-reports-a-staged-unmerged-path-as-modified.md), [998](../../adr/998-an-exclusion-does-not-shield-an-unmerged-path.md), [999](../../adr/999-add-writes-resolve-undo-when-it-resolves-a-conflict.md), [1000](../../adr/1000-only-an-exact-exclusion-yields-to-another-cover.md), [1001](../../adr/1001-an-exact-literal-silences-the-drop-beneath-a-resolved-path.md), [1002](../../adr/1002-resolve-undo-merges-after-the-extension-carry.md)
+- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [625](../../adr/625-git-parity-containment-posture.md), [626](../../adr/626-pathspec-beyond-symlink-error-code.md), [950](../../adr/950-conversion-extends-the-clean-smudge-pipeline.md), [952](../../adr/952-the-safecrlf-refusal-carries-path-loss-and-line-ending-counts.md), [953](../../adr/953-safecrlf-warnings-are-notices-on-the-command-result.md), [954](../../adr/954-safecrlf-true-serialises-conversion-and-object-writes-in-index-order.md), [956](../../adr/956-renormalize-covers-every-merge-ort-consumer-and-add-renormalize.md), [990](../../adr/990-add-applies-the-directory-file-replacement-on-every-route.md), [991](../../adr/991-add-folds-the-mirror-directory-file-replacement.md), [992](../../adr/992-the-directory-file-rule-is-a-pure-domain-module.md), [993](../../adr/993-add-stages-the-removal-beneath-a-regular-file.md), [994](../../adr/994-add-removed-lists-only-what-git-reports.md), [995](../../adr/995-add-bench-covers-a-large-index.md), [996](../../adr/996-add-keeps-every-stage-of-other-unmerged-paths.md), [997](../../adr/997-add-reports-a-staged-unmerged-path-as-modified.md), [998](../../adr/998-an-exclusion-does-not-shield-an-unmerged-path.md), [999](../../adr/999-add-writes-resolve-undo-when-it-resolves-a-conflict.md), [1000](../../adr/1000-only-an-exact-exclusion-yields-to-another-cover.md), [1001](../../adr/1001-an-exact-literal-silences-the-drop-beneath-a-resolved-path.md), [1002](../../adr/1002-resolve-undo-merges-after-the-extension-carry.md), [1046](../../adr/1046-add-reports-ignored-and-sparse-entries-in-additive-result-fields.md), [1047](../../adr/1047-add-force-disables-every-ignore-rule-as-gits-f-does.md), [1048](../../adr/1048-the-ignored-report-ships-as-a-fix.md), [1049](../../adr/1049-a-gitlinks-head-is-read-from-the-repository-under-path-git.md), [1050](../../adr/1050-a-gitlink-whose-git-leads-nowhere-refuses-not-a-repository.md), [1053](../../adr/1053-a-literal-only-add-with-an-exclusion-takes-the-walk-route.md)
