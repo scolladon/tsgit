@@ -717,8 +717,8 @@ Every other row grew by at most 9 B and stays under its cap (largest: mv +9, rev
 
 The review round of the fold (five fix batches: the tree-source skip-worktree restore, the gitlink
 probe read through a confined derived filesystem with its symlink, common-dir, objects/refs and
-unresolvable-HEAD rules  the repository-format scan hoisted into the domain and shared with the
-gitlink reader) crossed the rows below again  measured the same way on a clean build; each is
+unresolvable-HEAD rules, the repository-format scan hoisted into the domain and shared with the
+gitlink reader) crossed the rows below again, measured the same way on a clean build; each is
 raised once more to the next 0.1 kB. The tarball cap moved 1447 → 1450 KiB (1 484 245 B measured).
 
 | Row | before the review | measured | Δ | old limit | new limit | Attributable to |
