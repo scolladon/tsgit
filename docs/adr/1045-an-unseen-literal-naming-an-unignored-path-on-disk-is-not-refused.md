@@ -4,7 +4,12 @@ subjects:
 ---
 # 1045 — An unseen literal naming an unignored path on disk is not refused
 
-- **Status:** accepted
+> **Superseded by [ADR-1046](1046-add-reports-ignored-and-sparse-entries-in-additive-result-fields.md)**
+> for the interim rule: a literal naming an ignored path on disk is no longer refused — it takes
+> the on-disk escape and the ignored entry is reported in `AddResult.ignored`. The escape itself,
+> its single `lstat`, and the directory-only reading of a trailing-slash literal are carried forward.
+
+- **Status:** superseded by ADR-1046 (the ignored-literal interim); accepted for the escape
 - **Date:** 2026-10-22
 - **Design:** docs/design/pathspec-glob-dialect.md · **Supersedes/Refines:** supersedes ADR-1036 (escape scope); refines ADR-1035
 
