@@ -154466,7 +154466,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " and embedded repositories are skipped.\n\nBoth modes acquire "
+										"text": " is skipped; an untracked repository is staged as a gitlink\n and nothing beneath it is; a literal inside an untracked repository stages\n nothing.\n\nBoth modes acquire "
 									},
 									{
 										"kind": "code",

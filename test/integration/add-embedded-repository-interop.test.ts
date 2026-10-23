@@ -245,6 +245,8 @@ interface Row {
   /** git's spelling of an exclusion when it differs from tsgit's. */
   readonly gitSpec?: ReadonlyArray<string>;
   readonly force?: boolean;
+  /** `add -A`: tsgit gets no pathspec, git gets none either. */
+  readonly all?: boolean;
   /** The refusal tsgit must raise when git exits non-zero. */
   readonly refusal?: Readonly<Record<string, unknown>>;
   /** git exits 1 with a hint when a pathspec names an ignored path, yet stages what it can. */
@@ -503,6 +505,131 @@ const BENEATH_ROWS: ReadonlyArray<Row> = [
   ]),
 ];
 
+const everythingRow = (label: string, setup: Setup, extra: Partial<Row> = {}): Row => ({
+  label: `${label}, added by -A`,
+  setup,
+  spec: [],
+  all: true,
+  ...extra,
+});
+
+const ALL_TREE_ROWS: ReadonlyArray<Row> = [
+  everythingRow('a repository with a commit', committed()),
+  everythingRow('a repository with no files', committed('sub', {})),
+  everythingRow('a gitfile naming an absolute path', absoluteGitfile(committed())),
+  everythingRow('a .git symlink to a repository', linkedTo(committed())),
+  everythingRow('a detached HEAD', detached),
+  everythingRow('a linked worktree', linkedWorktree),
+  everythingRow('two repositories', together(committed('sub'), committed('sub2'))),
+  everythingRow(
+    'a repository beside a file in a directory',
+    together(committed('d/sub'), (repo) => writeFiles(repo, { 'd/f': 'f\n' })),
+  ),
+  everythingRow('a repository inside a repository', repositoryInside),
+  everythingRow('a repository with no commit', unborn(), { refusal: NO_COMMIT }),
+  everythingRow(
+    'a repository with no commit beside untracked files',
+    together(unborn(), (repo) => writeFiles(repo, { a: 'a\n', z: 'z\n' })),
+    { refusal: NO_COMMIT },
+  ),
+  everythingRow('two repositories with no commit', together(unborn('b'), unborn('a')), {
+    refusal: { code: 'NO_COMMIT_CHECKED_OUT', path: 'a/' },
+  }),
+  everythingRow('an ignored repository', together(committed(), ignoring('sub/\n'))),
+  everythingRow('an ignored repository', together(committed(), ignoring('sub/\n')), {
+    force: true,
+    label: 'an ignored repository, added by -A with force',
+  }),
+  everythingRow(
+    'a repository beneath an ignored directory',
+    together(committed('d/sub'), ignoring('d/\n')),
+  ),
+  everythingRow('an ignored repository with no commit', together(unborn(), ignoring('sub/\n'))),
+  everythingRow('an ignored repository with no commit', together(unborn(), ignoring('sub/\n')), {
+    force: true,
+    label: 'an ignored repository with no commit, added by -A with force',
+    refusal: NO_COMMIT,
+  }),
+  everythingRow(
+    'a tracked file replaced by a repository',
+    replacingTracked(trackedFile, committed()),
+  ),
+  everythingRow(
+    'a tracked symlink replaced by a repository',
+    replacingTracked(trackedSymlink, committed()),
+  ),
+  everythingRow(
+    'a tracked file replaced by a repository with no commit',
+    replacingTracked(trackedFile, unborn()),
+    { refusal: NO_COMMIT },
+  ),
+  everythingRow('tracked files beneath a repository', trackedBeneath()),
+  everythingRow(
+    'a rewritten tracked file beneath a repository',
+    trackedBeneath((repo) => writeFiles(repo, { 'sub/u': 'rewritten\n' })),
+  ),
+  everythingRow(
+    'an untracked file beside tracked ones beneath a repository',
+    trackedBeneath((repo) => writeFiles(repo, { 'sub/new': 'n\n' })),
+  ),
+];
+
+const INDEX_PASS_ROWS: ReadonlyArray<Row> = [
+  ...[
+    ['file', trackedFile],
+    ['symlink', trackedSymlink],
+  ].map(([kind, track]) => ({
+    label: `a tracked ${kind as string} replaced by a repository, added by a wildcard only the index pass reaches`,
+    setup: replacingTracked(track as (repo: string) => Promise<void>, committed()),
+    spec: ['*b'],
+  })),
+  {
+    label: 'a tracked file replaced by a repository with no commit, added by a wildcard',
+    setup: replacingTracked(trackedFile, unborn()),
+    spec: ['*b'],
+  },
+  ...[['.'], ['sub']].map((spec) => ({
+    label: `a tracked file replaced by a repository with no commit under an ignore rule, added by ${spec[0]}`,
+    setup: replacingTracked(trackedFile, together(unborn(), ignoring('sub\n'))),
+    spec,
+  })),
+  ...[['.'], ['sub']].map((spec) => ({
+    label: `a tracked file replaced by a repository under an ignore rule, added by ${spec[0]}`,
+    setup: replacingTracked(trackedFile, together(committed(), ignoring('sub\n'))),
+    spec,
+  })),
+  ...[['.'], ['sub']].map((spec) => ({
+    label: `a tracked file replaced by a directory with an empty .git, added by ${spec[0]}`,
+    setup: replacingTracked(trackedFile, withEmptyGitDir),
+    spec,
+  })),
+];
+
+const LITERAL_ROWS: ReadonlyArray<Row> = [
+  { label: 'a file inside a repository', setup: committed(), spec: ['sub/u'] },
+  { label: 'a file inside a repository with no commit', setup: unborn(), spec: ['sub/u'] },
+  {
+    label: 'a file inside a repository inside a repository',
+    setup: repositoryInside,
+    spec: ['sub/inner/v'],
+  },
+  {
+    label: 'a file inside a directory whose .git has a garbage HEAD',
+    setup: withGarbageHead,
+    spec: ['sub/u'],
+  },
+  {
+    label: 'a rewritten tracked file beneath a repository',
+    setup: trackedBeneath((repo) => writeFiles(repo, { 'sub/u': 'rewritten\n' })),
+    spec: ['sub/u'],
+  },
+  {
+    label: 'an untracked file beside tracked ones beneath a repository',
+    setup: trackedBeneath((repo) => writeFiles(repo, { 'sub/new': 'n\n' })),
+    spec: ['sub/new'],
+  },
+];
+
 const ALL_ROWS: ReadonlyArray<Row> = [
   ...SUB_ROWS,
   ...NO_COMMIT_ROWS,
@@ -511,6 +638,9 @@ const ALL_ROWS: ReadonlyArray<Row> = [
   ...NESTED_ROWS,
   ...REPLACED_ROWS,
   ...BENEATH_ROWS,
+  ...ALL_TREE_ROWS,
+  ...INDEX_PASS_ROWS,
+  ...LITERAL_ROWS,
 ];
 
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
@@ -565,7 +695,11 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           // Arrange
           const { gitRepo, tsgitRepo } = await twins(row.setup);
           const sut = add;
-          const gitArgs = row.force === true ? ['add', '-f'] : ['add'];
+          const gitArgs = [
+            'add',
+            ...(row.force === true ? ['-f'] : []),
+            ...(row.all === true ? ['-A'] : []),
+          ];
 
           // Act
           const gitRun = tryRunGitWithExit([
@@ -576,7 +710,10 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             ...(row.gitSpec ?? row.spec),
           ]);
           const refusal = await refusalOf(() =>
-            sut(createNodeContext({ workDir: tsgitRepo }), row.spec, { force: row.force === true }),
+            sut(createNodeContext({ workDir: tsgitRepo }), row.spec, {
+              force: row.force === true,
+              all: row.all === true,
+            }),
           );
 
           // Assert

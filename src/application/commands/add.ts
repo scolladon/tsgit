@@ -181,7 +181,9 @@ export interface AddResult {
  * - **Bulk mode** (`paths` empty, `all === true`): walk the working tree,
  *  stage every modified/new tracked file plus every untracked, non-ignored
  *  file. Files missing from disk but present in the prior index land in
- *  `removed`. `.git` and embedded repositories are skipped.
+ *  `removed`. `.git` is skipped; an untracked repository is staged as a gitlink
+ *  and nothing beneath it is; a literal inside an untracked repository stages
+ *  nothing.
  *
  * Both modes acquire `.git/index.lock` once, read the existing index under
  * the lock, and commit a single replacement — no partial writes.
@@ -294,10 +296,12 @@ const addLiteralOnly = async (
       stageZeroBeside,
       ensurePromisorConfigValid,
     };
-    const { sparse, ignored, stageable } = await splitReportedLiterals(
-      resolved,
+    const reported = await splitReportedLiterals(resolved, state.entries, repoIgnore);
+    const { sparse, ignored } = reported;
+    const stageable = await withoutRepositoryLiterals(
+      embeddedRepositories(ctx, sorted),
       state.entries,
-      repoIgnore,
+      reported.stageable,
     );
     const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
       staging,
@@ -371,17 +375,43 @@ const splitIgnoredLiterals = async (
   };
 };
 
-/** The shallowest proper ancestor directory a rule hides: git prunes there. */
-const firstIgnoredAncestorOf = async (
-  repoIgnore: IgnorePredicate,
+/** The shallowest proper ancestor directory of `path` that `test` accepts. */
+const firstAncestorWhere = async (
   path: FilePath,
+  test: (ancestor: FilePath) => boolean | Promise<boolean>,
 ): Promise<FilePath | undefined> => {
   const segments = path.split(SEPARATOR);
   for (let depth = 1; depth < segments.length; depth++) {
     const ancestor = segments.slice(0, depth).join(SEPARATOR) as FilePath;
-    if (await repoIgnore(ancestor, true)) return ancestor;
+    if (await test(ancestor)) return ancestor;
   }
   return undefined;
+};
+
+/** The shallowest proper ancestor directory a rule hides: git prunes there. */
+const firstIgnoredAncestorOf = (
+  repoIgnore: IgnorePredicate,
+  path: FilePath,
+): Promise<FilePath | undefined> =>
+  firstAncestorWhere(path, (ancestor) => repoIgnore(ancestor, true));
+
+/**
+ * git never looks inside an untracked repository: a literal there is neither staged,
+ * reported nor refused. A tracked literal is restaged whatever stands above it.
+ */
+const withoutRepositoryLiterals = async (
+  repositories: EmbeddedRepositories,
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  resolved: ResolvedPathspec,
+): Promise<ResolvedPathspec> => {
+  const literalMustMatch: FilePath[] = [];
+  for (const body of resolved.literalMustMatch) {
+    const inside =
+      !entries.has(keyOfPath(body)) &&
+      (await firstAncestorWhere(body, repositories.holds)) !== undefined;
+    if (!inside) literalMustMatch.push(body);
+  }
+  return { ...resolved, literalMustMatch };
 };
 
 /** The ignored ancestor of a literal, else the literal itself when a rule hides it as a non-directory. */
@@ -1130,6 +1160,13 @@ const renormalizeOne = async (
   return indexEntryFromStat(fresh, mode, id, path);
 };
 
+/** What selects a tracked entry on the index pass. */
+interface HiddenSelection {
+  readonly matcher: ResolvedPathspec['matcher'];
+  readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
+  readonly verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>;
+}
+
 /**
  * git's `add` also runs an index-side pass that stages every matching tracked
  * entry whatever the ignore rules say, so a tracked file the pruned walk never
@@ -1139,11 +1176,10 @@ const renormalizeOne = async (
  */
 const hiddenTracked = async (
   ctx: Context,
+  repositories: EmbeddedRepositories,
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
-  matcher: ResolvedPathspec['matcher'],
   walked: ReadonlyArray<WalkWorkingTreeEntry>,
-  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
-  verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>,
+  { matcher, unmergedStages, verdicts }: HiddenSelection,
 ): Promise<WalkWorkingTreeEntry[]> => {
   const walkedKeys = new Set(walked.map(({ path }) => keyOfPath(path)));
   const candidates = [...existing].filter(
@@ -1153,7 +1189,7 @@ const hiddenTracked = async (
   );
   const scanner = createLeadingPathScanner(ctx);
   const hidden = await boundedMapFor(ctx, 'ioBound', candidates, ([, entry]) =>
-    hiddenWalkEntryOf(ctx, scanner, entry),
+    hiddenWalkEntryOf(ctx, scanner, repositories, entry),
   );
   return hidden.filter((walkEntry) => walkEntry !== undefined);
 };
@@ -1180,22 +1216,44 @@ const pathspecSelectsTracked = (
     ? verdict?.matched === true
     : matchesUnmergedIndexPath(matcher, entry, stages.length);
 
-/** The walk entry the walker would have yielded, from the file as it lies on disk. */
+/**
+ * The walk entry the walker would have yielded, from the file as it lies on disk. A
+ * directory is one only when it is a repository: any other is left to the removal pass.
+ */
 const hiddenWalkEntryOf = async (
   ctx: Context,
   scanner: LeadingPathScanner,
+  repositories: EmbeddedRepositories,
   { path }: IndexEntry,
 ): Promise<WalkWorkingTreeEntry | undefined> => {
   if (await scanner.hasSymlinkedLeadingPath(path)) return undefined;
   const stat = await lstatOrBeneathFile(ctx, path);
-  if (stat === undefined || (stat.isDirectory && !stat.isSymbolicLink)) return undefined;
+  if (stat === undefined) return undefined;
+  const isDirectory = stat.isDirectory && !stat.isSymbolicLink;
+  if (isDirectory && !(await repositories.holds(path))) return undefined;
   return {
     path,
     isFile: stat.isFile,
-    isDirectory: false,
+    isDirectory,
     isSymbolicLink: stat.isSymbolicLink,
     stat: () => Promise.resolve(stat),
   };
+};
+
+/**
+ * git's index pass restages a tracked path a repository now stands on, and never refuses
+ * one with no commit: that path is left to the removal pass.
+ */
+const stagedHiddenRepositories = async (
+  ctx: Context,
+  repositories: EmbeddedRepositories,
+  hidden: ReadonlyArray<WalkWorkingTreeEntry>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): Promise<WalkOutcome[]> => {
+  const outcomes = await boundedMapFor(ctx, 'ioBound', hidden.filter(isRepositoryLeaf), (leaf) =>
+    embeddedOutcomeOf(repositories, leaf, existing),
+  );
+  return outcomes.filter((outcome) => outcome !== undefined);
 };
 
 interface WalkStaging {
@@ -1352,17 +1410,22 @@ const stageSelectedEntries = async (
   const gitlinks = await stagedGitlinks(ctx, existing, matcher);
   const embedded = await stagedEmbeddedRepositories(ctx, repositories, walked.leaves, existing);
   const reached = [...walked.files, ...walked.leaves];
-  const hidden = await hiddenTracked(ctx, existing, matcher, reached, unmergedStages, verdicts);
+  const hidden = await hiddenTracked(ctx, repositories, existing, reached, {
+    matcher,
+    unmergedStages,
+    verdicts,
+  });
+  const hiddenRepositories = await stagedHiddenRepositories(ctx, repositories, hidden, existing);
   const staged = await stageWalkedEntries(
     ctx,
-    [...walked.files, ...hidden],
+    [...walked.files, ...hidden.filter((entry) => !isRepositoryLeaf(entry))],
     existing,
     new Set<IndexPathKey>(),
     scope,
     indexMtime,
     ensurePromisorConfigValid,
   );
-  return [...gitlinks, ...embedded, ...staged];
+  return [...gitlinks, ...embedded, ...hiddenRepositories, ...staged];
 };
 
 /** The reached repositories staged as gitlinks at the commit each has checked out. */
@@ -1617,34 +1680,35 @@ export const addAll = async (
   try {
     const state = await readExistingEntries(ctx);
     const { entries: existing, sorted } = state;
-    const walkIgnore = pruneGitlinkDirectories(ignore, existing.values());
     const seen = new Set<IndexPathKey>();
-    // Walk-time pruning: the walker calls `ignore` on every directory
-    // (skipping ignored subtrees) and every leaf. By the time we see a
-    // leaf here, the ignore filter has already passed.
-    const walkedEntries = withoutSkipWorktree(
-      await collectWalk(walkWorkingTree(ctx, { ignore: walkIgnore })),
-      existing,
-    );
+    const repositories = embeddedRepositories(ctx, sorted);
+    const reached = await walkEverything(ctx, ignore, repositories, state);
+    const gitlinks = await stagedGitlinks(ctx, existing, WHOLE_TREE_MATCHER);
+    const embedded = await stagedEmbeddedRepositories(ctx, repositories, reached.leaves, existing);
+    markSeen(seen, embedded);
     const hidden = await hiddenTracked(
       ctx,
+      repositories,
       existing,
-      WHOLE_TREE_MATCHER,
-      walkedEntries,
-      state.unmergedStages,
-      indexVerdicts(WHOLE_TREE_MATCHER, existing),
+      [...reached.files, ...reached.leaves],
+      {
+        matcher: WHOLE_TREE_MATCHER,
+        unmergedStages: state.unmergedStages,
+        verdicts: indexVerdicts(WHOLE_TREE_MATCHER, existing),
+      },
     );
-    const gitlinks = await stagedGitlinks(ctx, existing, WHOLE_TREE_MATCHER);
+    const hiddenRepositories = await stagedHiddenRepositories(ctx, repositories, hidden, existing);
+    markSeen(seen, hiddenRepositories);
     const staged = await stageWalkedEntries(
       ctx,
-      [...walkedEntries, ...hidden],
+      [...reached.files, ...hidden.filter((entry) => !isRepositoryLeaf(entry))],
       existing,
       seen,
       { ...scope, indexRules: state.indexRules },
       state.indexMtime,
       ensurePromisorConfigValid,
     );
-    const outcomes = [...gitlinks, ...staged];
+    const outcomes = [...gitlinks, ...embedded, ...hiddenRepositories, ...staged];
     const tally = tallyWalkOutcomes(existing, outcomes, state.stageZeroBeside);
     const removedEntries = await collectRemovedEntries(ctx, existing, seen);
     const walked = { sorted, existing, outcomes };
@@ -1660,6 +1724,32 @@ export const addAll = async (
   } finally {
     await lock.release();
   }
+};
+
+/** A path a staged repository now stands on is present, whatever the index recorded there. */
+const markSeen = (seen: Set<IndexPathKey>, outcomes: ReadonlyArray<WalkOutcome>): void => {
+  for (const { path } of outcomes) seen.add(keyOfPath(path));
+};
+
+/**
+ * Walk-time pruning: the walker calls `ignore` on every directory (skipping ignored
+ * subtrees) and every leaf, so a leaf seen here has already passed the ignore filter.
+ */
+const walkEverything = async (
+  ctx: Context,
+  ignore: IgnorePredicate,
+  repositories: EmbeddedRepositories,
+  { entries: existing, unmergedStages }: ExistingIndexState,
+): Promise<ReachedWalk> => {
+  const walkIgnore = pruneGitlinkDirectories(ignore, existing.values());
+  const walkedEntries = await collectWalk(
+    walkWorkingTree(ctx, { ignore: walkIgnore, isNestedRepository: repositories.holds }),
+  );
+  return reachedWalk(withoutSkipWorktree(walkedEntries, existing), {
+    existing,
+    unmergedStages,
+    matcher: WHOLE_TREE_MATCHER,
+  });
 };
 
 interface WalkOutcome {

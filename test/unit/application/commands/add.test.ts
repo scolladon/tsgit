@@ -930,9 +930,9 @@ describe('add', () => {
     });
   });
 
-  describe('Given an embedded.git subdirectory (nested repo) and all: true', () => {
+  describe('Given a subdirectory whose .git holds only a HEAD file (no objects or refs) and all: true', () => {
     describe('When add', () => {
-      it('Then nothing under it is staged and no 160000 entry is created', async () => {
+      it('Then it is no repository: its files are staged and no 160000 entry is created', async () => {
         // Arrange
         const ctx = await seedFreshRepo({
           'a.txt': 'a',
@@ -946,7 +946,7 @@ describe('add', () => {
         // Assert
         const idx = await readIndex(ctx);
         const paths = idx.entries.map((e) => e.path);
-        expect(paths).toEqual(['a.txt']);
+        expect(paths).toEqual(['a.txt', 'vendor/lib/src/x.ts']);
         const gitlinks = idx.entries.filter((e) => e.mode === '160000');
         expect(gitlinks).toEqual([]);
       });
@@ -1236,11 +1236,11 @@ describe('add', () => {
     });
   });
 
-  describe('Given a plain regular file literally named.git inside a subdirectory (worktree pointer)', () => {
+  describe('Given a plain regular file literally named.git inside a subdirectory naming nothing', () => {
     describe('When add({ all: true })', () => {
-      it('Then the whole subdirectory is skipped', async () => {
-        // Arrange — `.git` regular file is git's worktree gitdir pointer
-        // (`gitdir: /path/...`). Treated as an embedded-repo marker.
+      it('Then it is no repository: the siblings are staged and the .git file is not', async () => {
+        // Arrange — `gitdir: /elsewhere` leads to no repository, so the
+        // directory is walked like any other.
         const ctx = await seedFreshRepo({
           'sub/normal.txt': 'x',
           'sub/.git': 'gitdir: /elsewhere',
@@ -1249,9 +1249,9 @@ describe('add', () => {
         // Act
         await add(ctx, [], { all: true });
 
-        // Assert — siblings inside `sub/` are not staged.
+        // Assert
         const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual([]);
+        expect(idx.entries.map((e) => e.path)).toEqual(['sub/normal.txt']);
       });
     });
   });
