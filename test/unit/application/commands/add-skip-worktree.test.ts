@@ -35,6 +35,16 @@ const blobExists = async (ctx: Ctx, content: string) => {
   return ctx.fs.exists(`${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`);
 };
 
+const looseObjectCount = async (ctx: Ctx): Promise<number> => {
+  const objects = `${ctx.layout.gitDir}/objects`;
+  if (!(await ctx.fs.exists(objects))) return 0;
+  const prefixes = await ctx.fs.readdir(objects);
+  const counts = await Promise.all(
+    prefixes.map(async ({ name }) => (await ctx.fs.readdir(`${objects}/${name}`)).length),
+  );
+  return counts.reduce((sum, count) => sum + count, 0);
+};
+
 const entryOf = async (ctx: Ctx, path: string) =>
   (await readIndex(ctx)).entries.find((entry) => entry.path === path);
 
@@ -62,6 +72,7 @@ describe('add over a skip-worktree entry', () => {
 
         // Assert
         const after = await entryOf(ctx, 'x.log');
+        expect(result.sparse).toEqual([]);
         expect(result.modified).toEqual(['s.txt']);
         expect(after?.flags.skipWorktree).toBe(true);
         expect(after?.id).toBe(before?.id);
@@ -83,6 +94,7 @@ describe('add over a skip-worktree entry', () => {
 
         // Assert
         const after = await entryOf(ctx, 'x.log');
+        expect(result.sparse).toEqual([]);
         expect(result.modified).toEqual(['s.txt']);
         expect(after?.flags.skipWorktree).toBe(true);
         expect(after?.id).toBe(before?.id);
@@ -103,6 +115,7 @@ describe('add over a skip-worktree entry', () => {
 
         // Assert
         const after = await entryOf(ctx, 'x.log');
+        expect(result.sparse).toEqual([]);
         expect(result.removed).toEqual([]);
         expect(after?.flags.skipWorktree).toBe(true);
       });
@@ -170,6 +183,7 @@ describe('add over a skip-worktree entry', () => {
       it('Then the unmatched pathspec is refused and nothing is written', async () => {
         // Arrange
         const ctx = await sparseRepo();
+        const before = await looseObjectCount(ctx);
         const sut = add;
 
         // Act
@@ -177,7 +191,29 @@ describe('add over a skip-worktree entry', () => {
 
         // Assert
         expect(data).toMatchObject({ code: 'PATHSPEC_NO_MATCH', pattern: 'nomatch*' });
-        expect(await blobExists(ctx, 's2\n')).toBe(false);
+        expect(await looseObjectCount(ctx)).toBe(before);
+      });
+    });
+  });
+
+  describe('Given a prefix wildcard reaching only a skip-worktree entry', () => {
+    describe('When it is added alone', () => {
+      it('Then it is reported, the index is unchanged and no blob is written', async () => {
+        // Arrange
+        const ctx = await sparseRepo();
+        const before = await looseObjectCount(ctx);
+        const entryBefore = await entryOf(ctx, 'x.log');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x*']);
+
+        // Assert
+        const after = await entryOf(ctx, 'x.log');
+        expect(result.sparse).toEqual(['x*']);
+        expect(result.modified).toEqual([]);
+        expect(after?.id).toBe(entryBefore?.id);
+        expect(await looseObjectCount(ctx)).toBe(before);
       });
     });
   });

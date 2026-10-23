@@ -76,6 +76,10 @@ const untracked: Setup = (repo) =>
     'd/q.txt': 'q\n',
   });
 
+/** keep.txt exists and is ignored; gone.txt does not exist. */
+const ignoredKeep: Setup = (repo) =>
+  writeFiles(repo, { '.gitignore': 'keep.txt\n', 'keep.txt': 'k\n' });
+
 /** d/x.txt and k tracked, then d hidden, d/x.txt rewritten, d/new.txt untracked. */
 const trackedUnderIgnoredDirectory: Setup = trackedThen({ 'd/x.txt': 'a\n', k: 'k\n' }, 'd/\n', {
   'd/x.txt': 'bb\n',
@@ -121,28 +125,60 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       return { gitRepo, tsgitRepo };
     };
 
-    const outcomeOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+    const outcomeOf = async (run: () => Promise<unknown>): Promise<TsgitError | undefined> => {
       try {
-        return await run();
+        await run();
       } catch (error) {
-        return error;
+        if (error instanceof TsgitError) return error;
+        throw error;
       }
+      return undefined;
     };
 
     describe.each([
-      { label: 'a wildcard that matches nothing', setup: untracked, spec: ['nomatch*', '*.txt'] },
-      { label: 'a missing literal', setup: untracked, spec: ['missing', '*.txt'] },
+      {
+        label: 'a wildcard that matches nothing',
+        setup: untracked,
+        spec: ['nomatch*', '*.txt'],
+        named: 'nomatch*',
+      },
+      {
+        label: 'a missing literal',
+        setup: untracked,
+        spec: ['missing', '*.txt'],
+        named: 'missing',
+      },
       {
         label: 'a wildcard reaching only an ignored log',
         setup: untracked,
         spec: ['x.lo?', '*.txt'],
+        named: 'x.lo?',
       },
       {
         label: 'a wildcard reaching nothing beneath an ignored directory holding a tracked file',
         setup: trackedUnderIgnoredDirectory,
         spec: ['d/n*'],
+        named: 'd/n*',
       },
-    ])('Given $label', ({ setup, spec }) => {
+      {
+        label: 'an ignored literal beside a wildcard that matches nothing',
+        setup: untracked,
+        spec: ['x.log', 'nomatch*'],
+        named: 'nomatch*',
+      },
+      {
+        label: 'an ignored literal beside a missing literal',
+        setup: untracked,
+        spec: ['x.log', 'missing'],
+        named: 'missing',
+      },
+      {
+        label: 'an ignored file beside a missing file',
+        setup: ignoredKeep,
+        spec: ['keep.txt', 'gone.txt'],
+        named: 'gone.txt',
+      },
+    ])('Given $label', ({ setup, spec, named }) => {
       describe('When git and tsgit add it', () => {
         it('Then both leave the same index, status and loose objects', async () => {
           // Arrange
@@ -159,8 +195,8 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
       });
 
-      describe('When git and tsgit add it and git refuses', () => {
-        it('Then tsgit refuses with the same pathspec', async () => {
+      describe('When git and tsgit add it', () => {
+        it('Then both refuse and name the same pathspec', async () => {
           // Arrange
           const { gitRepo, tsgitRepo } = await twins(setup);
           const sut = add;
@@ -172,14 +208,9 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           );
 
           // Assert
-          const refused = gitRun.exitCode === GIT_REFUSED;
-          expect(outcome instanceof TsgitError).toBe(refused);
-          if (!refused) return;
-          const named = /pathspec '(.*)' did not match/.exec(gitRun.stderr)?.[1];
-          expect((outcome as TsgitError).data).toMatchObject({
-            code: 'PATHSPEC_NO_MATCH',
-            pattern: named,
-          });
+          expect(gitRun.exitCode).toBe(GIT_REFUSED);
+          expect(/pathspec '(.*)' did not match/.exec(gitRun.stderr)?.[1]).toBe(named);
+          expect(outcome?.data).toMatchObject({ code: 'PATHSPEC_NO_MATCH', pattern: named });
         });
       });
     });

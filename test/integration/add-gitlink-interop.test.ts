@@ -12,6 +12,7 @@
 import {
   mkdir,
   mkdtemp,
+  readdir,
   realpath,
   rm as removeTree,
   rename,
@@ -214,6 +215,11 @@ const brokenBy =
     await writeFiles(repo, { n: 'untracked\n' });
   };
 
+const notARepository = (shown: string): string => `fatal: not a git repository: ${shown}\n`;
+const invalidGitfile = (shown: string): string => `fatal: invalid gitfile format: ${shown}\n`;
+const notRecognized = (shown: string): string =>
+  `fatal: '${shown}' not recognized as a git repository\n`;
+
 const pointAt = (pointer: (repo: string) => string) =>
   brokenBy((repo) => writeFile(path.join(repo, 'sub', '.git'), `gitdir: ${pointer(repo)}\n`));
 
@@ -252,6 +258,18 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     };
 
     const indexOf = (repo: string): string => runGit(['-C', repo, 'ls-files', '-s']);
+
+    const looseCountOf = async (repo: string): Promise<number> => {
+      const prefixes = (await readdir(path.join(repo, '.git', 'objects'))).filter((name) =>
+        /^[0-9a-f]{2}$/.test(name),
+      );
+      const counts = await Promise.all(
+        prefixes.map(
+          async (prefix) => (await readdir(path.join(repo, '.git', 'objects', prefix))).length,
+        ),
+      );
+      return counts.reduce((sum, count) => sum + count, 0);
+    };
 
     const verbose = (repo: string): string => runGit(['-C', repo, 'ls-files', '-v']);
 
@@ -362,6 +380,29 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
+    describe.each([
+      { label: 'the whole tree minus the submodule', gitSpec: ['.', ':!sub'], spec: ['.', '!sub'] },
+      { label: 'the submodule minus itself', gitSpec: ['sub', ':!sub'], spec: ['sub', '!sub'] },
+    ])('Given a moved submodule and $label', ({ gitSpec, spec }) => {
+      describe('When git and tsgit add it', () => {
+        it('Then both leave the gitlink as recorded and exit cleanly', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(moved);
+          const recorded = indexOf(gitRepo);
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', ...gitSpec]);
+          await sut(createNodeContext({ workDir: tsgitRepo }), spec);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(indexOf(gitRepo)).toBe(recorded);
+          expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
+        });
+      });
+    });
+
     describe('Given a moved submodule', () => {
       describe('When git and tsgit add all', () => {
         it('Then both stage the gitlink at the new commit', async () => {
@@ -417,20 +458,24 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       {
         label: 'a pointer to a gitdir that does not exist',
         setup: pointAt(() => '../.git/modules/nowhere'),
+        line: notARepository,
       },
       {
         label: 'a module whose HEAD is garbage',
         setup: brokenBy((repo) =>
           writeFile(path.join(repo, '.git', 'modules', 'sub', 'HEAD'), 'garbage\n'),
         ),
+        line: notARepository,
       },
       {
         label: 'a gitfile that does not parse',
         setup: brokenBy((repo) => writeFile(path.join(repo, 'sub', '.git'), 'garbage\n')),
+        line: invalidGitfile,
       },
       {
         label: 'an empty .git directory',
         setup: brokenBy((repo) => replaceDotGit(repo, (dotGit) => mkdir(dotGit))),
+        line: notRecognized,
       },
       {
         label: 'a .git directory whose HEAD is garbage',
@@ -440,14 +485,20 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             await writeFile(path.join(dotGit, 'HEAD'), 'garbage\n');
           }),
         ),
+        line: notRecognized,
       },
-      { label: 'an absolute pointer to nothing', setup: pointAt((repo) => `${repo}-nowhere`) },
-    ])('Given $label and an untracked file', ({ setup }) => {
+      {
+        label: 'an absolute pointer to nothing',
+        setup: pointAt((repo) => `${repo}-nowhere`),
+        line: notARepository,
+      },
+    ])('Given $label and an untracked file', ({ setup, line }) => {
       describe('When git and tsgit add the whole tree', () => {
         it('Then both refuse, name the same path and leave the index alone', async () => {
           // Arrange
           const { gitRepo, tsgitRepo } = await twins(setup);
           const before = indexOf(gitRepo);
+          const looseBefore = await looseCountOf(gitRepo);
           const sut = add;
 
           // Act
@@ -460,11 +511,13 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           // Assert
           expect(gitRun.exitCode).toBe(128);
           expect(refusal).toMatchObject({ code: 'NOT_A_REPOSITORY' });
-          expect(gitRun.stderr).toContain(
-            (refusal as { path: string }).path.replace(tsgitRepo, gitRepo),
+          expect(gitRun.stderr).toBe(
+            line((refusal as { path: string }).path.replace(tsgitRepo, gitRepo)),
           );
           expect(indexOf(gitRepo)).toBe(before);
           expect(indexOf(tsgitRepo)).toBe(before);
+          expect(await looseCountOf(gitRepo)).toBe(looseBefore);
+          expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
         });
       });
     });

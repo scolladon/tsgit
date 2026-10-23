@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { serializeAndHash } from '../../../../src/application/primitives/internal/serialize-and-hash.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { pathspecNoMatch, TsgitError } from '../../../../src/domain/index.js';
-import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { seedRepo } from './fixtures.js';
-
-const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 type Ctx = ReturnType<typeof createMemoryContext>;
 
@@ -44,13 +41,14 @@ const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
   return undefined;
 };
 
-const blobExists = async (ctx: Ctx, content: string) => {
-  const { id } = await serializeAndHash(ctx, {
-    type: 'blob',
-    id: '' as ObjectId,
-    content: enc(content),
-  });
-  return ctx.fs.exists(`${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`);
+const looseObjectCount = async (ctx: Ctx): Promise<number> => {
+  const objects = `${ctx.layout.gitDir}/objects`;
+  if (!(await ctx.fs.exists(objects))) return 0;
+  const prefixes = await ctx.fs.readdir(objects);
+  const counts = await Promise.all(
+    prefixes.map(async ({ name }) => (await ctx.fs.readdir(`${objects}/${name}`)).length),
+  );
+  return counts.reduce((sum, count) => sum + count, 0);
 };
 
 const stagedPaths = async (ctx: Ctx) => (await readIndex(ctx)).entries.map((e) => e.path);
@@ -74,6 +72,7 @@ describe('Given an untracked file named by a literal and excluded by a negation'
     it('Then nothing is staged and no blob is written', async () => {
       // Arrange
       const ctx = await untracked();
+      const looseBefore = await looseObjectCount(ctx);
       const sut = add;
 
       // Act
@@ -82,7 +81,7 @@ describe('Given an untracked file named by a literal and excluded by a negation'
       // Assert
       expect(result.added).toEqual([]);
       expect(await stagedPaths(ctx)).toEqual([]);
-      expect(await blobExists(ctx, 'x body')).toBe(false);
+      expect(await looseObjectCount(ctx)).toBe(looseBefore);
     });
   });
 });
@@ -110,10 +109,15 @@ describe.each(acceptedRows)('Given the $fixture fixture', ({ fixture, args, rest
       const sut = add;
 
       // Act
-      await sut(ctx, [...args]);
+      const result = await sut(ctx, [...args]);
 
       // Assert
       expect(await restagedPaths(ctx)).toEqual(restaged);
+      expect(result.added).toEqual(fixture === 'untracked' ? restaged : []);
+      expect(result.modified).toEqual(fixture === 'tracked' ? restaged : []);
+      expect(result.removed).toEqual([]);
+      expect(result.sparse).toEqual([]);
+      expect(result.ignored).toEqual([]);
     });
   });
 });
@@ -130,6 +134,7 @@ describe.each(refusedRows)('Given an untracked fixture', ({ args, refused }) => 
     it('Then it refuses the unmatched pathspec and writes nothing', async () => {
       // Arrange
       const ctx = await untracked();
+      const looseBefore = await looseObjectCount(ctx);
       const sut = add;
 
       // Act
@@ -138,7 +143,7 @@ describe.each(refusedRows)('Given an untracked fixture', ({ args, refused }) => 
       // Assert
       expect(result).toEqual(pathspecNoMatch(refused).data);
       expect(await stagedPaths(ctx)).toEqual([]);
-      expect(await blobExists(ctx, 'x body')).toBe(false);
+      expect(await looseObjectCount(ctx)).toBe(looseBefore);
     });
   });
 });

@@ -363,6 +363,47 @@ describe('add over a gitlink that did not move', () => {
   });
 });
 
+describe('add over a moved gitlink that a pathspec excludes', () => {
+  describe.each([
+    { label: 'the whole tree minus the gitlink', spec: ['.', '!sub'] },
+    { label: 'the gitlink minus itself', spec: ['sub', '!sub'] },
+  ])('Given a moved gitlink and $label', ({ spec }) => {
+    describe('When it is added', () => {
+      it('Then the gitlink is left as recorded', async () => {
+        // Arrange
+        const ctx = await superproject();
+        const recorded = (await entryOf(ctx, 'sub'))?.id;
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, spec);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(recorded);
+      });
+    });
+  });
+
+  describe('Given a moved gitlink', () => {
+    describe('When the whole tree is renormalized', () => {
+      it('Then the gitlink keeps the recorded commit', async () => {
+        // Arrange
+        const ctx = await superproject();
+        const recorded = (await entryOf(ctx, 'sub'))?.id;
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], { renormalize: true });
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(recorded);
+      });
+    });
+  });
+});
+
 describe('add over a gitlink replaced in the working tree', () => {
   describe.each([
     { label: 'a file', checkout: 'file' as const, mode: FILE_MODE.REGULAR },

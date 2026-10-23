@@ -115,6 +115,27 @@ describe('add reporting the ignored entries a pathspec reaches', () => {
     });
   });
 
+  describe.each([
+    { label: 'a wildcard that matches nothing', spec: 'nomatch*' },
+    { label: 'a literal that is missing', spec: 'missing' },
+  ])('Given an ignored log and $label', ({ spec }) => {
+    describe('When it is added beside the ignored log', () => {
+      it('Then the refusal names it and nothing is written', async () => {
+        // Arrange
+        const ctx = await untrackedRepo();
+        const sut = add;
+
+        // Act
+        const data = await refusalOf(() => sut(ctx, ['x.log', spec]));
+
+        // Assert
+        expect(data).toEqual(pathspecNoMatch(spec).data);
+        expect(await indexPaths(ctx)).toEqual([]);
+        expect(await looseObjectCount(ctx)).toBe(0);
+      });
+    });
+  });
+
   describe('Given a tracked file beneath an ignored directory and an untracked sibling', () => {
     describe('When a wildcard reaching neither is added', () => {
       it('Then the refusal names it and nothing is written', async () => {
