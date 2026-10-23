@@ -52,7 +52,7 @@ interface GrepResult {
 | `wholeWord` | `boolean` | `false` | git's `-w` — a match counts only when the byte before its start and the byte at its end are non-word bytes (`[A-Za-z0-9_]`). Applied to both regex and fixed forms. |
 | `invert` | `boolean` | `false` | git's `-v` — return the lines that do **not** match. Inverted line hits carry empty `spans`. |
 | `target` | `'index' \| { treeish }` | working tree | Absent ⇒ the **working tree** (tracked files, working-tree content). `'index'` ⇒ the staged content (git's `--cached`). `{ treeish: 'HEAD' }` ⇒ a committed tree/commit (full rev grammar). |
-| `paths` | `ReadonlyArray<string>` | (all) | Pathspec limiter — only enumerated paths matching the pathspec are searched. |
+| `paths` | `ReadonlyArray<string>` | (all) | Pathspec limiter — only enumerated paths matching the pathspec are searched. Same syntax as [`add`](add.md#pathspec-syntax): git's pathspec glob, where `*` and `?` cross `/`; on a POSIX host a `\` is a matching escape. |
 
 ## Behaviour
 
