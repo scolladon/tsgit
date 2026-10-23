@@ -751,3 +751,23 @@ probe, the status spelling). Every other row stays under its cap.
 The npm tarball cap moved 1450 → 1454 KiB (1 488 266 B measured; the baseline pack is
 1 484 486 B, under the old cap, so the whole 3 466 B overage is this round's); its attribution
 lives in `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — the embedded-repository review fixes
+
+Measured on a clean build (`rm -rf dist .wireit && npm run check:size`, `npx size-limit --json`),
+gzip bytes, against the tree of the previous raise (`f16a2778`) built the same way at the same
+toolchain. Each failing row is raised to its measurement rounded up to the next 0.1 kB; every
+other row stays under its cap, the `Command (add)` row included (6 361 B against 6.4 kB, below
+its baseline of 6 398 B).
+
+| Row | old limit | baseline | measured | Δ | new limit | attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 345.7 kB | 345 625 | 346 059 | +434 | 346.1 kB | the sum of the rows below, shipped to the browser |
+| Full library | 403.9 kB | 403 838 | 404 229 | +391 | 404.3 kB | the sum of the rows below |
+| Chunks: domain | 127.4 kB | 127 307 | 127 426 | +119 | 127.5 kB | the `GITFILE_TOO_LARGE` error member and its message, and `hasEntryBeneath` |
+| Chunks: primitives | 108.4 kB | 108 369 | 108 403 | +34 | 108.5 kB | the HEAD slot seeding and the exported HEAD-usability judgement the bounded reads share |
+| Chunks: commands-internal | 83.4 kB | 83 367 | 83 723 | +356 | 83.8 kB | the oversized kind and regular-file gate of the gitlink probe, the bounded nested HEAD and commondir reads, and the ignored-inside-repository filter |
+
+The npm tarball cap moved 1454 → 1455 KiB (1 489 535 B measured, 639 B over the old cap; the
+baseline pack is 1 488 266 B, so the round adds 1 269 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.

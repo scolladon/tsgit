@@ -395,7 +395,14 @@ done
 # reader, the error member with its message, the embedded step and the
 # index-side type change, and the literal ancestor probe — runtime code shipped
 # in every distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((1454 * 1024))
+# Raised 1454 -> 1455 KiB by the embedded-repository review fixes: the measured
+# pack landed at 1 489 535 B, 639 B over the old cap and 1 269 B over the
+# pack before them, attributable to the oversized-gitfile error member with its
+# message, the oversized kind and regular-file gate of the gitlink probe, the
+# beneath-an-entry lookup, the bounded reads of a nested HEAD and commondir,
+# and the ignored-inside-repository filter — runtime code shipped in every
+# distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1455 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
