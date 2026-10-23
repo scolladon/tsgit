@@ -258,6 +258,22 @@ const withModuleConfig = (text: string) =>
 
 const FORMAT_1 = '[core]\n\trepositoryformatversion = 1\n';
 
+const MODULE_POINTER = 'sub/../.git/modules/sub';
+
+const moduleDirOf = (repo: string): string => path.join(repo, '.git', 'modules', 'sub');
+
+/** The absorbed module's `commondir` file holding `content`, which may name a directory made by `prepare`. */
+const commondirNaming = (
+  content: (repo: string) => string,
+  prepare: (repo: string) => Promise<unknown> = async () => undefined,
+): Setup =>
+  brokenBy(async (repo) => {
+    await prepare(repo);
+    await writeFile(path.join(moduleDirOf(repo), 'commondir'), content(repo));
+  });
+
+const aSiblingDirectory = (name: string) => (repo: string) => `${repo}-${name}`;
+
 /** The embedded repository that moved, its own config then extended by `text`. */
 const embeddedWithConfig =
   (text: string): Setup =>
@@ -807,6 +823,125 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(indexOf(tsgitRepo)).toBe(before);
             expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
           });
+        });
+      });
+    });
+
+    describe.each([
+      { label: 'a commondir naming nothing', setup: commondirNaming(() => '/nonexistent\n') },
+      { label: 'a commondir naming the filesystem root', setup: commondirNaming(() => '/\n') },
+      {
+        label: 'a commondir naming an empty directory',
+        setup: commondirNaming(
+          (repo) => `${aSiblingDirectory('empty')(repo)}\n`,
+          (repo) => mkdir(aSiblingDirectory('empty')(repo)),
+        ),
+      },
+      {
+        label: 'a commondir naming a directory with refs and no objects',
+        setup: commondirNaming(
+          (repo) => `${aSiblingDirectory('refs-only')(repo)}\n`,
+          (repo) =>
+            mkdir(path.join(aSiblingDirectory('refs-only')(repo), 'refs'), { recursive: true }),
+        ),
+      },
+      {
+        label: 'a commondir naming a directory with objects and no refs',
+        setup: commondirNaming(
+          (repo) => `${aSiblingDirectory('objects-only')(repo)}\n`,
+          (repo) =>
+            mkdir(path.join(aSiblingDirectory('objects-only')(repo), 'objects'), {
+              recursive: true,
+            }),
+        ),
+      },
+      {
+        label: 'a commondir naming a regular file',
+        setup: commondirNaming(
+          (repo) => `${aSiblingDirectory('file')(repo)}\n`,
+          (repo) => writeFile(aSiblingDirectory('file')(repo), 'plain\n'),
+        ),
+      },
+      {
+        label: 'a module whose objects directory is missing',
+        setup: brokenBy((repo) =>
+          removeTree(path.join(moduleDirOf(repo), 'objects'), { recursive: true }),
+        ),
+      },
+      {
+        label: 'a module whose refs directory is missing',
+        setup: brokenBy((repo) =>
+          removeTree(path.join(moduleDirOf(repo), 'refs'), { recursive: true }),
+        ),
+      },
+    ])('Given $label and an untracked file', ({ setup }) => {
+      describe('When git and tsgit add the whole tree', () => {
+        it('Then both refuse with the pointer as typed and leave the index and objects alone', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(setup);
+          const before = indexOf(gitRepo);
+          const looseBefore = await looseCountOf(gitRepo);
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', '.']);
+          const thrown = await sut(createNodeContext({ workDir: tsgitRepo }), ['.']).then(
+            () => undefined,
+            (error: unknown) => (error instanceof TsgitError ? error.data : error),
+          );
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).toBe(notARepository(MODULE_POINTER));
+          expect(thrown).toEqual({ code: 'NOT_A_REPOSITORY', path: MODULE_POINTER });
+          expect(indexOf(tsgitRepo)).toBe(before);
+          expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
+        });
+      });
+    });
+
+    describe('Given a commondir file of zero bytes and an untracked file', () => {
+      describe('When git and tsgit add the whole tree', () => {
+        it('Then both refuse and leave the index and objects alone', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(commondirNaming(() => ''));
+          const before = indexOf(gitRepo);
+          const looseBefore = await looseCountOf(gitRepo);
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', '.']);
+          const thrown = await sut(createNodeContext({ workDir: tsgitRepo }), ['.']).then(
+            () => undefined,
+            (error: unknown) => (error instanceof TsgitError ? error.data : error),
+          );
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).toBe(
+            `fatal: failed to read ${MODULE_POINTER}/commondir: No such file or directory\n`,
+          );
+          expect(thrown).toEqual({ code: 'NOT_A_REPOSITORY', path: MODULE_POINTER });
+          expect(indexOf(tsgitRepo)).toBe(before);
+          expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
+        });
+      });
+    });
+
+    describe('Given a commondir file holding a bare newline and an untracked file', () => {
+      describe('When git and tsgit add the whole tree', () => {
+        it('Then both ignore it, stage the untracked file and the moved gitlink alike', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(commondirNaming(() => '\n'));
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', '.']);
+          await sut(createNodeContext({ workDir: tsgitRepo }), ['.']);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
         });
       });
     });

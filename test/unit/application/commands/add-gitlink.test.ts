@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { serializeAndHash } from '../../../../src/application/primitives/internal/serialize-and-hash.js';
@@ -54,13 +54,22 @@ interface Superproject {
   readonly tree?: Readonly<Record<string, string>>;
 }
 
+/** What git's `is_git_directory` requires beside `HEAD`. */
+const layOutRepositoryDirs = async (ctx: Ctx, gitDir: string): Promise<void> => {
+  await ctx.fs.mkdir(`${gitDir}/objects`);
+  await ctx.fs.mkdir(`${gitDir}/refs`);
+};
+
 const layOutModule = async (
   ctx: Ctx,
   gitDir: string,
   { head = MODULE_HEAD, branch = MOVED_HEAD, moduleFiles = {}, branchSymlink }: Superproject,
 ): Promise<void> => {
   if (head === null) await ctx.fs.mkdir(gitDir);
-  else await ctx.fs.writeUtf8(`${gitDir}/HEAD`, head);
+  else {
+    await ctx.fs.writeUtf8(`${gitDir}/HEAD`, head);
+    await layOutRepositoryDirs(ctx, gitDir);
+  }
   if (branch !== null) await ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, `${branch}\n`);
   for (const [name, body] of Object.entries(moduleFiles)) {
     await ctx.fs.writeUtf8(`${gitDir}/${name}`, body);
@@ -111,6 +120,7 @@ const layOutReftableWorktreeAdmin = async (ctx: Ctx): Promise<void> => {
     `${admin}/reftable`,
     reftableHolding({ name: 'HEAD', value: { kind: 'symbolic', target: 'refs/heads/main' } }),
   );
+  await layOutRepositoryDirs(ctx, common);
   await ctx.fs.writeUtf8(`${common}/config`, REFTABLE_CONFIG);
   await layOutStack(
     ctx,
@@ -150,6 +160,7 @@ const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
       `${admin}/commondir`,
       checkout === 'worktree-admin' ? '../common\n' : `${common}\n`,
     );
+    await layOutRepositoryDirs(ctx, common);
     await ctx.fs.writeUtf8(`${common}/refs/heads/main`, `${setup.branch ?? MOVED_HEAD}\n`);
     for (const [name, body] of Object.entries(setup.commonFiles ?? {})) {
       await ctx.fs.writeUtf8(`${common}/${name}`, body);
@@ -813,6 +824,128 @@ describe('add over a gitlink whose repository fails the format gate', () => {
           expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
           expect(await blobExists(ctx, 'untracked\n')).toBe(false);
         });
+      });
+    });
+  });
+});
+
+describe('add over a gitlink whose repository lacks objects or refs', () => {
+  const ADMIN_POINTER = 'sub/../.git/admin';
+
+  describe.each([
+    {
+      label: 'a commondir naming nothing',
+      arrange: (ctx: Ctx) => ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/commondir`, '/nowhere\n'),
+    },
+    {
+      label: 'a commondir naming the filesystem root',
+      arrange: (ctx: Ctx) => ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/commondir`, '/\n'),
+    },
+    {
+      label: 'a commondir naming an empty directory',
+      arrange: async (ctx: Ctx) => {
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/bare`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/commondir`, '../bare\n');
+      },
+    },
+    {
+      label: 'a commondir naming a directory with refs and no objects',
+      arrange: async (ctx: Ctx) => {
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/bare/refs`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/commondir`, '../bare\n');
+      },
+    },
+    {
+      label: 'a commondir naming a directory with objects and no refs',
+      arrange: async (ctx: Ctx) => {
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/bare/objects`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/commondir`, '../bare\n');
+      },
+    },
+    {
+      label: 'a commondir naming a regular file',
+      arrange: async (ctx: Ctx) => {
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/plain`, 'plain\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/commondir`, '../plain\n');
+      },
+    },
+    {
+      label: 'a commondir file of zero bytes',
+      arrange: async (ctx: Ctx) => {
+        await layOutRepositoryDirs(ctx, `${ctx.layout.gitDir}/admin`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/commondir`, '');
+      },
+    },
+
+    {
+      label: 'a common dir whose objects directory is missing',
+      arrange: (ctx: Ctx) => ctx.fs.rm(`${ctx.layout.gitDir}/common/objects`),
+    },
+    {
+      label: 'a common dir whose refs path is a regular file',
+      arrange: async (ctx: Ctx) => {
+        await ctx.fs.rmRecursive(`${ctx.layout.gitDir}/common/refs`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/common/refs`, 'plain\n');
+      },
+    },
+  ])('Given $label and an untracked file', ({ arrange }) => {
+    describe('When the whole tree is added', () => {
+      it('Then it refuses with the pointer as typed and stages nothing', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout: 'worktree-admin', tree: { n: 'untracked\n' } });
+        await arrange(ctx);
+        const before = (await readIndex(ctx)).entries.map(({ id }) => id);
+        const sut = add;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['.']));
+
+        // Assert
+        expect(refusal).toEqual({ code: 'NOT_A_REPOSITORY', path: ADMIN_POINTER });
+        expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
+        expect(await blobExists(ctx, 'untracked\n')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a failure of the filesystem while the common dir is probed', () => {
+    describe('When the whole tree is added', () => {
+      it('Then the failure surfaces as it is and stages nothing', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout: 'worktree-admin' });
+        const failure = new Error('disk gone');
+        const stat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation((target) =>
+          target.endsWith('/common/objects') ? Promise.reject(failure) : stat(target),
+        );
+        const before = (await readIndex(ctx)).entries.map(({ id }) => id);
+        const sut = add;
+
+        // Act
+        const outcome = sut(ctx, ['.']);
+
+        // Assert
+        await expect(outcome).rejects.toBe(failure);
+        expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a commondir file holding a bare newline', () => {
+    describe('When the whole tree is added', () => {
+      it('Then the admin dir is its own common dir and the gitlink is staged', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout: 'worktree-admin' });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/commondir`, '\n');
+        await layOutRepositoryDirs(ctx, `${ctx.layout.gitDir}/admin`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/admin/refs/heads/main`, `${MOVED_HEAD}\n`);
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['.']);
+
+        // Assert
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(MOVED_HEAD);
       });
     });
   });

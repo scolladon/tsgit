@@ -19,6 +19,10 @@ const DOT_GIT = '.git';
 const COMMONDIR_FILE = 'commondir';
 const SEPARATOR = '/';
 const UNFOLLOWED_LINK_CODES: ReadonlySet<string> = new Set(['FILE_NOT_FOUND', 'PERMISSION_DENIED']);
+const NOT_A_DIRECTORY_CODES: ReadonlySet<string> = new Set([
+  ...UNFOLLOWED_LINK_CODES,
+  'NOT_A_DIRECTORY',
+]);
 
 /** Where a checkout's repository lies on disk, the path git names it by when it is broken, and the filesystem that reaches it. */
 interface Located {
@@ -46,6 +50,7 @@ export const gitlinkHeadOf = async (
   const unread = deriveGitlinkContext(ctx, gitDir, path, { fs: located.fs });
   if (!(await hasUsableHead(unread))) throw notARepository(located.shown);
   const { commonDir, fs } = await reaching(ctx, located);
+  if (!(await holdsObjectsAndRefs(fs, commonDir))) throw notARepository(located.shown);
   const child = deriveGitlinkContext(ctx, gitDir, path, {
     fs,
     commonDir,
@@ -76,13 +81,29 @@ const resolveGitlinkHead = async (child: Context): Promise<ObjectId | undefined>
  */
 const reaching = async (
   ctx: Context,
-  { gitDir, fs }: Located,
+  { gitDir, fs, shown }: Located,
 ): Promise<{ readonly commonDir: string; readonly fs: FileSystem }> => {
   const declared = await readUtf8IfPresent(fs, `${gitDir}${SEPARATOR}${COMMONDIR_FILE}`);
+  // git reads the file into a buffer and fails on a zero-byte one, unlike a bare newline.
+  if (declared === '') throw notARepository(shown);
   const value = declared === undefined ? undefined : parseCommondir(declared);
   if (value?.kind !== 'ok') return { commonDir: gitDir, fs };
   const commonDir = resolveWorktreePath(gitDir, value.path);
   return { commonDir, fs: worktreeScopedFs(ctx, [gitDir, commonDir]) };
+};
+
+/** git's `is_git_directory`: a repository directory holds `objects` and `refs`, searchable. */
+const holdsObjectsAndRefs = async (fs: FileSystem, commonDir: string): Promise<boolean> =>
+  (await isDirectory(fs, `${commonDir}${SEPARATOR}objects`)) &&
+  (await isDirectory(fs, `${commonDir}${SEPARATOR}refs`));
+
+const isDirectory = async (fs: FileSystem, absolute: string): Promise<boolean> => {
+  try {
+    return (await fs.stat(absolute)).isDirectory;
+  } catch (err) {
+    if (err instanceof TsgitError && NOT_A_DIRECTORY_CODES.has(err.data.code)) return false;
+    throw err;
+  }
 };
 
 const locateCheckout = async (
