@@ -349,7 +349,7 @@ Index: `a\377` (lossy), `a\303\251` (`aé`), `ab`.
 | L6 | `rm --cached -q 'a?'` | exit 0; index left: `a\303\251` | ✗ removes `aé` too |
 
 A lossy *file name* (`printf x > $'a\377'`) cannot be created on APFS (`Illegal byte sequence`).
-The worktree-side lossy rows (`add` of a lossy file) need the Linux CI leg. L1–L6 cover the
+The worktree-side lossy rows (`add` of a lossy file) need the Linux CI leg, where git stages `a\377` for `a?` and tsgit cannot reach the raw name through its string-pathed filesystem port (ADR-973; the byte-path port is backlog 32.28), so that row pins the divergence. L1–L6 cover the
 matcher itself.
 
 #### B — `add` refusal
