@@ -10,6 +10,7 @@
  *   interopSurface: add
  */
 import {
+  appendFile,
   mkdir,
   mkdtemp,
   readdir,
@@ -244,6 +245,12 @@ const notRecognized = (shown: string): string =>
 
 const pointAt = (pointer: (repo: string) => string) =>
   brokenBy((repo) => writeFile(path.join(repo, 'sub', '.git'), `gitdir: ${pointer(repo)}\n`));
+
+/** The absorbed module's own config, with `text` appended so its last-wins keys decide. */
+const withModuleConfig = (text: string) =>
+  brokenBy((repo) => appendFile(path.join(repo, '.git', 'modules', 'sub', 'config'), text));
+
+const FORMAT_1 = '[core]\n\trepositoryformatversion = 1\n';
 
 const replaceDotGit = async (repo: string, make: (dotGit: string) => Promise<void>) => {
   const dotGit = path.join(repo, 'sub', '.git');
@@ -549,6 +556,94 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           expect(indexOf(gitRepo)).toBe(before);
           expect(indexOf(tsgitRepo)).toBe(before);
           expect(await looseCountOf(gitRepo)).toBe(looseBefore);
+          expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
+        });
+      });
+    });
+
+    describe.each([
+      {
+        label: 'an unknown ref storage at format version 1',
+        config: `${FORMAT_1}[extensions]\n\trefStorage = bogus\n`,
+        stderr: (source: string, line: number) =>
+          `error: invalid value for 'extensions.refstorage': 'bogus'\nfatal: bad config line ${line} in file ${source}\n`,
+      },
+      {
+        label: 'an unknown ref storage at format version 0',
+        config: '[extensions]\n\trefStorage = bogus\n',
+        stderr: (source: string, line: number) =>
+          `error: invalid value for 'extensions.refstorage': 'bogus'\nfatal: bad config line ${line} in file ${source}\n`,
+      },
+      {
+        label: 'a valueless ref storage at format version 1',
+        config: `${FORMAT_1}[extensions]\n\trefStorage\n`,
+        stderr: (source: string, line: number) =>
+          `error: missing value for 'extensions.refstorage'\nfatal: bad config line ${line} in file ${source}\n`,
+      },
+      {
+        label: 'a valueless format version',
+        config: '[core]\n\trepositoryformatversion\n',
+        stderr: (source: string) =>
+          `fatal: bad numeric config value '' for 'core.repositoryformatversion' in file ${source}: invalid unit\n`,
+      },
+    ])('Given a submodule config holding $label and an untracked file', ({ config, stderr }) => {
+      describe('When git and tsgit add the whole tree', () => {
+        it('Then both refuse with the config error and leave the index and objects alone', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(withModuleConfig(config));
+          const before = indexOf(gitRepo);
+          const looseBefore = await looseCountOf(gitRepo);
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', '.']);
+          const refusal = await sut(createNodeContext({ workDir: tsgitRepo }), ['.']).then(
+            () => undefined,
+            (error: unknown) => (error instanceof TsgitError ? error.data : error),
+          );
+
+          // Assert
+          const { source, line } = refusal as { source: string; line?: number };
+          expect(gitRun.exitCode).toBe(128);
+          expect(refusal).toMatchObject({ code: expect.stringMatching(/^CONFIG_/) });
+          expect(gitRun.stderr).toBe(stderr(source.replace(tsgitRepo, gitRepo), line ?? 0));
+          expect(indexOf(gitRepo)).toBe(before);
+          expect(indexOf(tsgitRepo)).toBe(before);
+          expect(await looseCountOf(gitRepo)).toBe(looseBefore);
+          expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
+        });
+      });
+    });
+
+    describe('Given a submodule config naming a ref storage at format version 0 and an untracked file', () => {
+      describe('When git and tsgit add the whole tree', () => {
+        it('Then both refuse the v1-only extension and leave the index and objects alone', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(
+            withModuleConfig('[extensions]\n\trefStorage = reftable\n'),
+          );
+          const before = indexOf(gitRepo);
+          const looseBefore = await looseCountOf(gitRepo);
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', '.']);
+          const refusal = await sut(createNodeContext({ workDir: tsgitRepo }), ['.']).then(
+            () => undefined,
+            (error: unknown) => (error instanceof TsgitError ? error.data : error),
+          );
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).toContain(
+            'fatal: repo version is 0, but v1-only extension found:\n\trefstorage\n',
+          );
+          expect(refusal).toEqual({
+            code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED',
+            version: 0,
+            extensions: ['refstorage'],
+          });
+          expect(indexOf(tsgitRepo)).toBe(before);
           expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
         });
       });
