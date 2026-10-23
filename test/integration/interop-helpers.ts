@@ -78,6 +78,22 @@ const PRIVATE_DIR_MODE = 0o700;
 const GROUP_OR_OTHER_BITS = 0o077;
 
 /** Windows keeps `%TEMP%` per account and reports no POSIX owner or mode bits to check. */
+/** A named pipe at `target`: reading it blocks until a writer opens it. */
+export const makeFifo = (target: string): void => {
+  execFileSync('mkfifo', [target]);
+};
+
+/** A sparse regular file of `size` bytes at `target`, which costs no real bytes. */
+export const makeSparseFile = (target: string, size: number): void => {
+  execFileSync('truncate', ['-s', String(size), target]);
+};
+
+/** git's cap on a `.git` file is 1 MiB; this is a byte more than twice that. */
+export const OVERSIZED_GITFILE_BYTES = 2 * (1 << 20);
+
+/** A guard so a regression that reads a pipe fails the test instead of hanging the run. */
+export const NON_BLOCKING_TIMEOUT_MS = 20_000;
+
 export const isPrivateToThisAccount = (dir: string): boolean => {
   const stats = lstatSync(dir);
   if (!stats.isDirectory()) return false;

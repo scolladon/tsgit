@@ -28,7 +28,16 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { TsgitError } from '../../src/domain/index.js';
-import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  makeFifo,
+  makeSparseFile,
+  NON_BLOCKING_TIMEOUT_MS,
+  OVERSIZED_GITFILE_BYTES,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const PINNED_DATE = '@1700000000 +0000';
 
@@ -269,6 +278,14 @@ const brokenBy =
     await breakIt(repo);
     await writeFiles(repo, { n: 'untracked\n' });
   };
+
+/** The submodule's gitfile replaced by what `make` builds at `sub/.git`. */
+const dotGitMadeBy = (make: (dotGit: string) => Promise<unknown> | unknown) =>
+  brokenBy(async (repo) => {
+    const dotGit = path.join(repo, 'sub', '.git');
+    await removeTree(dotGit, { force: true });
+    await make(dotGit);
+  });
 
 const notARepository = (shown: string): string => `fatal: not a git repository: ${shown}\n`;
 const invalidGitfile = (shown: string): string => `fatal: invalid gitfile format: ${shown}\n`;
@@ -854,6 +871,64 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           expect(indexOf(tsgitRepo)).toBe(before);
           expect(await looseCountOf(gitRepo)).toBe(looseBefore);
           expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
+        });
+      });
+    });
+
+    describe.each([
+      { label: 'a FIFO', setup: dotGitMadeBy(makeFifo) },
+      {
+        label: 'a symlink to a character device',
+        setup: dotGitMadeBy((p) => symlink('/dev/zero', p)),
+      },
+    ])('Given a recorded gitlink whose .git is $label', ({ setup }) => {
+      describe('When git and tsgit add the whole tree', () => {
+        it(
+          'Then both keep the gitlink as recorded and stage the untracked file',
+          async () => {
+            // Arrange
+            const { gitRepo, tsgitRepo } = await twins(setup);
+            const sut = add;
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '-A']);
+            await sut(createNodeContext({ workDir: tsgitRepo }), [], { all: true });
+
+            // Assert
+            expect(gitRun.exitCode).toBe(0);
+            expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
+            expect(indexOf(gitRepo)).toContain('\tn\n');
+          },
+          NON_BLOCKING_TIMEOUT_MS,
+        );
+      });
+    });
+
+    describe('Given a recorded gitlink whose .git file is past 1 MiB', () => {
+      describe('When git and tsgit add the whole tree', () => {
+        it('Then both refuse as too large and leave the index alone', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo } = await twins(
+            dotGitMadeBy((p) => makeSparseFile(p, OVERSIZED_GITFILE_BYTES)),
+          );
+          const before = indexOf(gitRepo);
+          const sut = add;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '-A']);
+          const refusal = await sut(createNodeContext({ workDir: tsgitRepo }), [], {
+            all: true,
+          }).then(
+            () => undefined,
+            (error: unknown) => (error instanceof TsgitError ? error.data : error),
+          );
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(refusal).toEqual({ code: 'GITFILE_TOO_LARGE', path: 'sub/.git' });
+          expect(gitRun.stderr).toBe("fatal: too large to be a .git file: 'sub/.git'\n");
+          expect(indexOf(gitRepo)).toBe(before);
+          expect(indexOf(tsgitRepo)).toBe(before);
         });
       });
     });

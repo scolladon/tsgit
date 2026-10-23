@@ -14,7 +14,14 @@ import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { status } from '../../src/application/commands/status.js';
-import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  makeFifo,
+  makeSparseFile,
+  OVERSIZED_GITFILE_BYTES,
+  runGit,
+  runGitEnv,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 const PINNED_DATE = '@1700000000 +0000';
@@ -101,6 +108,13 @@ const trackedFileTurnedRepository: Setup = async (repo) => {
   await writeFiles(repo, { 'sub/u': 'u\n' });
 };
 
+const withDotGit =
+  (make: (dotGit: string) => Promise<unknown> | unknown): Setup =>
+  async (repo) => {
+    await writeFiles(repo, { 'sub/u': 'u\n' });
+    await make(path.join(repo, 'sub', '.git'));
+  };
+
 const ROWS: ReadonlyArray<readonly [string, Setup]> = [
   ['a repository holding a committed file', repositoryWithFile],
   ['a .git that is a symlink to an outside repository', linkedGitDir],
@@ -109,6 +123,12 @@ const ROWS: ReadonlyArray<readonly [string, Setup]> = [
   ['an untracked file beside a repository inside a tracked directory', trackedBeneathWithNewFile],
   ['a repository under an ignore rule', ignoredRepository],
   ['a tracked file turned into a repository', trackedFileTurnedRepository],
+  ['a .git FIFO', withDotGit(makeFifo)],
+  ['a .git symlink to a character device', withDotGit((dotGit) => symlink('/dev/zero', dotGit))],
+  [
+    'a .git file past 1 MiB',
+    withDotGit((dotGit) => makeSparseFile(dotGit, OVERSIZED_GITFILE_BYTES)),
+  ],
 ];
 
 const gitUntracked = (repo: string): ReadonlyArray<string> =>

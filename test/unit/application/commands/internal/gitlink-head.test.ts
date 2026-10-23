@@ -7,7 +7,7 @@ import {
 import { permissionDenied, TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import type { FileSystem } from '../../../../../src/ports/file-system.js';
+import type { FileStat, FileSystem } from '../../../../../src/ports/file-system.js';
 
 const HEAD_COMMIT = 'c'.repeat(40);
 const SUB = 'sub' as FilePath;
@@ -57,6 +57,47 @@ const failingLstatOfDotGit = (failure: unknown): Context => {
   };
   return { ...base, fs: Object.assign(Object.create(base.fs), { lstat }) } as Context;
 };
+
+const MIB = 1 << 20;
+const DOT_GIT_OF_SUB = '/sub/.git';
+
+const asDotGit = (stat: FileStat, overrides: Partial<FileStat>): FileStat => ({
+  ...stat,
+  ...overrides,
+});
+
+/** `sub/.git` as the kernel reports it, whatever the memory filesystem holds there; the file is never read when it is not a regular one. */
+const reportingDotGit = (
+  ctx: Context,
+  reported: { readonly lstat?: Partial<FileStat>; readonly stat?: Partial<FileStat> },
+): Context => {
+  const reporting =
+    (method: 'lstat' | 'stat', overrides: Partial<FileStat> | undefined) =>
+    async (path: string) => {
+      const real = await ctx.fs[method](path);
+      return path.endsWith(DOT_GIT_OF_SUB) && overrides !== undefined
+        ? asDotGit(real, overrides)
+        : real;
+    };
+  const readUtf8 = async (path: string) => {
+    if (
+      path.endsWith(DOT_GIT_OF_SUB) &&
+      reported.lstat?.isFile !== true &&
+      reported.stat?.isFile !== true
+    ) {
+      throw new Error(`read ${path}`);
+    }
+    return ctx.fs.readUtf8(path);
+  };
+  const fs = Object.assign(Object.create(ctx.fs), {
+    lstat: reporting('lstat', reported.lstat),
+    stat: reporting('stat', reported.stat),
+    readUtf8,
+  });
+  return { ...ctx, fs } as Context;
+};
+
+const NOT_A_REGULAR_FILE = { isFile: false, isDirectory: false, isSymbolicLink: false };
 
 describe('gitlinkHeadOf', () => {
   describe('Given a context without a work tree', () => {
@@ -301,6 +342,143 @@ describe('probeGitlinkCheckout', () => {
 
         // Assert
         expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
+      });
+    });
+  });
+});
+
+describe('a .git that is neither a directory nor a regular file', () => {
+  describe('Given a .git that is a FIFO', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is none and the file is never read', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        await memory.fs.writeUtf8(`${memory.layout.workDir}/sub/.git`, 'gitdir: ../elsewhere\n');
+        const ctx = reportingDotGit(memory, { lstat: NOT_A_REGULAR_FILE });
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'none' });
+      });
+    });
+  });
+
+  describe('Given a .git symlink to a FIFO or a device', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is none and the target is never read', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        await memory.fs.writeUtf8(`${memory.layout.workDir}/sub/target`, 'x\n');
+        await memory.fs.symlink('target', `${memory.layout.workDir}/sub/.git`);
+        const ctx = reportingDotGit(memory, { stat: NOT_A_REGULAR_FILE });
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'none' });
+      });
+    });
+  });
+
+  describe('Given a tracked gitlink whose .git is a FIFO', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then nothing is checked out', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        await memory.fs.writeUtf8(`${memory.layout.workDir}/sub/.git`, 'x\n');
+        const ctx = reportingDotGit(memory, { lstat: NOT_A_REGULAR_FILE });
+        const sut = gitlinkHeadOf;
+
+        // Act
+        const head = await sut(ctx, SUB);
+
+        // Assert
+        expect(head).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('a .git file past the size git reads', () => {
+  const layOutPointer = async (memory: Context): Promise<void> => {
+    await layOutRepository(memory, `${memory.layout.gitDir}/modules/sub`, HEAD_COMMIT);
+    await memory.fs.writeUtf8(`${memory.layout.workDir}/sub/.git`, 'gitdir: ../.git/modules/sub\n');
+  };
+
+  describe('Given a gitfile of exactly 1 MiB', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is still read as a gitfile', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        await layOutPointer(memory);
+        const ctx = reportingDotGit(memory, { lstat: { isFile: true, size: MIB } });
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout.kind).toBe('repository');
+      });
+    });
+  });
+
+  describe('Given a gitfile of 1 MiB and a byte', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is oversized, shown as the .git path, and never read', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        await layOutPointer(memory);
+        const ctx = reportingDotGit(memory, { lstat: { isFile: true, size: MIB + 1 } });
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'oversized', shown: 'sub/.git' });
+      });
+    });
+  });
+
+  describe('Given a .git symlink to a file of 1 MiB and a byte', () => {
+    describe('When the checkout is probed', () => {
+      it('Then it is oversized, shown as the .git path', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        await memory.fs.writeUtf8(`${memory.layout.workDir}/sub/target`, 'x\n');
+        await memory.fs.symlink('target', `${memory.layout.workDir}/sub/.git`);
+        const ctx = reportingDotGit(memory, { stat: { isFile: true, size: MIB + 1 } });
+        const sut = probeGitlinkCheckout;
+
+        // Act
+        const checkout = await sut(ctx, SUB);
+
+        // Assert
+        expect(checkout).toEqual({ kind: 'oversized', shown: 'sub/.git' });
+      });
+    });
+  });
+
+  describe('Given a tracked gitlink whose .git is 1 MiB and a byte', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then it refuses with GITFILE_TOO_LARGE at the .git path', async () => {
+        // Arrange
+        const memory = createMemoryContext();
+        await layOutPointer(memory);
+        const ctx = reportingDotGit(memory, { lstat: { isFile: true, size: MIB + 1 } });
+        const sut = gitlinkHeadOf;
+
+        // Act
+        const err = await sut(ctx, SUB).catch((e: unknown) => e);
+
+        // Assert
+        expect((err as TsgitError).data).toEqual({ code: 'GITFILE_TOO_LARGE', path: 'sub/.git' });
       });
     });
   });

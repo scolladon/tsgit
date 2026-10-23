@@ -4,6 +4,7 @@ import type { FilePath } from '../objects/object-id.js';
 export type RepositoryError =
   | { readonly code: 'NOT_A_REPOSITORY'; readonly path: FilePath }
   | { readonly code: 'NO_COMMIT_CHECKED_OUT'; readonly path: FilePath }
+  | { readonly code: 'GITFILE_TOO_LARGE'; readonly path: FilePath }
   | { readonly code: 'BARE_REPOSITORY'; readonly operation: string }
   | { readonly code: 'WORK_TREE_REQUIRED'; readonly operation: string }
   | { readonly code: 'WORK_TREE_CONFIG_INVALID'; readonly gitDir: string }
@@ -28,6 +29,9 @@ export const notARepository = (path: FilePath): TsgitError =>
 
 export const noCommitCheckedOut = (path: FilePath): TsgitError =>
   new TsgitError({ code: 'NO_COMMIT_CHECKED_OUT', path });
+
+export const gitfileTooLarge = (path: FilePath): TsgitError =>
+  new TsgitError({ code: 'GITFILE_TOO_LARGE', path });
 
 export const bareRepository = (operation: string): TsgitError =>
   new TsgitError({ code: 'BARE_REPOSITORY', operation });

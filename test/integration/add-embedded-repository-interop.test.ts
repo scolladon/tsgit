@@ -26,7 +26,16 @@ import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { rm } from '../../src/application/commands/rm.js';
 import { TsgitError } from '../../src/domain/index.js';
-import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  makeFifo,
+  makeSparseFile,
+  NON_BLOCKING_TIMEOUT_MS,
+  OVERSIZED_GITFILE_BYTES,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const PINNED_DATE = '@1700000000 +0000';
 const REFUSED_EXIT = 128;
@@ -192,6 +201,11 @@ const withLinkToFile = brokenDotGit(async (repo, dotGit) => {
   await symlink(`${repo}-file`, dotGit);
 });
 const withGarbageGitfile = brokenDotGit((_repo, dotGit) => writeFile(dotGit, 'garbage\n'));
+const withFifo = brokenDotGit(async (_repo, dotGit) => makeFifo(dotGit));
+const withLinkToDevice = brokenDotGit((_repo, dotGit) => symlink('/dev/zero', dotGit));
+const withOversizedGitfile = brokenDotGit(async (_repo, dotGit) =>
+  makeSparseFile(dotGit, OVERSIZED_GITFILE_BYTES),
+);
 const withEmptyGitfile = brokenDotGit((_repo, dotGit) => writeFile(dotGit, ''));
 const withGitfileToNothing = brokenDotGit((_repo, dotGit) => gitfile(dotGit, '../nothing'));
 const withAdminFilesAtTheTop: Setup = async (repo) => {
@@ -251,6 +265,8 @@ interface Row {
   readonly refusal?: Readonly<Record<string, unknown>>;
   /** git exits 1 with a hint when a pathspec names an ignored path, yet stages what it can. */
   readonly ignoredHint?: boolean;
+  /** A guard so a regression that blocks on a pipe fails instead of hanging. */
+  readonly timeoutMs?: number;
 }
 
 const SUB_ROWS: ReadonlyArray<Row> = [
@@ -298,6 +314,16 @@ const SUB_ROWS: ReadonlyArray<Row> = [
     spec: ['.'],
     refusal: { code: 'NO_COMMIT_CHECKED_OUT', path: 'sub/' },
   },
+  ...[
+    ['a .git FIFO', withFifo],
+    ['a .git symlink to a character device', withLinkToDevice],
+    ['a .git file past 1 MiB', withOversizedGitfile],
+  ].map(([label, setup]) => ({
+    label: `${label as string}, which git takes for a plain directory`,
+    setup: setup as Setup,
+    spec: ['.'],
+    timeoutMs: NON_BLOCKING_TIMEOUT_MS,
+  })),
   ...[
     ['a dangling .git link', withDanglingLink],
     ['a .git link to a file', withLinkToFile],
@@ -691,39 +717,43 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
     describe.each(ALL_ROWS)('Given $label', (row) => {
       describe('When git and tsgit add it', () => {
-        it('Then both leave the same index and agree on the refusal', async () => {
-          // Arrange
-          const { gitRepo, tsgitRepo } = await twins(row.setup);
-          const sut = add;
-          const gitArgs = [
-            'add',
-            ...(row.force === true ? ['-f'] : []),
-            ...(row.all === true ? ['-A'] : []),
-          ];
+        it(
+          'Then both leave the same index and agree on the refusal',
+          async () => {
+            // Arrange
+            const { gitRepo, tsgitRepo } = await twins(row.setup);
+            const sut = add;
+            const gitArgs = [
+              'add',
+              ...(row.force === true ? ['-f'] : []),
+              ...(row.all === true ? ['-A'] : []),
+            ];
 
-          // Act
-          const gitRun = tryRunGitWithExit([
-            '-C',
-            gitRepo,
-            ...gitArgs,
-            '--',
-            ...(row.gitSpec ?? row.spec),
-          ]);
-          const refusal = await refusalOf(() =>
-            sut(createNodeContext({ workDir: tsgitRepo }), row.spec, {
-              force: row.force === true,
-              all: row.all === true,
-            }),
-          );
+            // Act
+            const gitRun = tryRunGitWithExit([
+              '-C',
+              gitRepo,
+              ...gitArgs,
+              '--',
+              ...(row.gitSpec ?? row.spec),
+            ]);
+            const refusal = await refusalOf(() =>
+              sut(createNodeContext({ workDir: tsgitRepo }), row.spec, {
+                force: row.force === true,
+                all: row.all === true,
+              }),
+            );
 
-          // Assert
-          const refused = gitRun.exitCode === REFUSED_EXIT;
-          expect(gitRun.exitCode).toBe(refused ? REFUSED_EXIT : row.ignoredHint === true ? 1 : 0);
-          expect(refusal !== undefined).toBe(refused);
-          if (row.refusal !== undefined) expect(refusal).toMatchObject(row.refusal);
-          expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
-          if (!refused) expect(await looseCountOf(tsgitRepo)).toBe(await looseCountOf(gitRepo));
-        });
+            // Assert
+            const refused = gitRun.exitCode === REFUSED_EXIT;
+            expect(gitRun.exitCode).toBe(refused ? REFUSED_EXIT : row.ignoredHint === true ? 1 : 0);
+            expect(refusal !== undefined).toBe(refused);
+            if (row.refusal !== undefined) expect(refusal).toMatchObject(row.refusal);
+            expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
+            if (!refused) expect(await looseCountOf(tsgitRepo)).toBe(await looseCountOf(gitRepo));
+          },
+          row.timeoutMs,
+        );
       });
     });
 

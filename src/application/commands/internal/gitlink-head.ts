@@ -1,10 +1,10 @@
 import { TsgitError } from '../../../domain/error.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
-import { notARepository } from '../../../domain/repository/error.js';
+import { gitfileTooLarge, notARepository } from '../../../domain/repository/error.js';
 import { parseCommondir, parseGitfilePointer } from '../../../domain/worktree/gitfile.js';
 import { resolveWorktreePath } from '../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../ports/context.js';
-import type { FileSystem } from '../../../ports/file-system.js';
+import type { FileStat, FileSystem } from '../../../ports/file-system.js';
 import type { AlternatePathProbe } from '../../../ports/object-source-access.js';
 import { readUtf8IfPresent } from '../../primitives/internal/fs-probes.js';
 import { refStorageOf } from '../../primitives/internal/gitlink-ref-storage.js';
@@ -18,6 +18,8 @@ import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 const DOT_GIT = '.git';
 const COMMONDIR_FILE = 'commondir';
 const SEPARATOR = '/';
+// Mirrors git's cap on a gitfile (`read_gitfile_gently`): a larger `.git` file is refused unread.
+const MAX_GITFILE_SIZE = 1 << 20;
 const UNFOLLOWED_LINK_CODES: ReadonlySet<string> = new Set(['FILE_NOT_FOUND', 'PERMISSION_DENIED']);
 const NOT_A_DIRECTORY_CODES: ReadonlySet<string> = new Set([
   ...UNFOLLOWED_LINK_CODES,
@@ -32,13 +34,15 @@ interface Located {
   readonly fs: FileSystem;
 }
 
-/** What <path>/.git leads to: nothing, a repository git refuses to read (named as git names it), or one whose HEAD is read on demand. */
+/** What <path>/.git leads to: nothing, a repository git refuses to read (named as git names it), a gitfile too large for git to read, or one whose HEAD is read on demand. */
 export type GitlinkCheckout =
   | { readonly kind: 'none' }
+  | { readonly kind: 'oversized'; readonly shown: FilePath }
   | { readonly kind: 'broken'; readonly shown: FilePath }
   | { readonly kind: 'repository'; readonly head: () => Promise<ObjectId | undefined> };
 
 type Broken = Extract<GitlinkCheckout, { readonly kind: 'broken' }>;
+type Oversized = Extract<GitlinkCheckout, { readonly kind: 'oversized' }>;
 
 const broken = (shown: FilePath): Broken => ({ kind: 'broken', shown });
 
@@ -55,6 +59,7 @@ export const gitlinkHeadOf = async (
 ): Promise<ObjectId | undefined> => {
   const checkout = await probeGitlinkCheckout(ctx, path);
   if (checkout.kind === 'broken') throw notARepository(checkout.shown);
+  if (checkout.kind === 'oversized') throw gitfileTooLarge(checkout.shown);
   if (checkout.kind === 'none') return undefined;
   return checkout.head();
 };
@@ -67,7 +72,7 @@ export const probeGitlinkCheckout = async (
   const checkout = joinPath(requireWorkTree(ctx, 'add'), path);
   const located = await locateCheckout(ctx, checkout, path);
   if (located === undefined) return { kind: 'none' };
-  if (located.kind === 'broken') return located;
+  if (located.kind === 'broken' || located.kind === 'oversized') return located;
   const { gitDir } = located;
   // HEAD is a plain file under either ref backend, so it is judged before the config is read.
   const unread = deriveGitlinkContext(ctx, gitDir, path, { fs: located.fs });
@@ -140,20 +145,33 @@ const locateCheckout = async (
   ctx: Context,
   checkout: string,
   path: FilePath,
-): Promise<Located | Broken | undefined> => {
+): Promise<Located | Broken | Oversized | undefined> => {
   const dotGit = `${checkout}${SEPARATOR}${DOT_GIT}`;
   const stat = await lstatOrMissing(ctx, dotGit);
   if (stat === undefined) return undefined;
   if (stat.isDirectory) return directoryCheckout(ctx, checkout, path);
-  // Stryker disable next-line ConditionalExpression: equivalent — a regular `.git` file stats as a non-directory, so `symlinkCheckout` falls through to `gitfileCheckout` exactly as the direct call does.
   if (stat.isSymbolicLink) return symlinkCheckout(ctx, checkout, path);
+  return gitfileOfSize(ctx, checkout, path, stat);
+};
+
+/** git reads a `.git` only when its followed stat is a regular file, and refuses one past its cap without reading it. */
+const gitfileOfSize = async (
+  ctx: Context,
+  checkout: string,
+  path: FilePath,
+  stat: FileStat,
+): Promise<Located | Broken | Oversized | undefined> => {
+  if (!stat.isFile) return undefined;
+  if (stat.size > MAX_GITFILE_SIZE) return { kind: 'oversized', shown: dotGitShown(path) };
   return gitfileCheckout(ctx, checkout, path);
 };
+
+const dotGitShown = (path: FilePath): FilePath => `${path}${SEPARATOR}${DOT_GIT}` as FilePath;
 
 const directoryCheckout = (ctx: Context, checkout: string, path: FilePath): Located => ({
   kind: 'located',
   gitDir: `${checkout}${SEPARATOR}${DOT_GIT}`,
-  shown: `${path}${SEPARATOR}${DOT_GIT}` as FilePath,
+  shown: dotGitShown(path),
   fs: ctx.fs,
 });
 
@@ -165,12 +183,12 @@ const symlinkCheckout = async (
   ctx: Context,
   checkout: string,
   path: FilePath,
-): Promise<Located | Broken | undefined> => {
+): Promise<Located | Broken | Oversized | undefined> => {
   const dotGit = `${checkout}${SEPARATOR}${DOT_GIT}`;
   const target = await statOrUnreachable(ctx, dotGit);
   if (target === undefined) return undefined;
   if (target.isDirectory) return linkedCheckout(ctx, checkout, path);
-  return gitfileCheckout(ctx, checkout, path);
+  return gitfileOfSize(ctx, checkout, path, target);
 };
 
 /**
@@ -195,7 +213,7 @@ const linkedCheckout = async (ctx: Context, checkout: string, path: FilePath): P
   return {
     kind: 'located',
     gitDir,
-    shown: `${path}${SEPARATOR}${DOT_GIT}` as FilePath,
+    shown: dotGitShown(path),
     fs: worktreeScopedFs(ctx, gitDir),
   };
 };
@@ -205,7 +223,7 @@ const gitfileCheckout = async (
   checkout: string,
   path: FilePath,
 ): Promise<Located | Broken> => {
-  const dotGit = `${path}${SEPARATOR}${DOT_GIT}` as FilePath;
+  const dotGit = dotGitShown(path);
   const pointer = parseGitfilePointer(await ctx.fs.readUtf8(`${checkout}${SEPARATOR}${DOT_GIT}`));
   if (pointer.kind !== 'ok') return broken(dotGit);
   const shown = pointer.path.startsWith(SEPARATOR)
