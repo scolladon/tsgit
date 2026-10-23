@@ -2,6 +2,7 @@ import { pathspecOutsideRepo } from './commands/error.js';
 import type { FilePath } from './objects/object-id.js';
 import { isDotGitAlias } from './path/verify-path.js';
 
+const POSIX_HOST: PathSyntaxHost = {};
 const BACKSLASH = '\\';
 const MAX_PATH_BYTES = 4096;
 const MAX_COMPONENT_BYTES = 255;
@@ -33,6 +34,16 @@ export interface PathSyntaxHost {
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
   rejectBackslash(input);
+  return validateWorkingTreePathOn(input, POSIX_HOST);
+};
+
+/**
+ * {@link validateWorkingTreePath} with the backslash refusal gated on the
+ * host: a POSIX host keeps `\` as an ordinary file-name byte, a Windows path
+ * syntax refuses it as a separator. Every other rule is unchanged.
+ */
+export const validateWorkingTreePathOn = (input: string, host: PathSyntaxHost): FilePath => {
+  if (host.windowsPathSyntax === true) rejectBackslash(input);
   rejectInputShape(input);
   rejectLeadingColon(input);
   const components = input.split('/');

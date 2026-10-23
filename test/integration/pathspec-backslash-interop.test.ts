@@ -10,7 +10,14 @@
  *   unique:         a backslash pathspec escapes, and a backslash file name is walked, as git does
  *   interopSurface: add
  */
-import { mkdtemp, readFile, realpath, rm as removeTree, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm as removeTree,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -18,6 +25,7 @@ import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { grep } from '../../src/application/commands/grep.js';
+import { rm } from '../../src/application/commands/rm.js';
 import { status } from '../../src/application/commands/status.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
@@ -153,6 +161,9 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       return repo;
     };
 
+    const filesOf = async (repo: string): Promise<string[]> =>
+      (await readdir(repo)).filter((name) => name !== '.git').sort();
+
     const porcelainPaths = (repo: string): string[] =>
       splitNames(runGit(['-C', repo, 'status', '--porcelain', '-z', '--untracked-files=all']))
         .map((line) => line.slice(3))
@@ -208,6 +219,32 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         const gitContent = await readFile(path.join(gitRepo, 'a\\b'), 'utf8');
         expect(gitContent === 'dirty').toBe(row.stayed);
         expect(await readFile(path.join(tsgitRepo, 'a\\b'), 'utf8')).toBe(gitContent);
+      });
+    });
+
+    describe.each([
+      { label: 'rm -f with an escaped backslash', spec: 'a\\\\b', cached: false },
+      { label: 'rm -f with question marks', spec: 'a??', cached: false },
+      { label: 'rm --cached with an escaped backslash', spec: 'a\\\\b', cached: true },
+      { label: 'rm -f with one question mark', spec: 'a?', cached: false },
+    ])('When git and tsgit run $label on tracked backslash-named files', (row) => {
+      it('Then both leave the same index and working tree', async () => {
+        // Arrange
+        const gitRepo = await dirtyTwin('git');
+        const tsgitRepo = await dirtyTwin('tsgit');
+        const sut = rm;
+        const gitArgs = row.cached ? ['--cached'] : ['-f'];
+
+        // Act
+        runGit(['-C', gitRepo, 'rm', '-q', ...gitArgs, '--', row.spec]);
+        await sut(createNodeContext({ workDir: tsgitRepo }), [row.spec], {
+          force: !row.cached,
+          cached: row.cached,
+        });
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
       });
     });
 

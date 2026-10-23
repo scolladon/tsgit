@@ -5,6 +5,7 @@ import {
   type PathSyntaxHost,
   validateWalkedEntryPath,
   validateWorkingTreePath,
+  validateWorkingTreePathOn,
 } from '../../../src/domain/working-tree-path.js';
 
 const POSIX_HOST: PathSyntaxHost = {};
@@ -652,6 +653,72 @@ describe('validateWalkedEntryPath', () => {
       it('Then accepts — the NTFS ADS/drive-letter guard is a pathspec-input concern, not a walk hazard', () => {
         // Arrange & Act + Assert
         expect(validateWalkedEntryPath('a:b', POSIX_HOST)).toBe('a:b');
+      });
+    });
+  });
+});
+
+describe('validateWorkingTreePathOn', () => {
+  describe('Given a backslash in the path on a POSIX host', () => {
+    describe('When validated', () => {
+      it('Then returns the path — a backslash is an ordinary file-name byte', () => {
+        // Arrange
+        const sut = validateWorkingTreePathOn;
+
+        // Act
+        const result = sut('a\\b', POSIX_HOST);
+
+        // Assert
+        expect(result).toBe('a\\b');
+      });
+    });
+  });
+
+  describe('Given a backslash in the path on a Windows path-syntax host', () => {
+    describe('When validated', () => {
+      it('Then refuses with PATHSPEC_OUTSIDE_REPO carrying the path', () => {
+        // Arrange
+        const sut = validateWorkingTreePathOn;
+        let caught: unknown;
+
+        // Act
+        try {
+          sut('a\\b', WINDOWS_HOST);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: 'a\\b',
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a .git component', input: 'a/.git/b' },
+    { label: 'a leading colon', input: ':magic' },
+  ])('Given $label on a POSIX host', ({ input }) => {
+    describe('When validated', () => {
+      it('Then still refuses with PATHSPEC_OUTSIDE_REPO carrying the path', () => {
+        // Arrange
+        const sut = validateWorkingTreePathOn;
+        let caught: unknown;
+
+        // Act
+        try {
+          sut(input, POSIX_HOST);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: input,
+        });
       });
     });
   });

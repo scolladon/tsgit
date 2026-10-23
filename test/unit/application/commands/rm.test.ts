@@ -1517,3 +1517,28 @@ describe('Given a merge stopped on a conflicted a/f and a merged b', () => {
     });
   });
 });
+
+describe('Given a tracked backslash-named file a\\b beside a tracked ab', () => {
+  describe.each([
+    { label: 'an escaped backslash', spec: 'a\\\\b' },
+    { label: 'question marks', spec: 'a??' },
+  ])('When rm force-removes it with $label', ({ spec }) => {
+    it('Then only the backslash-named file leaves the index and the working tree', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { workingTree: { 'a\\b': 'x\n', ab: 'y\n' } });
+      await add(ctx, ['.']);
+      await commit(ctx, { message: 'seed', author: AUTHOR });
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, [spec], { force: true });
+
+      // Assert
+      expect(result.removed).toEqual(['a\\b']);
+      expect(await ctx.fs.exists(work(ctx, 'a\\b'))).toBe(false);
+      expect(await ctx.fs.exists(work(ctx, 'ab'))).toBe(true);
+      expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['ab']);
+    });
+  });
+});

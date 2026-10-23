@@ -3,7 +3,10 @@ import { dirname, TsgitError } from '../../../domain/error.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
-import { validateWorkingTreePath } from '../../../domain/working-tree-path.js';
+import {
+  validateWorkingTreePath,
+  validateWorkingTreePathOn,
+} from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
@@ -82,7 +85,7 @@ export const materializeFile = async (
  * Throws `CHECKOUT_OVERWRITE_DIRTY` rather than blindly mutating.
  */
 export const removeFile = async (ctx: Context, rawPath: string): Promise<void> => {
-  const path = validatePath(rawPath);
+  const path = validateWorkingTreePathOn(rawPath, ctx);
   const full = repoPath(ctx, path);
   let stat: Awaited<ReturnType<Context['fs']['lstat']>>;
   try {
