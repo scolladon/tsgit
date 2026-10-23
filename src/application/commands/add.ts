@@ -252,7 +252,7 @@ const holdsExclusion = (matcher: Pathspec): boolean => matcher.some((entry) => e
 
 const addLiteralOnly = async (
   ctx: Context,
-  resolved: ResolvedPathspec,
+  resolved: CommandPathspec,
   stats: LiteralStats,
   scope: ConversionScope,
 ): Promise<AddResult> => {
@@ -268,17 +268,37 @@ const addLiteralOnly = async (
       stageZeroBeside,
       ensurePromisorConfigValid,
     };
+    const { sparse, stageable } = splitSparseLiterals(resolved, state.entries);
     const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
       staging,
       sorted,
-      resolved,
+      stageable,
       stats,
     );
     await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
-    return { ...result, sparse: [] };
+    return { ...result, sparse: sparse.map(({ spelling }) => spelling) };
   } finally {
     await lock.release();
   }
+};
+
+/**
+ * git leaves a skip-worktree entry alone and reports the literal that names it.
+ * Only the entry's own path counts: a literal naming a symlink that replaced a
+ * directory is staged, and the skip-worktree entries beneath it just go.
+ */
+const splitSparseLiterals = (
+  resolved: CommandPathspec,
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+): { readonly sparse: ReadonlyArray<PositivePathspec>; readonly stageable: ResolvedPathspec } => {
+  const namesSkipWorktree = ({ entry }: PositivePathspec): boolean => {
+    const named = entries.get(keyOfPath(entry.body as FilePath));
+    return named !== undefined && isStageZeroSkipWorktree(named);
+  };
+  const sparse = resolved.positives.filter(namesSkipWorktree);
+  const sparseBodies = new Set(sparse.map(({ entry }) => entry.body));
+  const literalMustMatch = resolved.literalMustMatch.filter((body) => !sparseBodies.has(body));
+  return { sparse, stageable: { ...resolved, literalMustMatch } };
 };
 
 /** Stage the literals, then drop what a non-directory they inserted now replaces. */
@@ -810,7 +830,7 @@ const addRenormalized = async (
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries } = await readIndexOrEmpty(ctx);
-    await refuseUnseenRenormalized(ctx, positives, entries);
+    const sparse = await refuseUnseenRenormalized(ctx, positives, entries);
     const staging = {
       ctx,
       scope: { ...scope, indexRules: NO_INDEX_RULES },
@@ -820,7 +840,13 @@ const addRenormalized = async (
     await commitIfChanged(lock, entries.length, renormalized.entries, {
       restagedPaths: renormalized.restagedPaths,
     });
-    return { added: [], modified: renormalized.modified, removed: [], eolNotices: [], sparse: [] };
+    return {
+      added: [],
+      modified: renormalized.modified,
+      removed: [],
+      eolNotices: [],
+      sparse: sparse.map(({ spelling }) => spelling),
+    };
   } finally {
     await lock.release();
   }
@@ -850,8 +876,11 @@ const withoutSkipWorktree = (
 ): WalkWorkingTreeEntry[] =>
   walked.filter(({ path }) => existing.get(keyOfPath(path))?.flags.skipWorktree !== true);
 
+const isStageZeroSkipWorktree = (entry: IndexEntry): boolean =>
+  entry.flags.skipWorktree && entry.flags.stage === 0;
+
 const skipWorktreeOf = (existing: ReadonlyMap<IndexPathKey, IndexEntry>): IndexEntry[] =>
-  [...existing.values()].filter((entry) => entry.flags.skipWorktree && entry.flags.stage === 0);
+  [...existing.values()].filter(isStageZeroSkipWorktree);
 
 const withoutSkipWorktreeEntries = (
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
@@ -878,16 +907,22 @@ const namesOnDisk = async (ctx: Context, { entry, probesDisk }: PositivePathspec
 /**
  * `add --renormalize` runs no directory fill, so a pathspec is seen through the
  * index alone; git still accepts one whose verbatim body names a file on disk.
+ * A skip-worktree entry does not count as seen: git reports the pathspec that
+ * reaches only such entries, before it asks the disk.
  */
 const refuseUnseenRenormalized = async (
   ctx: Context,
   positives: ReadonlyArray<PositivePathspec>,
   entries: ReadonlyArray<IndexEntry>,
-): Promise<void> => {
-  const unseen = unmatchedPositives(positives, (positive) => indexSees(positive, entries));
-  for (const positive of unseen) {
+): Promise<ReadonlyArray<PositivePathspec>> => {
+  const notSkipped = entries.filter((entry) => !entry.flags.skipWorktree);
+  const unseen = unmatchedPositives(positives, (positive) => indexSees(positive, notSkipped));
+  const skipped = entries.filter(isStageZeroSkipWorktree);
+  const sparse = unseen.filter((positive) => reachesSkipWorktree(positive, skipped));
+  for (const positive of unseen.filter((candidate) => !sparse.includes(candidate))) {
     if (!(await namesOnDisk(ctx, positive))) throw pathspecNoMatch(positive.spelling);
   }
+  return sparse;
 };
 
 /** Every pathspec, in argument order, that neither the index pass nor the walk reaches. */

@@ -274,4 +274,88 @@ describe('add over a skip-worktree entry', () => {
       });
     });
   });
+
+  describe('Given a skip-worktree file rewritten on disk', () => {
+    describe('When it is added by name', () => {
+      it('Then it is reported and the entry keeps its bit and its blob', async () => {
+        // Arrange
+        const ctx = await sparseRepo();
+        const before = await entryOf(ctx, 'x.log');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x.log']);
+
+        // Assert
+        const after = await entryOf(ctx, 'x.log');
+        expect(result.sparse).toEqual(['x.log']);
+        expect(result.modified).toEqual([]);
+        expect(after?.flags.skipWorktree).toBe(true);
+        expect(after?.id).toBe(before?.id);
+        expect(await blobExists(ctx, CHANGED)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a skip-worktree file and another file rewritten on disk', () => {
+    describe('When both are added by name', () => {
+      it('Then only the skip-worktree name is reported and the other is staged', async () => {
+        // Arrange
+        const ctx = await sparseRepo();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x.log', 's.txt']);
+
+        // Assert
+        const after = await entryOf(ctx, 'x.log');
+        expect(result.sparse).toEqual(['x.log']);
+        expect(result.modified).toEqual(['s.txt']);
+        expect(after?.flags.skipWorktree).toBe(true);
+        expect(await blobExists(ctx, CHANGED)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a skip-worktree file rewritten on disk', () => {
+    describe('When it is renormalized by name', () => {
+      it('Then it is reported and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await sparseRepo();
+        const before = await entryOf(ctx, 'x.log');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['x.log'], { renormalize: true });
+
+        // Assert
+        const after = await entryOf(ctx, 'x.log');
+        expect(result.sparse).toEqual(['x.log']);
+        expect(result.modified).toEqual([]);
+        expect(after?.flags.skipWorktree).toBe(true);
+        expect(after?.id).toBe(before?.id);
+      });
+    });
+  });
+
+  describe('Given a skip-worktree file and another file rewritten on disk', () => {
+    describe('When the whole tree is renormalized', () => {
+      it('Then the skip-worktree entry is kept and nothing is reported', async () => {
+        // Arrange
+        const ctx = await sparseRepo();
+        const before = await entryOf(ctx, 'x.log');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], { renormalize: true });
+
+        // Assert
+        const after = await entryOf(ctx, 'x.log');
+        expect(result.sparse).toEqual([]);
+        expect(result.modified).toEqual(['s.txt']);
+        expect(after?.flags.skipWorktree).toBe(true);
+        expect(after?.id).toBe(before?.id);
+      });
+    });
+  });
 });
