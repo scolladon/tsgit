@@ -99,6 +99,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import {
   type CommandPathspec,
   type PositivePathspec,
+  type PositiveTracker,
   reachesSkipWorktree,
   resolveCommandPathspec,
   trackPositives,
@@ -290,9 +291,8 @@ const addLiteralOnly = async (
       stageZeroBeside,
       ensurePromisorConfigValid,
     };
-    const { sparse, stageable: unfiltered } = splitSparseLiterals(resolved, state.entries);
-    const { ignored, stageable } = await splitIgnoredLiterals(
-      unfiltered,
+    const { sparse, ignored, stageable } = await splitReportedLiterals(
+      resolved,
       state.entries,
       repoIgnore,
     );
@@ -303,10 +303,25 @@ const addLiteralOnly = async (
       stats,
     );
     await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
-    return { ...result, sparse: sparse.map(({ spelling }) => spelling), ignored };
+    return { ...result, sparse, ignored };
   } finally {
     await lock.release();
   }
+};
+
+/** git reports a sparse literal first; the ignore verdict only concerns the literals left. */
+const splitReportedLiterals = async (
+  resolved: CommandPathspec,
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  repoIgnore: IgnorePredicate,
+): Promise<{
+  readonly sparse: ReadonlyArray<string>;
+  readonly ignored: ReadonlyArray<FilePath>;
+  readonly stageable: ResolvedPathspec;
+}> => {
+  const { sparse, stageable: unfiltered } = splitSparseLiterals(resolved, entries);
+  const { ignored, stageable } = await splitIgnoredLiterals(unfiltered, entries, repoIgnore);
+  return { sparse: sparse.map(({ spelling }) => spelling), ignored, stageable };
 };
 
 /**
@@ -1178,14 +1193,7 @@ const hiddenWalkEntryOf = async (
   };
 };
 
-/** Read the index, then stage every walked entry `ignore` keeps. */
-const stageIgnoredWalk = async (
-  ctx: Context,
-  repoIgnore: IgnorePredicate,
-  { matcher, positives }: Pick<CommandPathspec, 'matcher' | 'positives'>,
-  scope: ConversionScope,
-  ensurePromisorConfigValid: PromisorGuard,
-): Promise<{
+interface WalkStaging {
   readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
   readonly stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>;
@@ -1194,7 +1202,16 @@ const stageIgnoredWalk = async (
   readonly verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>;
   readonly sparse: ReadonlyArray<string>;
   readonly ignored: ReadonlyArray<FilePath>;
-}> => {
+}
+
+/** Read the index, then stage every walked entry `ignore` keeps. */
+const stageIgnoredWalk = async (
+  ctx: Context,
+  repoIgnore: IgnorePredicate,
+  { matcher, positives }: Pick<CommandPathspec, 'matcher' | 'positives'>,
+  scope: ConversionScope,
+  ensurePromisorConfigValid: PromisorGuard,
+): Promise<WalkStaging> => {
   const {
     entries: existing,
     unmergedStages,
@@ -1208,25 +1225,14 @@ const stageIgnoredWalk = async (
   const collector = collectIgnored(repoIgnore, existing, positives);
   const ignore = withPathspec(collector.ignore, matcher, unmergedStages);
   const walked = withoutSkipWorktree(await collectWalk(walkWorkingTree(ctx, { ignore })), existing);
-  const unseen = unseenWalked(positives, (positive) => tracker.seen(positive), walked);
-  const skipped = skipWorktreeOf(existing);
-  const sparse = unseen.filter((positive) => reachesSkipWorktree(positive, skipped));
-  await refuseUnseenWalked(
+  const sparse = await settleUnseenPositives(ctx, tracker, positives, walked, existing);
+  const outcomes = await stageSelectedEntries(
     ctx,
-    unseen.filter((positive) => !sparse.includes(positive)),
-  );
-  const gitlinks = await stagedGitlinks(ctx, existing, matcher);
-  const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages, verdicts);
-  const staged = await stageWalkedEntries(
-    ctx,
-    [...walked, ...hidden],
-    existing,
-    new Set<IndexPathKey>(),
+    { existing, matcher, walked, unmergedStages, verdicts },
     { ...scope, indexRules },
     indexMtime,
     ensurePromisorConfigValid,
   );
-  const outcomes = [...gitlinks, ...staged];
   return {
     existing,
     unmergedStages,
@@ -1237,6 +1243,54 @@ const stageIgnoredWalk = async (
     sparse: sparse.map(({ spelling }) => spelling),
     ignored: collector.ignored(),
   };
+};
+
+/** git reports the sparse pathspecs, then refuses the rest, all before any blob is written. */
+const settleUnseenPositives = async (
+  ctx: Context,
+  tracker: PositiveTracker,
+  positives: ReadonlyArray<PositivePathspec>,
+  walked: ReadonlyArray<WalkWorkingTreeEntry>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): Promise<ReadonlyArray<PositivePathspec>> => {
+  const unseen = unseenWalked(positives, (positive) => tracker.seen(positive), walked);
+  const skipped = skipWorktreeOf(existing);
+  const sparse = unseen.filter((positive) => reachesSkipWorktree(positive, skipped));
+  await refuseUnseenWalked(
+    ctx,
+    unseen.filter((positive) => !sparse.includes(positive)),
+  );
+  return sparse;
+};
+
+interface WalkSelection {
+  readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly matcher: ResolvedPathspec['matcher'];
+  readonly walked: ReadonlyArray<WalkWorkingTreeEntry>;
+  readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
+  readonly verdicts: ReadonlyMap<IndexPathKey, PathspecVerdict>;
+}
+
+/** The index-side gitlink restages come first, then the walked and hidden tracked entries. */
+const stageSelectedEntries = async (
+  ctx: Context,
+  { existing, matcher, walked, unmergedStages, verdicts }: WalkSelection,
+  scope: StagingScope,
+  indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
+): Promise<ReadonlyArray<WalkOutcome>> => {
+  const gitlinks = await stagedGitlinks(ctx, existing, matcher);
+  const hidden = await hiddenTracked(ctx, existing, matcher, walked, unmergedStages, verdicts);
+  const staged = await stageWalkedEntries(
+    ctx,
+    [...walked, ...hidden],
+    existing,
+    new Set<IndexPathKey>(),
+    scope,
+    indexMtime,
+    ensurePromisorConfigValid,
+  );
+  return [...gitlinks, ...staged];
 };
 
 /**
