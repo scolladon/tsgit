@@ -29,6 +29,8 @@ const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): C
 /** What a gitlink's repository needs beyond the parent's own: the filesystem that reaches it. */
 interface GitlinkReach {
   readonly fs?: FileSystem;
+  /** Where the repository keeps shared refs and config when that is not its `gitDir` (a linked worktree's admin dir). */
+  readonly commonDir?: string;
   /** The ref backend the repository declares; a submodule command assumes `files`. */
   readonly refStorage?: RepositoryLayout['refStorage'];
 }
@@ -52,6 +54,9 @@ export const deriveGitlinkContext = (
     layout: Object.freeze({
       workDir,
       gitDir,
+      ...(reach.commonDir !== undefined && reach.commonDir !== gitDir
+        ? { commonDir: reach.commonDir }
+        : {}),
       bare: false,
       // A submodule is its own repository and can declare its own
       // `extensions.refStorage`, independent of the parent's — this

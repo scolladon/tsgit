@@ -27,13 +27,13 @@ const honoursExtensions = (core: ReadonlyArray<ConfigEntry>): boolean => {
 };
 
 /**
- * The ref backend a repository declares in `<gitDir>/config`, as git honours it:
+ * The ref backend a repository declares in `<commonDir>/config`, as git honours it:
  * `extensions.refStorage` counts from `core.repositoryformatversion` 1 up, and
  * anything but `reftable` reads as the files backend. Read through `fs`, which
- * must reach `gitDir` — a gitlink's repository is its own, never the parent's.
+ * must reach `commonDir`, where a linked worktree keeps its config — a gitlink's repository is its own, never the parent's.
  */
-export const refStorageOf = async (fs: FileSystem, gitDir: string): Promise<RefStorage> => {
-  const text = await readUtf8IfPresent(fs, `${gitDir}/${CONFIG_FILE}`);
+export const refStorageOf = async (fs: FileSystem, commonDir: string): Promise<RefStorage> => {
+  const text = await readUtf8IfPresent(fs, `${commonDir}/${CONFIG_FILE}`);
   if (text === undefined) return 'files';
   if (!honoursExtensions(topLevelEntries(text, 'core'))) return 'files';
   return lastValueOf(topLevelEntries(text, 'extensions'), 'refstorage') === REFTABLE

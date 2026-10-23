@@ -20,7 +20,9 @@ type Checkout =
   | 'file'
   | 'symlink'
   | 'linked'
-  | 'pointed-away';
+  | 'pointed-away'
+  | 'worktree-admin'
+  | 'worktree-admin-absolute';
 
 interface Superproject {
   /** What `sub` holds in the working tree. */
@@ -66,6 +68,17 @@ const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
     const awayGitDir = `${ctx.layout.workDir}/away/module`;
     await layOutModule(ctx, awayGitDir, setup);
     await ctx.fs.writeUtf8(`${sub}/.git`, `gitdir: ${awayGitDir}\n`);
+  }
+  if (checkout === 'worktree-admin' || checkout === 'worktree-admin-absolute') {
+    const admin = `${ctx.layout.gitDir}/admin`;
+    const common = `${ctx.layout.gitDir}/common`;
+    await ctx.fs.writeUtf8(`${sub}/.git`, `gitdir: ../.git/admin\n`);
+    await ctx.fs.writeUtf8(`${admin}/HEAD`, MODULE_HEAD);
+    await ctx.fs.writeUtf8(
+      `${admin}/commondir`,
+      checkout === 'worktree-admin' ? '../common\n' : `${common}\n`,
+    );
+    await ctx.fs.writeUtf8(`${common}/refs/heads/main`, `${setup.branch ?? MOVED_HEAD}\n`);
   }
   if (checkout === 'deinitialised') await ctx.fs.mkdir(sub);
   if (checkout === 'file') await ctx.fs.writeUtf8(sub, 'plain\n');
@@ -245,6 +258,28 @@ describe('add over a gitlink whose .git leads out of the superproject or through
   ])('Given $label at another commit than recorded', ({ checkout }) => {
     describe('When the whole tree is added', () => {
       it('Then the gitlink is staged at that repository HEAD', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual(['sub']);
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(MOVED_HEAD);
+      });
+    });
+  });
+});
+
+describe('add over a gitlink whose .git is a linked worktree admin directory', () => {
+  describe.each([
+    { label: 'a relative commondir', checkout: 'worktree-admin' as const },
+    { label: 'an absolute commondir', checkout: 'worktree-admin-absolute' as const },
+  ])('Given $label holding the branch at another commit than recorded', ({ checkout }) => {
+    describe('When the whole tree is added', () => {
+      it('Then the gitlink is staged at the commit the common dir holds', async () => {
         // Arrange
         const ctx = await superproject({ checkout });
         const sut = add;

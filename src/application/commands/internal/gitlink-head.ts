@@ -1,11 +1,12 @@
 import { TsgitError } from '../../../domain/error.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import { notARepository } from '../../../domain/repository/error.js';
-import { parseGitfilePointer } from '../../../domain/worktree/gitfile.js';
+import { parseCommondir, parseGitfilePointer } from '../../../domain/worktree/gitfile.js';
 import { resolveWorktreePath } from '../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileSystem } from '../../../ports/file-system.js';
 import type { AlternatePathProbe } from '../../../ports/object-source-access.js';
+import { readUtf8IfPresent } from '../../primitives/internal/fs-probes.js';
 import { refStorageOf } from '../../primitives/internal/gitlink-ref-storage.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { hasUsableHead, requireWorkTree } from '../../primitives/internal/repo-state.js';
@@ -15,6 +16,7 @@ import { narrowAlternatePathProbe } from '../../primitives/object-store.js';
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 
 const DOT_GIT = '.git';
+const COMMONDIR_FILE = 'commondir';
 const SEPARATOR = '/';
 
 /** Where a checkout's repository lies on disk, the path git names it by when it is broken, and the filesystem that reaches it. */
@@ -38,15 +40,33 @@ export const gitlinkHeadOf = async (
   const checkout = joinPath(requireWorkTree(ctx, 'add'), path);
   const located = await locateCheckout(ctx, checkout, path);
   if (located === undefined) return undefined;
-  const { gitDir, fs } = located;
+  const { gitDir } = located;
   // HEAD is a plain file under either ref backend, so it is judged before the config is read.
-  const unread = deriveGitlinkContext(ctx, gitDir, path, { fs });
+  const unread = deriveGitlinkContext(ctx, gitDir, path, { fs: located.fs });
   if (!(await hasUsableHead(unread))) throw notARepository(located.shown);
+  const { commonDir, fs } = await reaching(ctx, located);
   const child = deriveGitlinkContext(ctx, gitDir, path, {
     fs,
-    refStorage: await refStorageOf(fs, gitDir),
+    commonDir,
+    refStorage: await refStorageOf(fs, commonDir),
   });
   return resolveRefOrMissing(child, 'HEAD');
+};
+
+/**
+ * A linked worktree's admin dir names its common dir — where shared refs and config
+ * live — in `commondir`, relative to the admin dir or absolute; the filesystem is
+ * widened to reach it.
+ */
+const reaching = async (
+  ctx: Context,
+  { gitDir, fs }: Located,
+): Promise<{ readonly commonDir: string; readonly fs: FileSystem }> => {
+  const declared = await readUtf8IfPresent(fs, `${gitDir}${SEPARATOR}${COMMONDIR_FILE}`);
+  const value = declared === undefined ? undefined : parseCommondir(declared);
+  if (value?.kind !== 'ok') return { commonDir: gitDir, fs };
+  const commonDir = resolveWorktreePath(gitDir, value.path);
+  return { commonDir, fs: worktreeScopedFs(ctx, [gitDir, commonDir]) };
 };
 
 const locateCheckout = async (
