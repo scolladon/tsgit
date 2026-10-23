@@ -306,6 +306,29 @@ describe('add -A over a tracked file replaced by a repository', () => {
     });
   });
 
+  describe('Given a tracked file where an ignored untracked repository now stands', () => {
+    describe('When everything is added', () => {
+      it('Then the path is reported as modified, not removed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { '.gitignore': 'sub\n' } });
+        await seedIndex(ctx, [{ path: 'sub', text: 'was a file\n' }]);
+        await layOutRepository(ctx, 'sub');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [], { all: true });
+
+        // Assert
+        expect(result.modified).toEqual(['sub']);
+        expect(result.removed).toEqual([]);
+        const staged = await entryOf(ctx, 'sub');
+        expect(staged?.mode).toBe(FILE_MODE.GITLINK);
+        expect(staged?.id).toBe(BRANCH_HEAD);
+      });
+    });
+  });
+
   describe('Given a tracked file where a repository with no commit now stands', () => {
     describe('When everything is added', () => {
       it('Then it is refused', async () => {

@@ -247,6 +247,16 @@ const trackedBeneath =
     await after(repo);
   };
 
+/** A conflict on `sub`: a gitlink at stage 2 and a regular file at stage 3, with a repository checked out there. */
+const gitlinkConflictedWithFile: Setup = async (repo) => {
+  await committed()(repo);
+  const head = runGit(['-C', path.join(repo, 'sub'), 'rev-parse', 'HEAD']).trim();
+  const blob = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'file\n' }).trim();
+  runGit(['-C', repo, 'update-index', '--index-info'], {
+    input: `160000 ${head} 2\tsub\n100644 ${blob} 3\tsub\n`,
+  });
+};
+
 const repositoryInside: Setup = async (repo) => {
   await committed()(repo);
   await committed('sub/inner', { v: 'v\n' })(repo);
@@ -265,11 +275,33 @@ interface Row {
   readonly refusal?: Readonly<Record<string, unknown>>;
   /** git exits 1 with a hint when a pathspec names an ignored path, yet stages what it can. */
   readonly ignoredHint?: boolean;
+  /** Loose objects git writes before it dies on a refusal; tsgit refuses before writing any. */
+  readonly gitLooseWrites?: number;
   /** The paths git's hint names, which tsgit reports as `ignored`. */
   readonly ignored?: ReadonlyArray<string>;
   /** A guard so a regression that blocks on a pipe fails instead of hanging. */
   readonly timeoutMs?: number;
 }
+
+const PLAIN_DIRECTORY_SETUPS: ReadonlyArray<readonly [string, Setup]> = [
+  ['a .git FIFO', withFifo],
+  ['a .git symlink to a character device', withLinkToDevice],
+  ['a .git file past 1 MiB', withOversizedGitfile],
+];
+
+const NO_REPOSITORY_SETUPS: ReadonlyArray<readonly [string, Setup]> = [
+  ['a dangling .git link', withDanglingLink],
+  ['a .git link to a file', withLinkToFile],
+  ['an empty .git directory', withEmptyGitDir],
+  ['a garbage HEAD', withGarbageHead],
+  ['no objects directory', withoutObjects],
+  ['a garbage gitfile', withGarbageGitfile],
+  ['an empty gitfile', withEmptyGitfile],
+  ['a gitfile to nothing', withGitfileToNothing],
+  ['admin files at the top', withAdminFilesAtTheTop],
+];
+
+const BROKEN_DOT_GIT_SPECS = [['.'], ['sub'], ['s*']];
 
 const SUB_ROWS: ReadonlyArray<Row> = [
   ...[['.'], ['sub'], ['sub/'], ['s*'], ['su?/']].map((spec) => ({
@@ -316,31 +348,21 @@ const SUB_ROWS: ReadonlyArray<Row> = [
     spec: ['.'],
     refusal: { code: 'NO_COMMIT_CHECKED_OUT', path: 'sub/' },
   },
-  ...[
-    ['a .git FIFO', withFifo],
-    ['a .git symlink to a character device', withLinkToDevice],
-    ['a .git file past 1 MiB', withOversizedGitfile],
-  ].map(([label, setup]) => ({
-    label: `${label as string}, which git takes for a plain directory`,
-    setup: setup as Setup,
-    spec: ['.'],
-    timeoutMs: NON_BLOCKING_TIMEOUT_MS,
-  })),
-  ...[
-    ['a dangling .git link', withDanglingLink],
-    ['a .git link to a file', withLinkToFile],
-    ['an empty .git directory', withEmptyGitDir],
-    ['a garbage HEAD', withGarbageHead],
-    ['no objects directory', withoutObjects],
-    ['a garbage gitfile', withGarbageGitfile],
-    ['an empty gitfile', withEmptyGitfile],
-    ['a gitfile to nothing', withGitfileToNothing],
-    ['admin files at the top', withAdminFilesAtTheTop],
-  ].map(([label, setup]) => ({
-    label: `${label as string}, which is no repository`,
-    setup: setup as Setup,
-    spec: ['.'],
-  })),
+  ...PLAIN_DIRECTORY_SETUPS.flatMap(([label, setup]) =>
+    BROKEN_DOT_GIT_SPECS.map((spec) => ({
+      label: `${label}, which git takes for a plain directory, added by ${spec[0]}`,
+      setup: setup,
+      spec,
+      timeoutMs: NON_BLOCKING_TIMEOUT_MS,
+    })),
+  ),
+  ...NO_REPOSITORY_SETUPS.flatMap(([label, setup]) =>
+    BROKEN_DOT_GIT_SPECS.map((spec) => ({
+      label: `${label}, which is no repository, added by ${spec[0]}`,
+      setup: setup,
+      spec,
+    })),
+  ),
 ];
 
 const NO_COMMIT = { code: 'NO_COMMIT_CHECKED_OUT', path: 'sub/' };
@@ -367,6 +389,7 @@ const NO_COMMIT_ROWS: ReadonlyArray<Row> = [
     setup: together(unborn(), (repo: string) => writeFiles(repo, { a: 'a\n', z: 'z\n' })),
     spec,
     refusal: NO_COMMIT,
+    gitLooseWrites: 1,
   })),
   {
     label: 'a repository with no commit beside untracked files, added without it',
@@ -433,6 +456,19 @@ const IGNORED_ROWS: ReadonlyArray<Row> = [
     spec: ['.'],
   },
   {
+    label: 'a repository beneath an ignored directory, added by its path',
+    setup: together(committed('d/sub'), ignoring('d/\n')),
+    spec: ['d/sub'],
+    ignoredHint: true,
+    ignored: ['d'],
+  },
+  {
+    label: 'a repository beneath an ignored directory, added by its name alone',
+    setup: together(committed('d/sub'), ignoring('d/\n')),
+    spec: ['sub'],
+    refusal: { code: 'PATHSPEC_NO_MATCH', pattern: 'sub' },
+  },
+  {
     label: 'an ignored repository, added by dot with force',
     setup: together(committed(), ignoring('sub/\n')),
     spec: ['.'],
@@ -468,6 +504,7 @@ const IGNORED_ROWS: ReadonlyArray<Row> = [
     spec: ['.'],
     force: true,
     refusal: NO_COMMIT,
+    gitLooseWrites: 1,
   },
 ];
 
@@ -544,6 +581,14 @@ const everythingRow = (label: string, setup: Setup, extra: Partial<Row> = {}): R
 });
 
 const ALL_TREE_ROWS: ReadonlyArray<Row> = [
+  ...PLAIN_DIRECTORY_SETUPS.map(([label, setup]) =>
+    everythingRow(`${label}, which git takes for a plain directory`, setup, {
+      timeoutMs: NON_BLOCKING_TIMEOUT_MS,
+    }),
+  ),
+  ...NO_REPOSITORY_SETUPS.map(([label, setup]) =>
+    everythingRow(`${label}, which is no repository`, setup),
+  ),
   everythingRow('a repository with a commit', committed()),
   everythingRow('a repository with no files', committed('sub', {})),
   everythingRow('a gitfile naming an absolute path', absoluteGitfile(committed())),
@@ -560,7 +605,7 @@ const ALL_TREE_ROWS: ReadonlyArray<Row> = [
   everythingRow(
     'a repository with no commit beside untracked files',
     together(unborn(), (repo) => writeFiles(repo, { a: 'a\n', z: 'z\n' })),
-    { refusal: NO_COMMIT },
+    { refusal: NO_COMMIT, gitLooseWrites: 1 },
   ),
   everythingRow('two repositories with no commit', together(unborn('b'), unborn('a')), {
     refusal: { code: 'NO_COMMIT_CHECKED_OUT', path: 'a/' },
@@ -579,6 +624,7 @@ const ALL_TREE_ROWS: ReadonlyArray<Row> = [
     force: true,
     label: 'an ignored repository with no commit, added by -A with force',
     refusal: NO_COMMIT,
+    gitLooseWrites: 1,
   }),
   everythingRow(
     'a tracked file replaced by a repository',
@@ -593,6 +639,10 @@ const ALL_TREE_ROWS: ReadonlyArray<Row> = [
     replacingTracked(trackedFile, unborn()),
     { refusal: NO_COMMIT },
   ),
+  everythingRow(
+    'a tracked file replaced by a repository under an ignore rule',
+    replacingTracked(trackedFile, together(committed(), ignoring('sub\n'))),
+  ),
   everythingRow('tracked files beneath a repository', trackedBeneath()),
   everythingRow(
     'a rewritten tracked file beneath a repository',
@@ -605,6 +655,11 @@ const ALL_TREE_ROWS: ReadonlyArray<Row> = [
 ];
 
 const INDEX_PASS_ROWS: ReadonlyArray<Row> = [
+  ...[['.'], ['sub'], ['s*']].map((spec) => ({
+    label: `a gitlink at stage 2 and a file at stage 3 with a repository checked out, added by ${spec[0]}`,
+    setup: gitlinkConflictedWithFile,
+    spec,
+  })),
   ...[
     ['file', trackedFile],
     ['symlink', trackedSymlink],
@@ -753,6 +808,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             // Arrange
             const { gitRepo, tsgitRepo } = await twins(row.setup);
             const sut = add;
+            const looseBefore = await looseCountOf(gitRepo);
             const gitArgs = [
               'add',
               ...(row.force === true ? ['-f'] : []),
@@ -782,6 +838,10 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             if (row.refusal !== undefined) expect(refusal).toMatchObject(row.refusal);
             expect(indexOf(tsgitRepo)).toBe(indexOf(gitRepo));
             if (!refused) expect(await looseCountOf(tsgitRepo)).toBe(await looseCountOf(gitRepo));
+            if (refused) {
+              expect(await looseCountOf(gitRepo)).toBe(looseBefore + (row.gitLooseWrites ?? 0));
+              expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
+            }
             if (!refused) expect(result?.ignored).toEqual(row.ignored ?? []);
           },
           row.timeoutMs,
