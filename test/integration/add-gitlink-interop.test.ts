@@ -258,6 +258,13 @@ const replaceDotGit = async (repo: string, make: (dotGit: string) => Promise<voi
   await make(dotGit);
 };
 
+/** The submodule's `.git` replaced by a symlink to nothing, beside an edited file. */
+const danglingDotGit: Setup = async (repo, upstream) => {
+  await withSubmodule(repo, upstream);
+  await replaceDotGit(repo, (dotGit) => symlink(`${repo}-nowhere`, dotGit));
+  await writeFiles(repo, { k: 'k2\n' });
+};
+
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'add over a gitlink whose submodule checkout moved',
   () => {
@@ -374,6 +381,12 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         label: 'a moved repository whose .git is a symlink outside the superproject',
         setup: movedGitdirReachedBy(outsideTheSuperproject, linkTo),
         spec: ['.'],
+      },
+      { label: 'a dangling .git symlink, added by dot', setup: danglingDotGit, spec: ['.'] },
+      {
+        label: 'a dangling .git symlink, added by name and a file',
+        setup: danglingDotGit,
+        spec: ['k', 'sub'],
       },
       {
         label: 'a .git that is a gitfile to a linked worktree whose branch moved, added by dot',
@@ -522,6 +535,17 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           replaceDotGit(repo, async (dotGit) => {
             await mkdir(dotGit);
             await writeFile(path.join(dotGit, 'HEAD'), 'garbage\n');
+          }),
+        ),
+        line: notRecognized,
+      },
+      {
+        label: 'a .git symlink to a directory holding no HEAD',
+        setup: brokenBy((repo) =>
+          replaceDotGit(repo, async (dotGit) => {
+            const target = `${repo}-empty-gitdir`;
+            await mkdir(target);
+            await symlink(target, dotGit);
           }),
         ),
         line: notRecognized,

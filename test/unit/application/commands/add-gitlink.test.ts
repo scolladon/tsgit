@@ -22,7 +22,8 @@ type Checkout =
   | 'linked'
   | 'pointed-away'
   | 'worktree-admin'
-  | 'worktree-admin-absolute';
+  | 'worktree-admin-absolute'
+  | 'dangling';
 
 interface Superproject {
   /** What `sub` holds in the working tree. */
@@ -79,6 +80,10 @@ const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
       checkout === 'worktree-admin' ? '../common\n' : `${common}\n`,
     );
     await ctx.fs.writeUtf8(`${common}/refs/heads/main`, `${setup.branch ?? MOVED_HEAD}\n`);
+  }
+  if (checkout === 'dangling') {
+    await ctx.fs.mkdir(sub);
+    await ctx.fs.symlink(`${ctx.layout.workDir}/nowhere`, `${sub}/.git`);
   }
   if (checkout === 'deinitialised') await ctx.fs.mkdir(sub);
   if (checkout === 'file') await ctx.fs.writeUtf8(sub, 'plain\n');
@@ -268,6 +273,27 @@ describe('add over a gitlink whose .git leads out of the superproject or through
         // Assert
         expect(result.modified).toEqual(['sub']);
         expect((await entryOf(ctx, 'sub'))?.id).toBe(MOVED_HEAD);
+      });
+    });
+  });
+});
+
+describe('add over a gitlink whose .git is a dangling symlink', () => {
+  describe('Given a gitlink with nothing checked out behind a dangling .git and an edited file', () => {
+    describe('When the whole tree is added', () => {
+      it('Then the file is staged and the gitlink is left as recorded', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout: 'dangling', tree: { k: 'k2\n' } });
+        const recorded = (await entryOf(ctx, 'sub'))?.id;
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual(['k']);
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(recorded);
+        expect((await entryOf(ctx, 'sub'))?.mode).toBe(FILE_MODE.GITLINK);
       });
     });
   });
@@ -546,6 +572,11 @@ describe('add over a gitlink whose checkout is broken', () => {
     {
       label: 'a .git directory whose HEAD is garbage',
       setup: { checkout: 'embedded' as const, head: 'garbage\n' },
+      path: 'sub/.git',
+    },
+    {
+      label: 'a .git symlink to a directory holding no HEAD',
+      setup: { checkout: 'linked' as const, head: null },
       path: 'sub/.git',
     },
     {

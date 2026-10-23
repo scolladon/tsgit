@@ -78,9 +78,7 @@ const locateCheckout = async (
   const stat = await lstatOrMissing(ctx, dotGit);
   if (stat === undefined) return undefined;
   if (stat.isDirectory) return directoryCheckout(ctx, checkout, path);
-  if (stat.isSymbolicLink && (await linksToDirectory(ctx, dotGit))) {
-    return linkedCheckout(ctx, checkout, path);
-  }
+  if (stat.isSymbolicLink) return symlinkCheckout(ctx, checkout, path);
   return gitfileCheckout(ctx, checkout, path);
 };
 
@@ -90,12 +88,27 @@ const directoryCheckout = (ctx: Context, checkout: string, path: FilePath): Loca
   fs: ctx.fs,
 });
 
-/** git `stat`s `.git`, so a link to a repository directory is that directory, wherever it lies. */
-const linksToDirectory = async (ctx: Context, dotGit: string): Promise<boolean> => {
+/**
+ * git `stat`s `.git`, so a link to a repository directory is that directory, wherever it
+ * lies, and a link to nothing is no checkout at all; a link to a file is a gitfile.
+ */
+const symlinkCheckout = async (
+  ctx: Context,
+  checkout: string,
+  path: FilePath,
+): Promise<Located | undefined> => {
+  const dotGit = `${checkout}${SEPARATOR}${DOT_GIT}`;
+  const target = await statOrMissing(ctx, dotGit);
+  if (target === undefined) return undefined;
+  if (target.isDirectory) return linkedCheckout(ctx, checkout, path);
+  return gitfileCheckout(ctx, checkout, path);
+};
+
+const statOrMissing = async (ctx: Context, dotGit: string) => {
   try {
-    return (await metadataOf(ctx, dotGit).stat(dotGit)).isDirectory;
+    return await metadataOf(ctx, dotGit).stat(dotGit);
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return false;
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
     throw err;
   }
 };
