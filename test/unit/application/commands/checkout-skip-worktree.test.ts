@@ -45,6 +45,33 @@ const seedSkipWorktree = async () => {
 
 type SeededCtx = Awaited<ReturnType<typeof seedSkipWorktree>>;
 
+/** Two commits changing `sw.txt` (v1, v2) and `n.txt`, then `sw.txt` marked skip-worktree and both dirtied. */
+const seedSkipWorktreeOverTwoCommits = async () => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${SKIP_WORKTREE_PATH}`, 'sw-v1');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${PLAIN_PATH}`, 'n-v1');
+  await add(ctx, [SKIP_WORKTREE_PATH, PLAIN_PATH]);
+  await commit(ctx, { message: 'first', author });
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${SKIP_WORKTREE_PATH}`, 'sw-v2');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${PLAIN_PATH}`, 'n-v2');
+  await add(ctx, [SKIP_WORKTREE_PATH, PLAIN_PATH]);
+  await commit(ctx, { message: 'second', author });
+  const index = await readIndex(ctx);
+  const marked: GitIndex = {
+    ...index,
+    entries: index.entries.map((entry) =>
+      entry.path === SKIP_WORKTREE_PATH
+        ? { ...entry, flags: { ...entry.flags, skipWorktree: true } }
+        : entry,
+    ),
+  };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(marked, ctx));
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${SKIP_WORKTREE_PATH}`, 'sw-dirty');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${PLAIN_PATH}`, 'n-dirty');
+  return ctx;
+};
+
 const workText = (ctx: SeededCtx, path: string) => ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`);
 
 const skipWorktreeOf = async (ctx: SeededCtx, path: string) =>
@@ -113,5 +140,30 @@ describe.each(SOURCES)(
         });
       },
     );
+  },
+);
+
+describe.each([
+  { spec: ['sw.txt'], restoredPlain: false },
+  { spec: ['sw*'], restoredPlain: false },
+  { spec: ['sw.txt', 'n.txt'], restoredPlain: true },
+])(
+  'Given a skip-worktree file whose blob differs in the tree source',
+  ({ spec, restoredPlain }) => {
+    describe(`When ${'$spec'} is restored from HEAD~1`, () => {
+      it('Then the file is written, its index blob is the source blob and the bit is cleared', async () => {
+        // Arrange
+        const ctx = await seedSkipWorktreeOverTwoCommits();
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, { paths: spec, source: 'HEAD~1' });
+
+        // Assert
+        expect(await workText(ctx, SKIP_WORKTREE_PATH)).toBe('sw-v1');
+        expect(await workText(ctx, PLAIN_PATH)).toBe(restoredPlain ? 'n-v1' : 'n-dirty');
+        expect(await skipWorktreeOf(ctx, SKIP_WORKTREE_PATH)).toBe(false);
+      });
+    });
   },
 );

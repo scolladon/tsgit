@@ -79,6 +79,61 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       return { gitRepo, tsgitRepo };
     };
 
+    const setUpTwoCommits = async (repo: string): Promise<void> => {
+      const env = { ...runGitEnv(), GIT_AUTHOR_DATE: PINNED_DATE, GIT_COMMITTER_DATE: PINNED_DATE };
+      const commitAll = (message: string) => {
+        runGit(['-C', repo, 'add', '-A']);
+        runGit(
+          ['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-qm', message],
+          {
+            env,
+          },
+        );
+      };
+      runGit(['init', '-q', '-b', 'main', repo]);
+      await writeFile(path.join(repo, 'sw.txt'), 'sw-v1');
+      await writeFile(path.join(repo, 'n.txt'), 'n-v1');
+      commitAll('first');
+      await writeFile(path.join(repo, 'sw.txt'), 'sw-v2');
+      await writeFile(path.join(repo, 'n.txt'), 'n-v2');
+      commitAll('second');
+      runGit(['-C', repo, 'update-index', '--skip-worktree', 'sw.txt']);
+      await writeFile(path.join(repo, 'sw.txt'), 'sw-dirty');
+      await writeFile(path.join(repo, 'n.txt'), 'n-dirty');
+    };
+
+    const stagedSnapshotOf = async (repo: string) => ({
+      ...(await snapshotOf(repo)),
+      staged: runGit(['-C', repo, 'ls-files', '-s']),
+    });
+
+    describe.each([{ spec: ['sw.txt'] }, { spec: ['sw*'] }, { spec: ['sw.txt', 'n.txt'] }])(
+      'Given a skip-worktree file whose blob differs in HEAD~1',
+      ({ spec }) => {
+        describe('When $spec is restored from HEAD~1', () => {
+          it('Then git and tsgit write the file, stage the source blob and clear the bit', async () => {
+            // Arrange
+            counter += 1;
+            const gitRepo = path.join(root, `git-${counter}`);
+            const tsgitRepo = path.join(root, `tsgit-${counter}`);
+            await setUpTwoCommits(gitRepo);
+            await setUpTwoCommits(tsgitRepo);
+            const sut = checkout;
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', gitRepo, 'checkout', 'HEAD~1', '--', ...spec]);
+            await sut(createNodeContext({ workDir: tsgitRepo }), { paths: spec, source: 'HEAD~1' });
+
+            // Assert
+            expect(gitRun.exitCode).toBe(0);
+            expect(await readFile(path.join(gitRepo, 'sw.txt'), 'utf8')).toBe('sw-v1');
+            expect(runGit(['-C', gitRepo, 'ls-files', '-v'])).toContain('H sw.txt');
+            expect(await stagedSnapshotOf(tsgitRepo)).toEqual(await stagedSnapshotOf(gitRepo));
+          });
+        });
+      },
+    );
+
     describe.each([
       { sourceLabel: 'the index', source: undefined },
       { sourceLabel: 'HEAD', source: 'HEAD' },

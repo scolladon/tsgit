@@ -7,7 +7,7 @@ import {
   revparseUnresolved,
 } from '../../domain/commands/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
-import type { GitIndex } from '../../domain/git-index/index.js';
+import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {
   escapedPathOf,
   type IndexPath,
@@ -16,6 +16,7 @@ import {
 } from '../../domain/git-index/index-path-key.js';
 import {
   FILE_MODE,
+  type FileMode,
   type FilePath,
   type ObjectId,
   type RefName,
@@ -318,6 +319,9 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   };
 };
 
+/** A path of the restore universe with the content the restore would write. */
+type SourceEntry = IndexPath & { readonly mode: FileMode; readonly id: ObjectId };
+
 interface PathSource {
   readonly tree: ObjectId;
   readonly metadata: CheckoutMetadata;
@@ -382,10 +386,7 @@ const restoreUnderIndexLock = async (
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
-    const universe = outsideSkipWorktree(
-      await enumerateSourcePaths(ctx, source, currentIndex),
-      currentIndex,
-    );
+    const universe = await restorableUniverse(ctx, source, currentIndex);
     const { matched, unmatched } = selectFromUniverse(pathspec, universe);
     refuseUnmatched(unmatched);
     const pathSet = new Set<FilePath>(matched.map(escapedPathOf));
@@ -397,17 +398,31 @@ const restoreUnderIndexLock = async (
   }
 };
 
-// Git's checkout_paths skips skip-worktree entries before it matches the
-// pathspec, so a path only they name is refused like any unknown one.
-const outsideSkipWorktree = (
-  universe: ReadonlyArray<IndexPath>,
+// Git's checkout_paths skips a skip-worktree entry before it matches the
+// pathspec, so a path only they name is refused like any unknown one. A tree
+// source keeps the entry whose (mode, id) differs from the index's: update_some
+// replaces it with a fresh entry that has no bit, and the restore writes it.
+const restorableUniverse = async (
+  ctx: Context,
+  source: PathSource | undefined,
   currentIndex: GitIndex,
-): ReadonlyArray<IndexPath> => {
-  const skipped = new Set<IndexPathKey>(
-    currentIndex.entries.filter((entry) => entry.flags.skipWorktree).map(indexPathKey),
+): Promise<ReadonlyArray<SourceEntry>> => {
+  const skipped = new Map<IndexPathKey, IndexEntry>(
+    currentIndex.entries
+      .filter((entry) => entry.flags.skipWorktree)
+      .map((entry) => [indexPathKey(entry), entry]),
   );
-  return universe.filter((entry) => !skipped.has(indexPathKey(entry)));
+  const universe = await enumerateSourcePaths(ctx, source, currentIndex);
+  return universe.filter(
+    (entry) => !isUnchangedSkipWorktree(skipped.get(indexPathKey(entry)), entry),
+  );
 };
+
+const isUnchangedSkipWorktree = (
+  indexed: IndexEntry | undefined,
+  candidate: SourceEntry,
+): boolean =>
+  indexed !== undefined && indexed.mode === candidate.mode && indexed.id === candidate.id;
 
 // One matcher pass over the universe: what the spec selects, and which
 // positives nothing reached, so the refusal needs no second scan.
@@ -503,9 +518,9 @@ const enumerateSourcePaths = async (
   ctx: Context,
   source: PathSource | undefined,
   currentIndex: GitIndex,
-): Promise<ReadonlyArray<IndexPath>> => {
+): Promise<ReadonlyArray<SourceEntry>> => {
   if (source === undefined) return currentIndex.entries;
-  const paths: IndexPath[] = [];
+  const paths: SourceEntry[] = [];
   for await (const entry of walkTreeWithLossyBytes(ctx, source.tree)) {
     // Stryker disable next-line ConditionalExpression: equivalent — directory entries in the universe are unobservable: materializeTree filters DIRECTORY modes itself and matches by exact path, and any pathspec matching a directory also matches its (non-empty) descendant files.
     if (entry.mode !== FILE_MODE.DIRECTORY) paths.push(entry);
