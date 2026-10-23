@@ -7,7 +7,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import type { GitIndex } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import { type AuthorIdentity, FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 
 const author: AuthorIdentity = {
@@ -69,6 +69,27 @@ const seedSkipWorktreeOverTwoCommits = async () => {
   await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(marked, ctx));
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${SKIP_WORKTREE_PATH}`, 'sw-dirty');
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${PLAIN_PATH}`, 'n-dirty');
+  return ctx;
+};
+
+/** `sw.txt` committed as a regular file, its index entry executable and skip-worktree, the file dirtied: only the mode differs from HEAD. */
+const seedSkipWorktreeWithOtherMode = async () => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${SKIP_WORKTREE_PATH}`, 'sw');
+  await add(ctx, [SKIP_WORKTREE_PATH]);
+  await commit(ctx, { message: 'first', author });
+  const index = await readIndex(ctx);
+  const marked: GitIndex = {
+    ...index,
+    entries: index.entries.map((entry) => ({
+      ...entry,
+      mode: FILE_MODE.EXECUTABLE,
+      flags: { ...entry.flags, skipWorktree: true },
+    })),
+  };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(marked, ctx));
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${SKIP_WORKTREE_PATH}`, 'sw-dirty');
   return ctx;
 };
 
@@ -167,3 +188,24 @@ describe.each([
     });
   },
 );
+
+const modeOf = async (ctx: SeededCtx, path: string) =>
+  (await readIndex(ctx)).entries.find((entry) => entry.path === path)?.mode;
+
+describe('Given a skip-worktree file whose blob equals the tree source but whose mode differs', () => {
+  describe('When it is restored from HEAD', () => {
+    it('Then the file is written, its index mode is the source mode and the bit is cleared', async () => {
+      // Arrange
+      const ctx = await seedSkipWorktreeWithOtherMode();
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { paths: [SKIP_WORKTREE_PATH], source: 'HEAD' });
+
+      // Assert
+      expect(await workText(ctx, SKIP_WORKTREE_PATH)).toBe('sw');
+      expect(await modeOf(ctx, SKIP_WORKTREE_PATH)).toBe(FILE_MODE.REGULAR);
+      expect(await skipWorktreeOf(ctx, SKIP_WORKTREE_PATH)).toBe(false);
+    });
+  });
+});

@@ -20,7 +20,7 @@ describe('refStorageOf', () => {
       expected: 'reftable',
     },
     {
-      label: 'lower-cased section and key',
+      label: 'upper-cased section and key',
       config: '[CORE]\n\tRepositoryFormatVersion = 1\n[EXTENSIONS]\n\trefstorage = reftable\n',
       expected: 'reftable',
     },
@@ -53,7 +53,7 @@ describe('refStorageOf', () => {
     },
   ])('Given $label', ({ config, expected }) => {
     describe('When the declared ref storage is read', () => {
-      it(`Then it is ${'$expected'}`, async () => {
+      it(`Then it is ${expected}`, async () => {
         // Arrange
         const { fs, gitDir } = await gitDirWithConfig(config);
         const sut = refStorageOf;
