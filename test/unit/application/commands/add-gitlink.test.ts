@@ -13,7 +13,14 @@ type Ctx = ReturnType<typeof createMemoryContext>;
 const MOVED_HEAD = 'b'.repeat(40);
 const MODULE_HEAD = 'ref: refs/heads/main\n';
 
-type Checkout = 'absorbed' | 'embedded' | 'deinitialised' | 'file' | 'symlink';
+type Checkout =
+  | 'absorbed'
+  | 'embedded'
+  | 'deinitialised'
+  | 'file'
+  | 'symlink'
+  | 'linked'
+  | 'pointed-away';
 
 interface Superproject {
   /** What `sub` holds in the working tree. */
@@ -51,6 +58,15 @@ const layOutCheckout = async (ctx: Ctx, setup: Superproject): Promise<void> => {
     }
   }
   if (checkout === 'embedded') await layOutModule(ctx, `${sub}/.git`, setup);
+  if (checkout === 'linked') {
+    await layOutModule(ctx, `${ctx.layout.gitDir}/store`, setup);
+    await ctx.fs.symlink('../.git/store', `${sub}/.git`);
+  }
+  if (checkout === 'pointed-away') {
+    const awayGitDir = `${ctx.layout.workDir}/away/module`;
+    await layOutModule(ctx, awayGitDir, setup);
+    await ctx.fs.writeUtf8(`${sub}/.git`, `gitdir: ${awayGitDir}\n`);
+  }
   if (checkout === 'deinitialised') await ctx.fs.mkdir(sub);
   if (checkout === 'file') await ctx.fs.writeUtf8(sub, 'plain\n');
   if (checkout === 'symlink') await ctx.fs.symlink('k', sub);
@@ -217,6 +233,68 @@ describe('add over a gitlink whose checkout is elsewhere', () => {
       });
     });
   });
+});
+
+describe('add over a gitlink whose .git leads out of the superproject or through a link', () => {
+  describe.each([
+    {
+      label: 'a gitfile with an absolute pointer to another directory',
+      checkout: 'pointed-away' as const,
+    },
+    { label: 'a .git that is a symlink to a repository directory', checkout: 'linked' as const },
+  ])('Given $label at another commit than recorded', ({ checkout }) => {
+    describe('When the whole tree is added', () => {
+      it('Then the gitlink is staged at that repository HEAD', async () => {
+        // Arrange
+        const ctx = await superproject({ checkout });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.modified).toEqual(['sub']);
+        expect((await entryOf(ctx, 'sub'))?.id).toBe(MOVED_HEAD);
+      });
+    });
+  });
+});
+
+/** Gitlink `d/sub` recorded, `d` a symlink to `out`, and `out/sub` a repository at another commit. */
+const gitlinkBehindSymlinkedParent = async (): Promise<Ctx> => {
+  const ctx = createMemoryContext();
+  await seedRepo(ctx, { workingTree: { k: 'k\n' } });
+  const work = ctx.layout.workDir;
+  await layOutModule(ctx, `${work}/out/sub/.git`, {});
+  await ctx.fs.symlink('out', `${work}/d`);
+  await seedIndex(ctx, [
+    { path: 'd/sub', text: 'recorded\n', mode: FILE_MODE.GITLINK },
+    { path: 'k', text: 'k\n' },
+  ]);
+  return ctx;
+};
+
+describe('add over a gitlink whose parent directory became a symlink', () => {
+  describe.each([{ spec: ['*sub'] }, { spec: ['.'] }])(
+    'Given the parent replaced by a symlink to a repository and $spec',
+    ({ spec }) => {
+      describe('When it is added', () => {
+        it('Then the gitlink is staged as removed and never as modified', async () => {
+          // Arrange
+          const ctx = await gitlinkBehindSymlinkedParent();
+          const sut = add;
+
+          // Act
+          const result = await sut(ctx, spec);
+
+          // Assert
+          expect(result.modified).not.toContain('d/sub');
+          expect(result.removed.filter((path) => path === 'd/sub')).toEqual(['d/sub']);
+          expect(await entryOf(ctx, 'd/sub')).toBeUndefined();
+        });
+      });
+    },
+  );
 });
 
 describe('add over a gitlink that did not move', () => {

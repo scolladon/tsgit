@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  deriveGitlinkContext,
   deriveSubmoduleCloneContext,
   deriveSubmoduleContext,
 } from '../../../../../src/application/primitives/internal/submodule-context.js';
@@ -235,6 +236,39 @@ describe('deriveSubmoduleContext — the acceptance verdicts', () => {
         expect('untrusted' in (result?.layout ?? {})).toBe(false);
         expect('formatRefusal' in (result?.layout ?? {})).toBe(false);
       });
+    });
+  });
+});
+
+describe('Given a gitlink repository reached through its own filesystem', () => {
+  describe('When the gitlink context is derived with that filesystem', () => {
+    it('Then the child reads through it and keeps the parent layout otherwise', () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const reaching = createMemoryContext().fs;
+      const sut = deriveGitlinkContext;
+
+      // Act
+      const child = sut(ctx, '/elsewhere/.git', 'sub' as FilePath, { fs: reaching });
+
+      // Assert
+      expect(child.fs).toBe(reaching);
+      expect(child.layout.gitDir).toBe('/elsewhere/.git');
+      expect(child.layout.workDir).toBe(`${ctx.layout.workDir}/sub`);
+    });
+  });
+
+  describe('When the gitlink context is derived without one', () => {
+    it('Then the child shares the parent filesystem', () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = deriveGitlinkContext;
+
+      // Act
+      const child = sut(ctx, '/elsewhere/.git', 'sub' as FilePath);
+
+      // Assert
+      expect(child.fs).toBe(ctx.fs);
     });
   });
 });

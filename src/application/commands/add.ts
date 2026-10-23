@@ -1249,8 +1249,9 @@ const stagedGitlinks = async (
       !isLossy(entry) &&
       selectsGitlink(matcher, entry.path),
   );
+  const scanner = createLeadingPathScanner(ctx);
   const probed = await boundedMapFor(ctx, 'ioBound', candidates, (entry) =>
-    settled(movedGitlinkOf(ctx, entry)),
+    settled(movedGitlinkOf(ctx, scanner, entry)),
   );
   return firstFailureOrValues(probed).filter((outcome) => outcome !== undefined);
 };
@@ -1275,13 +1276,16 @@ const selectsGitlink = (matcher: ResolvedPathspec['matcher'], path: FilePath): b
 
 /**
  * The gitlink restaged at its checkout's HEAD, as git's `resolve_gitlink_ref` reads it.
- * `undefined` when the path is no longer a directory (the walk stages what replaced it),
+ * `undefined` when the path is no longer a directory (the walk stages what replaced it) or
+ * lies behind a symlinked directory (git's `check_removed` stages its removal),
  * when nothing is checked out, or when the checkout still holds the recorded commit.
  */
 const movedGitlinkOf = async (
   ctx: Context,
+  scanner: LeadingPathScanner,
   { path, id }: IndexEntry,
 ): Promise<WalkOutcome | undefined> => {
+  if (await scanner.hasSymlinkedLeadingPath(path)) return undefined;
   const stat = await lstatOrBeneathFile(ctx, path);
   if (stat === undefined || !stat.isDirectory) return undefined;
   const head = await gitlinkHeadOf(ctx, path);

@@ -1,6 +1,7 @@
 import { NO_PARSER_OFFSET } from '../../../domain/git-index/path-validator.js';
 import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileSystem } from '../../../ports/file-system.js';
 import { deriveContext } from '../derive-context.js';
 import { indexPathRulesOf } from './index-path-rules.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -25,19 +26,27 @@ import { requireWorkTree } from './repo-state.js';
 const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): Context =>
   deriveGitlinkContext(ctx, `${ctx.layout.gitDir}/modules/${name}`, treeRelPath);
 
+/** What a gitlink's repository needs beyond the parent's own: the filesystem that reaches it. */
+interface GitlinkReach {
+  readonly fs?: FileSystem;
+}
+
 /**
  * Derive a child `Context` for the repository a gitlink's checkout leads to:
  * working tree at `${workDir}/<treeRelPath>`, object store at `gitDir`, wherever
- * that is. The caller vouches for `gitDir`; nothing is probed here.
+ * that is. The caller vouches for `gitDir`; nothing is probed here. A `gitDir`
+ * outside the parent's containment roots is reached through `reach.fs`.
  */
 export const deriveGitlinkContext = (
   ctx: Context,
   gitDir: string,
   treeRelPath: FilePath,
+  reach: GitlinkReach = {},
 ): Context => {
   const workDir = joinPath(requireWorkTree(ctx, 'deriveSubmoduleContext'), treeRelPath);
   const { promisor: _promisor, hooks: _hooks, ...rest } = ctx;
   return deriveContext(rest, {
+    ...(reach.fs !== undefined ? { fs: reach.fs } : {}),
     layout: Object.freeze({
       workDir,
       gitDir,

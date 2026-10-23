@@ -9,7 +9,15 @@
  *   unique:         add stages a moved gitlink and refuses a broken one as git does
  *   interopSurface: add
  */
-import { mkdir, mkdtemp, realpath, rm as removeTree, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm as removeTree,
+  rename,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -119,6 +127,44 @@ const embedded: Setup = async (repo, upstream) => {
   runGit(['-C', repo, 'add', '.']);
   commitIn(repo, 'super');
   commitIn(path.join(repo, 'sub'), 'moved');
+};
+
+/** The embedded repository's own `.git` moved to `target`, which the superproject's `sub/.git` then reaches. */
+const movedGitdirReachedBy =
+  (
+    target: (repo: string) => string,
+    reach: (dotGit: string, target: string) => Promise<void>,
+  ): Setup =>
+  async (repo, upstream) => {
+    await embedded(repo, upstream);
+    const dotGit = path.join(repo, 'sub', '.git');
+    const moved = target(repo);
+    await rename(dotGit, moved);
+    await reach(dotGit, moved);
+  };
+
+const pointerTo = (dotGit: string, target: string): Promise<void> =>
+  writeFile(dotGit, `gitdir: ${target}\n`);
+
+const linkTo = (dotGit: string, target: string): Promise<void> => symlink(target, dotGit);
+
+const outsideTheSuperproject = (repo: string): string => `${repo}-gitdir`;
+
+const insideTheGitDir = (repo: string): string => path.join(repo, '.git', 'store');
+
+/** Gitlink `d/sub` recorded, then `d` replaced by a relative symlink to a directory holding a moved repository `sub`. */
+const behindSymlinkedParent: Setup = async (repo, upstream) => {
+  await writeFiles(repo, { k: 'k\n' });
+  runGit(['clone', '-q', upstream, path.join(repo, 'd', 'sub')], { env: pinnedEnv() });
+  runGit(['-C', repo, 'add', '.']);
+  commitIn(repo, 'super');
+  await removeTree(path.join(repo, 'd'), { recursive: true, force: true });
+  // Shared by both twins and only ever read, so the symlink blob is the same in each.
+  const out = `${upstream}-out`;
+  await removeTree(out, { recursive: true, force: true });
+  runGit(['clone', '-q', upstream, path.join(out, 'sub')], { env: pinnedEnv() });
+  commitIn(path.join(out, 'sub'), 'moved');
+  await symlink(`../${path.basename(out)}`, path.join(repo, 'd'));
 };
 
 const movedUnderAnotherName: Setup = async (repo, upstream) => {
@@ -256,6 +302,31 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         spec: ['.'],
       },
       { label: 'a skip-worktree submodule that moved', setup: movedAndSkipped, spec: ['.'] },
+      {
+        label: 'a moved repository whose gitfile points outside the superproject',
+        setup: movedGitdirReachedBy(outsideTheSuperproject, pointerTo),
+        spec: ['.'],
+      },
+      {
+        label: 'a moved repository whose .git is a symlink into the git directory',
+        setup: movedGitdirReachedBy(insideTheGitDir, linkTo),
+        spec: ['.'],
+      },
+      {
+        label: 'a moved repository whose .git is a symlink outside the superproject',
+        setup: movedGitdirReachedBy(outsideTheSuperproject, linkTo),
+        spec: ['.'],
+      },
+      {
+        label: 'a gitlink under a symlinked parent, added by wildcard',
+        setup: behindSymlinkedParent,
+        spec: ['*sub'],
+      },
+      {
+        label: 'a gitlink under a symlinked parent, added by dot',
+        setup: behindSymlinkedParent,
+        spec: ['.'],
+      },
     ])('Given $label', ({ setup, spec }) => {
       describe('When git and tsgit add it', () => {
         it('Then both leave the same index and exit status', async () => {
