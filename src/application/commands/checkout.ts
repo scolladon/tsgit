@@ -20,6 +20,7 @@ import {
   type FilePath,
   type ObjectId,
   type RefName,
+  zeroOid,
 } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
@@ -41,6 +42,7 @@ import {
   refResolvesForReading,
   resolveRef,
   resolveRefForReading,
+  resolveRefOrMissing,
 } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
@@ -360,8 +362,8 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
 
   const materializeResult = await restoreUnderIndexLock(ctx, source, pathspec);
 
-  // HEAD unchanged. Resolve current HEAD for the result.
-  const head = await resolveRef(ctx, 'HEAD' as RefName);
+  // HEAD unchanged. An unborn HEAD reports the null oid, as git hands its hook.
+  const head = (await resolveRefOrMissing(ctx, 'HEAD')) ?? zeroOid(ctx.hashConfig);
   // post-checkout (informational) fires after a file checkout with prev == new
   // HEAD (the restore does not move HEAD) and the file flag.
   await runInformationalHook(ctx, 'post-checkout', { args: [head, head, FILE_FLAG] });

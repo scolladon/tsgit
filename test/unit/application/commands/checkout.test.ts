@@ -1667,6 +1667,34 @@ describe('checkout — post-checkout hook', () => {
     });
   });
 
+  describe.each([
+    { algorithm: 'sha1' as const, width: 40 },
+    { algorithm: 'sha256' as const, width: 64 },
+  ])('Given an unborn branch with a staged file ($algorithm)', ({ algorithm, width }) => {
+    describe('When checkout restores the modified path from the index', () => {
+      it('Then the file is restored, the result id is the null oid and post-checkout gets it twice', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner, algorithm });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'a');
+        await add(ctx, ['f']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'b');
+        const nullOid = '0'.repeat(width);
+
+        // Act
+        const result = await checkout(ctx, { paths: ['f'] });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('a');
+        expect(result.id).toBe(nullOid);
+        expect(postCheckoutSince(runner, 0).map((call) => call.args)).toEqual([
+          [nullOid, nullOid, '0'],
+        ]);
+      });
+    });
+  });
+
   describe('Given a path restore whose glob matches nothing', () => {
     describe('When checkout refuses', () => {
       it('Then post-checkout does not fire', async () => {
