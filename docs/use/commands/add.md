@@ -70,7 +70,7 @@ A literal-only pathspec carrying a `!` exclusion takes the walk route and honour
 
 ## Gitlinks
 
-A gitlink (submodule) entry whose checked-out HEAD differs from the recorded id is staged and reported in `modified` by `.`, `<path>`, `<path>/`, a glob or `all: true`, whether or not an ignore rule names it. HEAD is read from the repository `<path>/.git` leads to (a directory or a gitfile), not from the `.gitmodules` name. Nothing is staged when HEAD equals the recorded id, the directory is empty, the checkout has no commit, or HEAD cannot be resolved. A skip-worktree gitlink is left alone.
+A gitlink (submodule) entry whose checked-out HEAD differs from the recorded id is staged and reported in `modified` by `.`, `<path>`, `<path>/`, a glob or `all: true`, whether or not an ignore rule names it. HEAD is read from the repository `<path>/.git` leads to (a directory or a gitfile), not from the `.gitmodules` name. Nothing is staged when HEAD equals the recorded id, the directory is empty, the checkout has no commit, or HEAD cannot be resolved. A skip-worktree gitlink is left alone. The gitlink's own directory is never walked into, whatever its `.git` is (a directory, a gitfile, a symlink or nothing at all): the files inside belong to the submodule and are never staged as paths of this repository.
 
 A `<path>/.git` that leads to no repository (missing gitdir, garbage HEAD, unparsable gitfile, a gitdir or common dir lacking `objects/` or `refs/`, an invalid repository format) refuses with `NOT_A_REPOSITORY`, before any write. A malformed config refuses with its config error instead.
 
