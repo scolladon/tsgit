@@ -49,14 +49,16 @@ const layOutRepository = async (ctx: Context, gitDir: string, head: string): Pro
   await ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, `${head}\n`);
 };
 
-const failingLstatOfDotGit = (failure: unknown): Context => {
-  const base = createMemoryContext();
+const failingLstatOf = (base: Context, leaf: string, failure: unknown): Context => {
   const lstat = async (path: string) => {
-    if (path.endsWith('/sub/.git')) throw failure;
+    if (path.endsWith(leaf)) throw failure;
     return base.fs.lstat(path);
   };
   return { ...base, fs: Object.assign(Object.create(base.fs), { lstat }) } as Context;
 };
+
+const failingLstatOfDotGit = (failure: unknown): Context =>
+  failingLstatOf(createMemoryContext(), '/sub/.git', failure);
 
 const MIB = 1 << 20;
 const DOT_GIT_OF_SUB = '/sub/.git';
@@ -230,6 +232,50 @@ describe('gitlinkHeadOf', () => {
       it('Then the failure surfaces', async () => {
         // Arrange
         const ctx = failingLstatOfDotGit(new Error('disk on fire'));
+        const sut = gitlinkHeadOf;
+
+        // Act
+        const err = await sut(ctx, SUB).catch((e: unknown) => e);
+
+        // Assert
+        expect((err as Error).message).toBe('disk on fire');
+      });
+    });
+  });
+
+  describe('Given a commondir the filesystem refuses to read', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then the refusal surfaces', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const { gitDir, workDir } = base.layout;
+        await base.fs.writeUtf8(`${workDir}/sub/.git`, 'gitdir: ../.git/admin\n');
+        await base.fs.writeUtf8(`${gitDir}/admin/HEAD`, 'ref: refs/heads/main\n');
+        await base.fs.writeUtf8(`${gitDir}/admin/commondir`, '../common\n');
+        await layOutRepository(base, `${gitDir}/common`, HEAD_COMMIT);
+        const ctx = { ...base, fs: guarded(base.fs, (path) => !path.endsWith('/admin/commondir')) };
+        const sut = gitlinkHeadOf;
+
+        // Act
+        const err = await sut(ctx, SUB).catch((e: unknown) => e);
+
+        // Assert
+        expect(err).toBeInstanceOf(TsgitError);
+        expect((err as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: `${gitDir}/admin/commondir`,
+        });
+      });
+    });
+  });
+
+  describe('Given the probe of HEAD ending in a failure that is no tsgit error', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then the failure surfaces', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await layOutRepository(base, `${base.layout.workDir}/sub/.git`, HEAD_COMMIT);
+        const ctx = failingLstatOf(base, '/sub/.git/HEAD', new Error('disk on fire'));
         const sut = gitlinkHeadOf;
 
         // Act
