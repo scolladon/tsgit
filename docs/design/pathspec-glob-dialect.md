@@ -8,7 +8,8 @@
 > git's abbreviation signal; (e) docs fold-in, carried by the plan. Magic pathspecs, `:(exclude)`,
 > the `!` alias and the ADR superseding 038 are 32.11b, out.
 > Status: draft → self-reviewed ×3 → accepted → revised against ADR-1044 (2026-10-22) → folded the tracked-under-ignore staging gap (2026-10-22) → review pins folded: empty-directory literal, hidden conflicted path (2026-10-22) → folded the
-> skip-worktree, gitlink, ignored-report and backslash-name gaps: R13–R17, Parts f–i, candidates 13–19 (2026-10-23)
+> skip-worktree, gitlink, ignored-report and backslash-name gaps: R13–R17, Parts f–i, candidates 13–19 (2026-10-23) → folded literal positives
+> honouring exclusions: R18, Part j, candidate 20 (2026-10-23)
 
 ## Context
 
@@ -169,6 +170,14 @@ against the snapshot, with identical results.
   `\`, as git's walk does (W1–W5, W7, W16): `add`, `status` and every other `walkWorkingTree`
   consumer see it. Under Windows path syntax the walk keeps refusing it (candidate 18). `rm`'s
   working-tree removal of such a path is candidate 19 (W8, W9).
+- R18. When every positive pathspec is a literal, `add` applies the `!` exclusions (git's `:!`)
+  exactly as the walk route does. An excluded path is neither staged nor restaged, and no blob is
+  written for it, whether it is untracked or tracked and modified (X1–X3, X5, X7–X10, X12, X14).
+  An exclusion that reaches nothing changes nothing (X4, X11). An argument-order swap changes
+  nothing (X7, X14). A literal whose every match is excluded is not refused when its path exists
+  on disk: exclusion runs before the seen-marking and git's `file_exists` escape runs after it
+  (X1, X15). A wildcard positive whose matches are all excluded still refuses (X16, X17). `rm`
+  and `checkout` already honour exclusions on literals (X20–X26).
 
 ## Design
 
@@ -556,8 +565,46 @@ committed, then `a\b` rewritten to `dirty`. `ls-files` quotes the name as `"a\\b
 | W15 | tracked | `grep -l .` | 0 · `"a\\b"`, `ab`, `k` | ok |
 | W16 | tracked | `status --porcelain` | 0 · ` M "a\\b"` | ✗ throws `PATHSPEC_OUTSIDE_REPO` |
 
+#### X — literal positives with exclusions (tsgit spells git's `:!p` as `!p`, ADR-038)
+
+Fixture "U": untracked `x y d/x a.txt`. Fixture "M": the same four committed, then each one
+rewritten. Status is `--porcelain`; "loose" counts loose objects (U starts at 0, M at 7). Run
+against git 2.55 and tsgit at `569c5b89`, once each.
+
+| # | Fixture · command | git: exit · status · loose | tsgit at HEAD (run) |
+|---|---|---|---|
+| X1 | U · `add x ':!x'` | 0 · `?? x` (nothing staged) · 0 | ✗ `added: [x]` · 1 |
+| X2 | U · `add d/x ':!d'` | 0 · nothing staged · 0 | ✗ `added: [d/x]` · 1 |
+| X3 | U · `add a.txt ':!*.txt'` | 0 · nothing staged · 0 | ✗ `added: [a.txt]` · 1 |
+| X4 | U · `add x ':!y'` | 0 · `A  x` · 1 | ok |
+| X5 | U · `add x y ':!x'` | 0 · `A  y` only · 1 | ✗ stages `x` and `y` · 2 |
+| X6 | U · `add x '*.txt' ':!x'` (walk route) | 0 · `A  a.txt` · 1 | ok |
+| X7 | U · `add ':!x' x` | 0 · nothing staged · 0 | ✗ `added: [x]` · 1 |
+| X8 | M · `add x ':!x'` | 0 · ` M x` kept · 7 | ✗ `modified: [x]`, `M  x` · 8 |
+| X9 | M · `add d/x ':!d'` | 0 · ` M d/x` kept · 7 | ✗ `M  d/x` · 8 |
+| X10 | M · `add a.txt ':!*.txt'` | 0 · ` M a.txt` kept · 7 | ✗ `M  a.txt` · 8 |
+| X11 | M · `add x ':!y'` | 0 · `M  x` · 8 | ok |
+| X12 | M · `add x y ':!x'` | 0 · `M  y` only · 8 | ✗ `M  x`, `M  y` · 9 |
+| X13 | M · `add x '*.txt' ':!x'` (walk route) | 0 · `M  a.txt` · 8 | ok |
+| X14 | M · `add ':!x' x` | 0 · ` M x` kept · 7 | ✗ `M  x` · 8 |
+| X15 | U · `add missing ':!missing'` | 128 · `fatal: pathspec 'missing' did not match any files` · 0 | ok (`PATHSPEC_NO_MATCH 'missing'`) |
+| X16 | U · `add 'x*' ':!x'` | 128 · `… 'x*' …` · 0 | ok |
+| X17 | U · `add 'q*' ':!q*'` | 128 · `… 'q*' …` · 0 | ok |
+| X18 | U · `add x ':!x' 'nomatch*'` | 128 · `… 'nomatch*' …` · 0 | ok |
+| X19 | U · `add d ':!d/x'` | 0 · nothing staged · 0 | ok |
+| X20 | M · `rm --cached x ':!x'` | 0 · index unchanged | ok (`removed: []`) |
+| X21 | M · `rm --cached x y ':!x'` | 0 · `y` removed | ok |
+| X22 | M · `rm --cached d/x ':!d'` | 0 · unchanged | ok |
+| X23 | M · `rm --cached a.txt ':!*.txt'` | 0 · unchanged | ok |
+| X24 | M · `checkout -- x ':!x'` | 0 · `x` stays `x2` | ok (`changedPaths: 0`) |
+| X25 | M · `checkout -- x y ':!x'` | 0 · `y` restored, `x` stays `x2` | ok |
+| X26 | M · `checkout -- x ':!y'` | 0 · `x` restored, `y` stays `y2` | ok |
+
+Only `add`'s literal fast path diverges. `rm` and `checkout` select through the whole matcher,
+and so does `add`'s walk route (X6, X13).
+
 **Row count** (D 23 + E 5 + L 6 + B 31 + R 11 + C 10 + G 5 + K 6 + DS 14 + N 28 = 139, plus the
-fold: S 15 + SC 12 + GL 23 + I 30 + W 16 = 96; total 235. B3l/B3m are counted once, in B; I1/I2
+fold: S 15 + SC 12 + GL 23 + I 30 + W 16 + X 26 = 122; total 261. B3l/B3m are counted once, in B; I1/I2
 repeat them with the tsgit column run). B8 and B13–B16 were re-run on 2026-10-22 with
 the same procedure. Their tsgit column comes from a session pin that ran tsgit through jiti at
 this branch's HEAD and at `main` (`8dd442ee`). Both gave the same result, so the gap predates this
@@ -926,6 +973,34 @@ Tests to extend: `test/unit/domain/working-tree-path.test.ts` (both hosts),
 interop file `test/integration/pathspec-backslash-interop.test.ts` (`snapshotOf`, `namesOf`) gets
 W1–W5, W7, W16 and D8b/E1 under its POSIX `describe.skipIf` at `:31`. Its Windows block at
 `:76` gets the walk refusal.
+### Part j — exclusions on the literal route (R18)
+
+Line numbers at `569c5b89`.
+
+- `src/application/commands/internal/resolve-pathspec.ts:55-62` `resolvePathspec` builds
+  `literalMustMatch` from `isPositiveLiteral` (`:178`) and `hasGlob` from `isPositiveGlob`
+  (`:179`). Negated entries are in `matcher` and in neither list, so a call whose positives
+  are all literal sets `hasGlob: false` whatever its exclusions say.
+- `src/application/commands/add.ts:230-241` `dispatchPathspec`: when `hasGlob` is false and
+  every literal `lstat`s as a file (`literalStats`, `:567`), the call goes to `addLiteralOnly`
+  (`:243`) → `stageLiteralsOver` (`:275`) → `stageLiterals` (`:323`), which stages every entry of
+  `literalMustMatch`. The matcher is consulted only in `dropBeneathInserted` (`:405`), so
+  exclusions never apply there.
+- The walk route already gives git's result (X6, X13, X16–X19). Its pieces: the `withPathspec`
+  leaf filter, `trackPositives` in `src/application/commands/internal/pathspec-intake.ts:78`
+  (seen-marking through `pathspecVerdict`, which applies exclusions), and the escape through
+  `namesOnDisk` (`add.ts:850`) or `namesUnignoredDiskPath` (`:902`), both gated by
+  `PositivePathspec.probesDisk` (`pathspec-intake.ts:21`, `:32`). That escape order is what X1
+  and X15 pin: exclusion before seen, the on-disk escape after.
+- Change: candidate 20. Under 20A it is one predicate in `dispatchPathspec`: a call holding any
+  negated entry takes `addByPathspec` (`:736`).
+- `rm.ts` and `checkout.ts` need no change (X20–X26).
+
+Tests to extend: `test/unit/application/commands/add.test.ts`, with X1–X5, X7–X12 and X14 on
+the memory adapter, asserting the result and no `writeObject` for the excluded path. Interop:
+`test/integration/pathspec-glob-dialect-interop.test.ts`, where tsgit `!p` is twinned with
+git `:!p`, X1–X19.
+
 ### Size and hot path
 
 - Removed: `scanStar`, the `pathname` option, `containsGlob`, `compileLiteral`/`compileDirectory`,
@@ -978,6 +1053,7 @@ W1–W5, W7, W16 and D8b/E1 under its POSIX `describe.skipIf` at `:31`. Its Wind
 | 17 | A `<path>/.git` that leads to no repository (GL20 broken gitfile, GL21 corrupt HEAD) | **A** refuse with the existing `NOT_A_REPOSITORY { path }` (`src/domain/repository/error.ts`), the path being git's `<path>/<gitdir as written>`, before any blob write (the gitlink step runs before `stageWalkedEntries`) · **B** leave the entry unchanged and succeed (today's outcome) · **C** a new member `SUBMODULE_NOT_A_REPOSITORY { path }` | A | git dies with exit 128 and the index unchanged, and A matches both with no new union member. B is a refusal-condition mismatch. C costs about 30 B gzip for a distinction `path` already carries. |
 | 18 | Admitting a `\`-named entry in the working-tree walk (R17) | **A** host-gate it: `validateWalkedEntryPath` refuses `\` only under `windowsPathSyntax`, the key ADR-1044 uses · **B** admit it on every host · **C** keep refusing, but skip the entry instead of throwing | A | A matches W1–W5, W7 and W16 on POSIX and keeps ADR-1044's Windows stance in one place. B admits a separator-bearing name under Windows path syntax, which ADR-1044 refused. C stops `status` from throwing but still hides the file from `add` (W1–W5 stay divergent), against git. |
 | 19 | `rm` removing a `\`-named working-tree file (W8, W9) | **A** extend the same host gate to `removeFile` (`internal/working-tree.ts:84`), the only writer these rows reach · **B** leave `rm` as a pinned follow-up (its refusal is atomic: index and file unchanged) · **C** gate `validateWorkingTreePath` itself for every caller (`mv`, `materializeFile`, the pathspec intake) | A | W8/W9 are a refusal-condition mismatch on POSIX, and A closes them with the gate Part i already builds. C widens the change to `mv` and `materializeFile`, which nothing here pinned. B is the fallback if the security review rejects A. |
+| 20 | How the literal fast path honours exclusions (R18) | **A** route every call that holds a negated entry to the walk route (`addByPathspec`), which already matches X6/X13/X15–X19 · **B** keep the fast path and filter `literalMustMatch` through the full matcher, then refuse or escape each fully-excluded literal in the fast path · **C** lift the exclusion check into `resolvePathspec`, so `literalMustMatch` arrives pre-filtered | A | A reuses the one implementation of git's exclusion, seen and escape order, so X1/X15 cannot drift between routes. Its cost is a walk for literal-plus-exclusion calls, which are rare, and the size cost is a few bytes. B duplicates the refusal and escape logic in a second route. C gives resolve-pathspec knowledge of the disk (the escape), which belongs to the command. |
 
 **Blockers:** none. None of the four IN parts needs magic pathspecs, `:(exclude)` or a change to
 the `!` alias to match the pinned rows.
@@ -1084,6 +1160,7 @@ the `!` alias to match the pinned rows.
 | interop | `test/integration/add-tracked-under-ignore-interop.test.ts` | S1–S15 (new `describe`, no ignore rule), GL1–GL23 (gitlink fixtures, `protocol.file.allow=always`, pinned dates); compare `ls-files -s -v` and, for the report rows, git's exit code against the structured fields (the advice text is rebuilt from `sparse`) |
 | interop | `test/integration/pathspec-glob-dialect-interop.test.ts` | SC1–SC12 (disk bytes, `ls-files -v`, refusal patterns); I1–I30 and B3l/B3m/B16 (index + the ignored report rebuilt from `ignored`) |
 | interop | `test/integration/pathspec-backslash-interop.test.ts` | W1–W16, D8b, E1 under the POSIX `describe.skipIf` at `:31`; the Windows block at `:76` gains the walk refusal |
+| unit + interop | `add.test.ts`, `pathspec-glob-dialect-interop.test.ts` | X1–X19 (Part j); X20–X26 as `rm`/`checkout` guards in the same interop file |
 | bench | `test/bench/add.bench.ts` | "When add() stages one tracked literal" and "… one untracked literal" (Part h's ignore build on the fast path), `bench:ab` after the implementation commit |
 
 Mutation: the narrowed buckets gain `src/domain/working-tree-path.ts`,
