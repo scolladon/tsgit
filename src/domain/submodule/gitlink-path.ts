@@ -26,3 +26,22 @@ export const submoduleGitfile = (name: string, path: string): string =>
  */
 export const submoduleCoreWorktree = (name: string, path: string): string =>
   `${'../'.repeat(2 + segmentCount(name))}${path}`;
+
+const commonPrefixLength = (from: ReadonlyArray<string>, to: ReadonlyArray<string>): number => {
+  let length = 0;
+  while (length < from.length && length < to.length && from[length] === to[length]) length++;
+  return length;
+};
+
+/**
+ * The relative path git writes as `core.worktree`: from the module directory up to the
+ * deepest ancestor it shares with the working-tree path, then down to it. Both inputs are
+ * absolute and normalised, so a split on `/` yields exact segments.
+ */
+export const relativePathBetween = (fromDirectory: string, toPath: string): string => {
+  const from = fromDirectory.split('/');
+  const to = toPath.split('/');
+  const shared = commonPrefixLength(from, to);
+  const climb = from.slice(shared).map(() => '..');
+  return [...climb, ...to.slice(shared)].join('/');
+};

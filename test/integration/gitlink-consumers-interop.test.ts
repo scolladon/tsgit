@@ -42,6 +42,9 @@ import { stashPush } from '../../src/application/commands/stash.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const ROW_TIMEOUT = 60_000;
 const PINNED_DATE = '@1700000000 +0000';
@@ -569,6 +572,13 @@ const embeddedOverAbsorbed: Setup = async (repo) => {
   await cp(path.join(repo, ...MODULE_DIR), sub(repo, '.git'), { recursive: true });
   gitIn(repo, 'config', '--file', sub(repo, '.git', 'config'), '--unset', 'core.worktree');
 };
+/** `embedded`, with the `.gitmodules` section naming the path removed and committed. */
+const embeddedWithoutName: Setup = async (repo) => {
+  await embedded(repo);
+  await writeFile(path.join(repo, GITMODULES), '');
+  gitIn(repo, 'add', GITMODULES);
+  commitIn(repo, 'drop the section');
+};
 const unstagedGitmodulesEdit: Setup = async (repo) =>
   appendFile(path.join(repo, GITMODULES), '# edit\n');
 const stagedGitmodulesEdit: Setup = async (repo) => {
@@ -671,6 +681,13 @@ const RM_ROWS: ReadonlyArray<RmRow> = [
     setup: embedded,
     paths: ['sub'],
     cached: false,
+  },
+  {
+    title: 'a submodule carrying its repository in .git, named by no .gitmodules row',
+    setup: embeddedWithoutName,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_NAME_NOT_FOUND'),
   },
   {
     title: 'a moved submodule forced out',
@@ -861,6 +878,41 @@ const afterRemoval = async (repo: string) => ({
   moduleEntries: await filesUnder(path.join(repo, ...MODULE_DIR)),
 });
 
+const LINKED_WORKTREE = 'wt';
+
+/** A linked worktree `wt` beside the superproject, its `sub` replaced by a clone-like repository at the recorded commit. */
+const linkedWorktreeWithEmbeddedSubmodule = async (
+  superproject: string,
+  upstream: string,
+): Promise<string> => {
+  const linked = path.join(path.dirname(superproject), LINKED_WORKTREE);
+  gitIn(superproject, 'worktree', 'add', '-q', linked, '-b', LINKED_WORKTREE);
+  await rm(sub(linked), { recursive: true });
+  await cp(upstream, sub(linked), { recursive: true });
+  gitIn(sub(linked), 'checkout', '-q', gitIn(linked, 'rev-parse', `HEAD:${SUBMODULE}`).trim());
+  return linked;
+};
+
+const afterLinkedRemoval = async (superproject: string, linked: string) => {
+  const moduleDir = path.join(
+    superproject,
+    '.git',
+    'worktrees',
+    LINKED_WORKTREE,
+    'modules',
+    SUBMODULE,
+  );
+  return {
+    index: gitIn(linked, 'ls-files', '--stage'),
+    status: gitIn(linked, 'status', '--porcelain'),
+    gitmodules: await bytesOf(path.join(linked, GITMODULES)),
+    config: await bytesOf(path.join(moduleDir, 'config')),
+    moduleEntries: await filesUnder(moduleDir),
+    gitfile: await bytesOf(path.join(linked, SUBMODULE, '.git')),
+    directory: await filesUnder(sub(linked)),
+  };
+};
+
 const REBASE_STATE = ['.git', 'rebase-merge'] as const;
 const REBASE_ROOT_FILES = ['ORIG_HEAD', 'REBASE_HEAD'] as const;
 
@@ -1018,6 +1070,48 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
       },
     );
+
+    describe('Given an embedded repository in a linked worktree', () => {
+      describe('When both tools run rm', () => {
+        it(
+          'Then the module migrates into the worktree admin directory with git core.worktree',
+          async () => {
+            // Arrange
+            const upstream = path.join(root, 'up');
+            const sides = await Promise.all(
+              ['linked-git', 'linked-tsgit'].map(async (name) => {
+                const parent = path.join(root, name);
+                await mkdir(parent);
+                const superproject = path.join(parent, 'super');
+                await cp(fixture, superproject, {
+                  recursive: true,
+                  preserveTimestamps: true,
+                  verbatimSymlinks: true,
+                });
+                gitIn(superproject, 'config', 'user.name', 't');
+                gitIn(superproject, 'config', 'user.email', 't@t');
+                const linked = await linkedWorktreeWithEmbeddedSubmodule(superproject, upstream);
+                return { superproject, linked };
+              }),
+            );
+            const [gitSide, tsgitSide] = sides as [(typeof sides)[number], (typeof sides)[number]];
+
+            // Act
+            gitIn(gitSide.linked, 'rm', '-q', SUBMODULE);
+            const repo = await openTrackedRepository({ cwd: tsgitSide.linked });
+            await repo.rm([SUBMODULE]);
+
+            // Assert
+            const expected = await afterLinkedRemoval(gitSide.superproject, gitSide.linked);
+            expect(expected.config).toContain('worktree = ../../../../../../wt/sub');
+            expect(await afterLinkedRemoval(tsgitSide.superproject, tsgitSide.linked)).toEqual(
+              expected,
+            );
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
 
     describe.each(UNTRACKED_OPTIONS.map((args) => [args.join(' '), args] as const))(
       'Given a tracked path whose leading directory became a symlink, stash %s',

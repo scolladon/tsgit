@@ -47,7 +47,8 @@ A submodule (a gitlink entry) is also modified when its own check finds anything
 - Before anything happens to a submodule, a working `.gitmodules` that differs by content from its staged entry is refused `GITMODULES_NOT_STAGED` — under `cached` and `force` too, and with nothing removed. A `.gitmodules` rewritten with the same bytes, or absent from the work tree, does not trigger it.
 - A clean submodule's directory is removed with everything beneath it. A submodule that was never initialized has no directory; only its index entry goes.
 - The `[submodule "<name>"]` section whose `path` is the removed path leaves `.gitmodules`, and the edited file is staged. A `.gitmodules` without such a section is left alone and not staged.
-- A repository kept in the submodule's own `.git` directory is first moved to `.git/modules/<name>` with `core.worktree` set, so its history survives; if `.git/modules/<name>` already holds a repository the move is refused `DIRECTORY_NOT_EMPTY`. An absorbed module under `.git/modules/<name>` is always kept.
+- A repository kept in the submodule's own `.git` directory is first moved to `.git/modules/<name>` with `core.worktree` set, so its history survives; if `.git/modules/<name>` already holds a repository the move is refused `DIRECTORY_NOT_EMPTY`. An absorbed module under `.git/modules/<name>` is always kept. When no `.gitmodules` row names the path, git cannot name the module: the removal is refused `SUBMODULE_NAME_NOT_FOUND { path }` with nothing written (a gitfile-based or empty submodule without a row is still removed, `.gitmodules` untouched; `cached` never migrates, so it is never refused).
+- In a linked worktree the module moves into that worktree's own admin directory (`.git/worktrees/<wt>/modules/<name>`) and `core.worktree` is the relative path from there to the worktree's directory, as git writes it.
 - `cached` removes only the index entry: the directory and `.gitmodules` stay.
 - `force` removes a modified submodule the same way.
 
@@ -92,6 +93,7 @@ await repo.rm(['*.log']);
 - `RM_RECURSIVE_WITHOUT_R` — a pathspec reached only paths beneath a directory (a literal, or a glob matching a directory through the verbatim-prefix rule) and `recursive` was not set; `data.pattern` is the pathspec as given. Nothing is removed.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `GITMODULES_NOT_STAGED` — a submodule is being removed while the working `.gitmodules` carries unstaged changes. Nothing is removed.
+- `SUBMODULE_NAME_NOT_FOUND { path }` — an embedded repository sits in the submodule's `.git` directory and no `.gitmodules` row names the path. Nothing is removed.
 - `RM_STAGED_CHANGES` / `RM_LOCAL_MODIFICATIONS` / `RM_STAGED_AND_LOCAL_CHANGES` — the safety valve refused (see above); each `data.paths` lists the refused paths.
 
 ## See also

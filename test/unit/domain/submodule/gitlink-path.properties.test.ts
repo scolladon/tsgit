@@ -1,6 +1,8 @@
+import { posix } from 'node:path';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  relativePathBetween,
   submoduleCoreWorktree,
   submoduleGitfile,
 } from '../../../../src/domain/submodule/gitlink-path.js';
@@ -52,6 +54,29 @@ describe('Given an arbitrary safe submodule name and path', () => {
           expect(isUnsafeSubmoduleName(name)).toBe(false);
           expect(submoduleGitfile(name, path).length).toBeGreaterThan(0);
           expect(submoduleCoreWorktree(name, path).length).toBeGreaterThan(0);
+        }),
+        { numRuns: RUNS },
+      );
+    });
+  });
+
+  describe('When deriving the relative path between two absolute directories', () => {
+    it('Then joining it onto the origin and normalising lands on the target', () => {
+      // Arrange
+      const segments = fc.array(fc.constantFrom('a', 'b', 'c', 'wt'), {
+        minLength: 1,
+        maxLength: 5,
+      });
+      fc.assert(
+        fc.property(segments, segments, (fromSegments, toSegments) => {
+          const from = `/${fromSegments.join('/')}`;
+          const to = `/${toSegments.join('/')}`;
+
+          // Act
+          const result = relativePathBetween(from, to);
+
+          // Assert
+          expect(posix.normalize(posix.join(from, result))).toBe(to);
         }),
         { numRuns: RUNS },
       );

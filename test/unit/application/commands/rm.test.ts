@@ -1968,7 +1968,7 @@ describe('Given a clean submodule that carries its repository in sub/.git', () =
   describe('When rm names the submodule', () => {
     it('Then the repository moves to .git/modules/sub with core.worktree set', async () => {
       // Arrange
-      const { ctx } = await withCommittedSubmodule();
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
       await embedSubmoduleRepository(ctx);
       const headBytes = await ctx.fs.readUtf8(work(ctx, 'sub/.git/HEAD'));
       const sut = rm;
@@ -2015,7 +2015,7 @@ describe('Given an embedded repository and a populated .git/modules/<name>', () 
   describe('When rm names the submodule', () => {
     it('Then DIRECTORY_NOT_EMPTY refuses and the embedded repository stays', async () => {
       // Arrange
-      const { ctx } = await withCommittedSubmodule();
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
       await embedSubmoduleRepository(ctx);
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/modules/sub/occupied`, 'x');
       const sut = rm;
@@ -2046,6 +2046,85 @@ describe('Given a deinitialised submodule whose directory is empty', () => {
       // Assert
       expect(result.removed).toEqual(['sub']);
       expect(await ctx.fs.exists(work(ctx, 'sub'))).toBe(false);
+    });
+  });
+});
+
+const NAMELESS_REFUSAL_CODE = 'SUBMODULE_NAME_NOT_FOUND';
+
+describe('Given an embedded repository whose path no .gitmodules row names', () => {
+  describe('When rm names the submodule', () => {
+    it('Then SUBMODULE_NAME_NOT_FOUND refuses and nothing changes', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await embedSubmoduleRepository(ctx);
+      const before = (await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`);
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['sub']), NAMELESS_REFUSAL_CODE);
+
+      // Assert
+      expect(err.data).toEqual({ code: NAMELESS_REFUSAL_CODE, path: 'sub' });
+      expect(await ctx.fs.exists(work(ctx, 'sub/.git/HEAD'))).toBe(true);
+      expect(await ctx.fs.exists(work(ctx, '.gitmodules'))).toBe(false);
+      expect((await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`)).toEqual(before);
+    });
+  });
+});
+
+describe('Given an unnamed embedded repository', () => {
+  describe('When rm keeps the working tree with cached', () => {
+    it('Then the gitlink leaves the index without a refusal', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await embedSubmoduleRepository(ctx);
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['sub'], { cached: true });
+
+      // Assert
+      expect(result.removed).toEqual(['sub']);
+      expect(await ctx.fs.exists(work(ctx, 'sub/.git/HEAD'))).toBe(true);
+    });
+  });
+});
+
+describe('Given an embedded repository removed from a linked worktree', () => {
+  describe('When rm names the submodule', () => {
+    it('Then core.worktree climbs from the worktree admin directory to the worktree path', async () => {
+      // Arrange
+      const { ctx: main } = await withStagedGitmodules(GITMODULES_SUB);
+      await embedSubmoduleRepository(main);
+      const root = main.layout.workDir as string;
+      const linkedDir = `${main.layout.gitDir}/worktrees/wt`;
+      await main.fs.mkdir(linkedDir);
+      await main.fs.mkdir(`${root}/wt`);
+      await main.fs.write(`${linkedDir}/HEAD`, await main.fs.read(`${main.layout.gitDir}/HEAD`));
+      await main.fs.write(`${linkedDir}/index`, await main.fs.read(`${main.layout.gitDir}/index`));
+      await main.fs.write(`${root}/wt/.gitmodules`, await main.fs.read(`${root}/.gitmodules`));
+      await main.fs.writeUtf8(`${linkedDir}/commondir`, '../..\n');
+      await main.fs.writeUtf8(`${linkedDir}/gitdir`, `${root}/wt/.git\n`);
+      await main.fs.rename(work(main, 'sub'), `${root}/wt/sub`);
+      const ctx: Context = {
+        ...main,
+        layout: {
+          ...main.layout,
+          gitDir: linkedDir,
+          commonDir: main.layout.gitDir,
+          workDir: `${root}/wt`,
+        },
+      };
+      const sut = rm;
+
+      // Act
+      await sut(ctx, ['sub'], { cached: false, force: true });
+
+      // Assert
+      expect(await ctx.fs.readUtf8(`${linkedDir}/modules/sub/config`)).toContain(
+        'worktree = ../../../../../wt/sub',
+      );
     });
   });
 });

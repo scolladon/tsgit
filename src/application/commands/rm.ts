@@ -37,8 +37,8 @@ import { emptyPathspec } from '../../domain/index.js';
 import { FILE_MODE } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import { MATCH_LEVEL, type MatchLevel } from '../../domain/pathspec/wildcard.js';
-import { gitmodulesNotStaged } from '../../domain/submodule/error.js';
-import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
+import { gitmodulesNotStaged, submoduleNameNotFound } from '../../domain/submodule/error.js';
+import { relativePathBetween, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import type { Context } from '../../ports/context.js';
 import {
   compareWorkingTreeDelta,
@@ -158,6 +158,7 @@ const removeFromWorkTree = async (
     .filter((entry) => !isLossy(entry));
   const gitlinks = entries.filter((entry) => entry.mode === FILE_MODE.GITLINK);
   const gitmodules = await readGitmodules(ctx, workDir, gitlinks);
+  await enforceEmbeddedNamed(ctx, workDir, gitlinks, gitmodules);
   await removeWorkingTree(ctx, entries, gitmodules);
   await pruneEmptiedDirectories(
     ctx,
@@ -215,19 +216,41 @@ const removeSubmodule = async (ctx: Context, path: FilePath, name: string): Prom
   await removeDirectory(ctx, path);
 };
 
+/** Whether the submodule carries its repository as a `.git` directory rather than a gitfile. */
+const carriesEmbeddedRepository = async (ctx: Context, dotGit: string): Promise<boolean> => {
+  const stat = await ctx.fs.lstat(dotGit).catch(() => undefined);
+  return stat?.isDirectory === true && !stat.isSymbolicLink;
+};
+
+/** git dies on an embedded repository it cannot name; checked before anything is removed. */
+const enforceEmbeddedNamed = async (
+  ctx: Context,
+  workDir: string,
+  gitlinks: ReadonlyArray<IndexEntry>,
+  { rows }: Gitmodules,
+): Promise<void> => {
+  for (const { path } of gitlinks) {
+    if (rows.some((row) => row.path === path)) continue;
+    if (await carriesEmbeddedRepository(ctx, joinPath(workDir, `${path}/.git`))) {
+      throw submoduleNameNotFound(path);
+    }
+  }
+};
+
 /**
  * A repository embedded in the submodule would die with its directory: git first moves it
- * into `.git/modules/<name>` and leaves the gitfile an absorbed submodule carries.
+ * into `<gitDir>/modules/<name>` and leaves the gitfile an absorbed submodule carries.
  */
 const migrateGitDir = async (ctx: Context, path: FilePath, name: string): Promise<void> => {
-  const dotGit = joinPath(requireWorkTree(ctx, 'rm'), `${path}/.git`);
-  const stat = await ctx.fs.lstat(dotGit).catch(() => undefined);
-  if (stat === undefined || !stat.isDirectory || stat.isSymbolicLink) return;
+  const workDir = requireWorkTree(ctx, 'rm');
+  const dotGit = joinPath(workDir, `${path}/.git`);
+  if (!(await carriesEmbeddedRepository(ctx, dotGit))) return;
   const moduleDir = `${ctx.layout.gitDir}/modules/${name}`;
   await ctx.fs.mkdir(dirname(moduleDir));
   await ctx.fs.rename(dotGit, moduleDir);
+  const worktree = relativePathBetween(moduleDir, joinPath(workDir, path));
   await updateConfigOperations(deriveGitlinkContext(ctx, moduleDir, path), [
-    { kind: 'set', section: 'core', key: 'worktree', value: submoduleCoreWorktree(name, path) },
+    { kind: 'set', section: 'core', key: 'worktree', value: worktree },
   ]);
   await ctx.fs.writeUtf8(dotGit, `${submoduleGitfile(name, path)}\n`);
 };
