@@ -90,11 +90,11 @@ interface CheckoutGitlinks {
   readonly rows: ReadonlyArray<GitmodulesRow>;
 }
 
-/** The gitlinks a checkout's index records and the `.gitmodules` rows naming them; a checkout recording none reads no `.gitmodules`, as git's foreach visits nothing. */
+/** The gitlinks a checkout's index records, an unmerged one included as git's foreach lists it, and the `.gitmodules` rows naming them; a checkout recording none reads no `.gitmodules`, as git's foreach visits nothing. */
 const checkoutGitlinks = async (child: Context): Promise<CheckoutGitlinks> => {
   const { entries } = await readIndex(child);
   const gitlinks = entries
-    .filter((entry) => entry.flags.stage === 0 && entry.mode === FILE_MODE.GITLINK)
+    .filter((entry) => entry.mode === FILE_MODE.GITLINK)
     .map((entry) => entry.path);
   if (gitlinks.length === 0) return { gitlinks, rows: [] };
   const workDir = requireWorkTree(child, COMMAND);

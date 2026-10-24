@@ -13,6 +13,7 @@ import { status } from '../../../../../src/application/commands/status.js';
 import { deriveGitlinkContext } from '../../../../../src/application/primitives/internal/submodule-context.js';
 import { createLeadingPathScanner } from '../../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
+import { MAX_GITMODULES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { permissionDenied } from '../../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../../src/domain/git-index/index.js';
 import type { FilePath } from '../../../../../src/domain/objects/index.js';
@@ -1351,6 +1352,154 @@ describe('gitlinkLocalModification', () => {
         // Assert
         expect(result).toBe('modified');
         expect(childStatus).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('gitfileCheckoutOf over the gitlinks a checkout records', () => {
+  describe('Given a nested gitlink left unmerged in the checkout and named by no .gitmodules row', () => {
+    describe('When the outer checkout is asked for', () => {
+      it('Then nothing is answered: git lists an unmerged gitlink and fails on its missing name', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture, { named: false });
+        await unmergeEntry(fixture.child, 'in');
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(fixture.ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a checkout recording no gitlink beside a .gitmodules past the bound git reads', () => {
+    describe('When the outer checkout is asked for', () => {
+      it('Then the repository is answered: no .gitmodules is read for a checkout with nothing to visit', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.writeUtf8(work(ctx, 'sub/.gitmodules'), 'x'.repeat(MAX_GITMODULES_BYTES + 1));
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result?.kind).toBe('repository');
+      });
+    });
+  });
+
+  describe('Given a nested gitlink whose path only another .gitmodules row names', () => {
+    describe('When the outer checkout is asked for', () => {
+      it('Then nothing is answered: the row must name the gitlink itself', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture, {
+          gitmodules: '[submodule "other"]\n\tpath = other\n\turl = ../up\n',
+        });
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(fixture.ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('absorbGitDirs over the rows and repositories git consults', () => {
+  describe('Given an embedded repository and a .gitmodules whose first row names another path', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then the repository moves under the name of its own row', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await embed(ctx, 'sub', `${ctx.layout.gitDir}/modules/sub`);
+        const sut = absorbGitDirs;
+        const rows = [
+          { name: 'other', path: 'other' as FilePath, url: '../up' },
+          { name: 'sub', path: 'sub' as FilePath, url: '../up' },
+        ];
+
+        // Act
+        await sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], rows);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/other`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an embedded repository named without a slash while modules itself looks like a repository', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then it moves under modules/<name>: only the leading parts before a slash are checked', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await embed(ctx, 'sub', `${ctx.layout.gitDir}/modules/sub`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/modules/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/modules/objects`);
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/modules/refs`);
+        const sut = absorbGitDirs;
+
+        // Act
+        await sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(work(ctx, 'sub/.git'))).toBe('gitdir: ../.git/modules/sub\n');
+      });
+    });
+  });
+
+  describe('Given a gitfile submodule using gitfiles throughout beside a nested .git directory holding no repository', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then the nested directory is left alone: git absorbs nothing there', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture);
+        const { ctx } = fixture;
+        await ctx.fs.rm(work(ctx, 'sub/in/.git'));
+        await ctx.fs.mkdir(work(ctx, 'sub/in/.git'));
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB),
+        );
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect((await ctx.fs.lstat(work(ctx, 'sub/in/.git'))).isDirectory).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an embedded repository holding a regular file where a nested gitlink is recorded', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then the repository moves and the file is left alone', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture, { named: false });
+        const { ctx } = fixture;
+        await embed(ctx, 'sub', `${ctx.layout.gitDir}/modules/sub`);
+        await ctx.fs.rmRecursive(work(ctx, 'sub/in'));
+        await ctx.fs.writeUtf8(work(ctx, 'sub/in'), 'plain\n');
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB),
+        );
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(await ctx.fs.readUtf8(work(ctx, 'sub/in'))).toBe('plain\n');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(true);
       });
     });
   });
