@@ -90,6 +90,7 @@
 | ADR-1072 broken HEAD (design LH1–LH8, SF11) | 15 (`PATH_TOO_LONG`), 16 (unreadable set, log/rev-parse twins), 17 (status unknown-HEAD state, LH + SF11 + r6–r9 rows) |
 | R7 rebase with a staged gitlink (design CO14, CO14b, CO14c; regression fold) | 18a (state writer + progress read), 18 (carry + pre-pick refusal), 18b (skip) |
 | R7/R9 gitlink written over a file occupant (design CO39, CO40) | 19 |
+| R7/R9 file written over a directory occupant (design CO44–CO46) | 19b |
 | R7 stash beyond a symbolic link (design CO38) | 20 |
 | ADR-1073 `SUBMODULE_NAME_NOT_FOUND` (design CO42) | 21 (member), 23 (throw site) |
 | R9 rm of a path already gone from the work tree (design CO41) | 22 |
@@ -1080,6 +1081,9 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink
 
 ### Context
 
+**Landed as e5fdb96c.** The `FILE_EXISTS` lived in the gitlink branch of `writeWorkingTreeEntry` (`src/application/primitives/internal/write-working-tree-file.ts`, new `makeGitlinkDirectory`), so that file replaced apply-changeset.ts in the list below; the reverse direction (a file written over a populated gitlink) is Part 19b.
+
+
 R7/R9 (checkout write path); design rows CO39, CO40 (pinned by the orchestrator after Part 12). git's `checkout_entry` (entry.c) runs with `state->force = 1` from `check_updates`, after the dirty check has already passed: when the path holds something that is not a directory, git `unlink`s it ("We unlink the old file, to get the new one with the right permissions"), then creates the gitlink's empty directory; a directory already there is left alone ("If it is a gitlink, leave it alone!"). tsgit's gitlink add arm in `src/application/primitives/apply-changeset.ts` creates the directory without looking at a file occupant, so `writeWorkingTreeEntry` throws `FILE_EXISTS` at `mkdir sub` — seen by the Part 12 implementer through `stash push` with a staged gitlink→file type change (git: stash saved, then `sub` restored as an empty directory, exit 0), and reachable the same way through `checkout` to a tree whose `sub` is a gitlink while the current path holds a committed regular file (a type-change entry the dirty check passes).
 
 Files:
@@ -1113,6 +1117,37 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink
 ### Commit
 
 `fix(checkout): replace a file occupant with the gitlink's directory, as git's checkout_entry does`
+
+## Part 19b — Replace a directory occupant with the file a tree write lands
+
+### Context
+
+Inserted by the orchestrator after Part 19 exposed it; LANDED as 128bf79e. git's `checkout_entry` removes a directory in the way of a file write with `remove_subtree` once the dirty and untracked checks have passed (design rows CO44–CO46): a populated gitlink's checkout replaced by a committed regular file (gitfile and embedded-directory forms alike) and an empty untracked directory in the way are both replaced, exit 0; a populated untracked directory is refused earlier (`Updating the following directories would lose untracked files in them`). tsgit's `writeStreamedBlob` removed the occupant with `rmIfExists` and threw `DIRECTORY_NOT_EMPTY`.
+
+Files:
+- `src/application/primitives/internal/write-working-tree-file.ts` — `clearOccupant` replaces the `rmIfExists` call in `writeStreamedBlob`: a directory occupant through `rmRecursive`, anything else through `rm`; `writeRegularFile`, `rmIfExists` and the delete path untouched (other writers reach `writeRegularFile` without the untracked check).
+- `test/unit/application/primitives/apply-changeset.test.ts` — a regular-file `update` with a gitlink `previousMode` over a populated directory (RED on DIRECTORY_NOT_EMPTY); a file over an empty directory (GUARD).
+- `test/integration/gitlink-consumers-interop.test.ts` — CO44 (both forms) and CO45; CO46 is pinned by `test/integration/checkout-file-directory-swap-interop.test.ts` already (66 rows in the consumers suite).
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED — a file written over a populated gitlink directory rejects DIRECTORY_NOT_EMPTY; GREEN — `clearOccupant`. GUARD — an empty directory occupant is replaced; GUARD — the populated-untracked refusal row stays green.
+2. Interop — CO44 (gitfile, embedded), CO45, git first.
+3. REFACTOR — none needed (5-line helper).
+
+### Gate
+
+```
+npx vitest run test/unit/application/primitives/apply-changeset test/unit/application/commands/checkout test/unit/application/commands/stash && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/internal/write-working-tree-file.ts test/unit/application/primitives/apply-changeset.test.ts test/integration/gitlink-consumers-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/primitives/internal/write-working-tree-file.ts test/unit/application/primitives/apply-changeset.test.ts test/integration/gitlink-consumers-interop.test.ts
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink-consumers-interop.test.ts test/integration/stash-interop.test.ts test/integration/checkout-file-directory-swap-interop.test.ts test/integration/checkout-replace-symlink-with-file-interop.test.ts test/integration/checkout-leading-symlink-interop.test.ts
+```
+
+### Commit
+
+`fix(checkout): replace a directory occupant with the file a tree write lands, as git does`
 
 ## Part 20 — Refuse to stash a tracked path beyond a symbolic link, as git does
 
