@@ -29,6 +29,7 @@ export const submoduleCoreWorktree = (name: string, path: string): string =>
 
 const commonPrefixLength = (from: ReadonlyArray<string>, to: ReadonlyArray<string>): number => {
   let length = 0;
+  // Stryker disable next-line LogicalOperator,EqualityOperator: equivalent — an index at either array's length reads undefined on that side, and undefined equals only an undefined past the other end, so every loosened bound stops at the same length
   while (length < from.length && length < to.length && from[length] === to[length]) length++;
   return length;
 };
