@@ -28,6 +28,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import { carriedCacheTreeOf } from '../../../../src/domain/git-index/cache-tree-update.js';
+import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
@@ -3799,6 +3800,135 @@ describe('rebase AUTO_MERGE lifecycle', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('rebase over a rescheduled pick with two picks', () => {
+  const seedTwoPicks = async (): Promise<{
+    ctx: Context;
+    first: ObjectId;
+    second: ObjectId;
+  }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await setUser(ctx);
+    const base = await gitlinkCommit(ctx, {
+      parents: [],
+      sub: GITLINK_A,
+      files: { 'f.txt': 'f\n' },
+      message: 'base\n',
+    });
+    const first = await gitlinkCommit(ctx, {
+      parents: [base],
+      sub: GITLINK_A,
+      files: { 'f.txt': 'f\n', 'k1.txt': 'k1\n' },
+      message: 'one\n',
+    });
+    const second = await gitlinkCommit(ctx, {
+      parents: [first],
+      sub: GITLINK_A,
+      files: { 'f.txt': 'two\n', 'k1.txt': 'k1\n' },
+      message: 'two\n',
+    });
+    const ontoTip = await gitlinkCommit(ctx, {
+      parents: [base],
+      sub: GITLINK_A,
+      files: { 'f.txt': 'onto\n' },
+      message: 'onto\n',
+    });
+    await pointBranch(ctx, 'main', second);
+    await pointBranch(ctx, 'side', ontoTip);
+    await reset(ctx, { mode: 'hard', rev: 'main' });
+    await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
+    await stageGitlink(ctx, GITLINK_C);
+    return { ctx, first, second };
+  };
+
+  describe('Given a staged gitlink refusing the first of two picks', () => {
+    describe('When the rebase is refused', () => {
+      it('Then done holds the first pick alone and the todo both picks', async () => {
+        // Arrange
+        const { ctx, first, second } = await seedTwoPicks();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${first} # one\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(
+          `pick ${first} # one\npick ${second} # two\n`,
+        );
+      });
+    });
+
+    describe('When the gitlink is unstaged and the rebase continued into a conflict on the second pick', () => {
+      it('Then done lists the rescheduled pick again, then the second pick, as git writes it', async () => {
+        // Arrange
+        const { ctx, first, second } = await seedTwoPicks();
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        await stageGitlink(ctx, GITLINK_A);
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await readMerge(ctx, 'done')).toBe(
+          `pick ${first} # one\npick ${first} # one\npick ${second} # two\n`,
+        );
+        expect(await readMerge(ctx, 'msgnum')).toBe('3\n');
+        expect(await readMerge(ctx, 'end')).toBe('3\n');
+      });
+    });
+  });
+
+  describe('Given a staged gitlink and a --rebase-merges todo opening with a label', () => {
+    describe('When the rebase runs', () => {
+      it('Then no pick is refused: the todo resets to onto first and the staged gitlink is dropped', async () => {
+        // Arrange
+        const { ctx } = await seedTwoPicks();
+        const sut = rebaseRun;
+
+        // Act
+        const result = await sut(ctx, { upstream: 'side', rebaseMerges: true });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        const sub = (await readIndex(ctx)).entries.find((entry) => entry.path === 'sub');
+        expect(sub?.id).toBe(GITLINK_A);
+      });
+    });
+  });
+});
+
+describe('rebase restaging a carried gitlink', () => {
+  const holdsBytes = (haystack: Uint8Array, needle: Uint8Array): boolean =>
+    haystack.some((_, at) => needle.every((byte, offset) => haystack[at + offset] === byte));
+
+  describe('Given the index write that restages the gitlink fails', () => {
+    describe('When the rebase runs', () => {
+      it('Then the failure surfaces and the index lock is released', async () => {
+        // Arrange
+        const { ctx } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        const restaged = hexToBytes(GITLINK_C);
+        const rename = ctx.fs.rename.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'rename').mockImplementation(async (from, to) => {
+          if (to.endsWith('/index') && holdsBytes(await ctx.fs.read(from), restaged)) {
+            throw new Error('restage failed');
+          }
+          return rename(from, to);
+        });
+        const sut = rebaseRun;
+
+        // Act
+        const failure = await sut(ctx, { upstream: 'side' }).catch((err: unknown) => err);
+
+        // Assert
+        expect((failure as Error).message).toBe('restage failed');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
       });
     });
   });

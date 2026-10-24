@@ -288,6 +288,7 @@ const gitlinksToCarry = async (
   onto: ObjectId,
   paths: ReadonlyArray<FilePath>,
 ): Promise<ReadonlyArray<CarriedGitlink>> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — an empty `paths` makes `carried` empty, so `assertOntoAgrees` has nothing to compare and the result is the same `[]`; the guard only skips the index and tree reads.
   if (paths.length === 0) return [];
   const { entries } = await readIndex(ctx);
   const carried = paths.map((path) => ({
@@ -304,15 +305,14 @@ const restageCarried = async (
   ctx: Context,
   carried: ReadonlyArray<CarriedGitlink>,
 ): Promise<void> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — with nothing carried the lock rewrites the same entries it just read, so no state differs; the guard only skips that write.
   if (carried.length === 0) return;
   const lock = await acquireIndexLock(ctx);
   try {
     const carriedPaths = new Set(carried.map(({ path }) => path));
     const kept = (await readIndex(ctx)).entries.filter((entry) => !carriedPaths.has(entry.path));
     const restaged = carried.flatMap(({ entry }) => (entry === undefined ? [] : [entry]));
-    await lock.commit([...kept, ...restaged], 'update', {
-      restagedPaths: carried.map(({ path }) => ({ path })),
-    });
+    await lock.commit([...kept, ...restaged], 'update');
   } finally {
     await lock.release();
   }
@@ -595,35 +595,28 @@ const stopOnConflict = async (
 /**
  * git's `do_pick_commit` refuses a pick while the index differs from HEAD, gitlinks
  * counted, and leaves the pick rescheduled so `--continue` retries it and `--abort` restores.
+ * Every pick leaves the index equal to HEAD, so only a todo opening with a pick can meet a
+ * dirty one: a `--rebase-merges` script opens with a `reset` that discards the staged change.
  */
-const refuseDirtyIndexBeforePick = async (
-  ctx: Context,
-  rc: ReplayContext,
-  at: { readonly index: number; readonly cur: ObjectId },
-): Promise<void> => {
-  const staged = await stagedChangePaths(ctx, await treeOf(ctx, at.cur), rc.submoduleIgnores);
-  if (staged.length === 0) return;
-  const pick = rc.todo[at.index] as PlannedPick;
-  await writeRescheduledPick(ctx, {
-    headName: rc.branch ?? 'detached HEAD',
-    onto: rc.onto,
-    origHead: rc.origHead,
-    done: [...rc.doneBefore, ...rc.todo.slice(0, at.index + 1)],
-    remaining: rc.todo.slice(at.index),
-    pickSha: pick.oid,
-    backupHeader: rc.backupHeader,
-  });
-  throw workingTreeDirty({ localChanges: staged, untracked: [] });
-};
-
-/** Every pick leaves the index equal to HEAD, so only the first pick can meet a dirty one. */
 const refuseDirtyIndexBeforeFirstPick = async (
   ctx: Context,
   rc: ReplayContext,
   cur: ObjectId,
 ): Promise<void> => {
-  const index = rc.todo.findIndex((line) => line.action === 'pick');
-  if (index >= 0) await refuseDirtyIndexBeforePick(ctx, rc, { index, cur });
+  const first = rc.todo[0];
+  if (first?.action !== 'pick') return;
+  const staged = await stagedChangePaths(ctx, await treeOf(ctx, cur), rc.submoduleIgnores);
+  if (staged.length === 0) return;
+  await writeRescheduledPick(ctx, {
+    headName: rc.branch ?? 'detached HEAD',
+    onto: rc.onto,
+    origHead: rc.origHead,
+    done: [...rc.doneBefore, first],
+    remaining: rc.todo,
+    pickSha: first.oid,
+    backupHeader: rc.backupHeader,
+  });
+  throw workingTreeDirty({ localChanges: staged, untracked: [] });
 };
 
 /** Replay `rc.todo` from the detached HEAD `ourId`; stop on conflict, else finish. */
@@ -866,13 +859,13 @@ const continueRescheduled = async (
   return retryRescheduledPick(ctx, progress, head);
 };
 
-/** The rescheduled pick sits in `done` and in the live todo; the retry replays it from the todo. */
+/** The rescheduled pick sits in `done` and in the live todo; the retry replays it from the todo, which lists it in `done` once more as git does. */
 const retryRescheduledPick = (
   ctx: Context,
   progress: RebaseProgress,
   head: ObjectId,
 ): Promise<RebaseResult> => {
-  const rc = { ...replayContextOf(progress), doneBefore: progress.done.slice(0, -1) };
+  const rc = { ...replayContextOf(progress), doneBefore: progress.done };
   return replayFrom(ctx, rc, head, { applied: [], rewritten: [] });
 };
 
