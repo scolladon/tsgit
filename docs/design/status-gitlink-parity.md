@@ -308,6 +308,14 @@ CO14's exit 0 holds only when nothing is to replay (F2: `side` is cut from `main
 | CO39 | F1, `sub` replaced by a regular file, not staged | `stash push` | 0 · `No local changes to save` (`diff-files --ignore-submodules` zeroes every change on a gitlink index entry, a type change included); status `1 .T S... 160000 160000 100644 A A sub` | no local changes (Part 12's `classifyEntry`) | ok |
 | CO40 | CO39 then `git add sub` (index `100644 <blob> sub`) | `stash push` | 0 · saved; afterwards status clean, `sub` an empty directory, `stash@{0}^2:sub` = `stash@{0}:sub` = the file blob | stash saved, then `FILE_EXISTS` at `mkdir sub` restoring the gitlink over the file (pre-existing write-path gap, also reachable by `checkout`) | fold (Part 19) |
 
+| CO41 | tracked `f` deleted from disk (also `dd/f` with `dd` gone) (×3) | `rm f` | 0 · `rm 'f'`, status `D  f` (git's "rm F; git rm F" novice path) | `CHECKOUT_OVERWRITE_DIRTY { localChanges: ['f'] }` from `removeFile`'s lstat catch; `test/unit/application/commands/rm.test.ts:675` pins the refusal | fold (Part 22) — the pinned row is re-pinned to git |
+| CO42 | embedded `.git` directory at `sub`, NO `.gitmodules` section (main worktree and a linked one alike) | `rm sub` | 128 · `fatal: could not lookup name for submodule 'sub'`; nothing written | Part 14 migrates to `.git/modules/sub` using the path as the name, then removes | fold (Part 23) → `SUBMODULE_NAME_NOT_FOUND { path: 'sub' }` (ADR-1073) |
+| CO43 | `.gitmodules` section present, embedded `.git` directory at `sub`, `rm sub` run INSIDE a linked worktree `wt` | `rm sub` | 0 · `Migrating git directory of 'sub' from '<wt>/sub/.git' to '<super>/.git/worktrees/wt/modules/sub'`; that module's `config` gets `\tworktree = ../../../../../../wt/sub`; `M  .gitmodules`, `D  sub` | Part 14 migrates to `layout.gitDir/modules/sub` (= the worktree's admin dir, as git) but writes `core.worktree = ../../../sub` (the name-and-path helper assumes the main layout) | fold (Part 23): compute the value from the module directory to the working-tree path; the migration target was a refuted hunch, tsgit's is right |
+
+CO41–CO43 were pinned by the orchestrator after Part 14 (CO41 ×3). The suspicion that tsgit's
+migration target (`layout.gitDir/modules`) was wrong in a linked worktree was refuted by CO43: git
+migrates into the worktree's own admin directory too; only the `core.worktree` value differs.
+
 CO38–CO40 were pinned by the orchestrator after Part 12 (same procedure; CO38 ×3). The design's
 earlier wording "a gitlink↔file type change still counts" holds for the staged side only
 (`diff-index --cached --ignore-submodules` skips a change whose both sides are gitlinks); on the
