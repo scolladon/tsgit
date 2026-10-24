@@ -4,8 +4,10 @@ import {
   workingTreeFileTooLarge,
 } from '../../../domain/commands/error.js';
 import type { IndexEntry } from '../../../domain/git-index/index.js';
+import { FILE_MODE } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import { gitfileTooLarge, notARepository } from '../../../domain/repository/error.js';
+import { submodulePathIsSymlink } from '../../../domain/submodule/error.js';
 import type { Context } from '../../../ports/context.js';
 import type { WorkingTreeDelta } from '../../primitives/compare-working-tree-entry.js';
 import {
@@ -16,6 +18,7 @@ import {
 import { probeGitlinkCheckout } from '../../primitives/internal/gitlink-head.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { type GitmodulesRow, parseGitmodules } from '../../primitives/parse-gitmodules.js';
+import { readBlob } from '../../primitives/read-blob.js';
 import { MAX_GITMODULES_BYTES } from '../../primitives/types.js';
 import type { ChangedPath, StatusResult } from '../status.js';
 
@@ -24,6 +27,7 @@ export type SubmoduleState = NonNullable<ChangedPath['submodule']>;
 /** The status run inside a checked-out submodule, injected so this module only types `status`. */
 export interface SubmoduleDeps {
   readonly childStatus: (child: Context) => Promise<StatusResult>;
+  readonly ignore: SubmoduleIgnore;
 }
 
 /** git checks only the `S..U` field of a nested gitlink row: such a row adds untracked changes, not tracked ones. */
@@ -40,28 +44,54 @@ const insideOf = (
     result.untracked.length > 0 || result.changes.some((row) => row.submodule?.untrackedChanges),
 });
 
+/** git refuses a symlink where a submodule belongs unless `dirty` stops it looking; any other file there is only a type change. */
+const refuseSymlink = (
+  { path }: IndexEntry,
+  { worktreeMode }: WorkingTreeDelta,
+  ignore: SubmoduleIgnore,
+  state: SubmoduleState,
+): SubmoduleState => {
+  if (worktreeMode === FILE_MODE.SYMLINK && ignore !== 'dirty') throw submodulePathIsSymlink(path);
+  return state;
+};
+
+/** The submodule's own changes, read once its `.git` leads to a repository; one that leads to none refuses. */
+const insideState = async (
+  ctx: Context,
+  { path }: IndexEntry,
+  state: SubmoduleState,
+  { childStatus, ignore }: SubmoduleDeps,
+): Promise<SubmoduleState> => {
+  const checkout = await probeGitlinkCheckout(ctx, path);
+  if (checkout.kind === 'oversized') throw gitfileTooLarge(checkout.shown);
+  if (checkout.kind === 'broken') throw notARepository(checkout.shown);
+  if (checkout.kind === 'none') return state;
+  const inside = insideOf(await childStatus(await checkout.context()));
+  return {
+    ...state,
+    ...inside,
+    untrackedChanges: inside.untrackedChanges && ignore !== 'untracked',
+  };
+};
+
 /**
  * What git's dirty check reports for a gitlink: the checkout's HEAD moving off the
- * recorded commit, then, once a `.git` that leads to no repository has refused,
- * the submodule's own changes.
+ * recorded commit, then, unless the mode stops at the commit, the submodule's own changes.
  */
 export const submoduleState = async (
   ctx: Context,
   entry: IndexEntry,
   delta: WorkingTreeDelta,
-  { childStatus }: SubmoduleDeps,
+  deps: SubmoduleDeps,
 ): Promise<SubmoduleState> => {
   const state = {
     commitChanged: delta.status === 'modified',
     trackedChanges: false,
     untrackedChanges: false,
   };
-  if (delta.status === 'type-changed') return state;
-  const checkout = await probeGitlinkCheckout(ctx, entry.path);
-  if (checkout.kind === 'oversized') throw gitfileTooLarge(checkout.shown);
-  if (checkout.kind === 'broken') throw notARepository(checkout.shown);
-  if (checkout.kind === 'none') return state;
-  return { ...state, ...insideOf(await childStatus(await checkout.context())) };
+  if (delta.status === 'type-changed') return refuseSymlink(entry, delta, deps.ignore, state);
+  if (deps.ignore === 'dirty') return state;
+  return insideState(ctx, entry, state, deps);
 };
 
 export type SubmoduleIgnore = 'none' | 'untracked' | 'dirty' | 'all';
@@ -93,22 +123,38 @@ export const resolveSubmoduleIgnore = async (
   ctx: Context,
   path: FilePath,
   rows: ReadonlyArray<GitmodulesRow>,
+  shared: SubmoduleIgnore | undefined,
 ): Promise<SubmoduleIgnore> => {
   const row = rows.find((candidate) => candidate.path === path);
   const own = configuredOrUndefined(
     await findLastSubsectionEntry(ctx, 'submodule', row?.name ?? path, 'ignore'),
   );
   const declared = row?.ignore === undefined ? undefined : ignoreModeOf(row.ignore);
-  const shared = configuredOrUndefined(await findLastEntry(ctx, 'diff', 'ignoreSubmodules'));
   return own ?? declared ?? shared ?? 'none';
 };
 
-const readWorktreeGitmodules = async (
+/** Where `.gitmodules` is read from: the working tree, else the blob the index holds. */
+export interface GitmodulesSource {
+  readonly workDir: string;
+  readonly stage0: ReadonlyMap<FilePath, IndexEntry>;
+}
+
+const readIndexedGitmodules = async (
   ctx: Context,
-  workDir: string,
+  stage0: ReadonlyMap<FilePath, IndexEntry>,
+): Promise<ReadonlyArray<GitmodulesRow>> => {
+  const indexed = stage0.get(GITMODULES_FILE as FilePath);
+  if (indexed === undefined) return [];
+  const blob = await readBlob(ctx, indexed.id, { maxBytes: MAX_GITMODULES_BYTES });
+  return parseGitmodules(new TextDecoder().decode(blob.content));
+};
+
+const readGitmodules = async (
+  ctx: Context,
+  { workDir, stage0 }: GitmodulesSource,
 ): Promise<ReadonlyArray<GitmodulesRow>> => {
   const path = joinPath(workDir, GITMODULES_FILE);
-  if (!(await ctx.fs.exists(path))) return [];
+  if (!(await ctx.fs.exists(path))) return readIndexedGitmodules(ctx, stage0);
   const { size } = await ctx.fs.stat(path);
   if (size > MAX_GITMODULES_BYTES) {
     throw workingTreeFileTooLarge(path as FilePath, size, MAX_GITMODULES_BYTES);
@@ -116,17 +162,29 @@ const readWorktreeGitmodules = async (
   return parseGitmodules(await ctx.fs.readUtf8(path));
 };
 
+/** `diff.ignoreSubmodules`, which git parses on every run whether or not a submodule exists. */
+const sharedIgnore = async (ctx: Context): Promise<SubmoduleIgnore | undefined> =>
+  configuredOrUndefined(await findLastEntry(ctx, 'diff', 'ignoreSubmodules'));
+
 /**
- * The gitlinks whose changes git's `all` mode hides from the working-tree column.
- * Nothing is read for a repository without a gitlink.
+ * The ignore mode of each gitlink. `diff.ignoreSubmodules` is validated up front;
+ * nothing else is read for a repository without a gitlink.
  */
-export const hiddenSubmodules = async (
+export const submoduleIgnores = async (
   ctx: Context,
-  workDir: string,
+  gitmodules: GitmodulesSource,
   gitlinks: ReadonlyArray<FilePath>,
-): Promise<ReadonlySet<FilePath>> => {
-  if (gitlinks.length === 0) return new Set();
-  const rows = await readWorktreeGitmodules(ctx, workDir);
-  const modes = await Promise.all(gitlinks.map((path) => resolveSubmoduleIgnore(ctx, path, rows)));
-  return new Set(gitlinks.filter((_, at) => modes[at] === 'all'));
+): Promise<ReadonlyMap<FilePath, SubmoduleIgnore>> => {
+  const shared = await sharedIgnore(ctx);
+  if (gitlinks.length === 0) return new Map();
+  const rows = await readGitmodules(ctx, gitmodules);
+  const modes = await Promise.all(
+    gitlinks.map(
+      async (path): Promise<readonly [FilePath, SubmoduleIgnore]> => [
+        path,
+        await resolveSubmoduleIgnore(ctx, path, rows, shared),
+      ],
+    ),
+  );
+  return new Map(modes);
 };

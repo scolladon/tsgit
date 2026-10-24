@@ -41,6 +41,7 @@ const CLEAN_CHILD: StatusResult = {
 };
 const childReporting = (report: Partial<StatusResult>) => ({
   childStatus: async (_child: Context): Promise<StatusResult> => ({ ...CLEAN_CHILD, ...report }),
+  ignore: 'none' as const,
 });
 const deps = childReporting({});
 const modifiedFile = { path: 'f', unstaged: 'modified' } as ChangedPath;
@@ -356,6 +357,7 @@ describe('submoduleState', () => {
         // Act
         const attempt = sut(ctx, gitlinkEntry, directory, {
           childStatus: () => Promise.reject(failure),
+          ignore: 'none',
         });
 
         // Assert
@@ -376,6 +378,7 @@ describe('submoduleState', () => {
             received.push(child);
             return CLEAN_CHILD;
           },
+          ignore: 'none',
         });
 
         // Assert

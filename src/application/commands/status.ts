@@ -58,8 +58,9 @@ import { pruneGitlinkDirectories } from './internal/prune-gitlink-directories.js
 import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 import {
-  hiddenSubmodules,
+  type SubmoduleIgnore,
   type SubmoduleState,
+  submoduleIgnores,
   submoduleState,
 } from './internal/submodule-state.js';
 
@@ -248,8 +249,10 @@ const scanAndReport = async (
 ): Promise<StatusReport> => {
   const trackedScan = await scanTrackedTree(ctx, index, tracked);
   const refresh = refreshEnabled(ctx, opts);
-  const hidden = await hiddenSubmodules(ctx, workDir, gitlinkPathsOf(tracked));
-  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan, { refresh, hidden });
+  const gitmodules = { workDir, stage0: tracked.stage0Map };
+  const ignores = await submoduleIgnores(ctx, gitmodules, gitlinkPathsOf(tracked));
+  const hidden = hiddenOf(ignores);
+  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan, { refresh, ignores });
   const lock = refresh ? await acquireOptionalIndexLock(ctx) : undefined;
   return reportUnderLock(ctx, { index, tracked, trackedScan, submodules, hidden, workDir, lock });
 };
@@ -287,7 +290,7 @@ type SubmoduleStates = ReadonlyMap<FilePath, SubmoduleState>;
 const isDirtyChecked = (entry: IndexEntry, delta: WorkingTreeDelta): boolean =>
   entry.mode === FILE_MODE.GITLINK && !entry.flags.assumeValid && delta.status !== 'absent';
 
-type DirtyCheck = readonly [FilePath, IndexEntry, WorkingTreeDelta];
+type DirtyCheck = readonly [FilePath, IndexEntry, WorkingTreeDelta, SubmoduleIgnore];
 
 const gitlinkPathsOf = ({ stage0Map }: TrackedEntries): ReadonlyArray<FilePath> =>
   [...stage0Map].filter(([, entry]) => entry.mode === FILE_MODE.GITLINK).map(([path]) => path);
@@ -304,16 +307,22 @@ const withoutChanges = (
     ]),
   );
 
+type SubmoduleIgnores = ReadonlyMap<FilePath, SubmoduleIgnore>;
+
+const hiddenOf = (ignores: SubmoduleIgnores): ReadonlySet<FilePath> =>
+  new Set([...ignores].filter(([, mode]) => mode === 'all').map(([path]) => path));
+
 const dirtyChecksOf = (
   { stage0Map }: TrackedEntries,
   { workingMap }: TrackedScan,
-  hidden: ReadonlySet<FilePath>,
+  ignores: SubmoduleIgnores,
 ): ReadonlyArray<DirtyCheck> => {
   const checked: DirtyCheck[] = [];
   for (const [path, entry] of stage0Map) {
     const delta = workingMap.get(path);
-    if (delta !== undefined && !hidden.has(path) && isDirtyChecked(entry, delta))
-      checked.push([path, entry, delta]);
+    const mode = ignores.get(path);
+    if (delta === undefined || mode === undefined || mode === 'all') continue;
+    if (isDirtyChecked(entry, delta)) checked.push([path, entry, delta, mode]);
   }
   return checked;
 };
@@ -323,16 +332,16 @@ const submoduleStatesOf = async (
   ctx: Context,
   tracked: TrackedEntries,
   scan: TrackedScan,
-  { refresh, hidden }: { readonly refresh: boolean; readonly hidden: ReadonlySet<FilePath> },
+  { refresh, ignores }: { readonly refresh: boolean; readonly ignores: SubmoduleIgnores },
 ): Promise<SubmoduleStates> => {
-  const deps = { childStatus: (child: Context) => status(child, { refresh }) };
+  const childStatus = (child: Context) => status(child, { refresh });
   const states = await boundedMapFor(
     ctx,
     'ioBound',
-    dirtyChecksOf(tracked, scan, hidden),
-    async ([path, entry, delta]): Promise<readonly [FilePath, SubmoduleState]> => [
+    dirtyChecksOf(tracked, scan, ignores),
+    async ([path, entry, delta, ignore]): Promise<readonly [FilePath, SubmoduleState]> => [
       path,
-      await submoduleState(ctx, entry, delta, deps),
+      await submoduleState(ctx, entry, delta, { childStatus, ignore }),
     ],
   );
   return new Map(states);

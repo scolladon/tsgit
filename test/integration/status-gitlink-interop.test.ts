@@ -269,11 +269,74 @@ const FORMAT_REFUSALS: ReadonlyArray<{
   },
 ];
 
+const gitmodulesPath = (repo: string): string => path.join(repo, '.gitmodules');
+
+const gitmodulesIgnoring =
+  (value: string): Setup =>
+  async (repo) => {
+    gitIn(repo, 'config', '--file', gitmodulesPath(repo), `submodule.${SUBMODULE}.ignore`, value);
+  };
+
+const stagedGitmodules =
+  (value: string): Setup =>
+  async (repo) => {
+    await gitmodulesIgnoring(value)(repo);
+    gitIn(repo, 'add', '.gitmodules');
+  };
+
+const committedGitmodules =
+  (value: string): Setup =>
+  async (repo) => {
+    await stagedGitmodules(value)(repo);
+    commitIn(repo, 'ignore');
+  };
+
+const configured =
+  (key: string, value: string): Setup =>
+  async (repo) => {
+    gitIn(repo, 'config', key, value);
+  };
+
+const ownIgnore = (value: string): Setup => configured(`submodule.${SUBMODULE}.ignore`, value);
+
+const sharedIgnore = (value: string): Setup => configured('diff.ignoreSubmodules', value);
+
+const gitmodulesDeleted: Setup = async (repo) => rm(gitmodulesPath(repo));
+
+const gitmodulesNamed =
+  (name: string, value: string): Setup =>
+  async (repo) =>
+    writeFile(
+      gitmodulesPath(repo),
+      `[submodule "${name}"]\n\tpath = ${SUBMODULE}\n\turl = x\n\tignore = ${value}\n`,
+    );
+
+const symlinkedTo =
+  (target: (repo: string) => Promise<string>): Setup =>
+  async (repo) => {
+    const resolved = await target(repo);
+    await rm(sub(repo), { recursive: true });
+    await symlink(resolved, sub(repo));
+  };
+
+const symlinkToDirectory = symlinkedTo(async (repo) => {
+  const away = `${repo}-away`;
+  await mkdir(away);
+  return away;
+});
+
+const symlinkToFile = symlinkedTo(async () => 'k');
+
+const gitlinkDropped: Setup = async (repo) => {
+  gitIn(repo, 'rm', '-q', '-f', SUBMODULE);
+  commitIn(repo, 'drop');
+};
+
 interface Refusal {
   readonly title: string;
   readonly setup: Setup;
   readonly gitMessage: string;
-  readonly data: { readonly code: string; readonly path: string };
+  readonly data: unknown;
 }
 
 const REFUSALS: ReadonlyArray<Refusal> = [
@@ -324,6 +387,30 @@ const REFUSALS: ReadonlyArray<Refusal> = [
     setup: moduleObjectsRemoved,
     gitMessage: 'not a git repository: sub/../.git/modules/sub',
     data: { code: 'NOT_A_REPOSITORY', path: 'sub/../.git/modules/sub' },
+  },
+  {
+    title: 'a committed .gitmodules untracked and an oversized gitfile',
+    setup: compose(committedGitmodules('untracked'), sparseDotGit(OVERSIZED_GITFILE_BYTES)),
+    gitMessage: "too large to be a .git file: 'sub/.git'",
+    data: { code: 'GITFILE_TOO_LARGE', path: 'sub/.git' },
+  },
+  {
+    title: 'a symlink to a directory in place of the submodule',
+    setup: symlinkToDirectory,
+    gitMessage: "expected submodule path 'sub' not to be a symbolic link",
+    data: { code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'sub' },
+  },
+  {
+    title: 'a symlink to a file in place of the submodule',
+    setup: symlinkToFile,
+    gitMessage: "expected submodule path 'sub' not to be a symbolic link",
+    data: { code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'sub' },
+  },
+  {
+    title: 'a committed .gitmodules untracked and a symlink in place of the submodule',
+    setup: compose(committedGitmodules('untracked'), symlinkToFile),
+    gitMessage: "expected submodule path 'sub' not to be a symbolic link",
+    data: { code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'sub' },
   },
 ];
 
@@ -378,6 +465,126 @@ const ROWS: ReadonlyArray<readonly [string, Setup]> = [
     compose(regularUnderDirectory, linkedAway),
   ],
 ];
+
+const IGNORE_ROWS: ReadonlyArray<readonly [string, Setup]> = [
+  [
+    'a committed .gitmodules dirty and an edited file',
+    compose(committedGitmodules('dirty'), editedUpstreamFile),
+  ],
+  [
+    'diff.ignoreSubmodules dirty and an edited file',
+    compose(sharedIgnore('dirty'), editedUpstreamFile),
+  ],
+  [
+    'a committed .gitmodules dirty and an untracked file',
+    compose(committedGitmodules('dirty'), untrackedFile),
+  ],
+  [
+    'a committed .gitmodules dirty and a moved submodule',
+    compose(committedGitmodules('dirty'), moved),
+  ],
+  ['config untracked and an untracked file', compose(ownIgnore('untracked'), untrackedFile)],
+  [
+    'a working .gitmodules untracked and an untracked file',
+    compose(gitmodulesIgnoring('untracked'), untrackedFile),
+  ],
+  [
+    'a working .gitmodules untracked and an edited file',
+    compose(gitmodulesIgnoring('untracked'), editedUpstreamFile),
+  ],
+  [
+    'a working .gitmodules untracked and a moved submodule',
+    compose(gitmodulesIgnoring('untracked'), moved),
+  ],
+  [
+    'an index .gitmodules all and a working .gitmodules none over a moved submodule',
+    compose(stagedGitmodules('all'), gitmodulesIgnoring('none'), moved),
+  ],
+  [
+    'a deleted working .gitmodules over an index and HEAD all and a moved submodule',
+    compose(committedGitmodules('all'), gitmodulesDeleted, moved),
+  ],
+  [
+    'status.submoduleSummary and a moved submodule',
+    compose(configured('status.submoduleSummary', 'true'), moved),
+  ],
+  ['a working .gitmodules all and a moved submodule', compose(gitmodulesIgnoring('all'), moved)],
+  ['diff.ignoreSubmodules all and a moved submodule', compose(sharedIgnore('all'), moved)],
+  [
+    'config none over a working .gitmodules all and a moved submodule',
+    compose(ownIgnore('none'), gitmodulesIgnoring('all'), moved),
+  ],
+  [
+    'a working .gitmodules none over diff.ignoreSubmodules all and a moved submodule',
+    compose(gitmodulesIgnoring('none'), sharedIgnore('all'), moved),
+  ],
+  [
+    'a .gitmodules section named apart from its path with all and a moved submodule',
+    compose(gitmodulesNamed('alias', 'all'), moved),
+  ],
+  [
+    'a .gitmodules ignore value outside the four modes and a moved submodule',
+    compose(gitmodulesIgnoring('bogus'), moved),
+  ],
+  [
+    'a committed .gitmodules all and an oversized gitfile',
+    compose(committedGitmodules('all'), sparseDotGit(OVERSIZED_GITFILE_BYTES)),
+  ],
+  [
+    'a committed .gitmodules dirty and an oversized gitfile',
+    compose(committedGitmodules('dirty'), sparseDotGit(OVERSIZED_GITFILE_BYTES)),
+  ],
+  [
+    'a committed .gitmodules dirty and a symlink in place of the submodule',
+    compose(committedGitmodules('dirty'), symlinkToDirectory),
+  ],
+  [
+    'a dropped gitlink and a dangling bogus submodule key',
+    compose(gitlinkDropped, configured('submodule.x.ignore', 'bogus')),
+  ],
+  [
+    'a dropped gitlink and a valid diff.ignoreSubmodules',
+    compose(gitlinkDropped, sharedIgnore('dirty')),
+  ],
+];
+
+interface ConfigRefusal {
+  readonly title: string;
+  readonly setup: Setup;
+  readonly gitMessage: string;
+  readonly code: string;
+}
+
+const INVALID_VALUE = 'bad --ignore-submodules argument: bogus';
+
+const CONFIG_REFUSALS: ReadonlyArray<ConfigRefusal> = [
+  {
+    title: 'diff.ignoreSubmodules bogus and no gitlink in the index',
+    setup: compose(gitlinkDropped, sharedIgnore('bogus')),
+    gitMessage: INVALID_VALUE,
+    code: 'CONFIG_INVALID_ENUM_VALUE',
+  },
+  {
+    title: 'diff.ignoreSubmodules bogus beside config none',
+    setup: compose(ownIgnore('none'), sharedIgnore('bogus')),
+    gitMessage: INVALID_VALUE,
+    code: 'CONFIG_INVALID_ENUM_VALUE',
+  },
+  {
+    title: 'diff.ignoreSubmodules bogus beside a .gitmodules none',
+    setup: compose(gitmodulesIgnoring('none'), sharedIgnore('bogus')),
+    gitMessage: INVALID_VALUE,
+    code: 'CONFIG_INVALID_ENUM_VALUE',
+  },
+  {
+    title: 'config bogus for the submodule',
+    setup: ownIgnore('bogus'),
+    gitMessage: INVALID_VALUE,
+    code: 'CONFIG_INVALID_ENUM_VALUE',
+  },
+];
+
+const ALL_ROWS = [...ROWS, ...IGNORE_ROWS];
 
 const modeOf = (side: { readonly mode: string } | undefined): string => side?.mode ?? ABSENT_MODE;
 
@@ -456,14 +663,14 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       await Promise.all(roots.map((dir) => rm(dir, { recursive: true, force: true })));
     });
 
-    describe.each(ROWS)('Given %s', (_title, setup) => {
+    describe.each(ALL_ROWS)('Given %s', (_title, setup) => {
       describe('When status runs in both tools', () => {
         it(
           'Then the changed and untracked paths match git',
           async () => {
             // Arrange
-            const gitTwin = await twin(`git-${ROWS.findIndex(([t]) => t === _title)}`);
-            const tsgitTwin = await twin(`tsgit-${ROWS.findIndex(([t]) => t === _title)}`);
+            const gitTwin = await twin(`git-${ALL_ROWS.findIndex(([t]) => t === _title)}`);
+            const tsgitTwin = await twin(`tsgit-${ALL_ROWS.findIndex(([t]) => t === _title)}`);
             await setup(gitTwin);
             await setup(tsgitTwin);
             const lines = porcelain(gitTwin);
@@ -614,6 +821,68 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(result).toEqual(data);
           },
           NON_BLOCKING_TIMEOUT_MS,
+        );
+      });
+    });
+
+    describe.each(CONFIG_REFUSALS)('Given $title', ({ title, setup, gitMessage, code }) => {
+      describe('When status runs in both tools', () => {
+        it(
+          'Then both refuse over the invalid ignore value',
+          async () => {
+            // Arrange
+            const gitTwin = await twin(`git-config-${title}`);
+            const tsgitTwin = await twin(`tsgit-config-${title}`);
+            await setup(gitTwin);
+            await setup(tsgitTwin);
+            const gitRun = tryRunGitWithExit(['-C', gitTwin, 'status'], { env: pinnedEnv() });
+            const sut = status;
+
+            // Act
+            const result = (await refusalOf(() =>
+              sut(createNodeContext({ workDir: tsgitTwin })),
+            )) as { code: string; value: string };
+
+            // Assert
+            expect(gitRun.exitCode).toBe(REFUSED_EXIT);
+            expect(gitRun.stderr).toContain(gitMessage);
+            expect(result.code).toBe(code);
+            expect(result.value).toBe('bogus');
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe('Given a committed .gitmodules dirty and a submodule file rewritten with the same bytes', () => {
+      describe('When git status and tsgit status run', () => {
+        it(
+          'Then the submodule index is left untouched in both tools',
+          async () => {
+            // Arrange
+            const gitTwin = await twin('git-dirty-touch');
+            const tsgitTwin = await twin('tsgit-dirty-touch');
+            for (const repo of [gitTwin, tsgitTwin]) {
+              await committedGitmodules('dirty')(repo);
+              await settle(repo);
+              await writeFile(sub(repo, 'u'), 'u\n');
+            }
+            const gitBefore = await readFile(path.join(moduleDir(gitTwin), 'index'));
+            const tsgitBefore = await readFile(path.join(moduleDir(tsgitTwin), 'index'));
+            const sut = status;
+
+            // Act
+            gitIn(gitTwin, 'status', '--porcelain=v2');
+            const result = await sut(createNodeContext({ workDir: tsgitTwin }));
+
+            // Assert
+            const gitAfter = await readFile(path.join(moduleDir(gitTwin), 'index'));
+            const tsgitAfter = await readFile(path.join(moduleDir(tsgitTwin), 'index'));
+            expect(gitAfter.equals(gitBefore)).toBe(true);
+            expect(tsgitAfter.equals(tsgitBefore)).toBe(true);
+            expect(result.changes.filter((change) => change.path === SUBMODULE)).toEqual([]);
+          },
+          ROW_TIMEOUT,
         );
       });
     });
