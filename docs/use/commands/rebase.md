@@ -86,6 +86,27 @@ type RebaseResult =
 - **Detached HEAD.** Rebasing a detached HEAD records `head-name = detached HEAD`;
   finish leaves HEAD at the new tip (no `returning to` entry), abort returns HEAD
   to the original oid.
+- **Gitlinks.** The pre-flight judges a staged gitlink change by its submodule
+  ignore mode. A configured `none`, `dirty` or `untracked` refuses
+  `WORKING_TREE_DIRTY` before HEAD moves, a gitlink removed from the index
+  included; under `all`, or with no `.gitmodules` row, the change is let through
+  and **carried**: the checkout of `onto` keeps it in the index and the replayed
+  commit records it, a removal included. The ignore modes read by the pre-flight
+  are kept for the whole run (git's in-process submodule config), so each pick
+  judges the index by them even when `onto`'s `.gitmodules` differs.
+- **Checkout of `onto`.** git's two-way rule decides what a staged path
+  becomes: one HEAD and `onto` agree on is kept, one the index already holds as
+  `onto` does is kept, anything else refuses `CHECKOUT_OVERWRITE_DIRTY
+  { localChanges }` before HEAD moves, with nothing written.
+- **First pick refused over a staged change.** A staged change the pre-flight let
+  through but the pick judges dirty (a gitlink move under only
+  `diff.ignoreSubmodules = all`, which is porcelain-only) leaves git's
+  rescheduled-pick state: `rebase-merge/` holding `done`, `git-rebase-todo` with
+  the pick, `end` and `msgnum`, no `message` or `author-script`, plus
+  `REBASE_HEAD`, and the staged change is dropped by the hard reset of the
+  detach. `continue` refuses `WORKING_TREE_DIRTY` again until the change is
+  unstaged, then replays the pick; `skip` hard-resets and replays the rescheduled
+  pick and the rest; `abort` restores the branch and hard-resets the index.
 - **Refusals.** A dirty index/working tree (`WORKING_TREE_DIRTY`), an operation
   already in progress (`OPERATION_IN_PROGRESS`), an unborn branch
   (`NO_INITIAL_COMMIT`), no work tree (`WORK_TREE_REQUIRED`).
@@ -175,7 +196,8 @@ await repo.rebase.run({
 
 ## Throws
 
-- `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree.
+- `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree; `continue` while a refused first pick's staged change is still in the index.
+- `CHECKOUT_OVERWRITE_DIRTY` — the checkout of `onto` would overwrite a staged path HEAD and `onto` disagree on and the index does not hold as `onto` does (`localChanges`); nothing is written.
 - `INVALID_INDEX_ENTRY` — a conflicting replay's outcome or conflict path fails
   git's own index-entry name rules. Every path the conflict write is about to
   touch is checked in one pass before any of them is written, so a hostile

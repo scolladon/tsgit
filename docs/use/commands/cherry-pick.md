@@ -67,10 +67,14 @@ type CherryPickResult =
   refuses with `CHERRY_PICK_MERGE_NO_MAINLINE`; in a range, earlier picks are
   committed and the sequence stops at the merge (git-faithful partial-apply).
 - **Refusals.** Detached HEAD (`UNSUPPORTED_OPERATION`), unborn branch
-  (`NO_INITIAL_COMMIT`), staged changes (`WORKING_TREE_DIRTY`; the index must match HEAD),
+  (`NO_INITIAL_COMMIT`), staged changes (`WORKING_TREE_DIRTY`; the index must match HEAD, except a gitlink difference its submodule ignore mode hides),
   and an operation already in progress (`OPERATION_IN_PROGRESS`). Unstaged
   changes do not refuse, as in git: the merge's would-overwrite check guards
   the paths it touches. `--no-commit` refuses only on unmerged entries.
+- **Index-cut commit.** The commit is cut from the index git leaves after the
+  merge, so a staged change the pre-flight let through (a gitlink under
+  `ignore = all`, a staged addition) rides into the picked commit, and the
+  `empty` verdict compares that index tree rather than the bare merge result.
 
 ## Throws
 

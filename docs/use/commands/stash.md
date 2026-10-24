@@ -78,6 +78,14 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   it takes the same path.
 - **Conflict stages refuse.** `apply`/`pop` against an index that holds conflict
   stages refuse with `MERGE_HAS_CONFLICTS`; nothing is written and the stash is kept.
+- **Gitlinks are not local changes.** Like git's stash, `push` ignores submodules:
+  a moved or edited submodule, staged or not, never counts, and alone it returns
+  `no-local-changes`. When other changes are stashed, the gitlink's index id rides
+  into the stash trees unchanged and the submodule's own checkout is untouched.
+- **Beyond a symbolic link.** A tracked path whose leading directory became a
+  symbolic link refuses `PATHSPEC_BEYOND_SYMLINK { path }` (git's `'d/f' is beyond
+  a symbolic link`), with `includeUntracked` too; nothing is created. The push
+  classifies every tracked path against one shared leading-path scan.
 - **Push is pooled.** `push` fans its work-tree comparisons and hashing through
   the `ioBound` pool and compares against the stat cache; a configured clean
   driver still hears the paths in index order.
@@ -154,6 +162,7 @@ await repo.stash.apply({ restoreIndex: true });
 ## Throws
 
 - `NO_INITIAL_COMMIT` — `push` on an unborn branch (no commit yet).
+- `PATHSPEC_BEYOND_SYMLINK { path }` — `push` found a tracked path whose leading directory is a symbolic link. Nothing is saved.
 - `STASH_NOT_FOUND` — the selector `index` is out of range.
 - `STASH_APPLY_WOULD_OVERWRITE` — `apply`/`pop` would overwrite uncommitted
   working-tree changes or an existing untracked file. The untracked-restore
