@@ -19,6 +19,7 @@ import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { escapedPathOf, viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import type { MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
+import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
@@ -125,6 +126,8 @@ export const findWouldOverwrite = async (
       if (await isUntrackedPresent(ctx, path)) untracked.push(path);
       continue;
     }
+    // git's `verify_uptodate_1` returns early for a gitlink: a moved checkout is not local work.
+    if (entry.mode === FILE_MODE.GITLINK) continue;
     if (
       isWorkingTreeModified(
         await compareWorkingTreeEntry(ctx, entry, provider, currentIndex.indexMtime),

@@ -8,7 +8,8 @@ import { workingTreeDirty } from '../../../domain/commands/error.js';
 import { comparePaths } from '../../../domain/diff/index.js';
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index.js';
 import { escapedPathOf, viewOfEscaped } from '../../../domain/git-index/index-path-key.js';
-import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
+import { FILE_MODE } from '../../../domain/objects/file-mode.js';
+import type { FileMode, FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { compareWorkingTreeEntry } from '../../primitives/compare-working-tree-entry.js';
 import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
@@ -31,23 +32,52 @@ const partitionIndex = (entries: ReadonlyArray<IndexEntry>): PartitionedIndex =>
   return { stage0, unmerged };
 };
 
+const isGitlink = (mode: FileMode): boolean => mode === FILE_MODE.GITLINK;
+
+type HeadSide = { readonly mode: FileMode } | undefined;
+
+/** Which gitlink differences between the index and HEAD a caller's git counterpart ignores. */
+interface GitlinkPolicy {
+  readonly ignoresChange: (head: HeadSide, entry: IndexEntry) => boolean;
+  readonly ignoresRemoval: (head: { readonly mode: FileMode }) => boolean;
+}
+
+/**
+ * `require_clean_work_tree` (rebase, pull) runs with submodules ignored: a change between
+ * two gitlinks, or one adding or removing a gitlink, is skipped. A gitlink turning into a
+ * file still counts.
+ */
+const IGNORING_GITLINKS: GitlinkPolicy = {
+  ignoresChange: (head, entry) =>
+    isGitlink(entry.mode) && (head === undefined || isGitlink(head.mode)),
+  ignoresRemoval: (head) => isGitlink(head.mode),
+};
+
+/** The sequencer's `index_differs_from(HEAD)` counts every gitlink difference. */
+const COUNTING_GITLINKS: GitlinkPolicy = {
+  ignoresChange: () => false,
+  ignoresRemoval: () => false,
+};
+
 /** Paths whose index (id, mode) differs from HEAD's tree, incl. staged deletions. */
 const stagedDirty = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
   headTree: ObjectId,
+  policy: GitlinkPolicy,
 ): Promise<ReadonlyArray<FilePath>> => {
   const headFlat = await flattenEscapedTree(ctx, headTree);
   const indexPaths = new Set(stage0.map(escapedPathOf));
   const dirty: FilePath[] = [];
   for (const entry of stage0) {
     const head = headFlat.entries.get(escapedPathOf(entry));
+    if (policy.ignoresChange(head, entry)) continue;
     if (head === undefined || head.id !== entry.id || head.mode !== entry.mode) {
       dirty.push(entry.path);
     }
   }
-  for (const path of headFlat.entries.keys()) {
-    if (!indexPaths.has(path)) dirty.push(viewOfEscaped(path));
+  for (const [path, head] of headFlat.entries) {
+    if (!indexPaths.has(path) && !policy.ignoresRemoval(head)) dirty.push(viewOfEscaped(path));
   }
   return dirty;
 };
@@ -63,6 +93,8 @@ const unstagedDirty = async (
   for (const entry of stage0) {
     // Skip-worktree (sparse-excluded) entries are intentionally off-disk.
     if (entry.flags.skipWorktree) continue;
+    // git runs these pre-flights with submodules ignored: a moved checkout is not a change.
+    if (entry.mode === FILE_MODE.GITLINK) continue;
     if ((await compareWorkingTreeEntry(ctx, entry, provider, indexMtime)) !== 'unchanged')
       dirty.push(entry.path);
   }
@@ -74,7 +106,7 @@ export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Pro
   const { stage0, unmerged } = partitionIndex(index.entries);
   const dirty = new Set<FilePath>([
     ...unmerged,
-    ...(await stagedDirty(ctx, stage0, headTree)),
+    ...(await stagedDirty(ctx, stage0, headTree, IGNORING_GITLINKS)),
     ...(await unstagedDirty(ctx, stage0, index.indexMtime)),
   ]);
   // Raw-byte path order matches git's refusal; the Set's insertion order
@@ -97,7 +129,7 @@ const refuseDirty = (dirty: ReadonlyArray<FilePath>): void => {
  */
 export const assertCleanIndex = async (ctx: Context, headTree: ObjectId): Promise<void> => {
   const { stage0, unmerged } = partitionIndex((await readIndex(ctx)).entries);
-  refuseDirty([...unmerged, ...(await stagedDirty(ctx, stage0, headTree))]);
+  refuseDirty([...unmerged, ...(await stagedDirty(ctx, stage0, headTree, COUNTING_GITLINKS))]);
 };
 
 /** The `--no-commit` pre-flight: staged changes ride along, only unmerged entries refuse. */
@@ -118,5 +150,5 @@ export const stagedChangePaths = async (
   headTree: ObjectId,
 ): Promise<ReadonlyArray<FilePath>> => {
   const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
-  return [...(await stagedDirty(ctx, stage0, headTree))].sort(comparePaths);
+  return [...(await stagedDirty(ctx, stage0, headTree, COUNTING_GITLINKS))].sort(comparePaths);
 };

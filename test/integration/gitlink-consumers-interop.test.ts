@@ -1,24 +1,26 @@
 /**
- * Cross-tool interop — a checkout or merge that rewrites the tree never treats a
- * tracked gitlink as dirty, and removes a deleted gitlink only when its directory is empty.
+ * Cross-tool interop — a checkout, merge, cherry-pick or rebase never treats a tracked
+ * gitlink as dirty, and a rewrite removes a deleted gitlink only when its directory is empty.
  * Both tools run the same step on twin copies; the index entry, the submodule HEAD, the
  * files under the submodule and the status lines are compared.
  *
  * @proves
  *   surface:        checkout
  *   bucket:         cross-tool-interop
- *   unique:         checkout and merge leave a gitlink directory alone and remove an empty one as git does
+ *   unique:         checkout, merge, cherry-pick and rebase leave a gitlink directory alone and remove an empty one as git does
  *   interopSurface: checkout, merge
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { cp, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
+import { rebaseContinue, rebaseRun } from '../../src/application/commands/rebase.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
 
@@ -30,9 +32,11 @@ const ABSENT = 'absent';
 type Setup = (repo: string) => Promise<void>;
 
 interface Step {
-  readonly git: ReadonlyArray<string>;
-  readonly tsgit: (ctx: Context) => Promise<unknown>;
+  readonly git: (repo: string) => void;
+  readonly tsgit: (ctx: Context, repo: string) => Promise<unknown>;
 }
+
+const CONFLICT_EXIT_STATUS = 1;
 
 const pinnedEnv = () => ({
   ...runGitEnv(),
@@ -53,6 +57,8 @@ const gitIn = (repo: string, ...args: string[]): string =>
       'commit.gpgsign=false',
       '-c',
       'protocol.file.allow=always',
+      '-c',
+      'core.editor=true',
       ...args,
     ],
     { env: pinnedEnv() },
@@ -98,6 +104,13 @@ const buildFixture = async (root: string): Promise<string> => {
   return superproject;
 };
 
+/** F3: F2 plus a commit `m` on `main`, so merging `other` is a real merge and `other` cherry-picks. */
+const addMainCommit = async (repo: string): Promise<void> => {
+  await writeFile(path.join(repo, 'k'), 'main\n');
+  gitIn(repo, 'add', 'k');
+  commitIn(repo, 'm');
+};
+
 const nothing: Setup = async () => {};
 const moved: Setup = async (repo) => commitIn(sub(repo), 'z');
 const edited: Setup = async (repo) => writeFile(sub(repo, 'u'), 'edited\n');
@@ -105,20 +118,78 @@ const deinitialised: Setup = async (repo) => {
   gitIn(repo, 'submodule', 'deinit', '-q', '-f', SUBMODULE);
 };
 
+/** `side` edits `k` too, so replaying `m` onto it stops on a conflict. */
+const conflictingSide: Setup = async (repo) => {
+  gitIn(repo, 'checkout', '-q', 'side');
+  await writeFile(path.join(repo, 'k'), 'side\n');
+  gitIn(repo, 'add', 'k');
+  commitIn(repo, 'side k');
+  gitIn(repo, 'checkout', '-q', 'main');
+};
+
+const gitStep = (...args: string[]): ((repo: string) => void) => {
+  return (repo) => {
+    gitIn(repo, ...args);
+  };
+};
+
 const switchTo = (rev: string): Step => ({
-  git: ['checkout', '-q', rev],
+  git: gitStep('checkout', '-q', rev),
   tsgit: (ctx) => checkout(ctx, { rev }),
 });
 
 const detachTo = (rev: string): Step => ({
-  git: ['checkout', '-q', '--detach', rev],
+  git: gitStep('checkout', '-q', '--detach', rev),
   tsgit: (ctx) => checkout(ctx, { rev, detach: true }),
 });
 
 const fastForwardTo = (rev: string): Step => ({
-  git: ['merge', '-q', '--no-edit', rev],
+  git: gitStep('merge', '-q', '--no-edit', rev),
   tsgit: (ctx) => mergeRun(ctx, { rev }),
 });
+
+const mergeCommit = (rev: string): Step => ({
+  git: gitStep('merge', '-q', '--no-edit', rev),
+  tsgit: (ctx) => mergeRun(ctx, { rev }),
+});
+
+const cherryPick = (rev: string): Step => ({
+  git: gitStep('cherry-pick', rev),
+  tsgit: (ctx) => cherryPickRun(ctx, { commits: [rev] }),
+});
+
+const rebaseOnto = (upstream: string): Step => ({
+  git: gitStep('rebase', '-q', upstream),
+  tsgit: (ctx) => rebaseRun(ctx, { upstream }),
+});
+
+/** git exits 1 when a rebase stops on a conflict; any other failure is a real error. */
+const rebaseStoppingOnConflict = (upstream: string): Step => ({
+  git: (repo) => {
+    try {
+      gitIn(repo, 'rebase', '-q', upstream);
+    } catch (error) {
+      if ((error as { status?: number }).status !== CONFLICT_EXIT_STATUS) throw error;
+    }
+  },
+  tsgit: (ctx) => rebaseRun(ctx, { upstream }),
+});
+
+const resolveAndMoveSubmodule = (repo: string): void => {
+  writeFileSync(path.join(repo, 'k'), 'resolved\n');
+  gitIn(repo, 'add', 'k');
+  commitIn(sub(repo), 'z');
+};
+
+const resolveThenMoveSubmodule: Step = {
+  git: resolveAndMoveSubmodule,
+  tsgit: async (_ctx, repo) => resolveAndMoveSubmodule(repo),
+};
+
+const continueRebase: Step = {
+  git: gitStep('rebase', '--continue'),
+  tsgit: (ctx) => rebaseContinue(ctx),
+};
 
 interface Row {
   readonly title: string;
@@ -189,6 +260,54 @@ const ROWS: ReadonlyArray<Row> = [
   },
 ];
 
+const F3_ROWS: ReadonlyArray<Row> = [
+  {
+    title: 'an unmoved submodule, merge of a branch moving it',
+    setup: nothing,
+    steps: [mergeCommit('other')],
+  },
+  {
+    title: 'a moved submodule, merge of a branch moving it',
+    setup: moved,
+    steps: [mergeCommit('other')],
+  },
+  {
+    title: 'an edited submodule, merge of a branch moving it',
+    setup: edited,
+    steps: [mergeCommit('other')],
+  },
+  {
+    title: 'an unmoved submodule, cherry-pick of a commit moving it',
+    setup: nothing,
+    steps: [cherryPick('other')],
+  },
+  {
+    title: 'a moved submodule, cherry-pick of a commit moving it',
+    setup: moved,
+    steps: [cherryPick('other')],
+  },
+  {
+    title: 'a moved submodule, cherry-pick of a commit adding a file',
+    setup: moved,
+    steps: [cherryPick('side')],
+  },
+  {
+    title: 'a moved submodule, rebase onto a branch adding a file',
+    setup: moved,
+    steps: [rebaseOnto('side')],
+  },
+  {
+    title: 'an edited submodule, rebase onto a branch adding a file',
+    setup: edited,
+    steps: [rebaseOnto('side')],
+  },
+  {
+    title: 'a submodule moved after a conflicted rebase was resolved, rebase continued',
+    setup: conflictingSide,
+    steps: [rebaseStoppingOnConflict('side'), resolveThenMoveSubmodule, continueRebase],
+  },
+];
+
 const filesUnder = async (dir: string): Promise<string[]> => {
   if (!existsSync(dir)) return [ABSENT];
   const names = await readdir(dir);
@@ -210,48 +329,63 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   () => {
     let root: string;
     let fixture: string;
+    let fixtureWithMainCommit: string;
 
-    const twin = async (name: string): Promise<string> => {
+    const twin = async (name: string, source: string): Promise<string> => {
       const dir = path.join(root, name);
-      await cp(fixture, dir, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+      await cp(source, dir, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+      gitIn(dir, 'config', 'user.name', 't');
+      gitIn(dir, 'config', 'user.email', 't@t');
       return dir;
     };
 
     beforeAll(async () => {
       root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-gitlink-consumers-'));
       fixture = await buildFixture(root);
+      fixtureWithMainCommit = path.join(root, 'fixture-main-commit');
+      await cp(fixture, fixtureWithMainCommit, {
+        recursive: true,
+        preserveTimestamps: true,
+        verbatimSymlinks: true,
+      });
+      await addMainCommit(fixtureWithMainCommit);
     }, ROW_TIMEOUT);
 
     afterAll(async () => {
       await rm(root, { recursive: true, force: true });
     });
 
-    describe.each(ROWS.map((row, index) => [row.title, row, index] as const))(
-      'Given %s',
-      (_title, row, index) => {
-        describe('When both tools run the steps', () => {
-          it(
-            'Then the index entry, the submodule HEAD, its files and the status lines match git',
-            async () => {
-              // Arrange
-              const gitTwin = await twin(`git-${index}`);
-              const tsgitTwin = await twin(`tsgit-${index}`);
-              await row.setup(gitTwin);
-              await row.setup(tsgitTwin);
+    const matchesGit = (prefix: string, rows: ReadonlyArray<Row>, source: () => string): void => {
+      describe.each(rows.map((row, index) => [row.title, row, index] as const))(
+        'Given %s',
+        (_title, row, index) => {
+          describe('When both tools run the steps', () => {
+            it(
+              'Then the index entry, the submodule HEAD, its files and the status lines match git',
+              async () => {
+                // Arrange
+                const gitTwin = await twin(`${prefix}-git-${index}`, source());
+                const tsgitTwin = await twin(`${prefix}-tsgit-${index}`, source());
+                await row.setup(gitTwin);
+                await row.setup(tsgitTwin);
 
-              // Act
-              for (const step of row.steps) {
-                gitIn(gitTwin, ...step.git);
-                await step.tsgit(createNodeContext({ workDir: tsgitTwin }));
-              }
+                // Act
+                for (const step of row.steps) {
+                  step.git(gitTwin);
+                  await step.tsgit(createNodeContext({ workDir: tsgitTwin }), tsgitTwin);
+                }
 
-              // Assert
-              expect(await observed(tsgitTwin)).toEqual(await observed(gitTwin));
-            },
-            ROW_TIMEOUT,
-          );
-        });
-      },
-    );
+                // Assert
+                expect(await observed(tsgitTwin)).toEqual(await observed(gitTwin));
+              },
+              ROW_TIMEOUT,
+            );
+          });
+        },
+      );
+    };
+
+    matchesGit('f2', ROWS, () => fixture);
+    matchesGit('f3', F3_ROWS, () => fixtureWithMainCommit);
   },
 );

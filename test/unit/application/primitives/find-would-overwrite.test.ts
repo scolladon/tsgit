@@ -52,6 +52,20 @@ const work = (ctx: Context, path: string, content: string): Promise<void> =>
 const set = (...paths: ReadonlyArray<string>): ReadonlySet<FilePath> =>
   new Set(paths.map((p) => p as FilePath));
 
+const A_COMMIT = 'a'.repeat(40) as ObjectId;
+const MOVED_HEAD = 'b'.repeat(40);
+
+/** An absorbed submodule checkout at `sub` whose HEAD is `MOVED_HEAD`. */
+const layOutMovedSubmodule = async (ctx: Context): Promise<void> => {
+  const sub = `${ctx.layout.workDir}/sub`;
+  const moduleDir = `${ctx.layout.gitDir}/modules/sub`;
+  await ctx.fs.mkdir(sub);
+  await ctx.fs.writeUtf8(`${sub}/.git`, 'gitdir: ../.git/modules/sub\n');
+  await ctx.fs.writeUtf8(`${moduleDir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.mkdir(`${moduleDir}/objects`);
+  await ctx.fs.writeUtf8(`${moduleDir}/refs/heads/main`, `${MOVED_HEAD}\n`);
+};
+
 describe('findWouldOverwrite', () => {
   describe('Given a tracked lossy entry and a file named like its decoded view on disk', () => {
     describe('When the changed set carries the escaped key', () => {
@@ -111,6 +125,46 @@ describe('findWouldOverwrite', () => {
 
         // Assert
         expect(result.localChanges).toEqual(['\uFFFD.txt']);
+      });
+    });
+  });
+
+  describe('Given a stage-0 gitlink whose checkout HEAD moved', () => {
+    describe('When the changed set carries its path', () => {
+      it('Then it is not a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await layOutMovedSubmodule(ctx);
+
+        // Act
+        const result = await findWouldOverwrite(
+          ctx,
+          set('sub'),
+          indexOf([entryOf('sub', A_COMMIT, FILE_MODE.GITLINK)]),
+        );
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given a stage-0 gitlink whose path holds a regular file', () => {
+    describe('When the changed set carries its path', () => {
+      it('Then it is not a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'sub', 'now a file\n');
+
+        // Act
+        const result = await findWouldOverwrite(
+          ctx,
+          set('sub'),
+          indexOf([entryOf('sub', A_COMMIT, FILE_MODE.GITLINK)]),
+        );
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
       });
     });
   });
