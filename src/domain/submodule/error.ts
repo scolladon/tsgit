@@ -12,7 +12,8 @@ export type SubmoduleError =
     }
   | { readonly code: 'SUBMODULE_PATH_EXISTS'; readonly path: string }
   | { readonly code: 'SUBMODULE_PATH_IS_SYMLINK'; readonly path: FilePath }
-  | { readonly code: 'GITMODULES_NOT_STAGED' };
+  | { readonly code: 'GITMODULES_NOT_STAGED' }
+  | { readonly code: 'SUBMODULE_NAME_NOT_FOUND'; readonly path: FilePath };
 
 /**
  * A relative submodule URL cannot be resolved because the base URL has no more
@@ -68,3 +69,11 @@ export const submodulePathIsSymlink = (path: FilePath): TsgitError =>
  */
 export const gitmodulesNotStaged = (): TsgitError =>
   new TsgitError({ code: 'GITMODULES_NOT_STAGED' });
+
+/**
+ * `rm` must migrate an embedded .git directory into .git/modules/<name>, and git
+ * takes the name from the .gitmodules section whose `path` matches — it dies
+ * `could not lookup name for submodule '<path>'` (exit 128) when there is none.
+ */
+export const submoduleNameNotFound = (path: FilePath): TsgitError =>
+  new TsgitError({ code: 'SUBMODULE_NAME_NOT_FOUND', path });

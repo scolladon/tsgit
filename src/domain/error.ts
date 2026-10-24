@@ -757,6 +757,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `'${data.path}' already exists in the index`;
     case 'SUBMODULE_PATH_IS_SYMLINK':
       return `expected submodule path '${data.path}' not to be a symbolic link`;
+    case 'SUBMODULE_NAME_NOT_FOUND':
+      return `could not lookup name for submodule '${data.path}'`;
     case 'GITMODULES_NOT_STAGED':
       return 'please stage your changes to .gitmodules or stash them to proceed';
     case 'SUBMODULE_OBJECT_FORMAT_MISMATCH':

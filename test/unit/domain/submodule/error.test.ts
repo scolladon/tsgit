@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import {
   gitmodulesNotStaged,
+  submoduleNameNotFound,
   submoduleObjectFormatMismatch,
   submodulePathIsSymlink,
 } from '../../../../src/domain/submodule/error.js';
@@ -104,6 +105,34 @@ describe('gitmodulesNotStaged', () => {
         expect(result).toBe(
           'GITMODULES_NOT_STAGED: please stage your changes to .gitmodules or stash them to proceed',
         );
+      });
+    });
+  });
+});
+
+describe('submoduleNameNotFound', () => {
+  describe('Given an embedded repository whose path has no .gitmodules name', () => {
+    describe('When the helper is called', () => {
+      it('Then the payload carries the code and the path', () => {
+        // Arrange
+        const sut = submoduleNameNotFound;
+
+        // Act
+        const result = sut('sub' as FilePath);
+
+        // Assert
+        expect(result.data).toStrictEqual({ code: 'SUBMODULE_NAME_NOT_FOUND', path: 'sub' });
+      });
+
+      it("Then the message mirrors git's refusal", () => {
+        // Arrange
+        const sut = submoduleNameNotFound('sub' as FilePath);
+
+        // Act
+        const result = sut.message;
+
+        // Assert
+        expect(result).toBe("SUBMODULE_NAME_NOT_FOUND: could not lookup name for submodule 'sub'");
       });
     });
   });

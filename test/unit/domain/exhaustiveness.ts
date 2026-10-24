@@ -250,6 +250,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'SUBMODULE_OBJECT_FORMAT_MISMATCH':
     case 'SUBMODULE_PATH_EXISTS':
     case 'SUBMODULE_PATH_IS_SYMLINK':
+    case 'SUBMODULE_NAME_NOT_FOUND':
     case 'GITMODULES_NOT_STAGED':
     case 'WORKTREE_PATH_EXISTS':
     case 'BRANCH_CHECKED_OUT':
