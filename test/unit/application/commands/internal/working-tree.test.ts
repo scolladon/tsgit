@@ -511,21 +511,45 @@ describe('internal/working-tree', () => {
 
     describe('Given a missing file', () => {
       describe('When removeFile', () => {
-        it('Then throws CHECKOUT_OVERWRITE_DIRTY listing that path (treated as a divergence)', async () => {
-          // Arrange — the contract says: if the working tree state doesn't match what we wrote, refuse.
-          // Missing-when-expected qualifies as divergence; safer than silently succeeding.
+        it('Then throws FILE_NOT_FOUND carrying the full path, for the caller to tolerate', async () => {
+          // Arrange
           const ctx = createMemoryContext();
           const path = 'missing.txt' as FilePath;
 
           // Act
+          const err = await expectError(() => removeFile(ctx, path), 'FILE_NOT_FOUND');
+
+          // Assert
+          if (err.data.code !== 'FILE_NOT_FOUND') throw new Error('unexpected error shape');
+          expect(err.data.path).toBe(`${ctx.layout.workDir}/${path}`);
+        });
+      });
+    });
+
+    describe('Given an lstat denied by the file system', () => {
+      describe('When removeFile', () => {
+        it('Then throws CHECKOUT_OVERWRITE_DIRTY listing that path', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          const path = 'locked.txt' as FilePath;
+          const ctx: Context = {
+            ...base,
+            fs: {
+              ...base.fs,
+              lstat: async (full: string) => {
+                throw permissionDenied(full);
+              },
+            },
+          };
+
+          // Act
           const err = await expectError(() => removeFile(ctx, path), 'CHECKOUT_OVERWRITE_DIRTY');
 
-          // Assert — the offending path is reported (kills L96 ArrayDeclaration `[]`).
-          const data = err.data;
-          if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
-            expect(data.localChanges).toEqual([path]);
-            expect(data.untracked).toEqual([]);
-          }
+          // Assert
+          if (err.data.code !== 'CHECKOUT_OVERWRITE_DIRTY')
+            throw new Error('unexpected error shape');
+          expect(err.data.localChanges).toEqual([path]);
+          expect(err.data.untracked).toEqual([]);
         });
       });
     });

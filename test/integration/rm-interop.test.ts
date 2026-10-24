@@ -436,4 +436,59 @@ describe.skipIf(!GIT_AVAILABLE)('rm porcelain interop', () => {
       });
     });
   });
+
+  const seedCommittedIn = async (name: string): Promise<void> => {
+    await mkdir(path.dirname(path.join(pair.peer, name)), { recursive: true });
+    await mkdir(path.dirname(path.join(pair.ours, name)), { recursive: true });
+    await writeBoth(name, 'one\n');
+    runGit(['-C', pair.peer, 'add', name]);
+    runGit(['-C', pair.peer, 'commit', '-q', '-m', 'seed'], { env: COMMIT_ENV });
+    await repo.add([name]);
+    await repo.commit({ message: 'seed', author: AUTHOR, committer: AUTHOR });
+  };
+  const porcelainOf = (dir: string): string => runGit(['-C', dir, 'status', '--porcelain']);
+
+  describe('Given a tracked file the user already deleted from disk', () => {
+    describe('When repo.rm and git rm remove it', () => {
+      it('Then both succeed and stage the deletion identically', async () => {
+        // Arrange
+        await seedCommitted('f', 'one\n');
+        await rm(path.join(pair.ours, 'f'));
+        await rm(path.join(pair.peer, 'f'));
+
+        // Act
+        const peerRun = tryRunGit(['-C', pair.peer, 'rm', 'f']);
+        const result = await repo.rm(['f']);
+
+        // Assert
+        expect(peerRun.ok).toBe(true);
+        expect(result.removed).toEqual(['f']);
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        expect(porcelainOf(pair.ours)).toBe('D  f\n');
+        expect(porcelainOf(pair.ours)).toBe(porcelainOf(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a tracked file whose containing directory is gone from disk', () => {
+    describe('When repo.rm and git rm remove it', () => {
+      it('Then both succeed and stage the deletion identically', async () => {
+        // Arrange
+        await seedCommittedIn('dd/f');
+        await rm(path.join(pair.ours, 'dd'), { recursive: true });
+        await rm(path.join(pair.peer, 'dd'), { recursive: true });
+
+        // Act
+        const peerRun = tryRunGit(['-C', pair.peer, 'rm', 'dd/f']);
+        const result = await repo.rm(['dd/f']);
+
+        // Assert
+        expect(peerRun.ok).toBe(true);
+        expect(result.removed).toEqual(['dd/f']);
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        expect(porcelainOf(pair.ours)).toBe('D  dd/f\n');
+        expect(porcelainOf(pair.ours)).toBe(porcelainOf(pair.peer));
+      });
+    });
+  });
 });

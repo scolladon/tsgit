@@ -18,7 +18,12 @@ import {
 } from '../../../../src/domain/commands/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
-import { fileNotFound, pathspecNoMatch, TsgitError } from '../../../../src/domain/index.js';
+import {
+  fileNotFound,
+  pathspecNoMatch,
+  permissionDenied,
+  TsgitError,
+} from '../../../../src/domain/index.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -672,20 +677,48 @@ describe('rm', () => {
     });
   });
 
-  describe('Given cached=false and a missing working file (CHECKOUT_OVERWRITE_DIRTY)', () => {
+  describe('Given cached=false and a tracked file already deleted from the working tree', () => {
     describe('When rm', () => {
-      it('Then the error propagates', async () => {
-        // Arrange — a tracked file already deleted from the working tree. removeFile
-        // sees the missing file and throws CHECKOUT_OVERWRITE_DIRTY, NOT FILE_NOT_FOUND.
+      it('Then the index entry is removed, as git does', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
         await add(ctx, ['a.txt']);
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
 
-        // Act + Assert — the removeFile catch must re-throw any non-FILE_NOT_FOUND
-        // error. Kills L69 EqualityOperator `=== ` -> `!==` (which would swallow
-        // CHECKOUT_OVERWRITE_DIRTY) and the `-> true` ConditionalExpression mutant.
-        const err = await expectError(() => rm(ctx, ['a.txt']), 'CHECKOUT_OVERWRITE_DIRTY');
+        // Act
+        const result = await rm(ctx, ['a.txt']);
+
+        // Assert
+        expect(result.removed).toEqual(['a.txt']);
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).not.toContain('a.txt');
+      });
+    });
+  });
+
+  describe('Given cached=false and a working file whose lstat is denied', () => {
+    describe('When rm', () => {
+      it('Then the error propagates', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
+        await add(ctx, ['a.txt']);
+        const target = `${ctx.layout.workDir}/a.txt`;
+        const deniedCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (path: string) => {
+              if (path === target) throw permissionDenied(path);
+              return ctx.fs.lstat(path);
+            },
+          },
+        };
+
+        // Act + Assert — the catch must re-throw any non-FILE_NOT_FOUND error.
+        // Kills the `===` -> `!==` and `-> true` mutants of the catch condition.
+        const err = await expectError(() => rm(deniedCtx, ['a.txt']), 'CHECKOUT_OVERWRITE_DIRTY');
         if (err.data.code !== 'CHECKOUT_OVERWRITE_DIRTY') throw new Error('unexpected error shape');
         expect(err.data.localChanges).toEqual(['a.txt']);
         expect(err.data.untracked).toEqual([]);
