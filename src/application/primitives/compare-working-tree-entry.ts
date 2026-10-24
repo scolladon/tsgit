@@ -249,10 +249,10 @@ const compareContent = async (
 };
 
 /**
- * The commit checked out at a gitlink, or `undefined` when git would find none:
- * no repository there, one it cannot read, or one without a resolvable HEAD.
+ * The commit checked out at a gitlink as git's `ce_compare_gitlink` reads it, or
+ * `undefined` when git would find none: no repository there, one it cannot open,
+ * or one without a resolvable HEAD.
  */
-/** The commit checked out at a gitlink as git's `ce_compare_gitlink` reads it: a checkout it cannot open has none. */
 export const checkedOutHead = async (
   ctx: Context,
   path: FilePath,
