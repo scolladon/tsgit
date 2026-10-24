@@ -252,6 +252,12 @@ const rebaseOnto = (upstream: string): Step => ({
   tsgit: (ctx) => rebaseRun(ctx, { upstream }),
 });
 
+/** git's `--rebase-merges` todo opens with `label onto` and `reset onto`, never with a pick. */
+const rebaseMergesOnto = (upstream: string): Step => ({
+  git: gitStep('rebase', '-q', '--rebase-merges', upstream),
+  tsgit: (ctx) => rebaseRun(ctx, { upstream, rebaseMerges: true }),
+});
+
 /** git exits 1 when a rebase stops on a conflict; any other failure is a real error. */
 const rebaseStoppingOnConflict = (upstream: string): Step => ({
   git: (repo) => {
@@ -482,6 +488,11 @@ const stagedMoveOwnIgnoreAll: Setup = async (repo) => {
   gitIn(repo, 'config', 'submodule.sub.ignore', 'all');
   await stagedMoveForced(repo);
 };
+/** The move staged, then the checkout put back on the recorded commit: index and checkout disagree. */
+const stagedMoveCheckedOutBack: Setup = async (repo) => {
+  await stagedMove(repo);
+  gitIn(sub(repo), 'checkout', '-q', 'HEAD~1');
+};
 
 const F3_ROWS: ReadonlyArray<Row> = [
   {
@@ -489,6 +500,23 @@ const F3_ROWS: ReadonlyArray<Row> = [
       'a staged submodule move under a .gitmodules ignoring it entirely, rebase onto a branch adding a file',
     setup: stagedMoveIgnoringAll,
     steps: [rebaseOnto('side')],
+  },
+  {
+    title: 'a staged submodule move, rebase recreating merges onto a branch adding a file',
+    setup: stagedMove,
+    steps: [rebaseMergesOnto('side')],
+  },
+  {
+    title:
+      'a staged submodule move whose checkout went back, rebase recreating merges onto a branch adding a file',
+    setup: stagedMoveCheckedOutBack,
+    steps: [rebaseMergesOnto('side')],
+  },
+  {
+    title:
+      'a staged submodule move under a .gitmodules ignoring it entirely, rebase recreating merges onto a branch adding a file',
+    setup: stagedMoveIgnoringAll,
+    steps: [rebaseMergesOnto('side')],
   },
   {
     title:
