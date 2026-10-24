@@ -36,6 +36,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_COMMIT_GRAPH_HEADER':
     case 'INVALID_COMMIT_GRAPH_CHUNK':
     case 'FILE_NOT_FOUND':
+    case 'PATH_TOO_LONG':
     case 'FILE_EXISTS':
     case 'NOT_A_DIRECTORY':
     case 'DIRECTORY_NOT_EMPTY':

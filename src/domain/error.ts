@@ -15,6 +15,7 @@ import type { WorktreeError } from './worktree/error.js';
 
 export type AdapterError =
   | { readonly code: 'FILE_NOT_FOUND'; readonly path: string }
+  | { readonly code: 'PATH_TOO_LONG'; readonly path: string }
   | { readonly code: 'FILE_EXISTS'; readonly path: string }
   | { readonly code: 'NOT_A_DIRECTORY'; readonly path: string }
   | { readonly code: 'DIRECTORY_NOT_EMPTY'; readonly path: string }
@@ -137,6 +138,10 @@ export const sanitizeForDisplay = (s: string): string => {
 
 export const fileNotFound = (path: string): TsgitError =>
   new TsgitError({ code: 'FILE_NOT_FOUND', path });
+
+/** The file system refused a path component or the whole path as too long (`ENAMETOOLONG`); git's files backend treats a loose ref whose `lstat` fails that way as not resolving. */
+export const pathTooLong = (path: string): TsgitError =>
+  new TsgitError({ code: 'PATH_TOO_LONG', path });
 
 export const fileExists = (path: string): TsgitError =>
   new TsgitError({ code: 'FILE_EXISTS', path });
@@ -315,6 +320,8 @@ function extractDetail(data: TsgitErrorData): string {
       return data.reason;
     case 'FILE_NOT_FOUND':
       return `file not found: ${basename(data.path)}`;
+    case 'PATH_TOO_LONG':
+      return `file name too long: ${basename(data.path)}`;
     case 'FILE_EXISTS':
       return `file already exists: ${basename(data.path)}`;
     case 'NOT_A_DIRECTORY':

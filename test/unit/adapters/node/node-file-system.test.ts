@@ -1209,6 +1209,16 @@ describe('NodeFileSystem', () => {
               label: 'EISDIR returns PERMISSION_DENIED (open-directory refusal, cross-platform)',
             },
             {
+              code: 'ENAMETOOLONG',
+              path: '/repo/.git/refs/heads/overlong',
+              expectedCode: 'PATH_TOO_LONG',
+              extra: (data: TsgitError['data']) => {
+                if (data.code === 'PATH_TOO_LONG')
+                  expect(data.path).toBe('/repo/.git/refs/heads/overlong');
+              },
+              label: 'ENAMETOOLONG returns PATH_TOO_LONG carrying the path',
+            },
+            {
               code: 'EOTHER',
               path: '/weird',
               expectedCode: 'UNSUPPORTED_OPERATION',
