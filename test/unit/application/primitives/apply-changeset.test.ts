@@ -3920,6 +3920,46 @@ describe('applyChangeset over a gitlink directory', () => {
     });
   });
 
+  describe('Given a populated directory at a path whose gitlink is replaced by a regular file', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the directory and its contents are gone and the path holds the blob', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('content'));
+        await ctx.fs.write(`${WORKDIR}/sub/inner/deep.txt`, enc('d'));
+        const changeset = makeChangeset([
+          { ...makeUpdate('sub', OLD_ID, newId), previousMode: FILE_MODE.GITLINK },
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub`))).toBe('content');
+      });
+    });
+  });
+
+  describe('Given an empty directory at a path where an add lands a regular file', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the directory is replaced by the file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('content'));
+        await ctx.fs.mkdir(`${WORKDIR}/f`);
+        const changeset = makeChangeset([makeAdd('f', newId)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('content');
+      });
+    });
+  });
+
   describe('Given a regular-file update over a locally modified file', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then it is still refused as a local change', async () => {

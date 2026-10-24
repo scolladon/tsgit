@@ -173,6 +173,25 @@ const onBranchWithFileSubmodule: Setup = async (repo) => {
   gitIn(repo, 'add', SUBMODULE);
   commitIn(repo, 'file-sub');
 };
+const populatedSubmoduleBesideFileBranch: Setup = async (repo) => {
+  await onBranchWithFileSubmodule(repo);
+  gitIn(repo, 'checkout', '-q', 'main');
+  gitIn(repo, 'submodule', 'update', '-q', '--init', '--force');
+};
+const populatedSubmoduleWithEmbeddedGitDirectory: Setup = async (repo) => {
+  await populatedSubmoduleBesideFileBranch(repo);
+  await rm(sub(repo, '.git'), { force: true });
+  await cp(path.join(repo, '.git', 'modules', SUBMODULE), sub(repo, '.git'), { recursive: true });
+};
+/** `file-added` adds a regular file `f`; an empty untracked directory `f/` waits on `main`. */
+const emptyDirectoryWhereABranchAddsAFile: Setup = async (repo) => {
+  gitIn(repo, 'checkout', '-q', '-b', 'file-added');
+  await writeFile(path.join(repo, 'f'), 'f\n');
+  gitIn(repo, 'add', 'f');
+  commitIn(repo, 'file-added');
+  gitIn(repo, 'checkout', '-q', 'main');
+  await mkdir(path.join(repo, 'f'));
+};
 const deinitialised: Setup = async (repo) => {
   gitIn(repo, 'submodule', 'deinit', '-q', '-f', SUBMODULE);
 };
@@ -324,6 +343,21 @@ interface Row {
 }
 
 const ROWS: ReadonlyArray<Row> = [
+  {
+    title: 'a populated submodule, checkout of a branch holding a regular file at its path',
+    setup: populatedSubmoduleBesideFileBranch,
+    steps: [switchTo('file-sub')],
+  },
+  {
+    title: 'a submodule with an embedded git directory, checkout of a branch holding a file there',
+    setup: populatedSubmoduleWithEmbeddedGitDirectory,
+    steps: [switchTo('file-sub')],
+  },
+  {
+    title: 'an empty untracked directory, checkout of a branch adding a file of that name',
+    setup: emptyDirectoryWhereABranchAddsAFile,
+    steps: [switchTo('file-added')],
+  },
   {
     title: 'a branch holding a regular file where main has the submodule, checkout of main',
     setup: onBranchWithFileSubmodule,
@@ -856,6 +890,7 @@ const observed = async (repo: string) => ({
   index: gitIn(repo, 'ls-files', '--stage', SUBMODULE),
   head: submoduleHead(repo),
   files: await filesUnder(sub(repo)),
+  addedFile: await bytesOf(path.join(repo, 'f')),
   status: gitIn(repo, 'status', '--porcelain=v2', '-uall'),
   stash: stashObservation(repo),
 });

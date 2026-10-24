@@ -266,6 +266,15 @@ const writeServedBlob = async (
   }
 };
 
+// git's checkout_entry: the dirty and untracked checks have already passed, so a
+// directory in the way of a file is a subtree to remove, not content to protect.
+const clearOccupant = async (ctx: Context, fullPath: string): Promise<void> => {
+  const occupant = await lstatIfPresent(ctx.fs, fullPath);
+  if (occupant === undefined) return;
+  if (occupant.isDirectory) await ctx.fs.rmRecursive(fullPath);
+  else await ctx.fs.rm(fullPath);
+};
+
 /**
  * Writes blob `id` to `fullPath` the way git's streaming checkout does: the
  * occupant is unlinked first, a refused locate leaves an empty file, a failure
@@ -279,7 +288,7 @@ export const writeStreamedBlob = async (
   mode?: FileMode,
   transform?: ChunkTransform,
 ): Promise<FileStat> => {
-  await rmIfExists(ctx, fullPath);
+  await clearOccupant(ctx, fullPath);
   let located: Awaited<ReturnType<typeof locateBlob>>;
   try {
     located = await locateBlob(ctx, id, { order: 'stream' });
