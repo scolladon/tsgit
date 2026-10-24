@@ -61,23 +61,26 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   // IN-FLIGHT promise itself, so the second caller joins the first's flight.
   const memo = new Map<string, PromiseMemo<PrefixShape>>();
   // Every change to a settled classification goes through the three helpers below, which
-  // advance `generation`; a verdict stamped with an older generation is recomputed, so no
-  // verdict outlives the classifications it was walked from.
-  let generation = 0;
+  // mint a fresh `generation` token; a verdict stamped with an older token is recomputed, so
+  // no verdict outlives the classifications it was walked from.
+  let generation: symbol = Symbol('classifications');
+  const classificationsChanged = (): void => {
+    generation = Symbol('classifications');
+  };
   const forgetPrefix = (prefix: string): void => {
     memo.delete(prefix);
-    generation += 1;
+    classificationsChanged();
   };
   const forgetEveryPrefix = (): void => {
     memo.clear();
-    generation += 1;
+    classificationsChanged();
   };
   const settlePrefix = (prefix: string, shape: PrefixShape): void => {
     memo.set(
       prefix,
       createPromiseMemo<PrefixShape>(async () => shape),
     );
-    generation += 1;
+    classificationsChanged();
   };
   // Single-flights the UNLINK step itself, separate from `memo` above: two
   // concurrent `unlinkSymlinkedLeadingComponent` calls for the SAME prefix
@@ -91,7 +94,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   // further path under the same directory answers from one lookup, without a promise hop
   // per component — as long as no classification changed since it was walked.
   interface StampedVerdict {
-    readonly generation: number;
+    readonly generation: symbol;
     readonly verdict: FilePath | undefined;
   }
   const verdicts = new Map<string, StampedVerdict>();
@@ -151,11 +154,14 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   };
 
   const symlinkedLeadingComponent = async (path: FilePath): Promise<FilePath | undefined> => {
+    // Stryker disable next-line StringLiteral: equivalent — a key of the whole path only caches per path instead of per directory; the memo answers the same verdicts
     const slash = path.lastIndexOf('/');
     // A root-level path has no leading component to classify.
     if (slash === -1) return undefined;
+    // Stryker disable next-line MethodExpression: equivalent — a key of the whole path only caches per path instead of per directory; the memo answers the same verdicts
     const directory = path.slice(0, slash);
     const cached = verdicts.get(directory);
+    // Stryker disable next-line ConditionalExpression: equivalent — never hitting the cache walks the memo again and answers the same verdict
     if (cached?.generation === generation) return cached.verdict;
     // Stamped with the generation the walk started from: a classification that changes
     // while the walk is in flight leaves this verdict stale, and the next lookup redoes it.

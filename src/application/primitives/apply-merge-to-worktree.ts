@@ -564,17 +564,22 @@ const keepsStagedChanges = (
   let unchangedSeen = 0;
   for (const entry of newIndexEntries) {
     const path = escapedPathOf(entry);
+    // Stryker disable next-line ConditionalExpression: equivalent — a spurious true only re-synthesizes the index into the tree the merge already produced (same oid)
     if (changed.has(path)) continue;
     const kept = ours.entries.get(path);
+    // Stryker disable next-line ConditionalExpression: equivalent — a spurious true only re-synthesizes the index into the tree the merge already produced (same oid)
     if (kept === undefined || kept.id !== entry.id || kept.mode !== entry.mode) return true;
+    // Stryker disable next-line AssignmentOperator: equivalent — a miscount can only add a spurious true, which re-synthesizes the same tree
     unchangedSeen += 1;
   }
+  // Stryker disable next-line ConditionalExpression: equivalent — a spurious true only re-synthesizes the index into the tree the merge already produced (same oid)
   return unchangedSeen !== unchangedCount(ours, changed);
 };
 
 /** How many of ours' paths the merge left alone; fewer of them in the index means a staged removal rode along. */
 const unchangedCount = (ours: EscapedFlatTree, changed: ReadonlySet<FilePath>): number => {
   let count = ours.entries.size;
+  // Stryker disable next-line ConditionalExpression,AssignmentOperator: equivalent — a miscount can only add a spurious true, which re-synthesizes the same tree
   for (const path of changed) if (ours.entries.has(path)) count -= 1;
   return count;
 };
