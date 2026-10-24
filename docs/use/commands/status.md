@@ -13,8 +13,8 @@ interface StatusOptions {
 }
 
 interface StatusResult {
-  readonly branch: RefName | undefined;
-  readonly detached: boolean;
+  readonly branch: RefName | undefined; // the branch HEAD names; undefined when detached or unknown
+  readonly detached: boolean; // true only when HEAD holds an object id
   readonly changes: ReadonlyArray<ChangedPath>;
   readonly untracked: ReadonlyArray<FilePath>;
   readonly unmerged: ReadonlyArray<UnmergedEntry>;
@@ -83,7 +83,7 @@ interface UnmergedEntry {
 - **One stat sample per path.** The tracked pass (`compareWorkingTreeDelta`) and the untracked walk never `lstat` the same path: the untracked walk excludes every tracked path by construction and never reads a leaf's stat at all, so the two passes' `lstat`ed paths are structurally disjoint — a path is `lstat`ed at most once per `status()` call. (Earlier revisions deduplicated this with a stat cache shared across both passes; the cache was write-only — the untracked pass never consulted it — so it was removed once the structural guarantee was confirmed, not replaced by another cache.)
 - **Sparse-aware:** out-of-cone paths marked `skip-worktree` are not reported as deletions.
 - **`.gitignore` integration:** untracked files matched by an ignore rule are filtered out before `clean` is computed.
-- **Detached HEAD:** `branch` is `undefined` and `detached: true` when HEAD points directly at a commit.
+- **HEAD states.** On a branch, `branch` is set and `detached` is `false` (an unborn branch keeps its name). Detached, `branch` is `undefined` and `detached` is `true`. Unknown, `branch` is `undefined` and `detached` is `false`, git's `# branch.head (unknown)`. HEAD is unknown when its chain cannot be read: a target whose loose path the file system refuses as too long, a target name git refuses, or a symbolic cycle. The report then has no HEAD tree, so every staged entry is `added` with no `head` side, as in git's `# branch.oid (initial)`.
 
 ## Examples
 

@@ -11,6 +11,7 @@
 
 import { constants, existsSync } from 'node:fs';
 import {
+  appendFile,
   chmod,
   cp,
   mkdir,
@@ -50,6 +51,7 @@ const ABSENT_MODE = '000000';
 const ABSENT_ID = '0'.repeat(40);
 const NO_CHANGE = '.';
 const SUBMODULE = 'sub';
+const LONG_NAME_LENGTH = 5000;
 const NOT_A_SUBMODULE = 'N...';
 
 type Setup = (repo: string) => Promise<void>;
@@ -241,6 +243,16 @@ const moduleHeadGarbage: Setup = async (repo) =>
 
 const moduleObjectsRemoved: Setup = async (repo) =>
   rm(path.join(moduleDir(repo), 'objects'), { recursive: true });
+
+const stagedAtSubmoduleHead: Setup = async (repo) => {
+  const head = gitIn(sub(repo), 'rev-parse', 'HEAD').trim();
+  gitIn(repo, 'update-index', '--cacheinfo', `160000,${head},${SUBMODULE}`);
+};
+
+const valuelessConfig =
+  (section: string, key: string): Setup =>
+  async (repo) =>
+    appendFile(path.join(repo, '.git', 'config'), `[${section}]\n\t${key}\n`);
 
 const FORMAT_REFUSALS: ReadonlyArray<{
   readonly title: string;
@@ -435,6 +447,14 @@ const ROWS: ReadonlyArray<readonly [string, Setup]> = [
     async (repo) => void gitIn(sub(repo), 'checkout', '-q', '--detach'),
   ],
   ['a moved submodule', moved],
+  [
+    'a module HEAD naming a branch too long for the file system',
+    async (repo) =>
+      writeFile(
+        path.join(moduleDir(repo), 'HEAD'),
+        `ref: refs/heads/${'1'.repeat(LONG_NAME_LENGTH)}\n`,
+      ),
+  ],
   ['a submodule with an edited tracked file', editedUpstreamFile],
   ['a submodule with an untracked file', untrackedFile],
   ['a submodule with an edited and an untracked file', compose(editedUpstreamFile, untrackedFile)],
@@ -527,6 +547,18 @@ const IGNORE_ROWS: ReadonlyArray<readonly [string, Setup]> = [
     compose(gitmodulesIgnoring('bogus'), moved),
   ],
   [
+    'a working .gitmodules all and a gitlink staged at the submodule head',
+    compose(gitmodulesIgnoring('all'), moved, stagedAtSubmoduleHead),
+  ],
+  [
+    'a working .gitmodules all and a file in place of the submodule',
+    compose(gitmodulesIgnoring('all'), replacedByFile(0o644)),
+  ],
+  [
+    'a working .gitmodules all and a removed submodule',
+    compose(gitmodulesIgnoring('all'), async (repo) => rm(sub(repo), { recursive: true })),
+  ],
+  [
     'a committed .gitmodules all and an oversized gitfile',
     compose(committedGitmodules('all'), sparseDotGit(OVERSIZED_GITFILE_BYTES)),
   ],
@@ -584,6 +616,31 @@ const CONFIG_REFUSALS: ReadonlyArray<ConfigRefusal> = [
   },
 ];
 
+interface MissingValueRefusal {
+  readonly title: string;
+  readonly setup: Setup;
+  readonly key: string;
+  readonly gitKey: string;
+}
+
+/** git lower-cases the variable name in its config messages. */
+const LOWERED_SHARED_IGNORE = 'diff.ignoreSubmodules'.toLowerCase();
+
+const MISSING_VALUE_REFUSALS: ReadonlyArray<MissingValueRefusal> = [
+  {
+    title: 'a valueless submodule ignore in the repository config',
+    setup: compose(valuelessConfig(`submodule "${SUBMODULE}"`, 'ignore'), moved),
+    key: `submodule.${SUBMODULE}.ignore`,
+    gitKey: `submodule.${SUBMODULE}.ignore`,
+  },
+  {
+    title: 'a valueless diff.ignoreSubmodules in the repository config',
+    setup: compose(valuelessConfig('diff', 'ignoreSubmodules'), moved),
+    key: LOWERED_SHARED_IGNORE,
+    gitKey: LOWERED_SHARED_IGNORE,
+  },
+];
+
 const ALL_ROWS = [...ROWS, ...IGNORE_ROWS];
 
 const modeOf = (side: { readonly mode: string } | undefined): string => side?.mode ?? ABSENT_MODE;
@@ -628,6 +685,9 @@ const gitChanges = (lines: string[]): string[] =>
 
 const gitUntracked = (lines: string[]): string[] =>
   lines.filter((line) => line.startsWith('? ')).map((line) => line.slice(2));
+
+const changeOf = (result: { readonly changes: ReadonlyArray<ChangedPath> }, p: string) =>
+  result.changes.find((change) => change.path === p);
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -848,6 +908,76 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(gitRun.stderr).toContain(gitMessage);
             expect(result.code).toBe(code);
             expect(result.value).toBe('bogus');
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe('Given a .gitmodules ignore value outside the four modes and a moved submodule', () => {
+      describe('When status runs in both tools', () => {
+        it(
+          'Then git warns and neither refuses',
+          async () => {
+            // Arrange
+            const gitTwin = await twin('git-bogus-warning');
+            const tsgitTwin = await twin('tsgit-bogus-warning');
+            for (const repo of [gitTwin, tsgitTwin]) {
+              await gitmodulesIgnoring('bogus')(repo);
+              await moved(repo);
+            }
+            const gitRun = tryRunGitWithExit(['-C', gitTwin, 'status', '--porcelain=v2'], {
+              env: pinnedEnv(),
+            });
+            const sut = status;
+
+            // Act
+            const result = await sut(createNodeContext({ workDir: tsgitTwin }));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(0);
+            expect(gitRun.stderr).toContain(
+              "warning: Invalid parameter 'bogus' for config option 'submodule.sub.ignore'",
+            );
+            expect(result.changes.map(fieldsOf)).toEqual(
+              gitChanges(gitRun.stdout.split('\n').filter(Boolean)),
+            );
+            expect(changeOf(result, SUBMODULE)?.submodule?.commitChanged).toBe(true);
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(MISSING_VALUE_REFUSALS)('Given $title', ({ title, setup, key, gitKey }) => {
+      describe('When status runs in both tools', () => {
+        it(
+          'Then both refuse and tsgit names the key, the file and the line',
+          async () => {
+            // Arrange
+            const gitTwin = await twin(`git-missing-${title}`);
+            const tsgitTwin = await twin(`tsgit-missing-${title}`);
+            await setup(gitTwin);
+            await setup(tsgitTwin);
+            const gitRun = tryRunGitWithExit(['-C', gitTwin, 'status'], { env: pinnedEnv() });
+            const sut = status;
+
+            // Act
+            const result = await refusalOf(() => sut(createNodeContext({ workDir: tsgitTwin })));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(REFUSED_EXIT);
+            expect(gitRun.stderr).toContain(`error: missing value for '${gitKey}'`);
+            expect(gitRun.stderr).toContain('fatal: bad config variable');
+            const gitLine = Number(
+              /in file '\.git\/config' at line (\d+)/.exec(gitRun.stderr)?.[1],
+            );
+            expect(result).toEqual({
+              code: 'CONFIG_MISSING_VALUE',
+              key,
+              source: path.join(tsgitTwin, '.git', 'config'),
+              line: gitLine,
+            });
           },
           ROW_TIMEOUT,
         );

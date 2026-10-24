@@ -128,8 +128,9 @@ const MISSING_CANDIDATE: RefCandidateOutcome = { kind: 'missing' };
 const DANGLING_CANDIDATE: RefCandidateOutcome = { kind: 'dangling-symref' };
 const BROKEN_CANDIDATE: RefCandidateOutcome = { kind: 'broken' };
 
+/** Whether a fault is one git folds into an unreadable ref rather than an error. */
 // Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREADABLE_REF_CODES, so the probe answers false whatever the literal is.
-const isUnreadable = (err: unknown): boolean => UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '');
+export const isUnreadableRef = (err: unknown) => UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '');
 
 /** Why a candidate whose chain failed to read failed: its own content
  *  unreadable, else a fault past its first hop — which is therefore symbolic.
@@ -143,7 +144,7 @@ const unreadableCandidate = async (
     await getRefStore(ctx).resolveDirect(name as RefName);
     return DANGLING_CANDIDATE;
   } catch (err) {
-    if (isUnreadable(err)) return BROKEN_CANDIDATE;
+    if (isUnreadableRef(err)) return BROKEN_CANDIDATE;
     throw err;
   }
 };
@@ -164,7 +165,7 @@ export async function readRefCandidate(
   try {
     outcome = await resolveChainOutcome(ctx, name, options);
   } catch (err) {
-    if (!isUnreadable(err)) throw err;
+    if (!isUnreadableRef(err)) throw err;
     return unreadableCandidate(ctx, name);
   }
   if (outcome.kind === 'missing')

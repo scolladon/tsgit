@@ -49,6 +49,7 @@ import {
 } from '../primitives/internal/scan-tracked-entries.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
+import { isUnreadableRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import type { WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
@@ -217,12 +218,28 @@ const reportUnderLock = async (
   }
 };
 
+type HeadView = Pick<StatusResult, 'branch' | 'detached'>;
+
+const UNKNOWN_HEAD: HeadView = { branch: undefined, detached: false };
+
+/** git's `branch.head`: the branch HEAD names, detached, or unknown when HEAD's chain cannot be read. */
+const headViewOf = async (ctx: Context): Promise<HeadView> => {
+  try {
+    const head = await readHeadRaw(ctx);
+    await resolveRefOrMissing(ctx, HEAD_NAME);
+    return { branch: branchRefFromHead(head), detached: head.kind === 'direct' };
+  } catch (err) {
+    if (isUnreadableRef(err)) return UNKNOWN_HEAD;
+    throw err;
+  }
+};
+
 const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
-  const head = await readHeadRaw(ctx);
+  const head = await headViewOf(ctx);
   // `readIndex` returns an empty index when the file is absent (fresh/unborn
   // repo); a thrown error means a corrupt index, which we let propagate rather
   // than fabricate an empty one — fabricating it would report every HEAD path as
@@ -235,7 +252,7 @@ const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusR
       tracked: trackedEntriesOf(index),
       workDir,
     });
-    return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
+    return { ...head, ...report };
   } finally {
     ctx.progress.end(STATUS_SCAN_OP);
   }
@@ -385,8 +402,8 @@ const reportStatus = async (
     readonly workDir: string;
   },
 ): Promise<StatusReport> => {
-  await resolveRevisionName(ctx, HEAD_NAME);
-  const headTree = await readHeadTreeEscaped(ctx);
+  const headId = await resolveRevisionName(ctx, HEAD_NAME);
+  const headTree = headId === undefined ? undefined : await readHeadTreeEscaped(ctx);
   const { unmerged: groups } = tracked.grouped;
   const stagedKindMap = collectStagedKinds(index, headTree, groups);
   const changes = buildChanges(stagedKindMap, scanned, headTree, tracked.stage0Map);
