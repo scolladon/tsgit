@@ -99,6 +99,23 @@ export const probeGitlinkCheckout = async (
   if (reached.kind === 'broken') return reached;
   const { commonDir, fs } = reached;
   if (!(await holdsObjectsAndRefs(fs, commonDir))) return broken(located.shown);
+  return repositoryCheckout(ctx, path, { gitDir, via: located.via, commonDir, fs, resolved });
+};
+
+interface ReachedRepository {
+  readonly gitDir: string;
+  readonly via: CheckoutVia;
+  readonly commonDir: string;
+  readonly fs: FileSystem;
+  readonly resolved: HeadFile;
+}
+
+/** The repository variant: its context and HEAD are derived on demand, the HEAD from the bytes already read. */
+const repositoryCheckout = (
+  ctx: Context,
+  path: FilePath,
+  { gitDir, via, commonDir, fs, resolved }: ReachedRepository,
+): GitlinkCheckout => {
   const context = async (): Promise<Context> =>
     deriveGitlinkContext(ctx, gitDir, path, {
       fs,
@@ -110,7 +127,7 @@ export const probeGitlinkCheckout = async (
     seedHeadFile(child, resolved);
     return resolveGitlinkHead(child);
   };
-  return { kind: 'repository', via: located.via, head, context };
+  return { kind: 'repository', via, head, context };
 };
 
 /**

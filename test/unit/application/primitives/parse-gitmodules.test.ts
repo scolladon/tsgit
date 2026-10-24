@@ -46,7 +46,8 @@ describe('Given .gitmodules text', () => {
       // Act
       const result = parseGitmodules(text);
       // Assert
-      expect(result).toEqual([{ name: 's', path: 'sub' }]);
+      expect(result).toStrictEqual([{ name: 's', path: 'sub' }]);
+      expect('ignore' in (result[0] ?? {})).toBe(false);
     });
   });
 

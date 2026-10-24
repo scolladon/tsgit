@@ -631,6 +631,57 @@ describe('rebaseRun', () => {
         expect((await readIndex(ctx)).entries).toEqual(indexBefore);
       });
     });
+    describe('When onto records the same id as HEAD at the path but as a regular file', () => {
+      it('Then the checkout refuses: agreeing on the id is not agreeing on the entry', async () => {
+        // Arrange — the gitlink's recorded id doubles as a real blob so onto can hold it as a file.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        const shared = await blobOf(ctx, 'shared\n');
+        const base = await gitlinkCommit(ctx, {
+          parents: [],
+          sub: shared,
+          files: { 'f.txt': 'f\n' },
+          message: 'base\n',
+        });
+        const mainTip = await gitlinkCommit(ctx, {
+          parents: [base],
+          sub: shared,
+          files: { 'f.txt': 'main\n' },
+          message: 'm\n',
+        });
+        const ontoTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f.txt' as never, await blobOf(ctx, 'f\n')),
+          treeEntry(FILE_MODE.REGULAR, 'o.txt' as never, await blobOf(ctx, 'o\n')),
+          treeEntry(FILE_MODE.REGULAR, 'sub' as never, shared),
+        ]);
+        const ontoTip = await createCommit(ctx, {
+          tree: ontoTree,
+          parents: [base],
+          author: FEAT_AUTHOR,
+          committer: FEAT_AUTHOR,
+          message: 'o-as-file\n',
+          extraHeaders: [],
+        });
+        await pointBranch(ctx, 'main', mainTip);
+        await pointBranch(ctx, 'side', ontoTip);
+        await reset(ctx, { mode: 'hard', rev: 'main' });
+        await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
+        await stageGitlink(ctx, GITLINK_C);
+
+        // Act
+        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(mainTip);
+      });
+    });
+
     describe('When onto agrees with HEAD on the gitlink', () => {
       it('Then the first pick is refused as a dirty index', async () => {
         // Arrange

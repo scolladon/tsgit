@@ -2042,7 +2042,9 @@ describe('stash push line-ending guards', () => {
       });
     });
   });
+});
 
+describe('stash push beyond a symbolic link', () => {
   describe('Given a tracked path whose leading directory became a symlink to a copy', () => {
     const arrange = async (): Promise<Context> => {
       const ctx = await setupRepo();

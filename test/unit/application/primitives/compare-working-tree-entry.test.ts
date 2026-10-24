@@ -17,6 +17,7 @@ import {
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
   CommandRequest,
@@ -1712,10 +1713,8 @@ describe('compareAndRefresh below a leading directory', () => {
         // Arrange
         const { ctx, entry } = await seedFile('d/f', 'x\n');
         const realLstat = ctx.fs.lstat.bind(ctx.fs);
-        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p) => {
-          if (p === work(ctx, 'd') || p === work(ctx, 'd/f')) {
-            throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
-          }
+        const lstat = vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p) => {
+          if (p === work(ctx, 'd')) throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
           return realLstat(p);
         });
         const sut = compareAndRefresh;
@@ -1723,8 +1722,9 @@ describe('compareAndRefresh below a leading directory', () => {
         // Act
         const result = await sut(ctx, entry);
 
-        // Assert
+        // Assert — the leading-directory verdict alone decides: the leaf is never probed.
         expect(result.delta.status).toBe('absent');
+        expect(lstat.mock.calls.map(([p]) => p)).not.toContain(work(ctx, 'd/f'));
       });
     });
   });
@@ -1752,10 +1752,11 @@ describe('compareAndRefresh below a leading directory', () => {
         // Arrange
         const { ctx, entry } = await seedFile('d/f', 'x\n');
         await replaceDirWithLink(ctx, 'd', 'copy');
-        const sut = { ...entry, mode: '160000' as const };
+        const gitlink = { ...entry, mode: FILE_MODE.GITLINK };
+        const sut = compareAndRefresh;
 
         // Act
-        const result = await compareAndRefresh(ctx, sut);
+        const result = await sut(ctx, gitlink);
 
         // Assert
         expect(result.delta).toEqual({ status: 'absent' });

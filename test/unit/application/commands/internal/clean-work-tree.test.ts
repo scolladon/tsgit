@@ -840,6 +840,35 @@ describe('stagedGitlinkChanges', () => {
     });
   });
 
+  describe('Given a gitlink staged where HEAD holds a regular file', () => {
+    describe('When queried', () => {
+      it('Then the path is not listed: the pre-flight itself refuses a type change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('file\n'),
+        });
+        const headTree = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.REGULAR, new TextEncoder().encode('sub'), blob)],
+        });
+        await writeFramedIndex(ctx, [gitlinkEntry(C_COMMIT)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(await codeOf(() => assertCleanWorkTree(ctx, headTree))).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+
   describe('Given a gitlink staged where HEAD has nothing', () => {
     describe('When queried', () => {
       it('Then the path is listed', async () => {
