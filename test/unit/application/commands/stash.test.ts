@@ -275,6 +275,43 @@ describe('stash push', () => {
     });
   });
 
+  describe('Given a regular file staged where HEAD holds a gitlink and the working tree matches the index', () => {
+    describe('When push runs', () => {
+      it('Then a stash is made, since the staged type change is the only local change', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+        await write(ctx, 'sub', 'now a file\n');
+        await add(ctx, ['sub']);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+      });
+    });
+  });
+
+  describe('Given a gitlink staged at a new id and a tracked file staged with an edit', () => {
+    describe('When push runs', () => {
+      it('Then a stash is made, since the file edit is a local change', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_C);
+        await stageGitlink(ctx, FILE_MODE.GITLINK, GITLINK_C);
+        await write(ctx, 'a.txt', 'staged edit\n');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+      });
+    });
+  });
+
   describe('Given an unmoved gitlink with a file edited inside its checkout', () => {
     describe('When push runs', () => {
       it('Then it reports no local changes', async () => {

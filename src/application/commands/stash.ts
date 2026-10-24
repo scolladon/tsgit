@@ -400,6 +400,7 @@ const differsBeyondGitlinks = async (
   iTree: ObjectId,
   base: BaseState,
 ): Promise<boolean> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — identical trees diff to no changes, so `.some` over them is false either way; the guard only skips the flatten.
   if (iTree === base.bTree) return false;
   const baseTree = await flattenEscapedTree(ctx, base.bTree);
   return diffIndexAgainstTreeKeyed(index, baseTree).changes.some(countsAsLocalChange);

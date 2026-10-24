@@ -351,6 +351,7 @@ const withoutChanges = (
   workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>,
   hidden: ReadonlySet<FilePath>,
 ): ReadonlyMap<FilePath, WorkingTreeDelta> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — with nothing hidden the copy maps every delta to itself, so the result equals the input map; the guard only skips the allocation.
   if (hidden.size === 0) return workingMap;
   return new Map(
     [...workingMap].map(([path, delta]) => [
@@ -370,6 +371,7 @@ const dirtyChecksOf = (
   { workingMap }: TrackedScan,
   ignores: SubmoduleIgnores,
 ): ReadonlyArray<DirtyCheck> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — with no ignores the loop's `ignores.get` is undefined for every path and `continue`s, so it returns the same empty list; the guard only skips the walk.
   if (ignores.size === 0) return [];
   const checked: DirtyCheck[] = [];
   for (const [path, entry] of stage0Map) {
@@ -557,13 +559,13 @@ const unstagedKindOf = (
 
 /** Whether a row's HEAD or index side is a gitlink: only those carry git's submodule field. */
 const submoduleOf = (
-  delta: WorkingTreeDelta | undefined,
   head: { readonly mode: string } | undefined,
   indexEntry: IndexEntry | undefined,
 ): ChangedPath['submodule'] => {
   if (head?.mode !== FILE_MODE.GITLINK && indexEntry?.mode !== FILE_MODE.GITLINK) return undefined;
+  // A gitlink whose checkout moved is always probed, so only rows the probe skipped reach here.
   return {
-    commitChanged: indexEntry?.mode === FILE_MODE.GITLINK && delta?.status === 'modified',
+    commitChanged: false,
     trackedChanges: false,
     untrackedChanges: false,
   };
@@ -585,7 +587,7 @@ const buildChangedPath = (
 ): ChangedPath => {
   const head = headTree?.entries.get(path);
   const unstaged = delta === undefined ? undefined : unstagedKindOf(delta, checked);
-  const submodule = checked ?? submoduleOf(delta, head, indexEntry);
+  const submodule = checked ?? submoduleOf(head, indexEntry);
   return {
     path,
     ...(staged !== undefined && { staged }),

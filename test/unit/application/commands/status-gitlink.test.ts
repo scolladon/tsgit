@@ -354,6 +354,29 @@ describe('status submodule field', () => {
       });
     });
   });
+  describe('Given a gitlink staged as new and missing from the work tree', () => {
+    describe('When status runs', () => {
+      it('Then the row is an addition with the three flags unset', async () => {
+        // Arrange
+        const ctx = await committed();
+        await seedIndex(ctx, [
+          { path: 'k', text: 'k\n' },
+          gitlinkRow('recorded\n'),
+          { path: 'other', text: 'staged\n', mode: FILE_MODE.GITLINK },
+        ]);
+        const sut = status;
+
+        // Act
+        const result = rowIn(await sut(ctx), 'other');
+
+        // Assert
+        expect(result?.staged).toBe('added');
+        expect(result?.unstaged).toBe('deleted');
+        expect(result?.submodule).toEqual(NO_SUBMODULE_CHANGE);
+      });
+    });
+  });
+
   describe('Given an unmoved submodule with an edited tracked file', () => {
     describe('When status runs', () => {
       it('Then the row reports tracked changes inside it', async () => {

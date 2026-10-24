@@ -321,6 +321,42 @@ describe('status', () => {
     });
   });
 
+  describe('Given a HEAD whose branch loose path fails for a reason git does not fold on the first read only', () => {
+    describe('When status', () => {
+      it('Then it rejects with that fault rather than reading HEAD as unknown', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        const faulty = await overlongBranchContext(ctx, permissionDenied);
+        const target = `${ctx.layout.gitDir}/refs/heads/overlong`;
+        let reads = 0;
+        const sut = status;
+        const onceFaulty = {
+          ...faulty,
+          fs: {
+            ...faulty.fs,
+            lstatIfReachable: async (path: string) => {
+              if (path === target) reads += 1;
+              if (path === target && reads === 1) throw permissionDenied(path);
+              return lstatIfReachable(ctx.fs, path);
+            },
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        await sut(onceFaulty).catch((err: unknown) => {
+          caught = err;
+        });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: target,
+        });
+      });
+    });
+  });
+
   describe('Given an unborn HEAD', () => {
     describe('When status', () => {
       it('Then the branch keeps its name and detached is false', async () => {
