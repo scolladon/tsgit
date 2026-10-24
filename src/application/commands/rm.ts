@@ -47,10 +47,7 @@ import {
 import { lstatIfPresent } from '../primitives/internal/fs-probes.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
-import {
-  pruneEmptiedDirectories,
-  survivingDirectoriesOf,
-} from '../primitives/internal/prune-emptied-directories.js';
+import { pruneEmptiedDirectories } from '../primitives/internal/prune-emptied-directories.js';
 import type { AttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
@@ -191,12 +188,12 @@ const removeFromWorkTree = async (
   const entries = removedGroups
     .map(([first]) => first as IndexEntry)
     .filter((entry) => !isLossy(entry));
-  await removeWorkingTree(ctx, entries, gitmodules.refusesEdit);
+  await removeWorkingTree(ctx, workDir, entries, gitmodules.refusesEdit);
   await pruneEmptiedDirectories(
     ctx,
     workDir,
     entries.map((entry) => entry.path),
-    survivingDirectoriesOf([]),
+    new Set<string>(),
   );
   return dropGitmodulesSections(ctx, workDir, entries.filter(isGitlinkEntry), gitmodules);
 };
@@ -241,11 +238,12 @@ const readGitmodules = async (
  */
 const removeWorkingTree = async (
   ctx: Context,
+  workDir: string,
   entries: ReadonlyArray<IndexEntry>,
   gitmodulesRefusesEdit: boolean,
 ): Promise<void> => {
   for (const entry of entries) {
-    await removeFromDisk(ctx, entry).catch((err: unknown) => {
+    await removeFromDisk(ctx, workDir, entry).catch((err: unknown) => {
       if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
       throw err;
     });
@@ -253,12 +251,14 @@ const removeWorkingTree = async (
   }
 };
 
-const removeFromDisk = (ctx: Context, entry: IndexEntry): Promise<void> =>
-  entry.mode === FILE_MODE.GITLINK ? removeSubmodule(ctx, entry.path) : removeFile(ctx, entry.path);
+const removeFromDisk = (ctx: Context, workDir: string, entry: IndexEntry): Promise<void> =>
+  entry.mode === FILE_MODE.GITLINK
+    ? removeSubmodule(ctx, workDir, entry.path)
+    : removeFile(ctx, entry.path);
 
 /** An uninitialized submodule has no directory; git removes only its index entry. */
-const removeSubmodule = async (ctx: Context, path: FilePath): Promise<void> => {
-  const directory = joinPath(requireWorkTree(ctx, 'rm'), path);
+const removeSubmodule = async (ctx: Context, workDir: string, path: FilePath): Promise<void> => {
+  const directory = joinPath(workDir, path);
   if ((await lstatIfPresent(ctx.fs, directory)) === undefined) return;
   await removeDirectory(ctx, path);
 };

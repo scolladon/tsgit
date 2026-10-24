@@ -168,8 +168,8 @@ export interface GitmodulesSource {
 const isGitmodulesUnmerged = (entries: ReadonlyArray<IndexEntry>): boolean =>
   entries.some((entry) => entry.path === GITMODULES_FILE && entry.flags.stage !== 0);
 
-const stage0GitmodulesOf = (entries: ReadonlyArray<IndexEntry>): IndexEntry | undefined =>
-  entries.find((entry) => entry.path === GITMODULES_FILE && entry.flags.stage === 0);
+const stagedGitmodulesOf = (entries: ReadonlyArray<IndexEntry>): IndexEntry | undefined =>
+  entries.find((entry) => entry.path === GITMODULES_FILE);
 
 /** The blob git's `HEAD:.gitmodules` names, when HEAD records one. */
 const headGitmodulesBlob = async (ctx: Context): Promise<ObjectId | undefined> => {
@@ -182,12 +182,12 @@ const headGitmodulesBlob = async (ctx: Context): Promise<ObjectId | undefined> =
 
 const NON_BLOB_MODES: ReadonlySet<FileMode> = new Set([FILE_MODE.DIRECTORY, FILE_MODE.GITLINK]);
 
-/** The recorded `.gitmodules` git falls back to without a working file: the staged blob, else HEAD's. */
+/** The recorded `.gitmodules` git falls back to without a working file: the staged blob, else HEAD's. Callers have settled that the entries hold it merged, as git reads none otherwise. */
 export const readRecordedGitmodules = async (
   ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
 ): Promise<ReadonlyArray<GitmodulesRow>> => {
-  const id = stage0GitmodulesOf(entries)?.id ?? (await headGitmodulesBlob(ctx));
+  const id = stagedGitmodulesOf(entries)?.id ?? (await headGitmodulesBlob(ctx));
   if (id === undefined) return [];
   const blob = await readBlob(ctx, id, { maxBytes: MAX_GITMODULES_BYTES });
   return parseGitmodules(new TextDecoder().decode(blob.content));
