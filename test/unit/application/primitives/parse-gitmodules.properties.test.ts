@@ -28,6 +28,7 @@ const arbRow = (name: string): fc.Arbitrary<GitmodulesRow> =>
       url: arbValue(),
       update: fc.constantFrom('checkout', 'rebase', 'merge', 'none'),
       branch: arbValue(),
+      ignore: fc.constantFrom('none', 'untracked', 'dirty', 'all'),
     },
     { requiredKeys: ['name', 'path', 'url'] },
   );
@@ -40,6 +41,7 @@ const serialize = (rows: ReadonlyArray<GitmodulesRow>): string =>
       if (r.url !== undefined) lines.push(`\turl = ${r.url}`);
       if (r.update !== undefined) lines.push(`\tupdate = ${r.update}`);
       if (r.branch !== undefined) lines.push(`\tbranch = ${r.branch}`);
+      if (r.ignore !== undefined) lines.push(`\tignore = ${r.ignore}`);
       return lines.join('\n');
     })
     .join('\n')
@@ -48,7 +50,7 @@ const serialize = (rows: ReadonlyArray<GitmodulesRow>): string =>
 describe('parseGitmodules properties', () => {
   describe('Given arbitrary safe-named submodule rows serialised to .gitmodules', () => {
     describe('When parsed back', () => {
-      it('Then name/path/url/update/branch round-trip, in order', () => {
+      it('Then name/path/url/update/branch/ignore round-trip, in order', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(

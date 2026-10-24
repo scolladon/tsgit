@@ -57,7 +57,11 @@ import { createGranularityTracker } from './internal/progress-tracker.js';
 import { pruneGitlinkDirectories } from './internal/prune-gitlink-directories.js';
 import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { resolveRevisionName } from './internal/revision-name.js';
-import { type SubmoduleState, submoduleState } from './internal/submodule-state.js';
+import {
+  hiddenSubmodules,
+  type SubmoduleState,
+  submoduleState,
+} from './internal/submodule-state.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
@@ -190,6 +194,7 @@ interface LockedScan {
   readonly tracked: TrackedEntries;
   readonly trackedScan: TrackedScan;
   readonly submodules: SubmoduleStates;
+  readonly hidden: ReadonlySet<FilePath>;
   readonly workDir: string;
   readonly lock: IndexLock | undefined;
 }
@@ -197,11 +202,12 @@ interface LockedScan {
 /** Scans untracked, reports, then refreshes the index when able; the lock is released whatever happens. */
 const reportUnderLock = async (
   ctx: Context,
-  { index, tracked, trackedScan, submodules, workDir, lock }: LockedScan,
+  { index, tracked, trackedScan, submodules, hidden, workDir, lock }: LockedScan,
 ): Promise<StatusReport> => {
   try {
     const untracked = await scanUntracked(ctx, index, tracked.trackedPaths);
-    const scanned = { workingMap: trackedScan.workingMap, submodules, untracked };
+    const workingMap = withoutChanges(trackedScan.workingMap, hidden);
+    const scanned = { workingMap, submodules, untracked };
     const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
     if (lock) await updateIndexIfAble(lock, index, trackedScan);
     return report;
@@ -242,9 +248,10 @@ const scanAndReport = async (
 ): Promise<StatusReport> => {
   const trackedScan = await scanTrackedTree(ctx, index, tracked);
   const refresh = refreshEnabled(ctx, opts);
-  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan, refresh);
+  const hidden = await hiddenSubmodules(ctx, workDir, gitlinkPathsOf(tracked));
+  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan, { refresh, hidden });
   const lock = refresh ? await acquireOptionalIndexLock(ctx) : undefined;
-  return reportUnderLock(ctx, { index, tracked, trackedScan, submodules, workDir, lock });
+  return reportUnderLock(ctx, { index, tracked, trackedScan, submodules, hidden, workDir, lock });
 };
 
 /** The index's tracked entries: stage 0 by path, the unmerged groups, and every tracked path. */
@@ -282,14 +289,31 @@ const isDirtyChecked = (entry: IndexEntry, delta: WorkingTreeDelta): boolean =>
 
 type DirtyCheck = readonly [FilePath, IndexEntry, WorkingTreeDelta];
 
+const gitlinkPathsOf = ({ stage0Map }: TrackedEntries): ReadonlyArray<FilePath> =>
+  [...stage0Map].filter(([, entry]) => entry.mode === FILE_MODE.GITLINK).map(([path]) => path);
+
+/** The scan's deltas with the given paths read as unchanged, the scan's own map left to the index refresh. */
+const withoutChanges = (
+  workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>,
+  hidden: ReadonlySet<FilePath>,
+): Map<FilePath, WorkingTreeDelta> =>
+  new Map(
+    [...workingMap].map(([path, delta]) => [
+      path,
+      hidden.has(path) ? { ...delta, status: 'unchanged' } : delta,
+    ]),
+  );
+
 const dirtyChecksOf = (
   { stage0Map }: TrackedEntries,
   { workingMap }: TrackedScan,
+  hidden: ReadonlySet<FilePath>,
 ): ReadonlyArray<DirtyCheck> => {
   const checked: DirtyCheck[] = [];
   for (const [path, entry] of stage0Map) {
     const delta = workingMap.get(path);
-    if (delta !== undefined && isDirtyChecked(entry, delta)) checked.push([path, entry, delta]);
+    if (delta !== undefined && !hidden.has(path) && isDirtyChecked(entry, delta))
+      checked.push([path, entry, delta]);
   }
   return checked;
 };
@@ -299,13 +323,13 @@ const submoduleStatesOf = async (
   ctx: Context,
   tracked: TrackedEntries,
   scan: TrackedScan,
-  refresh: boolean,
+  { refresh, hidden }: { readonly refresh: boolean; readonly hidden: ReadonlySet<FilePath> },
 ): Promise<SubmoduleStates> => {
   const deps = { childStatus: (child: Context) => status(child, { refresh }) };
   const states = await boundedMapFor(
     ctx,
     'ioBound',
-    dirtyChecksOf(tracked, scan),
+    dirtyChecksOf(tracked, scan, hidden),
     async ([path, entry, delta]): Promise<readonly [FilePath, SubmoduleState]> => [
       path,
       await submoduleState(ctx, entry, delta, deps),

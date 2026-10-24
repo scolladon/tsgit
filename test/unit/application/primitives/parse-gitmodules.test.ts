@@ -28,6 +28,39 @@ describe('Given .gitmodules text', () => {
     });
   });
 
+  describe('When the section sets an ignore mode', () => {
+    it('Then the row carries it verbatim', () => {
+      // Arrange
+      const text = '[submodule "s"]\n\tpath = sub\n\tignore = all\n';
+      // Act
+      const result = parseGitmodules(text);
+      // Assert
+      expect(result).toEqual([{ name: 's', path: 'sub', ignore: 'all' }]);
+    });
+  });
+
+  describe('When the ignore key has no value', () => {
+    it('Then the row carries no ignore mode', () => {
+      // Arrange
+      const text = '[submodule "s"]\n\tpath = sub\n\tignore\n';
+      // Act
+      const result = parseGitmodules(text);
+      // Assert
+      expect(result).toEqual([{ name: 's', path: 'sub' }]);
+    });
+  });
+
+  describe('When the section holds a key the rows do not consume', () => {
+    it('Then the key is left out of the row', () => {
+      // Arrange
+      const text = '[submodule "s"]\n\tpath = sub\n\tfetchRecurseSubmodules = true\n';
+      // Act
+      const result = parseGitmodules(text);
+      // Assert
+      expect(result).toEqual([{ name: 's', path: 'sub' }]);
+    });
+  });
+
   describe('When keys vary in case and update/branch are present', () => {
     it('Then keys are read case-insensitively and update/branch surface', () => {
       // Arrange

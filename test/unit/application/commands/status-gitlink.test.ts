@@ -112,6 +112,29 @@ const markAssumeValid = async (ctx: Context, path: string): Promise<void> => {
 const rowOf = async (ctx: Context, path: string): Promise<ChangedPath | undefined> =>
   (await status(ctx)).changes.find((change) => change.path === path);
 
+const appendConfig = async (ctx: Context, text: string): Promise<void> => {
+  const path = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}${text}`);
+};
+
+const writeGitmodules = (ctx: Context, text: string): Promise<void> =>
+  ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitmodules`, text);
+
+const gitmodulesIgnoring = (mode: string, name = 'sub'): string =>
+  `[submodule "${name}"]\n\tpath = sub\n\turl = ../up\n\tignore = ${mode}\n`;
+
+/** A moved submodule and the extra config / `.gitmodules` text that governs its ignore mode. */
+const movedWith = async (setup: {
+  readonly config?: string;
+  readonly gitmodules?: string;
+}): Promise<Context> => {
+  const { ctx, child } = await withRealSubmodule();
+  await advanceChild(ctx, child);
+  if (setup.config !== undefined) await appendConfig(ctx, setup.config);
+  if (setup.gitmodules !== undefined) await writeGitmodules(ctx, setup.gitmodules);
+  return ctx;
+};
+
 describe('status submodule field', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -401,6 +424,360 @@ describe('status submodule field', () => {
         expect(result).toEqual({
           code: 'INVALID_INDEX_HEADER',
           reason: 'file is shorter than the hash trailer',
+        });
+      });
+    });
+  });
+
+  describe('Given diff.ignoreSubmodules = all and a moved gitlink', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is absent and the tree is clean', async () => {
+        // Arrange
+        const ctx = await movedWith({ config: '[diff]\n\tignoreSubmodules = all\n' });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toBeUndefined();
+        expect(result.clean).toBe(true);
+      });
+    });
+  });
+
+  describe('Given .gitmodules ignoring a moved gitlink with all', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is absent', async () => {
+        // Arrange
+        const ctx = await movedWith({ gitmodules: gitmodulesIgnoring('all') });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given .gitmodules ignore = none and diff.ignoreSubmodules = all', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is reported as moved', async () => {
+        // Arrange
+        const ctx = await movedWith({
+          gitmodules: gitmodulesIgnoring('none'),
+          config: '[diff]\n\tignoreSubmodules = all\n',
+        });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toMatchObject({
+          unstaged: 'modified',
+        });
+      });
+    });
+  });
+
+  describe('Given a .gitmodules section named apart from its path with ignore = all', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is absent', async () => {
+        // Arrange
+        const ctx = await movedWith({ gitmodules: gitmodulesIgnoring('all', 'nm') });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given submodule.sub.ignore = none in config and .gitmodules ignore = all', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is reported as moved', async () => {
+        // Arrange
+        const ctx = await movedWith({
+          gitmodules: gitmodulesIgnoring('all'),
+          config: '[submodule "sub"]\n\tignore = none\n',
+        });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toMatchObject({
+          unstaged: 'modified',
+        });
+      });
+    });
+  });
+
+  describe('Given submodule.sub.ignore = none in config and diff.ignoreSubmodules = all', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is reported as moved', async () => {
+        // Arrange
+        const ctx = await movedWith({
+          config: '[submodule "sub"]\n\tignore = none\n[diff]\n\tignoreSubmodules = all\n',
+        });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toMatchObject({
+          unstaged: 'modified',
+        });
+      });
+    });
+  });
+
+  describe('Given submodule.sub.ignore = all in config and no .gitmodules row', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is absent', async () => {
+        // Arrange
+        const ctx = await movedWith({ config: '[submodule "sub"]\n\tignore = all\n' });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given .gitmodules ignore = bogus', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is reported as moved', async () => {
+        // Arrange
+        const ctx = await movedWith({ gitmodules: gitmodulesIgnoring('bogus') });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toMatchObject({
+          unstaged: 'modified',
+        });
+      });
+    });
+  });
+
+  describe('Given submodule.sub.ignore = bogus in config', () => {
+    describe('When status runs', () => {
+      it('Then it refuses with the invalid value, its source and its line', async () => {
+        // Arrange
+        const { ctx, child } = await withRealSubmodule();
+        await advanceChild(ctx, child);
+        const before = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).split('\n').length;
+        await appendConfig(ctx, '[submodule "sub"]\n\tignore = bogus\n');
+        const sut = status;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'submodule.sub.ignore',
+          source: `${ctx.layout.gitDir}/config`,
+          value: 'bogus',
+          line: before + 1,
+        });
+      });
+    });
+  });
+
+  describe('Given diff.ignoreSubmodules = bogus in config', () => {
+    describe('When status runs', () => {
+      it('Then it refuses with the invalid value, its source and its line', async () => {
+        // Arrange
+        const { ctx, child } = await withRealSubmodule();
+        await advanceChild(ctx, child);
+        const before = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).split('\n').length;
+        await appendConfig(ctx, '[diff]\n\tignoreSubmodules = bogus\n');
+        const sut = status;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'diff.ignoreSubmodules'.toLowerCase(),
+          source: `${ctx.layout.gitDir}/config`,
+          value: 'bogus',
+          line: before + 1,
+        });
+      });
+    });
+  });
+
+  describe('Given submodule.sub.ignore without a value in config', () => {
+    describe('When status runs', () => {
+      it('Then it refuses with the missing value, its source and its line', async () => {
+        // Arrange
+        const { ctx, child } = await withRealSubmodule();
+        await advanceChild(ctx, child);
+        const before = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).split('\n').length;
+        await appendConfig(ctx, '[submodule "sub"]\n\tignore\n');
+        const sut = status;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'submodule.sub.ignore',
+          source: `${ctx.layout.gitDir}/config`,
+          line: before + 1,
+        });
+      });
+    });
+  });
+
+  describe('Given diff.ignoreSubmodules without a value in config', () => {
+    describe('When status runs', () => {
+      it('Then it refuses with the missing value', async () => {
+        // Arrange
+        const ctx = await movedWith({ config: '[diff]\n\tignoreSubmodules\n' });
+        const sut = status;
+
+        // Act
+        const result = (await refusalOf(() => sut(ctx))) as { code: string; key: string };
+
+        // Assert
+        expect(result.code).toBe('CONFIG_MISSING_VALUE');
+        expect(result.key).toBe('diff.ignoreSubmodules'.toLowerCase());
+      });
+    });
+  });
+
+  describe('Given an unmoved gitlink and submodule.sub.ignore = bogus', () => {
+    describe('When status runs', () => {
+      it('Then it still refuses with the invalid value', async () => {
+        // Arrange
+        const ctx = await committed();
+        await appendConfig(ctx, '[submodule "sub"]\n\tignore = bogus\n');
+        const sut = status;
+
+        // Act
+        const result = (await refusalOf(() => sut(ctx))) as { code: string; value: string };
+
+        // Assert
+        expect(result.code).toBe('CONFIG_INVALID_ENUM_VALUE');
+        expect(result.value).toBe('bogus');
+      });
+    });
+  });
+
+  describe('Given no gitlink in the index and diff.ignoreSubmodules = bogus', () => {
+    describe('When status runs', () => {
+      it('Then it reads no ignore setting and reports a clean tree', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/k`, 'k\n');
+        await seedIndex(ctx, [{ path: 'k', text: 'k\n' }]);
+        await commit(ctx, { message: 'first', author });
+        await appendConfig(ctx, '[diff]\n\tignoreSubmodules = bogus\n');
+        const exists = vi.spyOn(ctx.fs, 'exists');
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.clean).toBe(true);
+        expect(exists).not.toHaveBeenCalledWith(`${ctx.layout.workDir}/.gitmodules`);
+      });
+    });
+  });
+
+  describe('Given a moved gitlink staged in the index under ignore = all', () => {
+    describe('When status runs', () => {
+      it('Then the staged row stays and the working-tree column is empty', async () => {
+        // Arrange
+        const { ctx, child } = await withRealSubmodule();
+        await recordGitlinkId(ctx, await advanceChild(ctx, child));
+        await writeGitmodules(ctx, gitmodulesIgnoring('all'));
+        const sut = rowOf;
+
+        // Act
+        const result = await sut(ctx, 'sub');
+
+        // Assert
+        expect(result?.staged).toBe('modified');
+        expect(result?.unstaged).toBeUndefined();
+        expect(result?.submodule).toEqual(NO_SUBMODULE_CHANGE);
+      });
+    });
+  });
+
+  describe('Given a file in place of the gitlink under ignore = all', () => {
+    describe('When status runs', () => {
+      it('Then the type change is hidden', async () => {
+        // Arrange
+        const ctx = await committed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub`, 'plain\n');
+        await writeGitmodules(ctx, gitmodulesIgnoring('all'));
+        const sut = rowOf;
+
+        // Act
+        const result = await sut(ctx, 'sub');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a removed gitlink under ignore = all', () => {
+    describe('When status runs', () => {
+      it('Then the deletion is hidden', async () => {
+        // Arrange
+        const ctx = await committed();
+        await writeGitmodules(ctx, gitmodulesIgnoring('all'));
+        const sut = rowOf;
+
+        // Act
+        const result = await sut(ctx, 'sub');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a .gitmodules past the size git reads and a gitlink in the index', () => {
+    describe('When status runs', () => {
+      it('Then it refuses with the file, its size and the limit', async () => {
+        // Arrange
+        const ctx = await committed();
+        await writeGitmodules(ctx, 'x'.repeat(OVERSIZED_BYTES));
+        const sut = status;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'WORKING_TREE_FILE_TOO_LARGE',
+          path: `${ctx.layout.workDir}/.gitmodules`,
+          size: OVERSIZED_BYTES,
+          limit: OVERSIZED_BYTES - 1,
         });
       });
     });
