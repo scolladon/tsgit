@@ -88,7 +88,7 @@
 | ADR-1064 `ChangedPath.submodule` | 3 (field + commit flag), 6 (tracked/untracked flags) |
 | ADR-1071 `GITMODULES_NOT_STAGED` | 7 (member), 14 (throw site) |
 | ADR-1072 broken HEAD (design LH1–LH8, SF11) | 15 (`PATH_TOO_LONG`), 16 (unreadable set, log/rev-parse twins), 17 (status unknown-HEAD state, LH + SF11 + r6–r9 rows) |
-| R7 rebase with a staged gitlink (design CO14, CO14b, CO14c; regression fold) | 18 |
+| R7 rebase with a staged gitlink (design CO14, CO14b, CO14c; regression fold) | 18a (state writer + progress read), 18 (carry + pre-pick refusal), 18b (skip) |
 | R7/R9 gitlink written over a file occupant (design CO39, CO40) | 19 |
 | R7 stash beyond a symbolic link (design CO38) | 20 |
 | ADR-1073 `SUBMODULE_NAME_NOT_FOUND` (design CO42) | 21 (member), 23 (throw site) |
@@ -964,6 +964,36 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/broken-
 
 `fix(status): report a HEAD whose target cannot be read as unknown, as git does`
 
+## Part 18a — Persist git's rescheduled-pick state and read a stop without a message or author script
+
+### Context
+
+Inserted by the orchestrator after the Part 18 implementer's blocker; LANDED as 76553fe4. git's refused first pick leaves a rebase-merge directory of exactly eleven files — done and git-rebase-todo both holding the pick (rescheduled), git-rebase-todo.backup, end (the todo's total), msgnum (the current item), head-name, onto, orig-head, and the empty drop_redundant_commits, interactive, no-reschedule-failed-exec — plus REBASE_HEAD at the git dir root, and no message, author-script, patch, stopped-sha, rewritten-list, amend or MERGE_MSG (pinned ×3). tsgit's `writeRebaseStop` writes the conflict-stop shape and `readRebaseState` reads author-script and message unconditionally.
+
+Files:
+- `src/application/commands/internal/rebase-state.ts` — `writeRescheduledPick` (exactly the eleven files plus REBASE_HEAD) and `readRebaseProgress(ctx)` returning `{ headName, onto, origHead, done, remaining, stoppedSha, rescheduled }` (rescheduled = author-script absent) as the shared read for abort/continue/skip; `readRebaseState` and `writeRebaseStop` unchanged so `RebaseState` consumers stay type-safe.
+- `test/unit/application/commands/internal/rebase-state.test.ts` — the writer's file set and bytes; the progress read over a directory without the two files; the conflict-stop rows unchanged.
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED — the writer does not exist; GREEN — it emits the eleven files and REBASE_HEAD.
+2. RED — the progress read over a rescheduled-pick directory; GREEN — optional reads. GUARD — the conflict-stop rows stay green byte-for-byte.
+3. REFACTOR — functions under 20 lines.
+
+### Gate
+
+```
+npx vitest run test/unit/application/commands/internal/rebase-state test/unit/application/commands/rebase && npm run check:types && ./node_modules/.bin/biome check src/application/commands/internal/rebase-state.ts test/unit/application/commands/internal/rebase-state.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/commands/internal/rebase-state.ts test/unit/application/commands/internal/rebase-state.test.ts
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/rebase-interop.test.ts
+```
+
+### Commit
+
+`fix(rebase): persist git's rescheduled-pick state and read a stop without a message or author script`
+
 ## Part 18 — Carry a staged gitlink through rebase's onto checkout and refuse the first pick, as git does
 
 ### Context
@@ -983,6 +1013,8 @@ Files:
 - `test/integration/gitlink-consumers-interop.test.ts` — rows CO14 (F2, nothing to replay), CO14b (F3, onto agrees on `sub`), CO14c (F3 with `other` as onto: `sub` differs between HEAD and onto), the `--abort` restore row, and a GUARD that the Part 11 `rebase --continue` row still passes.
 
 Pinned bytes (git 2.55; the Part 11 implementer ×3 on fresh repos): F3, `sub` moved to `<C>` and `git add sub`, `rebase side` → exit 1, stderr contains `your local changes would be overwritten by rebase`. F2 (nothing to replay), same staging, `rebase side` → exit 0, index keeps `<C>` (design CO14). Everything else above is to pin git-first in this part (×3 when it surprises); write the observed bytes into the rows and the hand-back. If git's post-failure state cannot be reproduced inside `rebase.ts` + `clean-work-tree.ts`, stop and hand back `{ unit, reason, ≤3 options }` with the pinned state — never widen silently.
+
+**Pinned corrections (Part 18 implementer, git 2.55 ×3; the pins win):** CO14c is checkout's refusal — exit 1 with `Your local changes to the following files would be overwritten by checkout: sub … error: could not detach HEAD`, nothing written — so `CHECKOUT_OVERWRITE_DIRTY` stands and the "128 / Entry would be overwritten by merge" guess above is wrong. `--abort` after CO14b hard-resets the index: `sub` goes back to `A` (the plan's "keeps `C`" guess above is wrong). `--continue` with `sub` still staged refuses again (`error: you have staged changes in your working tree`, `end` recounted to `2`); after `git restore --staged sub` it completes. The pre-pick check runs once before the first pick (every pick leaves the index equal to HEAD). The rescheduled state is written by Part 18a's writer and is byte-equal to git's.
 
 ### TDD steps
 
@@ -1011,6 +1043,38 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink
 ### Commit
 
 `fix(rebase): carry a staged gitlink through the onto checkout and refuse the first pick as git does`
+
+## Part 18b — Skip a rescheduled pick as git does
+
+### Context
+
+Inserted by the orchestrator after Part 18 exposed it; LANDED as 9757be40. `rebaseSkip` read the stop through `readRebaseState`, which rejects the rescheduled shape Part 18 now writes (no author-script). git's `rebase --skip` after the refused first pick does NOT drop the refused pick: it hard-resets to HEAD (dropping the staged `C`), then replays the rescheduled pick and every remaining one, exit 0 (`Rebasing (2/2)Successfully rebased …`; with two commits on main `Rebasing (2/3)Rebasing (3/3)…`, both replayed); index `sub` = `A`, state directory gone, no REBASE_HEAD, `ORIG_HEAD` at the old tip (×3 per shape).
+
+Files:
+- `src/application/commands/rebase.ts` — `rebaseSkip` reads through `readRebaseProgress`; on the rescheduled shape `skipRescheduled` hard-resets to HEAD and calls `retryRescheduledPick`, extracted from `continueRescheduled`.
+- `test/unit/application/commands/rebase.test.ts` — one-commit and two-commit rows (RED on FILE_NOT_FOUND author-script); the conflict-stop skip rows unchanged.
+- `test/integration/gitlink-consumers-interop.test.ts` — the two skip rows (60 rows in the suite).
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED — `rebaseSkip` after the refusal rejects FILE_NOT_FOUND; GREEN — the rescheduled arm. GUARD — the conflict-stop skip rows stay green.
+2. Interop — both shapes, git first.
+3. REFACTOR — functions under 20 lines.
+
+### Gate
+
+```
+npx vitest run test/unit/application/commands/rebase test/unit/application/commands/internal/clean-work-tree test/unit/application/commands/pull test/unit/application/commands/cherry-pick && npm run check:types && ./node_modules/.bin/biome check src/application/commands/rebase.ts test/unit/application/commands/rebase.test.ts test/integration/gitlink-consumers-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/commands/rebase.ts test/unit/application/commands/rebase.test.ts test/integration/gitlink-consumers-interop.test.ts
+npm run check:write-surfaces
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink-consumers-interop.test.ts test/integration/rebase-interop.test.ts
+```
+
+### Commit
+
+`fix(rebase): skip a rescheduled pick as git does`
 
 ## Part 19 — Replace a file with a gitlink's directory when a tree write lands a gitlink over it
 
