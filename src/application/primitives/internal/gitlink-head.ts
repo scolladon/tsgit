@@ -48,7 +48,11 @@ export type GitlinkCheckout =
   | { readonly kind: 'none' }
   | { readonly kind: 'oversized'; readonly shown: FilePath }
   | { readonly kind: 'broken'; readonly shown: FilePath }
-  | { readonly kind: 'repository'; readonly head: () => Promise<ObjectId | undefined> };
+  | {
+      readonly kind: 'repository';
+      readonly head: () => Promise<ObjectId | undefined>;
+      readonly context: () => Promise<Context>;
+    };
 
 type Broken = Extract<GitlinkCheckout, { readonly kind: 'broken' }>;
 type Oversized = Extract<GitlinkCheckout, { readonly kind: 'oversized' }>;
@@ -90,16 +94,18 @@ export const probeGitlinkCheckout = async (
   if (reached.kind === 'broken') return reached;
   const { commonDir, fs } = reached;
   if (!(await holdsObjectsAndRefs(fs, commonDir))) return broken(located.shown);
-  const head = async (): Promise<ObjectId | undefined> => {
-    const child = deriveGitlinkContext(ctx, gitDir, path, {
+  const context = async (): Promise<Context> =>
+    deriveGitlinkContext(ctx, gitDir, path, {
       fs,
       commonDir,
       refStorage: await refStorageOf(fs, commonDir),
     });
+  const head = async (): Promise<ObjectId | undefined> => {
+    const child = await context();
     seedHeadFile(child, resolved);
     return resolveGitlinkHead(child);
   };
-  return { kind: 'repository', head };
+  return { kind: 'repository', head, context };
 };
 
 /**

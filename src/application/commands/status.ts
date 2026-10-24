@@ -241,8 +241,9 @@ const scanAndReport = async (
   { index, tracked, workDir }: Pick<LockedScan, 'index' | 'tracked' | 'workDir'>,
 ): Promise<StatusReport> => {
   const trackedScan = await scanTrackedTree(ctx, index, tracked);
-  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan);
-  const lock = refreshEnabled(ctx, opts) ? await acquireOptionalIndexLock(ctx) : undefined;
+  const refresh = refreshEnabled(ctx, opts);
+  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan, refresh);
+  const lock = refresh ? await acquireOptionalIndexLock(ctx) : undefined;
   return reportUnderLock(ctx, { index, tracked, trackedScan, submodules, workDir, lock });
 };
 
@@ -279,24 +280,35 @@ type SubmoduleStates = ReadonlyMap<FilePath, SubmoduleState>;
 const isDirtyChecked = (entry: IndexEntry, delta: WorkingTreeDelta): boolean =>
   entry.mode === FILE_MODE.GITLINK && !entry.flags.assumeValid && delta.status !== 'absent';
 
+type DirtyCheck = readonly [FilePath, IndexEntry, WorkingTreeDelta];
+
+const dirtyChecksOf = (
+  { stage0Map }: TrackedEntries,
+  { workingMap }: TrackedScan,
+): ReadonlyArray<DirtyCheck> => {
+  const checked: DirtyCheck[] = [];
+  for (const [path, entry] of stage0Map) {
+    const delta = workingMap.get(path);
+    if (delta !== undefined && isDirtyChecked(entry, delta)) checked.push([path, entry, delta]);
+  }
+  return checked;
+};
+
 /** git's dirty check runs over each gitlink the scan found on disk; it refuses a `.git` that leads to no repository. */
 const submoduleStatesOf = async (
   ctx: Context,
   tracked: TrackedEntries,
-  { workingMap }: TrackedScan,
+  scan: TrackedScan,
+  refresh: boolean,
 ): Promise<SubmoduleStates> => {
-  const checked: Array<readonly [FilePath, IndexEntry, WorkingTreeDelta]> = [];
-  for (const [path, entry] of tracked.stage0Map) {
-    const delta = workingMap.get(path);
-    if (delta !== undefined && isDirtyChecked(entry, delta)) checked.push([path, entry, delta]);
-  }
+  const deps = { childStatus: (child: Context) => status(child, { refresh }) };
   const states = await boundedMapFor(
     ctx,
     'ioBound',
-    checked,
+    dirtyChecksOf(tracked, scan),
     async ([path, entry, delta]): Promise<readonly [FilePath, SubmoduleState]> => [
       path,
-      await submoduleState(ctx, entry, delta),
+      await submoduleState(ctx, entry, delta, deps),
     ],
   );
   return new Map(states);
@@ -415,7 +427,7 @@ const buildChanges = (
 ): ChangedPath[] => {
   const paths = new Set<FilePath>(stagedKindMap.keys());
   for (const [path, delta] of workingMap) {
-    if (toUnstagedKind(delta.status) !== undefined) paths.add(path);
+    if (unstagedKindOf(delta, submodules.get(path)) !== undefined) paths.add(path);
   }
   const changes = [...paths].map((path) =>
     buildChangedPath(
@@ -430,6 +442,16 @@ const buildChanges = (
   return changes
     .sort((a, b) => comparePaths(a.path, b.path))
     .map((change) => ({ ...change, path: viewOfEscaped(change.path) }));
+};
+
+/** A gitlink whose checkout holds changes is modified in the working tree though its commit did not move; a file in its place keeps its kind. */
+const unstagedKindOf = (
+  delta: WorkingTreeDelta,
+  checked: SubmoduleState | undefined,
+): ChangeKind | undefined => {
+  const kind = toUnstagedKind(delta.status);
+  if (kind !== undefined || checked === undefined) return kind;
+  return checked.trackedChanges || checked.untrackedChanges ? 'modified' : undefined;
 };
 
 /** Whether a row's HEAD or index side is a gitlink: only those carry git's submodule field. */
@@ -461,7 +483,7 @@ const buildChangedPath = (
   checked: SubmoduleState | undefined,
 ): ChangedPath => {
   const head = headTree?.entries.get(path);
-  const unstaged = delta === undefined ? undefined : toUnstagedKind(delta.status);
+  const unstaged = delta === undefined ? undefined : unstagedKindOf(delta, checked);
   const submodule = checked ?? submoduleOf(delta, head, indexEntry);
   return {
     path,

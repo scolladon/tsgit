@@ -9,7 +9,7 @@
  *   interopSurface: status
  */
 
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import {
   chmod,
   cp,
@@ -146,6 +146,28 @@ const replacedByFile =
 
 const editedUpstreamFile: Setup = async (repo) => writeFile(sub(repo, 'u'), 'edited\n');
 
+const untrackedFile: Setup = async (repo) => writeFile(sub(repo, 'n'), 'n\n');
+
+const orphanBranch: Setup = async (repo) => {
+  gitIn(sub(repo), 'checkout', '-q', '--orphan', 'o');
+};
+
+const NESTED = 'in';
+
+/** `sub` records a commit that holds the nested submodule `sub/in`, then `sub/in` moves. */
+const nestedMoved: Setup = async (repo) => {
+  const upstream = path.join(path.dirname(repo), 'nested-up');
+  if (!existsSync(upstream)) {
+    runGit(['init', '-q', '-b', 'main', upstream]);
+    commitIn(upstream, 'in');
+  }
+  gitIn(sub(repo), 'submodule', 'add', '-q', upstream, NESTED);
+  commitIn(sub(repo), 'nest');
+  gitIn(repo, 'add', SUBMODULE);
+  commitIn(repo, 'record');
+  commitIn(sub(repo, NESTED), 'z');
+};
+
 const compose =
   (...steps: Setup[]): Setup =>
   async (repo) => {
@@ -219,6 +241,33 @@ const moduleHeadGarbage: Setup = async (repo) =>
 
 const moduleObjectsRemoved: Setup = async (repo) =>
   rm(path.join(moduleDir(repo), 'objects'), { recursive: true });
+
+const FORMAT_REFUSALS: ReadonlyArray<{
+  readonly title: string;
+  readonly config: ReadonlyArray<readonly [string, string]>;
+  readonly gitMessage: string;
+  readonly data: unknown;
+}> = [
+  {
+    title: 'repositoryformatversion 2',
+    config: [['core.repositoryformatversion', '2']],
+    gitMessage: 'Expected git repo version <= 1, found 2',
+    data: { code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED', version: 2 },
+  },
+  {
+    title: 'an unknown extension',
+    config: [
+      ['core.repositoryformatversion', '1'],
+      ['extensions.something', 'true'],
+    ],
+    gitMessage: 'unknown repository extension found:',
+    data: {
+      code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED',
+      extensions: ['something'],
+      version: 1,
+    },
+  },
+];
 
 interface Refusal {
   readonly title: string;
@@ -299,6 +348,12 @@ const ROWS: ReadonlyArray<readonly [string, Setup]> = [
     async (repo) => void gitIn(sub(repo), 'checkout', '-q', '--detach'),
   ],
   ['a moved submodule', moved],
+  ['a submodule with an edited tracked file', editedUpstreamFile],
+  ['a submodule with an untracked file', untrackedFile],
+  ['a submodule with an edited and an untracked file', compose(editedUpstreamFile, untrackedFile)],
+  ['a moved submodule with an edited file', compose(moved, editedUpstreamFile)],
+  ['a submodule on an orphan branch', orphanBranch],
+  ['a nested submodule that moved', nestedMoved],
   ['a submodule moved to a commit from an unrelated repository', fetchedFromUnrelated],
   ['an embedded .git directory, moved', compose(embedded, moved)],
   ['a file in place of the submodule', replacedByFile(0o644)],
@@ -562,6 +617,117 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         );
       });
     });
+
+    describe.each([
+      ['git status', ['status', '--porcelain=v2'], true],
+      [
+        'git --no-optional-locks status',
+        ['--no-optional-locks', 'status', '--porcelain=v2'],
+        false,
+      ],
+    ] as const)(
+      'Given a submodule file rewritten with the same bytes',
+      (_title, gitArgs, rewrites) => {
+        describe(`When ${_title} and tsgit status run`, () => {
+          it(
+            'Then the submodule index is rewritten only when the tool may refresh it',
+            async () => {
+              // Arrange
+              const gitTwin = await twin(`git-touch-${rewrites}`);
+              const tsgitTwin = await twin(`tsgit-touch-${rewrites}`);
+              for (const repo of [gitTwin, tsgitTwin]) {
+                await settle(repo);
+                await writeFile(sub(repo, 'u'), 'u\n');
+              }
+              const gitBefore = await readFile(path.join(moduleDir(gitTwin), 'index'));
+              const tsgitBefore = await readFile(path.join(moduleDir(tsgitTwin), 'index'));
+              const sut = status;
+
+              // Act
+              gitIn(gitTwin, ...gitArgs);
+              const result = await sut(createNodeContext({ workDir: tsgitTwin }), {
+                refresh: rewrites,
+              });
+
+              // Assert
+              const gitAfter = await readFile(path.join(moduleDir(gitTwin), 'index'));
+              const tsgitAfter = await readFile(path.join(moduleDir(tsgitTwin), 'index'));
+              expect(gitAfter.equals(gitBefore)).toBe(!rewrites);
+              expect(tsgitAfter.equals(tsgitBefore)).toBe(!rewrites);
+              expect(result.changes).toEqual([]);
+            },
+            ROW_TIMEOUT,
+          );
+        });
+      },
+    );
+
+    describe('Given a submodule whose index is truncated', () => {
+      describe('When status runs in both tools', () => {
+        it(
+          'Then both refuse and tsgit rejects with the submodule index error',
+          async () => {
+            // Arrange
+            const gitTwin = await twin('git-junk-index');
+            const tsgitTwin = await twin('tsgit-junk-index');
+            for (const repo of [gitTwin, tsgitTwin]) {
+              await writeFile(path.join(moduleDir(repo), 'index'), 'junk\n');
+            }
+            const gitRun = tryRunGitWithExit(['-C', gitTwin, 'status', '--porcelain=2'], {
+              env: pinnedEnv(),
+            });
+            const sut = status;
+
+            // Act
+            const result = await refusalOf(() => sut(createNodeContext({ workDir: tsgitTwin })));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(REFUSED_EXIT);
+            expect(gitRun.stderr).toContain('index file smaller than expected');
+            expect(gitRun.stderr).toContain("'git status --porcelain=2' failed in submodule sub");
+            expect(result).toEqual({
+              code: 'INVALID_INDEX_HEADER',
+              reason: 'file is shorter than the hash trailer',
+            });
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(FORMAT_REFUSALS)(
+      'Given a submodule whose config declares $title',
+      ({ title, config, gitMessage, data }) => {
+        describe('When status runs in both tools', () => {
+          it(
+            'Then both refuse over the repository format',
+            async () => {
+              // Arrange
+              const gitTwin = await twin(`git-format-${title}`);
+              const tsgitTwin = await twin(`tsgit-format-${title}`);
+              for (const repo of [gitTwin, tsgitTwin]) {
+                for (const [key, value] of config) {
+                  gitIn(repo, 'config', '--file', path.join(moduleDir(repo), 'config'), key, value);
+                }
+              }
+              const gitRun = tryRunGitWithExit(['-C', gitTwin, 'status', '--porcelain=2'], {
+                env: pinnedEnv(),
+              });
+              const sut = status;
+
+              // Act
+              const result = await refusalOf(() => sut(createNodeContext({ workDir: tsgitTwin })));
+
+              // Assert
+              expect(gitRun.exitCode).toBe(REFUSED_EXIT);
+              expect(gitRun.stderr).toContain(`fatal: ${gitMessage}`);
+              expect(result).toEqual(data);
+            },
+            ROW_TIMEOUT,
+          );
+        });
+      },
+    );
 
     describe('Given a submodule whose .git is a FIFO', () => {
       describe('When status runs in both tools', () => {
