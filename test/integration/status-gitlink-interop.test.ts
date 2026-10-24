@@ -486,7 +486,38 @@ const ROWS: ReadonlyArray<readonly [string, Setup]> = [
   ],
 ];
 
+/** `.gitmodules` gone from the work tree, the index and HEAD: no row names the submodule anywhere. */
+const gitmodulesDropped: Setup = async (repo) => {
+  gitIn(repo, 'rm', '-q', '--cached', '.gitmodules');
+  await rm(gitmodulesPath(repo));
+  commitIn(repo, 'drop gitmodules');
+};
+const skipWorktree: Setup = async (repo) => {
+  gitIn(repo, 'update-index', '--skip-worktree', SUBMODULE);
+};
+const assumeUnchanged: Setup = async (repo) => {
+  gitIn(repo, 'update-index', '--assume-unchanged', SUBMODULE);
+};
+
 const IGNORE_ROWS: ReadonlyArray<readonly [string, Setup]> = [
+  [
+    'config all with no .gitmodules row anywhere and a moved submodule',
+    compose(gitmodulesDropped, ownIgnore('all'), moved),
+  ],
+  [
+    'config bogus with no .gitmodules row anywhere and a moved submodule',
+    compose(gitmodulesDropped, ownIgnore('bogus'), moved),
+  ],
+  [
+    'config all under the alias a .gitmodules section names and a moved submodule',
+    compose(gitmodulesNamed('alias', 'none'), configured('submodule.alias.ignore', 'all'), moved),
+  ],
+  [
+    'config all under the path beside an alias-named .gitmodules section and a moved submodule',
+    compose(gitmodulesNamed('alias', 'none'), ownIgnore('all'), moved),
+  ],
+  ['config bogus and a skip-worktree gitlink', compose(ownIgnore('bogus'), skipWorktree)],
+  ['config bogus and an assume-unchanged gitlink', compose(ownIgnore('bogus'), assumeUnchanged)],
   [
     'a committed .gitmodules dirty and an edited file',
     compose(committedGitmodules('dirty'), editedUpstreamFile),

@@ -5,6 +5,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
   type ChangedPath,
+  type StatusResult,
   status,
   statusForDirtyCheck,
 } from '../../../../src/application/commands/status.js';
@@ -18,6 +19,7 @@ import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-i
 import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { seedIndex } from './add-index-fixtures.js';
+import { withSubmodule } from './submodule-fixtures.js';
 
 const author = {
   name: 'Ada',
@@ -114,8 +116,23 @@ const markAssumeValid = async (ctx: Context, path: string): Promise<void> => {
   );
 };
 
-const rowOf = async (ctx: Context, path: string): Promise<ChangedPath | undefined> =>
-  (await status(ctx)).changes.find((change) => change.path === path);
+const rowIn = (report: StatusResult, path: string): ChangedPath | undefined =>
+  report.changes.find((change) => change.path === path);
+
+const GITMODULES_ALIAS = '[submodule "alias"]\n\tpath = sub\n\turl = ../up\n';
+const GITMODULES_PLAIN = '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n';
+
+const markSkipWorktree = async (ctx: Context, path: string): Promise<void> => {
+  const index = await readIndex(ctx);
+  const entries = index.entries.map((entry) =>
+    entry.path === path ? { ...entry, flags: { ...entry.flags, skipWorktree: true } } : entry,
+  );
+  invalidateIndexCache(ctx);
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync({ ...index, version: 3, entries }, ctx),
+  );
+};
 
 const appendConfig = async (ctx: Context, text: string): Promise<void> => {
   const path = `${ctx.layout.gitDir}/config`;
@@ -205,7 +222,7 @@ describe('status submodule field', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub`, 'plain\n');
 
         // Act
-        const result = await rowOf(ctx, 'sub');
+        const result = rowIn(await status(ctx), 'sub');
 
         // Assert
         expect(result?.unstaged).toBe('type-changed');
@@ -222,7 +239,7 @@ describe('status submodule field', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/k`, 'changed\n');
 
         // Act
-        const result = await rowOf(ctx, 'k');
+        const result = rowIn(await status(ctx), 'k');
 
         // Assert
         expect(result?.unstaged).toBe('modified');
@@ -239,7 +256,7 @@ describe('status submodule field', () => {
         await seedIndex(ctx, [{ path: 'k', text: 'k\n' }]);
 
         // Act
-        const result = await rowOf(ctx, 'sub');
+        const result = rowIn(await status(ctx), 'sub');
 
         // Assert
         expect(result?.staged).toBe('deleted');
@@ -256,7 +273,7 @@ describe('status submodule field', () => {
         await recordGitlinkId(ctx, await advanceChild(ctx, child));
 
         // Act
-        const result = await rowOf(ctx, 'sub');
+        const result = rowIn(await status(ctx), 'sub');
 
         // Assert
         expect(result?.staged).toBe('modified');
@@ -366,13 +383,13 @@ describe('status submodule field', () => {
         const { ctx } = await withRealSubmodule();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/u`, 'edited\n');
         await writeGitmodules(ctx, gitmodulesIgnoring('dirty'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result).toBeUndefined();
+        expect(rowIn(result, 'sub')).toBeUndefined();
       });
     });
   });
@@ -382,13 +399,13 @@ describe('status submodule field', () => {
       it('Then the row reports only the commit as changed', async () => {
         // Arrange
         const ctx = await movedWith({ gitmodules: gitmodulesIgnoring('dirty') });
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result?.submodule).toEqual({
+        expect(rowIn(result, 'sub')?.submodule).toEqual({
           commitChanged: true,
           trackedChanges: false,
           untrackedChanges: false,
@@ -404,13 +421,13 @@ describe('status submodule field', () => {
         const ctx = await committed();
         await writeOversizedDotGit(ctx);
         await writeGitmodules(ctx, gitmodulesIgnoring('dirty'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result).toBeUndefined();
+        expect(rowIn(result, 'sub')).toBeUndefined();
       });
     });
   });
@@ -422,13 +439,13 @@ describe('status submodule field', () => {
         const { ctx } = await withRealSubmodule();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/n`, 'n\n');
         await writeGitmodules(ctx, gitmodulesIgnoring('untracked'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result).toBeUndefined();
+        expect(rowIn(result, 'sub')).toBeUndefined();
       });
     });
   });
@@ -440,13 +457,13 @@ describe('status submodule field', () => {
         const { ctx } = await withRealSubmodule();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/u`, 'edited\n');
         await writeGitmodules(ctx, gitmodulesIgnoring('untracked'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result?.submodule).toEqual({
+        expect(rowIn(result, 'sub')?.submodule).toEqual({
           commitChanged: false,
           trackedChanges: true,
           untrackedChanges: false,
@@ -533,14 +550,14 @@ describe('status submodule field', () => {
         const ctx = await committed();
         await ctx.fs.symlink('k', `${ctx.layout.workDir}/sub`);
         await writeGitmodules(ctx, gitmodulesIgnoring('dirty'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result?.unstaged).toBe('type-changed');
-        expect(result?.worktree).toMatchObject({ mode: FILE_MODE.SYMLINK });
+        expect(rowIn(result, 'sub')?.unstaged).toBe('type-changed');
+        expect(rowIn(result, 'sub')?.worktree).toMatchObject({ mode: FILE_MODE.SYMLINK });
       });
     });
   });
@@ -552,14 +569,14 @@ describe('status submodule field', () => {
         const ctx = await committed();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub`, 'plain\n');
         await writeGitmodules(ctx, gitmodulesIgnoring('none'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result?.unstaged).toBe('type-changed');
-        expect(result?.worktree).toMatchObject({ mode: FILE_MODE.REGULAR });
+        expect(rowIn(result, 'sub')?.unstaged).toBe('type-changed');
+        expect(rowIn(result, 'sub')?.worktree).toMatchObject({ mode: FILE_MODE.REGULAR });
       });
     });
   });
@@ -569,13 +586,13 @@ describe('status submodule field', () => {
       it('Then the gitlink row is absent', async () => {
         // Arrange
         const ctx = await movedWithStagedGitmodules('all', undefined);
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result).toBeUndefined();
+        expect(rowIn(result, 'sub')).toBeUndefined();
       });
     });
   });
@@ -585,13 +602,13 @@ describe('status submodule field', () => {
       it('Then the gitlink row is reported as moved', async () => {
         // Arrange
         const ctx = await movedWithStagedGitmodules('all', 'none');
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result?.submodule?.commitChanged).toBe(true);
+        expect(rowIn(result, 'sub')?.submodule?.commitChanged).toBe(true);
       });
     });
   });
@@ -633,43 +650,45 @@ describe('status submodule field', () => {
   });
 
   describe('Given a submodule file rewritten with the same bytes', () => {
-    const childIndexAfter = async (refresh: boolean | undefined): Promise<Uint8Array> => {
+    /** The submodule's index bytes before a settled rewrite of `u` makes its stat data stale. */
+    const staleChild = async (): Promise<{
+      ctx: Context;
+      indexPath: string;
+      before: Uint8Array;
+    }> => {
       const { ctx, child } = await withRealSubmodule();
+      const indexPath = `${child.layout.gitDir}/index`;
+      const before = await ctx.fs.read(indexPath);
       settle();
       await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/u`, 'u\n');
-      await status(ctx, refresh === undefined ? {} : { refresh });
-      return ctx.fs.read(`${child.layout.gitDir}/index`);
-    };
-    const childIndexBefore = async (): Promise<Uint8Array> => {
-      const { ctx, child } = await withRealSubmodule();
-      return ctx.fs.read(`${child.layout.gitDir}/index`);
+      return { ctx, indexPath, before };
     };
 
     describe('When status runs with refresh disabled', () => {
       it('Then the submodule index is left untouched', async () => {
         // Arrange
-        const before = await childIndexBefore();
-        const sut = childIndexAfter;
+        const { ctx, indexPath, before } = await staleChild();
+        const sut = status;
 
         // Act
-        const result = await sut(false);
+        await sut(ctx, { refresh: false });
 
         // Assert
-        expect(result).toEqual(before);
+        expect(await ctx.fs.read(indexPath)).toEqual(before);
       });
     });
 
     describe('When status runs by default', () => {
       it('Then the submodule index is refreshed', async () => {
         // Arrange
-        const before = await childIndexBefore();
-        const sut = childIndexAfter;
+        const { ctx, indexPath, before } = await staleChild();
+        const sut = status;
 
         // Act
-        const result = await sut(undefined);
+        await sut(ctx);
 
         // Assert
-        expect(result).not.toEqual(before);
+        expect(await ctx.fs.read(indexPath)).not.toEqual(before);
       });
     });
   });
@@ -785,11 +804,12 @@ describe('status submodule field', () => {
     });
   });
 
-  describe('Given submodule.sub.ignore = none in config and diff.ignoreSubmodules = all', () => {
+  describe('Given a .gitmodules row, submodule.sub.ignore = none in config and diff.ignoreSubmodules = all', () => {
     describe('When status runs', () => {
       it('Then the gitlink row is reported as moved', async () => {
         // Arrange
         const ctx = await movedWith({
+          gitmodules: GITMODULES_PLAIN,
           config: '[submodule "sub"]\n\tignore = none\n[diff]\n\tignoreSubmodules = all\n',
         });
         const sut = status;
@@ -807,7 +827,7 @@ describe('status submodule field', () => {
 
   describe('Given submodule.sub.ignore = all in config and no .gitmodules row', () => {
     describe('When status runs', () => {
-      it('Then the gitlink row is absent', async () => {
+      it('Then the gitlink row is reported as moved, the key unread without a row', async () => {
         // Arrange
         const ctx = await movedWith({ config: '[submodule "sub"]\n\tignore = all\n' });
         const sut = status;
@@ -816,7 +836,151 @@ describe('status submodule field', () => {
         const result = await sut(ctx);
 
         // Assert
-        expect(result.changes.find((change) => change.path === 'sub')).toBeUndefined();
+        expect(rowIn(result, 'sub')).toMatchObject({ unstaged: 'modified' });
+      });
+    });
+  });
+
+  describe('Given submodule.sub.ignore = bogus in config and no .gitmodules row', () => {
+    describe('When status runs', () => {
+      it('Then nothing refuses and the gitlink row is reported as moved', async () => {
+        // Arrange
+        const ctx = await movedWith({ config: '[submodule "sub"]\n\tignore = bogus\n' });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'sub')).toMatchObject({ unstaged: 'modified' });
+      });
+    });
+  });
+
+  describe('Given a .gitmodules section named alias for the path and submodule.alias.ignore = all in config', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is absent', async () => {
+        // Arrange
+        const ctx = await movedWith({
+          gitmodules: GITMODULES_ALIAS,
+          config: '[submodule "alias"]\n\tignore = all\n',
+        });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a .gitmodules section named alias for the path and submodule.sub.ignore = all in config', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink row is reported as moved, the path-named key unread', async () => {
+        // Arrange
+        const ctx = await movedWith({
+          gitmodules: GITMODULES_ALIAS,
+          config: '[submodule "sub"]\n\tignore = all\n',
+        });
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'sub')).toMatchObject({ unstaged: 'modified' });
+      });
+    });
+  });
+
+  describe('Given an assume-valid gitlink and submodule.sub.ignore = bogus in config', () => {
+    describe('When status runs', () => {
+      it('Then nothing refuses and no row is reported', async () => {
+        // Arrange
+        const ctx = await movedWith({ config: '[submodule "sub"]\n\tignore = bogus\n' });
+        await markAssumeValid(ctx, 'sub');
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a skip-worktree gitlink and submodule.sub.ignore = bogus in config', () => {
+    describe('When status runs', () => {
+      it('Then nothing refuses and no row is reported', async () => {
+        // Arrange
+        const ctx = await movedWith({ config: '[submodule "sub"]\n\tignore = bogus\n' });
+        await markSkipWorktree(ctx, 'sub');
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given .gitmodules ignore = all and a symlink in place of the gitlink', () => {
+    describe('When status runs', () => {
+      it('Then nothing refuses and no row is reported', async () => {
+        // Arrange
+        const { ctx } = await withRealSubmodule();
+        await writeGitmodules(ctx, gitmodulesIgnoring('all'));
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/sub`);
+        await ctx.fs.symlink('k', `${ctx.layout.workDir}/sub`);
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given .gitmodules ignore = all and a gitfile past the size git reads', () => {
+    describe('When status runs', () => {
+      it('Then nothing refuses and no row is reported', async () => {
+        // Arrange
+        const { ctx } = await withRealSubmodule();
+        await writeGitmodules(ctx, gitmodulesIgnoring('all'));
+        await writeOversizedDotGit(ctx);
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a gitlink below a symlinked directory whose target holds an oversized gitfile', () => {
+    describe('When status runs', () => {
+      it('Then the gitlink reads deleted and nothing is probed through the link', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule('d/sub');
+        await ctx.fs.rename(`${ctx.layout.workDir}/d`, `${ctx.layout.workDir}/c`);
+        await ctx.fs.symlink('c', `${ctx.layout.workDir}/d`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c/sub/.git`, 'x'.repeat(OVERSIZED_BYTES));
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'd/sub')).toMatchObject({ unstaged: 'deleted' });
       });
     });
   });
@@ -839,12 +1003,13 @@ describe('status submodule field', () => {
     });
   });
 
-  describe('Given submodule.sub.ignore = bogus in config', () => {
+  describe('Given a .gitmodules row and submodule.sub.ignore = bogus in config', () => {
     describe('When status runs', () => {
       it('Then it refuses with the invalid value, its source and its line', async () => {
         // Arrange
         const { ctx, child } = await withRealSubmodule();
         await advanceChild(ctx, child);
+        await writeGitmodules(ctx, GITMODULES_PLAIN);
         const before = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).split('\n').length;
         await appendConfig(ctx, '[submodule "sub"]\n\tignore = bogus\n');
         const sut = status;
@@ -889,12 +1054,13 @@ describe('status submodule field', () => {
     });
   });
 
-  describe('Given submodule.sub.ignore without a value in config', () => {
+  describe('Given a .gitmodules row and submodule.sub.ignore without a value in config', () => {
     describe('When status runs', () => {
       it('Then it refuses with the missing value, its source and its line', async () => {
         // Arrange
         const { ctx, child } = await withRealSubmodule();
         await advanceChild(ctx, child);
+        await writeGitmodules(ctx, GITMODULES_PLAIN);
         const before = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).split('\n').length;
         await appendConfig(ctx, '[submodule "sub"]\n\tignore\n');
         const sut = status;
@@ -930,11 +1096,12 @@ describe('status submodule field', () => {
     });
   });
 
-  describe('Given an unmoved gitlink and submodule.sub.ignore = bogus', () => {
+  describe('Given an unmoved gitlink named in .gitmodules and submodule.sub.ignore = bogus', () => {
     describe('When status runs', () => {
       it('Then it still refuses with the invalid value', async () => {
         // Arrange
         const ctx = await committed();
+        await writeGitmodules(ctx, GITMODULES_PLAIN);
         await appendConfig(ctx, '[submodule "sub"]\n\tignore = bogus\n');
         const sut = status;
 
@@ -1015,15 +1182,15 @@ describe('status submodule field', () => {
         const { ctx, child } = await withRealSubmodule();
         await recordGitlinkId(ctx, await advanceChild(ctx, child));
         await writeGitmodules(ctx, gitmodulesIgnoring('all'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result?.staged).toBe('modified');
-        expect(result?.unstaged).toBeUndefined();
-        expect(result?.submodule).toEqual(NO_SUBMODULE_CHANGE);
+        expect(rowIn(result, 'sub')?.staged).toBe('modified');
+        expect(rowIn(result, 'sub')?.unstaged).toBeUndefined();
+        expect(rowIn(result, 'sub')?.submodule).toEqual(NO_SUBMODULE_CHANGE);
       });
     });
   });
@@ -1035,13 +1202,13 @@ describe('status submodule field', () => {
         const ctx = await committed();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub`, 'plain\n');
         await writeGitmodules(ctx, gitmodulesIgnoring('all'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result).toBeUndefined();
+        expect(rowIn(result, 'sub')).toBeUndefined();
       });
     });
   });
@@ -1052,13 +1219,13 @@ describe('status submodule field', () => {
         // Arrange
         const ctx = await committed();
         await writeGitmodules(ctx, gitmodulesIgnoring('all'));
-        const sut = rowOf;
+        const sut = status;
 
         // Act
-        const result = await sut(ctx, 'sub');
+        const result = await sut(ctx);
 
         // Assert
-        expect(result).toBeUndefined();
+        expect(rowIn(result, 'sub')).toBeUndefined();
       });
     });
   });

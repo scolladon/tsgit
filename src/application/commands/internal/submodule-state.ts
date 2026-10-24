@@ -124,9 +124,10 @@ const configuredOrUndefined = (
 ): SubmoduleIgnore | undefined => (entry === undefined ? undefined : configuredMode(entry));
 
 /**
- * Which ignore mode governs a submodule: its own `.git/config` key, then the
- * `.gitmodules` row (an unknown value there reads as unset, as git warns and moves on),
- * then `diff.ignoreSubmodules`, else `none`. The name is the row whose `path` is the entry's.
+ * Which ignore mode governs a submodule: its own `.git/config` key under the name the
+ * `.gitmodules` row gives it, then the row's own value (an unknown value there reads as
+ * unset, as git warns and moves on), then `diff.ignoreSubmodules`, else `none`. Without a
+ * row git reads no per-submodule key at all, so only the shared mode applies.
  */
 export const resolveSubmoduleIgnore = async (
   ctx: Context,
@@ -135,10 +136,11 @@ export const resolveSubmoduleIgnore = async (
   shared: SubmoduleIgnore | undefined,
 ): Promise<SubmoduleIgnore> => {
   const row = rows.find((candidate) => candidate.path === path);
+  if (row === undefined) return shared ?? 'none';
   const own = configuredOrUndefined(
-    await findLastSubsectionEntry(ctx, 'submodule', row?.name ?? path, 'ignore'),
+    await findLastSubsectionEntry(ctx, 'submodule', row.name, 'ignore'),
   );
-  const declared = row?.ignore === undefined ? undefined : ignoreModeOf(row.ignore);
+  const declared = row.ignore === undefined ? undefined : ignoreModeOf(row.ignore);
   return own ?? declared ?? shared ?? 'none';
 };
 

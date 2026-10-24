@@ -325,33 +325,40 @@ const trackedEntriesOf = (index: GitIndex): TrackedEntries => {
 
 /** What the working tree holds: every tracked file's delta, and the untracked paths. */
 interface ScannedTree {
-  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>;
   readonly submodules: SubmoduleStates;
   readonly untracked: ReadonlyArray<FilePath>;
 }
 
 type SubmoduleStates = ReadonlyMap<FilePath, SubmoduleState>;
 
-/** A gitlink git neither assumes valid nor finds gone from disk; a skip-worktree one never yields a delta. */
-const isDirtyChecked = (entry: IndexEntry, delta: WorkingTreeDelta): boolean =>
-  entry.mode === FILE_MODE.GITLINK && !entry.flags.assumeValid && delta.status !== 'absent';
-
 type DirtyCheck = readonly [FilePath, IndexEntry, WorkingTreeDelta, SubmoduleIgnore];
 
-const gitlinkPathsOf = ({ stage0Map }: TrackedEntries): ReadonlyArray<FilePath> =>
-  [...stage0Map].filter(([, entry]) => entry.mode === FILE_MODE.GITLINK).map(([path]) => path);
+/** The gitlinks git's diff visits: a skip-worktree or assume-valid entry never reaches the submodule config. */
+const gitlinkPathsOf = ({ stage0Map }: TrackedEntries): ReadonlyArray<FilePath> => {
+  const paths: FilePath[] = [];
+  for (const [path, entry] of stage0Map) {
+    if (entry.mode !== FILE_MODE.GITLINK || entry.flags.skipWorktree || entry.flags.assumeValid) {
+      continue;
+    }
+    paths.push(path);
+  }
+  return paths;
+};
 
 /** The scan's deltas with the given paths read as unchanged, the scan's own map left to the index refresh. */
 const withoutChanges = (
   workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>,
   hidden: ReadonlySet<FilePath>,
-): Map<FilePath, WorkingTreeDelta> =>
-  new Map(
+): ReadonlyMap<FilePath, WorkingTreeDelta> => {
+  if (hidden.size === 0) return workingMap;
+  return new Map(
     [...workingMap].map(([path, delta]) => [
       path,
       hidden.has(path) ? { ...delta, status: 'unchanged' } : delta,
     ]),
   );
+};
 
 type SubmoduleIgnores = ReadonlyMap<FilePath, SubmoduleIgnore>;
 
@@ -363,12 +370,15 @@ const dirtyChecksOf = (
   { workingMap }: TrackedScan,
   ignores: SubmoduleIgnores,
 ): ReadonlyArray<DirtyCheck> => {
+  if (ignores.size === 0) return [];
   const checked: DirtyCheck[] = [];
   for (const [path, entry] of stage0Map) {
-    const delta = workingMap.get(path);
     const mode = ignores.get(path);
-    if (delta === undefined || mode === undefined || mode === 'all') continue;
-    if (isDirtyChecked(entry, delta)) checked.push([path, entry, delta, mode]);
+    if (mode === undefined || mode === 'all') continue;
+    // A gitlink gone from disk is a plain deletion git never probes.
+    const delta = workingMap.get(path);
+    if (delta === undefined || delta.status === 'absent') continue;
+    checked.push([path, entry, delta, mode]);
   }
   return checked;
 };
