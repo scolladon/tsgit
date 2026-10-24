@@ -840,8 +840,24 @@ const continueRescheduled = async (
   const head = await resolveRef(ctx, HEAD);
   const staged = await stagedChangePaths(ctx, await treeOf(ctx, head));
   if (staged.length > 0) throw workingTreeDirty({ localChanges: staged, untracked: [] });
+  return retryRescheduledPick(ctx, progress, head);
+};
+
+/** The rescheduled pick sits in `done` and in the live todo; the retry replays it from the todo. */
+const retryRescheduledPick = (
+  ctx: Context,
+  progress: RebaseProgress,
+  head: ObjectId,
+): Promise<RebaseResult> => {
   const rc = { ...replayContextOf(progress), doneBefore: progress.done.slice(0, -1) };
   return replayFrom(ctx, rc, head, { applied: [], rewritten: [] });
+};
+
+/** git's `--skip` hard-resets to HEAD (dropping the staged change) and retries the rescheduled pick. */
+const skipRescheduled = async (ctx: Context, progress: RebaseProgress): Promise<RebaseResult> => {
+  const head = await resolveRef(ctx, HEAD);
+  await hardResetWorktreeToCommit(ctx, head);
+  return retryRescheduledPick(ctx, progress, head);
 };
 
 /** Commit the resolved stop (unless it matches HEAD) and replay the rest of the todo. */
@@ -936,9 +952,11 @@ const treeMatchesCommit = async (
 export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --skip');
-  const state = await readRebaseState(ctx);
-  if (state === undefined) throw noOperationInProgress('rebase');
+  const progress = await readRebaseProgress(ctx);
+  if (progress === undefined) throw noOperationInProgress('rebase');
   await assertEverySourceLoadable(ctx);
+  if (progress.rescheduled) return skipRescheduled(ctx, progress);
+  const state = (await readRebaseState(ctx)) as RebaseState;
   if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, currentHead);

@@ -806,6 +806,46 @@ describe('rebaseRun', () => {
         expect(await readMerge(ctx, 'head-name')).toBe('detached HEAD\n');
       });
     });
+    describe('When the refused rebase is skipped', () => {
+      it('Then the staged gitlink is reset away and the rescheduled pick is replayed', async () => {
+        // Arrange
+        const { ctx, mainTip, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Act
+        const result = await rebaseSkip(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        expect(await headIsSymbolic(ctx)).toBe(true);
+        const tip = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        expect(tip).not.toBe(mainTip);
+        expect((await readCommit(ctx, tip)).parents).toEqual([ontoTip]);
+        const sub = (await readIndex(ctx)).entries.find((entry) => entry.path === 'sub');
+        expect(sub?.id).toBe(GITLINK_A);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(false);
+      });
+
+      it('Then every remaining pick is replayed after the rescheduled one', async () => {
+        // Arrange
+        const { ctx, ontoTip } = await seedStagedGitlink({
+          ontoSub: GITLINK_A,
+          secondCommit: true,
+        });
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Act
+        await rebaseSkip(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        const second = await readCommit(ctx, tip);
+        const first = await readCommit(ctx, second.parents[0] as ObjectId);
+        expect(first.parents).toEqual([ontoTip]);
+        expect(await ctx.fs.readUtf8(work(ctx, 'k2.txt'))).toBe('m2\n');
+      });
+    });
   });
 });
 
@@ -876,9 +916,11 @@ const unstageGitlinkRemoval = async (ctx: Context): Promise<void> => {
 const seedStagedGitlink = async ({
   ontoSub,
   replays = true,
+  secondCommit = false,
 }: {
   readonly ontoSub: ObjectId;
   readonly replays?: boolean;
+  readonly secondCommit?: boolean;
 }): Promise<{ ctx: Context; mainTip: ObjectId; ontoTip: ObjectId }> => {
   const ctx = createMemoryContext();
   await init(ctx);
@@ -889,7 +931,7 @@ const seedStagedGitlink = async ({
     files: { 'f.txt': 'f\n' },
     message: 'base\n',
   });
-  const mainTip = replays
+  const first = replays
     ? await gitlinkCommit(ctx, {
         parents: [base],
         sub: GITLINK_A,
@@ -897,6 +939,14 @@ const seedStagedGitlink = async ({
         message: 'm\n',
       })
     : base;
+  const mainTip = secondCommit
+    ? await gitlinkCommit(ctx, {
+        parents: [first],
+        sub: GITLINK_A,
+        files: { 'f.txt': 'main\n', 'k2.txt': 'm2\n' },
+        message: 'm2\n',
+      })
+    : first;
   const ontoTip = await gitlinkCommit(ctx, {
     parents: [base],
     sub: ontoSub,

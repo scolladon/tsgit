@@ -31,7 +31,12 @@ import { createNodeContext } from '../../src/adapters/node/index.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
-import { rebaseAbort, rebaseContinue, rebaseRun } from '../../src/application/commands/rebase.js';
+import {
+  rebaseAbort,
+  rebaseContinue,
+  rebaseRun,
+  rebaseSkip,
+} from '../../src/application/commands/rebase.js';
 import { rm as removePaths } from '../../src/application/commands/rm.js';
 import { stashPush } from '../../src/application/commands/stash.js';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -138,6 +143,15 @@ const editedK: Setup = async (repo) => writeFile(path.join(repo, 'k'), 'edited\n
 const movedAndEditedK: Setup = async (repo) => {
   await moved(repo);
   await editedK(repo);
+};
+const secondMainCommit: Setup = async (repo) => {
+  await writeFile(path.join(repo, 'k2'), 'm2\n');
+  gitIn(repo, 'add', 'k2');
+  commitIn(repo, 'm2');
+};
+const stagedMoveAfterSecondCommit: Setup = async (repo) => {
+  await secondMainCommit(repo);
+  await stagedMove(repo);
 };
 const stagedMoveAndEditedK: Setup = async (repo) => {
   await stagedMove(repo);
@@ -273,6 +287,11 @@ const refusedContinue: Step = refusedStep(
 const abortRebase: Step = {
   git: gitStep('rebase', '--abort'),
   tsgit: (ctx) => rebaseAbort(ctx),
+};
+
+const skipRebase: Step = {
+  git: gitStep('rebase', '--skip'),
+  tsgit: (ctx) => rebaseSkip(ctx),
 };
 
 const unstageSubmodule: Step = {
@@ -421,6 +440,16 @@ const F3_ROWS: ReadonlyArray<Row> = [
     title: 'a staged submodule move, refused rebase continued after the move was unstaged',
     setup: stagedMove,
     steps: [refusedRebase('side', 'WORKING_TREE_DIRTY'), unstageSubmodule, continueRebase],
+  },
+  {
+    title: 'a staged submodule move, refused rebase skipped',
+    setup: stagedMove,
+    steps: [refusedRebase('side', 'WORKING_TREE_DIRTY'), skipRebase],
+  },
+  {
+    title: 'a staged submodule move and a second commit to replay, refused rebase skipped',
+    setup: stagedMoveAfterSecondCommit,
+    steps: [refusedRebase('side', 'WORKING_TREE_DIRTY'), skipRebase],
   },
   {
     title: 'a submodule moved after a conflicted rebase was resolved, rebase continued',
