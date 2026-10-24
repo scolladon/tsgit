@@ -2017,4 +2017,86 @@ describe('stash push line-ending guards', () => {
       });
     });
   });
+
+  describe('Given a tracked path whose leading directory became a symlink to a copy', () => {
+    const arrange = async (): Promise<Context> => {
+      const ctx = await setupRepo();
+      await commitFile(ctx, 'd/f', 'x\n', 'add d/f');
+      await write(ctx, 'copy/f', 'x\n');
+      await ctx.fs.rm(`${ctx.layout.workDir}/d/f`);
+      await ctx.fs.rm(`${ctx.layout.workDir}/d`);
+      await ctx.fs.symlink('copy', `${ctx.layout.workDir}/d`);
+      return ctx;
+    };
+
+    const refusalOf = async (ctx: Context): Promise<unknown> => {
+      try {
+        await stashPush(ctx, {});
+      } catch (error) {
+        return error instanceof TsgitError ? error.data : error;
+      }
+      return undefined;
+    };
+
+    describe('When push runs', () => {
+      it('Then it refuses with the path beyond the symbolic link', async () => {
+        // Arrange
+        const ctx = await arrange();
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'd/f' });
+      });
+
+      it('Then it writes no stash ref and leaves the index bytes unchanged', async () => {
+        // Arrange
+        const ctx = await arrange();
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const before = await ctx.fs.read(indexPath);
+
+        // Act
+        await refusalOf(ctx);
+
+        // Assert
+        expect(await readStashStack(ctx)).toEqual([]);
+        expect(await ctx.fs.read(indexPath)).toEqual(before);
+      });
+    });
+
+    describe('When push runs and another file is edited', () => {
+      it('Then it refuses the same way', async () => {
+        // Arrange
+        const ctx = await arrange();
+        await write(ctx, 'a.txt', 'edited\n');
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'd/f' });
+      });
+    });
+  });
+
+  describe('Given a tracked symlink that is a leaf, not a leading directory', () => {
+    describe('When push runs after the link was retargeted', () => {
+      it('Then it stashes normally', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.symlink('old-target', `${ctx.layout.workDir}/link`);
+        await add(ctx, ['link']);
+        await commit(ctx, { message: 'add link', author });
+        await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+        await ctx.fs.symlink('new-target', `${ctx.layout.workDir}/link`);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+      });
+    });
+  });
 });

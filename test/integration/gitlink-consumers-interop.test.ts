@@ -895,6 +895,41 @@ const observed = async (repo: string) => ({
   stash: stashObservation(repo),
 });
 
+const BEYOND_SYMLINK_STDERR = [
+  "error: 'd/f' is beyond a symbolic link",
+  'fatal: Unable to process path d/f',
+  'Cannot save the current worktree state',
+];
+
+const stashRefusal = (repo: string, args: ReadonlyArray<string>) => {
+  try {
+    gitIn(repo, 'stash', ...args);
+    return { status: 0, stderr: [] };
+  } catch (error) {
+    const { status, stderr } = error as { status: number; stderr: Buffer };
+    return { status, stderr: stderr.toString().trimEnd().split('\n') };
+  }
+};
+
+const tsgitStashRefusal = async (repo: string, args: ReadonlyArray<string>) => {
+  try {
+    await stashPush(createNodeContext({ workDir: repo }), {
+      includeUntracked: args.includes('-u'),
+    });
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
+const afterRefusedStash = (repo: string) => ({
+  list: gitIn(repo, 'stash', 'list'),
+  index: gitIn(repo, 'ls-files', '--stage'),
+  status: gitIn(repo, 'status', '--porcelain=v2', '-uall'),
+});
+
+const UNTRACKED_OPTIONS = [['push'], ['push', '-u']] as const;
+
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'Feature: tree-rewriting commands over a tracked gitlink compared with git',
   () => {
@@ -977,6 +1012,41 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               expect(gitExit).toBe(row.refusal?.exit ?? 0);
               expect(tsgitCode).toBe(row.refusal?.code);
               expect(await afterRemoval(tsgitTwin)).toEqual(await afterRemoval(gitTwin));
+            },
+            ROW_TIMEOUT,
+          );
+        });
+      },
+    );
+
+    describe.each(UNTRACKED_OPTIONS.map((args) => [args.join(' '), args] as const))(
+      'Given a tracked path whose leading directory became a symlink, stash %s',
+      (_title, args) => {
+        describe('When both tools run the stash', () => {
+          it(
+            'Then both refuse and leave the stash list, the index and the status untouched',
+            async () => {
+              // Arrange
+              const gitTwin = await twin(`beyond-git-${args.length}`, fixture);
+              const tsgitTwin = await twin(`beyond-tsgit-${args.length}`, fixture);
+              await behindSymlinkedDirectory(gitTwin);
+              await behindSymlinkedDirectory(tsgitTwin);
+              const untouched = afterRefusedStash(gitTwin);
+
+              // Act
+              const gitRefusal = stashRefusal(gitTwin, args);
+              const tsgitRefusal = await tsgitStashRefusal(tsgitTwin, args);
+
+              // Assert
+              expect(gitRefusal).toEqual({ status: 1, stderr: BEYOND_SYMLINK_STDERR });
+              expect(tsgitRefusal).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'd/f' });
+              expect(untouched.list).toBe('');
+              expect(untouched.status).toMatch(
+                /^1 \.D N\.\.\. 100644 100644 000000 \w+ \w+ d\/f$/m,
+              );
+              expect(untouched.status).toMatch(/^\? d$/m);
+              expect(afterRefusedStash(gitTwin)).toEqual(untouched);
+              expect(afterRefusedStash(tsgitTwin)).toEqual(untouched);
             },
             ROW_TIMEOUT,
           );
