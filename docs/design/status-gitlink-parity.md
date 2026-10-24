@@ -275,7 +275,9 @@ not run): tsgit reads no ignore key, so every directory-backed row is the ST1 ar
 | CO11 | F3 unmoved / moved | `cherry-pick other` | 0 · index `B`, sub untouched | `WORKING_TREE_DIRTY { localChanges: ['sub'] }` from `replay-sequence.ts:186` (`findWouldOverwrite`) | fold |
 | CO12 | moved | `cherry-pick side` | 0 | ok | ok |
 | CO13 | moved / edited | `rebase side` | 0 · ` M sub` / clean | `WORKING_TREE_DIRTY { localChanges: ['sub'] }` from `clean-work-tree.ts:83` | fold |
-| CO14 | moved, `git add sub` (staged gitlink) | `rebase side` | 0 | `WORKING_TREE_DIRTY { localChanges: ['sub'] }` | fold |
+| CO14 | F2 (nothing to replay), moved, `git add sub` (staged gitlink) | `rebase side` | 0 · the staged `C` kept in the index (no pick runs) | `WORKING_TREE_DIRTY { localChanges: ['sub'] }` | fold |
+| CO14b | F3 (a commit `m` to replay), moved, `git add sub`, `side` and `main` agree on `sub` | `rebase side` | 1 · `error: your local changes would be overwritten by rebase.` (git's `do_pick_commit` → `index_differs_from(HEAD)`, gitlinks counted, before every pick); rebase left in progress — on-disk state to pin git-first in Part 18 (`.git/rebase-merge/*`, HEAD detached at onto, `ORIG_HEAD`, index `sub` = `C`), `--abort` restores | after Part 11: rebases, the staged `C` dropped from the index by `detachHead`'s hard reset (before Part 11: refused by accident) | fold (Part 18) — regression introduced by this branch |
+| CO14c | as CO14b but onto `other` holds `sub` = `B` ≠ HEAD's `A` | `rebase other` | to pin git-first (expected `error: Entry 'sub' would be overwritten by merge. Cannot merge.` + `fatal: Could not detach HEAD`, exit 128, nothing written — `checkout_onto`'s two-way merge, two-way merge reject arm) | as CO14b | fold (Part 18) |
 | CO15 | conflicted rebase resolved, then moved | `rebase --continue` | 0 · ` M sub` | not run (the `unstagedChangePaths` arm of CO13) | fold |
 | CO16 | F2 unmoved | `stash push` | 0 · `No local changes to save` | `PERMISSION_DENIED` from `stash.ts:203` (hashing the directory) | fold |
 | CO17 | moved / edited / untracked `sub/n` | `stash push` | 0 · `No local changes to save`, sub untouched | `PERMISSION_DENIED` | fold |
@@ -299,6 +301,17 @@ not run): tsgit reads no ignore key, so every directory-backed row is the ST1 ar
 | CO35 | `.gitmodules` rewritten with identical bytes (stat drift only) | `rm sub` | 0 · as CO21 | `RM_LOCAL_MODIFICATIONS` | fold (CO21 arm) |
 | CO36 | working `.gitmodules` deleted, not staged | `rm sub` | 0 · ` D .gitmodules` stays unstaged, `D  sub`; no section edit, nothing staged for `.gitmodules` | `RM_LOCAL_MODIFICATIONS` | fold |
 | CO37 | second submodule `sub2` committed | `rm sub` | 0 · `.gitmodules` keeps only `[submodule "sub2"]` (`path`, `url`), `M  .gitmodules`, `D  sub` | `RM_LOCAL_MODIFICATIONS` | fold (CO21 arm) |
+
+CO14's exit 0 holds only when nothing is to replay (F2: `side` is cut from `main` and `main` has no commit of its own): the pre-flight ignores the staged gitlink, `checkout_onto` keeps it (HEAD and onto agree on `sub`, two-way merge cases 14/15) and no pick runs. The Part 11 implementer's git twins (×3) exposed the difference; the design's expectation was over-general. Pinned 2026-10-24.
+
+| CO38 | tracked `d/f`, `d` replaced by a symlink to a copy (×3) | `stash push` (and `push -u`) | 1 · `error: 'd/f' is beyond a symbolic link` / `fatal: Unable to process path d/f` / `Cannot save the current worktree state`; nothing created; status ` D d/f` + `? d` unchanged | after Part 12 (run by its implementer): a stash is saved (the Part 4 `absent` verdict flows into W) | fold (Part 20) → `PATHSPEC_BEYOND_SYMLINK { path: 'd/f' }`, the code `add` already uses |
+| CO39 | F1, `sub` replaced by a regular file, not staged | `stash push` | 0 · `No local changes to save` (`diff-files --ignore-submodules` zeroes every change on a gitlink index entry, a type change included); status `1 .T S... 160000 160000 100644 A A sub` | no local changes (Part 12's `classifyEntry`) | ok |
+| CO40 | CO39 then `git add sub` (index `100644 <blob> sub`) | `stash push` | 0 · saved; afterwards status clean, `sub` an empty directory, `stash@{0}^2:sub` = `stash@{0}:sub` = the file blob | stash saved, then `FILE_EXISTS` at `mkdir sub` restoring the gitlink over the file (pre-existing write-path gap, also reachable by `checkout`) | fold (Part 19) |
+
+CO38–CO40 were pinned by the orchestrator after Part 12 (same procedure; CO38 ×3). The design's
+earlier wording "a gitlink↔file type change still counts" holds for the staged side only
+(`diff-index --cached --ignore-submodules` skips a change whose both sides are gitlinks); on the
+worktree side git's `match_stat_with_submodule` zeroes any change on a gitlink index entry.
 
 CO31–CO37 were pinned by the orchestrator after planning (git 2.55.0, `env -i`, same
 procedure as the CO rows; CO31 ran three times, the others once), for the planner's D3 question.
