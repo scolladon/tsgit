@@ -122,7 +122,9 @@ Fixture **F3** = F2 plus a commit `m` on `main`, so merging `other` is not a fas
   working-tree file, or the index blob when that file is absent), then `diff.ignoreSubmodules`.
   `<name>` is the `.gitmodules` section whose `path` is the entry's path. `all` hides the
   gitlink. `dirty` keeps only the HEAD comparison. `untracked` drops the untracked flag. Any
-  other value refuses (SC rows).
+  other value refuses (SC rows). `diff.ignoreSubmodules` is validated on every `status` run,
+  gitlink or not, as git parses it at config load (r1–r3); the per-name key and `.gitmodules`
+  are consulted only for a gitlink the index holds (r5).
 - **R7** stash, the rebase/pull pre-flight, `findWouldOverwrite` and apply-changeset's dirty
   check ignore gitlinks, as git does. A moved, dirty or staged submodule never blocks
   `stash`/`checkout`/`merge`/`cherry-pick`/`rebase`, and never gets stashed. The submodule's
@@ -239,6 +241,19 @@ the tsgit row asserts that the call settles within a timeout and that the outcom
 | q2 / q2b / q2c | `ignore = all` / `dirty` / `untracked` over SF2 | 0 · none / 0 · none / 128 · `too large to be a .git file` |
 | q3 | the submodule's own `status.showUntrackedFiles = no`, untracked `sub/n` | 0 · none |
 | q4 | `ignore = dirty`, `sub` a symlink | 0 · `1 .T S... 160000 160000 120000 …` |
+| r1 | no submodule at all, `.git/config` `diff.ignoreSubmodules = bogus`, a staged file (×3) | 128 · `fatal: bad --ignore-submodules argument: bogus` (`diff-files` and `add` exit 0: only `status` parses the key) |
+| r2 | submodule present, `.git/config` `submodule.sub.ignore = none` + `diff.ignoreSubmodules = bogus` | 128 · same (the own key does not shield a bogus `diff` value) |
+| r3 | submodule present, `.gitmodules` `ignore = none` + `diff.ignoreSubmodules = bogus` | 128 · same |
+| r4 | submodule present, unmoved, `submodule.sub.ignore = bogus`, `diff` key unset | 128 · same (the resolver runs for every stage-0 gitlink, moved or not) |
+| r5 | no submodule, dangling `.git/config` `submodule.sub.ignore = bogus` | 0 · staged rows shown (a per-name key is read only for a gitlink the index holds) |
+| r6 | `.gitmodules` `ignore = bogus`, moved | 0 · `warning: Invalid parameter 'bogus' for config option 'submodule.sub.ignore'`, `SC..` row shown (reads as unset) |
+| r7 | `.git/config` `[submodule "sub"] ignore` with no value (valueless), moved | 128 · `error: missing value for 'submodule.sub.ignore'` then `fatal: bad config variable 'submodule.sub.ignore' in file '.git/config' at line <N>`; valueless `[diff] ignoreSubmodules` the same (git spells the key lower-case in its message) |
+| r8 | `ignore = all`, gitlink staged via `update-index --cacheinfo` (`git add sub` refuses: "Skipping submodule due to ignore=all") | 0 · `1 M. S... 160000 160000 160000 <A> <C> sub` (the staged column stays; only the worktree column is hidden) |
+| r9 | `ignore = all`, `sub` replaced by a file; `sub` removed | 0 · no line for either |
+
+r1–r5 were pinned by the orchestrator after Part 8 (same procedure; r1 ran three times); r6–r9 by the
+Part 8 implementer. tsgit after Part 8: r1 answered clean (fold in Part 9: the `diff` key is
+validated on every run); r2–r9 match.
 
 tsgit today, n1–n4 and o1–o3 (run): `modified · 100755` in every row. p- and q-rows (read,
 not run): tsgit reads no ignore key, so every directory-backed row is the ST1 arm.
@@ -287,6 +302,28 @@ not run): tsgit reads no ignore key, so every directory-backed row is the ST1 ar
 
 CO31–CO37 were pinned by the orchestrator after planning (git 2.55.0, `env -i`, same
 procedure as the CO rows; CO31 ran three times, the others once), for the planner's D3 question.
+
+#### LH — a HEAD whose target's loose path is too long (orchestrator, after Part 6)
+
+Fixture: a plain repository with one commit on `main` and a staged `u`, then `.git/HEAD` rewritten
+to `ref: refs/heads/<name>`. `v2b` is `git status --porcelain=v2 --branch`. git 2.55.0, `env -i`,
+same procedure as the CO rows.
+
+| # | Setup | git: exit · output | tsgit (run, Part 6 implementer) | Class |
+|---|---|---|---|---|
+| LH1 | `<name>` = 5000 digits (×3) | 0 · `# branch.oid (initial)`, `# branch.head (unknown)`, every index entry `1 A. N... 000000 100644 100644 <0×40> <id> <path>` | `status` rejects `UNSUPPORTED_OPERATION { operation: 'filesystem', reason: 'ENAMETOOLONG' }` from the loose-ref probe | fold |
+| LH2 | `<name>` = 300 chars (over `NAME_MAX`) | as LH1 | as LH1 | fold |
+| LH3 | `<name>` = `none` (plain unborn branch, contrast) | 0 · `# branch.oid (initial)`, `# branch.head none`, same `A.` rows | `branch: 'refs/heads/none'`, initial | ok |
+| LH4 | LH1, `rev-parse HEAD` | 128 · `fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.` | to pin: refuses | fold (refusal kept, code recorded) |
+| LH5 | LH1, `log -1` | 128 · `fatal: your current branch appears to be broken` | to pin: refuses | fold (refusal kept, code recorded) |
+| LH6 | LH1, `symbolic-ref HEAD` | 128 · (25-byte stderr; the implementing part pins the text) | to pin | pin |
+| LH7 | = SF11: module HEAD `ref: refs/heads/<5000 digits>`, superproject `status` | 0 · `1 .M S.M. 160000 160000 160000 <A> <A> sub` | child `status` rejects as LH1 | fold |
+| LH8 | HEAD → `refs/heads/a..b` (a name git rejects) and HEAD → a symref cycle, `v2b` | to pin git-first (expected `(unknown)` + initial, the same NULL path in `refs_resolve_ref_unsafe`) | today: `INVALID_REF` / `REF_CYCLE_DETECTED` escape `status` | pin, fold if git agrees |
+
+What the pins say: git's files backend `lstat`s the loose path; an errno other than `ENOENT`
+leaves `packed-refs` unread and `refs_resolve_ref_unsafe` returns NULL. `status` then takes
+`s->branch = NULL` (`branch.head (unknown)`) and `is_initial = 1`; `log` and `rev-parse` refuse.
+An unborn branch (`ENOENT`) keeps its name. The user ratified folding this (ADR-1072).
 
 ### What the pins say git does
 
@@ -427,6 +464,25 @@ there is folded in the same part.
   migrated into `.git/modules/<name>` first (CO23). `.gitmodules` loses the section whose
   `path` matches and is staged (CO21: the file ends empty). `--cached` changes the index only
   (CO29).
+
+### Part g — a loose path too long resolves as unreadable; `status` reports a broken HEAD as unknown (LH rows; ADR-1072)
+
+- `src/adapters/node/node-file-system.ts` `mapErrno`: `ENAMETOOLONG` → a new `AdapterError`
+  member `PATH_TOO_LONG { path }` (constructor `pathTooLong` in `src/domain/error.ts`, message
+  case, exhaustiveness case, `docs/use/errors.md` "Adapters & I/O" row). The memory and browser
+  adapters never produce it.
+- `src/application/primitives/resolve-ref.ts` `UNREADABLE_REF_CODES` gains `PATH_TOO_LONG`: every
+  "for reading" resolution treats the fault as git's NULL, and `resolveRef` still throws it (a
+  refusal where git refuses: LH4, LH5).
+- `src/application/commands/status.ts`: the HEAD state is read once for the report — a symbolic
+  HEAD whose target resolves for reading or is missing keeps today's `branch`/`detached`/head
+  tree; a target whose resolution throws an `UNREADABLE_REF_CODES` fault is broken:
+  `branch: undefined`, `detached: false`, no head tree (every index entry a staged add), as git's
+  `(unknown)` + initial. The pair `branch: undefined, detached: false` is the structured form of
+  `(unknown)`; `docs/use/commands/status.md` says so.
+- No change to `ResolveDirectResult`; the ref store keeps surfacing the fault.
+- Out of scope, by pin: how `checkout`, `commit` and `branch` treat a broken HEAD (git dies at lock
+  time with the same errno); not probed.
 
 ### Old unit rows — verdicts
 
