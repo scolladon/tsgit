@@ -98,15 +98,18 @@ type RebaseResult =
   becomes: one HEAD and `onto` agree on is kept, one the index already holds as
   `onto` does is kept, anything else refuses `CHECKOUT_OVERWRITE_DIRTY
   { localChanges }` before HEAD moves, with nothing written.
-- **First pick refused over a staged change.** A staged change the pre-flight let
-  through but the pick judges dirty (a gitlink move under only
-  `diff.ignoreSubmodules = all`, which is porcelain-only) leaves git's
-  rescheduled-pick state: `rebase-merge/` holding `done`, `git-rebase-todo` with
-  the pick, `end` and `msgnum`, no `message` or `author-script`, plus
-  `REBASE_HEAD`, and the staged change is dropped by the hard reset of the
-  detach. `continue` refuses `WORKING_TREE_DIRTY` again until the change is
-  unstaged, then replays the pick; `skip` hard-resets and replays the rescheduled
-  pick and the rest; `abort` restores the branch and hard-resets the index.
+- **First pick refused over a staged change.** When the todo opens with a pick, a
+  staged change the pre-flight let through but the pick judges dirty (a gitlink
+  move under only `diff.ignoreSubmodules = all`, which is porcelain-only) leaves
+  git's rescheduled-pick state: `rebase-merge/` holding `done` (the refused pick
+  included), `git-rebase-todo` with the pick, `end` and `msgnum`, no `message` or
+  `author-script`, plus `REBASE_HEAD`, and the staged change is dropped by the
+  hard reset of the detach. `continue` refuses `WORKING_TREE_DIRTY` again until
+  the change is unstaged, then replays the pick, which `done` lists a second time
+  as git's does; `skip` hard-resets and replays the rescheduled pick and the
+  rest; `abort` restores the branch and hard-resets the index. A todo opening
+  with a `label` or a `reset` (`--rebase-merges`) never refuses: the reset sets
+  the index to `onto`'s tree, carried change included, before any pick runs.
 - **Refusals.** A dirty index/working tree (`WORKING_TREE_DIRTY`), an operation
   already in progress (`OPERATION_IN_PROGRESS`), an unborn branch
   (`NO_INITIAL_COMMIT`), no work tree (`WORK_TREE_REQUIRED`).
@@ -139,7 +142,9 @@ runs git's `--rebase-merges` todo instead of flattening the branch:
 - **Run.** A `label` names HEAD `refs/rewritten/<label>` (no reflog; the refs are
   deleted when the rebase finishes or aborts, `refs-to-delete` lists them on a
   stop). A `reset` moves HEAD (`rebase (reset): '<label>'`, no entry when HEAD
-  does not move). A `pick` or `merge` whose parents are unchanged fast-forwards
+  does not move), the index following git's one-way merge: a staged gitlink
+  change carried past the pre-flight becomes the label's entry, the submodule
+  checkout left alone. A `pick` or `merge` whose parents are unchanged fast-forwards
   (`rebase: fast-forward`). Otherwise `merge -C` merges HEAD with the label and
   commits with the original message and author (`rebase (merge): <subject>`); a
   label HEAD already contains leaves the merge out.

@@ -652,6 +652,16 @@ The review round found behaviour the implementation had not pinned. Each row bel
 | RV45 | `status` / `rm sub`, HEAD recording `.gitmodules` as a directory or as a gitlink, nothing staged or in the work tree | `error: reference '<oid>' does not point to a blob` / `error: unable to load config blob object '<oid>'`, then no rows: status exit 0 reporting the moved submodule, `rm sub` exit 128 `could not lookup name for submodule 'sub'` | `readRecordedGitmodules` reads only a blob entry; a tree or gitlink `.gitmodules` answers no row (the error line is git's stderr, not data) |
 | RV46 | `rm k sub`, `.gitmodules` unmerged and present | exit 128 `Cannot change unmerged .gitmodules` after `rm 'k'` and `rm 'sub'`: both leave the work tree in index order, the index untouched | `GITMODULES_UNMERGED` after the submodule's directory went, `k` gone too, index untouched |
 
+### Validation-round folds (git 2.55 pins)
+
+Mutation survivors on the lines above sent the triage back to git: each row below was pinned the same way before the fold, and the matching rows live in `rebase.test.ts`, `submodule-absorb.test.ts` and `gitlink-consumers-interop.test.ts`.
+
+| id | fixture | git 2.55 | tsgit after the fold |
+|---|---|---|---|
+| RV47 | `rm sub` / `rm -f sub`, embedded repository whose own index holds an unmerged gitlink no `.gitmodules` row names | `submodule foreach --recursive 'test -f .git'` lists the unmerged gitlink too and fails `could not lookup name` 128 → `submodule_uses_gitfile` is false: `rm` exit 1 local modifications, `rm -f` removes | `checkoutGitlinks` visits every gitlink entry of the nested index, whatever its stage; was: stage 0 only, so the unmerged gitlink went unvisited and the repository read as gitfile-backed |
+| RV48 | `rebase --rebase-merges side` over a staged gitlink move the pre-flight ignores (no `ignore` key, or `all`); submodule unpopulated, checked out at the staged commit, or at the recorded one | no refusal: the todo opens with `label onto` and `reset onto`, `do_reset`'s one-way merge sets the index entry to `onto`'s and leaves the checkout alone (`verify_uptodate` never rejects a gitlink without `submodule.recurse`), the picks then run; exit 1 only on a later conflict | the dirty-index refusal runs only when the todo's first line is a pick; the reset writes `onto`'s entry, checkout untouched; was: `WORKING_TREE_DIRTY` after scanning the todo for its first pick |
+| RV49 | `rebase` refused at the first of two picks over a staged gitlink move, the move unstaged, `rebase --continue` conflicting on the second pick | `rebase-merge/done` lists the retried pick again — `pick one`, `pick one`, `pick two` — `end` and `msgnum` both 3 | `continue` keeps the whole `done` and appends the retried pick; was: `one`, `two` |
+
 ## Size-limit raise — status gitlink parity
 
 Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`),
