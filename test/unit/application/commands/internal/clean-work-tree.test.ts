@@ -141,6 +141,28 @@ const gitlinkEntry = (id: ObjectId): IndexEntry => ({
 });
 
 describe('assertCleanWorkTree', () => {
+  describe('Given three committed files sharing a directory', () => {
+    describe('When asserted', () => {
+      it('Then the directory is lstat-ed once for the whole pass', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        for (const name of ['d/a', 'd/b', 'd/c'])
+          await ctx.fs.writeUtf8(work(ctx, name), `${name}\n`);
+        await add(ctx, ['d/a', 'd/b', 'd/c']);
+        const { tree } = await commit(ctx, { message: 'init', author: AUTHOR });
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+        const sut = assertCleanWorkTree;
+
+        // Act
+        await sut(ctx, tree);
+
+        // Assert
+        expect(lstat.mock.calls.filter(([path]) => path === work(ctx, 'd'))).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a clean working tree and index matching HEAD', () => {
     describe('When asserted', () => {
       it('Then it passes', async () => {

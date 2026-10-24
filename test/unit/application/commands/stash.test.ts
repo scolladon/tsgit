@@ -176,6 +176,31 @@ const setupRepoWithSubmodule = async (checkedOut: ObjectId): Promise<Context> =>
 };
 
 describe('stash push', () => {
+  describe('Given three committed files sharing a directory', () => {
+    describe('When push runs', () => {
+      it('Then the directory is lstat-ed once per pass: the classification, the restore, the index refresh', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        for (const name of ['d/a', 'd/b', 'd/c']) await commitFile(ctx, name, `${name}\n`, name);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/a`, 'edited\n');
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        // Three passes walk the tree, each with its own leading-path memo: the classification of
+        // the tracked entries, the restore that writes HEAD back, and the racy-clean comparison
+        // that refreshes the index; none lstat-s the directory more than once.
+        expect(
+          lstat.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/d`),
+        ).toHaveLength(3);
+      });
+    });
+  });
+
   describe('Given a gitlink newly staged and nothing else changed', () => {
     describe('When push runs', () => {
       it('Then it reports no local changes', async () => {

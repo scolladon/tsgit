@@ -38,7 +38,8 @@ import type { FileStat } from '../../ports/file-system.js';
 import { applyMergeToWorktree, mergeTreesToTree } from '../primitives/apply-merge-to-worktree.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import {
-  compareWorkingTreeEntry,
+  compareAndRefresh,
+  scopeOf,
   type WorkingTreeComparison,
 } from '../primitives/compare-working-tree-entry.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -261,7 +262,8 @@ const classifyEntry = async (
   if (isGitlink(entry.mode)) return { entry, state: 'unchanged' };
   // git builds the work-tree tree through add_to_index, which dies on a path beyond a symlink.
   if (await scanner.hasSymlinkedLeadingPath(entry.path)) throw pathspecBeyondSymlink(entry.path);
-  return { entry, state: await compareWorkingTreeEntry(ctx, entry, provider, indexMtime) };
+  const { delta } = await compareAndRefresh(ctx, entry, scopeOf(provider, indexMtime, scanner));
+  return { entry, state: delta.status };
 };
 
 /**

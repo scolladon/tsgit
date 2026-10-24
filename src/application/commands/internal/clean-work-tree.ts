@@ -5,15 +5,17 @@
  * unmerged entries. Collects every offending path and throws `WORKING_TREE_DIRTY`.
  */
 import { workingTreeDirty } from '../../../domain/commands/error.js';
+import type { EscapedFlatTree } from '../../../domain/diff/flat-tree.js';
 import { comparePaths } from '../../../domain/diff/index.js';
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index.js';
 import { escapedPathOf, viewOfEscaped } from '../../../domain/git-index/index-path-key.js';
 import { FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { compareWorkingTreeEntry } from '../../primitives/compare-working-tree-entry.js';
+import { compareAndRefresh, scopeOf } from '../../primitives/compare-working-tree-entry.js';
 import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
 import { buildCheckinAttributeProvider } from '../../primitives/internal/read-gitattributes.js';
+import { createLeadingPathScanner } from '../../primitives/internal/symlinked-leading-path.js';
 import { readIndex } from '../../primitives/read-index.js';
 
 interface PartitionedIndex {
@@ -59,14 +61,12 @@ const COUNTING_GITLINKS: GitlinkPolicy = {
   ignoresRemoval: () => false,
 };
 
-/** Paths whose index (id, mode) differs from HEAD's tree, incl. staged deletions. */
-const stagedDirty = async (
-  ctx: Context,
+/** Paths whose index (id, mode) differs from the flattened HEAD tree, incl. staged deletions. */
+const stagedDirtyAgainst = (
+  headFlat: EscapedFlatTree,
   stage0: ReadonlyArray<IndexEntry>,
-  headTree: ObjectId,
   policy: GitlinkPolicy,
-): Promise<ReadonlyArray<FilePath>> => {
-  const headFlat = await flattenEscapedTree(ctx, headTree);
+): ReadonlyArray<FilePath> => {
   const indexPaths = new Set(stage0.map(escapedPathOf));
   const dirty: FilePath[] = [];
   for (const entry of stage0) {
@@ -89,14 +89,16 @@ const unstagedDirty = async (
   indexMtime: GitIndex['indexMtime'],
 ): Promise<ReadonlyArray<FilePath>> => {
   const provider = await buildCheckinAttributeProvider(ctx);
+  // One leading-path memo for the whole pass: a shared directory is lstat-ed once.
+  const scope = scopeOf(provider, indexMtime, createLeadingPathScanner(ctx));
   const dirty: FilePath[] = [];
   for (const entry of stage0) {
     // Skip-worktree (sparse-excluded) entries are intentionally off-disk.
     if (entry.flags.skipWorktree) continue;
     // git runs these pre-flights with submodules ignored: a moved checkout is not a change.
     if (entry.mode === FILE_MODE.GITLINK) continue;
-    if ((await compareWorkingTreeEntry(ctx, entry, provider, indexMtime)) !== 'unchanged')
-      dirty.push(entry.path);
+    const { delta } = await compareAndRefresh(ctx, entry, scope);
+    if (delta.status !== 'unchanged') dirty.push(entry.path);
   }
   return dirty;
 };
@@ -104,9 +106,10 @@ const unstagedDirty = async (
 export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Promise<void> => {
   const index = await readIndex(ctx);
   const { stage0, unmerged } = partitionIndex(index.entries);
+  const headFlat = await flattenEscapedTree(ctx, headTree);
   const dirty = new Set<FilePath>([
     ...unmerged,
-    ...(await stagedDirty(ctx, stage0, headTree, IGNORING_GITLINKS)),
+    ...stagedDirtyAgainst(headFlat, stage0, IGNORING_GITLINKS),
     ...(await unstagedDirty(ctx, stage0, index.indexMtime)),
   ]);
   // Raw-byte path order matches git's refusal; the Set's insertion order
@@ -129,7 +132,10 @@ const refuseDirty = (dirty: ReadonlyArray<FilePath>): void => {
  */
 export const assertCleanIndex = async (ctx: Context, headTree: ObjectId): Promise<void> => {
   const { stage0, unmerged } = partitionIndex((await readIndex(ctx)).entries);
-  refuseDirty([...unmerged, ...(await stagedDirty(ctx, stage0, headTree, COUNTING_GITLINKS))]);
+  refuseDirty([
+    ...unmerged,
+    ...stagedDirtyAgainst(await flattenEscapedTree(ctx, headTree), stage0, COUNTING_GITLINKS),
+  ]);
 };
 
 /** The `--no-commit` pre-flight: staged changes ride along, only unmerged entries refuse. */
@@ -150,7 +156,8 @@ export const stagedChangePaths = async (
   headTree: ObjectId,
 ): Promise<ReadonlyArray<FilePath>> => {
   const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
-  return [...(await stagedDirty(ctx, stage0, headTree, COUNTING_GITLINKS))].sort(comparePaths);
+  const headFlat = await flattenEscapedTree(ctx, headTree);
+  return [...stagedDirtyAgainst(headFlat, stage0, COUNTING_GITLINKS)].sort(comparePaths);
 };
 
 /** Staged changes git's `require_clean_work_tree` skips (submodules ignored), in raw-byte order. */
@@ -159,7 +166,9 @@ export const stagedGitlinkChanges = async (
   headTree: ObjectId,
 ): Promise<ReadonlyArray<FilePath>> => {
   const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
-  const refusedByPreflight = new Set(await stagedDirty(ctx, stage0, headTree, IGNORING_GITLINKS));
-  const counted = await stagedDirty(ctx, stage0, headTree, COUNTING_GITLINKS);
+  // HEAD is flattened once and read under both policies.
+  const headFlat = await flattenEscapedTree(ctx, headTree);
+  const refusedByPreflight = new Set(stagedDirtyAgainst(headFlat, stage0, IGNORING_GITLINKS));
+  const counted = stagedDirtyAgainst(headFlat, stage0, COUNTING_GITLINKS);
   return counted.filter((path) => !refusedByPreflight.has(path)).sort(comparePaths);
 };

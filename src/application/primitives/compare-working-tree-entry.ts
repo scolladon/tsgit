@@ -200,9 +200,15 @@ export interface RefreshedComparison {
   readonly refreshed?: IndexEntry;
 }
 
-const scopeOf = (provider?: AttributeProvider, indexMtime?: IndexMtime): ComparisonScope => ({
+/** A comparison scope from optional parts; a loop passes its one scanner so every entry shares the leading-path memo. */
+export const scopeOf = (
+  provider?: AttributeProvider,
+  indexMtime?: IndexMtime,
+  scanner?: LeadingPathScanner,
+): ComparisonScope => ({
   ...(provider !== undefined && { provider }),
   ...(indexMtime !== undefined && { indexMtime }),
+  ...(scanner !== undefined && { scanner }),
 });
 
 const compareContent = async (

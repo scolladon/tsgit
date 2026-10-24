@@ -4,13 +4,14 @@ import { type IndexPathKey, indexPathKey } from '../../../domain/git-index/index
 import { deriveWorkingMode, FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
-import { compareWorkingTreeDelta } from '../compare-working-tree-entry.js';
+import { compareAndRefresh, scopeOf } from '../compare-working-tree-entry.js';
 import { indexPath } from '../path-layout.js';
 import { readIndexAt } from '../read-index.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { type IndexMtime, isRacy, matchesContentStat } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
 import { buildCheckinAttributeProvider } from './read-gitattributes.js';
+import { createLeadingPathScanner } from './symlinked-leading-path.js';
 
 const CORRUPT_INDEX_CODE_PREFIX = 'INVALID_INDEX_';
 /** Whether the caller already found `path` unchanged (git's `CE_UPTODATE`). */
@@ -128,9 +129,11 @@ export const smudgeRacilyClean = async (
   const clean = await racilyClean(ctx, workDir, entries, previous, previous.indexMtime, verified);
   if (clean.length === 0) return entries;
   const provider = await buildCheckinAttributeProvider(ctx);
+  // One single-flight leading-path memo for the concurrent pass: a shared directory is lstat-ed once.
+  const scope = scopeOf(provider, undefined, createLeadingPathScanner(ctx));
   const modified = await filterConcurrently(
     clean,
-    async (entry) => (await compareWorkingTreeDelta(ctx, entry, provider)).status === 'modified',
+    async (entry) => (await compareAndRefresh(ctx, entry, scope)).delta.status === 'modified',
   );
   const smudged = new Set(modified);
   return entries.map((entry) => (smudged.has(entry) ? { ...entry, fileSize: 0 } : entry));
