@@ -68,6 +68,10 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   // path (`rm` is not idempotent). Keyed and cleared independently of
   // `memo` so a later, unrelated scan of the same prefix still re-lstats.
   const unlinkMemo = new Map<string, PromiseMemo<void>>();
+  // The settled verdict per leading directory: once its components are classified, every
+  // further path under the same directory answers from one lookup, without a promise hop
+  // per component. Cleared whenever a prefix classification changes.
+  const verdicts = new Map<string, FilePath | undefined>();
   const workDir = requireWorkTree(ctx, 'createLeadingPathScanner');
 
   const classifyPrefix = (prefix: string): Promise<PrefixShape> => {
@@ -89,6 +93,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
         // verdict must not survive to serve a later lookup of this same
         // prefix, so drop it rather than guess its post-unlink shape.
         memo.delete(prefix);
+        verdicts.clear();
       });
       unlinkMemo.set(prefix, entry);
     }
@@ -108,7 +113,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
     }
   };
 
-  const symlinkedLeadingComponent = async (path: FilePath): Promise<FilePath | undefined> => {
+  const walkLeadingComponents = async (path: FilePath): Promise<FilePath | undefined> => {
     const segments = path.split('/');
     // Stryker disable next-line StringLiteral: equivalent — split() always returns at least one element, so the '' default can never activate.
     let prefix = segments[0] ?? '';
@@ -121,6 +126,17 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
       prefix = `${prefix}/${segments[i]}`;
     }
     return undefined;
+  };
+
+  const symlinkedLeadingComponent = async (path: FilePath): Promise<FilePath | undefined> => {
+    const slash = path.lastIndexOf('/');
+    // A root-level path has no leading component to classify.
+    if (slash === -1) return undefined;
+    const directory = path.slice(0, slash);
+    if (verdicts.has(directory)) return verdicts.get(directory);
+    const verdict = await walkLeadingComponents(path);
+    verdicts.set(directory, verdict);
+    return verdict;
   };
 
   const hasSymlinkedLeadingPath = async (path: FilePath): Promise<boolean> =>
@@ -142,6 +158,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
         // `hasSymlinkedLeadingPath`) before it ever reaches a symlink
         // deeper under this now-materialised prefix.
         memo.delete(prefix);
+        verdicts.clear();
         return;
       }
       if (shape === 'symlink') {
@@ -154,6 +171,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
 
   const invalidate = (path: FilePath): void => {
     memo.delete(path);
+    verdicts.clear();
   };
 
   const makeDirectory = async (prefix: string): Promise<void> => {
@@ -162,6 +180,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
       prefix,
       createPromiseMemo<PrefixShape>(async () => 'directory'),
     );
+    verdicts.clear();
   };
 
   const ensureDirectory = async (prefix: string): Promise<void> => {
@@ -182,6 +201,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
 
   const invalidateAll = (): void => {
     memo.clear();
+    verdicts.clear();
   };
 
   return {
