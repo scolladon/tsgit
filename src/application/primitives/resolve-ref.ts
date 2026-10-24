@@ -21,13 +21,16 @@ export type ChainOutcome =
 
 /** Error codes `refs_resolve_ref_unsafe(RESOLVE_REF_READING)` folds into "does
  *  not resolve for reading": a chain ending on a name that formats invalid, a
- *  loose file whose content is neither an oid nor `ref: …`, a cycle, and a
- *  chain longer than the reading walk's cap — git returns NULL for all four. */
+ *  loose file whose content is neither an oid nor `ref: …`, a cycle, a
+ *  chain longer than the reading walk's cap, and a loose path the file system
+ *  refuses as too long (git's `lstat` failing with an errno other than
+ *  `ENOENT`) — git returns NULL for all five. */
 export const UNREADABLE_REF_CODES: ReadonlySet<string> = new Set([
   'INVALID_REF',
   'INVALID_OBJECT_ID',
   'REF_CYCLE_DETECTED',
   'REF_CHAIN_TOO_DEEP',
+  'PATH_TOO_LONG',
 ]);
 
 /**
