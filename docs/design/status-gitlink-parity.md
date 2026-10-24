@@ -129,7 +129,9 @@ Fixture **F3** = F2 plus a commit `m` on `main`, so merging `other` is not a fas
   type-changed submodule (`RM_LOCAL_MODIFICATIONS`), and an oversized gitfile refuses
   `GITFILE_TOO_LARGE`. A clean submodule is removed from the working tree, the
   `.gitmodules` section is removed and staged, and `.git/modules/<name>` is kept. `--cached`
-  touches the index only (CO21–CO30).
+  touches the index only (CO21–CO30). A working `.gitmodules` whose content differs from the
+  index refuses before anything is removed or unstaged, under `--cached` and `-f` too; an absent
+  working file or a same-bytes rewrite proceeds (CO31–CO37).
 - **R9** No `add`, `ls-files`, `diff` or checkout-write behaviour changes beyond what R1–R8 name.
   Every existing interop suite stays green.
 
@@ -273,6 +275,16 @@ not run): tsgit reads no ignore key, so every directory-backed row is the ST1 ar
 | CO28 | SF2 | `rm sub` | 128 · `fatal: too large to be a .git file: 'sub/.git'` | `RM_LOCAL_MODIFICATIONS` | fold |
 | CO29 | moved | `rm --cached sub` | 0 · `D  sub`, `?? sub/`, `.gitmodules` untouched | ok | ok |
 | CO30 | moved | `rm -f sub` | 0 · `sub` removed, `M  .gitmodules`, `D  sub`, `.git/modules/sub` kept | `CHECKOUT_OVERWRITE_DIRTY { localChanges: ['sub'] }` from `working-tree.ts:97` | fold |
+| CO31 | F1, working `.gitmodules` with an unstaged comment appended (×3) | `rm sub` | 128 · `fatal: please stage your changes to .gitmodules or stash them to proceed`; nothing removed, ` M .gitmodules` | `RM_LOCAL_MODIFICATIONS` (valve first) | fold → `GITMODULES_NOT_STAGED` (ADR-1071) |
+| CO32 | as CO31 | `rm --cached sub` | 128 · same message; index untouched | `D  sub` (no check) | fold |
+| CO33 | as CO31 | `rm -f sub` | 128 · same message | `CHECKOUT_OVERWRITE_DIRTY` | fold |
+| CO34 | `.gitmodules` edited then `git add .gitmodules` | `rm sub` | 0 · `M  .gitmodules`, `D  sub`; `.gitmodules` ends empty, staged blob empty | `RM_LOCAL_MODIFICATIONS` | fold (CO21 arm) |
+| CO35 | `.gitmodules` rewritten with identical bytes (stat drift only) | `rm sub` | 0 · as CO21 | `RM_LOCAL_MODIFICATIONS` | fold (CO21 arm) |
+| CO36 | working `.gitmodules` deleted, not staged | `rm sub` | 0 · ` D .gitmodules` stays unstaged, `D  sub`; no section edit, nothing staged for `.gitmodules` | `RM_LOCAL_MODIFICATIONS` | fold |
+| CO37 | second submodule `sub2` committed | `rm sub` | 0 · `.gitmodules` keeps only `[submodule "sub2"]` (`path`, `url`), `M  .gitmodules`, `D  sub` | `RM_LOCAL_MODIFICATIONS` | fold (CO21 arm) |
+
+CO31–CO37 were pinned by the orchestrator after planning (git 2.55.0, `env -i`, same
+procedure as the CO rows; CO31 ran three times, the others once), for the planner's D3 question.
 
 ### What the pins say git does
 
