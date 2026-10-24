@@ -312,6 +312,14 @@ CO14's exit 0 holds only when nothing is to replay (F2: `side` is cut from `main
 | CO42 | embedded `.git` directory at `sub`, NO `.gitmodules` section (main worktree and a linked one alike) | `rm sub` | 128 · `fatal: could not lookup name for submodule 'sub'`; nothing written | Part 14 migrates to `.git/modules/sub` using the path as the name, then removes | fold (Part 23) → `SUBMODULE_NAME_NOT_FOUND { path: 'sub' }` (ADR-1073) |
 | CO43 | `.gitmodules` section present, embedded `.git` directory at `sub`, `rm sub` run INSIDE a linked worktree `wt` | `rm sub` | 0 · `Migrating git directory of 'sub' from '<wt>/sub/.git' to '<super>/.git/worktrees/wt/modules/sub'`; that module's `config` gets `\tworktree = ../../../../../../wt/sub`; `M  .gitmodules`, `D  sub` | Part 14 migrates to `layout.gitDir/modules/sub` (= the worktree's admin dir, as git) but writes `core.worktree = ../../../sub` (the name-and-path helper assumes the main layout) | fold (Part 23): compute the value from the module directory to the working-tree path; the migration target was a refuted hunch, tsgit's is right |
 
+| CO44 | populated gitlink (gitfile `sub/.git`, and again with an embedded `.git` directory), branch `file-sub` where `sub` is a committed regular file (×3 each) | `checkout file-sub` | 0 · `Switched to branch 'file-sub'`; `sub` is the regular file, index `100644 <blob> 0 sub`, status clean, `.git/modules/sub` survives (`checkout_entry`'s `remove_subtree` on a non-gitlink entry over a directory) | `DIRECTORY_NOT_EMPTY: sub` from `rmIfExists` in `writeStreamedBlob` (the regular-file write arm) | fold (Part 19b) |
+| CO45 | empty untracked `f/`, branch `file-f` adds a regular file `f` (×3) | `checkout file-f` | 0 · `Switched to branch 'file-f'`; `f` is the file, nothing reported | ok after Part 19b (GUARD) | ok |
+| CO46 | populated untracked `f/x`, same checkout (×3) | `checkout file-f` | 1 · `error: Updating the following directories would lose untracked files in them:` / `\tf` / (blank) / `Aborting`; nothing written, `?? f/` kept | refused by the untracked-clash check (`test/integration/checkout-file-directory-swap-interop.test.ts:112` pins it) | ok |
+
+CO44–CO46 were pinned by the Part 19 implementer after CO40's fix exposed the mirror case (same procedure, ×3). The
+rule folded in Part 19b is git's general one: once the dirty and untracked checks have passed, a directory in the way
+of a file write is removed with the subtree; the checks before it (CO46) are what protect content.
+
 CO41–CO43 were pinned by the orchestrator after Part 14 (CO41 ×3). The suspicion that tsgit's
 migration target (`layout.gitDir/modules`) was wrong in a linked worktree was refuted by CO43: git
 migrates into the worktree's own admin directory too; only the `core.worktree` value differs.
