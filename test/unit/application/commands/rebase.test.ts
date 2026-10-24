@@ -757,6 +757,64 @@ describe('rebaseRun', () => {
       });
     });
 
+    describe('When a .gitmodules row ignores the submodule entirely', () => {
+      it('Then the first pick is not refused and the replayed commit carries the staged gitlink', async () => {
+        // Arrange
+        const { ctx, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await writeGitmodules(ctx, 'all');
+
+        // Act
+        const result = await rebaseRun(ctx, { upstream: 'side' });
+
+        // Assert
+        expect(result.kind).not.toBe('conflict');
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        expect((await readCommit(ctx, tip)).parents).toEqual([ontoTip]);
+        expect((await readIndex(ctx)).entries.find((entry) => entry.path === 'sub')?.id).toBe(
+          GITLINK_C,
+        );
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+
+    describe('When submodule.sub.ignore = all in config names the .gitmodules row', () => {
+      it('Then the first pick is not refused and the replayed commit carries the staged gitlink', async () => {
+        // Arrange
+        const { ctx, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await writeGitmodules(ctx);
+        await appendConfig(ctx, '[submodule "sub"]\n\tignore = all\n');
+
+        // Act
+        const result = await rebaseRun(ctx, { upstream: 'side' });
+
+        // Assert
+        expect(result.kind).not.toBe('conflict');
+        expect((await readCommit(ctx, await resolveRef(ctx, 'HEAD' as RefName))).parents).toEqual([
+          ontoTip,
+        ]);
+        expect((await readIndex(ctx)).entries.find((entry) => entry.path === 'sub')?.id).toBe(
+          GITLINK_C,
+        );
+      });
+    });
+
+    describe('When a .gitmodules row sets the submodule ignore mode to none', () => {
+      it('Then the pre-flight refuses the staged gitlink before HEAD moves', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await writeGitmodules(ctx, 'none');
+
+        // Act
+        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: ['sub'], untracked: [] });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(mainTip);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+
     describe('When there is nothing to replay', () => {
       it('Then the rebase succeeds and the staged gitlink stays in the index', async () => {
         // Arrange
@@ -913,6 +971,18 @@ const unstageGitlinkRemoval = async (ctx: Context): Promise<void> => {
  * main: base (sub = A) then m (edits f.txt); side: base then o (adds o.txt, sub = `ontoSub`).
  * HEAD on main with the gitlink staged at C — a moved submodule after `git add sub`.
  */
+/** A working `.gitmodules` naming `sub`, with an `ignore` mode when given. */
+const writeGitmodules = (ctx: Context, ignore?: string): Promise<void> =>
+  ctx.fs.writeUtf8(
+    `${ctx.layout.workDir}/.gitmodules`,
+    `[submodule "sub"]\n\tpath = sub\n\turl = ../up\n${ignore === undefined ? '' : `\tignore = ${ignore}\n`}`,
+  );
+
+const appendConfig = async (ctx: Context, text: string): Promise<void> => {
+  const path = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}${text}`);
+};
+
 const seedStagedGitlink = async ({
   ontoSub,
   replays = true,

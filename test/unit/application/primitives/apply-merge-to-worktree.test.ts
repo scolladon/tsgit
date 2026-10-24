@@ -10,7 +10,10 @@ import {
   writeMarkedConflict,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
-import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import {
+  flattenEscapedTree,
+  flattenTree,
+} from '../../../../src/application/primitives/flatten-tree.js';
 import { survivingDirectoriesOf } from '../../../../src/application/primitives/internal/prune-emptied-directories.js';
 import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
@@ -198,6 +201,84 @@ describe('applyMergeToWorktree', () => {
           source: `${ctx.layout.gitDir}/config`,
           line: 2,
         });
+      });
+    });
+  });
+
+  describe('Given a staged change on a path the merge leaves as ours has it', () => {
+    describe('When the merge is applied', () => {
+      it('Then the index keeps the staged entry and the tree to commit carries it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const v1 = await writeBlob(ctx, 'one\n');
+        const v2 = await writeBlob(ctx, 'two\n');
+        const staged = await writeBlob(ctx, 'staged\n');
+        const base = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1),
+          treeEntry(FILE_MODE.REGULAR, 's' as FilePath, v1),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v2),
+          treeEntry(FILE_MODE.REGULAR, 's' as FilePath, v1),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/s`, new TextEncoder().encode('staged\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', v1), indexEntry('s', staged)]),
+        });
+
+        // Assert
+        if (result.kind !== 'clean') throw new Error(result.kind);
+        expect(result.result.newIndexEntries.find((entry) => entry.path === 's')?.id).toBe(staged);
+        expect(
+          (await flattenEscapedTree(ctx, result.indexTree)).entries.get('s' as FilePath)?.id,
+        ).toBe(staged);
+        expect(
+          (await flattenEscapedTree(ctx, result.mergedTree)).entries.get('s' as FilePath)?.id,
+        ).toBe(v1);
+        expect(await readWork(ctx, 's')).toBe('staged\n');
+      });
+    });
+  });
+
+  describe('Given a staged removal of a path the merge leaves as ours has it', () => {
+    describe('When the merge is applied', () => {
+      it('Then the index keeps the path removed and the tree to commit lacks it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const v1 = await writeBlob(ctx, 'one\n');
+        const v2 = await writeBlob(ctx, 'two\n');
+        const base = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1),
+          treeEntry(FILE_MODE.REGULAR, 's' as FilePath, v1),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v2),
+          treeEntry(FILE_MODE.REGULAR, 's' as FilePath, v1),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', v1)]),
+        });
+
+        // Assert
+        if (result.kind !== 'clean') throw new Error(result.kind);
+        expect(result.result.newIndexEntries.map((entry) => entry.path)).toEqual(['a']);
+        expect((await flattenEscapedTree(ctx, result.indexTree)).entries.has('s' as FilePath)).toBe(
+          false,
+        );
       });
     });
   });

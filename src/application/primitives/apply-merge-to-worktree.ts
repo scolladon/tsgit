@@ -20,7 +20,7 @@ import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries, recordedPaths } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
-import { viewOfEscaped } from '../../domain/git-index/index-path-key.js';
+import { escapedPathOf, viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { validateTreePath } from '../../domain/git-index/path-validator.js';
 import {
@@ -106,7 +106,10 @@ export interface ApplyMergeInput {
 export type ApplyMergeResult =
   | {
       readonly kind: 'clean';
+      /** The merge's own result, what git records as `AUTO_MERGE`. */
       readonly mergedTree: ObjectId;
+      /** The tree the index holds after the merge — the one git commits — carrying whatever the index already staged on paths the merge left alone. */
+      readonly indexTree: ObjectId;
       readonly result: MaterializeTreeResult;
     }
   | {
@@ -532,16 +535,39 @@ export const applyMergeToWorktree = async (
 
   if (merged.cleanMerge) {
     const mergedTree = await synthesiseMergedTree(ctx, merged.outcomes);
-    const result = await materializeTree(ctx, {
+    const materialized = await materializeTree(ctx, {
       targetTree: mergedTree,
       currentIndex: input.currentIndex,
+      // git's two-way rule: a path ours and the result agree on keeps its index entry and work file.
+      headTree: input.oursTree,
       // Stryker disable next-line BooleanLiteral: equivalent — `findWouldOverwrite` has already returned every dirty path as `would-overwrite` above, so by here no changed path is dirty and `force: false` would behave identically (nothing to refuse).
       force: true,
     });
     await writeAutoMerge(ctx, mergedTree);
-    return { kind: 'clean', mergedTree, result };
+    const indexTree = keepsStagedChanges(ours, changed, materialized.newIndexEntries)
+      ? await synthesizeTreeFromIndex(ctx, materialized.newIndexEntries)
+      : mergedTree;
+    return { kind: 'clean', mergedTree, indexTree, result: materialized };
   }
   return materialiseConflict(ctx, merged, changed, input.currentIndex);
+};
+
+/**
+ * Whether the index git leaves after the merge differs from the merge's own tree: a path the
+ * merge left as ours has it, where the index staged another version or a removal.
+ */
+const keepsStagedChanges = (
+  ours: EscapedFlatTree,
+  changed: ReadonlySet<FilePath>,
+  newIndexEntries: ReadonlyArray<IndexEntry>,
+): boolean => {
+  const after = new Map(newIndexEntries.map((entry) => [escapedPathOf(entry), entry]));
+  for (const [path, entry] of ours.entries) {
+    if (changed.has(path)) continue;
+    const kept = after.get(path);
+    if (kept === undefined || kept.id !== entry.id || kept.mode !== entry.mode) return true;
+  }
+  return false;
 };
 
 export type MergeTreesResult =

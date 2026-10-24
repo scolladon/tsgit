@@ -68,7 +68,8 @@ import { configuredAutostash } from './internal/autostash-config.js';
 import { removeBranchState, removeCommittedState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import {
-  assertCleanWorkTree,
+  cleanWorkTreePreflight,
+  type SubmoduleIgnoreModes,
   stagedChangePaths,
   stagedGitlinkChanges,
   unstagedChangePaths,
@@ -277,9 +278,10 @@ const gitlinksToCarry = async (
   ctx: Context,
   headCommit: ObjectId,
   onto: ObjectId,
+  modes: SubmoduleIgnoreModes,
 ): Promise<ReadonlyArray<CarriedGitlink>> => {
   const headTree = await treeOf(ctx, headCommit);
-  const paths = await stagedGitlinkChanges(ctx, headTree);
+  const paths = await stagedGitlinkChanges(ctx, headTree, modes);
   if (paths.length === 0) return [];
   await assertOntoAgrees(ctx, { head: headTree, onto: await treeOf(ctx, onto) }, paths);
   const { entries } = await readIndex(ctx);
@@ -435,6 +437,8 @@ interface ReplayContext extends FinishSides {
   readonly todo: ReadonlyArray<PlannedLine>;
   /** Set on the initial (fresh-run) stop only — git writes the backup once. */
   readonly backupHeader?: RebaseBackupHeader;
+  /** The submodule ignore modes the pre-flight read; a resumed run reads them afresh, as git's new process does. */
+  readonly submoduleIgnores?: SubmoduleIgnoreModes;
 }
 
 /** Applied + rewritten state carried into a resumed replay (`continue`). */
@@ -586,7 +590,7 @@ const refuseDirtyIndexBeforePick = async (
   rc: ReplayContext,
   at: { readonly index: number; readonly cur: ObjectId },
 ): Promise<void> => {
-  const staged = await stagedChangePaths(ctx, await treeOf(ctx, at.cur));
+  const staged = await stagedChangePaths(ctx, await treeOf(ctx, at.cur), rc.submoduleIgnores);
   if (staged.length === 0) return;
   const pick = rc.todo[at.index] as PlannedPick;
   await writeRescheduledPick(ctx, {
@@ -710,15 +714,26 @@ export const rebaseRun = async (
     throw invalidOption('rebaseMerges', 'interactive instructions cannot carry merges');
   }
   const stash = await autostashIfWanted(ctx, input.autostash);
-  await assertCleanWorkTree(ctx, await treeOf(ctx, sides.headCommit));
+  const submoduleIgnores = await cleanWorkTreePreflight(ctx, await treeOf(ctx, sides.headCommit));
   if (input.interactive !== undefined) {
     if (stash !== undefined) await writeAutostash(ctx, stash);
     const { branch, headCommit, upstream, onto, ontoName } = sides;
     const interactiveSides = { branch, headCommit, upstream, onto, ontoName };
     return startInteractive(ctx, sides.upstreamName, input.interactive, interactiveSides);
   }
-  return replayUnlessUpToDate(ctx, input.rebaseMerges, sides, { stash, reflogAction });
+  return replayUnlessUpToDate(ctx, input.rebaseMerges, sides, {
+    stash,
+    reflogAction,
+    submoduleIgnores,
+  });
 };
+
+interface RunOptions {
+  readonly stash: ObjectId | undefined;
+  readonly reflogAction: string;
+  /** The submodule ignore modes the pre-flight read, kept for the run as git's process keeps them. */
+  readonly submoduleIgnores: SubmoduleIgnoreModes;
+}
 
 /** git fires pre-rebase only when the rebase will do work; an up-to-date rebase
  *  (nothing to replay or fast-forward) returns before the hook, matching git. */
@@ -726,14 +741,14 @@ const replayUnlessUpToDate = async (
   ctx: Context,
   mode: RebaseRunInput['rebaseMerges'],
   sides: RunSides,
-  run: { readonly stash: ObjectId | undefined; readonly reflogAction: string },
+  run: RunOptions,
 ): Promise<RebaseResult> => {
   const { onto, upstream, branchBase } = sides;
   if (await canFastForward(ctx, { onto, upstream, head: sides.headCommit, branchBase })) {
     return finishUpToDate(ctx, run.stash);
   }
   if (run.stash !== undefined) await writeAutostash(ctx, run.stash);
-  return startReplay(ctx, mode, sides, run.reflogAction);
+  return startReplay(ctx, mode, sides, run);
 };
 
 /** Both sides of a non-interactive run, named and resolved. */
@@ -770,13 +785,13 @@ const startReplay = async (
   ctx: Context,
   mode: RebaseRunInput['rebaseMerges'],
   sides: RunSides,
-  reflogAction: string,
+  { reflogAction, submoduleIgnores }: Pick<RunOptions, 'reflogAction' | 'submoduleIgnores'>,
 ): Promise<RebaseResult> => {
   const { headCommit, upstream, onto } = sides;
   await assertEverySourceLoadable(ctx);
   await firePreRebase(ctx, sides.upstreamName);
   const todo = await planTodo(ctx, mode, { upstream, head: headCommit });
-  const carried = await gitlinksToCarry(ctx, headCommit, onto);
+  const carried = await gitlinksToCarry(ctx, headCommit, onto, submoduleIgnores);
   await writeOrigHead(ctx, headCommit);
   await detachHead(ctx, headCommit, onto, sides.ontoName, reflogAction, carried);
   const rc: ReplayContext = {
@@ -787,6 +802,7 @@ const startReplay = async (
     doneBefore: [],
     todo,
     backupHeader: backupHeaderOf(upstream, headCommit, onto),
+    submoduleIgnores,
   };
   return replayFrom(ctx, rc, onto, { applied: [], rewritten: [] });
 };

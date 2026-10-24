@@ -313,6 +313,9 @@ const refusedStep = (
   },
 });
 
+/** git's `try_merge_strategy` refuses a dirty index with exit 2. */
+const MERGE_REFUSED_EXIT_STATUS = 2;
+
 const refusedRebase = (upstream: string, code: string): Step =>
   refusedStep(['rebase', upstream], (ctx) => rebaseRun(ctx, { upstream }), code);
 
@@ -431,9 +434,70 @@ const ROWS: ReadonlyArray<Row> = [
     setup: stagedMove,
     steps: [rebaseOnto('side')],
   },
+  {
+    title: 'a staged submodule move, fast-forward merge adding a file',
+    setup: stagedMove,
+    steps: [fastForwardTo('side')],
+  },
 ];
 
+/** `.gitmodules` committed with `ignore = <mode>` for the submodule. */
+const gitmodulesIgnoring =
+  (mode: string): Setup =>
+  async (repo) => {
+    gitIn(repo, 'config', '-f', '.gitmodules', 'submodule.sub.ignore', mode);
+    gitIn(repo, 'add', '.gitmodules');
+    commitIn(repo, `ignore ${mode}`);
+  };
+/** The submodule moved and the move staged past the ignore mode, as `git add -f` does. */
+const stagedMoveForced: Setup = async (repo) => {
+  await moved(repo);
+  gitIn(repo, 'add', '-f', SUBMODULE);
+};
+const stagedMoveIgnoringAll: Setup = async (repo) => {
+  await gitmodulesIgnoring('all')(repo);
+  await stagedMoveForced(repo);
+};
+const stagedMoveIgnoringNone: Setup = async (repo) => {
+  await gitmodulesIgnoring('none')(repo);
+  await stagedMoveForced(repo);
+};
+const stagedMoveOwnIgnoreAll: Setup = async (repo) => {
+  gitIn(repo, 'config', 'submodule.sub.ignore', 'all');
+  await stagedMoveForced(repo);
+};
+
 const F3_ROWS: ReadonlyArray<Row> = [
+  {
+    title:
+      'a staged submodule move under a .gitmodules ignoring it entirely, rebase onto a branch adding a file',
+    setup: stagedMoveIgnoringAll,
+    steps: [rebaseOnto('side')],
+  },
+  {
+    title:
+      'a staged submodule move under submodule.sub.ignore = all in config, rebase onto a branch adding a file',
+    setup: stagedMoveOwnIgnoreAll,
+    steps: [rebaseOnto('side')],
+  },
+  {
+    title:
+      'a staged submodule move under a .gitmodules ignore = none, rebase onto a branch adding a file',
+    setup: stagedMoveIgnoringNone,
+    steps: [refusedRebase('side', 'WORKING_TREE_DIRTY')],
+  },
+  {
+    title:
+      'a staged submodule move under a .gitmodules ignoring it entirely, cherry-pick of a commit adding a file',
+    setup: stagedMoveIgnoringAll,
+    steps: [cherryPick('side')],
+  },
+  {
+    title:
+      'a staged submodule move under a .gitmodules ignoring it entirely, merge of a branch adding a file',
+    setup: stagedMoveIgnoringAll,
+    steps: [mergeCommit('side')],
+  },
   {
     title: 'an unmoved submodule, merge of a branch moving it',
     setup: nothing,
@@ -1303,6 +1367,40 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
     matchesGit('f2', ROWS, () => fixture);
     matchesGit('f3', F3_ROWS, () => fixtureWithMainCommit);
+
+    describe('Given a staged submodule move, merge of a branch adding a file', () => {
+      describe('When both tools merge', () => {
+        it(
+          'Then both refuse the dirty index with HEAD unmoved and no merge state written',
+          async () => {
+            // Arrange
+            const gitTwin = await twin('merge-staged-git', fixtureWithMainCommit);
+            const tsgitTwin = await twin('merge-staged-tsgit', fixtureWithMainCommit);
+            await stagedMove(gitTwin);
+            await stagedMove(tsgitTwin);
+            const headBefore = gitIn(gitTwin, 'rev-parse', 'HEAD');
+
+            // Act
+            const gitExit = exitStatusOf(() => gitIn(gitTwin, 'merge', '-q', '--no-edit', 'side'));
+            const code = await codeOfRefusal(() =>
+              mergeRun(createNodeContext({ workDir: tsgitTwin }), { rev: 'side' }),
+            );
+
+            // Assert — git's `try_merge_strategy` refuses with exit 2; its `restore_state` then
+            // resets the index through a stash round trip that does not carry a staged gitlink,
+            // so git alone ends with the move unstaged (a pinned residual); the refusal, HEAD and
+            // the absent merge state match.
+            expect(gitExit).toBe(MERGE_REFUSED_EXIT_STATUS);
+            expect(code).toBe('WORKING_TREE_DIRTY');
+            for (const repo of [gitTwin, tsgitTwin]) {
+              expect(gitIn(repo, 'rev-parse', 'HEAD')).toBe(headBefore);
+              expect(existsSync(path.join(repo, '.git', 'MERGE_HEAD'))).toBe(false);
+            }
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
     matchesGit('stash', STASH_ROWS, () => fixture);
   },
 );

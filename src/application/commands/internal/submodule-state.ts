@@ -134,14 +134,25 @@ export const resolveSubmoduleIgnore = async (
   path: FilePath,
   rows: ReadonlyArray<GitmodulesRow>,
   shared: SubmoduleIgnore | undefined,
-): Promise<SubmoduleIgnore> => {
+): Promise<SubmoduleIgnore> =>
+  (await configuredSubmoduleIgnore(ctx, path, rows)) ?? shared ?? 'none';
+
+/**
+ * The ignore mode a submodule's own configuration declares — git's
+ * submodule-config diff flags: the `.git/config` key under the `.gitmodules`
+ * name, else the row's value; nothing without a row, and nothing from `diff.ignoreSubmodules`.
+ */
+export const configuredSubmoduleIgnore = async (
+  ctx: Context,
+  path: FilePath,
+  rows: ReadonlyArray<GitmodulesRow>,
+): Promise<SubmoduleIgnore | undefined> => {
   const row = rows.find((candidate) => candidate.path === path);
-  if (row === undefined) return shared ?? 'none';
+  if (row === undefined) return undefined;
   const own = configuredOrUndefined(
     await findLastSubsectionEntry(ctx, 'submodule', row.name, 'ignore'),
   );
-  const declared = row.ignore === undefined ? undefined : ignoreModeOf(row.ignore);
-  return own ?? declared ?? shared ?? 'none';
+  return own ?? (row.ignore === undefined ? undefined : ignoreModeOf(row.ignore));
 };
 
 /** Where `.gitmodules` is read from: the working tree, else the blob the index holds. */

@@ -7,11 +7,7 @@ import {
   workingTreeDirty,
 } from '../../domain/commands/error.js';
 import type { EscapedFlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
-import {
-  comparePaths,
-  conflictsToIndexEntries,
-  sortedRecordedPaths,
-} from '../../domain/diff/index.js';
+import { conflictsToIndexEntries, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import {
@@ -138,6 +134,7 @@ import { branchMarkRef } from './internal/branch-mark.js';
 import { branchMergeOptions } from './internal/branch-merge-options.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg, conflictsHint } from './internal/cherry-pick-state.js';
+import { indexDifferences } from './internal/clean-work-tree.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { configuredMergeFastForward } from './internal/fast-forward-config.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -691,8 +688,12 @@ const twoHeadMerge = async (
     return fastForwardOrSquash(ctx, { opts, internal, branch }, { ourId, theirId });
   }
   if (opts.fastForward === 'only') throw nonFastForward(branch ?? HEAD, ourId, theirId);
-  const commit = { opts, internal, branch, ourId, parents: [ourId, theirId], named };
-  return underAutostash(ctx, opts, () => twoHeadStrategy(ctx, commit, remote, bases));
+  const parents = [ourId, theirId];
+  return underAutostash(ctx, opts, async () => {
+    const carried = await refuseDirtyIndex(ctx, ourId);
+    const commit = { opts, internal, branch, ourId, parents, named, carried };
+    return twoHeadStrategy(ctx, commit, remote, bases);
+  });
 };
 
 /** HEAD is an ancestor of the one remote head: fast-forward to it, or squash it in. */
@@ -706,6 +707,19 @@ const fastForwardOrSquash = (
       ? squashInto(ctx, await getTree(ctx, heads.theirId), heads.ourId, [heads.theirId])
       : fastForward(ctx, opts, internal, branch, heads),
   );
+
+/**
+ * git's `index_has_changes` before any strategy runs: a staged change refuses the merge with
+ * nothing written; the gitlink differences a configured `all` hides are answered to be carried.
+ */
+const refuseDirtyIndex = async (
+  ctx: Context,
+  ourId: ObjectId,
+): Promise<ReadonlyArray<FilePath>> => {
+  const { refused, carried } = await indexDifferences(ctx, await getTree(ctx, ourId));
+  if (refused.length > 0) throw workingTreeDirty({ localChanges: refused, untracked: [] });
+  return carried;
+};
 
 /** git's trivial in-index merge where every strategy allows it, then its strategy loop for one head. */
 const twoHeadStrategy = async (
@@ -875,10 +889,11 @@ const tryTrivialMerge = async (
 ): Promise<MergeEnding | undefined> => {
   const { ourId } = commit;
   if (bases.length !== 1) return undefined;
+  // git's read_tree_trivial fails on any index difference, hidden gitlinks included; the strategy then runs.
+  if (commit.carried.length > 0) return undefined;
   const [base, ours, theirs] = await Promise.all(
     [bases[0]!, ourId, theirId].map(async (id) => flattenEscapedTree(ctx, await getTree(ctx, id))),
   );
-  await assertIndexMatches(ctx, ours!.entries);
   const merged = trivialMerge(base!.entries, ours!.entries, theirs!.entries);
   if (merged === undefined) return undefined;
   return commitCleanMerge(ctx, commit, await writeFlatTree(ctx, merged), IN_INDEX_MERGE);
@@ -887,7 +902,6 @@ const tryTrivialMerge = async (
 /** git's `ours` strategy: HEAD's tree is the result, once the index matches it. */
 const oursAttempt = async (ctx: Context, commit: MergeCommitInput): Promise<StrategyAttempt> => {
   const tree = await getTree(ctx, commit.ourId);
-  await assertIndexMatches(ctx, (await flattenEscapedTree(ctx, tree)).entries);
   return { kind: 'clean', tree, note: mergeMadeBy('ours') };
 };
 
@@ -928,8 +942,11 @@ const manyHeadMerge = async (
   if (opts.fastForward === 'only') throw nonFastForward(branch ?? HEAD, ourId, remotes[0]!.id);
   const keepsHead = reduced.includes(ourId) || opts.fastForward === 'never';
   const parents = [...(keepsHead ? [ourId] : []), ...remotes.map((remote) => remote.id)];
-  const commit = { opts, internal, branch, ourId, parents, named };
-  return underAutostash(ctx, opts, () => manyHeadStrategy(ctx, commit, remotes));
+  return underAutostash(ctx, opts, async () => {
+    const carried = await refuseDirtyIndex(ctx, ourId);
+    const commit = { opts, internal, branch, ourId, parents, named, carried };
+    return manyHeadStrategy(ctx, commit, remotes);
+  });
 };
 
 /** git's `reduce_heads` over HEAD and every named head, and the remotes that survive it. */
@@ -982,14 +999,18 @@ const fastForward = async (
   branch: RefName | undefined,
   { ourId, theirId }: { readonly ourId: ObjectId; readonly theirId: ObjectId },
 ): Promise<MergeEnding> =>
-  materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
-    // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
-    await updateRef(ctx, HEAD, theirId, {
-      expected: ourId,
-      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
-    });
-    return { kind: 'fast-forward', id: theirId, branch };
-  });
+  materialiseAndApply(
+    ctx,
+    { target: await getTree(ctx, theirId), head: await getTree(ctx, ourId) },
+    async () => {
+      // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
+      await updateRef(ctx, HEAD, theirId, {
+        expected: ourId,
+        reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
+      });
+      return { kind: 'fast-forward', id: theirId, branch };
+    },
+  );
 
 const MERGE_WRITE_FILES_OP = 'merge:write-files';
 
@@ -1024,10 +1045,12 @@ export const asMergeDirtyError = (err: unknown): unknown =>
 const materialiseNonConflictTree = async (
   ctx: Context,
   targetTree: ObjectId,
+  headTree: ObjectId,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const currentIndex = await readIndex(ctx);
   try {
-    const result = await materializeTree(ctx, { targetTree, currentIndex, force: false });
+    // git's two-way rule: a path HEAD and the target agree on keeps its index entry and work file.
+    const result = await materializeTree(ctx, { targetTree, currentIndex, headTree, force: false });
     return result.newIndexEntries;
   } catch (err) {
     throw asMergeDirtyError(err);
@@ -1042,12 +1065,12 @@ const materialiseNonConflictTree = async (
  */
 const materialiseAndApply = async <T extends MergeEnding>(
   ctx: Context,
-  targetTree: ObjectId,
+  trees: { readonly target: ObjectId; readonly head: ObjectId },
   apply: () => Promise<T>,
 ): Promise<T> => {
   const lock = await acquireIndexLock(ctx);
   try {
-    const entries = await materialiseNonConflictTree(ctx, targetTree);
+    const entries = await materialiseNonConflictTree(ctx, trees.target, trees.head);
     await lock.commit(entries, 'replace');
     return await apply();
   } finally {
@@ -1065,16 +1088,18 @@ interface MergeCommitInput {
   readonly parents: ReadonlyArray<ObjectId>;
   /** Every head as named, in order: a commit's first name is the one git's `merge_remote_util` keeps. */
   readonly named: ReadonlyArray<MergeRemote>;
+  /** Gitlink differences the index holds that a configured `all` hides from git's pre-check; they ride into the result. */
+  readonly carried: ReadonlyArray<FilePath>;
 }
 
 /** git's `--squash` `finish`: stage `tree` and write `SQUASH_MSG`, leaving HEAD where it is. */
-const squashInto = (
+const squashInto = async (
   ctx: Context,
   tree: ObjectId,
   ourId: ObjectId,
   heads: ReadonlyArray<ObjectId>,
 ): Promise<SquashedResult> =>
-  materialiseAndApply(ctx, tree, async () => {
+  materialiseAndApply(ctx, { target: tree, head: await getTree(ctx, ourId) }, async () => {
     await writeSquashMsg(ctx, await buildSquashMessage(ctx, ourId, heads));
     return { kind: 'squashed', origHead: ourId };
   });
@@ -1103,7 +1128,7 @@ const writeStopState = async (
 };
 
 /** git's `--no-commit`: stage `tree` and keep `write_merge_state`'s files, leaving HEAD where it is. */
-const stopBeforeCommit = (
+const stopBeforeCommit = async (
   ctx: Context,
   opts: SettledMerge,
   tree: ObjectId,
@@ -1111,7 +1136,7 @@ const stopBeforeCommit = (
   heads: ReadonlyArray<ObjectId>,
   message: string = `${opts.message}\n`,
 ): Promise<MergeEnding> =>
-  materialiseAndApply(ctx, tree, async () => {
+  materialiseAndApply(ctx, { target: tree, head: await getTree(ctx, ourId) }, async () => {
     await writeMergeHeads(ctx, heads);
     await writeMergeMode(ctx, opts.fastForward);
     await writeMergeMsg(ctx, message);
@@ -1164,16 +1189,52 @@ const commitCleanMerge = async (
   const heads = parents.filter((id) => id !== ourId);
   if (opts.squash === true) return headless(squashInto(ctx, mergedTree, ourId, heads));
   if (opts.commit === false) return stopBeforeCommit(ctx, opts, mergedTree, ourId, heads);
-  const commitData = await mergeCommitData(ctx, input, mergedTree);
+  // git commits the index it leaves after the merge: the carried gitlinks ride into the commit.
+  const commitData = await mergeCommitData(
+    ctx,
+    input,
+    await treeWithCarried(ctx, input, mergedTree),
+  );
   // git dies on a failed signing with the merge materialised and its state kept, MERGE_MSG
   // as `prepare_to_commit` wrote it: the message without its final newline.
   const gpgSignature = await mergeSignature(ctx, opts, commitData).catch(async (error: unknown) => {
     await stopBeforeCommit(ctx, opts, mergedTree, ourId, heads, commitData.message.slice(0, -1));
     throw error;
   });
-  return materialiseAndApply(ctx, mergedTree, () =>
+  return materialiseAndApply(ctx, { target: mergedTree, head: await getTree(ctx, ourId) }, () =>
     writeMergeCommit(ctx, input, { commitData, gpgSignature }, note),
   );
+};
+
+/**
+ * The merged tree with the carried gitlinks as the index holds them — what git's `write_tree`
+ * records after its two-way switch kept those entries; the merged tree itself when none is carried.
+ */
+const treeWithCarried = async (
+  ctx: Context,
+  { carried }: Pick<MergeCommitInput, 'carried'>,
+  mergedTree: ObjectId,
+): Promise<ObjectId> => {
+  if (carried.length === 0) return mergedTree;
+  const paths = new Set(carried);
+  const staged = new Map(
+    (await readIndex(ctx)).entries
+      .filter((entry) => entry.flags.stage === 0 && paths.has(entry.path))
+      .map((entry) => [escapedPathOf(entry), entry]),
+  );
+  const projected = new Map((await flattenEscapedTree(ctx, mergedTree)).entries);
+  for (const path of carried) {
+    const key = path as FilePath;
+    const entry = staged.get(key);
+    if (entry === undefined) projected.delete(key);
+    else
+      projected.set(key, {
+        ...projected.get(key),
+        id: entry.id,
+        mode: entry.mode,
+      } as FlatTreeEntry);
+  }
+  return writeFlatTree(ctx, projected);
 };
 
 /** The merge commit's data: its author, committer, cleaned message and mergetag headers. */
@@ -1227,7 +1288,6 @@ const octopusAttempt = async (
   strategy: string,
 ): Promise<StrategyAttempt> => {
   const ours = await flattenEscapedTree(ctx, await getTree(ctx, commit.ourId));
-  await assertIndexMatches(ctx, ours.entries);
   const result = await octopusMerge(ctx, commit.ourId, remotes);
   if (result.kind === 'clean')
     return { kind: 'clean', tree: result.tree, note: mergeMadeBy(strategy) };
@@ -1237,25 +1297,6 @@ const octopusAttempt = async (
     persist: () => persistOctopusConflict(ctx, commit, result, ours.entries),
   };
 };
-
-const assertIndexMatches = async (ctx: Context, ours: FlatEntries): Promise<void> => {
-  const { entries } = await readIndex(ctx);
-  const indexed = new Set(entries.map(escapedPathOf));
-  const staged = new Set([
-    ...entries
-      .filter((entry) => !sameEntry(ours.get(escapedPathOf(entry)), entry))
-      .map(escapedPathOf),
-    ...[...ours.keys()].filter((path) => !indexed.has(path)),
-  ]);
-  if (staged.size === 0) return;
-  throw workingTreeDirty({
-    localChanges: [...staged].sort(comparePaths).map(viewOfEscaped),
-    untracked: [],
-  });
-};
-
-const sameEntry = (committed: FlatTreeEntry | undefined, entry: FlatTreeEntry): boolean =>
-  committed?.id === entry.id && committed.mode === entry.mode;
 
 /** The working-tree moves from `ours` to `target`: each path added or changed, then each removed. */
 const outcomesBetween = (

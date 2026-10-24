@@ -155,7 +155,8 @@ const mergeIntoLockedIndex = async (
     return { kind: 'conflict', conflicts: res.conflicts };
   }
   await lock.commit(res.result.newIndexEntries, 'replace');
-  return { kind: 'clean', mergedTree: res.mergedTree, oursTree };
+  // git commits the index, which keeps what it staged on paths the merge left alone.
+  return { kind: 'clean', mergedTree: res.indexTree, oursTree };
 };
 
 export interface MergeStep {
