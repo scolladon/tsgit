@@ -79,8 +79,10 @@ describe('findWouldOverwrite', () => {
         }
         const lstat = vi.spyOn(ctx.fs, 'lstat');
 
+        const sut = findWouldOverwrite;
+
         // Act
-        const result = await findWouldOverwrite(ctx, set('d/a', 'd/b', 'd/c'), indexOf(entries));
+        const result = await sut(ctx, set('d/a', 'd/b', 'd/c'), indexOf(entries));
 
         // Assert
         expect(result).toEqual({ localChanges: [], untracked: [] });

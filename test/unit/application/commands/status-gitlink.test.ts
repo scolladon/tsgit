@@ -895,11 +895,14 @@ describe('status submodule field', () => {
     });
   });
 
-  describe('Given an assume-valid gitlink and submodule.sub.ignore = bogus in config', () => {
+  describe('Given an assume-valid gitlink named in .gitmodules and submodule.sub.ignore = bogus in config', () => {
     describe('When status runs', () => {
       it('Then nothing refuses and no row is reported', async () => {
         // Arrange
-        const ctx = await movedWith({ config: '[submodule "sub"]\n\tignore = bogus\n' });
+        const ctx = await movedWith({
+          config: '[submodule "sub"]\n\tignore = bogus\n',
+          gitmodules: GITMODULES_PLAIN,
+        });
         await markAssumeValid(ctx, 'sub');
         const sut = status;
 
@@ -912,11 +915,14 @@ describe('status submodule field', () => {
     });
   });
 
-  describe('Given a skip-worktree gitlink and submodule.sub.ignore = bogus in config', () => {
+  describe('Given a skip-worktree gitlink named in .gitmodules and submodule.sub.ignore = bogus in config', () => {
     describe('When status runs', () => {
       it('Then nothing refuses and no row is reported', async () => {
         // Arrange
-        const ctx = await movedWith({ config: '[submodule "sub"]\n\tignore = bogus\n' });
+        const ctx = await movedWith({
+          config: '[submodule "sub"]\n\tignore = bogus\n',
+          gitmodules: GITMODULES_PLAIN,
+        });
         await markSkipWorktree(ctx, 'sub');
         const sut = status;
 

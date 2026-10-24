@@ -1216,16 +1216,40 @@ const treeWithCarried = async (
   mergedTree: ObjectId,
 ): Promise<ObjectId> => {
   if (carried.length === 0) return mergedTree;
-  const paths = new Set(carried);
-  const staged = new Map(
-    (await readIndex(ctx)).entries
-      .filter((entry) => entry.flags.stage === 0 && paths.has(entry.path))
-      .map((entry) => [escapedPathOf(entry), entry]),
-  );
+  const staged = stagedEntriesAt(await readIndex(ctx), carried);
   const projected = new Map((await flattenEscapedTree(ctx, mergedTree)).entries);
+  projectCarried(projected, staged, carried);
+  return writeFlatTree(ctx, projected);
+};
+
+/** The stage-0 entries at the carried paths, by the path as the pre-flight named it. */
+const stagedEntriesAt = (
+  index: GitIndex,
+  carried: ReadonlyArray<FilePath>,
+): ReadonlyMap<FilePath, IndexEntry> => {
+  const paths = new Set(carried);
+  return new Map(
+    index.entries
+      .filter((entry) => entry.flags.stage === 0 && paths.has(entry.path))
+      .map((entry) => [entry.path, entry]),
+  );
+};
+
+/**
+ * Each carried path takes the index's version in the projection, or leaves it when the index
+ * dropped it. The pre-flight names paths by their view; the tree is keyed by escaped paths, so
+ * a name that is not valid UTF-8 is mapped back before it is looked up.
+ */
+const projectCarried = (
+  projected: Map<FilePath, FlatTreeEntry>,
+  staged: ReadonlyMap<FilePath, IndexEntry>,
+  carried: ReadonlyArray<FilePath>,
+): void => {
+  const escapedOfView = new Map([...projected.keys()].map((key) => [viewOfEscaped(key), key]));
   for (const path of carried) {
-    const key = path as FilePath;
-    const entry = staged.get(key);
+    const entry = staged.get(path);
+    const key = entry === undefined ? escapedOfView.get(path) : escapedPathOf(entry);
+    if (key === undefined) continue;
     if (entry === undefined) projected.delete(key);
     else
       projected.set(key, {
@@ -1234,7 +1258,6 @@ const treeWithCarried = async (
         mode: entry.mode,
       } as FlatTreeEntry);
   }
-  return writeFlatTree(ctx, projected);
 };
 
 /** The merge commit's data: its author, committer, cleaned message and mergetag headers. */

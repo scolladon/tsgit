@@ -616,8 +616,9 @@ describe('rebaseRun', () => {
         const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_B });
         const indexBefore = (await readIndex(ctx)).entries;
 
+        const sut = rebaseRun;
         // Act
-        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        const data = await dataOf(() => sut(ctx, { upstream: 'side' }));
 
         // Assert
         expect(data).toEqual({
@@ -669,8 +670,9 @@ describe('rebaseRun', () => {
         await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
         await stageGitlink(ctx, GITLINK_C);
 
+        const sut = rebaseRun;
         // Act
-        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        const data = await dataOf(() => sut(ctx, { upstream: 'side' }));
 
         // Assert
         expect(data).toEqual({
@@ -687,8 +689,9 @@ describe('rebaseRun', () => {
         // Arrange
         const { ctx } = await seedStagedGitlink({ ontoSub: GITLINK_A });
 
+        const sut = rebaseRun;
         // Act
-        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        const data = await dataOf(() => sut(ctx, { upstream: 'side' }));
 
         // Assert
         expect(data).toEqual({
@@ -702,8 +705,9 @@ describe('rebaseRun', () => {
         // Arrange
         const { ctx, mainTip, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
 
+        const sut = rebaseRun;
         // Act
-        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        await dataOf(() => sut(ctx, { upstream: 'side' }));
 
         // Assert
         expect(await headIsSymbolic(ctx)).toBe(false);
@@ -718,8 +722,9 @@ describe('rebaseRun', () => {
         // Arrange
         const { ctx, mainTip, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
 
+        const sut = rebaseRun;
         // Act
-        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        await dataOf(() => sut(ctx, { upstream: 'side' }));
 
         // Assert
         const names = await ctx.fs.readdir(`${ctx.layout.gitDir}/rebase-merge`);
@@ -814,8 +819,9 @@ describe('rebaseRun', () => {
         const { ctx, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
         await writeGitmodules(ctx, 'all');
 
+        const sut = rebaseRun;
         // Act
-        const result = await rebaseRun(ctx, { upstream: 'side' });
+        const result = await sut(ctx, { upstream: 'side' });
 
         // Assert
         expect(result.kind).not.toBe('conflict');
@@ -835,8 +841,9 @@ describe('rebaseRun', () => {
         await writeGitmodules(ctx);
         await appendConfig(ctx, '[submodule "sub"]\n\tignore = all\n');
 
+        const sut = rebaseRun;
         // Act
-        const result = await rebaseRun(ctx, { upstream: 'side' });
+        const result = await sut(ctx, { upstream: 'side' });
 
         // Assert
         expect(result.kind).not.toBe('conflict');
@@ -849,14 +856,166 @@ describe('rebaseRun', () => {
       });
     });
 
+    describe('When the gitlink was removed from the index under a .gitmodules ignore = none', () => {
+      it('Then the pre-flight refuses the staged removal before HEAD moves', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await writeGitmodules(ctx, 'none');
+        await unstageGitlinkRemoval(ctx);
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: ['sub'], untracked: [] });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(mainTip);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+
+    describe('When HEAD commits a .gitmodules ignoring the submodule and onto commits one that does not', () => {
+      it('Then the pick judges the index by the modes the pre-flight read and records the staged gitlink', async () => {
+        // Arrange — git keeps the submodule config it read at the pre-flight for the whole run.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        const plain = '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n';
+        const base = await gitlinkCommit(ctx, {
+          parents: [],
+          sub: GITLINK_A,
+          files: { 'f.txt': 'f\n', '.gitmodules': plain },
+          message: 'base\n',
+        });
+        const mainTip = await gitlinkCommit(ctx, {
+          parents: [base],
+          sub: GITLINK_A,
+          files: { 'f.txt': 'f\n', '.gitmodules': `${plain}\tignore = all\n` },
+          message: 'main: ignore all\n',
+        });
+        const ontoTip = await gitlinkCommit(ctx, {
+          parents: [base],
+          sub: GITLINK_A,
+          files: { 'f.txt': 'f\n', 'o.txt': 'o\n', '.gitmodules': plain },
+          message: 'o\n',
+        });
+        await pointBranch(ctx, 'main', mainTip);
+        await pointBranch(ctx, 'side', ontoTip);
+        await reset(ctx, { mode: 'hard', rev: 'main' });
+        await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
+        await stageGitlink(ctx, GITLINK_C);
+        const sut = rebaseRun;
+
+        // Act
+        const result = await sut(ctx, { upstream: 'side' });
+
+        // Assert
+        expect(result.kind).not.toBe('conflict');
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        expect((await readCommit(ctx, tip)).parents).toEqual([ontoTip]);
+        const replayed = (await readObject(ctx, (await readCommit(ctx, tip)).tree)) as {
+          readonly entries: ReadonlyArray<{ readonly name: string; readonly id: ObjectId }>;
+        };
+        expect(replayed.entries.find((entry) => entry.name === 'sub')?.id).toBe(GITLINK_C);
+      });
+    });
+
+    describe('When a gitlink the pre-flight ignores is staged as an addition and a pick replays', () => {
+      it('Then the replayed commit records the added gitlink', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        const ignoring = '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n\tignore = all\n';
+        const base = await fileCommit(ctx, {
+          parents: [],
+          files: { 'f.txt': 'f\n', '.gitmodules': ignoring },
+          message: 'base\n',
+        });
+        const mainTip = await fileCommit(ctx, {
+          parents: [base],
+          files: { 'f.txt': 'main\n', '.gitmodules': ignoring },
+          message: 'm\n',
+        });
+        const ontoTip = await fileCommit(ctx, {
+          parents: [base],
+          files: { 'f.txt': 'f\n', 'o.txt': 'o\n', '.gitmodules': ignoring },
+          message: 'o\n',
+        });
+        await pointBranch(ctx, 'main', mainTip);
+        await pointBranch(ctx, 'side', ontoTip);
+        await reset(ctx, { mode: 'hard', rev: 'main' });
+        await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
+        await stageGitlinkAddition(ctx, GITLINK_C);
+        const sut = rebaseRun;
+
+        // Act
+        const result = await sut(ctx, { upstream: 'side' });
+
+        // Assert
+        expect(result.kind).not.toBe('conflict');
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        expect((await readCommit(ctx, tip)).parents).toEqual([ontoTip]);
+        const replayed = (await readObject(ctx, (await readCommit(ctx, tip)).tree)) as {
+          readonly entries: ReadonlyArray<{ readonly name: string; readonly id: ObjectId }>;
+        };
+        expect(replayed.entries.find((entry) => entry.name === 'sub')?.id).toBe(GITLINK_C);
+        expect((await readIndex(ctx)).entries.find((entry) => entry.path === 'sub')?.id).toBe(
+          GITLINK_C,
+        );
+      });
+    });
+
+    describe('When a gitlink the pre-flight ignores is staged as an addition that onto records alike', () => {
+      it('Then the checkout keeps it, as git two-way keeps an index entry equal to the target', async () => {
+        // Arrange
+        const { ctx, ontoTip } = await seedAdditionAgainstOnto();
+        await stageGitlinkAddition(ctx, GITLINK_A);
+        const sut = rebaseRun;
+
+        // Act
+        const result = await sut(ctx, { upstream: 'side' });
+
+        // Assert
+        expect(result.kind).not.toBe('conflict');
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        expect((await readCommit(ctx, tip)).parents).toEqual([ontoTip]);
+        expect((await readIndex(ctx)).entries.find((entry) => entry.path === 'sub')?.id).toBe(
+          GITLINK_A,
+        );
+      });
+    });
+
+    describe('When a gitlink the pre-flight ignores is staged as an addition that onto records differently', () => {
+      it('Then the checkout refuses the path before HEAD moves, as git two-way does', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedAdditionAgainstOnto();
+        await stageGitlinkAddition(ctx, GITLINK_C);
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(mainTip);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+
     describe('When a .gitmodules row sets the submodule ignore mode to none', () => {
       it('Then the pre-flight refuses the staged gitlink before HEAD moves', async () => {
         // Arrange
         const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
         await writeGitmodules(ctx, 'none');
 
+        const sut = rebaseRun;
         // Act
-        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        const data = await dataOf(() => sut(ctx, { upstream: 'side' }));
 
         // Assert
         expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: ['sub'], untracked: [] });
@@ -871,8 +1030,9 @@ describe('rebaseRun', () => {
         // Arrange
         const { ctx } = await seedStagedGitlink({ ontoSub: GITLINK_A, replays: false });
 
+        const sut = rebaseRun;
         // Act
-        const result = await rebaseRun(ctx, { upstream: 'side' });
+        const result = await sut(ctx, { upstream: 'side' });
 
         // Assert
         expect(result.kind).not.toBe('conflict');
@@ -886,8 +1046,9 @@ describe('rebaseRun', () => {
         const { ctx } = await seedStagedGitlink({ ontoSub: GITLINK_A });
         await unstageGitlinkRemoval(ctx);
 
+        const sut = rebaseRun;
         // Act
-        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        const data = await dataOf(() => sut(ctx, { upstream: 'side' }));
 
         // Assert
         expect(data).toEqual({
@@ -908,8 +1069,9 @@ describe('rebaseRun', () => {
         const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${mainTip}\n`);
 
+        const sut = rebaseRun;
         // Act
-        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        await dataOf(() => sut(ctx, { upstream: 'side' }));
 
         // Assert
         expect(await readMerge(ctx, 'head-name')).toBe('detached HEAD\n');
@@ -990,6 +1152,79 @@ const gitlinkCommit = async (
     message: commitInput.message,
     extraHeaders: [],
   });
+};
+
+/** A commit of regular files only, so a gitlink can be staged as an addition against it. */
+const fileCommit = async (
+  ctx: Context,
+  commitInput: {
+    readonly parents: ReadonlyArray<ObjectId>;
+    readonly files: Readonly<Record<string, string>>;
+    readonly message: string;
+  },
+): Promise<ObjectId> => {
+  const entries = [];
+  for (const [name, text] of Object.entries(commitInput.files)) {
+    entries.push(treeEntry(FILE_MODE.REGULAR, name as never, await blobOf(ctx, text)));
+  }
+  return createCommit(ctx, {
+    tree: await writeTree(ctx, entries),
+    parents: commitInput.parents,
+    author: FEAT_AUTHOR,
+    committer: FEAT_AUTHOR,
+    message: commitInput.message,
+    extraHeaders: [],
+  });
+};
+
+/** Stage `id` as a new gitlink `sub`, as `git update-index --add --cacheinfo 160000,<id>,sub` does. */
+const stageGitlinkAddition = async (ctx: Context, id: ObjectId): Promise<void> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const entries = (await readIndex(ctx)).entries;
+    const template = entries[0];
+    if (template === undefined) throw new Error('an index entry is needed as the template');
+    const added = { ...template, path: 'sub' as never, mode: FILE_MODE.GITLINK, id, fileSize: 0 };
+    await lock.commit(
+      [...entries, added].sort((a, b) => (a.path < b.path ? -1 : 1)),
+      'update',
+    );
+  } finally {
+    await lock.release();
+  }
+};
+
+/** main (base, m) records no gitlink under a `.gitmodules` ignoring `sub`; onto (side) records `sub` at A. */
+const seedAdditionAgainstOnto = async (): Promise<{
+  ctx: Context;
+  mainTip: ObjectId;
+  ontoTip: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  const ignoring = '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n\tignore = all\n';
+  const base = await fileCommit(ctx, {
+    parents: [],
+    files: { 'f.txt': 'f\n', '.gitmodules': ignoring },
+    message: 'base\n',
+  });
+  const mainTip = await fileCommit(ctx, {
+    parents: [base],
+    files: { 'f.txt': 'main\n', '.gitmodules': ignoring },
+    message: 'm\n',
+  });
+  const ontoTip = await gitlinkCommit(ctx, {
+    parents: [base],
+    sub: GITLINK_A,
+    files: { 'f.txt': 'f\n', 'o.txt': 'o\n', '.gitmodules': ignoring },
+    message: 'o\n',
+  });
+  await pointBranch(ctx, 'main', mainTip);
+  await pointBranch(ctx, 'side', ontoTip);
+  await reset(ctx, { mode: 'hard', rev: 'main' });
+  await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
+  return { ctx, mainTip, ontoTip };
 };
 
 const pointBranch = (ctx: Context, name: string, id: ObjectId): Promise<void> =>

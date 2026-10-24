@@ -554,20 +554,29 @@ export const applyMergeToWorktree = async (
 
 /**
  * Whether the index git leaves after the merge differs from the merge's own tree: a path the
- * merge left as ours has it, where the index staged another version or a removal.
+ * merge left as ours has it, where the index staged another version, an addition or a removal.
  */
 const keepsStagedChanges = (
   ours: EscapedFlatTree,
   changed: ReadonlySet<FilePath>,
   newIndexEntries: ReadonlyArray<IndexEntry>,
 ): boolean => {
-  const after = new Map(newIndexEntries.map((entry) => [escapedPathOf(entry), entry]));
-  for (const [path, entry] of ours.entries) {
+  let unchangedSeen = 0;
+  for (const entry of newIndexEntries) {
+    const path = escapedPathOf(entry);
     if (changed.has(path)) continue;
-    const kept = after.get(path);
+    const kept = ours.entries.get(path);
     if (kept === undefined || kept.id !== entry.id || kept.mode !== entry.mode) return true;
+    unchangedSeen += 1;
   }
-  return false;
+  return unchangedSeen !== unchangedCount(ours, changed);
+};
+
+/** How many of ours' paths the merge left alone; fewer of them in the index means a staged removal rode along. */
+const unchangedCount = (ours: EscapedFlatTree, changed: ReadonlySet<FilePath>): number => {
+  let count = ours.entries.size;
+  for (const path of changed) if (ours.entries.has(path)) count -= 1;
+  return count;
 };
 
 export type MergeTreesResult =

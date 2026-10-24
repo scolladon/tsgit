@@ -283,6 +283,81 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given a staged addition on a path neither ours nor the merge records', () => {
+    describe('When the merge is applied', () => {
+      it('Then the index keeps the added entry and the tree to commit carries it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const v1 = await writeBlob(ctx, 'one\n');
+        const v2 = await writeBlob(ctx, 'two\n');
+        const added = 'c'.repeat(40) as ObjectId;
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v2)]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', v1), indexEntry('sub', added, FILE_MODE.GITLINK)]),
+        });
+
+        // Assert
+        if (result.kind !== 'clean') throw new Error(result.kind);
+        expect(result.result.newIndexEntries.map((entry) => entry.path)).toEqual(['a', 'sub']);
+        const committed = (await flattenEscapedTree(ctx, result.indexTree)).entries.get(
+          'sub' as FilePath,
+        );
+        expect(committed?.id).toBe(added);
+        expect(committed?.mode).toBe(FILE_MODE.GITLINK);
+        expect(
+          (await flattenEscapedTree(ctx, result.mergedTree)).entries.has('sub' as FilePath),
+        ).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a staged mode change, same blob, on a path the merge leaves as ours has it', () => {
+    describe('When the merge is applied', () => {
+      it('Then the tree to commit carries the staged mode', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const v1 = await writeBlob(ctx, 'one\n');
+        const v2 = await writeBlob(ctx, 'two\n');
+        const base = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1),
+          treeEntry(FILE_MODE.REGULAR, 's' as FilePath, v1),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v2),
+          treeEntry(FILE_MODE.REGULAR, 's' as FilePath, v1),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/s`, new TextEncoder().encode('one\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', v1), indexEntry('s', v1, FILE_MODE.EXECUTABLE)]),
+        });
+
+        // Assert
+        if (result.kind !== 'clean') throw new Error(result.kind);
+        expect(
+          (await flattenEscapedTree(ctx, result.indexTree)).entries.get('s' as FilePath)?.mode,
+        ).toBe(FILE_MODE.EXECUTABLE);
+        expect(
+          (await flattenEscapedTree(ctx, result.mergedTree)).entries.get('s' as FilePath)?.mode,
+        ).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
   describe('Given a stash that changes a clean tracked file', () => {
     describe('When the merge is applied', () => {
       it('Then it is clean and the working tree takes the stashed content', async () => {

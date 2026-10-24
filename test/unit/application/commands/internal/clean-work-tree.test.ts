@@ -12,6 +12,7 @@ import {
   unstagedChangePaths,
 } from '../../../../../src/application/commands/internal/clean-work-tree.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
+import { MAX_GITMODULES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
@@ -141,6 +142,27 @@ const gitlinkEntry = (id: ObjectId): IndexEntry => ({
 });
 
 describe('assertCleanWorkTree', () => {
+  describe('Given a committed file, no gitlink, and a working .gitmodules past the bound tsgit reads', () => {
+    describe('When asserted', () => {
+      it('Then it passes: .gitmodules is read only when a gitlink exists', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'a'), 'a\n');
+        await add(ctx, ['a']);
+        const { tree } = await commit(ctx, { message: 'init', author: AUTHOR });
+        await ctx.fs.writeUtf8(work(ctx, '.gitmodules'), 'x'.repeat(MAX_GITMODULES_BYTES + 1));
+        const sut = assertCleanWorkTree;
+
+        // Act
+        const outcome = await codeOf(() => sut(ctx, tree));
+
+        // Assert
+        expect(outcome).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given three committed files sharing a directory', () => {
     describe('When asserted', () => {
       it('Then the directory is lstat-ed once for the whole pass', async () => {

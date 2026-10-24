@@ -171,25 +171,47 @@ const unstagedDirty = async (
   return dirty;
 };
 
+/** What `require_clean_work_tree` leaves for the rest of a run once it has passed. */
+export interface WorkTreePreflight {
+  /** The submodule ignore modes git keeps in its process for the run, so the picks judge the index by them. */
+  readonly modes: SubmoduleIgnoreModes;
+  /** The staged gitlink differences the pre-flight let through, in raw-byte order — what the onto checkout keeps. */
+  readonly carried: ReadonlyArray<FilePath>;
+}
+
 /**
- * `require_clean_work_tree`, answering the submodule ignore modes it read: git keeps them in
- * its process for the rest of the run, so a rebase's picks judge the index by these modes
- * rather than by the `.gitmodules` the detached checkout happens to hold.
+ * `require_clean_work_tree`, answering what it read on the way: git keeps the submodule ignore
+ * modes in its process for the rest of the run, so a rebase's picks judge the index by them
+ * rather than by the `.gitmodules` the detached checkout happens to hold; and the gitlink
+ * differences it skipped are the ones git's checkout of `onto` keeps in the index.
  */
 export const cleanWorkTreePreflight = async (
   ctx: Context,
   headTree: ObjectId,
-): Promise<SubmoduleIgnoreModes> => {
+): Promise<WorkTreePreflight> => {
   const index = await readIndex(ctx);
   const { stage0, unmerged } = partitionIndex(index.entries);
   const headFlat = await flattenEscapedTree(ctx, headTree);
   const { preflight, modes } = await policiesFor(ctx, stage0, headFlat);
+  const refused = stagedDirtyAgainst(headFlat, stage0, preflight);
   refuseDirtyWorkTree([
     ...unmerged,
-    ...stagedDirtyAgainst(headFlat, stage0, preflight),
+    ...refused,
     ...(await unstagedDirty(ctx, stage0, index.indexMtime)),
   ]);
-  return modes;
+  return { modes, carried: carriedPast(headFlat, stage0, refused) };
+};
+
+/** Every index difference from HEAD the pre-flight did not refuse, in raw-byte order. */
+const carriedPast = (
+  headFlat: EscapedFlatTree,
+  stage0: ReadonlyArray<IndexEntry>,
+  refused: ReadonlyArray<FilePath>,
+): ReadonlyArray<FilePath> => {
+  const refusedSet = new Set(refused);
+  return stagedDirtyAgainst(headFlat, stage0, EVERY_DIFFERENCE)
+    .filter((path) => !refusedSet.has(path))
+    .sort(comparePaths);
 };
 
 export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Promise<void> => {
@@ -291,7 +313,5 @@ export const stagedGitlinkChanges = async (
   // HEAD is flattened once and read under both policies.
   const headFlat = await flattenEscapedTree(ctx, headTree);
   const { preflight } = await policiesFor(ctx, stage0, headFlat, modes);
-  const refusedByPreflight = new Set(stagedDirtyAgainst(headFlat, stage0, preflight));
-  const counted = stagedDirtyAgainst(headFlat, stage0, EVERY_DIFFERENCE);
-  return counted.filter((path) => !refusedByPreflight.has(path)).sort(comparePaths);
+  return carriedPast(headFlat, stage0, stagedDirtyAgainst(headFlat, stage0, preflight));
 };

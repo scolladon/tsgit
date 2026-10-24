@@ -71,8 +71,8 @@ import {
   cleanWorkTreePreflight,
   type SubmoduleIgnoreModes,
   stagedChangePaths,
-  stagedGitlinkChanges,
   unstagedChangePaths,
+  type WorkTreePreflight,
 } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
@@ -260,15 +260,23 @@ const sameTreeEntry = (
   b: { readonly id: ObjectId; readonly mode: FileMode } | undefined,
 ): boolean => a?.id === b?.id && a?.mode === b?.mode;
 
-/** git's two-way checkout rejects a staged path whose HEAD and `onto` entries differ. */
+/**
+ * git's two-way checkout keeps a staged path HEAD and `onto` agree on, and one the index
+ * already holds as `onto` does; it rejects a staged version that matches neither.
+ */
 const assertOntoAgrees = async (
   ctx: Context,
   trees: { readonly head: ObjectId; readonly onto: ObjectId },
-  paths: ReadonlyArray<FilePath>,
+  carried: ReadonlyArray<CarriedGitlink>,
 ): Promise<void> => {
   const head = (await flattenEscapedTree(ctx, trees.head)).entries;
   const onto = (await flattenEscapedTree(ctx, trees.onto)).entries;
-  const differing = paths.filter((path) => !sameTreeEntry(head.get(path), onto.get(path)));
+  const differing = carried
+    .filter(
+      ({ path, entry }) =>
+        !sameTreeEntry(head.get(path), onto.get(path)) && !sameTreeEntry(entry, onto.get(path)),
+    )
+    .map(({ path }) => path);
   if (differing.length === 0) return;
   throw checkoutOverwriteDirty({ localChanges: differing, untracked: [] });
 };
@@ -278,14 +286,17 @@ const gitlinksToCarry = async (
   ctx: Context,
   headCommit: ObjectId,
   onto: ObjectId,
-  modes: SubmoduleIgnoreModes,
+  paths: ReadonlyArray<FilePath>,
 ): Promise<ReadonlyArray<CarriedGitlink>> => {
-  const headTree = await treeOf(ctx, headCommit);
-  const paths = await stagedGitlinkChanges(ctx, headTree, modes);
   if (paths.length === 0) return [];
-  await assertOntoAgrees(ctx, { head: headTree, onto: await treeOf(ctx, onto) }, paths);
   const { entries } = await readIndex(ctx);
-  return paths.map((path) => ({ path, entry: entries.find((entry) => entry.path === path) }));
+  const carried = paths.map((path) => ({
+    path,
+    entry: entries.find((entry) => entry.path === path),
+  }));
+  const trees = { head: await treeOf(ctx, headCommit), onto: await treeOf(ctx, onto) };
+  await assertOntoAgrees(ctx, trees, carried);
+  return carried;
 };
 
 /** Put the carried gitlink changes back over the freshly checked-out `onto` index. */
@@ -714,25 +725,21 @@ export const rebaseRun = async (
     throw invalidOption('rebaseMerges', 'interactive instructions cannot carry merges');
   }
   const stash = await autostashIfWanted(ctx, input.autostash);
-  const submoduleIgnores = await cleanWorkTreePreflight(ctx, await treeOf(ctx, sides.headCommit));
+  const preflight = await cleanWorkTreePreflight(ctx, await treeOf(ctx, sides.headCommit));
   if (input.interactive !== undefined) {
     if (stash !== undefined) await writeAutostash(ctx, stash);
     const { branch, headCommit, upstream, onto, ontoName } = sides;
     const interactiveSides = { branch, headCommit, upstream, onto, ontoName };
     return startInteractive(ctx, sides.upstreamName, input.interactive, interactiveSides);
   }
-  return replayUnlessUpToDate(ctx, input.rebaseMerges, sides, {
-    stash,
-    reflogAction,
-    submoduleIgnores,
-  });
+  return replayUnlessUpToDate(ctx, input.rebaseMerges, sides, { stash, reflogAction, preflight });
 };
 
 interface RunOptions {
   readonly stash: ObjectId | undefined;
   readonly reflogAction: string;
-  /** The submodule ignore modes the pre-flight read, kept for the run as git's process keeps them. */
-  readonly submoduleIgnores: SubmoduleIgnoreModes;
+  /** What the pre-flight read: the ignore modes kept for the run as git's process keeps them, and the staged gitlinks to carry. */
+  readonly preflight: WorkTreePreflight;
 }
 
 /** git fires pre-rebase only when the rebase will do work; an up-to-date rebase
@@ -785,13 +792,13 @@ const startReplay = async (
   ctx: Context,
   mode: RebaseRunInput['rebaseMerges'],
   sides: RunSides,
-  { reflogAction, submoduleIgnores }: Pick<RunOptions, 'reflogAction' | 'submoduleIgnores'>,
+  { reflogAction, preflight }: Pick<RunOptions, 'reflogAction' | 'preflight'>,
 ): Promise<RebaseResult> => {
   const { headCommit, upstream, onto } = sides;
   await assertEverySourceLoadable(ctx);
   await firePreRebase(ctx, sides.upstreamName);
   const todo = await planTodo(ctx, mode, { upstream, head: headCommit });
-  const carried = await gitlinksToCarry(ctx, headCommit, onto, submoduleIgnores);
+  const carried = await gitlinksToCarry(ctx, headCommit, onto, preflight.carried);
   await writeOrigHead(ctx, headCommit);
   await detachHead(ctx, headCommit, onto, sides.ontoName, reflogAction, carried);
   const rc: ReplayContext = {
@@ -802,7 +809,7 @@ const startReplay = async (
     doneBefore: [],
     todo,
     backupHeader: backupHeaderOf(upstream, headCommit, onto),
-    submoduleIgnores,
+    submoduleIgnores: preflight.modes,
   };
   return replayFrom(ctx, rc, onto, { applied: [], rewritten: [] });
 };

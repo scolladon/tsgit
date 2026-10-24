@@ -463,6 +463,21 @@ const stagedMoveIgnoringNone: Setup = async (repo) => {
   await gitmodulesIgnoring('none')(repo);
   await stagedMoveForced(repo);
 };
+/** The submodule dropped from HEAD, then staged again as an addition past the `ignore = all` row. */
+const stagedAdditionIgnoringAll: Setup = async (repo) => {
+  await gitmodulesIgnoring('all')(repo);
+  const recorded = gitIn(repo, 'rev-parse', `HEAD:${SUBMODULE}`).trim();
+  gitIn(repo, 'rm', '-q', '--cached', SUBMODULE);
+  commitIn(repo, 'drop sub');
+  gitIn(repo, 'update-index', '--add', '--cacheinfo', `160000,${recorded},${SUBMODULE}`);
+};
+/** The submodule removed from the index under the given `.gitmodules` ignore mode. */
+const cachedRemovalIgnoring =
+  (mode: string): Setup =>
+  async (repo) => {
+    await gitmodulesIgnoring(mode)(repo);
+    gitIn(repo, 'rm', '-q', '--cached', SUBMODULE);
+  };
 const stagedMoveOwnIgnoreAll: Setup = async (repo) => {
   gitIn(repo, 'config', 'submodule.sub.ignore', 'all');
   await stagedMoveForced(repo);
@@ -479,6 +494,30 @@ const F3_ROWS: ReadonlyArray<Row> = [
     title:
       'a staged submodule move under submodule.sub.ignore = all in config, rebase onto a branch adding a file',
     setup: stagedMoveOwnIgnoreAll,
+    steps: [rebaseOnto('side')],
+  },
+  {
+    title:
+      'a staged submodule addition under a .gitmodules ignoring it entirely, cherry-pick of a commit adding a file',
+    setup: stagedAdditionIgnoringAll,
+    steps: [cherryPick('side')],
+  },
+  {
+    title:
+      'a staged submodule addition under a .gitmodules ignoring it entirely, rebase onto a branch adding a file',
+    setup: stagedAdditionIgnoringAll,
+    steps: [rebaseOnto('side')],
+  },
+  {
+    title:
+      'a submodule removed from the index under a .gitmodules ignore = none, rebase onto a branch adding a file',
+    setup: cachedRemovalIgnoring('none'),
+    steps: [refusedRebase('side', 'WORKING_TREE_DIRTY')],
+  },
+  {
+    title:
+      'a submodule removed from the index under a .gitmodules ignoring it entirely, rebase onto a branch adding a file',
+    setup: cachedRemovalIgnoring('all'),
     steps: [rebaseOnto('side')],
   },
   {
@@ -1353,6 +1392,7 @@ const rebaseObservation = async (repo: string) => {
 
 const observed = async (repo: string) => ({
   rebase: await rebaseObservation(repo),
+  tree: gitIn(repo, 'rev-parse', 'HEAD^{tree}').trim(),
   index: gitIn(repo, 'ls-files', '--stage', SUBMODULE),
   head: submoduleHead(repo),
   files: await filesUnder(sub(repo)),
@@ -1593,6 +1633,9 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               expect(gitIn(repo, 'rev-parse', 'HEAD')).toBe(headBefore);
               expect(existsSync(path.join(repo, '.git', 'MERGE_HEAD'))).toBe(false);
             }
+            // The residual itself, pinned on both sides: git unstaged the move, tsgit kept it.
+            expect(gitIn(gitTwin, 'status', '--porcelain')).toContain(' M sub');
+            expect(gitIn(tsgitTwin, 'status', '--porcelain')).toContain('M  sub');
           },
           ROW_TIMEOUT,
         );
