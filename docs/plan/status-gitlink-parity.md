@@ -88,6 +88,9 @@
 | ADR-1064 `ChangedPath.submodule` | 3 (field + commit flag), 6 (tracked/untracked flags) |
 | ADR-1071 `GITMODULES_NOT_STAGED` | 7 (member), 14 (throw site) |
 | ADR-1072 broken HEAD (design LH1–LH8, SF11) | 15 (`PATH_TOO_LONG`), 16 (unreadable set, log/rev-parse twins), 17 (status unknown-HEAD state, LH + SF11 + r6–r9 rows) |
+| R7 rebase with a staged gitlink (design CO14, CO14b, CO14c; regression fold) | 18 |
+| R7/R9 gitlink written over a file occupant (design CO39, CO40) | 19 |
+| R7 stash beyond a symbolic link (design CO38) | 20 |
 
 ## Decision candidates
 
@@ -957,3 +960,123 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/broken-
 ### Commit
 
 `fix(status): report a HEAD whose target cannot be read as unknown, as git does`
+
+## Part 18 — Carry a staged gitlink through rebase's onto checkout and refuse the first pick, as git does
+
+### Context
+
+R7 (rebase); design rows CO14 (corrected), CO14b, CO14c; fold of a regression Part 11 introduced. git's rebase pre-flight (`require_clean_work_tree(…, ignore_submodules = 1)`) lets a staged gitlink change through; what follows is two git steps, pinned by the Part 11 implementer (×3) and refined here:
+
+1. `checkout_onto` → `reset_head` runs a two-way `unpack_trees` from HEAD's tree to `onto`'s tree over the index. For a path where the index entry differs from both trees: when HEAD's and `onto`'s entries are the same (two-way merge cases 14/15) the index entry is KEPT; when they differ, `reject_merge` → stderr `error: Entry 'sub' would be overwritten by merge. Cannot merge.` then `fatal: Could not detach HEAD`, exit 128, and nothing has been written (no `ORIG_HEAD` update, no state dir, HEAD still on the branch) — to pin git-first (CO14c).
+2. `do_pick_commit` runs `index_differs_from(HEAD)` with default flags (gitlinks COUNT) before every pick: a kept staged gitlink makes the first pick fail `error_dirty_index`: stderr `error: your local changes would be overwritten by rebase.` + `hint: commit your changes or stash them to proceed.`, exit 1. The rebase is then IN PROGRESS: pin git-first what is on disk — the rebase-merge state directory contents (`head-name`, `onto`, `orig-head`, `git-rebase-todo`, `done`, …), HEAD detached at `onto`, `ORIG_HEAD`, `git ls-files --stage sub` (= the staged id), the worktree untouched, `git status --porcelain=v2 --branch` — and what `git rebase --abort` restores (CO14b). When the todo is empty (nothing to replay, design CO14 on F2) no pick runs and the rebase finishes with exit 0, the staged gitlink kept in the index.
+
+tsgit today (after Part 11): `rebaseRun` (src/application/commands/rebase.ts L597-617) → `assertCleanWorkTree` passes (gitlinks ignored) → `replayUnlessUpToDate` L622 → `startReplay` L666-688: `writeOrigHead`, then `detachHead(ctx, headCommit, onto, ontoName, reflogAction)` (L~1700: a ref update of HEAD plus `hardResetWorktreeToCommit(ctx, onto)`, which rewrites the index to `onto`'s tree — the staged gitlink id is silently replaced), then `replayFrom(ctx, rc, onto, seed)` L513-543 whose loop calls `replayLine` → `replayOne` L294-316 per todo line with no dirty-index check. Result: tsgit rebases where git refuses, and the staged gitlink change is dropped from the index (the submodule's HEAD on disk is untouched). Before Part 11 the strict pre-flight refused by accident.
+
+Files:
+- `src/application/commands/internal/clean-work-tree.ts` — a new query beside `stagedChangePaths` (L148-154): `stagedGitlinkChanges(ctx, headTree): Promise<ReadonlyArray<FilePath>>` = the paths `stagedDirty(…, COUNTING_GITLINKS)` reports that `stagedDirty(…, IGNORING_GITLINKS)` does not — i.e. exactly the staged changes git's rebase pre-flight ignored (both sides gitlinks, or a gitlink added or removed). Keep CQS: a query, no throw. (Alternative if the two-call shape costs a second index read: expose the policy-difference from one `stagedDirty` pass; either way under 20 lines.)
+- `test/unit/application/commands/internal/clean-work-tree.test.ts` — rows for the new query.
+- `src/application/commands/rebase.ts` — (a) in `startReplay`, BEFORE `writeOrigHead`/`detachHead`: `const carried = await stagedGitlinkChanges(ctx, headTree)`; for each carried path compare HEAD's tree entry with `onto`'s tree entry (`readTree`/`flatten` helpers the file already uses for `treeOf`; read how `mergeUnderLock` or `canFastForward` read tree entries by path): any path whose entries differ → `throw checkoutOverwriteDirty({ localChanges: [paths…], untracked: [] })` (the code `checkout` gives git's `would be overwritten by merge`; find its constructor in src/domain/commands/error.ts) before any write. (b) `detachHead`: after `hardResetWorktreeToCommit(ctx, onto)`, re-stage the carried gitlink entries — write the index with those entries' pre-reset `IndexEntry` values restored (read the index before the reset, keep the carried entries, write them back after; use the index-lock writer the file already uses for `commitPick`/`stopOnConflict`), so the index equals git's "kept" state. (c) in `replayFrom`, before the first `replayLine` of a run (and, to mirror `do_pick_commit`, before every line): `if ((await stagedChangePaths(ctx, treeOf(cur))).length > 0)` → persist the rebase state exactly as `stopOnConflict` does for a stop (so `rebaseAbort` can restore ORIG_HEAD and the branch), then `throw workingTreeDirty({ localChanges, untracked: [] })` (the code cherry-pick's `assertCleanIndex` uses). Read `stopOnConflict` (L~560) and `writeRebaseState`/`endRebaseState` to reuse the persistence; the pinned the rebase-merge state directory contents decide which files must exist. `rebaseContinue` (L712) commits the resolution first (`commitResolution` L741), so after a conflict stop the index equals HEAD before the next pick and the check passes — GUARD row.
+- `test/unit/application/commands/rebase.test.ts` — rows in a new `describe('Given a staged gitlink the pre-flight ignores')` block after `describe('Given refusal conditions')` (L507).
+- `test/integration/gitlink-consumers-interop.test.ts` — rows CO14 (F2, nothing to replay), CO14b (F3, onto agrees on `sub`), CO14c (F3 with `other` as onto: `sub` differs between HEAD and onto), the `--abort` restore row, and a GUARD that the Part 11 `rebase --continue` row still passes.
+
+Pinned bytes (git 2.55; the Part 11 implementer ×3 on fresh repos): F3, `sub` moved to `<C>` and `git add sub`, `rebase side` → exit 1, stderr contains `your local changes would be overwritten by rebase`. F2 (nothing to replay), same staging, `rebase side` → exit 0, index keeps `<C>` (design CO14). Everything else above is to pin git-first in this part (×3 when it surprises); write the observed bytes into the rows and the hand-back. If git's post-failure state cannot be reproduced inside `rebase.ts` + `clean-work-tree.ts`, stop and hand back `{ unit, reason, ≤3 options }` with the pinned state — never widen silently.
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED — clean-work-tree unit: index gitlink `<C>` vs HEAD gitlink `<A>` → `stagedGitlinkChanges` returns `['sub']`; a staged regular file is not listed. Fails: the function does not exist.
+2. GREEN — the query. GUARD — a gitlink↔file type change is NOT listed (git's pre-flight counts it, so it is refused earlier).
+3. Pin git-first CO14c (onto disagrees on `sub`). RED — rebase unit: HEAD `sub` = `<A>`, index `sub` = `<C>` (staged), onto's tree `sub` = `<B>`, one commit to replay → `rebaseRun` rejects `CHECKOUT_OVERWRITE_DIRTY { localChanges: ['sub'], untracked: [] }` and nothing changed (HEAD, ORIG_HEAD, index, no rebase-merge state directory). Fails: today the hard reset to onto proceeds.
+4. GREEN — the pre-detach comparison in `startReplay`.
+5. Pin git-first CO14b (onto agrees on `sub`) and the post-failure state. RED — rebase unit: same but onto's `sub` = `<A>` → rejects `WORKING_TREE_DIRTY { localChanges: ['sub'], untracked: [] }`, and afterwards HEAD is detached at onto, ORIG_HEAD is the branch tip, the index holds `sub` = `<C>`, the rebase-merge state directory exists as git's does. Fails: today the hard reset drops `<C>` and the rebase completes.
+6. GREEN — `detachHead` carries the gitlink entries; `replayFrom` refuses before the first pick with the state persisted. GUARD — `rebaseAbort` afterwards restores the branch, HEAD, and the index with `sub` = `<C>` (pin git's `--abort` result first).
+7. GUARD — nothing to replay (F2 shape): `rebaseRun` succeeds and the index keeps `sub` = `<C>` (passes: no pick runs; the carry keeps the entry through the onto checkout). GUARD — the Part 11 conflict-stop + `rebaseContinue` flow still passes (the resolution is committed before the next pick).
+8. Interop — CO14, CO14b, CO14c, the abort row.
+9. REFACTOR — functions under 20 lines; no mutable shared state.
+
+### Gate
+
+```
+npx vitest run test/unit/application/commands/rebase test/unit/application/commands/internal/clean-work-tree test/unit/application/commands/pull test/unit/application/commands/cherry-pick && npm run check:types && ./node_modules/.bin/biome check src/application/commands/rebase.ts src/application/commands/internal/clean-work-tree.ts test/unit/application/commands/rebase.test.ts test/unit/application/commands/internal/clean-work-tree.test.ts test/integration/gitlink-consumers-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/commands/rebase.ts src/application/commands/internal/clean-work-tree.ts test/unit/application/commands/rebase.test.ts test/unit/application/commands/internal/clean-work-tree.test.ts test/integration/gitlink-consumers-interop.test.ts
+npm run check:write-surfaces
+npx vitest run test/unit/application/commands/rebase test/unit/application/commands/internal/clean-work-tree --coverage --coverage.include=src/application/commands/rebase.ts --coverage.include=src/application/commands/internal/clean-work-tree.ts --coverage.reporter=text
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink-consumers-interop.test.ts test/integration/rebase-interop.test.ts test/integration/rebase-autostash-interop.test.ts test/integration/pull-rebase-interop.test.ts
+```
+
+### Commit
+
+`fix(rebase): carry a staged gitlink through the onto checkout and refuse the first pick as git does`
+
+## Part 19 — Replace a file with a gitlink's directory when a tree write lands a gitlink over it
+
+### Context
+
+R7/R9 (checkout write path); design rows CO39, CO40 (pinned by the orchestrator after Part 12). git's `checkout_entry` (entry.c) runs with `state->force = 1` from `check_updates`, after the dirty check has already passed: when the path holds something that is not a directory, git `unlink`s it ("We unlink the old file, to get the new one with the right permissions"), then creates the gitlink's empty directory; a directory already there is left alone ("If it is a gitlink, leave it alone!"). tsgit's gitlink add arm in `src/application/primitives/apply-changeset.ts` creates the directory without looking at a file occupant, so `writeWorkingTreeEntry` throws `FILE_EXISTS` at `mkdir sub` — seen by the Part 12 implementer through `stash push` with a staged gitlink→file type change (git: stash saved, then `sub` restored as an empty directory, exit 0), and reachable the same way through `checkout` to a tree whose `sub` is a gitlink while the current path holds a committed regular file (a type-change entry the dirty check passes).
+
+Files:
+- `src/application/primitives/apply-changeset.ts` — the gitlink `add`/`update` write arm (find where a `FILE_MODE.GITLINK` entry is materialised — the 16 existing gitlink rows in its unit suite name it; the plan's Part 10 context listed `applyDeleteEntry` L364-375 and the add arm beside it): before creating the directory, `lstat` the path; a regular file or symlink occupant is removed (`ctx.fs.rm`, never recursive), a directory is kept as today. Reuse the occupant probe the file already has for its other arms if one exists.
+- `test/unit/application/primitives/apply-changeset.test.ts` — rows: a gitlink add over a regular file → the file is gone and an empty directory stands (RED); over a symlink → the link is removed, not its target (RED or GUARD per the code shape); over an existing directory with contents → untouched (GUARD, existing behaviour); over nothing → directory created (GUARD, existing row).
+- `test/integration/gitlink-consumers-interop.test.ts` — CO40 (F1, `sub` replaced by a regular file, `git add sub`, `stash push` → exit 0 `Saved working directory and index state WIP on main: …`; afterwards `sub` is an empty directory, the index holds the gitlink `A`, `stash@{0}^2:sub` and `stash@{0}:sub` are the file blob `100644`), and a checkout row pinned git-first: branch `file-sub` where `sub` is a committed regular file, `checkout main` (gitlink) → expected exit 0 with `sub` an empty directory; and the reverse (`checkout file-sub` from a populated gitlink) → pin what git does with the populated directory (expected: left in place with a warning, or refused — follow the pin).
+
+Pinned bytes (git 2.55, orchestrator): CO39 — `sub` replaced by a regular file, NOT staged, `stash push` → exit 0 `No local changes to save` (stash's `diff-files --ignore-submodules` zeroes every change on a gitlink index entry, type change included); status shows `1 .T S... 160000 160000 100644 <A> <A> sub`. CO40 — the same staged (`git add sub` succeeds, index `100644 <blob> 0 sub`), `stash push` → exit 0, saved; afterwards status clean, `sub` an empty directory (a directory), `stash@{0}^2:sub` = `stash@{0}:sub` = `100644 blob <blob> sub`.
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. GUARD (run first, before any code) — the existing gitlink-add rows (directory created; occupants of an existing directory kept) pass today.
+2. RED — apply-changeset unit: a gitlink `add` for `sub` where `sub` is a regular file → applies, `sub` is an empty directory. Fails: `FILE_EXISTS` from the directory creation.
+3. GREEN — remove a non-directory occupant before creating the directory.
+4. GUARD — a symlink occupant is removed and its target untouched (if the code path distinguishes symlinks, this is a RED instead — report which).
+5. Interop — CO39 (GUARD: tsgit's stash already answers "no local changes" through Part 12's `classifyEntry`), CO40, and the two checkout rows git-first.
+6. REFACTOR — functions under 20 lines.
+
+### Gate
+
+```
+npx vitest run test/unit/application/primitives/apply-changeset test/unit/application/commands/checkout test/unit/application/commands/stash && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/apply-changeset.ts test/unit/application/primitives/apply-changeset.test.ts test/integration/gitlink-consumers-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/primitives/apply-changeset.ts test/unit/application/primitives/apply-changeset.test.ts test/integration/gitlink-consumers-interop.test.ts
+npm run check:write-surfaces
+npx vitest run test/unit/application/primitives/apply-changeset --coverage --coverage.include=src/application/primitives/apply-changeset.ts --coverage.reporter=text
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink-consumers-interop.test.ts test/integration/stash-interop.test.ts test/integration/checkout-file-directory-swap-interop.test.ts test/integration/checkout-replace-symlink-with-file-interop.test.ts
+```
+
+### Commit
+
+`fix(checkout): replace a file occupant with the gitlink's directory, as git's checkout_entry does`
+
+## Part 20 — Refuse to stash a tracked path beyond a symbolic link, as git does
+
+### Context
+
+R7 (stash); design row CO38 (pinned by the orchestrator after Part 12, ×3). git's `stash push` builds the worktree tree through `add_to_index`, which refuses a path whose leading directory is a symlink: stderr `error: 'd/f' is beyond a symbolic link`, `fatal: Unable to process path d/f`, `Cannot save the current worktree state`, exit 1, nothing created (no stash, HEAD and the index untouched); the same with `-u`. After Part 4 tsgit's comparison reads `d/f` as deleted (git's `status` agrees: ` D d/f` + `? d`), so tsgit's stash records a deletion and saves a stash where git refuses. `add` already refuses this condition with `PATHSPEC_BEYOND_SYMLINK { path }` (src/domain/commands/error.ts L47, constructor at L602; message `pathspec is beyond a symbolic link: <basename>`), so no new code is needed.
+
+Files:
+- `src/application/commands/stash.ts` — in the query that classifies entries (`classifyEntry` / `classify` / `findLocalChanges`, Part 12 shapes), a stage-0 entry whose leading directory is a symlink (`createLeadingPathScanner(ctx).hasSymlinkedLeadingPath(entry.path)` from src/application/primitives/internal/symlinked-leading-path.ts — one scanner per stash run, as `scanTrackedEntries` does) refuses with `pathspecBeyondSymlink(entry.path)` BEFORE any object or ref is written. The refusal is raised only when the stash would otherwise be saved (git refuses while building the worktree tree, i.e. after "no local changes" has been ruled out) — pin that ordering: a repository whose only change is the symlinked-parent deletion refuses (CO38), while `No local changes to save` wins when nothing else changed and … (there is no such case: the deletion IS a change; so the refusal fires whenever a tracked entry sits beyond a symlink and a stash would be created — including when other files changed). Read `stash.ts`'s write sequence (`createStashCommits` or its equivalent) to place the check before the first write.
+- `test/unit/application/commands/stash.test.ts` — rows: tracked `d/f` with `d` a symlink to a copy → `stashPush` rejects `PATHSPEC_BEYOND_SYMLINK { path: 'd/f' }` and writes nothing (no stash ref, index unchanged) (RED); the same plus an edited file elsewhere → the same refusal (GUARD); a symlink that is a tracked leaf (not a leading directory) stashes normally (GUARD).
+- `test/integration/gitlink-consumers-interop.test.ts` — CO38 (`stash push` and `stash push -u`): git exit 1 with the three stderr lines, no `stash list` entry, status ` D d/f` + `? d` unchanged; tsgit rejects `PATHSPEC_BEYOND_SYMLINK { path: 'd/f' }`, no stash ref, status unchanged.
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED — stash unit: tracked `d/f`, `d` replaced by a symlink to a copy → `stashPush` rejects `PATHSPEC_BEYOND_SYMLINK { path: 'd/f' }`. Fails: today a stash is saved.
+2. GREEN — the leading-path refusal before any write. GUARD — nothing was written (no `refs/stash`, index bytes unchanged). GUARD — an edited unrelated file does not change the outcome. GUARD — a tracked symlink leaf still stashes.
+3. Interop — CO38 twins (`push`, `push -u`).
+4. REFACTOR — functions under 20 lines.
+
+### Gate
+
+```
+npx vitest run test/unit/application/commands/stash && npm run check:types && ./node_modules/.bin/biome check src/application/commands/stash.ts test/unit/application/commands/stash.test.ts test/integration/gitlink-consumers-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/commands/stash.ts test/unit/application/commands/stash.test.ts test/integration/gitlink-consumers-interop.test.ts
+npm run check:write-surfaces
+npx vitest run test/unit/application/commands/stash --coverage --coverage.include=src/application/commands/stash.ts --coverage.reporter=text
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink-consumers-interop.test.ts test/integration/stash-interop.test.ts test/integration/stash-apply-index-interop.test.ts
+```
+
+### Commit
+
+`fix(stash): refuse a tracked path beyond a symbolic link, as git does`
