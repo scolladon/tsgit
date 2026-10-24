@@ -7,8 +7,8 @@
  * @proves
  *   surface:        checkout
  *   bucket:         cross-tool-interop
- *   unique:         checkout, merge, cherry-pick and rebase leave a gitlink directory alone and remove an empty one as git does
- *   interopSurface: checkout, merge
+ *   unique:         checkout, merge, cherry-pick, rebase and stash leave a gitlink directory alone and remove an empty one as git does
+ *   interopSurface: checkout, merge, stash
  */
 
 import { existsSync, writeFileSync } from 'node:fs';
@@ -21,6 +21,7 @@ import { checkout } from '../../src/application/commands/checkout.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
 import { rebaseContinue, rebaseRun } from '../../src/application/commands/rebase.js';
+import { stashPush } from '../../src/application/commands/stash.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
 
@@ -114,6 +115,20 @@ const addMainCommit = async (repo: string): Promise<void> => {
 const nothing: Setup = async () => {};
 const moved: Setup = async (repo) => commitIn(sub(repo), 'z');
 const edited: Setup = async (repo) => writeFile(sub(repo, 'u'), 'edited\n');
+const untrackedInSubmodule: Setup = async (repo) => writeFile(sub(repo, 'n'), 'n\n');
+const stagedMove: Setup = async (repo) => {
+  await moved(repo);
+  gitIn(repo, 'add', SUBMODULE);
+};
+const editedK: Setup = async (repo) => writeFile(path.join(repo, 'k'), 'edited\n');
+const movedAndEditedK: Setup = async (repo) => {
+  await moved(repo);
+  await editedK(repo);
+};
+const stagedMoveAndEditedK: Setup = async (repo) => {
+  await stagedMove(repo);
+  await editedK(repo);
+};
 const deinitialised: Setup = async (repo) => {
   gitIn(repo, 'submodule', 'deinit', '-q', '-f', SUBMODULE);
 };
@@ -125,6 +140,13 @@ const conflictingSide: Setup = async (repo) => {
   gitIn(repo, 'add', 'k');
   commitIn(repo, 'side k');
   gitIn(repo, 'checkout', '-q', 'main');
+};
+
+const stashPushStep: Step = {
+  git: (repo) => {
+    gitIn(repo, 'stash', 'push');
+  },
+  tsgit: (ctx) => stashPush(ctx, {}),
 };
 
 const gitStep = (...args: string[]): ((repo: string) => void) => {
@@ -308,6 +330,40 @@ const F3_ROWS: ReadonlyArray<Row> = [
   },
 ];
 
+const STASH_ORIGINS = ['stash@{0}', 'stash@{0}^2'] as const;
+
+const stashObservation = (repo: string) => {
+  const list = gitIn(repo, 'stash', 'list');
+  if (list === '') return { list, trees: [ABSENT] };
+  const trees = [
+    gitIn(repo, 'rev-parse', 'stash@{0}^{tree}').trim(),
+    ...STASH_ORIGINS.map((origin) => gitIn(repo, 'rev-parse', `${origin}:${SUBMODULE}`).trim()),
+  ];
+  return { list, trees };
+};
+
+const STASH_ROWS: ReadonlyArray<Row> = [
+  { title: 'an unmoved submodule, stash push', setup: nothing, steps: [stashPushStep] },
+  { title: 'a moved submodule, stash push', setup: moved, steps: [stashPushStep] },
+  { title: 'an edited submodule, stash push', setup: edited, steps: [stashPushStep] },
+  {
+    title: 'an untracked file in the submodule, stash push',
+    setup: untrackedInSubmodule,
+    steps: [stashPushStep],
+  },
+  { title: 'a staged moved submodule, stash push', setup: stagedMove, steps: [stashPushStep] },
+  {
+    title: 'a moved submodule and an edited file, stash push',
+    setup: movedAndEditedK,
+    steps: [stashPushStep],
+  },
+  {
+    title: 'a staged moved submodule and an edited file, stash push',
+    setup: stagedMoveAndEditedK,
+    steps: [stashPushStep],
+  },
+];
+
 const filesUnder = async (dir: string): Promise<string[]> => {
   if (!existsSync(dir)) return [ABSENT];
   const names = await readdir(dir);
@@ -322,6 +378,7 @@ const observed = async (repo: string) => ({
   head: submoduleHead(repo),
   files: await filesUnder(sub(repo)),
   status: gitIn(repo, 'status', '--porcelain=v2', '-uall'),
+  stash: stashObservation(repo),
 });
 
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
@@ -387,5 +444,6 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
     matchesGit('f2', ROWS, () => fixture);
     matchesGit('f3', F3_ROWS, () => fixtureWithMainCommit);
+    matchesGit('stash', STASH_ROWS, () => fixture);
   },
 );
