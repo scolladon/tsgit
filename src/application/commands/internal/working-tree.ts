@@ -100,6 +100,20 @@ export const removeFile = async (ctx: Context, rawPath: string): Promise<void> =
 };
 
 /**
+ * Remove the working-tree directory at `path` with everything beneath it. Refuses
+ * anything that is not a directory (missing included) like `removeFile` does.
+ */
+export const removeDirectory = async (ctx: Context, rawPath: string): Promise<void> => {
+  const path = validateWorkingTreePathOn(rawPath, ctx);
+  const full = repoPath(ctx, path);
+  const stat = await ctx.fs.lstat(full).catch(() => undefined);
+  if (stat === undefined || !stat.isDirectory || stat.isSymbolicLink) {
+    throw checkoutOverwriteDirty({ localChanges: [path], untracked: [] });
+  }
+  await ctx.fs.rmRecursive(full);
+};
+
+/**
  * Move a working-tree path. Validates both ends (rejecting `..`, `.git`,
  * absolute paths, etc.) then relocates the node — carrying any untracked
  * contents along, faithful to `git mv`.

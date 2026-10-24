@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   materializeFile,
+  removeDirectory,
   removeFile,
   renameInWorkingTree,
   validatePath,
@@ -590,6 +591,110 @@ describe('internal/working-tree', () => {
             () => removeFile(ctx, '../escape' as FilePath),
             'PATHSPEC_OUTSIDE_REPO',
           );
+        });
+      });
+    });
+  });
+
+  describe('removeDirectory', () => {
+    describe('Given a populated directory', () => {
+      describe('When removeDirectory', () => {
+        it('Then the directory and its contents are removed', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/a/b.txt`, 'data');
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.git`, 'gitdir: x');
+
+          // Act
+          await removeDirectory(ctx, 'sub');
+
+          // Assert
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/sub`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a regular file at the path', () => {
+      describe('When removeDirectory', () => {
+        it('Then throws CHECKOUT_OVERWRITE_DIRTY listing that path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub`, 'data');
+
+          // Act
+          const err = await expectError(
+            () => removeDirectory(ctx, 'sub'),
+            'CHECKOUT_OVERWRITE_DIRTY',
+          );
+
+          // Assert
+          expect(err.data).toEqual({
+            code: 'CHECKOUT_OVERWRITE_DIRTY',
+            localChanges: ['sub'],
+            untracked: [],
+          });
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/sub`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a missing path', () => {
+      describe('When removeDirectory', () => {
+        it('Then throws CHECKOUT_OVERWRITE_DIRTY listing that path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          const err = await expectError(
+            () => removeDirectory(ctx, 'sub'),
+            'CHECKOUT_OVERWRITE_DIRTY',
+          );
+
+          // Assert
+          expect(err.data).toEqual({
+            code: 'CHECKOUT_OVERWRITE_DIRTY',
+            localChanges: ['sub'],
+            untracked: [],
+          });
+        });
+      });
+    });
+
+    describe('Given a symlink at the path', () => {
+      describe('When removeDirectory', () => {
+        it('Then throws CHECKOUT_OVERWRITE_DIRTY and keeps the link', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(`${ctx.layout.workDir}/real`);
+          await ctx.fs.symlink('real', `${ctx.layout.workDir}/sub`);
+
+          // Act
+          const err = await expectError(
+            () => removeDirectory(ctx, 'sub'),
+            'CHECKOUT_OVERWRITE_DIRTY',
+          );
+
+          // Assert
+          expect(err.data).toMatchObject({ localChanges: ['sub'] });
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/real`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a path that fails validation', () => {
+      describe('When removeDirectory', () => {
+        it('Then throws PATHSPEC_OUTSIDE_REPO carrying the path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          const err = await expectError(
+            () => removeDirectory(ctx, '../escape'),
+            'PATHSPEC_OUTSIDE_REPO',
+          );
+
+          // Assert
+          expect(err.data).toMatchObject({ path: '../escape' });
         });
       });
     });

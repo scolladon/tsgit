@@ -40,6 +40,17 @@ Like `git rm`, `rm` refuses to destroy un-recoverable changes (validated up fron
 A path whose working file is already gone is never refused. `cached` keeps the
 working file in every case; `force` overrides the valve entirely.
 
+## Submodules
+
+A submodule (a gitlink entry) is also modified when its own check finds anything: the checkout moved off the recorded commit, a tracked file edited, or an untracked file present, whatever `ignore` is configured. Such a submodule is refused `RM_LOCAL_MODIFICATIONS` unless `force` is set.
+
+- Before anything happens to a submodule, a working `.gitmodules` that differs by content from its staged entry is refused `GITMODULES_NOT_STAGED` — under `cached` and `force` too, and with nothing removed. A `.gitmodules` rewritten with the same bytes, or absent from the work tree, does not trigger it.
+- A clean submodule's directory is removed with everything beneath it. A submodule that was never initialized has no directory; only its index entry goes.
+- The `[submodule "<name>"]` section whose `path` is the removed path leaves `.gitmodules`, and the edited file is staged. A `.gitmodules` without such a section is left alone and not staged.
+- A repository kept in the submodule's own `.git` directory is first moved to `.git/modules/<name>` with `core.worktree` set, so its history survives; if `.git/modules/<name>` already holds a repository the move is refused `DIRECTORY_NOT_EMPTY`. An absorbed module under `.git/modules/<name>` is always kept.
+- `cached` removes only the index entry: the directory and `.gitmodules` stay.
+- `force` removes a modified submodule the same way.
+
 ## Merges in progress and resolve-undo
 
 - `rm` runs during a pending merge, cherry-pick, revert or rebase; it no longer refuses `OPERATION_IN_PROGRESS`.
@@ -80,6 +91,7 @@ await repo.rm(['*.log']);
 - `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive pathspec, literal or glob, matched no index entry; the first failing pathspec in argument order wins. Nothing is removed.
 - `RM_RECURSIVE_WITHOUT_R` — a pathspec reached only paths beneath a directory (a literal, or a glob matching a directory through the verbatim-prefix rule) and `recursive` was not set; `data.pattern` is the pathspec as given. Nothing is removed.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
+- `GITMODULES_NOT_STAGED` — a submodule is being removed while the working `.gitmodules` carries unstaged changes. Nothing is removed.
 - `RM_STAGED_CHANGES` / `RM_LOCAL_MODIFICATIONS` / `RM_STAGED_AND_LOCAL_CHANGES` — the safety valve refused (see above); each `data.paths` lists the refused paths.
 
 ## See also

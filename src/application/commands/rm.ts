@@ -20,31 +20,45 @@ import {
   rmStagedChanges,
 } from '../../domain/commands/error.js';
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
-import { TsgitError } from '../../domain/error.js';
+import { dirname, TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
-import { escapedPathOf, indexPathKey, isLossy } from '../../domain/git-index/index-path-key.js';
+import {
+  escapedPathOf,
+  indexPathKey,
+  isLossy,
+  keyOfPath,
+} from '../../domain/git-index/index-path-key.js';
 import {
   type ResolveUndoRecord,
   resolveUndoRecordOf,
 } from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec } from '../../domain/index.js';
 import { FILE_MODE } from '../../domain/objects/index.js';
-import type { FilePath } from '../../domain/objects/object-id.js';
+import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import { MATCH_LEVEL, type MatchLevel } from '../../domain/pathspec/wildcard.js';
+import { gitmodulesNotStaged } from '../../domain/submodule/error.js';
+import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import type { Context } from '../../ports/context.js';
 import {
   compareWorkingTreeDelta,
   isWorkingTreeModified,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
+import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
+import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   pruneEmptiedDirectories,
   survivingDirectoriesOf,
 } from '../primitives/internal/prune-emptied-directories.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
+import { deriveGitlinkContext } from '../primitives/internal/submodule-context.js';
+import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
+import { updateConfigOperations } from '../primitives/update-config.js';
+import { removeConfigSectionInText } from '../primitives/update-config-sections.js';
+import { writeObject } from '../primitives/write-object.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   type PositivePathspec,
@@ -53,8 +67,10 @@ import {
 } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 import { submoduleState } from './internal/submodule-state.js';
-import { removeFile } from './internal/working-tree.js';
+import { removeDirectory, removeFile } from './internal/working-tree.js';
 import { status } from './status.js';
+
+const GITMODULES_FILE = '.gitmodules' as FilePath;
 
 // A predicate (not a static Set) so Stryker attributes per-test coverage to
 // each literal — a module-level `new Set([...])` initializer runs before any
@@ -112,32 +128,15 @@ export const rm = async (
       }
     }
     enforcePositiveLevels(positives, tracker.highest(), opts.recursive === true);
+    const removedEntries = removedGroups.flat().filter(isStageZero);
     if (opts.force !== true) {
-      await enforceSafetyValve(
-        ctx,
-        removedGroups.flat().filter(isStageZero),
-        opts.cached === true,
-        index.indexMtime,
-      );
+      await enforceSafetyValve(ctx, removedEntries, opts.cached === true, index.indexMtime);
     }
+    await enforceGitmodulesStaged(ctx, index.entries, index.indexMtime, removedEntries);
     for (const key of removedKeys) byPath.delete(key);
     if (!opts.cached) {
-      const workingTreeEntries = removedGroups
-        .map(([first]) => first as IndexEntry)
-        .filter((entry) => !isLossy(entry));
-      for (const { path } of workingTreeEntries) {
-        // FILE_NOT_FOUND is the only tolerable error: working file already gone.
-        await removeFile(ctx, path).catch((err: unknown) => {
-          if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
-          throw err;
-        });
-      }
-      await pruneEmptiedDirectories(
-        ctx,
-        workDir,
-        workingTreeEntries.map((entry) => entry.path),
-        survivingDirectoriesOf([]),
-      );
+      const gitmodules = await removeFromWorkTree(ctx, workDir, removedGroups);
+      if (gitmodules !== undefined) byPath.set(keyOfPath(GITMODULES_FILE), [gitmodules]);
     }
     await lock.commit(Array.from(byPath.values()).flat(), 'update', {
       resolveUndo: resolvedRecordsOf(removedGroups),
@@ -147,6 +146,135 @@ export const rm = async (
     await lock.release();
   }
 };
+
+/** Remove the working-tree side of the matched entries; the staged `.gitmodules` it edited, if any. */
+const removeFromWorkTree = async (
+  ctx: Context,
+  workDir: string,
+  removedGroups: ReadonlyArray<ReadonlyArray<IndexEntry>>,
+): Promise<IndexEntry | undefined> => {
+  const entries = removedGroups
+    .map(([first]) => first as IndexEntry)
+    .filter((entry) => !isLossy(entry));
+  const gitlinks = entries.filter((entry) => entry.mode === FILE_MODE.GITLINK);
+  const gitmodules = await readGitmodules(ctx, workDir, gitlinks);
+  await removeWorkingTree(ctx, entries, gitmodules);
+  await pruneEmptiedDirectories(
+    ctx,
+    workDir,
+    entries.map((entry) => entry.path),
+    survivingDirectoriesOf([]),
+  );
+  return dropGitmodulesSections(ctx, workDir, gitlinks, gitmodules);
+};
+
+interface Gitmodules {
+  readonly text: string;
+  readonly rows: ReadonlyArray<GitmodulesRow>;
+}
+
+/** The working `.gitmodules`, read only when a gitlink is about to go; absent file, no rows. */
+const readGitmodules = async (
+  ctx: Context,
+  workDir: string,
+  gitlinks: ReadonlyArray<IndexEntry>,
+): Promise<Gitmodules> => {
+  const file = joinPath(workDir, GITMODULES_FILE);
+  if (gitlinks.length === 0 || !(await ctx.fs.exists(file))) return { text: '', rows: [] };
+  const text = await ctx.fs.readUtf8(file);
+  return { text, rows: parseGitmodules(text) };
+};
+
+const submoduleNameOf = (gitmodules: Gitmodules, path: FilePath): string =>
+  gitmodules.rows.find((row) => row.path === path)?.name ?? path;
+
+/** FILE_NOT_FOUND is the only tolerable error: the working path is already gone. */
+const removeWorkingTree = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+  gitmodules: Gitmodules,
+): Promise<void> => {
+  for (const entry of entries) {
+    await removeFromDisk(ctx, entry, gitmodules).catch((err: unknown) => {
+      if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
+      throw err;
+    });
+  }
+};
+
+const removeFromDisk = (ctx: Context, entry: IndexEntry, gitmodules: Gitmodules): Promise<void> =>
+  entry.mode === FILE_MODE.GITLINK
+    ? removeSubmodule(ctx, entry.path, submoduleNameOf(gitmodules, entry.path))
+    : removeFile(ctx, entry.path);
+
+/** An uninitialized submodule has no directory; git removes only its index entry. */
+const removeSubmodule = async (ctx: Context, path: FilePath, name: string): Promise<void> => {
+  const directory = joinPath(requireWorkTree(ctx, 'rm'), path);
+  if ((await ctx.fs.lstat(directory).catch(() => undefined)) === undefined) return;
+  await migrateGitDir(ctx, path, name);
+  await removeDirectory(ctx, path);
+};
+
+/**
+ * A repository embedded in the submodule would die with its directory: git first moves it
+ * into `.git/modules/<name>` and leaves the gitfile an absorbed submodule carries.
+ */
+const migrateGitDir = async (ctx: Context, path: FilePath, name: string): Promise<void> => {
+  const dotGit = joinPath(requireWorkTree(ctx, 'rm'), `${path}/.git`);
+  const stat = await ctx.fs.lstat(dotGit).catch(() => undefined);
+  if (stat === undefined || !stat.isDirectory || stat.isSymbolicLink) return;
+  const moduleDir = `${ctx.layout.gitDir}/modules/${name}`;
+  await ctx.fs.mkdir(dirname(moduleDir));
+  await ctx.fs.rename(dotGit, moduleDir);
+  await updateConfigOperations(deriveGitlinkContext(ctx, moduleDir, path), [
+    { kind: 'set', section: 'core', key: 'worktree', value: submoduleCoreWorktree(name, path) },
+  ]);
+  await ctx.fs.writeUtf8(dotGit, `${submoduleGitfile(name, path)}\n`);
+};
+
+/**
+ * git refuses to touch a gitlink while the working `.gitmodules` differs by content from
+ * its staged entry: the section edit would otherwise stage changes nobody reviewed.
+ */
+const enforceGitmodulesStaged = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+  indexMtime: GitIndex['indexMtime'],
+  removed: ReadonlyArray<IndexEntry>,
+): Promise<void> => {
+  if (!removed.some((entry) => entry.mode === FILE_MODE.GITLINK)) return;
+  const staged = entries.find((entry) => isStageZero(entry) && entry.path === GITMODULES_FILE);
+  if (staged === undefined) return;
+  const provider = await buildCheckinAttributeProvider(ctx);
+  const delta = await compareWorkingTreeDelta(ctx, staged, provider, indexMtime);
+  if (delta.status === 'modified') throw gitmodulesNotStaged();
+};
+
+/**
+ * git drops the `.gitmodules` section of each removed submodule and stages the result;
+ * a file without a matching section is left alone, and so is an absent one.
+ */
+const dropGitmodulesSections = async (
+  ctx: Context,
+  workDir: string,
+  gitlinks: ReadonlyArray<IndexEntry>,
+  { text, rows }: Gitmodules,
+): Promise<IndexEntry | undefined> => {
+  const sections = rows.filter((row) => gitlinks.some(({ path }) => row.path === path));
+  if (sections.length === 0) return undefined;
+  const file = joinPath(workDir, GITMODULES_FILE);
+  const edited = sections.reduce(removeSection, text);
+  await ctx.fs.writeUtf8(file, edited);
+  const id = (await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode(edited),
+  })) as ObjectId;
+  return indexEntryFromStat(await ctx.fs.lstat(file), FILE_MODE.REGULAR, id, GITMODULES_FILE);
+};
+
+const removeSection = (text: string, row: GitmodulesRow): string =>
+  removeConfigSectionInText(text, `submodule.${row.name}`);
 
 /** Every stage of a path, in index order, so an unmerged path stays whole. */
 const groupByPath = (

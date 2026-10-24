@@ -12,7 +12,18 @@
  */
 
 import { existsSync, statSync, writeFileSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -337,6 +348,7 @@ interface RmRow {
   readonly setup: Setup;
   readonly paths: ReadonlyArray<string>;
   readonly cached: boolean;
+  readonly force?: boolean;
   /** git's exit status, and the error code tsgit raises for it; `undefined` when the removal succeeds. */
   readonly refusal?: { readonly exit: number; readonly code: string };
 }
@@ -369,6 +381,44 @@ const behindSymlinkedDirectory: Setup = async (repo) => {
   commitIn(repo, 'd');
   await rename(path.join(repo, 'd'), path.join(repo, 'd2'));
   await symlink('d2', path.join(repo, 'd'));
+};
+
+const GITMODULES = '.gitmodules';
+const MODULE_DIR = ['.git', 'modules', SUBMODULE] as const;
+const SECOND_SUBMODULE = 'sub2';
+
+/** The submodule carries its own repository in `sub/.git`, as a plain clone would. */
+const embedded: Setup = async (repo) => {
+  await rm(sub(repo, '.git'));
+  await rename(path.join(repo, ...MODULE_DIR), sub(repo, '.git'));
+  gitIn(repo, 'config', '--file', sub(repo, '.git', 'config'), '--unset', 'core.worktree');
+};
+/** As `embedded`, but `.git/modules/sub` already holds a repository. */
+const embeddedOverAbsorbed: Setup = async (repo) => {
+  await rm(sub(repo, '.git'));
+  await cp(path.join(repo, ...MODULE_DIR), sub(repo, '.git'), { recursive: true });
+  gitIn(repo, 'config', '--file', sub(repo, '.git', 'config'), '--unset', 'core.worktree');
+};
+const unstagedGitmodulesEdit: Setup = async (repo) =>
+  appendFile(path.join(repo, GITMODULES), '# edit\n');
+const stagedGitmodulesEdit: Setup = async (repo) => {
+  await unstagedGitmodulesEdit(repo);
+  gitIn(repo, 'add', GITMODULES);
+};
+const gitmodulesRewrittenAlike: Setup = async (repo) =>
+  writeFile(path.join(repo, GITMODULES), await readFile(path.join(repo, GITMODULES)));
+const gitmodulesDeleted: Setup = async (repo) => rm(path.join(repo, GITMODULES));
+const secondSubmodule: Setup = async (repo) => {
+  gitIn(repo, 'submodule', 'add', '-q', '../up', SECOND_SUBMODULE);
+  commitIn(repo, SECOND_SUBMODULE);
+};
+const gitmodulesWithoutSection: Setup = async (repo) => {
+  await writeFile(
+    path.join(repo, GITMODULES),
+    '[submodule "other"]\n\tpath = other\n\turl = ../up\n',
+  );
+  gitIn(repo, 'add', GITMODULES);
+  commitIn(repo, 'other section');
 };
 
 const RM_ROWS: ReadonlyArray<RmRow> = [
@@ -435,6 +485,96 @@ const RM_ROWS: ReadonlyArray<RmRow> = [
     cached: true,
   },
   {
+    title: 'an unmoved submodule',
+    setup: nothing,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a deinitialised submodule',
+    setup: deinitialised,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a submodule carrying its repository in .git',
+    setup: embedded,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a moved submodule forced out',
+    setup: moved,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+  },
+  {
+    title: 'an unstaged .gitmodules edit',
+    setup: unstagedGitmodulesEdit,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('GITMODULES_NOT_STAGED'),
+  },
+  {
+    title: 'an unstaged .gitmodules edit, index only',
+    setup: unstagedGitmodulesEdit,
+    paths: ['sub'],
+    cached: true,
+    refusal: DIED('GITMODULES_NOT_STAGED'),
+  },
+  {
+    title: 'an unstaged .gitmodules edit, forced',
+    setup: unstagedGitmodulesEdit,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+    refusal: DIED('GITMODULES_NOT_STAGED'),
+  },
+  {
+    title: 'a staged .gitmodules edit',
+    setup: stagedGitmodulesEdit,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a .gitmodules rewritten with the same bytes',
+    setup: gitmodulesRewrittenAlike,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a .gitmodules deleted from the work tree',
+    setup: gitmodulesDeleted,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a second submodule',
+    setup: secondSubmodule,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a .gitmodules without a section for the submodule',
+    setup: gitmodulesWithoutSection,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a repository in .git over a populated .git/modules entry',
+    setup: embeddedOverAbsorbed,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('DIRECTORY_NOT_EMPTY'),
+  },
+  {
+    title: 'an unmoved submodule kept in the working tree',
+    setup: nothing,
+    paths: ['sub'],
+    cached: true,
+  },
+  {
     title: 'a tracked file behind a symlinked directory',
     setup: behindSymlinkedDirectory,
     paths: ['d/f'],
@@ -442,9 +582,16 @@ const RM_ROWS: ReadonlyArray<RmRow> = [
   },
 ];
 
-const gitRemoval = (repo: string, { paths, cached }: RmRow): number => {
+const gitRemoval = (repo: string, { paths, cached, force }: RmRow): number => {
   try {
-    gitIn(repo, 'rm', '-q', ...(cached ? ['--cached'] : []), ...paths);
+    gitIn(
+      repo,
+      'rm',
+      '-q',
+      ...(cached ? ['--cached'] : []),
+      ...(force === true ? ['-f'] : []),
+      ...paths,
+    );
     return 0;
   } catch (error) {
     return (error as { status: number }).status;
@@ -453,10 +600,13 @@ const gitRemoval = (repo: string, { paths, cached }: RmRow): number => {
 
 const tsgitRemoval = async (
   repo: string,
-  { paths, cached }: RmRow,
+  { paths, cached, force }: RmRow,
 ): Promise<string | undefined> => {
   try {
-    await removePaths(createNodeContext({ workDir: repo }), paths, { cached });
+    await removePaths(createNodeContext({ workDir: repo }), paths, {
+      cached,
+      ...(force === true ? { force } : {}),
+    });
     return undefined;
   } catch (error) {
     return (error as { data: { code: string } }).data.code;
@@ -507,11 +657,28 @@ const filesUnder = async (dir: string): Promise<string[]> => {
 const submoduleHead = (repo: string): string =>
   existsSync(path.join(sub(repo), '.git')) ? gitIn(sub(repo), 'rev-parse', 'HEAD').trim() : ABSENT;
 
+const bytesOf = async (file: string): Promise<string> =>
+  existsSync(file) ? (await readFile(file)).toString('latin1') : ABSENT;
+
+/** A status through a broken `.git` is git's refusal, which both tools must share. */
+const outcomeOf = (repo: string, ...args: string[]): string => {
+  try {
+    return gitIn(repo, ...args);
+  } catch (error) {
+    return `exit ${(error as { status: number }).status}`;
+  }
+};
+
 /** Git cannot read a status or a HEAD through a broken `.git`, so a removal is compared on what it leaves on disk. */
 const afterRemoval = async (repo: string) => ({
   index: gitIn(repo, 'ls-files', '--stage'),
   files: await filesUnder(sub(repo)),
   behindLink: await filesUnder(path.join(repo, 'd2')),
+  gitmodules: await bytesOf(path.join(repo, GITMODULES)),
+  stagedGitmodules: outcomeOf(repo, 'rev-parse', `:${GITMODULES}`),
+  status: outcomeOf(repo, 'status', '--porcelain'),
+  moduleConfig: await bytesOf(path.join(repo, ...MODULE_DIR, 'config')),
+  moduleEntries: await filesUnder(path.join(repo, ...MODULE_DIR)),
 });
 
 const observed = async (repo: string) => ({

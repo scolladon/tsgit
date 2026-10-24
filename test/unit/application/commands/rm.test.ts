@@ -1710,3 +1710,309 @@ describe('Given an unmoved submodule whose checkout has an edited tracked file',
     });
   });
 });
+
+describe('Given a clean submodule whose checkout is a gitfile', () => {
+  describe('When rm names the submodule', () => {
+    it('Then the directory goes, the index forgets it and the absorbed module stays', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['sub']);
+
+      // Assert
+      expect(result.removed).toEqual(['sub']);
+      expect(await ctx.fs.exists(work(ctx, 'sub'))).toBe(false);
+      expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['k']);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(true);
+    });
+  });
+});
+
+describe('Given a submodule whose checkout moved off the recorded commit', () => {
+  describe('When rm forces the removal', () => {
+    it('Then the directory goes and the index forgets it', async () => {
+      // Arrange
+      const { ctx, child } = await withCommittedSubmodule();
+      await ctx.fs.writeUtf8(work(ctx, 'sub/v'), 'v\n');
+      await seedIndex(child, [
+        { path: 'u', text: 'u\n' },
+        { path: 'v', text: 'v\n' },
+      ]);
+      await commit(child, { message: 'advance', author: AUTHOR });
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['sub'], { force: true });
+
+      // Assert
+      expect(result.removed).toEqual(['sub']);
+      expect(await ctx.fs.exists(work(ctx, 'sub'))).toBe(false);
+      expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['k']);
+    });
+  });
+});
+
+describe('Given a submodule whose directory is absent from the work tree', () => {
+  describe('When rm names the submodule', () => {
+    it('Then the index forgets it without touching the disk', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await emptySubmoduleDirectory(ctx);
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['sub']);
+
+      // Assert
+      expect(result.removed).toEqual(['sub']);
+      expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['k']);
+    });
+  });
+});
+
+const GITMODULES_SUB = '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n';
+const GITMODULES_SUB2 = '[submodule "sub2"]\n\tpath = sub2\n\turl = ../up\n';
+
+/** The committed submodule fixture with a staged `.gitmodules` holding `text`. */
+const withStagedGitmodules = async (text: string): Promise<{ ctx: Context; child: Context }> => {
+  const fixture = await withCommittedSubmodule();
+  await fixture.ctx.fs.writeUtf8(work(fixture.ctx, '.gitmodules'), text);
+  await add(fixture.ctx, ['.gitmodules']);
+  return fixture;
+};
+
+const blobIdOf = (ctx: Context, text: string): Promise<ObjectId> =>
+  writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) }) as Promise<ObjectId>;
+
+const indexIdOf = async (ctx: Context, path: string): Promise<ObjectId | undefined> =>
+  (await readIndex(ctx)).entries.find((e) => e.path === path)?.id;
+
+describe('Given a clean submodule named in the staged .gitmodules', () => {
+  describe('When rm names the submodule', () => {
+    it('Then its section leaves .gitmodules and the new text is staged', async () => {
+      // Arrange
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+      const sut = rm;
+
+      // Act
+      await sut(ctx, ['sub']);
+
+      // Assert
+      const text = await ctx.fs.readUtf8(work(ctx, '.gitmodules'));
+      expect(text).not.toContain('[submodule "sub"]');
+      expect(await indexIdOf(ctx, '.gitmodules')).toBe(await blobIdOf(ctx, text));
+    });
+  });
+});
+
+describe('Given a clean submodule named in the staged .gitmodules', () => {
+  describe('When rm keeps the working tree with cached', () => {
+    it('Then .gitmodules, its index entry and the directory stay', async () => {
+      // Arrange
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+      const before = await indexIdOf(ctx, '.gitmodules');
+      const sut = rm;
+
+      // Act
+      await sut(ctx, ['sub'], { cached: true });
+
+      // Assert
+      expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe(GITMODULES_SUB);
+      expect(await indexIdOf(ctx, '.gitmodules')).toBe(before);
+      expect(await ctx.fs.exists(work(ctx, 'sub/u'))).toBe(true);
+    });
+  });
+});
+
+describe('Given two sections in the staged .gitmodules', () => {
+  describe('When rm names the first submodule', () => {
+    it('Then the other section survives byte for byte', async () => {
+      // Arrange
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB + GITMODULES_SUB2);
+      const sut = rm;
+
+      // Act
+      await sut(ctx, ['sub']);
+
+      // Assert
+      expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe(GITMODULES_SUB2);
+    });
+  });
+});
+
+describe('Given a staged .gitmodules with no section for the submodule', () => {
+  describe('When rm names the submodule', () => {
+    it('Then .gitmodules and its index entry are left alone', async () => {
+      // Arrange
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB2);
+      const before = await indexIdOf(ctx, '.gitmodules');
+      const sut = rm;
+
+      // Act
+      await sut(ctx, ['sub']);
+
+      // Assert
+      expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe(GITMODULES_SUB2);
+      expect(await indexIdOf(ctx, '.gitmodules')).toBe(before);
+    });
+  });
+});
+
+const GITMODULES_EDITED = `${GITMODULES_SUB}# unstaged\n`;
+
+describe.each([
+  { options: {}, label: 'default options' },
+  { options: { cached: true }, label: 'cached' },
+  { options: { force: true }, label: 'force' },
+])('Given a .gitmodules edited after it was staged ($label)', ({ options }) => {
+  describe('When rm names the submodule', () => {
+    it('Then GITMODULES_NOT_STAGED refuses and nothing changes', async () => {
+      // Arrange
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+      await ctx.fs.writeUtf8(work(ctx, '.gitmodules'), GITMODULES_EDITED);
+      const before = (await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`);
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['sub'], options), 'GITMODULES_NOT_STAGED');
+
+      // Assert
+      expect(err.data).toEqual({ code: 'GITMODULES_NOT_STAGED' });
+      expect(await ctx.fs.exists(work(ctx, 'sub/u'))).toBe(true);
+      expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe(GITMODULES_EDITED);
+      expect((await readIndex(ctx)).entries.map((e) => `${e.path}:${e.id}`)).toEqual(before);
+    });
+  });
+});
+
+describe('Given a .gitmodules rewritten with the staged bytes', () => {
+  describe('When rm names the submodule', () => {
+    it('Then the removal proceeds and the section leaves', async () => {
+      // Arrange
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+      await ctx.fs.writeUtf8(work(ctx, '.gitmodules'), GITMODULES_SUB);
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['sub']);
+
+      // Assert
+      expect(result.removed).toEqual(['sub']);
+      expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe('');
+    });
+  });
+});
+
+describe('Given a .gitmodules deleted from the work tree after it was staged', () => {
+  describe('When rm names the submodule', () => {
+    it('Then the removal proceeds and stages nothing for .gitmodules', async () => {
+      // Arrange
+      const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+      await ctx.fs.rm(work(ctx, '.gitmodules'));
+      const before = await indexIdOf(ctx, '.gitmodules');
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['sub']);
+
+      // Assert
+      expect(result.removed).toEqual(['sub']);
+      expect(await ctx.fs.exists(work(ctx, '.gitmodules'))).toBe(false);
+      expect(await indexIdOf(ctx, '.gitmodules')).toBe(before);
+    });
+  });
+});
+
+/** Turn the fixture's gitfile submodule into one that carries its repository in `sub/.git`. */
+const embedSubmoduleRepository = async (ctx: Context): Promise<void> => {
+  await ctx.fs.rm(work(ctx, 'sub/.git'));
+  await ctx.fs.rename(`${ctx.layout.gitDir}/modules/sub`, work(ctx, 'sub/.git'));
+};
+
+describe('Given a clean submodule that carries its repository in sub/.git', () => {
+  describe('When rm names the submodule', () => {
+    it('Then the repository moves to .git/modules/sub with core.worktree set', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await embedSubmoduleRepository(ctx);
+      const headBytes = await ctx.fs.readUtf8(work(ctx, 'sub/.git/HEAD'));
+      const sut = rm;
+
+      // Act
+      await sut(ctx, ['sub']);
+
+      // Assert
+      expect(await ctx.fs.exists(work(ctx, 'sub'))).toBe(false);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(headBytes);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/sub/config`)).toContain(
+        'worktree = ../../../sub',
+      );
+    });
+  });
+});
+
+describe('Given an embedded repository whose .gitmodules name differs from its path', () => {
+  describe('When rm names the submodule', () => {
+    it('Then the repository lands under the name with a core.worktree that climbs to the path', async () => {
+      // Arrange
+      const { ctx } = await withStagedGitmodules(
+        '[submodule "mod"]\n\tpath = sub\n\turl = ../up\n',
+      );
+      await ctx.fs.rename(`${ctx.layout.gitDir}/modules/sub`, `${ctx.layout.gitDir}/modules/mod`);
+      await ctx.fs.rm(work(ctx, 'sub/.git'));
+      await ctx.fs.rename(`${ctx.layout.gitDir}/modules/mod`, work(ctx, 'sub/.git'));
+      const sut = rm;
+
+      // Act
+      await sut(ctx, ['sub']);
+
+      // Assert
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/mod/HEAD`)).toBe(true);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/mod/config`)).toContain(
+        'worktree = ../../../sub',
+      );
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub`)).toBe(false);
+    });
+  });
+});
+
+describe('Given an embedded repository and a populated .git/modules/<name>', () => {
+  describe('When rm names the submodule', () => {
+    it('Then DIRECTORY_NOT_EMPTY refuses and the embedded repository stays', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await embedSubmoduleRepository(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/modules/sub/occupied`, 'x');
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['sub']), 'DIRECTORY_NOT_EMPTY');
+
+      // Assert
+      expect(err.data).toMatchObject({ code: 'DIRECTORY_NOT_EMPTY' });
+      expect(await ctx.fs.exists(work(ctx, 'sub/.git/HEAD'))).toBe(true);
+      expect((await readIndex(ctx)).entries.map((e) => e.path)).toContain('sub');
+    });
+  });
+});
+
+describe('Given a deinitialised submodule whose directory is empty', () => {
+  describe('When rm names the submodule', () => {
+    it('Then the empty directory goes with the index entry', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await emptySubmoduleDirectory(ctx);
+      await ctx.fs.mkdir(work(ctx, 'sub'));
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['sub']);
+
+      // Assert
+      expect(result.removed).toEqual(['sub']);
+      expect(await ctx.fs.exists(work(ctx, 'sub'))).toBe(false);
+    });
+  });
+});
