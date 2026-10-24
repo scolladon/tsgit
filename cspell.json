@@ -17,6 +17,7 @@
     "abcdefghijx",
     "ABCE",
     "abcf",
+    "absorbgitdirs",
     "accum",
     "acked",
     "acks",
@@ -297,7 +298,7 @@
     "Disjointness",
     "disjointness",
     "dissimilarity",
-    "Di\u00e1taxis",
+    "Diátaxis",
     "docblocks",
     "Docstrings",
     "doesnotexist",
@@ -344,6 +345,7 @@
     "NEWSIG",
     "novalidate",
     "nreff",
+    "pathdup",
     "rdis",
     "readchangedpaths",
     "REVKEYSIG",
@@ -419,7 +421,7 @@
     "fanout",
     "fartag",
     "Fastforwards",
-    "fa\u00e7ade",
+    "façade",
     "fcheck",
     "fdict",
     "feup",
@@ -732,7 +734,7 @@
     "myfilter",
     "myrepo",
     "mysub",
-    "m\u00fcnchen",
+    "münchen",
     "nak",
     "nameability",
     "namelen",
@@ -882,7 +884,7 @@
     "Pathspec",
     "pathspec",
     "pathspecs",
-    "pa\u00dfwort",
+    "paßwort",
     "PCRE",
     "peaceiris",
     "penalise",
@@ -1191,7 +1193,7 @@
     "synthesises",
     "syscall",
     "syscalls",
-    "S\u00e9bastien",
+    "Sébastien",
     "Tagger",
     "tagger",
     "tagobj",
@@ -1440,5 +1442,7 @@
     "test/fixtures/clone-source/source.git/**",
     "src/domain/pretty/utf8-width-tables.ts"
   ],
-  "ignoreRegExpList": ["[a-f0-9]{40}"]
+  "ignoreRegExpList": [
+    "[a-f0-9]{40}"
+  ]
 }

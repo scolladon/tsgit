@@ -76,27 +76,36 @@ export const embedRepository = async (
   await ctx.fs.rename(moduleDir, workPath(ctx, `${path}/.git`));
 };
 
-export const GITMODULES_IN = '[submodule "in"]\n\tpath = in\n\turl = ../up\n';
+const gitmodulesRowFor = (path: string): string =>
+  `[submodule "${path}"]\n\tpath = ${path}\n\turl = ../up\n`;
+
+export const GITMODULES_IN = gitmodulesRowFor('in');
 
 /**
- * A nested submodule `in` inside `sub`, its repository under `sub`'s own `modules/in` behind a
- * gitfile, recorded in `sub`'s index beside `u` and, unless told otherwise, named in a tracked
- * `sub/.gitmodules`; the checkout stays clean.
+ * A nested submodule at `path` (`in` by default) inside `sub`, its repository under `sub`'s own
+ * `modules/<path>` behind a gitfile, recorded in `sub`'s index beside `u` and, unless told
+ * otherwise, named in a tracked `sub/.gitmodules`; the checkout stays clean.
  */
 export const withNestedSubmodule = async (
   { ctx, child }: SubmoduleFixture,
   {
     named = true,
-    gitmodules = GITMODULES_IN,
-  }: { readonly named?: boolean; readonly gitmodules?: string } = {},
+    path = 'in',
+    gitmodules = gitmodulesRowFor(path),
+  }: { readonly named?: boolean; readonly path?: string; readonly gitmodules?: string } = {},
 ): Promise<Context> => {
-  const nested = deriveGitlinkContext(child, `${child.layout.gitDir}/modules/in`, 'in' as FilePath);
-  await init(nested);
-  await ctx.fs.writeUtf8(
-    workPath(ctx, 'sub/in/.git'),
-    'gitdir: ../../.git/modules/sub/modules/in\n',
+  const nested = deriveGitlinkContext(
+    child,
+    `${child.layout.gitDir}/modules/${path}`,
+    path as FilePath,
   );
-  await ctx.fs.writeUtf8(workPath(ctx, 'sub/in/w'), 'w\n');
+  await init(nested);
+  const climb = '../'.repeat(path.split('/').length + 1);
+  await ctx.fs.writeUtf8(
+    workPath(ctx, `sub/${path}/.git`),
+    `gitdir: ${climb}.git/modules/sub/modules/${path}\n`,
+  );
+  await ctx.fs.writeUtf8(workPath(ctx, `sub/${path}/w`), 'w\n');
   await seedIndex(nested, [{ path: 'w', text: 'w\n' }]);
   const { id } = await commit(nested, { message: 'nested', author: SUBMODULE_AUTHOR });
   const tracked = [{ path: 'u', text: 'u\n' }];
@@ -104,9 +113,27 @@ export const withNestedSubmodule = async (
     await ctx.fs.writeUtf8(workPath(ctx, 'sub/.gitmodules'), gitmodules);
     tracked.push({ path: '.gitmodules', text: gitmodules });
   }
-  const childHead = await recordGitlink(child, 'in', id, tracked);
+  const childHead = await recordGitlink(child, path, id, tracked);
   await recordGitlink(ctx, 'sub', childHead);
   return nested;
+};
+
+/** Turn the stage-0 entry at `path` into stages 1, 2 and 3 of the same blob, as a conflicted merge leaves it. */
+export const unmergeEntry = async (ctx: Context, path: string): Promise<void> => {
+  const index = await readIndex(ctx);
+  const staged = index.entries.find((entry) => entry.path === path);
+  if (staged === undefined) throw new Error(`no stage-0 entry at ${path}`);
+  const stages = ([1, 2, 3] as const).map((stage) => ({
+    ...staged,
+    flags: { ...staged.flags, stage },
+  }));
+  const entries = [...index.entries.filter((entry) => entry.path !== path), ...stages];
+  invalidateIndexCache(ctx);
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync({ ...index, entries, extensions: [] }, ctx),
+  );
+  invalidateIndexCache(ctx);
 };
 
 /** Advance the submodule's HEAD by one commit adding `v`, leaving its index and files clean. */

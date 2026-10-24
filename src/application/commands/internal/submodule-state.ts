@@ -4,8 +4,8 @@ import {
   workingTreeFileTooLarge,
 } from '../../../domain/commands/error.js';
 import type { IndexEntry } from '../../../domain/git-index/index.js';
-import { FILE_MODE } from '../../../domain/objects/index.js';
-import type { FilePath } from '../../../domain/objects/object-id.js';
+import { FILE_MODE, type FileMode } from '../../../domain/objects/index.js';
+import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import { gitfileTooLarge, notARepository } from '../../../domain/repository/error.js';
 import { submodulePathIsSymlink } from '../../../domain/submodule/error.js';
 import type { Context } from '../../../ports/context.js';
@@ -20,10 +20,13 @@ import {
   probeGitlinkCheckout,
 } from '../../primitives/internal/gitlink-head.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
+import { findTreeEntry } from '../../primitives/internal/resolve-tree-path.js';
 import { type GitmodulesRow, parseGitmodules } from '../../primitives/parse-gitmodules.js';
 import { readBlob } from '../../primitives/read-blob.js';
+import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 import { MAX_GITMODULES_BYTES } from '../../primitives/types.js';
 import type { ChangedPath, StatusResult } from '../status.js';
+import { treeOf } from './history-rewrite.js';
 
 export type SubmoduleState = NonNullable<ChangedPath['submodule']>;
 
@@ -161,28 +164,49 @@ export interface GitmodulesSource {
   readonly stage0: ReadonlyMap<FilePath, IndexEntry>;
 }
 
-const readIndexedGitmodules = async (
+/** The blob git's `HEAD:.gitmodules` names, when HEAD records one. */
+const headGitmodulesBlob = async (ctx: Context): Promise<ObjectId | undefined> => {
+  const head = await resolveRefOrMissing(ctx, 'HEAD');
+  if (head === undefined) return undefined;
+  const entry = await findTreeEntry(ctx, await treeOf(ctx, head), GITMODULES_FILE);
+  if (entry === undefined || NON_BLOB_MODES.has(entry.mode)) return undefined;
+  return entry.id;
+};
+
+const NON_BLOB_MODES: ReadonlySet<FileMode> = new Set([FILE_MODE.DIRECTORY, FILE_MODE.GITLINK]);
+
+/** The recorded `.gitmodules` git falls back to without a working file: the staged blob, else HEAD's. */
+export const readRecordedGitmodules = async (
   ctx: Context,
   stage0: ReadonlyMap<FilePath, IndexEntry>,
 ): Promise<ReadonlyArray<GitmodulesRow>> => {
-  const indexed = stage0.get(GITMODULES_FILE as FilePath);
-  if (indexed === undefined) return [];
-  const blob = await readBlob(ctx, indexed.id, { maxBytes: MAX_GITMODULES_BYTES });
+  const id = stage0.get(GITMODULES_FILE as FilePath)?.id ?? (await headGitmodulesBlob(ctx));
+  if (id === undefined) return [];
+  const blob = await readBlob(ctx, id, { maxBytes: MAX_GITMODULES_BYTES });
   return parseGitmodules(new TextDecoder().decode(blob.content));
 };
 
-/** The `.gitmodules` rows git's `submodule_from_path` consults: the working file when present, else the staged blob; a working file past git's bound refuses. */
-export const readGitmodulesRows = async (
+/** The working `.gitmodules` text, `undefined` without one; a file past the bound refuses before it is read. */
+export const readWorkingGitmodules = async (
   ctx: Context,
-  { workDir, stage0 }: GitmodulesSource,
-): Promise<ReadonlyArray<GitmodulesRow>> => {
+  workDir: string,
+): Promise<string | undefined> => {
   const path = joinPath(workDir, GITMODULES_FILE);
-  if (!(await ctx.fs.exists(path))) return readIndexedGitmodules(ctx, stage0);
+  if (!(await ctx.fs.exists(path))) return undefined;
   const { size } = await ctx.fs.stat(path);
   if (size > MAX_GITMODULES_BYTES) {
     throw workingTreeFileTooLarge(path as FilePath, size, MAX_GITMODULES_BYTES);
   }
-  return parseGitmodules(await ctx.fs.readUtf8(path));
+  return ctx.fs.readUtf8(path);
+};
+
+/** The `.gitmodules` rows git's `submodule_from_path` consults: the working file, else the staged blob, else HEAD's. */
+export const readGitmodulesRows = async (
+  ctx: Context,
+  { workDir, stage0 }: GitmodulesSource,
+): Promise<ReadonlyArray<GitmodulesRow>> => {
+  const text = await readWorkingGitmodules(ctx, workDir);
+  return text === undefined ? readRecordedGitmodules(ctx, stage0) : parseGitmodules(text);
 };
 
 /** `diff.ignoreSubmodules`, which git parses on every run whether or not a submodule exists. */

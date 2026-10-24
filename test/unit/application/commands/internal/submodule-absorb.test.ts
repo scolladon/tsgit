@@ -16,11 +16,13 @@ import { readIndex } from '../../../../../src/application/primitives/read-index.
 import { permissionDenied } from '../../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../../src/domain/git-index/index.js';
 import type { FilePath } from '../../../../../src/domain/objects/index.js';
+import { resolveWorktreePath } from '../../../../../src/domain/worktree/resolve-path.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { seedIndex } from '../add-index-fixtures.js';
 import {
   SUBMODULE_AUTHOR as AUTHOR,
   embedRepository as embed,
+  unmergeEntry,
   withNestedSubmodule as withNested,
   withSubmodule,
   workPath,
@@ -43,6 +45,30 @@ const gitlinkEntry = async (ctx: Context, path: string): Promise<IndexEntry> => 
   if (entry === undefined) throw new Error(`no entry at ${path}`);
   return entry;
 };
+
+/** Replace `sub/.git` by a symbolic link to `target`, as written relative to `sub/`. */
+const linkDotGitTo = async (ctx: Context, target: string): Promise<void> => {
+  await ctx.fs.rm(work(ctx, 'sub/.git'));
+  await ctx.fs.symlink(target, work(ctx, 'sub/.git'));
+};
+
+/** Move the submodule's repository beside it in the working tree and point `sub/.git` at it; the repository's new path. */
+const repositoryLinkedFromBeside = async (ctx: Context): Promise<string> => {
+  const beside = resolveWorktreePath(work(ctx, 'sub'), '../ext');
+  await ctx.fs.rename(`${ctx.layout.gitDir}/modules/sub`, beside);
+  await linkDotGitTo(ctx, '../ext');
+  return beside;
+};
+
+/** Leave an empty directory in place of `sub/.git`, its repository gone. */
+const dotGitAsEmptyDirectory = async (ctx: Context): Promise<void> => {
+  await ctx.fs.rmRecursive(`${ctx.layout.gitDir}/modules/sub`);
+  await ctx.fs.rm(work(ctx, 'sub/.git'));
+  await ctx.fs.mkdir(work(ctx, 'sub/.git'));
+};
+
+const isSymbolicLink = async (ctx: Context, absolute: string): Promise<boolean> =>
+  (await ctx.fs.lstat(absolute)).isSymbolicLink;
 
 describe('validateSubmodulePath', () => {
   describe('Given a submodule path made of real directories', () => {
@@ -323,6 +349,140 @@ describe('gitfileCheckoutOf over nested gitlinks git never visits', () => {
       });
     });
   });
+
+  describe('Given a nested gitlink behind a leading directory that is a symbolic link', () => {
+    describe('When the outer checkout is asked for', () => {
+      it('Then nothing is answered: git foreach fails on the link before looking inside', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture, { path: 'a/n' });
+        const { ctx } = fixture;
+        await ctx.fs.rename(work(ctx, 'sub/a'), work(ctx, 'sub/c'));
+        await ctx.fs.symlink('c', work(ctx, 'sub/a'));
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a nested gitlink that is itself a symbolic link to its checkout', () => {
+    describe('When the outer checkout is asked for', () => {
+      it('Then nothing is answered: git foreach fails on the link before looking inside', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture);
+        const { ctx } = fixture;
+        await ctx.fs.rename(work(ctx, 'sub/in'), work(ctx, 'sub/c'));
+        await ctx.fs.symlink('c', work(ctx, 'sub/in'));
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a nested gitlink no .gitmodules row names, holding only an empty directory', () => {
+    describe('When the outer checkout is asked for', () => {
+      it('Then nothing is answered: git names a gitlink before asking whether it is populated', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture, { named: false });
+        const { ctx } = fixture;
+        await ctx.fs.rmRecursive(work(ctx, 'sub/in'));
+        await ctx.fs.mkdir(work(ctx, 'sub/in'));
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a regular file in place of a nested gitlink', () => {
+    describe('When the outer checkout is asked for', () => {
+      it('Then it is skipped as unpopulated and the repository is answered', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture);
+        const { ctx } = fixture;
+        await ctx.fs.rmRecursive(work(ctx, 'sub/in'));
+        await ctx.fs.writeUtf8(work(ctx, 'sub/in'), 'plain\n');
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result?.kind).toBe('repository');
+      });
+    });
+  });
+
+  describe('Given a nested gitlink whose .git is a directory holding no repository', () => {
+    describe('When the outer checkout is asked for', () => {
+      it('Then it is skipped as unpopulated and the repository is answered', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture);
+        const { ctx } = fixture;
+        await ctx.fs.rm(work(ctx, 'sub/in/.git'));
+        await ctx.fs.mkdir(work(ctx, 'sub/in/.git'));
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result?.kind).toBe('repository');
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a directory holding no repository', () => {
+    describe('When its checkout is asked for', () => {
+      it('Then nothing is answered and nothing refuses: git reads no gitfile from a directory', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await dotGitAsEmptyDirectory(ctx);
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a link to its repository under .git/modules', () => {
+    describe('When its checkout is asked for', () => {
+      it('Then nothing is answered: a link to a directory is no gitfile', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await linkDotGitTo(ctx, '../.git/modules/sub');
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
 });
 
 describe('absorbGitDirs', () => {
@@ -585,6 +745,160 @@ describe('absorbGitDirs', () => {
       });
     });
   });
+
+  describe('Given a submodule whose .git is a link to a repository elsewhere in the working tree', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then the repository the link leads to moves under modules and a gitfile replaces the link', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        const beside = await repositoryLinkedFromBeside(ctx);
+        const headBytes = await ctx.fs.readUtf8(`${beside}/HEAD`);
+        const sut = absorbGitDirs;
+
+        // Act
+        await sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(headBytes);
+        expect(await ctx.fs.exists(beside)).toBe(false);
+        expect(await isSymbolicLink(ctx, work(ctx, 'sub/.git'))).toBe(false);
+        expect(await ctx.fs.readUtf8(work(ctx, 'sub/.git'))).toBe('gitdir: ../.git/modules/sub\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/sub/config`)).toContain(
+          'worktree = ../../../sub',
+        );
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a link to its repository under .git/modules', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then nothing moves and the link stays: the repository already lies inside the git directory', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await linkDotGitTo(ctx, '../.git/modules/sub');
+        const configBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/sub/config`);
+        const sut = absorbGitDirs;
+
+        // Act
+        await sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB);
+
+        // Assert
+        expect(await isSymbolicLink(ctx, work(ctx, 'sub/.git'))).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(true);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/sub/config`)).toBe(configBefore);
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a directory holding no repository, named by no .gitmodules row', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then it refuses for the missing name and creates nothing', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await dotGitAsEmptyDirectory(ctx);
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], []),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'SUBMODULE_NAME_NOT_FOUND', path: 'sub' });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a directory holding no repository, named in .gitmodules', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then the module directory is created and the gitfile write over the directory refuses, as git dies there', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await dotGitAsEmptyDirectory(ctx);
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'PERMISSION_DENIED', path: work(ctx, 'sub/.git') });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/config`)).toBe(false);
+        expect((await ctx.fs.lstat(work(ctx, 'sub/.git'))).isDirectory).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a gitfile submodule holding a nested gitlink behind a leading directory that is a symbolic link', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then it refuses naming the nested component, as git absorb-gitdirs dies inside the checkout', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture, { path: 'a/n' });
+        const { ctx } = fixture;
+        await ctx.fs.rename(work(ctx, 'sub/a'), work(ctx, 'sub/c'));
+        await ctx.fs.symlink('c', work(ctx, 'sub/a'));
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'a/n', component: 'a' });
+      });
+    });
+  });
+
+  describe('Given an embedded submodule holding a nested gitlink that is itself a symbolic link', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then the outer repository moves first and the nested link then refuses, in git order', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture);
+        const { ctx } = fixture;
+        await embed(ctx, 'sub', `${ctx.layout.gitDir}/modules/sub`);
+        await ctx.fs.rename(work(ctx, 'sub/in'), work(ctx, 'sub/c'));
+        await ctx.fs.symlink('c', work(ctx, 'sub/in'));
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'in' });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(true);
+        expect(await ctx.fs.readUtf8(work(ctx, 'sub/.git'))).toBe('gitdir: ../.git/modules/sub\n');
+      });
+    });
+  });
+
+  describe('Given a gitlink whose leading directory is a link to a directory lacking it', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then it is skipped as unpopulated before the link is judged', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule('a/sub', 'sub');
+        await ctx.fs.rmRecursive(work(ctx, 'a/sub'));
+        await ctx.fs.rename(work(ctx, 'a'), work(ctx, 'c'));
+        await ctx.fs.symlink('c', work(ctx, 'a'));
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['a/sub' as FilePath], ROWS_SUB),
+        );
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
 });
 
 describe('gitlinkLocalModification', () => {
@@ -839,6 +1153,79 @@ describe('gitlinkLocalModification', () => {
 
         // Assert
         expect(result).toBe('clean');
+      });
+    });
+  });
+
+  describe('Given a submodule whose checkout holds an unmerged entry', () => {
+    describe('When its local modification is judged', () => {
+      it('Then it is modified', async () => {
+        // Arrange
+        const { ctx, child } = await withSubmodule();
+        await unmergeEntry(child, 'u');
+        const sut = gitlinkLocalModification;
+
+        // Act
+        const result = await sut(
+          ctx,
+          createLeadingPathScanner(ctx),
+          await gitlinkEntry(ctx, 'sub'),
+          childStatusSpy(),
+        );
+
+        // Assert
+        expect(result).toBe('modified');
+      });
+    });
+  });
+
+  describe('Given a submodule whose checkout records an unnamed gitlink holding an empty directory', () => {
+    describe('When its local modification is judged', () => {
+      it('Then it is modified without consulting the checkout', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        await withNested(fixture, { named: false });
+        const { ctx } = fixture;
+        await ctx.fs.rmRecursive(work(ctx, 'sub/in'));
+        await ctx.fs.mkdir(work(ctx, 'sub/in'));
+        const childStatus = childStatusSpy();
+        const sut = gitlinkLocalModification;
+
+        // Act
+        const result = await sut(
+          ctx,
+          createLeadingPathScanner(ctx),
+          await gitlinkEntry(ctx, 'sub'),
+          childStatus,
+        );
+
+        // Assert
+        expect(result).toBe('modified');
+        expect(childStatus).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a link to its repository under .git/modules', () => {
+    describe('When its local modification is judged', () => {
+      it('Then it is modified without consulting the checkout: no gitfile is in use', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await linkDotGitTo(ctx, '../.git/modules/sub');
+        const childStatus = childStatusSpy();
+        const sut = gitlinkLocalModification;
+
+        // Act
+        const result = await sut(
+          ctx,
+          createLeadingPathScanner(ctx),
+          await gitlinkEntry(ctx, 'sub'),
+          childStatus,
+        );
+
+        // Assert
+        expect(result).toBe('modified');
+        expect(childStatus).not.toHaveBeenCalled();
       });
     });
   });

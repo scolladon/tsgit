@@ -300,7 +300,7 @@ const symlinkCheckout = async (
  * A `.git` link that cannot be followed leaves nothing checked out: a dangling link, or a
  * loop or unsearchable target, which the adapters report alike as PERMISSION_DENIED.
  */
-const statOrUnreachable = async (ctx: Context, dotGit: string) => {
+export const statOrUnreachable = async (ctx: Context, dotGit: string) => {
   try {
     return await metadataOf(ctx, dotGit).stat(dotGit);
   } catch (err) {

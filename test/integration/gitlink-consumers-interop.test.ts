@@ -11,6 +11,7 @@
  *   interopSurface: checkout, merge, stash, rm
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import {
   appendFile,
@@ -735,6 +736,87 @@ const unmergedGitmodules: Setup = async (repo) => {
   await writeFile(path.join(repo, GITMODULES), original);
 };
 
+/** `sub`'s `.gitmodules` loses every section, committed; the nested gitlink stays recorded. */
+const nestedSectionDropped = async (repo: string): Promise<void> => {
+  await writeFile(sub(repo, GITMODULES), '');
+  gitIn(sub(repo), 'add', GITMODULES);
+  commitIn(sub(repo), 'drop the nested section');
+  gitIn(repo, 'add', SUBMODULE);
+  commitIn(repo, 'record the drop');
+};
+/** `sub/.git` links to the repository, moved beside the superproject. */
+const dotGitLinkedOutside: Setup = async (repo) => {
+  const outside = `${repo}-ext`;
+  await rename(path.join(repo, ...MODULE_DIR), outside);
+  gitIn(repo, 'config', '--file', path.join(outside, 'config'), '--unset', 'core.worktree');
+  await rm(sub(repo, '.git'));
+  await symlink(path.relative(sub(repo), outside), sub(repo, '.git'));
+};
+/** `sub/.git` links to its own repository under `.git/modules`. */
+const dotGitLinkedIntoModules: Setup = async (repo) => {
+  await rm(sub(repo, '.git'));
+  await symlink(path.join('..', ...MODULE_DIR), sub(repo, '.git'));
+};
+/** `sub/.git` is an empty directory, the repository gone. */
+const dotGitEmptyDirectory: Setup = async (repo) => {
+  await rm(path.join(repo, ...MODULE_DIR), { recursive: true });
+  await rm(sub(repo, '.git'));
+  await mkdir(sub(repo, '.git'));
+};
+const dotGitEmptyDirectoryWithoutName: Setup = async (repo) => {
+  await embeddedWithoutName(repo);
+  await rm(sub(repo, '.git'), { recursive: true });
+  await mkdir(sub(repo, '.git'));
+};
+/** `sub/.git` is a FIFO: present, yet neither a regular file nor a repository; a user file waits beside it. */
+const dotGitFifoWithoutName: Setup = async (repo) => {
+  await embeddedWithoutName(repo);
+  await rm(sub(repo, '.git'), { recursive: true });
+  execFileSync('mkfifo', [sub(repo, '.git')]);
+  await writeFile(sub(repo, 'u2'), 'u2\n');
+};
+/** A nested `a/n` inside `sub`, then `sub/a` turned into a link to the directory holding it. */
+const nestedBehindSymlinkedDirectory: Setup = async (repo) => {
+  gitIn(sub(repo), 'submodule', 'add', '-q', upstreamOf(repo), 'a/n');
+  gitIn(sub(repo), 'add', GITMODULES);
+  commitIn(sub(repo), 'nested below a');
+  gitIn(repo, 'add', SUBMODULE);
+  commitIn(repo, 'record nested');
+  await rename(sub(repo, 'a'), sub(repo, 'c'));
+  await symlink('c', sub(repo, 'a'));
+};
+/** The nested `in` replaced by a link to its moved checkout. */
+const nestedLeafSymlink: Setup = async (repo) => {
+  await withNested(repo);
+  await rename(sub(repo, NESTED), sub(repo, 'c'));
+  await symlink('c', sub(repo, NESTED));
+};
+/** The nested `in` no longer named by `sub`'s `.gitmodules`, its directory emptied. */
+const nestedUnnamedEmptyDirectory: Setup = async (repo) => {
+  await withNested(repo);
+  await nestedSectionDropped(repo);
+  await rm(sub(repo, NESTED), { recursive: true });
+  await mkdir(sub(repo, NESTED));
+};
+const unmergedGitmodulesDeleted: Setup = async (repo) => {
+  await unmergedGitmodules(repo);
+  await rm(path.join(repo, GITMODULES));
+};
+const unmergedGitmodulesEmbedded: Setup = async (repo) => {
+  await unmergedGitmodules(repo);
+  await embedded(repo);
+};
+/** `.gitmodules` dropped from the index and the work tree, still in HEAD; the repository embedded. */
+const gitmodulesOnlyInHead: Setup = async (repo) => {
+  gitIn(repo, 'rm', '-q', '--cached', GITMODULES);
+  await rm(path.join(repo, GITMODULES));
+  await embedded(repo);
+};
+const oversizedGitmodulesStaged: Setup = async (repo) => {
+  await appendFile(path.join(repo, GITMODULES), `# ${'x'.repeat(OVERSIZED_GITFILE_BYTES)}\n`);
+  gitIn(repo, 'add', GITMODULES);
+};
+
 const RM_ROWS: ReadonlyArray<RmRow> = [
   {
     title: 'a moved submodule',
@@ -983,6 +1065,121 @@ const RM_ROWS: ReadonlyArray<RmRow> = [
     setup: behindSymlinkedDirectory,
     paths: ['d/f'],
     cached: false,
+  },
+  {
+    title: 'a .git linking to a repository outside the working tree',
+    setup: dotGitLinkedOutside,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a .git linking to the repository under .git/modules',
+    setup: dotGitLinkedIntoModules,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'a .git linking to the repository under .git/modules, forced',
+    setup: dotGitLinkedIntoModules,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+  },
+  {
+    title: 'a .git that is an empty directory',
+    setup: dotGitEmptyDirectory,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('PERMISSION_DENIED'),
+  },
+  {
+    title: 'a .git that is an empty directory, named by no .gitmodules row',
+    setup: dotGitEmptyDirectoryWithoutName,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_NAME_NOT_FOUND'),
+  },
+  {
+    title: 'a FIFO in place of .git, named by no .gitmodules row, forced',
+    setup: dotGitFifoWithoutName,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+    refusal: DIED('SUBMODULE_NAME_NOT_FOUND'),
+  },
+  {
+    title: 'a nested gitlink behind a symbolic link',
+    setup: nestedBehindSymlinkedDirectory,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_PATH_IS_SYMLINK'),
+  },
+  {
+    title: 'a nested gitlink behind a symbolic link, forced',
+    setup: nestedBehindSymlinkedDirectory,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+    refusal: DIED('SUBMODULE_PATH_IS_SYMLINK'),
+  },
+  {
+    title: 'a nested gitlink behind a symbolic link, index only',
+    setup: nestedBehindSymlinkedDirectory,
+    paths: ['sub'],
+    cached: true,
+  },
+  {
+    title: 'a nested gitlink that is a symbolic link',
+    setup: nestedLeafSymlink,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_PATH_IS_SYMLINK'),
+  },
+  {
+    title: 'a nested gitlink that is a symbolic link, index only',
+    setup: nestedLeafSymlink,
+    paths: ['sub'],
+    cached: true,
+  },
+  {
+    title: 'a nested gitlink no .gitmodules row names, left an empty directory',
+    setup: nestedUnnamedEmptyDirectory,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'a nested gitlink no .gitmodules row names, left an empty directory, forced',
+    setup: nestedUnnamedEmptyDirectory,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+  },
+  {
+    title: 'an unmerged .gitmodules deleted from the work tree',
+    setup: unmergedGitmodulesDeleted,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'an unmerged .gitmodules and a repository carried in .git',
+    setup: unmergedGitmodulesEmbedded,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_NAME_NOT_FOUND'),
+  },
+  {
+    title: 'a .gitmodules kept only in HEAD and a repository carried in .git',
+    setup: gitmodulesOnlyInHead,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a staged .gitmodules past the bound tsgit reads, index only',
+    setup: oversizedGitmodulesStaged,
+    paths: ['sub'],
+    cached: true,
   },
 ];
 

@@ -44,7 +44,7 @@ import {
   compareWorkingTreeDelta,
   isWorkingTreeModified,
 } from '../primitives/compare-working-tree-entry.js';
-import { lstatIfPresent, readUtf8IfPresent } from '../primitives/internal/fs-probes.js';
+import { lstatIfPresent } from '../primitives/internal/fs-probes.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
@@ -57,7 +57,7 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
-import type { GitmodulesRow } from '../primitives/parse-gitmodules.js';
+import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { removeConfigSectionInText } from '../primitives/update-config-sections.js';
@@ -75,7 +75,7 @@ import {
   type GitlinkLocalModification,
   gitlinkLocalModification,
 } from './internal/submodule-absorb.js';
-import { readGitmodulesRows } from './internal/submodule-state.js';
+import { readRecordedGitmodules, readWorkingGitmodules } from './internal/submodule-state.js';
 import { removeDirectory, removeFile } from './internal/working-tree.js';
 import { statusForDirtyCheck } from './status.js';
 
@@ -170,7 +170,7 @@ const guardRemoval = async (
   await enforceGitmodulesStaged(ctx, index.entries, index.indexMtime, removed);
   const scanner = createLeadingPathScanner(ctx);
   const gitlinks = removed.filter(isGitlinkEntry).map((entry) => entry.path);
-  const gitmodules = await readGitmodules(ctx, workDir, index.entries, gitlinks);
+  const gitmodules = await readGitmodules(ctx, workDir, index.entries, gitlinks, opts);
   if (!opts.cached) await absorbGitDirs(ctx, scanner, gitlinks, gitmodules.rows);
   if (opts.force !== true) {
     await enforceSafetyValve(ctx, scanner, removed, opts.cached === true, index.indexMtime);
@@ -191,7 +191,7 @@ const removeFromWorkTree = async (
   const entries = removedGroups
     .map(([first]) => first as IndexEntry)
     .filter((entry) => !isLossy(entry));
-  await removeWorkingTree(ctx, entries, gitmodules.unmerged);
+  await removeWorkingTree(ctx, entries, gitmodules.refusesEdit);
   await pruneEmptiedDirectories(
     ctx,
     workDir,
@@ -205,26 +205,35 @@ interface Gitmodules {
   /** The working file's text, `undefined` when there is none to edit. */
   readonly text: string | undefined;
   readonly rows: ReadonlyArray<GitmodulesRow>;
-  /** Whether the index holds `.gitmodules` at a non-zero stage, which git refuses to edit. */
-  readonly unmerged: boolean;
+  /** git's `Cannot change unmerged .gitmodules`: a working file the index holds unmerged, refused once a submodule's directory went. */
+  readonly refusesEdit: boolean;
 }
 
+const NOTHING_TO_EDIT: Gitmodules = { text: undefined, rows: [], refusesEdit: false };
+
 /**
- * `.gitmodules` as git consults it when a gitlink is about to go: the rows from the working
- * file, else the staged blob, none while it is unmerged; the working text for the section edit.
+ * `.gitmodules` as git consults it when a gitlink leaves the working tree: the rows from the
+ * working file, else the recorded blob, none while it is unmerged; the working text for the
+ * section edit. `cached` neither absorbs nor edits, so it reads nothing.
  */
 const readGitmodules = async (
   ctx: Context,
   workDir: string,
   entries: ReadonlyArray<IndexEntry>,
   gitlinks: ReadonlyArray<FilePath>,
+  opts: RmOptions,
 ): Promise<Gitmodules> => {
+  if (gitlinks.length === 0 || opts.cached === true) return NOTHING_TO_EDIT;
   const unmerged = entries.some((entry) => entry.path === GITMODULES_FILE && !isStageZero(entry));
-  if (gitlinks.length === 0) return { text: undefined, rows: [], unmerged };
+  if (unmerged) {
+    const present = await ctx.fs.exists(joinPath(workDir, GITMODULES_FILE));
+    return { text: undefined, rows: [], refusesEdit: present };
+  }
+  const text = await readWorkingGitmodules(ctx, workDir);
   const stage0 = new Map(entries.filter(isStageZero).map((entry) => [entry.path, entry]));
-  const rows = unmerged ? [] : await readGitmodulesRows(ctx, { workDir, stage0 });
-  const text = await readUtf8IfPresent(ctx.fs, joinPath(workDir, GITMODULES_FILE));
-  return { text, rows, unmerged };
+  const rows =
+    text === undefined ? await readRecordedGitmodules(ctx, stage0) : parseGitmodules(text);
+  return { text, rows, refusesEdit: false };
 };
 
 /**
@@ -234,14 +243,14 @@ const readGitmodules = async (
 const removeWorkingTree = async (
   ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
-  unmergedGitmodules: boolean,
+  gitmodulesRefusesEdit: boolean,
 ): Promise<void> => {
   for (const entry of entries) {
     await removeFromDisk(ctx, entry).catch((err: unknown) => {
       if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
       throw err;
     });
-    if (unmergedGitmodules && entry.mode === FILE_MODE.GITLINK) throw gitmodulesUnmerged();
+    if (gitmodulesRefusesEdit && entry.mode === FILE_MODE.GITLINK) throw gitmodulesUnmerged();
   }
 };
 
