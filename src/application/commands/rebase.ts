@@ -7,17 +7,19 @@
  * Conflicts stop under a byte-faithful `.git/rebase-merge/` state + `REBASE_HEAD`.
  */
 import {
+  checkoutOverwriteDirty,
   invalidOption,
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
 import { renderPatch, sortedRecordedPaths } from '../../domain/diff/index.js';
 import type { TsgitError } from '../../domain/error.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
 import { amendedExtraHeaders } from '../../domain/objects/amend-headers.js';
 import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { FileMode, FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import {
   buildCombinedMessage,
   type CombinedMessageEntry,
@@ -43,7 +45,9 @@ import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
 import { createCommit, createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { diffTrees } from '../primitives/diff-trees.js';
+import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { removeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
+import { acquireIndexLock } from '../primitives/internal/index-lock.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
@@ -54,6 +58,7 @@ import {
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { mergeBasesOf } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
+import { readIndex } from '../primitives/read-index.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook, runInformationalHook } from '../primitives/run-hook.js';
@@ -63,9 +68,11 @@ import { configuredAutostash } from './internal/autostash-config.js';
 import { removeBranchState, removeCommittedState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import {
-  assertCleanWorkTree,
+  cleanWorkTreePreflight,
+  type SubmoduleIgnoreModes,
   stagedChangePaths,
   unstagedChangePaths,
+  type WorkTreePreflight,
 } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
@@ -89,14 +96,17 @@ import { resolveRebaseSides } from './internal/rebase-revisions.js';
 import {
   clearRebaseState,
   dropFixupGroup,
+  type RebaseProgress,
   type RebaseState,
   type RebaseStop,
   readAutostash,
+  readRebaseProgress,
   readRebaseState,
   readRewrittenList,
   serializeRewritten,
   writeAutostash,
   writeRebaseStop,
+  writeRescheduledPick,
 } from './internal/rebase-state.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
@@ -239,6 +249,75 @@ const buildTodoEntries = async (
   return entries;
 };
 
+/** A staged gitlink change git's two-way checkout keeps; `entry` is `undefined` for a staged removal. */
+interface CarriedGitlink {
+  readonly path: FilePath;
+  readonly entry: IndexEntry | undefined;
+}
+
+const sameTreeEntry = (
+  a: { readonly id: ObjectId; readonly mode: FileMode } | undefined,
+  b: { readonly id: ObjectId; readonly mode: FileMode } | undefined,
+): boolean => a?.id === b?.id && a?.mode === b?.mode;
+
+/**
+ * git's two-way checkout keeps a staged path HEAD and `onto` agree on, and one the index
+ * already holds as `onto` does; it rejects a staged version that matches neither.
+ */
+const assertOntoAgrees = async (
+  ctx: Context,
+  trees: { readonly head: ObjectId; readonly onto: ObjectId },
+  carried: ReadonlyArray<CarriedGitlink>,
+): Promise<void> => {
+  const head = (await flattenEscapedTree(ctx, trees.head)).entries;
+  const onto = (await flattenEscapedTree(ctx, trees.onto)).entries;
+  const differing = carried
+    .filter(
+      ({ path, entry }) =>
+        !sameTreeEntry(head.get(path), onto.get(path)) && !sameTreeEntry(entry, onto.get(path)),
+    )
+    .map(({ path }) => path);
+  if (differing.length === 0) return;
+  throw checkoutOverwriteDirty({ localChanges: differing, untracked: [] });
+};
+
+/** The staged gitlink changes the onto checkout must keep, or its refusal when `onto` disagrees. */
+const gitlinksToCarry = async (
+  ctx: Context,
+  headCommit: ObjectId,
+  onto: ObjectId,
+  paths: ReadonlyArray<FilePath>,
+): Promise<ReadonlyArray<CarriedGitlink>> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — an empty `paths` makes `carried` empty, so `assertOntoAgrees` has nothing to compare and the result is the same `[]`; the guard only skips the index and tree reads.
+  if (paths.length === 0) return [];
+  const { entries } = await readIndex(ctx);
+  const carried = paths.map((path) => ({
+    path,
+    entry: entries.find((entry) => entry.path === path),
+  }));
+  const trees = { head: await treeOf(ctx, headCommit), onto: await treeOf(ctx, onto) };
+  await assertOntoAgrees(ctx, trees, carried);
+  return carried;
+};
+
+/** Put the carried gitlink changes back over the freshly checked-out `onto` index. */
+const restageCarried = async (
+  ctx: Context,
+  carried: ReadonlyArray<CarriedGitlink>,
+): Promise<void> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — with nothing carried the lock rewrites the same entries it just read, so no state differs; the guard only skips that write.
+  if (carried.length === 0) return;
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const carriedPaths = new Set(carried.map(({ path }) => path));
+    const kept = (await readIndex(ctx)).entries.filter((entry) => !carriedPaths.has(entry.path));
+    const restaged = carried.flatMap(({ entry }) => (entry === undefined ? [] : [entry]));
+    await lock.commit([...kept, ...restaged], 'update');
+  } finally {
+    await lock.release();
+  }
+};
+
 /**
  * Detach HEAD onto `onto` — git's `rebase (start): checkout <onto>`. As a real
  * checkout it also resets the index + working tree to `onto`'s tree, so the
@@ -251,6 +330,7 @@ const detachHead = async (
   onto: ObjectId,
   ontoName: string,
   reflogAction: string,
+  carried: ReadonlyArray<CarriedGitlink>,
 ): Promise<void> => {
   await getRefStore(ctx).applyRefUpdates([
     {
@@ -265,6 +345,7 @@ const detachHead = async (
     },
   ]);
   await hardResetWorktreeToCommit(ctx, onto);
+  await restageCarried(ctx, carried);
 };
 
 /**
@@ -367,6 +448,8 @@ interface ReplayContext extends FinishSides {
   readonly todo: ReadonlyArray<PlannedLine>;
   /** Set on the initial (fresh-run) stop only — git writes the backup once. */
   readonly backupHeader?: RebaseBackupHeader;
+  /** The submodule ignore modes the pre-flight read; a resumed run reads them afresh, as git's new process does. */
+  readonly submoduleIgnores?: SubmoduleIgnoreModes;
 }
 
 /** Applied + rewritten state carried into a resumed replay (`continue`). */
@@ -509,6 +592,33 @@ const stopOnConflict = async (
   };
 };
 
+/**
+ * git's `do_pick_commit` refuses a pick while the index differs from HEAD, gitlinks
+ * counted, and leaves the pick rescheduled so `--continue` retries it and `--abort` restores.
+ * Every pick leaves the index equal to HEAD, so only a todo opening with a pick can meet a
+ * dirty one: a `--rebase-merges` script opens with a `reset` that discards the staged change.
+ */
+const refuseDirtyIndexBeforeFirstPick = async (
+  ctx: Context,
+  rc: ReplayContext,
+  cur: ObjectId,
+): Promise<void> => {
+  const first = rc.todo[0];
+  if (first?.action !== 'pick') return;
+  const staged = await stagedChangePaths(ctx, await treeOf(ctx, cur), rc.submoduleIgnores);
+  if (staged.length === 0) return;
+  await writeRescheduledPick(ctx, {
+    headName: rc.branch ?? 'detached HEAD',
+    onto: rc.onto,
+    origHead: rc.origHead,
+    done: [...rc.doneBefore, first],
+    remaining: rc.todo,
+    pickSha: first.oid,
+    backupHeader: rc.backupHeader,
+  });
+  throw workingTreeDirty({ localChanges: staged, untracked: [] });
+};
+
 /** Replay `rc.todo` from the detached HEAD `ourId`; stop on conflict, else finish. */
 const replayFrom = async (
   ctx: Context,
@@ -519,6 +629,7 @@ const replayFrom = async (
   let cur = ourId;
   const applied: RebasedCommit[] = [...seed.applied];
   const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
+  await refuseDirtyIndexBeforeFirstPick(ctx, rc, ourId);
   for (let i = 0; i < rc.todo.length; i += 1) {
     const line = rc.todo[i]!;
     await removeAutoMerge(ctx);
@@ -607,15 +718,22 @@ export const rebaseRun = async (
     throw invalidOption('rebaseMerges', 'interactive instructions cannot carry merges');
   }
   const stash = await autostashIfWanted(ctx, input.autostash);
-  await assertCleanWorkTree(ctx, await treeOf(ctx, sides.headCommit));
+  const preflight = await cleanWorkTreePreflight(ctx, await treeOf(ctx, sides.headCommit));
   if (input.interactive !== undefined) {
     if (stash !== undefined) await writeAutostash(ctx, stash);
     const { branch, headCommit, upstream, onto, ontoName } = sides;
     const interactiveSides = { branch, headCommit, upstream, onto, ontoName };
     return startInteractive(ctx, sides.upstreamName, input.interactive, interactiveSides);
   }
-  return replayUnlessUpToDate(ctx, input.rebaseMerges, sides, { stash, reflogAction });
+  return replayUnlessUpToDate(ctx, input.rebaseMerges, sides, { stash, reflogAction, preflight });
 };
+
+interface RunOptions {
+  readonly stash: ObjectId | undefined;
+  readonly reflogAction: string;
+  /** What the pre-flight read: the ignore modes kept for the run as git's process keeps them, and the staged gitlinks to carry. */
+  readonly preflight: WorkTreePreflight;
+}
 
 /** git fires pre-rebase only when the rebase will do work; an up-to-date rebase
  *  (nothing to replay or fast-forward) returns before the hook, matching git. */
@@ -623,14 +741,14 @@ const replayUnlessUpToDate = async (
   ctx: Context,
   mode: RebaseRunInput['rebaseMerges'],
   sides: RunSides,
-  run: { readonly stash: ObjectId | undefined; readonly reflogAction: string },
+  run: RunOptions,
 ): Promise<RebaseResult> => {
   const { onto, upstream, branchBase } = sides;
   if (await canFastForward(ctx, { onto, upstream, head: sides.headCommit, branchBase })) {
     return finishUpToDate(ctx, run.stash);
   }
   if (run.stash !== undefined) await writeAutostash(ctx, run.stash);
-  return startReplay(ctx, mode, sides, run.reflogAction);
+  return startReplay(ctx, mode, sides, run);
 };
 
 /** Both sides of a non-interactive run, named and resolved. */
@@ -667,14 +785,15 @@ const startReplay = async (
   ctx: Context,
   mode: RebaseRunInput['rebaseMerges'],
   sides: RunSides,
-  reflogAction: string,
+  { reflogAction, preflight }: Pick<RunOptions, 'reflogAction' | 'preflight'>,
 ): Promise<RebaseResult> => {
   const { headCommit, upstream, onto } = sides;
   await assertEverySourceLoadable(ctx);
   await firePreRebase(ctx, sides.upstreamName);
   const todo = await planTodo(ctx, mode, { upstream, head: headCommit });
+  const carried = await gitlinksToCarry(ctx, headCommit, onto, preflight.carried);
   await writeOrigHead(ctx, headCommit);
-  await detachHead(ctx, headCommit, onto, sides.ontoName, reflogAction);
+  await detachHead(ctx, headCommit, onto, sides.ontoName, reflogAction, carried);
   const rc: ReplayContext = {
     branch: sides.branch,
     onto,
@@ -683,6 +802,7 @@ const startReplay = async (
     doneBefore: [],
     todo,
     backupHeader: backupHeaderOf(upstream, headCommit, onto),
+    submoduleIgnores: preflight.modes,
   };
   return replayFrom(ctx, rc, onto, { applied: [], rewritten: [] });
 };
@@ -712,12 +832,48 @@ const branchOf = (headName: string): RefName | undefined =>
 export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --continue');
-  const state = await readRebaseState(ctx);
-  if (state === undefined) throw noOperationInProgress('rebase');
+  const progress = await readRebaseProgress(ctx);
+  if (progress === undefined) throw noOperationInProgress('rebase');
   await assertNothingUnstaged(ctx);
   await assertEverySourceLoadable(ctx);
+  if (progress.rescheduled) return continueRescheduled(ctx, progress);
+  const state = (await readRebaseState(ctx)) as RebaseState;
   if (isInteractiveState(state)) return rebaseContinueInteractive(ctx, state);
   return continueStop(ctx, state);
+};
+
+/**
+ * Retry a pick git refused for a dirty index: `--continue` re-counts the todo (the pick
+ * sits in `done` and in the live list), refuses while the index still differs from HEAD,
+ * else replays the rescheduled pick and the rest.
+ */
+const continueRescheduled = async (
+  ctx: Context,
+  progress: RebaseProgress,
+): Promise<RebaseResult> => {
+  const total = progress.done.length + progress.remaining.length;
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/rebase-merge/end`, `${total}\n`);
+  const head = await resolveRef(ctx, HEAD);
+  const staged = await stagedChangePaths(ctx, await treeOf(ctx, head));
+  if (staged.length > 0) throw workingTreeDirty({ localChanges: staged, untracked: [] });
+  return retryRescheduledPick(ctx, progress, head);
+};
+
+/** The rescheduled pick sits in `done` and in the live todo; the retry replays it from the todo, which lists it in `done` once more as git does. */
+const retryRescheduledPick = (
+  ctx: Context,
+  progress: RebaseProgress,
+  head: ObjectId,
+): Promise<RebaseResult> => {
+  const rc = { ...replayContextOf(progress), doneBefore: progress.done };
+  return replayFrom(ctx, rc, head, { applied: [], rewritten: [] });
+};
+
+/** git's `--skip` hard-resets to HEAD (dropping the staged change) and retries the rescheduled pick. */
+const skipRescheduled = async (ctx: Context, progress: RebaseProgress): Promise<RebaseResult> => {
+  const head = await resolveRef(ctx, HEAD);
+  await hardResetWorktreeToCommit(ctx, head);
+  return retryRescheduledPick(ctx, progress, head);
 };
 
 /** Commit the resolved stop (unless it matches HEAD) and replay the rest of the todo. */
@@ -765,7 +921,9 @@ const assertNothingUnstaged = async (ctx: Context): Promise<void> => {
   if (unstaged.length > 0) throw workingTreeDirty({ localChanges: unstaged, untracked: [] });
 };
 
-const replayContextOf = (state: RebaseState): ReplayContext => ({
+const replayContextOf = (
+  state: Pick<RebaseProgress, 'headName' | 'onto' | 'origHead' | 'done' | 'remaining'>,
+): ReplayContext => ({
   reflogAction: REBASE_REFLOG_ACTION,
   branch: branchOf(state.headName),
   onto: state.onto,
@@ -810,9 +968,11 @@ const treeMatchesCommit = async (
 export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --skip');
-  const state = await readRebaseState(ctx);
-  if (state === undefined) throw noOperationInProgress('rebase');
+  const progress = await readRebaseProgress(ctx);
+  if (progress === undefined) throw noOperationInProgress('rebase');
   await assertEverySourceLoadable(ctx);
+  if (progress.rescheduled) return skipRescheduled(ctx, progress);
+  const state = (await readRebaseState(ctx)) as RebaseState;
   if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, currentHead);
@@ -833,7 +993,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
 export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --abort');
-  const state = await readRebaseState(ctx);
+  const state = await readRebaseProgress(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
   const branch = branchOf(state.headName);
   const currentHead = await resolveRef(ctx, HEAD);

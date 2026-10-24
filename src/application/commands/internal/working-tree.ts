@@ -1,5 +1,6 @@
 import { checkoutOverwriteDirty } from '../../../domain/commands/error.js';
 import { dirname, TsgitError } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
@@ -8,6 +9,7 @@ import {
   validateWorkingTreePathOn,
 } from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
+import { lstatIfPresent } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
 
@@ -80,9 +82,10 @@ export const materializeFile = async (
 };
 
 /**
- * Remove the working-tree file at `path`. Refuses to remove a directory or a
- * missing file (both treated as a divergence from what we expected to be there).
- * Throws `CHECKOUT_OVERWRITE_DIRTY` rather than blindly mutating.
+ * Remove the working-tree file at `path`. Refuses to remove a directory
+ * (a divergence from what we expected to be there) with `CHECKOUT_OVERWRITE_DIRTY`
+ * rather than blindly mutating. A missing path surfaces as `FILE_NOT_FOUND` so the
+ * caller can tolerate it, as git does for a file the user already deleted.
  */
 export const removeFile = async (ctx: Context, rawPath: string): Promise<void> => {
   const path = validateWorkingTreePathOn(rawPath, ctx);
@@ -90,13 +93,28 @@ export const removeFile = async (ctx: Context, rawPath: string): Promise<void> =
   let stat: Awaited<ReturnType<Context['fs']['lstat']>>;
   try {
     stat = await ctx.fs.lstat(full);
-  } catch {
+  } catch (err) {
+    if (errorDataCode(err) === 'FILE_NOT_FOUND') throw err;
     throw checkoutOverwriteDirty({ localChanges: [path], untracked: [] });
   }
   if (!stat.isFile && !stat.isSymbolicLink) {
     throw checkoutOverwriteDirty({ localChanges: [path], untracked: [] });
   }
   await ctx.fs.rm(full);
+};
+
+/**
+ * Remove the working-tree directory at `path` with everything beneath it. Refuses
+ * anything that is not a directory (missing included) like `removeFile` does.
+ */
+export const removeDirectory = async (ctx: Context, rawPath: string): Promise<void> => {
+  const path = validateWorkingTreePathOn(rawPath, ctx);
+  const full = repoPath(ctx, path);
+  const stat = await lstatIfPresent(ctx.fs, full);
+  if (stat === undefined || !stat.isDirectory) {
+    throw checkoutOverwriteDirty({ localChanges: [path], untracked: [] });
+  }
+  await ctx.fs.rmRecursive(full);
 };
 
 /**

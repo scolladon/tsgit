@@ -16,10 +16,11 @@ import {
   toUnstagedKind,
 } from '../../../../src/application/commands/status.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { lstatIfReachable } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { pathTooLong, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
@@ -74,6 +75,25 @@ afterEach(() => {
 /** The single `changes` record for a path, or undefined if the path is clean. */
 const changeFor = (result: StatusResult, path: string): ChangedPath | undefined =>
   result.changes.find((c) => c.path === path);
+
+/** A context whose file system fails `lstat` of an overlong branch's loose path, HEAD naming that branch. */
+const overlongBranchContext = async (
+  ctx: Context,
+  fault: (path: string) => TsgitError,
+): Promise<Context> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/overlong\n');
+  const target = `${ctx.layout.gitDir}/refs/heads/overlong`;
+  return {
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      lstatIfReachable: async (path: string) => {
+        if (path === target) throw fault(path);
+        return lstatIfReachable(ctx.fs, path);
+      },
+    },
+  };
+};
 
 const INDEX_STATS = new Set<string | symbol>(['stat', 'tryStat']);
 
@@ -202,6 +222,154 @@ describe('status', () => {
         // Assert
         expect(result.detached).toBe(true);
         expect(result.branch).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a HEAD whose branch loose path is too long for the file system', () => {
+    describe('When status', () => {
+      it('Then every index entry is a staged add with no head side', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        const faulty = await overlongBranchContext(ctx, pathTooLong);
+        const sut = status;
+
+        // Act
+        const result = await sut(faulty);
+
+        // Assert
+        const change = changeFor(result, 'a.txt');
+        expect(change?.staged).toBe('added');
+        expect(change?.head).toBeUndefined();
+        expect(result.clean).toBe(false);
+      });
+
+      it('Then branch is undefined and detached is false', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        const faulty = await overlongBranchContext(ctx, pathTooLong);
+        const sut = status;
+
+        // Act
+        const result = await sut(faulty);
+
+        // Assert
+        expect(result.branch).toBeUndefined();
+        expect(result.detached).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a HEAD naming a branch git refuses', () => {
+    describe('When status', () => {
+      it('Then branch is undefined, detached is false and every entry is a staged add', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/a..b\n');
+
+        // Act
+        const result = await status(ctx);
+
+        // Assert
+        expect(result.branch).toBeUndefined();
+        expect(result.detached).toBe(false);
+        expect(changeFor(result, 'a.txt')?.staged).toBe('added');
+      });
+    });
+  });
+
+  describe('Given a HEAD whose branch is a symbolic cycle', () => {
+    describe('When status', () => {
+      it('Then branch is undefined, detached is false and every entry is a staged add', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/c1\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/c1`, 'ref: refs/heads/c2\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/c2`, 'ref: refs/heads/c1\n');
+
+        // Act
+        const result = await status(ctx);
+
+        // Assert
+        expect(result.branch).toBeUndefined();
+        expect(result.detached).toBe(false);
+        expect(changeFor(result, 'a.txt')?.staged).toBe('added');
+      });
+    });
+  });
+
+  describe('Given a HEAD whose branch loose path cannot be read for a reason git does not fold', () => {
+    describe('When status', () => {
+      it('Then it rejects with that fault', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        const faulty = await overlongBranchContext(ctx, permissionDenied);
+        const sut = status;
+
+        // Act
+        let caught: unknown;
+        await sut(faulty).catch((err: unknown) => {
+          caught = err;
+        });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: `${ctx.layout.gitDir}/refs/heads/overlong`,
+        });
+      });
+    });
+  });
+
+  describe('Given a HEAD whose branch loose path fails for a reason git does not fold on the first read only', () => {
+    describe('When status', () => {
+      it('Then it rejects with that fault rather than reading HEAD as unknown', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        const faulty = await overlongBranchContext(ctx, permissionDenied);
+        const target = `${ctx.layout.gitDir}/refs/heads/overlong`;
+        let reads = 0;
+        const sut = status;
+        const onceFaulty = {
+          ...faulty,
+          fs: {
+            ...faulty.fs,
+            lstatIfReachable: async (path: string) => {
+              if (path === target) reads += 1;
+              if (path === target && reads === 1) throw permissionDenied(path);
+              return lstatIfReachable(ctx.fs, path);
+            },
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        await sut(onceFaulty).catch((err: unknown) => {
+          caught = err;
+        });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: target,
+        });
+      });
+    });
+  });
+
+  describe('Given an unborn HEAD', () => {
+    describe('When status', () => {
+      it('Then the branch keeps its name and detached is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Act
+        const result = await status(ctx);
+
+        // Assert
+        expect(result.branch).toBe('refs/heads/main');
+        expect(result.detached).toBe(false);
       });
     });
   });

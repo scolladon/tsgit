@@ -21,13 +21,16 @@ export type ChainOutcome =
 
 /** Error codes `refs_resolve_ref_unsafe(RESOLVE_REF_READING)` folds into "does
  *  not resolve for reading": a chain ending on a name that formats invalid, a
- *  loose file whose content is neither an oid nor `ref: …`, a cycle, and a
- *  chain longer than the reading walk's cap — git returns NULL for all four. */
+ *  loose file whose content is neither an oid nor `ref: …`, a cycle, a
+ *  chain longer than the reading walk's cap, and a loose path the file system
+ *  refuses as too long (git's `lstat` failing with an errno other than
+ *  `ENOENT`) — git returns NULL for all five. */
 export const UNREADABLE_REF_CODES: ReadonlySet<string> = new Set([
   'INVALID_REF',
   'INVALID_OBJECT_ID',
   'REF_CYCLE_DETECTED',
   'REF_CHAIN_TOO_DEEP',
+  'PATH_TOO_LONG',
 ]);
 
 /**
@@ -125,8 +128,9 @@ const MISSING_CANDIDATE: RefCandidateOutcome = { kind: 'missing' };
 const DANGLING_CANDIDATE: RefCandidateOutcome = { kind: 'dangling-symref' };
 const BROKEN_CANDIDATE: RefCandidateOutcome = { kind: 'broken' };
 
+/** Whether a fault is one git folds into an unreadable ref rather than an error. */
 // Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREADABLE_REF_CODES, so the probe answers false whatever the literal is.
-const isUnreadable = (err: unknown): boolean => UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '');
+export const isUnreadableRef = (err: unknown) => UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '');
 
 /** Why a candidate whose chain failed to read failed: its own content
  *  unreadable, else a fault past its first hop — which is therefore symbolic.
@@ -140,7 +144,7 @@ const unreadableCandidate = async (
     await getRefStore(ctx).resolveDirect(name as RefName);
     return DANGLING_CANDIDATE;
   } catch (err) {
-    if (isUnreadable(err)) return BROKEN_CANDIDATE;
+    if (isUnreadableRef(err)) return BROKEN_CANDIDATE;
     throw err;
   }
 };
@@ -161,7 +165,7 @@ export async function readRefCandidate(
   try {
     outcome = await resolveChainOutcome(ctx, name, options);
   } catch (err) {
-    if (!isUnreadable(err)) throw err;
+    if (!isUnreadableRef(err)) throw err;
     return unreadableCandidate(ctx, name);
   }
   if (outcome.kind === 'missing')

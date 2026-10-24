@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  relativePathBetween,
   submoduleCoreWorktree,
   submoduleGitfile,
 } from '../../../../src/domain/submodule/gitlink-path.js';
@@ -45,5 +46,47 @@ describe('Given a submodule name and worktree path', () => {
         expect(result).toBe(expected);
       },
     );
+  });
+});
+
+describe('Given a module directory and a working-tree path', () => {
+  describe('When deriving the relative path between them', () => {
+    it('Then a linked worktree module climbs to the common directory and descends into the worktree', () => {
+      // Arrange
+      const from = '/r/super/.git/worktrees/wt/modules/sub';
+      const to = '/r/wt/sub';
+
+      // Act
+      const result = relativePathBetween(from, to);
+
+      // Assert
+      expect(result).toBe('../../../../../../wt/sub');
+    });
+
+    it.each([
+      [
+        'linked worktree inside the superproject',
+        '/r/.git/worktrees/wt/modules/sub',
+        '/r/wt/sub',
+        '../../../../../wt/sub',
+      ],
+      ['main worktree', '/r/.git/modules/sub', '/r/sub', '../../../sub'],
+      ['nested name', '/r/.git/modules/a/b', '/r/sub', '../../../../sub'],
+      ['nested path', '/r/.git/modules/sub', '/r/x/y', '../../../x/y'],
+    ])('Then %s matches the submodule core.worktree shape', (_label, from, to, expected) => {
+      // Arrange + Act
+      const result = relativePathBetween(from, to);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+
+    it('Then the main layout equals submoduleCoreWorktree', () => {
+      // Arrange + Act
+      const result = relativePathBetween('/r/.git/modules/a/b', '/r/x/y');
+
+      // Assert
+      expect(result).toBe(submoduleCoreWorktree('a/b', 'x/y'));
+    });
   });
 });

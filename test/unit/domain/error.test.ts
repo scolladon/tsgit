@@ -40,6 +40,7 @@ import {
   invalidWalkInput,
   operationAborted,
   orderInvariantViolation,
+  pathTooLong,
   snapshotRequired,
   TsgitError as TsgitErrorClass,
   type TsgitErrorData,
@@ -83,6 +84,21 @@ describe('domain error — AdapterError', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'FILE_NOT_FOUND', path: '/repo/missing.txt' });
+        });
+      });
+    });
+
+    describe("Given pathTooLong('/repo/.git/refs/heads/overlong')", () => {
+      describe('When checking data', () => {
+        it('Then code is PATH_TOO_LONG and path preserved', () => {
+          // Arrange & Act
+          const result = pathTooLong('/repo/.git/refs/heads/overlong');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'PATH_TOO_LONG',
+            path: '/repo/.git/refs/heads/overlong',
+          });
         });
       });
     });
@@ -309,6 +325,19 @@ describe('domain error — AdapterError', () => {
           // Assert
           expect(result.message).toContain('permission denied: secret.pem');
           expect(result.message).not.toContain('/private/keys');
+        });
+      });
+    });
+
+    describe('Given PATH_TOO_LONG with absolute path', () => {
+      describe('When reading message', () => {
+        it('Then contains sanitized prefix and basename ONLY', () => {
+          // Arrange & Act
+          const result = pathTooLong('/repo/.git/refs/heads/overlong');
+
+          // Assert
+          expect(result.message).toBe('PATH_TOO_LONG: file name too long: overlong');
+          expect(result.message).not.toContain('/repo/.git/refs/heads');
         });
       });
     });

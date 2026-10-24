@@ -6,6 +6,7 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { treeOf as commitTreeOf } from '../../../../src/application/commands/internal/history-rewrite.js';
 import {
   asMergeDirtyError,
   buildConflictIndexEntries,
@@ -31,7 +32,10 @@ import { survivingDirectoriesOf } from '../../../../src/application/primitives/i
 import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
-import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import {
+  invalidateIndexCache,
+  readIndex,
+} from '../../../../src/application/primitives/read-index.js';
 import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
@@ -66,8 +70,10 @@ import {
   DEEP_CHAIN_LEAF_CONTENT,
   deepIndexPath,
   seedMaxTreeDepth,
+  serializeIndexFixtureAsync,
 } from '../primitives/fixtures.js';
 import { failSourceLoad, snapshotFiles } from './fixtures.js';
+import { advanceSubmodule, withSubmodule } from './submodule-fixtures.js';
 
 const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
@@ -2492,83 +2498,59 @@ describe('merge — updateRef CAS guard', () => {
   });
 });
 
+/** Record `id` as the gitlink staged at `path`, as `git add -f <submodule>` does past an ignore mode. */
+const stageGitlinkAt = async (ctx: Context, path: string, id: ObjectId): Promise<void> => {
+  const index = await readIndex(ctx);
+  const entries = index.entries.map((entry) => (entry.path === path ? { ...entry, id } : entry));
+  invalidateIndexCache(ctx);
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync({ ...index, entries, extensions: [] }, ctx),
+  );
+  invalidateIndexCache(ctx);
+};
+
 describe('merge — conflicting-write atomicity', () => {
-  describe('Given a conflicting merge where one changed path is hostile and a sibling path is clean', () => {
+  describe('Given a clean merge where one added path is hostile and a sibling path is clean', () => {
     describe('When merge runs', () => {
       it('Then throws INVALID_INDEX_ENTRY and the clean sibling is never written', async () => {
-        // Arrange — `sub/.` conflicts (both sides change it differently from
-        // base); `clean.txt` is changed by theirs only and resolves cleanly.
-        // Nested under `sub/` (not top-level) so the conflicting path never
-        // collides with the work directory's own root. Under the previous
-        // per-outcome guard (validated inside the write wave), the clean
-        // sibling batch ran and completed BEFORE the conflicts batch ever
-        // reached `sub/.`'s refusal — this proves the hoisted whole-set gate
-        // now refuses before either path is written.
+        // Arrange — theirs adds the hostile `sub/.` and edits `clean.txt`, both resolving
+        // cleanly against an index that matches HEAD (git refuses a dirty index before any
+        // merge). The clean arm validates the whole write set before writing, so the clean
+        // sibling is never written; the conflict arm's hoisted gate is pinned by the
+        // apply-merge-to-worktree row over a `sub/.` both sides changed.
         const ctx = createMemoryContext();
         await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'base-clean\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ours.txt`, 'base\n');
+        await add(ctx, ['clean.txt', 'ours.txt']);
+        const base = await commit(ctx, { message: 'base', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ours.txt`, 'ours\n');
+        await add(ctx, ['ours.txt']);
+        await commit(ctx, { message: 'ours-edit', author });
 
-        const cleanBase = await writeBlob(ctx, 'base-clean\n');
         const cleanTheirs = await writeBlob(ctx, 'THEIRS-CLEAN\n');
-        const dotBase = await writeBlob(ctx, 'base\n');
-        const dotOurs = await writeBlob(ctx, 'ours\n');
+        const baseOurs = await writeBlob(ctx, 'base\n');
         const dotTheirs = await writeBlob(ctx, 'theirs\n');
-        const dotEntry = (id: ObjectId): TreeEntry => treeEntry(FILE_MODE.REGULAR, '.', id);
-
-        const baseTree = await writeTreeMod.writeTree(ctx, [
-          treeEntry(FILE_MODE.REGULAR, 'clean.txt', cleanBase),
-          treeEntry(
-            FILE_MODE.DIRECTORY,
-            'sub',
-            await writeTreeMod.writeTree(ctx, [dotEntry(dotBase)]),
-          ),
-        ]);
-        const mainTree = await writeTreeMod.writeTree(ctx, [
-          treeEntry(FILE_MODE.REGULAR, 'clean.txt', cleanBase),
-          treeEntry(
-            FILE_MODE.DIRECTORY,
-            'sub',
-            await writeTreeMod.writeTree(ctx, [dotEntry(dotOurs)]),
-          ),
-        ]);
         const featureTree = await writeTreeMod.writeTree(ctx, [
           treeEntry(FILE_MODE.REGULAR, 'clean.txt', cleanTheirs),
+          treeEntry(FILE_MODE.REGULAR, 'ours.txt', baseOurs),
           treeEntry(
             FILE_MODE.DIRECTORY,
             'sub',
-            await writeTreeMod.writeTree(ctx, [dotEntry(dotTheirs)]),
+            await writeTreeMod.writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, '.', dotTheirs)]),
           ),
         ]);
-
         const { createCommit: createCommitPrim } = await import(
           '../../../../src/application/primitives/create-commit.js'
         );
         const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
-        const baseCommitId = await createCommitPrim(ctx, {
-          tree: baseTree,
-          parents: [],
-          author,
-          committer: author,
-          message: 'base',
-          extraHeaders: [],
-        });
-        const mainCommitId = await createCommitPrim(ctx, {
-          tree: mainTree,
-          parents: [baseCommitId],
-          author,
-          committer: author,
-          message: 'ours-edit-dot',
-          extraHeaders: [],
-        });
-        await updateRef(ctx, 'refs/heads/main' as RefName, mainCommitId, {
-          reflogMessage: 'branch: Created',
-        });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const featureCommitId = await createCommitPrim(ctx, {
           tree: featureTree,
-          parents: [baseCommitId],
+          parents: [base.id],
           author,
           committer: author,
-          message: 'theirs-edit-both',
+          message: 'theirs-adds-hostile',
           extraHeaders: [],
         });
         await updateRef(ctx, 'refs/heads/feature' as RefName, featureCommitId, {
@@ -2587,7 +2569,7 @@ describe('merge — conflicting-write atomicity', () => {
         const data = (caught as { data?: { code?: string; reason?: string } })?.data;
         expect(data?.code).toBe('INVALID_INDEX_ENTRY');
         expect(data?.reason).toBe("'.' segment rejected");
-        expect(await ctx.fs.exists(`${ctx.layout.workDir}/clean.txt`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`)).toBe('base-clean\n');
       });
     });
   });
@@ -6379,6 +6361,236 @@ describe('merge — several heads (octopus)', () => {
 
         // Assert
         expect(result.id).toBe('f1e6d6a0c610f4cc8fe6829cbd74d266eb6214dd');
+      });
+    });
+  });
+});
+
+describe('merge — the index before the strategy runs', () => {
+  describe('Given a change staged on a path the fast-forward leaves alone', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then the staged entry and its file survive, as git two-way checkout keeps them', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'staged');
+        await add(ctx, ['a.txt']);
+        const stagedId = (await readIndex(ctx)).entries.find((e) => e.path === 'a.txt')?.id;
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(result.kind).toBe('fast-forward');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c2.id);
+        expect((await readIndex(ctx)).entries.find((e) => e.path === 'a.txt')?.id).toBe(stagedId);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('staged');
+      });
+    });
+  });
+
+  describe('Given a change staged on a path the fast-forward changes', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then it refuses the staged path and moves nothing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'b');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'staged');
+        await add(ctx, ['a.txt']);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: 'feature' }).catch((error: unknown) => error);
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c1.id);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('staged');
+      });
+    });
+  });
+
+  describe('Given a change staged on a path a true merge leaves alone', () => {
+    describe('When merge runs', () => {
+      it('Then it refuses the staged path before writing anything, as git index_has_changes does', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s.txt`, 's');
+        await add(ctx, ['a.txt', 's.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+        await add(ctx, ['c.txt']);
+        const c3 = await commit(ctx, { message: 'third', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s.txt`, 'staged');
+        await add(ctx, ['s.txt']);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: 'feature', author, committer: author }).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['s.txt'],
+          untracked: [],
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c3.id);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/s.txt`)).toBe('staged');
+      });
+    });
+  });
+
+  describe('Given a staged submodule move under a .gitmodules ignoring it entirely', () => {
+    describe('When a true merge runs', () => {
+      it('Then the merge commit carries the staged gitlink, as git commits the index it kept', async () => {
+        // Arrange
+        const { ctx, child } = await withSubmodule();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitmodules`,
+          '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n\tignore = all\n',
+        );
+        await add(ctx, ['.gitmodules']);
+        await commit(ctx, { message: 'ignore all', author });
+        await branchCreate(ctx, { name: 'side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o');
+        await add(ctx, ['o.txt']);
+        await commit(ctx, { message: 'main-add', author });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/p.txt`, 'p');
+        await add(ctx, ['p.txt']);
+        await commit(ctx, { message: 'side-add', author });
+        await checkout(ctx, { rev: 'main' });
+        const moved = await advanceSubmodule(ctx, child);
+        await stageGitlinkAt(ctx, 'sub', moved);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author, committer: author });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        const index = (await readIndex(ctx)).entries;
+        expect(index.find((entry) => entry.path === 'sub')?.id).toBe(moved);
+        expect(index.find((entry) => entry.path === 'p.txt')).toBeDefined();
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const committed = await flattenEscapedTree(ctx, await commitTreeOf(ctx, tip));
+        expect(committed.entries.get('sub' as FilePath)?.id).toBe(moved);
+      });
+    });
+  });
+
+  describe('Given a submodule removed from the index under a .gitmodules ignoring it entirely', () => {
+    describe('When a true merge runs', () => {
+      it('Then the merge commit records the removal, as git commits the index it kept', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitmodules`,
+          '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n\tignore = all\n',
+        );
+        await add(ctx, ['.gitmodules']);
+        await commit(ctx, { message: 'ignore all', author });
+        await branchCreate(ctx, { name: 'side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o');
+        await add(ctx, ['o.txt']);
+        await commit(ctx, { message: 'main-add', author });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/p.txt`, 'p');
+        await add(ctx, ['p.txt']);
+        await commit(ctx, { message: 'side-add', author });
+        await checkout(ctx, { rev: 'main' });
+        await rm(ctx, ['sub'], { cached: true });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author, committer: author });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(
+          (await readIndex(ctx)).entries.find((entry) => entry.path === 'sub'),
+        ).toBeUndefined();
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const committed = await flattenEscapedTree(ctx, await commitTreeOf(ctx, tip));
+        expect(committed.entries.has('sub' as FilePath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a staged submodule move under a .gitmodules ignoring it entirely and the resolve strategy allowing the trivial merge', () => {
+    describe('When a true merge runs', () => {
+      it('Then the trivial attempt yields to the strategy and the commit carries the staged gitlink', async () => {
+        // Arrange
+        const { ctx, child } = await withSubmodule();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitmodules`,
+          '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n\tignore = all\n',
+        );
+        await add(ctx, ['.gitmodules']);
+        await commit(ctx, { message: 'ignore all', author });
+        await branchCreate(ctx, { name: 'side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/o.txt`, 'o');
+        await add(ctx, ['o.txt']);
+        await commit(ctx, { message: 'main-add', author });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/p.txt`, 'p');
+        await add(ctx, ['p.txt']);
+        await commit(ctx, { message: 'side-add', author });
+        await checkout(ctx, { rev: 'main' });
+        const moved = await advanceSubmodule(ctx, child);
+        await stageGitlinkAt(ctx, 'sub', moved);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, {
+          rev: 'side',
+          author,
+          committer: author,
+          strategy: ['resolve'],
+        });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const committed = await flattenEscapedTree(ctx, await commitTreeOf(ctx, tip));
+        expect(committed.entries.get('sub' as FilePath)?.id).toBe(moved);
+        expect(await lastReflogLine(ctx, 'HEAD')).toContain(
+          "merge side: Merge made by the 'resolve' strategy.",
+        );
       });
     });
   });

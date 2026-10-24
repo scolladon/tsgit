@@ -19,9 +19,10 @@ import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { escapedPathOf, viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import type { MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
+import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
+import { compareAndRefresh, isWorkingTreeModified, scopeOf } from './compare-working-tree-entry.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { buildCheckinAttributeProvider } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
@@ -116,6 +117,8 @@ export const findWouldOverwrite = async (
 ): Promise<WouldOverwrite> => {
   const byPath = stage0ByPath(currentIndex);
   const provider = await buildCheckinAttributeProvider(ctx);
+  // One leading-path memo for the whole scan: a shared directory is lstat-ed once.
+  const scope = scopeOf(provider, currentIndex.indexMtime, createLeadingPathScanner(ctx));
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
   for (const path of paths) {
@@ -125,12 +128,10 @@ export const findWouldOverwrite = async (
       if (await isUntrackedPresent(ctx, path)) untracked.push(path);
       continue;
     }
-    if (
-      isWorkingTreeModified(
-        await compareWorkingTreeEntry(ctx, entry, provider, currentIndex.indexMtime),
-      )
-    )
-      localChanges.push(path);
+    // git's `verify_uptodate_1` returns early for a gitlink: a moved checkout is not local work.
+    if (entry.mode === FILE_MODE.GITLINK) continue;
+    const { delta } = await compareAndRefresh(ctx, entry, scope);
+    if (isWorkingTreeModified(delta.status)) localChanges.push(path);
   }
   return {
     localChanges: [...localChanges].sort(comparePaths).map(viewOfEscaped),

@@ -7,10 +7,13 @@ import {
   assertCleanIndex,
   assertCleanWorkTree,
   assertNoUnmergedEntries,
+  indexDifferences,
   stagedChangePaths,
+  stagedGitlinkChanges,
   unstagedChangePaths,
 } from '../../../../../src/application/commands/internal/clean-work-tree.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
+import { MAX_GITMODULES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
@@ -111,7 +114,78 @@ const writeFramedIndexInGivenOrder = async (
   await ctx.fs.write(`${ctx.layout.gitDir}/index`, framed);
 };
 
+const A_COMMIT = 'a'.repeat(40) as ObjectId;
+const C_COMMIT = 'c'.repeat(40) as ObjectId;
+const MOVED_HEAD = 'b'.repeat(40);
+
+/** A tree whose only entry is the gitlink `sub` pinned at `commit`. */
+const gitlinkTree = (ctx: Context, commit: ObjectId): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [treeEntry(FILE_MODE.GITLINK, new TextEncoder().encode('sub'), commit)],
+  });
+
+/** An absorbed submodule checkout at `sub` whose HEAD is `MOVED_HEAD`. */
+const layOutMovedSubmodule = async (ctx: Context): Promise<void> => {
+  const sub = work(ctx, 'sub');
+  const moduleDir = `${ctx.layout.gitDir}/modules/sub`;
+  await ctx.fs.mkdir(sub);
+  await ctx.fs.writeUtf8(`${sub}/.git`, 'gitdir: ../.git/modules/sub\n');
+  await ctx.fs.writeUtf8(`${moduleDir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.mkdir(`${moduleDir}/objects`);
+  await ctx.fs.writeUtf8(`${moduleDir}/refs/heads/main`, `${MOVED_HEAD}\n`);
+};
+
+const gitlinkEntry = (id: ObjectId): IndexEntry => ({
+  ...stageEntry('sub', id, 0),
+  mode: FILE_MODE.GITLINK,
+});
+
 describe('assertCleanWorkTree', () => {
+  describe('Given a committed file, no gitlink, and a working .gitmodules past the bound tsgit reads', () => {
+    describe('When asserted', () => {
+      it('Then it passes: .gitmodules is read only when a gitlink exists', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'a'), 'a\n');
+        await add(ctx, ['a']);
+        const { tree } = await commit(ctx, { message: 'init', author: AUTHOR });
+        await ctx.fs.writeUtf8(work(ctx, '.gitmodules'), 'x'.repeat(MAX_GITMODULES_BYTES + 1));
+        const sut = assertCleanWorkTree;
+
+        // Act
+        const outcome = await codeOf(() => sut(ctx, tree));
+
+        // Assert
+        expect(outcome).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given three committed files sharing a directory', () => {
+    describe('When asserted', () => {
+      it('Then the directory is lstat-ed once for the whole pass', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        for (const name of ['d/a', 'd/b', 'd/c'])
+          await ctx.fs.writeUtf8(work(ctx, name), `${name}\n`);
+        await add(ctx, ['d/a', 'd/b', 'd/c']);
+        const { tree } = await commit(ctx, { message: 'init', author: AUTHOR });
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+        const sut = assertCleanWorkTree;
+
+        // Act
+        await sut(ctx, tree);
+
+        // Assert
+        expect(lstat.mock.calls.filter(([path]) => path === work(ctx, 'd'))).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a clean working tree and index matching HEAD', () => {
     describe('When asserted', () => {
       it('Then it passes', async () => {
@@ -219,6 +293,95 @@ describe('assertCleanWorkTree', () => {
 
         // Assert
         expect(code).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+
+  describe('Given an index file at a path whose HEAD entry is a gitlink', () => {
+    describe('When asserted', () => {
+      it('Then the type change is refused as a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await ctx.fs.writeUtf8(work(ctx, 'sub'), 'now a file\n');
+        const fileId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('now a file\n'),
+          id: '' as ObjectId,
+        });
+        await writeFramedIndex(ctx, [stageEntry('sub', fileId, 0)]);
+
+        // Act
+        const data = await dataOf(() => assertCleanWorkTree(ctx, headTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a gitlink whose checkout HEAD moved and an index equal to HEAD', () => {
+    describe('When asserted', () => {
+      it('Then it passes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await layOutMovedSubmodule(ctx);
+        await writeFramedIndex(ctx, [gitlinkEntry(A_COMMIT)]);
+
+        // Act + Assert
+        await expect(assertCleanWorkTree(ctx, headTree)).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a staged gitlink moved from the one HEAD records', () => {
+    describe('When asserted', () => {
+      it('Then it passes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, [gitlinkEntry(C_COMMIT)]);
+
+        // Act + Assert
+        await expect(assertCleanWorkTree(ctx, headTree)).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a gitlink staged at a path HEAD does not have', () => {
+    describe('When asserted', () => {
+      it('Then it passes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await writeTree(ctx, []);
+        await writeFramedIndex(ctx, [gitlinkEntry(A_COMMIT)]);
+
+        // Act + Assert
+        await expect(assertCleanWorkTree(ctx, headTree)).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a gitlink in HEAD that the index no longer has', () => {
+    describe('When asserted', () => {
+      it('Then it passes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, []);
+
+        // Act + Assert
+        await expect(assertCleanWorkTree(ctx, headTree)).resolves.toBeUndefined();
       });
     });
   });
@@ -626,6 +789,271 @@ describe('stagedChangePaths on escaped paths', () => {
 
         // Assert
         expect(result).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('assertCleanIndex over gitlinks', () => {
+  describe('Given a staged gitlink moved from the one HEAD records', () => {
+    describe('When asserted', () => {
+      it('Then the refusal lists it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, [gitlinkEntry(C_COMMIT)]);
+
+        // Act
+        const data = await dataOf(() => assertCleanIndex(ctx, headTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a gitlink in HEAD that the index no longer has', () => {
+    describe('When asserted', () => {
+      it('Then the refusal lists it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, []);
+
+        // Act
+        const data = await dataOf(() => assertCleanIndex(ctx, headTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+      });
+    });
+  });
+});
+
+describe('stagedGitlinkChanges', () => {
+  const emptyTree = (ctx: Context): Promise<ObjectId> =>
+    writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+
+  describe('Given a staged gitlink whose id differs from HEAD gitlink', () => {
+    describe('When queried', () => {
+      it('Then the path is listed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, [gitlinkEntry(C_COMMIT)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['sub']);
+      });
+    });
+  });
+
+  describe('Given a gitlink staged where HEAD holds a regular file', () => {
+    describe('When queried', () => {
+      it('Then the path is not listed: the pre-flight itself refuses a type change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('file\n'),
+        });
+        const headTree = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.REGULAR, new TextEncoder().encode('sub'), blob)],
+        });
+        await writeFramedIndex(ctx, [gitlinkEntry(C_COMMIT)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(await codeOf(() => assertCleanWorkTree(ctx, headTree))).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+
+  describe('Given a gitlink staged where HEAD has nothing', () => {
+    describe('When queried', () => {
+      it('Then the path is listed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await emptyTree(ctx);
+        await writeFramedIndex(ctx, [gitlinkEntry(C_COMMIT)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['sub']);
+      });
+    });
+  });
+
+  describe('Given a HEAD gitlink the index no longer has', () => {
+    describe('When queried', () => {
+      it('Then the path is listed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, []);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['sub']);
+      });
+    });
+  });
+
+  describe('Given a staged regular file change', () => {
+    describe('When queried', () => {
+      it('Then the path is not listed', async () => {
+        // Arrange
+        const { ctx, headTree } = await seedClean('f', 'one\n');
+        await ctx.fs.writeUtf8(work(ctx, 'f'), 'two\n');
+        await add(ctx, ['f']);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a gitlink replaced by a staged file', () => {
+    describe('When queried', () => {
+      it('Then the path is not listed, as the pre-flight already counts it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, [stageEntry('sub', C_COMMIT, 0)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('refusal and carried-gitlink ordering', () => {
+  const gitlinksTree = (ctx: Context, names: ReadonlyArray<string>): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: names.map((name) =>
+        treeEntry(FILE_MODE.GITLINK, new TextEncoder().encode(name), A_COMMIT),
+      ),
+    });
+
+  const gitlinkAt = (path: string, id: ObjectId): IndexEntry => ({
+    ...stageEntry(path, id, 0),
+    mode: FILE_MODE.GITLINK,
+  });
+
+  describe('Given an unmerged path sorting after a staged-dirty path', () => {
+    describe('When the work tree is asserted clean', () => {
+      it('Then the refusal lists both in byte order, not unmerged first', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const emptyTree = await writeTree(ctx, []);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new Uint8Array(0),
+        });
+        await writeFramedIndexInGivenOrder(ctx, [stageEntry('a', id, 0), stageEntry('b', id, 1)]);
+        const sut = assertCleanWorkTree;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, emptyTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a', 'b'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a staged gitlink sorting after a HEAD gitlink the index dropped', () => {
+    describe('When the staged gitlink changes are queried', () => {
+      it('Then they come in byte order, not index entries before removals', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinksTree(ctx, ['a', 'z']);
+        await writeFramedIndex(ctx, [gitlinkAt('z', C_COMMIT)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['a', 'z']);
+      });
+    });
+  });
+
+  describe('Given two gitlinks configured to be ignored, one moved and one dropped from the index', () => {
+    describe('When the index differences are read', () => {
+      it('Then the carried gitlinks come in byte order, not index entries before removals', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinksTree(ctx, ['a', 'z']);
+        await ctx.fs.writeUtf8(
+          work(ctx, '.gitmodules'),
+          ['a', 'z']
+            .map(
+              (name) =>
+                `[submodule "${name}"]\n\tpath = ${name}\n\turl = ../${name}\n\tignore = all\n`,
+            )
+            .join(''),
+        );
+        await writeFramedIndex(ctx, [gitlinkAt('z', C_COMMIT)]);
+        const sut = indexDifferences;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual({ refused: [], carried: ['a', 'z'] });
       });
     });
   });

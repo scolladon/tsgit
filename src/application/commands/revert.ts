@@ -143,9 +143,9 @@ const applyOneRevert = (
   ourId: ObjectId,
 ): Promise<RevertOutcome> =>
   replayOntoHead(ctx, REVERT_COMMAND, { source, cData }, ourId, async (res, oursTree, lock) => {
-    if (res.mergedTree === oursTree) return { kind: 'empty' };
+    if (res.indexTree === oursTree) return { kind: 'empty' };
     await lock.commit(res.result.newIndexEntries, 'replace');
-    const { id, subject } = await buildRevertCommit(ctx, source, cData, ourId, res.mergedTree);
+    const { id, subject } = await buildRevertCommit(ctx, source, cData, ourId, res.indexTree);
     // Written through the literal `HEAD` — revert refuses on a detached
     // HEAD, so `HEAD` always names the branch being advanced here.
     await updateRef(ctx, HEAD, id, { expected: ourId, reflogMessage: revertReflog(subject) });

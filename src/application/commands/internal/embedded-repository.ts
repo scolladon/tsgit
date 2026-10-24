@@ -3,7 +3,10 @@ import { hasEntryBeneath } from '../../../domain/git-index/directory-file-confli
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
-import { type GitlinkCheckout, probeGitlinkCheckout } from './gitlink-head.js';
+import {
+  type GitlinkCheckout,
+  probeGitlinkCheckout,
+} from '../../primitives/internal/gitlink-head.js';
 
 /** The repositories one command call meets, each classified once. */
 export interface EmbeddedRepositories {

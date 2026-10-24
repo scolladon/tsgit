@@ -15,6 +15,7 @@ import type { WorktreeError } from './worktree/error.js';
 
 export type AdapterError =
   | { readonly code: 'FILE_NOT_FOUND'; readonly path: string }
+  | { readonly code: 'PATH_TOO_LONG'; readonly path: string }
   | { readonly code: 'FILE_EXISTS'; readonly path: string }
   | { readonly code: 'NOT_A_DIRECTORY'; readonly path: string }
   | { readonly code: 'DIRECTORY_NOT_EMPTY'; readonly path: string }
@@ -137,6 +138,10 @@ export const sanitizeForDisplay = (s: string): string => {
 
 export const fileNotFound = (path: string): TsgitError =>
   new TsgitError({ code: 'FILE_NOT_FOUND', path });
+
+/** The file system refused a path component or the whole path as too long (`ENAMETOOLONG`); git's files backend treats a loose ref whose `lstat` fails that way as not resolving. */
+export const pathTooLong = (path: string): TsgitError =>
+  new TsgitError({ code: 'PATH_TOO_LONG', path });
 
 export const fileExists = (path: string): TsgitError =>
   new TsgitError({ code: 'FILE_EXISTS', path });
@@ -286,6 +291,12 @@ const eolLossDetail = (loss: 'crlf-to-lf' | 'lf-to-crlf', path: string): string 
     ? `CRLF would be replaced by LF in ${path}`
     : `LF would be replaced by CRLF in ${path}`;
 
+/** git names the first symlinked leading directory when one is at fault, else the path itself. */
+const symlinkedSubmodulePathDetail = (path: string, component: string | undefined): string =>
+  component === undefined
+    ? `expected submodule path '${path}' not to be a symbolic link`
+    : `expected '${component}' in submodule path '${path}' not to be a symbolic link`;
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -315,6 +326,8 @@ function extractDetail(data: TsgitErrorData): string {
       return data.reason;
     case 'FILE_NOT_FOUND':
       return `file not found: ${basename(data.path)}`;
+    case 'PATH_TOO_LONG':
+      return `file name too long: ${basename(data.path)}`;
     case 'FILE_EXISTS':
       return `file already exists: ${basename(data.path)}`;
     case 'NOT_A_DIRECTORY':
@@ -748,6 +761,16 @@ function extractDetail(data: TsgitErrorData): string {
       return `submodule work tree '${data.path}' contains local modifications`;
     case 'SUBMODULE_PATH_EXISTS':
       return `'${data.path}' already exists in the index`;
+    case 'SUBMODULE_PATH_IS_SYMLINK':
+      return symlinkedSubmodulePathDetail(data.path, data.component);
+    case 'SUBMODULE_NAME_NOT_FOUND':
+      return `could not lookup name for submodule '${data.path}'`;
+    case 'GITMODULES_NOT_STAGED':
+      return 'please stage your changes to .gitmodules or stash them to proceed';
+    case 'GITMODULES_UNMERGED':
+      return 'Cannot change unmerged .gitmodules, resolve merge conflicts first';
+    case 'SUBMODULE_GIT_DIR_NESTED':
+      return `submodule git dir '.git/modules/${data.name}' is inside git dir '.git/modules/${data.inside}'`;
     case 'SUBMODULE_OBJECT_FORMAT_MISMATCH':
       return `cannot add a submodule of a different hash algorithm: local ${data.local}, remote ${data.remote}`;
     case 'WORKTREE_PATH_EXISTS':

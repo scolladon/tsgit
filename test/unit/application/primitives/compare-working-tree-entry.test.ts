@@ -15,8 +15,9 @@ import {
   buildAttributeProvider,
 } from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
   CommandRequest,
@@ -66,6 +67,26 @@ const seedSymlink = async (
   const entry = index.entries.find((e) => e.path === name);
   if (entry === undefined) throw new Error(`seed failed: ${name} not staged`);
   return { ctx, entry };
+};
+
+const MOVED_HEAD = 'b'.repeat(40);
+
+const gitlinkOf = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  path: 'sub' as typeof entry.path,
+  mode: '160000',
+});
+
+/** An absorbed submodule checkout at `sub`: a gitfile over a module dir holding HEAD and one branch. */
+const layOutSubmodule = async (ctx: Context, branch: string, config?: string): Promise<void> => {
+  const sub = work(ctx, 'sub');
+  const moduleDir = `${ctx.layout.gitDir}/modules/sub`;
+  await ctx.fs.mkdir(sub);
+  await ctx.fs.writeUtf8(`${sub}/.git`, 'gitdir: ../.git/modules/sub\n');
+  await ctx.fs.writeUtf8(`${moduleDir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.mkdir(`${moduleDir}/objects`);
+  await ctx.fs.writeUtf8(`${moduleDir}/refs/heads/main`, `${branch}\n`);
+  if (config !== undefined) await ctx.fs.writeUtf8(`${moduleDir}/config`, config);
 };
 
 describe('compareWorkingTreeEntry', () => {
@@ -279,25 +300,36 @@ describe('compareWorkingTreeEntry', () => {
     });
   });
 
-  describe('Given a gitlink (submodule) entry over a working directory', () => {
-    describe('When comparing the entry to the working tree', () => {
-      it("Then returns 'modified', not 'type-changed' (git reports a submodule as M)", async () => {
-        // Arrange — a 160000 entry whose working path is a directory. The kind
-        // derived from the directory is a file kind, but a gitlink must NOT read
-        // as a type change; the unreadable directory degrades to `modified`.
+  describe('Given a gitlink whose checked-out HEAD moved', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'modified' with the gitlink mode", async () => {
+        // Arrange
         const { ctx, entry } = await seedFile('a.txt', 'hello\n');
-        await ctx.fs.mkdir(work(ctx, 'sub'));
-        const gitlinkEntry: IndexEntry = {
-          ...entry,
-          path: 'sub' as typeof entry.path,
-          mode: '160000',
-        };
+        await layOutSubmodule(ctx, MOVED_HEAD);
+        const sut = compareWorkingTreeDelta;
 
         // Act
-        const result = await compareWorkingTreeEntry(ctx, gitlinkEntry);
+        const result = await sut(ctx, gitlinkOf(entry));
 
         // Assert
-        expect(result).toBe('modified');
+        expect(result).toEqual({ status: 'modified', worktreeMode: '160000' });
+      });
+    });
+  });
+
+  describe('Given a gitlink (submodule) entry over an empty working directory', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'unchanged' with the gitlink mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.mkdir(work(ctx, 'sub'));
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'unchanged', worktreeMode: '160000' });
       });
     });
   });
@@ -370,20 +402,10 @@ describe('compareWorkingTreeDelta', () => {
 
   describe('Given a gitlink entry over a working directory with a size-mismatched entry, index mtime supplied', () => {
     describe('When comparing the delta', () => {
-      it("Then the size-shortcut guard skips the gitlink and falls through to the read-based verdict ('modified')", async () => {
-        // Arrange — the gitlink guard (`entry.mode !== FILE_MODE.GITLINK`) must
-        // block the size shortcut for a submodule path even though the other
-        // three conjuncts are true (not a symlink, indexMtime armed, and the
-        // directory's always-0 stat.size differs from the entry's inherited
-        // content-length fileSize) — a directory read fails and degrades to
-        // 'modified' via the catch-all, but only after actually attempting it.
+      it("Then no read happens and the verdict is 'unchanged'", async () => {
+        // Arrange
         const { ctx, entry } = await seedFile('a.txt', 'hello\n');
         await ctx.fs.mkdir(work(ctx, 'sub'));
-        const gitlinkEntry: IndexEntry = {
-          ...entry,
-          path: 'sub' as typeof entry.path,
-          mode: '160000',
-        };
         const reads: string[] = [];
         const spiedCtx: Context = {
           ...ctx,
@@ -396,13 +418,14 @@ describe('compareWorkingTreeDelta', () => {
           },
         };
         const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+        const sut = compareWorkingTreeDelta;
 
         // Act
-        const result = await compareWorkingTreeDelta(spiedCtx, gitlinkEntry, undefined, indexMtime);
+        const result = await sut(spiedCtx, gitlinkOf(entry), undefined, indexMtime);
 
-        // Assert — content path taken (read attempted), verdict still 'modified'
-        expect(result.status).toBe('modified');
-        expect(reads).not.toEqual([]);
+        // Assert
+        expect(result.status).toBe('unchanged');
+        expect(reads).toEqual([]);
       });
     });
   });
@@ -571,26 +594,216 @@ describe('compareWorkingTreeDelta', () => {
     });
   });
 
-  describe('Given an assume-valid gitlink entry and the index mtime supplied', () => {
+  describe('Given an assume-valid gitlink entry whose HEAD moved and the index mtime supplied', () => {
     describe('When comparing the delta', () => {
-      it('Then the stat cache is bypassed and the content-path verdict stands (modified)', async () => {
-        // Arrange — assume-valid would make the stat cache report clean, so a
-        // missing gitlink guard would surface a fabricated 'mode-changed'
+      it("Then the verdict is 'unchanged' and the submodule is never touched", async () => {
+        // Arrange
         const { ctx, entry } = await seedFile('a.txt', 'hello\n');
-        await ctx.fs.mkdir(work(ctx, 'sub'));
+        await layOutSubmodule(ctx, MOVED_HEAD);
+        const touched: string[] = [];
+        const spy =
+          <A extends unknown[], R>(call: (...args: A) => R) =>
+          (...args: A): R => {
+            touched.push(String(args[0]));
+            return call(...args);
+          };
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: spy(ctx.fs.lstat.bind(ctx.fs)),
+            readSlice: spy(ctx.fs.readSlice.bind(ctx.fs)),
+          },
+        };
         const gitlinkEntry: IndexEntry = {
-          ...entry,
-          path: 'sub' as typeof entry.path,
-          mode: '160000',
+          ...gitlinkOf(entry),
           flags: { ...entry.flags, assumeValid: true },
         };
         const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+        const sut = compareWorkingTreeDelta;
 
         // Act
-        const result = await compareWorkingTreeDelta(ctx, gitlinkEntry, undefined, indexMtime);
+        const result = await sut(spiedCtx, gitlinkEntry, undefined, indexMtime);
 
-        // Assert — the unreadable directory degrades to modified, exactly the
-        // pre-stat-cache behaviour; never a stat-cache verdict
+        // Assert
+        expect(result.status).toBe('unchanged');
+        expect(touched.filter((p) => p.includes('sub/.git'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a gitlink entry whose path holds a regular file', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'type-changed' with the file mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'sub'), 'f\n');
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'type-changed', worktreeMode: '100644' });
+      });
+    });
+  });
+
+  describe('Given a gitlink entry whose path holds an executable file', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'type-changed' with the executable mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'sub'), 'f\n');
+        const executableCtx: Context = {
+          ...ctx,
+          fs: { ...ctx.fs, lstat: async (p) => ({ ...(await ctx.fs.lstat(p)), mode: 0o100755 }) },
+        };
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(executableCtx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'type-changed', worktreeMode: '100755' });
+      });
+    });
+  });
+
+  describe('Given a gitlink entry whose path holds a symlink', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'type-changed' with the symlink mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.symlink('a.txt', work(ctx, 'sub'));
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'type-changed', worktreeMode: '120000' });
+      });
+    });
+  });
+
+  describe('Given a gitlink whose checked-out HEAD equals the entry', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'unchanged' with the gitlink mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await layOutSubmodule(ctx, entry.id);
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'unchanged', worktreeMode: '160000' });
+      });
+    });
+  });
+
+  describe('Given a gitlink whose .git is an empty directory', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'unchanged' because git finds no commit there", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.mkdir(`${work(ctx, 'sub')}/.git`);
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'unchanged', worktreeMode: '160000' });
+      });
+    });
+  });
+
+  describe('Given a gitlink whose .git is a gitfile past the size git reads', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'unchanged' without reading it", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.write(`${work(ctx, 'sub')}/.git`, new Uint8Array((1 << 20) + 1));
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'unchanged', worktreeMode: '160000' });
+      });
+    });
+  });
+
+  describe('Given a gitlink whose repository declares a format version git refuses', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'unchanged' instead of refusing", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await layOutSubmodule(ctx, MOVED_HEAD, '[core]\n\trepositoryformatversion = 2\n');
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'unchanged', worktreeMode: '160000' });
+      });
+    });
+  });
+
+  describe('Given a gitlink whose repository config cannot be read for a reason of its own', () => {
+    describe('When comparing the delta', () => {
+      it('Then the failure surfaces unchanged', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await layOutSubmodule(ctx, MOVED_HEAD);
+        const failure = new Error('boom');
+        const isConfig = (p: string): boolean => p.endsWith('/modules/sub/config');
+        const failingCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            tryReadUtf8: async (p: string) => {
+              if (isConfig(p)) throw failure;
+              return ctx.fs.tryReadUtf8?.(p);
+            },
+            readUtf8: async (p: string) => {
+              if (isConfig(p)) throw failure;
+              return ctx.fs.readUtf8(p);
+            },
+          },
+        };
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const outcome = await sut(failingCtx, gitlinkOf(entry)).catch((err: unknown) => err);
+
+        // Assert
+        expect(outcome).toBe(failure);
+      });
+    });
+  });
+
+  describe('Given an assume-valid gitlink entry whose HEAD moved and no index mtime', () => {
+    describe('When comparing the delta', () => {
+      it("Then the submodule is probed and the verdict is 'modified'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await layOutSubmodule(ctx, MOVED_HEAD);
+        const gitlinkEntry: IndexEntry = {
+          ...gitlinkOf(entry),
+          flags: { ...entry.flags, assumeValid: true },
+        };
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, gitlinkEntry);
+
+        // Assert
         expect(result.status).toBe('modified');
       });
     });
@@ -1358,18 +1571,18 @@ describe('compareAndRefresh', () => {
         expect(result.refreshed).toBeUndefined();
       });
 
-      it('Then a gitlink is modified and never refreshed', async () => {
+      it('Then a gitlink whose HEAD matches is unchanged and never refreshed', async () => {
         // Arrange
         const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
-        await ctx.fs.mkdir(work(ctx, 'sub'));
-        const gitlink: IndexEntry = { ...entry, path: 'sub' as IndexEntry['path'], mode: '160000' };
+        await layOutSubmodule(ctx, entry.id);
+        const gitlink = gitlinkOf(entry);
 
         // Act
         const sut = compareAndRefresh;
         const result = await sut(ctx, gitlink, { indexMtime });
 
         // Assert
-        expect(result.delta.status).toBe('modified');
+        expect(result.delta.status).toBe('unchanged');
         expect(result.refreshed).toBeUndefined();
       });
 
@@ -1481,6 +1694,89 @@ describe('compareAndRefresh on a lossy entry', () => {
 
         // Assert
         expect(result.delta.status).toBe('unchanged');
+      });
+    });
+  });
+});
+
+const replaceDirWithLink = async (ctx: Context, dir: string, copy: string): Promise<void> => {
+  await ctx.fs.writeUtf8(work(ctx, `${copy}/f`), 'x\n');
+  await ctx.fs.rm(work(ctx, `${dir}/f`));
+  await ctx.fs.rm(work(ctx, dir));
+  await ctx.fs.symlink(copy, work(ctx, dir));
+};
+
+describe('compareAndRefresh below a leading directory', () => {
+  describe('Given a leading directory that cannot be lstat-ed', () => {
+    describe('When comparing a regular file below it', () => {
+      it("Then it is 'absent'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('d/f', 'x\n');
+        const realLstat = ctx.fs.lstat.bind(ctx.fs);
+        const lstat = vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p) => {
+          if (p === work(ctx, 'd')) throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
+          return realLstat(p);
+        });
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry);
+
+        // Assert — the leading-directory verdict alone decides: the leaf is never probed.
+        expect(result.delta.status).toBe('absent');
+        expect(lstat.mock.calls.map(([p]) => p)).not.toContain(work(ctx, 'd/f'));
+      });
+    });
+  });
+
+  describe('Given a regular file whose leading directory became a symlink to an identical copy', () => {
+    describe('When comparing the entry', () => {
+      it("Then it is 'absent'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('d/f', 'x\n');
+        await replaceDirWithLink(ctx, 'd', 'copy');
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry);
+
+        // Assert
+        expect(result.delta).toEqual({ status: 'absent' });
+      });
+    });
+  });
+
+  describe('Given a gitlink whose leading directory became a symlink', () => {
+    describe('When comparing the entry', () => {
+      it("Then it is 'absent'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('d/f', 'x\n');
+        await replaceDirWithLink(ctx, 'd', 'copy');
+        const gitlink = { ...entry, mode: FILE_MODE.GITLINK };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, gitlink);
+
+        // Assert
+        expect(result.delta).toEqual({ status: 'absent' });
+      });
+    });
+  });
+
+  describe('Given a root-level file', () => {
+    describe('When comparing the entry', () => {
+      it('Then only the leaf is lstat-ed', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'x\n');
+        const spy = vi.spyOn(ctx.fs, 'lstat');
+        const sut = compareAndRefresh;
+
+        // Act
+        await sut(ctx, entry);
+
+        // Assert
+        expect(spy.mock.calls.map(([p]) => p)).toEqual([work(ctx, 'a.txt')]);
       });
     });
   });

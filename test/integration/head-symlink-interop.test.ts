@@ -541,26 +541,32 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
     });
 
     describe('When git status and tsgit status both run', () => {
-      it('Then git reports no commits yet while tsgit refuses without the followed bytes — a recorded residual', async () => {
+      it('Then git reports no commits yet and tsgit reports an unknown HEAD', async () => {
         // Arrange
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'status']);
+        const plain = tryRunGitWithExit(['-C', pair.ours, 'status']);
+        const porcelain = tryRunGitWithExit([
+          '-C',
+          pair.ours,
+          'status',
+          '--porcelain=v2',
+          '--branch',
+        ]);
         const sut = status;
 
         // Act
-        let caught: unknown;
-        try {
-          await sut(ctx);
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode).toBe(0);
-        expect(gitResult.stdout).toContain('No commits yet');
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_REF',
-          reason: 'HEAD is a symbolic link to content that is not a ref',
-        });
+        expect(plain.exitCode).toBe(0);
+        expect(plain.stdout).toContain('No commits yet');
+        expect(porcelain.exitCode).toBe(0);
+        expect(porcelain.stdout).toContain('# branch.oid (initial)');
+        expect(porcelain.stdout).toContain('# branch.head (unknown)');
+        expect(porcelain.stdout).not.toContain(SECRET);
+        expect(result.branch).toBeUndefined();
+        expect(result.detached).toBe(false);
+        expect(result.changes).toEqual([]);
+        expect(JSON.stringify(result)).not.toContain(SECRET);
       });
     });
   });

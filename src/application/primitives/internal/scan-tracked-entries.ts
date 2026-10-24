@@ -7,6 +7,7 @@ import { type CleanOrder, configuresFilterDriver, inIndexOrder } from './clean-o
 import { boundedMapFor } from './concurrency.js';
 import { type AttributeProvider, buildCheckinAttributeProvider } from './read-gitattributes.js';
 import type { IsVerified } from './smudge-racily-clean.js';
+import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
 
 /** The tracked pass: every tracked file's delta plus the entries whose stat data drifted. */
 export interface TrackedScan {
@@ -37,12 +38,14 @@ const scanEntry = async (
   provider: AttributeProvider,
   indexMtime: GitIndex['indexMtime'],
   filterDriversConfigured: boolean,
+  scanner: LeadingPathScanner,
 ): Promise<ScannedEntry | undefined> => {
   if (entry.flags.skipWorktree) return undefined;
   const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
     provider,
     ...(indexMtime !== undefined && { indexMtime }),
     filterDriversConfigured,
+    scanner,
   });
   return { path: escapedPathOf(entry), delta, refreshed };
 };
@@ -66,10 +69,18 @@ const scanWorkingTree = async (
   indexMtime: GitIndex['indexMtime'],
 ): Promise<TrackedScan> => {
   const filterDriversConfigured = await configuresFilterDriver(ctx);
+  const scanner = createLeadingPathScanner(ctx);
   const scan = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
       try {
-        const scanned = await scanEntry(ctx, entry, provider, indexMtime, filterDriversConfigured);
+        const scanned = await scanEntry(
+          ctx,
+          entry,
+          provider,
+          indexMtime,
+          filterDriversConfigured,
+          scanner,
+        );
         onScanned();
         return scanned;
       } finally {

@@ -139,6 +139,29 @@ describe('smudgeRacilyClean', () => {
     });
   });
 
+  describe('Given three racily clean entries sharing a directory', () => {
+    describe('When the index is written', () => {
+      it('Then the directory is lstat-ed once for the whole pass', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const names = ['d/a', 'd/b', 'd/c'] as const;
+        for (const name of names) await write(ctx, name, `${name}\n`);
+        await add(ctx, [...names]);
+        const entries = await entriesAsRead(ctx);
+        const previous = await readPreviousIndex(ctx);
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+        const sut = smudgeRacilyClean;
+
+        // Act
+        await sut(ctx, entries, previous);
+
+        // Assert
+        expect(lstat.mock.calls.filter(([path]) => path === workPath(ctx, 'd'))).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a carried-over entry older than the index as read', () => {
     describe('When the index is written', () => {
       it('Then the entry is kept without touching its working file', async () => {

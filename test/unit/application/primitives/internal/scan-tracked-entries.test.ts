@@ -55,6 +55,32 @@ afterEach(() => {
 });
 
 describe('scanTrackedEntries', () => {
+  describe('Given two committed files sharing a directory', () => {
+    describe('When scanning the tracked entries', () => {
+      it('Then the directory is lstat-ed once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        at(0);
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/a`, 'a');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/b`, 'b');
+        at(2);
+        await add(ctx, ['d/a', 'd/b']);
+        await commit(ctx, { message: 'first', author });
+        const index = await freshIndex(ctx);
+        const spy = vi.spyOn(ctx.fs, 'lstat');
+        const sut = scanTrackedEntries;
+
+        // Act
+        await sut(ctx, index, index.entries, () => {});
+
+        // Assert
+        const directory = `${ctx.layout.workDir}/d`;
+        expect(spy.mock.calls.filter(([p]) => p === directory)).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a committed file rewritten with the same bytes at a newer mtime', () => {
     describe('When scanning the tracked entries', () => {
       it('Then it is refreshed with the new stat and reported unchanged', async () => {

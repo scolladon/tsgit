@@ -23,7 +23,12 @@ import {
   viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
-import { deriveWorkingMode, type FileMode, type RefName } from '../../domain/objects/index.js';
+import {
+  deriveWorkingMode,
+  FILE_MODE,
+  type FileMode,
+  type RefName,
+} from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import type {
@@ -44,6 +49,7 @@ import {
 } from '../primitives/internal/scan-tracked-entries.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
+import { isUnreadableRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import type { WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
@@ -52,6 +58,12 @@ import { createGranularityTracker } from './internal/progress-tracker.js';
 import { pruneGitlinkDirectories } from './internal/prune-gitlink-directories.js';
 import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { resolveRevisionName } from './internal/revision-name.js';
+import {
+  type SubmoduleIgnore,
+  type SubmoduleState,
+  submoduleIgnores,
+  submoduleState,
+} from './internal/submodule-state.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
@@ -88,6 +100,17 @@ export interface ChangedPath {
   readonly head?: BlobSide;
   readonly index?: BlobSide;
   readonly worktree?: WorktreeSide;
+  /**
+   * git's porcelain v2 `S<c><m><u>` submodule field, present on a row whose HEAD or index
+   * side is a gitlink and absent otherwise: `commitChanged` (`C`) is the submodule's HEAD
+   * differing from the recorded commit, `trackedChanges` (`M`) its own tracked changes,
+   * `untrackedChanges` (`U`) its untracked files.
+   */
+  readonly submodule?: {
+    readonly commitChanged: boolean;
+    readonly trackedChanges: boolean;
+    readonly untrackedChanges: boolean;
+  };
 }
 
 /**
@@ -149,6 +172,26 @@ const STATUS_SCAN_GRANULARITY = 100;
 export const status = (ctx: Context, opts: StatusOptions = {}): Promise<StatusResult> =>
   withFilterProcessPool(ctx, () => statusInScope(ctx, opts));
 
+/** git's `-uno` (`no`) or its default untracked walk (`all`). */
+export type UntrackedFilesMode = 'all' | 'no';
+
+/**
+ * How a dirty check runs a checkout's status — git's `-uno` and `--ignore-submodules=none`
+ * flags — never part of the public surface.
+ */
+export interface DirtyCheckStatusOptions extends StatusOptions {
+  /** git's `-uno`: no untracked walk, in this status and in the ones it runs on its own submodules. */
+  readonly untrackedFiles?: UntrackedFilesMode;
+  /** git's `--ignore-submodules=<mode>` on the command line: every gitlink takes it, the configured modes unread. */
+  readonly submoduleIgnore?: SubmoduleIgnore;
+}
+
+/** The status git runs inside a submodule for a dirty check. */
+export const statusForDirtyCheck = (
+  ctx: Context,
+  opts: DirtyCheckStatusOptions,
+): Promise<StatusResult> => withFilterProcessPool(ctx, () => statusInScope(ctx, opts));
+
 const OPTIONAL_LOCKS_ENV = 'GIT_OPTIONAL_LOCKS';
 
 /** Whether status may take the optional index lock: `refresh: false` wins without
@@ -172,18 +215,23 @@ interface LockedScan {
   readonly index: GitIndex;
   readonly tracked: TrackedEntries;
   readonly trackedScan: TrackedScan;
+  readonly submodules: SubmoduleStates;
+  readonly hidden: ReadonlySet<FilePath>;
   readonly workDir: string;
   readonly lock: IndexLock | undefined;
+  readonly untrackedFiles: UntrackedFilesMode;
 }
 
 /** Scans untracked, reports, then refreshes the index when able; the lock is released whatever happens. */
 const reportUnderLock = async (
   ctx: Context,
-  { index, tracked, trackedScan, workDir, lock }: LockedScan,
+  { index, tracked, trackedScan, submodules, hidden, workDir, lock, untrackedFiles }: LockedScan,
 ): Promise<StatusReport> => {
   try {
-    const untracked = await scanUntracked(ctx, index, tracked.trackedPaths);
-    const scanned = { workingMap: trackedScan.workingMap, untracked };
+    const untracked =
+      untrackedFiles === 'no' ? [] : await scanUntracked(ctx, index, tracked.trackedPaths);
+    const workingMap = withoutChanges(trackedScan.workingMap, hidden);
+    const scanned = { workingMap, submodules, untracked };
     const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
     if (lock) await updateIndexIfAble(lock, index, trackedScan);
     return report;
@@ -192,27 +240,67 @@ const reportUnderLock = async (
   }
 };
 
-const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusResult> => {
+type HeadView = Pick<StatusResult, 'branch' | 'detached'>;
+
+const UNKNOWN_HEAD: HeadView = { branch: undefined, detached: false };
+
+/** git's `branch.head`: the branch HEAD names, detached, or unknown when HEAD's chain cannot be read. */
+const headViewOf = async (ctx: Context): Promise<HeadView> => {
+  try {
+    const head = await readHeadRaw(ctx);
+    await resolveRefOrMissing(ctx, HEAD_NAME);
+    return { branch: branchRefFromHead(head), detached: head.kind === 'direct' };
+  } catch (err) {
+    if (isUnreadableRef(err)) return UNKNOWN_HEAD;
+    throw err;
+  }
+};
+
+const statusInScope = async (
+  ctx: Context,
+  opts: DirtyCheckStatusOptions,
+): Promise<StatusResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
-  const head = await readHeadRaw(ctx);
+  const head = await headViewOf(ctx);
   // `readIndex` returns an empty index when the file is absent (fresh/unborn
   // repo); a thrown error means a corrupt index, which we let propagate rather
   // than fabricate an empty one — fabricating it would report every HEAD path as
   // a spurious staged deletion (git errors on a corrupt index too).
   const index = await readIndex(ctx);
-  const tracked = trackedEntriesOf(index);
   ctx.progress.start(STATUS_SCAN_OP);
   try {
-    const trackedScan = await scanTrackedTree(ctx, index, tracked);
-    const lock = refreshEnabled(ctx, opts) ? await acquireOptionalIndexLock(ctx) : undefined;
-    const report = await reportUnderLock(ctx, { index, tracked, trackedScan, workDir, lock });
-    return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
+    const report = await scanAndReport(ctx, opts, {
+      index,
+      tracked: trackedEntriesOf(index),
+      workDir,
+    });
+    return { ...head, ...report };
   } finally {
     ctx.progress.end(STATUS_SCAN_OP);
   }
+};
+
+/** Scans the tracked tree, runs git's dirty check on its gitlinks (a refusal precedes any index write), then reports. */
+const scanAndReport = async (
+  ctx: Context,
+  opts: DirtyCheckStatusOptions,
+  { index, tracked, workDir }: Pick<LockedScan, 'index' | 'tracked' | 'workDir'>,
+): Promise<StatusReport> => {
+  const trackedScan = await scanTrackedTree(ctx, index, tracked);
+  const refresh = refreshEnabled(ctx, opts);
+  const untrackedFiles = opts.untrackedFiles ?? 'all';
+  const gitmodules = { workDir, entries: index.entries };
+  const paths = gitlinkPathsOf(tracked);
+  const ignores = await submoduleIgnores(ctx, gitmodules, paths, opts.submoduleIgnore);
+  const hidden = hiddenOf(ignores);
+  const dirtyChecks = { refresh, ignores, untrackedFiles };
+  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan, dirtyChecks);
+  const lock = refresh ? await acquireOptionalIndexLock(ctx) : undefined;
+  const scan = { index, tracked, trackedScan, submodules, hidden, workDir, lock, untrackedFiles };
+  return reportUnderLock(ctx, scan);
 };
 
 /** The index's tracked entries: stage 0 by path, the unmerged groups, and every tracked path. */
@@ -237,9 +325,97 @@ const trackedEntriesOf = (index: GitIndex): TrackedEntries => {
 
 /** What the working tree holds: every tracked file's delta, and the untracked paths. */
 interface ScannedTree {
-  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>;
+  readonly submodules: SubmoduleStates;
   readonly untracked: ReadonlyArray<FilePath>;
 }
+
+type SubmoduleStates = ReadonlyMap<FilePath, SubmoduleState>;
+
+type DirtyCheck = readonly [FilePath, IndexEntry, WorkingTreeDelta, SubmoduleIgnore];
+
+/** The gitlinks git's diff visits: a skip-worktree or assume-valid entry never reaches the submodule config. */
+const gitlinkPathsOf = ({ stage0Map }: TrackedEntries): ReadonlyArray<FilePath> => {
+  const paths: FilePath[] = [];
+  for (const [path, entry] of stage0Map) {
+    if (entry.mode !== FILE_MODE.GITLINK || entry.flags.skipWorktree || entry.flags.assumeValid) {
+      continue;
+    }
+    paths.push(path);
+  }
+  return paths;
+};
+
+/** The scan's deltas with the given paths read as unchanged, the scan's own map left to the index refresh. */
+const withoutChanges = (
+  workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>,
+  hidden: ReadonlySet<FilePath>,
+): ReadonlyMap<FilePath, WorkingTreeDelta> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — with nothing hidden the copy maps every delta to itself, so the result equals the input map; the guard only skips the allocation.
+  if (hidden.size === 0) return workingMap;
+  return new Map(
+    [...workingMap].map(([path, delta]) => [
+      path,
+      hidden.has(path) ? { ...delta, status: 'unchanged' } : delta,
+    ]),
+  );
+};
+
+type SubmoduleIgnores = ReadonlyMap<FilePath, SubmoduleIgnore>;
+
+const hiddenOf = (ignores: SubmoduleIgnores): ReadonlySet<FilePath> =>
+  new Set([...ignores].filter(([, mode]) => mode === 'all').map(([path]) => path));
+
+const dirtyChecksOf = (
+  { stage0Map }: TrackedEntries,
+  { workingMap }: TrackedScan,
+  ignores: SubmoduleIgnores,
+): ReadonlyArray<DirtyCheck> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — with no ignores the loop's `ignores.get` is undefined for every path and `continue`s, so it returns the same empty list; the guard only skips the walk.
+  if (ignores.size === 0) return [];
+  const checked: DirtyCheck[] = [];
+  for (const [path, entry] of stage0Map) {
+    const mode = ignores.get(path);
+    if (mode === undefined || mode === 'all') continue;
+    // A gitlink gone from disk is a plain deletion git never probes.
+    const delta = workingMap.get(path);
+    if (delta === undefined || delta.status === 'absent') continue;
+    checked.push([path, entry, delta, mode]);
+  }
+  return checked;
+};
+
+/** git's dirty check runs over each gitlink the scan found on disk; it refuses a `.git` that leads to no repository. */
+const submoduleStatesOf = async (
+  ctx: Context,
+  tracked: TrackedEntries,
+  scan: TrackedScan,
+  { refresh, ignores, untrackedFiles }: DirtyChecks,
+): Promise<SubmoduleStates> => {
+  const states = new Map<FilePath, SubmoduleState>();
+  // git runs the checkouts' statuses one after another.
+  for (const [path, entry, delta, ignore] of dirtyChecksOf(tracked, scan, ignores)) {
+    const childStatus = (child: Context) =>
+      statusForDirtyCheck(child, {
+        refresh,
+        untrackedFiles: childUntrackedFiles(untrackedFiles, ignore),
+      });
+    states.set(path, await submoduleState(ctx, entry, delta, { childStatus, ignore }));
+  }
+  return states;
+};
+
+interface DirtyChecks {
+  readonly refresh: boolean;
+  readonly ignores: SubmoduleIgnores;
+  readonly untrackedFiles: UntrackedFilesMode;
+}
+
+/** git's `is_submodule_modified` passes `-uno` down when untracked files are ignored, by flag or by the gitlink's mode. */
+const childUntrackedFiles = (
+  inherited: UntrackedFilesMode,
+  ignore: SubmoduleIgnore,
+): UntrackedFilesMode => (inherited === 'no' || ignore === 'untracked' ? 'no' : 'all');
 
 /** Write the refreshed stat data back, only when something is worth persisting:
  *  a drifted entry, or an entry racy against the index file's own mtime. */
@@ -279,11 +455,11 @@ const reportStatus = async (
     readonly workDir: string;
   },
 ): Promise<StatusReport> => {
-  await resolveRevisionName(ctx, HEAD_NAME);
-  const headTree = await readHeadTreeEscaped(ctx);
+  const headId = await resolveRevisionName(ctx, HEAD_NAME);
+  const headTree = headId === undefined ? undefined : await readHeadTreeEscaped(ctx);
   const { unmerged: groups } = tracked.grouped;
   const stagedKindMap = collectStagedKinds(index, headTree, groups);
-  const changes = buildChanges(stagedKindMap, scanned.workingMap, headTree, tracked.stage0Map);
+  const changes = buildChanges(stagedKindMap, scanned, headTree, tracked.stage0Map);
   const unmerged = await buildUnmergedEntries(ctx, groups, workDir);
   const { untracked } = scanned;
   const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
@@ -348,13 +524,13 @@ const collectStagedKinds = (
  */
 const buildChanges = (
   stagedKindMap: ReadonlyMap<FilePath, ChangeKind>,
-  workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>,
+  { workingMap, submodules }: Pick<ScannedTree, 'workingMap' | 'submodules'>,
   headTree: FlatTree | undefined,
   stage0Map: ReadonlyMap<FilePath, IndexEntry>,
 ): ChangedPath[] => {
   const paths = new Set<FilePath>(stagedKindMap.keys());
   for (const [path, delta] of workingMap) {
-    if (toUnstagedKind(delta.status) !== undefined) paths.add(path);
+    if (unstagedKindOf(delta, submodules.get(path)) !== undefined) paths.add(path);
   }
   const changes = [...paths].map((path) =>
     buildChangedPath(
@@ -363,11 +539,36 @@ const buildChanges = (
       workingMap.get(path),
       headTree,
       stage0Map.get(path),
+      submodules.get(path),
     ),
   );
   return changes
     .sort((a, b) => comparePaths(a.path, b.path))
     .map((change) => ({ ...change, path: viewOfEscaped(change.path) }));
+};
+
+/** A gitlink whose checkout holds changes is modified in the working tree though its commit did not move; a file in its place keeps its kind. */
+const unstagedKindOf = (
+  delta: WorkingTreeDelta,
+  checked: SubmoduleState | undefined,
+): ChangeKind | undefined => {
+  const kind = toUnstagedKind(delta.status);
+  if (kind !== undefined || checked === undefined) return kind;
+  return checked.trackedChanges || checked.untrackedChanges ? 'modified' : undefined;
+};
+
+/** Whether a row's HEAD or index side is a gitlink: only those carry git's submodule field. */
+const submoduleOf = (
+  head: { readonly mode: string } | undefined,
+  indexEntry: IndexEntry | undefined,
+): ChangedPath['submodule'] => {
+  if (head?.mode !== FILE_MODE.GITLINK && indexEntry?.mode !== FILE_MODE.GITLINK) return undefined;
+  // A gitlink whose checkout moved is always probed, so only rows the probe skipped reach here.
+  return {
+    commitChanged: false,
+    trackedChanges: false,
+    untrackedChanges: false,
+  };
 };
 
 /**
@@ -382,9 +583,11 @@ const buildChangedPath = (
   delta: WorkingTreeDelta | undefined,
   headTree: FlatTree | undefined,
   indexEntry: IndexEntry | undefined,
+  checked: SubmoduleState | undefined,
 ): ChangedPath => {
   const head = headTree?.entries.get(path);
-  const unstaged = delta === undefined ? undefined : toUnstagedKind(delta.status);
+  const unstaged = delta === undefined ? undefined : unstagedKindOf(delta, checked);
+  const submodule = checked ?? submoduleOf(head, indexEntry);
   return {
     path,
     ...(staged !== undefined && { staged }),
@@ -392,6 +595,7 @@ const buildChangedPath = (
     ...(head !== undefined && { head: { id: head.id, mode: head.mode } }),
     ...(indexEntry !== undefined && { index: { id: indexEntry.id, mode: indexEntry.mode } }),
     ...(delta?.worktreeMode !== undefined && { worktree: { mode: delta.worktreeMode } }),
+    ...(submodule !== undefined && { submodule }),
   };
 };
 

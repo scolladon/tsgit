@@ -118,7 +118,238 @@ const pushHostileUntrackedStash = async (ctx: Context, untrackedTree: ObjectId):
   await pushStashRef(ctx, w, 'WIP on main');
 };
 
+const GITLINK_A = 'a'.repeat(40) as ObjectId;
+const GITLINK_C = 'c'.repeat(40) as ObjectId;
+
+const checkOutSubmoduleAt = async (ctx: Context, head: ObjectId): Promise<void> => {
+  const moduleDir = `${ctx.layout.gitDir}/modules/sub`;
+  await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.git`, 'gitdir: ../.git/modules/sub\n');
+  await ctx.fs.writeUtf8(`${moduleDir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.mkdir(`${moduleDir}/objects`);
+  await ctx.fs.writeUtf8(`${moduleDir}/refs/heads/main`, `${head}\n`);
+};
+
+const replaceIndexEntries = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+): Promise<void> => {
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync(
+      { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) },
+      ctx,
+    ),
+  );
+};
+
+const stageGitlink = async (
+  ctx: Context,
+  mode: string,
+  id: ObjectId,
+  path = 'sub',
+): Promise<void> => {
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/sub`);
+  const tracked = await readIndex(ctx);
+  await replaceIndexEntries(ctx, [
+    ...tracked.entries.filter((entry) => entry.path !== path),
+    indexEntryFromStat(stat, mode as IndexEntry['mode'], id, path as FilePath),
+  ]);
+};
+
+const unstagePath = async (ctx: Context, path: string): Promise<void> => {
+  const tracked = await readIndex(ctx);
+  await replaceIndexEntries(
+    ctx,
+    tracked.entries.filter((entry) => entry.path !== path),
+  );
+};
+
+/** HEAD commits the gitlink `sub` at A; the checkout inside `sub` sits at `checkedOut`. */
+const setupRepoWithSubmodule = async (checkedOut: ObjectId): Promise<Context> => {
+  const ctx = await setupRepo();
+  await checkOutSubmoduleAt(ctx, GITLINK_A);
+  await stageGitlink(ctx, FILE_MODE.GITLINK, GITLINK_A);
+  await commit(ctx, { message: 'add submodule', author });
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/modules/sub/refs/heads/main`, `${checkedOut}\n`);
+  return ctx;
+};
+
 describe('stash push', () => {
+  describe('Given three committed files sharing a directory', () => {
+    describe('When push runs', () => {
+      it('Then the directory is lstat-ed once per pass: the classification, the restore, the index refresh', async () => {
+        // Arrange — the clock stands still, so the index and the files share one second and
+        // every entry is racily clean: the refresh pass always runs.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const ctx = createMemoryContext();
+        await init(ctx);
+        for (const name of ['d/a', 'd/b', 'd/c']) await commitFile(ctx, name, `${name}\n`, name);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/a`, 'edited\n');
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+        const sut = stashPush;
+
+        // Act
+        try {
+          await sut(ctx, {});
+        } finally {
+          vi.useRealTimers();
+        }
+
+        // Assert
+        // Three passes walk the tree, each with its own leading-path memo: the classification of
+        // the tracked entries, the restore that writes HEAD back, and the racy-clean comparison
+        // that refreshes the index; none lstat-s the directory more than once.
+        expect(
+          lstat.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/d`),
+        ).toHaveLength(3);
+      });
+    });
+  });
+
+  describe('Given a gitlink newly staged and nothing else changed', () => {
+    describe('When push runs', () => {
+      it('Then it reports no local changes', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await stageGitlink(ctx, FILE_MODE.GITLINK, GITLINK_C, 'other');
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+      });
+    });
+  });
+
+  describe('Given a committed gitlink removed from the index and nothing else changed', () => {
+    describe('When push runs', () => {
+      it('Then it reports no local changes', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await unstagePath(ctx, 'sub');
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+      });
+    });
+  });
+
+  describe('Given a gitlink staged at a new id and nothing else changed', () => {
+    describe('When push runs', () => {
+      it('Then it reports no local changes', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_C);
+        await stageGitlink(ctx, FILE_MODE.GITLINK, GITLINK_C);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+      });
+    });
+  });
+
+  describe('Given a regular file in the index where HEAD holds a gitlink', () => {
+    describe('When push runs', () => {
+      it('Then a stash is made, since a type change is a local change', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+        await write(ctx, 'sub', 'now a file\n');
+        await add(ctx, ['sub']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+      });
+    });
+  });
+
+  describe('Given a regular file staged where HEAD holds a gitlink and the working tree matches the index', () => {
+    describe('When push runs', () => {
+      it('Then a stash is made, since the staged type change is the only local change', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+        await write(ctx, 'sub', 'now a file\n');
+        await add(ctx, ['sub']);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+      });
+    });
+  });
+
+  describe('Given a gitlink staged at a new id and a tracked file staged with an edit', () => {
+    describe('When push runs', () => {
+      it('Then a stash is made, since the file edit is a local change', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_C);
+        await stageGitlink(ctx, FILE_MODE.GITLINK, GITLINK_C);
+        await write(ctx, 'a.txt', 'staged edit\n');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+      });
+    });
+  });
+
+  describe('Given an unmoved gitlink with a file edited inside its checkout', () => {
+    describe('When push runs', () => {
+      it('Then it reports no local changes', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await write(ctx, 'sub/k', 'edited\n');
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+      });
+    });
+  });
+
+  describe('Given a moved gitlink and an edited tracked file', () => {
+    describe('When push runs', () => {
+      it('Then the W tree keeps the index id for the gitlink', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_C);
+        await write(ctx, 'a.txt', 'modified\n');
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        const flat = await flattenTree(ctx, w.tree);
+        expect(flat.entries.get('sub' as FilePath)).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+      });
+    });
+  });
+
   describe('Given a clean working tree', () => {
     describe('When push runs', () => {
       it('Then it reports no local changes and writes no stash ref', async () => {
@@ -1851,6 +2082,90 @@ describe('stash push line-ending guards', () => {
         if (result.kind !== 'saved') throw new Error('expected saved');
         const wTree = (await commitOf(ctx, result.stash)).tree;
         expect(await treeContent(ctx, wTree, 'a.txt')).toBe('a\r\nb\r\nc\r\n');
+      });
+    });
+  });
+});
+
+describe('stash push beyond a symbolic link', () => {
+  describe('Given a tracked path whose leading directory became a symlink to a copy', () => {
+    const arrange = async (): Promise<Context> => {
+      const ctx = await setupRepo();
+      await commitFile(ctx, 'd/f', 'x\n', 'add d/f');
+      await write(ctx, 'copy/f', 'x\n');
+      await ctx.fs.rm(`${ctx.layout.workDir}/d/f`);
+      await ctx.fs.rm(`${ctx.layout.workDir}/d`);
+      await ctx.fs.symlink('copy', `${ctx.layout.workDir}/d`);
+      return ctx;
+    };
+
+    const refusalOf = async (ctx: Context): Promise<unknown> => {
+      try {
+        await stashPush(ctx, {});
+      } catch (error) {
+        return error instanceof TsgitError ? error.data : error;
+      }
+      return undefined;
+    };
+
+    describe('When push runs', () => {
+      it('Then it refuses with the path beyond the symbolic link', async () => {
+        // Arrange
+        const ctx = await arrange();
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'd/f' });
+      });
+
+      it('Then it writes no stash ref and leaves the index bytes unchanged', async () => {
+        // Arrange
+        const ctx = await arrange();
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const before = await ctx.fs.read(indexPath);
+
+        // Act
+        await refusalOf(ctx);
+
+        // Assert
+        expect(await readStashStack(ctx)).toEqual([]);
+        expect(await ctx.fs.read(indexPath)).toEqual(before);
+      });
+    });
+
+    describe('When push runs and another file is edited', () => {
+      it('Then it refuses the same way', async () => {
+        // Arrange
+        const ctx = await arrange();
+        await write(ctx, 'a.txt', 'edited\n');
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'd/f' });
+      });
+    });
+  });
+
+  describe('Given a tracked symlink that is a leaf, not a leading directory', () => {
+    describe('When push runs after the link was retargeted', () => {
+      it('Then it stashes normally', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.symlink('old-target', `${ctx.layout.workDir}/link`);
+        await add(ctx, ['link']);
+        await commit(ctx, { message: 'add link', author });
+        await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+        await ctx.fs.symlink('new-target', `${ctx.layout.workDir}/link`);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
       });
     });
   });

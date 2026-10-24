@@ -11,9 +11,13 @@
  */
 import {
   noInitialCommit,
+  pathspecBeyondSymlink,
   stashApplyWouldOverwrite,
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
+import type { DiffChange } from '../../domain/diff/diff-change.js';
+import { isGitlink } from '../../domain/diff/index.js';
+import { diffIndexAgainstTreeKeyed } from '../../domain/diff/index-diff.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
@@ -34,7 +38,8 @@ import type { FileStat } from '../../ports/file-system.js';
 import { applyMergeToWorktree, mergeTreesToTree } from '../primitives/apply-merge-to-worktree.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import {
-  compareWorkingTreeEntry,
+  compareAndRefresh,
+  scopeOf,
   type WorkingTreeComparison,
 } from '../primitives/compare-working-tree-entry.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -72,7 +77,10 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from '../primitives/internal/repo-state.js';
-import { createLeadingPathScanner } from '../primitives/internal/symlinked-leading-path.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from '../primitives/internal/symlinked-leading-path.js';
 import { stage0Entry } from '../primitives/internal/synthetic-index-entry.js';
 import {
   createWorkingTreeWriter,
@@ -244,12 +252,18 @@ const classifyEntry = async (
   entry: IndexEntry,
   provider: AttributeProvider,
   indexMtime: GitIndex['indexMtime'],
+  scanner: LeadingPathScanner,
 ): Promise<TrackedEntry | undefined> => {
   // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
   if (entry.flags.stage !== 0) return undefined;
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
   if (entry.flags.skipWorktree) return { entry, state: 'unchanged' };
-  return { entry, state: await compareWorkingTreeEntry(ctx, entry, provider, indexMtime) };
+  // git stashes with --ignore-submodules: the index id of a gitlink rides into the W tree as it is.
+  if (isGitlink(entry.mode)) return { entry, state: 'unchanged' };
+  // git builds the work-tree tree through add_to_index, which dies on a path beyond a symlink.
+  if (await scanner.hasSymlinkedLeadingPath(entry.path)) throw pathspecBeyondSymlink(entry.path);
+  const { delta } = await compareAndRefresh(ctx, entry, scopeOf(provider, indexMtime, scanner));
+  return { entry, state: delta.status };
 };
 
 /**
@@ -262,10 +276,11 @@ const classifyTracked = async (
   index: GitIndex,
   provider: AttributeProvider,
 ): Promise<ReadonlyArray<TrackedEntry>> => {
+  const scanner = createLeadingPathScanner(ctx);
   const classify = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', index.entries, async (entry) => {
       try {
-        return await classifyEntry(ctx, entry, provider, index.indexMtime);
+        return await classifyEntry(ctx, entry, provider, index.indexMtime, scanner);
       } finally {
         order?.release(entry.path);
       }
@@ -359,22 +374,54 @@ interface UntrackedFile {
 /** What `stash push` found to save, before any object is written for it. */
 interface LocalChanges {
   readonly iTree: ObjectId;
+  /** Whether the index differs from the base tree anywhere but at gitlinks, which stash ignores. */
+  readonly stagedBeyondGitlinks: boolean;
   readonly scope: ConversionScope;
   readonly tracked: ReadonlyArray<TrackedEntry>;
   readonly untrackedFiles: ReadonlyArray<UntrackedFile>;
 }
 
-const findLocalChanges = async (ctx: Context, opts: StashPushInput): Promise<LocalChanges> => {
-  const index = await readIndex(ctx);
-  const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
-  const scope = await buildConversionScope(ctx);
-  const tracked = await classifyTracked(ctx, index, scope.provider);
-  const untrackedFiles = opts.includeUntracked ? await listUntracked(ctx, index) : [];
-  return { iTree, scope, tracked, untrackedFiles };
+const countsAsLocalChange = (change: DiffChange): boolean => {
+  switch (change.type) {
+    case 'add':
+      return !isGitlink(change.newMode);
+    case 'delete':
+      return !isGitlink(change.oldMode);
+    case 'modify':
+      return !isGitlink(change.newMode);
+    default:
+      return true;
+  }
 };
 
-const hasLocalChanges = (found: LocalChanges, base: BaseState): boolean =>
-  found.iTree !== base.bTree ||
+const differsBeyondGitlinks = async (
+  ctx: Context,
+  index: GitIndex,
+  iTree: ObjectId,
+  base: BaseState,
+): Promise<boolean> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — identical trees diff to no changes, so `.some` over them is false either way; the guard only skips the flatten.
+  if (iTree === base.bTree) return false;
+  const baseTree = await flattenEscapedTree(ctx, base.bTree);
+  return diffIndexAgainstTreeKeyed(index, baseTree).changes.some(countsAsLocalChange);
+};
+
+const findLocalChanges = async (
+  ctx: Context,
+  opts: StashPushInput,
+  base: BaseState,
+): Promise<LocalChanges> => {
+  const index = await readIndex(ctx);
+  const scope = await buildConversionScope(ctx);
+  const tracked = await classifyTracked(ctx, index, scope.provider);
+  const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
+  const stagedBeyondGitlinks = await differsBeyondGitlinks(ctx, index, iTree, base);
+  const untrackedFiles = opts.includeUntracked ? await listUntracked(ctx, index) : [];
+  return { iTree, stagedBeyondGitlinks, scope, tracked, untrackedFiles };
+};
+
+const hasLocalChanges = (found: LocalChanges): boolean =>
+  found.stagedBeyondGitlinks ||
   found.tracked.some(({ state }) => state !== 'unchanged') ||
   found.untrackedFiles.length > 0;
 
@@ -450,8 +497,8 @@ const stashAndReset = async (
 
   const lock = await acquireIndexLock(ctx);
   try {
-    const found = await findLocalChanges(ctx, opts);
-    if (!hasLocalChanges(found, base)) return { kind: 'no-local-changes' };
+    const found = await findLocalChanges(ctx, opts, base);
+    if (!hasLocalChanges(found)) return { kind: 'no-local-changes' };
     const { iTree } = found;
     const w = await createStashCommits(ctx, workDir, { base, found, opts });
     const { untracked, working } = w;

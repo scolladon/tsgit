@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   materializeFile,
+  removeDirectory,
   removeFile,
   renameInWorkingTree,
   validatePath,
@@ -510,21 +511,45 @@ describe('internal/working-tree', () => {
 
     describe('Given a missing file', () => {
       describe('When removeFile', () => {
-        it('Then throws CHECKOUT_OVERWRITE_DIRTY listing that path (treated as a divergence)', async () => {
-          // Arrange — the contract says: if the working tree state doesn't match what we wrote, refuse.
-          // Missing-when-expected qualifies as divergence; safer than silently succeeding.
+        it('Then throws FILE_NOT_FOUND carrying the full path, for the caller to tolerate', async () => {
+          // Arrange
           const ctx = createMemoryContext();
           const path = 'missing.txt' as FilePath;
 
           // Act
+          const err = await expectError(() => removeFile(ctx, path), 'FILE_NOT_FOUND');
+
+          // Assert
+          if (err.data.code !== 'FILE_NOT_FOUND') throw new Error('unexpected error shape');
+          expect(err.data.path).toBe(`${ctx.layout.workDir}/${path}`);
+        });
+      });
+    });
+
+    describe('Given an lstat denied by the file system', () => {
+      describe('When removeFile', () => {
+        it('Then throws CHECKOUT_OVERWRITE_DIRTY listing that path', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          const path = 'locked.txt' as FilePath;
+          const ctx: Context = {
+            ...base,
+            fs: {
+              ...base.fs,
+              lstat: async (full: string) => {
+                throw permissionDenied(full);
+              },
+            },
+          };
+
+          // Act
           const err = await expectError(() => removeFile(ctx, path), 'CHECKOUT_OVERWRITE_DIRTY');
 
-          // Assert — the offending path is reported (kills L96 ArrayDeclaration `[]`).
-          const data = err.data;
-          if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
-            expect(data.localChanges).toEqual([path]);
-            expect(data.untracked).toEqual([]);
-          }
+          // Assert
+          if (err.data.code !== 'CHECKOUT_OVERWRITE_DIRTY')
+            throw new Error('unexpected error shape');
+          expect(err.data.localChanges).toEqual([path]);
+          expect(err.data.untracked).toEqual([]);
         });
       });
     });
@@ -590,6 +615,110 @@ describe('internal/working-tree', () => {
             () => removeFile(ctx, '../escape' as FilePath),
             'PATHSPEC_OUTSIDE_REPO',
           );
+        });
+      });
+    });
+  });
+
+  describe('removeDirectory', () => {
+    describe('Given a populated directory', () => {
+      describe('When removeDirectory', () => {
+        it('Then the directory and its contents are removed', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/a/b.txt`, 'data');
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.git`, 'gitdir: x');
+
+          // Act
+          await removeDirectory(ctx, 'sub');
+
+          // Assert
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/sub`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a regular file at the path', () => {
+      describe('When removeDirectory', () => {
+        it('Then throws CHECKOUT_OVERWRITE_DIRTY listing that path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub`, 'data');
+
+          // Act
+          const err = await expectError(
+            () => removeDirectory(ctx, 'sub'),
+            'CHECKOUT_OVERWRITE_DIRTY',
+          );
+
+          // Assert
+          expect(err.data).toEqual({
+            code: 'CHECKOUT_OVERWRITE_DIRTY',
+            localChanges: ['sub'],
+            untracked: [],
+          });
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/sub`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a missing path', () => {
+      describe('When removeDirectory', () => {
+        it('Then throws CHECKOUT_OVERWRITE_DIRTY listing that path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          const err = await expectError(
+            () => removeDirectory(ctx, 'sub'),
+            'CHECKOUT_OVERWRITE_DIRTY',
+          );
+
+          // Assert
+          expect(err.data).toEqual({
+            code: 'CHECKOUT_OVERWRITE_DIRTY',
+            localChanges: ['sub'],
+            untracked: [],
+          });
+        });
+      });
+    });
+
+    describe('Given a symlink at the path', () => {
+      describe('When removeDirectory', () => {
+        it('Then throws CHECKOUT_OVERWRITE_DIRTY and keeps the link', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(`${ctx.layout.workDir}/real`);
+          await ctx.fs.symlink('real', `${ctx.layout.workDir}/sub`);
+
+          // Act
+          const err = await expectError(
+            () => removeDirectory(ctx, 'sub'),
+            'CHECKOUT_OVERWRITE_DIRTY',
+          );
+
+          // Assert
+          expect(err.data).toMatchObject({ localChanges: ['sub'] });
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/real`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a path that fails validation', () => {
+      describe('When removeDirectory', () => {
+        it('Then throws PATHSPEC_OUTSIDE_REPO carrying the path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          const err = await expectError(
+            () => removeDirectory(ctx, '../escape'),
+            'PATHSPEC_OUTSIDE_REPO',
+          );
+
+          // Assert
+          expect(err.data).toMatchObject({ path: '../escape' });
         });
       });
     });

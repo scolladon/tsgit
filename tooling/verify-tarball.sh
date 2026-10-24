@@ -402,7 +402,16 @@ done
 # beneath-an-entry lookup, the bounded reads of a nested HEAD and commondir,
 # and the ignored-inside-repository filter — runtime code shipped in every
 # distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((1455 * 1024))
+# Raised 1455 -> 1473 KiB by the status gitlink parity work: the measured pack
+# landed at 1 507 470 B, 17 550 B over the old cap, attributable to the gitlink
+# HEAD comparison and dirty check in the comparison primitive, the submodule
+# ignore-mode resolution, the rm absorption (relocation through the real path,
+# the nested-gitlink validation, the unreadable-checkout arm), the sequencer's
+# carried-gitlink rules and git's two-way keep on the clean merge arm, the
+# rescheduled-pick state files and the leading-path scanner — runtime code
+# shipped in every distribution form, none removable without dropping the
+# behaviour.
+SIZE_CAP=$((1473 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

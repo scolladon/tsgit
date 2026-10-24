@@ -13,8 +13,8 @@ interface StatusOptions {
 }
 
 interface StatusResult {
-  readonly branch: RefName | undefined;
-  readonly detached: boolean;
+  readonly branch: RefName | undefined; // the branch HEAD names; undefined when detached or unknown
+  readonly detached: boolean; // true only when HEAD holds an object id
   readonly changes: ReadonlyArray<ChangedPath>;
   readonly untracked: ReadonlyArray<FilePath>;
   readonly unmerged: ReadonlyArray<UnmergedEntry>;
@@ -40,6 +40,11 @@ interface ChangedPath {
   readonly head?: BlobSide;       // hH / mH
   readonly index?: BlobSide;      // hI / mI
   readonly worktree?: WorktreeSide;
+  readonly submodule?: {          // S<c><m><u> — present when the HEAD or index side is a gitlink
+    readonly commitChanged: boolean;   // C — the submodule's HEAD moved
+    readonly trackedChanges: boolean;  // M — the submodule's own status shows tracked changes
+    readonly untrackedChanges: boolean; // U — the submodule holds untracked files
+  };
 }
 
 type ConflictKind =
@@ -64,7 +69,9 @@ interface UnmergedEntry {
 - **One correlated record per path.** `changes` holds one `ChangedPath` per tracked path with a change — the structured form of `git status --porcelain=v2`'s ordinary line. `staged` (git's X, index vs HEAD) and `unstaged` (git's Y, working tree vs index) live on the **same** record, so correlating the two columns is a lookup, not a join. `clean` is `true` only when `changes`, `untracked`, **and** `unmerged` are all empty.
 - **Self-describing endpoints → hunks.** Each record carries the blobs that form its diffs: `head`/`index` (`{ id, mode }`) and `worktree` (`{ mode }` only — git prints `mW` but no working oid). The hunks for any path are one read away — staged: `readBlob(head)` vs `readBlob(index)`; unstaged: `readBlob(index)` vs the working file at `path`. A side is omitted when the path does not exist there (staged add → no `head`; staged delete → no `index`; deleted in the worktree → no `worktree`).
 - **Untracked.** `untracked` is the separate set of untracked paths (git's `?` lines). A directory the index records as a gitlink is never scanned, whatever its `.git` is, so a submodule's files never appear here. An untracked directory that holds a repository is listed once, as `<dir>/`, and its files are not listed; the directory's `.git` must lead to a usable repository, otherwise it is a plain directory and its files are listed. A path removed from the index but kept on disk (`git rm --cached`) appears as a staged `deleted` record in `changes` **and** in `untracked` — git's `D ` + `??`.
-- **First-class `type-changed` / `mode-changed`.** Both columns distinguish a kind change (file↔symlink, git porcelain `T`) as `type-changed` and a same-blob mode-only change (exec bit, git `M`) as `mode-changed`, alongside content `modified` (ADR-255). A gitlink/submodule entry stays `modified` (git reports a submodule as `M`, not `T`). To reconstruct git's porcelain `XY`, map `type-changed → T` and `mode-changed → M`.
+- **First-class `type-changed` / `mode-changed`.** Both columns distinguish a kind change (file↔symlink, git porcelain `T`) as `type-changed` and a same-blob mode-only change (exec bit, git `M`) as `mode-changed`, alongside content `modified` (ADR-255). To reconstruct git's porcelain `XY`, map `type-changed → T` and `mode-changed → M`.
+- **Gitlinks.** A gitlink is compared with its submodule's checked-out HEAD, not hashed: an unresolvable HEAD counts as unchanged. Its worktree mode is `160000` over a directory; a file or symlink at its path is `type-changed`. Its row carries `submodule` with the three flags (`commitChanged` = HEAD moved, `trackedChanges` = the submodule's own status shows tracked changes, `untrackedChanges` = it holds untracked files); rows without a gitlink on the HEAD or index side have none. Rebuild git's field with `` `S${c ? 'C' : '.'}${m ? 'M' : '.'}${u ? 'U' : '.'}` `` (or `N...` when `submodule` is absent).
+- **Submodule ignore modes.** Each gitlink's mode is, first set wins, its own `submodule.<name>.ignore` in `.git/config`, the `ignore` of its `.gitmodules` row (the working-tree file, else the `.gitmodules` blob the index holds; an unknown value there reads as unset), then `diff.ignoreSubmodules`, else `none`. `all` hides the gitlink's working-tree changes (staged rows stay); `dirty` keeps only `commitChanged` and never opens the submodule; `untracked` drops `untrackedChanges`. A value outside the four modes in `.git/config` refuses `CONFIG_INVALID_ENUM_VALUE`, and a key without a value `CONFIG_MISSING_VALUE`; `diff.ignoreSubmodules` is checked on every run, even without a submodule. A symlink at a gitlink path refuses `SUBMODULE_PATH_IS_SYMLINK` under `none` and `untracked` (under `dirty` the row is a `type-changed`). A `.git` that leads to no repository refuses `GITFILE_TOO_LARGE` or `NOT_A_REPOSITORY` (`all` and `dirty` never read it), and an error from the submodule's own status propagates unchanged. Without a `.gitmodules` row naming the path, git reads no per-submodule key at all: only `diff.ignoreSubmodules` applies, and a `submodule.<path>.ignore` key in `.git/config` is neither honoured nor validated. A skip-worktree or assume-valid gitlink never reaches the submodule config either, so an invalid key for it is not refused.
 - **Unmerged paths.** `unmerged` reports conflicted paths (index stages 1/2/3 — git's "Unmerged paths"), each with a `kind` (the seven git conflict states, reconstructing the `UU`/`AA`/`DD`/`AU`/`UA`/`DU`/`UD` codes), the present per-stage blobs (`base`/`ours`/`theirs`), and the conflicted file's on-disk mode (`worktree`, git's `mW`; omitted when the file is absent on disk — `git status --porcelain=v2` then prints `000000`). With the stages plus `worktree`, the full v2 `u` line (`u <XY> N... <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`) reconstructs byte-for-byte. A conflicted path is reported **only** here, never in `changes`/`untracked` (ADR-256).
 - **Byte-exact paths.** A lossy entry (a name that is not valid UTF-8) is never read from disk, so it reports as deleted from the work tree, as git does on macOS. Index, `HEAD` and work-tree sides are joined by raw path bytes; every `path` in the result is the U+FFFD view.
 - **Unborn HEAD.** With no commit yet, the HEAD tree is empty, so every staged entry is `added` (no `head` side).
@@ -76,7 +83,7 @@ interface UnmergedEntry {
 - **One stat sample per path.** The tracked pass (`compareWorkingTreeDelta`) and the untracked walk never `lstat` the same path: the untracked walk excludes every tracked path by construction and never reads a leaf's stat at all, so the two passes' `lstat`ed paths are structurally disjoint — a path is `lstat`ed at most once per `status()` call. (Earlier revisions deduplicated this with a stat cache shared across both passes; the cache was write-only — the untracked pass never consulted it — so it was removed once the structural guarantee was confirmed, not replaced by another cache.)
 - **Sparse-aware:** out-of-cone paths marked `skip-worktree` are not reported as deletions.
 - **`.gitignore` integration:** untracked files matched by an ignore rule are filtered out before `clean` is computed.
-- **Detached HEAD:** `branch` is `undefined` and `detached: true` when HEAD points directly at a commit.
+- **HEAD states.** On a branch, `branch` is set and `detached` is `false` (an unborn branch keeps its name). Detached, `branch` is `undefined` and `detached` is `true`. Unknown, `branch` is `undefined` and `detached` is `false`, git's `# branch.head (unknown)`. HEAD is unknown when its chain cannot be read: a target whose loose path the file system refuses as too long, a target name git refuses, or a symbolic cycle. The report then has no HEAD tree, so every staged entry is `added` with no `head` side, as in git's `# branch.oid (initial)`.
 
 ## Examples
 

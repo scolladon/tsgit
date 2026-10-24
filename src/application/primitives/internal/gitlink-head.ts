@@ -7,14 +7,14 @@ import { resolveWorktreePath } from '../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileStat, FileSystem } from '../../../ports/file-system.js';
 import type { AlternatePathProbe } from '../../../ports/object-source-access.js';
-import { refStorageOf } from '../../primitives/internal/gitlink-ref-storage.js';
-import { type HeadFile, seedHeadFile } from '../../primitives/internal/head-file.js';
-import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
-import { isUsableHead, requireWorkTree } from '../../primitives/internal/repo-state.js';
-import { deriveGitlinkContext } from '../../primitives/internal/submodule-context.js';
-import { worktreeScopedFs } from '../../primitives/internal/worktree-context.js';
-import { narrowAlternatePathProbe } from '../../primitives/object-store.js';
-import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
+import { narrowAlternatePathProbe } from '../object-store.js';
+import { resolveRefOrMissing } from '../resolve-ref.js';
+import { refStorageOf } from './gitlink-ref-storage.js';
+import { type HeadFile, seedHeadFile } from './head-file.js';
+import { joinPath } from './join-working-tree-path.js';
+import { isUsableHead, requireWorkTree } from './repo-state.js';
+import { deriveGitlinkContext } from './submodule-context.js';
+import { worktreeScopedFs } from './worktree-context.js';
 
 const DOT_GIT = '.git';
 const COMMONDIR_FILE = 'commondir';
@@ -35,9 +35,13 @@ const NOT_A_DIRECTORY_CODES: ReadonlySet<string> = new Set([
   'NOT_A_DIRECTORY',
 ]);
 
-/** Where a checkout's repository lies on disk, the path git names it by when it is broken, and the filesystem that reaches it. */
+/** How `<path>/.git` reaches the repository: as the directory itself (a link to one included), or as a gitfile git reads. */
+export type CheckoutVia = 'directory' | 'gitfile';
+
+/** Where a checkout's repository lies on disk, how `.git` reaches it, the path git names it by when it is broken, and the filesystem that reaches it. */
 interface Located {
   readonly kind: 'located';
+  readonly via: CheckoutVia;
   readonly gitDir: string;
   readonly shown: FilePath;
   readonly fs: FileSystem;
@@ -48,7 +52,12 @@ export type GitlinkCheckout =
   | { readonly kind: 'none' }
   | { readonly kind: 'oversized'; readonly shown: FilePath }
   | { readonly kind: 'broken'; readonly shown: FilePath }
-  | { readonly kind: 'repository'; readonly head: () => Promise<ObjectId | undefined> };
+  | {
+      readonly kind: 'repository';
+      readonly via: CheckoutVia;
+      readonly head: () => Promise<ObjectId | undefined>;
+      readonly context: () => Promise<Context>;
+    };
 
 type Broken = Extract<GitlinkCheckout, { readonly kind: 'broken' }>;
 type Oversized = Extract<GitlinkCheckout, { readonly kind: 'oversized' }>;
@@ -90,16 +99,35 @@ export const probeGitlinkCheckout = async (
   if (reached.kind === 'broken') return reached;
   const { commonDir, fs } = reached;
   if (!(await holdsObjectsAndRefs(fs, commonDir))) return broken(located.shown);
-  const head = async (): Promise<ObjectId | undefined> => {
-    const child = deriveGitlinkContext(ctx, gitDir, path, {
+  return repositoryCheckout(ctx, path, { gitDir, via: located.via, commonDir, fs, resolved });
+};
+
+interface ReachedRepository {
+  readonly gitDir: string;
+  readonly via: CheckoutVia;
+  readonly commonDir: string;
+  readonly fs: FileSystem;
+  readonly resolved: HeadFile;
+}
+
+/** The repository variant: its context and HEAD are derived on demand, the HEAD from the bytes already read. */
+const repositoryCheckout = (
+  ctx: Context,
+  path: FilePath,
+  { gitDir, via, commonDir, fs, resolved }: ReachedRepository,
+): GitlinkCheckout => {
+  const context = async (): Promise<Context> =>
+    deriveGitlinkContext(ctx, gitDir, path, {
       fs,
       commonDir,
       refStorage: await refStorageOf(fs, commonDir),
     });
+  const head = async (): Promise<ObjectId | undefined> => {
+    const child = await context();
     seedHeadFile(child, resolved);
     return resolveGitlinkHead(child);
   };
-  return { kind: 'repository', head };
+  return { kind: 'repository', via, head, context };
 };
 
 /**
@@ -198,7 +226,12 @@ const fileOf = (bytes: Uint8Array): HeadFile => ({
   content: TEXT_DECODER.decode(bytes),
 });
 
-/** git's `is_git_directory`: a repository directory holds `objects` and `refs`, searchable. */
+/** git's `is_git_directory`: `objects` and `refs` directories beside a HEAD it can validate. */
+export const isGitDirectory = async (fs: FileSystem, directory: string): Promise<boolean> =>
+  (await holdsObjectsAndRefs(fs, directory)) &&
+  isUsableHead((await boundedHeadFile(fs, directory)).judged);
+
+/** The `objects` and `refs` directories git's `is_git_directory` looks for. */
 const holdsObjectsAndRefs = async (fs: FileSystem, commonDir: string): Promise<boolean> =>
   (await isDirectory(fs, `${commonDir}${SEPARATOR}objects`)) &&
   (await isDirectory(fs, `${commonDir}${SEPARATOR}refs`));
@@ -241,6 +274,7 @@ const dotGitShown = (path: FilePath): FilePath => `${path}${SEPARATOR}${DOT_GIT}
 
 const directoryCheckout = (ctx: Context, checkout: string, path: FilePath): Located => ({
   kind: 'located',
+  via: 'directory',
   gitDir: `${checkout}${SEPARATOR}${DOT_GIT}`,
   shown: dotGitShown(path),
   fs: ctx.fs,
@@ -266,7 +300,7 @@ const symlinkCheckout = async (
  * A `.git` link that cannot be followed leaves nothing checked out: a dangling link, or a
  * loop or unsearchable target, which the adapters report alike as PERMISSION_DENIED.
  */
-const statOrUnreachable = async (ctx: Context, dotGit: string) => {
+export const statOrUnreachable = async (ctx: Context, dotGit: string) => {
   try {
     return await metadataOf(ctx, dotGit).stat(dotGit);
   } catch (err) {
@@ -283,6 +317,7 @@ const linkedCheckout = async (ctx: Context, checkout: string, path: FilePath): P
   const gitDir = resolveWorktreePath(checkout, await metadataOf(ctx, dotGit).readlink(dotGit));
   return {
     kind: 'located',
+    via: 'directory',
     gitDir,
     shown: dotGitShown(path),
     fs: worktreeScopedFs(ctx, gitDir),
@@ -301,7 +336,13 @@ const gitfileCheckout = async (
     ? pointer.path
     : `${path}${SEPARATOR}${pointer.path}`;
   const gitDir = resolveWorktreePath(checkout, pointer.path);
-  return { kind: 'located', gitDir, shown: shown as FilePath, fs: worktreeScopedFs(ctx, gitDir) };
+  return {
+    kind: 'located',
+    via: 'gitfile',
+    gitDir,
+    shown: shown as FilePath,
+    fs: worktreeScopedFs(ctx, gitDir),
+  };
 };
 
 const lstatOrMissing = async (ctx: Context, absolute: string) => {

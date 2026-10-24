@@ -15,6 +15,7 @@ export interface GitmodulesRow {
   readonly url?: string;
   readonly update?: string;
   readonly branch?: string;
+  readonly ignore?: string;
 }
 
 interface SubmoduleKeys {
@@ -22,6 +23,7 @@ interface SubmoduleKeys {
   readonly url?: string;
   readonly update?: string;
   readonly branch?: string;
+  readonly ignore?: string;
 }
 
 const mergeKey = (
@@ -35,6 +37,7 @@ const mergeKey = (
   if (k === 'url') return { ...acc, url: kv.value };
   if (k === 'update') return { ...acc, update: kv.value };
   if (k === 'branch') return { ...acc, branch: kv.value };
+  if (k === 'ignore') return { ...acc, ignore: kv.value };
   return acc;
 };
 
@@ -56,6 +59,7 @@ const reduceSection = (section: IniSection): GitmodulesRow | undefined => {
     ...(keys.update !== undefined ? { update: keys.update } : {}),
     // Stryker disable next-line ConditionalExpression,ObjectLiteral: equivalent — `{ branch: undefined }` matches a missing `branch` field under structural equality.
     ...(keys.branch !== undefined ? { branch: keys.branch } : {}),
+    ...(keys.ignore !== undefined ? { ignore: keys.ignore } : {}),
   };
 };
 

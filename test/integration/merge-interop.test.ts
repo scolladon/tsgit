@@ -159,6 +159,77 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
     });
   });
 
+  describe('Given a change staged on a path the fast-forward leaves alone', () => {
+    describe('When the merge fast-forwards on both tools', () => {
+      it('Then both keep the staged entry and its file, as git two-way checkout does', async () => {
+        // Arrange — base f.txt + s.txt; feature +m.txt; main stages a change to s.txt.
+        await writeBoth('f.txt', 'base\n');
+        await writeBoth('s.txt', 'one\n');
+        await commitBoth('base', ['f.txt', 's.txt']);
+        await branchBoth('feature');
+        await writeBoth('m.txt', 'm\n');
+        await commitBoth('feature-add', ['m.txt']);
+        await checkoutBoth('main');
+        await writeBoth('s.txt', 'staged\n');
+        runGit(['-C', pair.peer, 'add', 's.txt']);
+        await repo.add(['s.txt']);
+
+        // Act
+        runGit(['-C', pair.peer, 'merge', '--ff-only', '-q', 'feature']);
+        const result = await repo.merge.run({ rev: 'feature', author: AUTHOR });
+
+        // Assert
+        expect(result.kind).toBe('fast-forward');
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        expect(runGit(['-C', pair.ours, 'ls-files', '--stage', 's.txt'])).toBe(
+          runGit(['-C', pair.peer, 'ls-files', '--stage', 's.txt']),
+        );
+        expect(runGit(['-C', pair.ours, 'status', '--porcelain'])).toBe('M  s.txt\n');
+        expect(await readMaybe(pair.ours, 's.txt')).toBe('staged\n');
+      });
+    });
+  });
+
+  describe('Given a change staged on a path a true merge leaves alone', () => {
+    describe('When both tools merge', () => {
+      it('Then both refuse the dirty index before writing anything', async () => {
+        // Arrange — base f.txt + s.txt; feature +m.txt; main +o.txt then stages a change to s.txt.
+        await writeBoth('f.txt', 'base\n');
+        await writeBoth('s.txt', 'one\n');
+        await commitBoth('base', ['f.txt', 's.txt']);
+        await branchBoth('feature');
+        await writeBoth('m.txt', 'm\n');
+        await commitBoth('feature-add', ['m.txt']);
+        await checkoutBoth('main');
+        await writeBoth('o.txt', 'o\n');
+        await commitBoth('main-add', ['o.txt']);
+        await writeBoth('s.txt', 'staged\n');
+        runGit(['-C', pair.peer, 'add', 's.txt']);
+        await repo.add(['s.txt']);
+        const before = snapshot(pair.ours);
+
+        // Act
+        const peerRun = tryRunGit(['-C', pair.peer, 'merge', '-q', '--no-edit', 'feature'], {
+          env: COMMIT_ENV,
+        });
+        const code = await repo.merge.run({ rev: 'feature', author: AUTHOR }).then(
+          () => undefined,
+          (err: unknown) => errorDataCode(err),
+        );
+
+        // Assert
+        expect(peerRun.ok).toBe(false);
+        expect(peerRun.stderr).toContain(
+          'Your local changes to the following files would be overwritten by merge',
+        );
+        expect(code).toBe('WORKING_TREE_DIRTY');
+        expect(snapshot(pair.ours)).toEqual(before);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        expect(await pathExists(pair.ours, '.git/MERGE_HEAD')).toBe(false);
+      });
+    });
+  });
+
   describe('Given diverged histories with a theirs-only add', () => {
     describe('When the clean true-merge runs on both tools', () => {
       it('Then HEAD, index, and working tree match git, with the added file present', async () => {

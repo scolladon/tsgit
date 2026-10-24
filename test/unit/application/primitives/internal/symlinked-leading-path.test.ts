@@ -441,6 +441,125 @@ describe('createLeadingPathScanner', () => {
     });
   });
 
+  describe('Given a verdict settled for a directory behind a symlinked prefix, the prefix then unlinked through the scanner', () => {
+    describe('When a sibling path under the same directory is classified', () => {
+      it('Then the verdict is walked again and names no component', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('/outside/target', `${ctx.layout.workDir}/a`);
+        const sut = createLeadingPathScanner(ctx);
+        expect(await sut.symlinkedLeadingComponent(path('a/f'))).toBe('a');
+
+        // Act
+        await sut.unlinkSymlinkedLeadingComponent(path('a/g'));
+        const result = await sut.symlinkedLeadingComponent(path('a/h'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a verdict settled under a missing prefix, a write then materialising the prefix as a symlink', () => {
+    describe('When a sibling path under the same directory is classified after the unlink scan', () => {
+      it('Then the verdict is walked again and names the new link', async () => {
+        // Arrange — the unlink scan forgets the missing prefix, as the write it precedes will create it.
+        const ctx = createMemoryContext();
+        const sut = createLeadingPathScanner(ctx);
+        expect(await sut.symlinkedLeadingComponent(path('a/f'))).toBeUndefined();
+        await sut.unlinkSymlinkedLeadingComponent(path('a/f'));
+        await ctx.fs.symlink('/outside/target', `${ctx.layout.workDir}/a`);
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('a/g'));
+
+        // Assert
+        expect(result).toBe('a');
+      });
+    });
+  });
+
+  describe('Given a verdict settled behind a symlinked prefix, the prefix then replaced by a real directory the scanner makes', () => {
+    describe('When a sibling path under the same directory is classified', () => {
+      it('Then the verdict is walked again and names no component', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('/outside/target', `${ctx.layout.workDir}/a`);
+        const sut = createLeadingPathScanner(ctx);
+        expect(await sut.symlinkedLeadingComponent(path('a/f'))).toBe('a');
+
+        // Act
+        await sut.ensureLeadingDirectories(path('a/f'));
+        const result = await sut.symlinkedLeadingComponent(path('a/g'));
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/a`)).isDirectory).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a verdict settled behind a symlinked prefix, the link then replaced on disk and every verdict invalidated', () => {
+    describe('When a sibling path under the same directory is classified', () => {
+      it('Then the verdict is walked again and names no component', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = `${ctx.layout.workDir}/a`;
+        await ctx.fs.symlink('/outside/target', dir);
+        const sut = createLeadingPathScanner(ctx);
+        expect(await sut.symlinkedLeadingComponent(path('a/f'))).toBe('a');
+        await ctx.fs.rm(dir);
+        await ctx.fs.mkdir(dir);
+
+        // Act
+        sut.invalidateAll();
+        const result = await sut.symlinkedLeadingComponent(path('a/g'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a classification still in flight when its prefix is invalidated', () => {
+    describe('When the verdict it settles is looked up again', () => {
+      it('Then the prefix is walked again: a verdict carries the generation its walk started from', async () => {
+        // Arrange
+        const seed = createMemoryContext();
+        await seed.fs.symlink('/outside/target', `${seed.layout.workDir}/a`);
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const baseLstat = seed.fs.lstat;
+        const lstats: string[] = [];
+        const fs = new Proxy(seed.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (p: string) => {
+              lstats.push(p);
+              await gate;
+              return baseLstat(p);
+            };
+          },
+        });
+        const sut = createLeadingPathScanner({ ...seed, fs });
+        const inFlight = sut.symlinkedLeadingComponent(path('a/f'));
+        sut.invalidate(path('a'));
+        release();
+        await inFlight;
+        const walked = lstats.length;
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('a/g'));
+
+        // Assert
+        expect(result).toBe('a');
+        expect(lstats.length).toBe(walked + 1);
+      });
+    });
+  });
+
   describe('Given a shared scanner whose first write materialises a prefix previously classified missing', () => {
     describe('When unlinkSymlinkedLeadingComponent runs for a deeper path after that write', () => {
       it('Then the stale missing verdict does not block the walk — the deeper symlink is still unlinked', async () => {

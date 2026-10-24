@@ -19,6 +19,7 @@ import {
 import type { Context } from '../../../ports/context.js';
 import type { FileStat, WriteOptions } from '../../../ports/file-system.js';
 import { type BlobSource, locateBlob, NEVER_BUFFER, serveLocatedBlob } from './blob-source.js';
+import { lstatIfPresent } from './fs-probes.js';
 import { joinPath } from './join-working-tree-path.js';
 import { requireWorkTree } from './repo-state.js';
 import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
@@ -98,6 +99,13 @@ export const writeWorkingTreeFile = async (
   );
 };
 
+// git's checkout_entry unlinks any non-directory occupant, then leaves a directory alone.
+const makeGitlinkDirectory = async (ctx: Context, fullPath: string): Promise<void> => {
+  const occupant = await lstatIfPresent(ctx.fs, fullPath);
+  if (occupant !== undefined && !occupant.isDirectory) await ctx.fs.rm(fullPath);
+  await ctx.fs.mkdir(fullPath);
+};
+
 /**
  * Mode-aware working-tree write dispatching on `FileMode`: symlink (120000) →
  * create a symlink whose target is the blob content decoded as UTF-8 (rm-if-exists
@@ -127,7 +135,7 @@ export const writeWorkingTreeEntry = async (
     return undefined;
   }
   if (mode === FILE_MODE.GITLINK) {
-    await ctx.fs.mkdir(fullPath);
+    await makeGitlinkDirectory(ctx, fullPath);
     return undefined;
   }
   return writeRegularFile(ctx, fullPath, content, mode);
@@ -258,6 +266,15 @@ const writeServedBlob = async (
   }
 };
 
+// git's checkout_entry: the dirty and untracked checks have already passed, so a
+// directory in the way of a file is a subtree to remove, not content to protect.
+const clearOccupant = async (ctx: Context, fullPath: string): Promise<void> => {
+  const occupant = await lstatIfPresent(ctx.fs, fullPath);
+  if (occupant === undefined) return;
+  if (occupant.isDirectory) await ctx.fs.rmRecursive(fullPath);
+  else await ctx.fs.rm(fullPath);
+};
+
 /**
  * Writes blob `id` to `fullPath` the way git's streaming checkout does: the
  * occupant is unlinked first, a refused locate leaves an empty file, a failure
@@ -271,7 +288,7 @@ export const writeStreamedBlob = async (
   mode?: FileMode,
   transform?: ChunkTransform,
 ): Promise<FileStat> => {
-  await rmIfExists(ctx, fullPath);
+  await clearOccupant(ctx, fullPath);
   let located: Awaited<ReturnType<typeof locateBlob>>;
   try {
     located = await locateBlob(ctx, id, { order: 'stream' });

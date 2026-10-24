@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { lstatIfReachable } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import {
   readRefCandidate,
@@ -10,7 +11,7 @@ import {
 } from '../../../../src/application/primitives/resolve-ref.js';
 import type { ResolveRefOptions } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
+import { pathTooLong, permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName, Tag, Tree } from '../../../../src/domain/objects/index.js';
 import { invalidRef } from '../../../../src/domain/refs/error.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -762,7 +763,92 @@ const permissionDeniedOn = (base: Context, target: string): Context => ({
   },
 });
 
+const pathTooLongOn = (base: Context, target: string): Context => ({
+  ...base,
+  fs: {
+    ...base.fs,
+    lstatIfReachable: async (path) => {
+      if (path === target) throw pathTooLong(path);
+      return lstatIfReachable(base.fs, path);
+    },
+  },
+});
+
+const OVERLONG_TARGET = '/repo/.git/refs/heads/overlong';
+
+const overlongContext = async (symbolicHead = false): Promise<Context> => {
+  const base = await buildSeededContext({
+    refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+  });
+  if (symbolicHead) await base.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/overlong\n');
+  return pathTooLongOn(base, OVERLONG_TARGET);
+};
+
 describe('resolveRefForReading', () => {
+  describe('Given a ref whose loose path the file system refuses as too long', () => {
+    describe('When resolveRefForReading resolves it', () => {
+      it('Then it reads as unresolvable', async () => {
+        // Arrange
+        const ctx = await overlongContext();
+        const sut = resolveRefForReading;
+
+        // Act
+        const result = await sut(ctx, 'refs/heads/overlong' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a ref whose loose path the file system refuses as too long, read for writing', () => {
+    describe('When resolveRef resolves it', () => {
+      it('Then it refuses with the path', async () => {
+        // Arrange
+        const ctx = await overlongContext();
+        const sut = resolveRef;
+
+        // Act
+        const refusal = await sut(ctx, 'refs/heads/overlong' as RefName).catch(
+          (err: TsgitError) => err.data,
+        );
+
+        // Assert
+        expect(refusal).toEqual({ code: 'PATH_TOO_LONG', path: OVERLONG_TARGET });
+      });
+    });
+  });
+
+  describe('Given a HEAD whose branch has a loose path the file system refuses as too long', () => {
+    describe('When resolveTerminalName resolves HEAD', () => {
+      it('Then it reads as unresolvable', async () => {
+        // Arrange
+        const ctx = await overlongContext(true);
+        const sut = resolveTerminalName;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+
+    describe('When readRefCandidate reads HEAD', () => {
+      it('Then it reads as a dangling symref', async () => {
+        // Arrange
+        const ctx = await overlongContext(true);
+        const sut = readRefCandidate;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result).toEqual({ kind: 'dangling-symref' });
+      });
+    });
+  });
+
   describe('Given a ref whose read fails for a reason the reading walk does not fold away', () => {
     describe('When resolveRefForReading resolves it', () => {
       it('Then that refusal propagates instead of reading as unresolvable', async () => {

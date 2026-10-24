@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import type * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathTooLong } from '../../domain/error.js';
 import {
   directoryNotEmpty,
   fileExists,
@@ -332,6 +333,10 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
       // Map to PERMISSION_DENIED so both POSIX and Windows symlink-to-directory
       // refusals share the same cross-platform code.
       return permissionDenied(path);
+    case 'ENAMETOOLONG':
+      // git's files backend treats any lstat errno but ENOENT as a ref that does
+      // not resolve, so the reader must tell this errno from an unsupported operation.
+      return pathTooLong(path);
     default:
       return unsupportedOperation('filesystem', err.code ?? 'UNKNOWN');
   }
