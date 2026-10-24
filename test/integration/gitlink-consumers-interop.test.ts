@@ -157,6 +157,22 @@ const stagedMoveAndEditedK: Setup = async (repo) => {
   await stagedMove(repo);
   await editedK(repo);
 };
+const replaceSubmoduleWithFile: Setup = async (repo) => {
+  await rm(sub(repo), { recursive: true, force: true });
+  await writeFile(sub(repo), 'f\n');
+};
+const stagedFileInPlaceOfSubmodule: Setup = async (repo) => {
+  await replaceSubmoduleWithFile(repo);
+  gitIn(repo, 'add', SUBMODULE);
+};
+/** `file-sub` commits `sub` as a regular file; the repository is left on it. */
+const onBranchWithFileSubmodule: Setup = async (repo) => {
+  gitIn(repo, 'checkout', '-q', '-b', 'file-sub');
+  gitIn(repo, 'rm', '-q', '--cached', SUBMODULE);
+  await replaceSubmoduleWithFile(repo);
+  gitIn(repo, 'add', SUBMODULE);
+  commitIn(repo, 'file-sub');
+};
 const deinitialised: Setup = async (repo) => {
   gitIn(repo, 'submodule', 'deinit', '-q', '-f', SUBMODULE);
 };
@@ -308,6 +324,11 @@ interface Row {
 }
 
 const ROWS: ReadonlyArray<Row> = [
+  {
+    title: 'a branch holding a regular file where main has the submodule, checkout of main',
+    setup: onBranchWithFileSubmodule,
+    steps: [switchTo('main')],
+  },
   {
     title: 'an unmoved submodule, checkout of a branch moving it',
     setup: nothing,
@@ -747,6 +768,16 @@ const STASH_ROWS: ReadonlyArray<Row> = [
   {
     title: 'an untracked file in the submodule, stash push',
     setup: untrackedInSubmodule,
+    steps: [stashPushStep],
+  },
+  {
+    title: 'a regular file in place of the submodule, unstaged, stash push',
+    setup: replaceSubmoduleWithFile,
+    steps: [stashPushStep],
+  },
+  {
+    title: 'a regular file staged in place of the submodule, stash push',
+    setup: stagedFileInPlaceOfSubmodule,
     steps: [stashPushStep],
   },
   { title: 'a staged moved submodule, stash push', setup: stagedMove, steps: [stashPushStep] },

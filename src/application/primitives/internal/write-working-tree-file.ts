@@ -19,6 +19,7 @@ import {
 import type { Context } from '../../../ports/context.js';
 import type { FileStat, WriteOptions } from '../../../ports/file-system.js';
 import { type BlobSource, locateBlob, NEVER_BUFFER, serveLocatedBlob } from './blob-source.js';
+import { lstatIfPresent } from './fs-probes.js';
 import { joinPath } from './join-working-tree-path.js';
 import { requireWorkTree } from './repo-state.js';
 import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
@@ -98,6 +99,13 @@ export const writeWorkingTreeFile = async (
   );
 };
 
+// git's checkout_entry unlinks any non-directory occupant, then leaves a directory alone.
+const makeGitlinkDirectory = async (ctx: Context, fullPath: string): Promise<void> => {
+  const occupant = await lstatIfPresent(ctx.fs, fullPath);
+  if (occupant !== undefined && !occupant.isDirectory) await ctx.fs.rm(fullPath);
+  await ctx.fs.mkdir(fullPath);
+};
+
 /**
  * Mode-aware working-tree write dispatching on `FileMode`: symlink (120000) →
  * create a symlink whose target is the blob content decoded as UTF-8 (rm-if-exists
@@ -127,7 +135,7 @@ export const writeWorkingTreeEntry = async (
     return undefined;
   }
   if (mode === FILE_MODE.GITLINK) {
-    await ctx.fs.mkdir(fullPath);
+    await makeGitlinkDirectory(ctx, fullPath);
     return undefined;
   }
   return writeRegularFile(ctx, fullPath, content, mode);

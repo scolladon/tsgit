@@ -3863,6 +3863,63 @@ describe('applyChangeset over a gitlink directory', () => {
     });
   });
 
+  describe('Given a regular file at a gitlink path, and a forced add of the gitlink', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the file is gone and an empty directory stands', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${WORKDIR}/sub`, enc('file'));
+        const changeset = makeChangeset([makeAdd('sub', NEW_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect((await ctx.fs.lstat(`${WORKDIR}/sub`)).isDirectory).toBe(true);
+        expect(await ctx.fs.readdir(`${WORKDIR}/sub`)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a symlink at a gitlink path, and a forced add of the gitlink', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the link is replaced by an empty directory and its target is untouched', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${WORKDIR}/target/keep.txt`, enc('k'));
+        await ctx.fs.symlink('target', `${WORKDIR}/sub`);
+        const changeset = makeChangeset([makeAdd('sub', NEW_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect((await ctx.fs.lstat(`${WORKDIR}/sub`)).isDirectory).toBe(true);
+        expect(await ctx.fs.readdir(`${WORKDIR}/sub`)).toHaveLength(0);
+        expect(dec(await ctx.fs.read(`${WORKDIR}/target/keep.txt`))).toBe('k');
+      });
+    });
+  });
+
+  describe('Given no path at a gitlink path, and a forced add of the gitlink', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then an empty directory is created', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const changeset = makeChangeset([makeAdd('sub', NEW_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect((await ctx.fs.lstat(`${WORKDIR}/sub`)).isDirectory).toBe(true);
+      });
+    });
+  });
+
   describe('Given a regular-file update over a locally modified file', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then it is still refused as a local change', async () => {
