@@ -85,7 +85,9 @@ see the note there).
 
 Fixture **F1**: an upstream `up` with one commit (`u`). The superproject holds `k` and
 `git submodule add <up> sub`, committed. The index has `160000 4f6700e… sub` (written below as
-`A`) with all-zero stat data. `sub/.git` holds `gitdir: ../.git/modules/sub`. "Moved" means a
+`A`) carrying the directory's stat data as `add` recorded it (`ls-files --debug sub` shows the
+directory's mtime and `size: 128` on APFS — an earlier draft of this doc said all-zero, which
+the implementation twin refuted). `sub/.git` holds `gitdir: ../.git/modules/sub`. "Moved" means a
 commit `z` made inside `sub`, so its HEAD becomes `319a957…` (`C`).
 Fixture **F2** = F1 plus branch `other`, where `sub` is at the upstream's second commit
 `958e500…` (`B`), and branch `side`, which adds a file `o`, both cut from `main`.
@@ -212,7 +214,7 @@ the tsgit row asserts that the call settles within a timeout and that the outcom
 |---|---|---|---|---|
 | SX1 | `sub/x` created then removed, `touch sub` (directory stat drifts) | `status`: `.git/index` bytes unchanged (×3); `update-index --refresh`: unchanged | today: the gitlink is never refreshed (`compare-working-tree-entry.test.ts:1361-1369`, green at base). After R1 the entry reads `unchanged`, and without R4's guard `shouldRefresh` would refresh it (zero stat ≠ directory stat) and write the index | guard (fold) |
 | SX2 | moved, then `status` | index unchanged (×3) | today unchanged (no refresh of a `modified` entry) | ok |
-| SX3 | `k` staged, `sub` moved, `commit -m` | commit ok, tree `sub` = `A`, `ls-files --debug sub`: `mtime: 0:0 size: 0` before and after | ok (run): tree `sub` = `A`, stat `0:0`, size 0 | ok, guard keeps it |
+| SX3 | `k` staged, `sub` moved, `commit -m` | commit ok, tree `sub` = `A`, `ls-files --debug sub` byte-identical before and after (the directory stat `add` recorded, `size: 128`, is kept; an earlier draft claimed zeros) | ok (run): tree `sub` = `A`, `ls-files --debug sub` identical before and after | ok, guard keeps it |
 | SX4 | `sub/u` touched with the same bytes, > 1 s | super `status` clean; the submodule's index rewritten (`ce5a337a22 → e5e57ba785`); under `--ignore-submodules=dirty` it stays unchanged | today: the submodule's index is never touched | fold (R5) |
 
 #### SC — ignore configuration (fixture F1; git only, run once each)
