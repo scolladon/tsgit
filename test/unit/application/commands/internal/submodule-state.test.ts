@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
+  configuredSubmoduleIgnore,
   readGitmodulesRows,
   submoduleState,
 } from '../../../../../src/application/commands/internal/submodule-state.js';
@@ -12,6 +13,7 @@ import type {
 } from '../../../../../src/application/commands/status.js';
 import type { WorkingTreeDelta } from '../../../../../src/application/primitives/compare-working-tree-entry.js';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
+import { MAX_GITMODULES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
@@ -322,6 +324,26 @@ describe('submoduleState', () => {
       });
     });
 
+    describe('When its only row is a nested gitlink with tracked and untracked changes of its own', () => {
+      it('Then both are flagged: only an untracked-only row is spared', async () => {
+        // Arrange
+        const ctx = await checkedOut();
+        const nested = nestedGitlink({ ...NO_FLAGS, trackedChanges: true, untrackedChanges: true });
+        const sut = submoduleState;
+
+        // Act
+        const result = await sut(
+          ctx,
+          gitlinkEntry,
+          directory,
+          childReporting({ changes: [nested] }),
+        );
+
+        // Assert
+        expect(result).toEqual({ ...NO_FLAGS, trackedChanges: true, untrackedChanges: true });
+      });
+    });
+
     describe('When a nested gitlink has untracked files beside a modified file', () => {
       it('Then both are flagged', async () => {
         // Arrange
@@ -407,11 +429,12 @@ describe('readGitmodulesRows', () => {
   const headRecording = async (
     ctx: Context,
     entry: (gitmodulesBlob: ObjectId) => ReturnType<typeof treeEntry>,
+    text = GITMODULES,
   ): Promise<void> => {
     const blob = (await writeObject(ctx, {
       type: 'blob',
       id: '' as ObjectId,
-      content: new TextEncoder().encode(GITMODULES),
+      content: new TextEncoder().encode(text),
     })) as ObjectId;
     const commit = await createCommit(ctx, {
       tree: await writeTree(ctx, [entry(blob)]),
@@ -474,6 +497,103 @@ describe('readGitmodulesRows', () => {
 
         // Assert
         expect(result).toEqual([{ name: 'sub', path: 'sub', url: '../up', ignore: 'all' }]);
+      });
+    });
+  });
+
+  describe('Given HEAD recording a .gitmodules blob past the bound git reads, nothing staged or in the work tree', () => {
+    describe('When the rows are read', () => {
+      it('Then OBJECT_TOO_LARGE refuses with the blob size and the bound', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await headRecording(
+          ctx,
+          (blob) => treeEntry(FILE_MODE.REGULAR, '.gitmodules', blob),
+          '#'.repeat(MAX_GITMODULES_BYTES + 1),
+        );
+        const sut = readGitmodulesRows;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, { workDir: ctx.layout.workDir as string, entries: [] }),
+        );
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'OBJECT_TOO_LARGE',
+          actualSize: MAX_GITMODULES_BYTES + 1,
+          limit: MAX_GITMODULES_BYTES,
+        });
+      });
+    });
+  });
+
+  describe('Given a working .gitmodules of exactly the bound git reads', () => {
+    describe('When the rows are read', () => {
+      it('Then it is read: only a larger file refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitmodules`,
+          '#'.repeat(MAX_GITMODULES_BYTES),
+        );
+        const sut = readGitmodulesRows;
+
+        // Act
+        const result = await sut(ctx, { workDir: ctx.layout.workDir as string, entries: [] });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an unmerged entry at another path and a clean working .gitmodules', () => {
+    describe('When the rows are read', () => {
+      it('Then the working rows are read: git skips them only for an unmerged .gitmodules', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitmodules`, GITMODULES);
+        const unmerged: IndexEntry = {
+          ...gitlinkEntry,
+          mode: FILE_MODE.REGULAR,
+          path: 'other' as FilePath,
+          flags: { ...STAGE0_FLAGS, stage: 2 },
+        };
+        const sut = readGitmodulesRows;
+
+        // Act
+        const result = await sut(ctx, {
+          workDir: ctx.layout.workDir as string,
+          entries: [unmerged],
+        });
+
+        // Assert
+        expect(result).toEqual([{ name: 'sub', path: 'sub', url: '../up', ignore: 'all' }]);
+      });
+    });
+  });
+});
+
+describe('configuredSubmoduleIgnore', () => {
+  describe('Given rows where the first names another path', () => {
+    describe('When the ignore mode of the second path is asked', () => {
+      it('Then it is the mode of its own row', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const rows = [
+          { name: 'other', path: 'other' as FilePath, url: '../up', ignore: 'all' },
+          { name: 'sub', path: 'sub' as FilePath, url: '../up', ignore: 'dirty' },
+        ];
+        const sut = configuredSubmoduleIgnore;
+
+        // Act
+        const result = await sut(ctx, 'sub' as FilePath, rows);
+
+        // Assert
+        expect(result).toBe('dirty');
       });
     });
   });

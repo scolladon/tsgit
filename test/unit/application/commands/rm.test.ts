@@ -43,6 +43,7 @@ import { asBareContext, seedRepo } from './fixtures.js';
 import {
   advanceSubmodule,
   embedRepository,
+  unmergeEntry,
   withNestedSubmodule,
   withSubmodule,
   workPath,
@@ -2791,6 +2792,139 @@ describe('rm absorbing a submodule whose .git is no gitfile', () => {
         // Assert
         expect(result.removed).toEqual(['sub']);
         expect(await ctx.fs.exists(work(ctx, 'sub'))).toBe(false);
+      });
+    });
+  });
+});
+
+/** Record a second gitlink `sub2` beside `sub`, its directory absent from the work tree. */
+const withSecondGitlink = async (ctx: Context): Promise<void> => {
+  const index = await readIndex(ctx);
+  const first = index.entries.find((e) => e.path === 'sub');
+  if (first === undefined) throw new Error('no gitlink sub');
+  invalidateIndexCache(ctx);
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync(
+      {
+        ...index,
+        entries: [...index.entries, { ...first, path: 'sub2' as FilePath }],
+        extensions: [],
+      },
+      ctx,
+    ),
+  );
+  invalidateIndexCache(ctx);
+};
+
+const GITMODULES_K = '[submodule "k"]\n\tpath = k\n\turl = ../up\n';
+
+describe('rm editing .gitmodules for the gitlinks it removes', () => {
+  describe('Given a dirty working .gitmodules, a tracked file and a submodule', () => {
+    describe('When rm names the file and the submodule', () => {
+      it('Then GITMODULES_NOT_STAGED refuses and nothing is removed', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+        await ctx.fs.writeUtf8(work(ctx, '.gitmodules'), GITMODULES_EDITED);
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['k', 'sub']), 'GITMODULES_NOT_STAGED');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'GITMODULES_NOT_STAGED' });
+        expect(await ctx.fs.exists(work(ctx, 'k'))).toBe(true);
+        expect(await ctx.fs.exists(work(ctx, 'sub/u'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a clean staged .gitmodules and a tracked file sorting before it that is edited in the work tree', () => {
+    describe('When rm names the submodule', () => {
+      it('Then the submodule goes: only the staged .gitmodules is compared', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+        await ctx.fs.writeUtf8(work(ctx, '-a'), 'a\n');
+        await add(ctx, ['-a']);
+        await ctx.fs.writeUtf8(work(ctx, '-a'), 'edited\n');
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['sub']);
+
+        // Assert
+        expect(result.removed).toEqual(['sub']);
+        expect(await ctx.fs.readUtf8(work(ctx, '-a'))).toBe('edited\n');
+      });
+    });
+  });
+
+  describe('Given two submodules each named in the staged .gitmodules', () => {
+    describe('When rm forces the removal of both', () => {
+      it('Then both sections leave .gitmodules', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB + GITMODULES_SUB2);
+        await withSecondGitlink(ctx);
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['sub', 'sub2'], { force: true });
+
+        // Assert
+        expect(result.removed).toEqual(['sub', 'sub2']);
+        expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe('');
+      });
+    });
+  });
+
+  describe('Given a staged .gitmodules holding a section whose path is a tracked regular file', () => {
+    describe('When rm names that file and the submodule', () => {
+      it('Then only the submodule section leaves: sections go for gitlinks alone', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB + GITMODULES_K);
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['k', 'sub']);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe(GITMODULES_K);
+      });
+    });
+  });
+
+  describe('Given a staged .gitmodules with no section for the submodule', () => {
+    describe('When rm names the submodule', () => {
+      it('Then .gitmodules is not written at all', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB2);
+        const write = vi.spyOn(ctx.fs, 'writeUtf8');
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['sub']);
+
+        // Assert
+        const written = write.mock.calls.map(([path]) => path);
+        expect(written).not.toContain(work(ctx, '.gitmodules'));
+      });
+    });
+  });
+
+  describe('Given a clean .gitmodules and an unmerged tracked file', () => {
+    describe('When rm names the submodule', () => {
+      it('Then its section leaves .gitmodules: only an unmerged .gitmodules stops the edit', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB + GITMODULES_SUB2);
+        await unmergeEntry(ctx, 'k');
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['sub']);
+
+        // Assert
+        expect(result.removed).toEqual(['sub']);
+        expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe(GITMODULES_SUB2);
       });
     });
   });
