@@ -66,10 +66,10 @@ describe('submodulePathIsSymlink', () => {
 
       it("Then the message mirrors git's refusal", () => {
         // Arrange
-        const sut = submodulePathIsSymlink('sub' as FilePath);
+        const sut = submodulePathIsSymlink;
 
         // Act
-        const result = sut.message;
+        const result = sut('sub' as FilePath).message;
 
         // Assert
         expect(result).toBe(
@@ -96,10 +96,10 @@ describe('gitmodulesNotStaged', () => {
 
       it("Then the message mirrors git's refusal", () => {
         // Arrange
-        const sut = gitmodulesNotStaged();
+        const sut = gitmodulesNotStaged;
 
         // Act
-        const result = sut.message;
+        const result = sut().message;
 
         // Assert
         expect(result).toBe(
@@ -126,10 +126,10 @@ describe('submoduleNameNotFound', () => {
 
       it("Then the message mirrors git's refusal", () => {
         // Arrange
-        const sut = submoduleNameNotFound('sub' as FilePath);
+        const sut = submoduleNameNotFound;
 
         // Act
-        const result = sut.message;
+        const result = sut('sub' as FilePath).message;
 
         // Assert
         expect(result).toBe("SUBMODULE_NAME_NOT_FOUND: could not lookup name for submodule 'sub'");

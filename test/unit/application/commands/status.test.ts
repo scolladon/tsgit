@@ -231,10 +231,11 @@ describe('status', () => {
       it('Then every index entry is a staged add with no head side', async () => {
         // Arrange
         const ctx = await seedClean();
-        const sut = await overlongBranchContext(ctx, pathTooLong);
+        const faulty = await overlongBranchContext(ctx, pathTooLong);
+        const sut = status;
 
         // Act
-        const result = await status(sut);
+        const result = await sut(faulty);
 
         // Assert
         const change = changeFor(result, 'a.txt');
@@ -246,10 +247,11 @@ describe('status', () => {
       it('Then branch is undefined and detached is false', async () => {
         // Arrange
         const ctx = await seedClean();
-        const sut = await overlongBranchContext(ctx, pathTooLong);
+        const faulty = await overlongBranchContext(ctx, pathTooLong);
+        const sut = status;
 
         // Act
-        const result = await status(sut);
+        const result = await sut(faulty);
 
         // Assert
         expect(result.branch).toBeUndefined();
@@ -301,11 +303,12 @@ describe('status', () => {
       it('Then it rejects with that fault', async () => {
         // Arrange
         const ctx = await seedClean();
-        const sut = await overlongBranchContext(ctx, permissionDenied);
+        const faulty = await overlongBranchContext(ctx, permissionDenied);
+        const sut = status;
 
         // Act
         let caught: unknown;
-        await status(sut).catch((err: unknown) => {
+        await sut(faulty).catch((err: unknown) => {
           caught = err;
         });
 
