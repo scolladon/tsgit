@@ -680,3 +680,10 @@ the review round converged (lesson 006). Every other row stays under its cap.
 The compressed tarball cap (`tooling/verify-tarball.sh`) moves 1455 → 1473 KiB: the pack landed
 at 1 507 470 B against a 1 489 536 B baseline, 17 550 B over the old cap, for the same code
 shipped in every distribution form.
+
+The validation round then reshaped two primitives for the mutation triage — the scanner's
+verdict cache stamps a fresh `Symbol` per classification change instead of counting, and the
+clean-merge index gate walks once — and the primitives chunk measured 110 033 B against the
+110.0 kB cap raised above: one more row, 110.0 → 110.1 kB, by the same rule (dropping the two
+`Symbol` descriptions would have saved 27 B, not the 33 B). Every other row stayed under its cap;
+the tarball cap holds.
