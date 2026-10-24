@@ -19,6 +19,7 @@ import {
   readFile,
   rename,
   rm,
+  symlink,
   utimes,
   writeFile,
 } from 'node:fs/promises';
@@ -169,6 +170,28 @@ const stagedDeletion: Setup = async (repo) => {
   gitIn(repo, 'rm', '-q', '--cached', SUBMODULE);
 };
 
+const DIRECTORY = 'd';
+
+const underDirectory: Setup = async (repo) => {
+  await mkdir(path.join(repo, DIRECTORY));
+  gitIn(repo, 'mv', SUBMODULE, `${DIRECTORY}/${SUBMODULE}`);
+  commitIn(repo, 'move');
+};
+
+const regularUnderDirectory: Setup = async (repo) => {
+  await mkdir(path.join(repo, DIRECTORY));
+  await writeFile(path.join(repo, DIRECTORY, 'f'), 'f\n');
+  gitIn(repo, 'add', `${DIRECTORY}/f`);
+  commitIn(repo, 'regular');
+};
+
+/** The directory moves out of the repository and a symlink to it takes its place. */
+const linkedAway: Setup = async (repo) => {
+  const away = `${repo}-away`;
+  await rename(path.join(repo, DIRECTORY), away);
+  await symlink(away, path.join(repo, DIRECTORY));
+};
+
 const ROWS: ReadonlyArray<readonly [string, Setup]> = [
   ['a populated unmoved submodule', async () => {}],
   [
@@ -208,6 +231,11 @@ const ROWS: ReadonlyArray<readonly [string, Setup]> = [
   ['an untracked file ignored by the submodule exclude file', ignoredUntracked],
   ['a moved submodule staged in the index', stagedMoved],
   ['a submodule removed from the index only', stagedDeletion],
+  ['a gitlink below a directory replaced by a symlink', compose(underDirectory, linkedAway)],
+  [
+    'a regular file below a directory replaced by a symlink',
+    compose(regularUnderDirectory, linkedAway),
+  ],
 ];
 
 const modeOf = (side: { readonly mode: string } | undefined): string => side?.mode ?? ABSENT_MODE;

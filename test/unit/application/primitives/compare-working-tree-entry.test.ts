@@ -15,7 +15,7 @@ import {
   buildAttributeProvider,
 } from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
@@ -1693,6 +1693,89 @@ describe('compareAndRefresh on a lossy entry', () => {
 
         // Assert
         expect(result.delta.status).toBe('unchanged');
+      });
+    });
+  });
+});
+
+const replaceDirWithLink = async (ctx: Context, dir: string, copy: string): Promise<void> => {
+  await ctx.fs.writeUtf8(work(ctx, `${copy}/f`), 'x\n');
+  await ctx.fs.rm(work(ctx, `${dir}/f`));
+  await ctx.fs.rm(work(ctx, dir));
+  await ctx.fs.symlink(copy, work(ctx, dir));
+};
+
+describe('compareAndRefresh below a leading directory', () => {
+  describe('Given a leading directory that cannot be lstat-ed', () => {
+    describe('When comparing a regular file below it', () => {
+      it("Then it is 'absent'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('d/f', 'x\n');
+        const realLstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p) => {
+          if (p === work(ctx, 'd') || p === work(ctx, 'd/f')) {
+            throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
+          }
+          return realLstat(p);
+        });
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry);
+
+        // Assert
+        expect(result.delta.status).toBe('absent');
+      });
+    });
+  });
+
+  describe('Given a regular file whose leading directory became a symlink to an identical copy', () => {
+    describe('When comparing the entry', () => {
+      it("Then it is 'absent'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('d/f', 'x\n');
+        await replaceDirWithLink(ctx, 'd', 'copy');
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry);
+
+        // Assert
+        expect(result.delta).toEqual({ status: 'absent' });
+      });
+    });
+  });
+
+  describe('Given a gitlink whose leading directory became a symlink', () => {
+    describe('When comparing the entry', () => {
+      it("Then it is 'absent'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('d/f', 'x\n');
+        await replaceDirWithLink(ctx, 'd', 'copy');
+        const sut = { ...entry, mode: '160000' as const };
+
+        // Act
+        const result = await compareAndRefresh(ctx, sut);
+
+        // Assert
+        expect(result.delta).toEqual({ status: 'absent' });
+      });
+    });
+  });
+
+  describe('Given a root-level file', () => {
+    describe('When comparing the entry', () => {
+      it('Then only the leaf is lstat-ed', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'x\n');
+        const spy = vi.spyOn(ctx.fs, 'lstat');
+        const sut = compareAndRefresh;
+
+        // Act
+        await sut(ctx, entry);
+
+        // Assert
+        expect(spy.mock.calls.map(([p]) => p)).toEqual([work(ctx, 'a.txt')]);
       });
     });
   });

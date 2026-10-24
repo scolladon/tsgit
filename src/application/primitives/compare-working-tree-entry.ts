@@ -43,6 +43,10 @@ import type { AttributeProvider } from './internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from './internal/symlinked-leading-path.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 import { resolveFilterDriver, streamsThroughFilter } from './resolve-filter-driver.js';
 
@@ -183,6 +187,8 @@ export interface ComparisonScope {
   readonly indexMtime?: IndexMtime;
   /** `false` when the caller knows no `[filter "<d>"]` section exists, so no driver is looked up. */
   readonly filterDriversConfigured?: boolean;
+  /** The scan's shared leading-path memo; a comparison outside a scan builds its own. */
+  readonly scanner?: LeadingPathScanner;
 }
 
 /**
@@ -297,6 +303,19 @@ const compareFile = async (
 };
 
 /**
+ * git's `has_symlink_leading_path`: a path below a symlinked directory is deleted. A
+ * leading directory that cannot be read reads `absent`, as its leaf `lstat` already does.
+ */
+const belowSymlinkedDirectory = (
+  ctx: Context,
+  entry: IndexEntry,
+  scope: ComparisonScope,
+): Promise<boolean> =>
+  (scope.scanner ?? createLeadingPathScanner(ctx))
+    .hasSymlinkedLeadingPath(entry.path)
+    .catch(() => true);
+
+/**
  * The comparison plus its refresh verdict, from the single `lstat` the
  * comparison already took — no second stat, no extra read.
  */
@@ -307,6 +326,7 @@ export const compareAndRefresh = async (
 ): Promise<RefreshedComparison> => {
   if (isLossy(entry)) return { delta: { status: 'absent' } };
   const absPath = joinPath(requireWorkTree(ctx, 'compareWorkingTreeEntry'), entry.path);
+  if (await belowSymlinkedDirectory(ctx, entry, scope)) return { delta: { status: 'absent' } };
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { delta: { status: 'absent' } };
   const delta =
