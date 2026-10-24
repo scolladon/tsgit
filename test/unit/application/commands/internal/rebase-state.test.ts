@@ -3,10 +3,12 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   clearRebaseState,
   readRebaseHead,
+  readRebaseProgress,
   readRebaseState,
   readRewrittenList,
   rebaseInProgress,
   writeRebaseStop,
+  writeRescheduledPick,
 } from '../../../../../src/application/commands/internal/rebase-state.js';
 import type { AuthorIdentity, ObjectId } from '../../../../../src/domain/objects/index.js';
 import { rebaseTodoBackup } from '../../../../../src/domain/rebase/index.js';
@@ -249,6 +251,172 @@ describe('rebase-state', () => {
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
         expect(await readRebaseHead(ctx)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a pick refused before it ran', () => {
+    const FIRST = { action: 'pick', oid: T1, subject: 't1' } as const;
+    const PICK = { action: 'pick', oid: T2, subject: 't2' } as const;
+    const LAST = { action: 'pick', oid: T3, subject: 't3' } as const;
+    const RESCHEDULED = {
+      headName: 'refs/heads/topic',
+      onto: ONTO,
+      origHead: ORIG,
+      done: [FIRST, PICK],
+      remaining: [PICK, LAST],
+      pickSha: T2,
+      backupHeader: STOP.backupHeader,
+    } as const;
+    const entriesOf = async (ctx: Context): Promise<string[]> =>
+      (await ctx.fs.readdir(`${ctx.layout.gitDir}/rebase-merge`)).map((entry) => entry.name).sort();
+
+    describe('When writeRescheduledPick persists it', () => {
+      it('Then exactly the files git leaves exist, with no conflict-stop file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledPick(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual([
+          'done',
+          'drop_redundant_commits',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+        ]);
+      });
+
+      it('Then the pick sits in both done and the live todo', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledPick(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await read(ctx, 'done')).toBe(`pick ${T1} # t1\npick ${T2} # t2\n`);
+        expect(await read(ctx, 'git-rebase-todo')).toBe(`pick ${T2} # t2\npick ${T3} # t3\n`);
+      });
+
+      it('Then end counts the whole todo and msgnum the current item', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledPick(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await read(ctx, 'end')).toBe('3\n');
+        expect(await read(ctx, 'msgnum')).toBe('2\n');
+      });
+
+      it('Then head-name, onto, orig-head and the empty markers hold git bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledPick(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await read(ctx, 'head-name')).toBe('refs/heads/topic\n');
+        expect(await read(ctx, 'onto')).toBe(`${ONTO}\n`);
+        expect(await read(ctx, 'orig-head')).toBe(`${ORIG}\n`);
+        expect(await read(ctx, 'interactive')).toBe('');
+        expect(await read(ctx, 'drop_redundant_commits')).toBe('');
+        expect(await read(ctx, 'no-reschedule-failed-exec')).toBe('');
+      });
+
+      it('Then the backup lists the whole todo once and REBASE_HEAD names the pick', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const fullTodo = [FIRST, PICK, LAST];
+
+        // Act
+        await writeRescheduledPick(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await read(ctx, 'git-rebase-todo.backup')).toBe(
+          rebaseTodoBackup(fullTodo, STOP.backupHeader),
+        );
+        expect(await readRebaseHead(ctx)).toBe(T2);
+      });
+
+      it('Then no backup is written when none is given', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { backupHeader: _omitted, ...withoutBackup } = RESCHEDULED;
+
+        // Act
+        await writeRescheduledPick(ctx, withoutBackup);
+
+        // Assert
+        expect(
+          await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/git-rebase-todo.backup`),
+        ).toBe(false);
+      });
+    });
+
+    describe('When readRebaseProgress reads it back', () => {
+      it('Then it reads the stop without a message or an author script and flags it rescheduled', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRescheduledPick(ctx, RESCHEDULED);
+
+        // Act
+        const result = await readRebaseProgress(ctx);
+
+        // Assert
+        expect(result).toEqual({
+          headName: 'refs/heads/topic',
+          onto: ONTO,
+          origHead: ORIG,
+          done: [
+            { action: 'pick', oid: T1, subject: 't1' },
+            { action: 'pick', oid: T2, subject: 't2' },
+          ],
+          remaining: [
+            { action: 'pick', oid: T2, subject: 't2' },
+            { action: 'pick', oid: T3, subject: 't3' },
+          ],
+          stoppedSha: T2,
+          rescheduled: true,
+        });
+      });
+    });
+
+    describe('When readRebaseProgress reads a conflict stop', () => {
+      it('Then it is not flagged rescheduled', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, STOP);
+
+        // Act
+        const result = await readRebaseProgress(ctx);
+
+        // Assert
+        expect(result?.rescheduled).toBe(false);
+      });
+    });
+
+    describe('When no rebase is in progress', () => {
+      it('Then readRebaseProgress returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const result = await readRebaseProgress(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

@@ -92,6 +92,35 @@ export interface RebaseStop {
   readonly mergeMsg?: string;
 }
 
+/**
+ * What git leaves when a pick is refused before it runs (a dirty index): the pick sits in
+ * both `done` and the live todo, so a `continue` retries it. No commit was attempted, so
+ * there is no message, author, patch or rewritten list.
+ */
+export interface RescheduledPick {
+  readonly headName: string;
+  readonly onto: ObjectId;
+  readonly origHead: ObjectId;
+  /** Completed instructions, including the rescheduled pick (last). */
+  readonly done: ReadonlyArray<RebaseTodoLine>;
+  /** The live todo, starting with the rescheduled pick. */
+  readonly remaining: ReadonlyArray<RebaseTodoLine>;
+  readonly pickSha: ObjectId;
+  readonly backupHeader?: RebaseBackupHeader;
+}
+
+/** The part of the state every rebase stop carries, whatever stopped it. */
+export interface RebaseProgress {
+  readonly headName: string;
+  readonly onto: ObjectId;
+  readonly origHead: ObjectId;
+  readonly done: ReadonlyArray<ResolvedRebaseTodoEntry>;
+  readonly remaining: ReadonlyArray<ResolvedRebaseTodoEntry>;
+  readonly stoppedSha: ObjectId | undefined;
+  /** True when the stop is a refused pick (no `author-script`): `continue` retries it. */
+  readonly rescheduled: boolean;
+}
+
 /** The aggregated read used by `continue` / `skip` / `abort`. */
 export interface RebaseState {
   readonly headName: string;
@@ -158,6 +187,27 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await writeRootRef(ctx, REBASE_HEAD_REF, stop.stoppedSha);
 };
 
+/** Persist git's state for a pick refused before it ran, exactly the files git leaves. */
+export const writeRescheduledPick = async (ctx: Context, stop: RescheduledPick): Promise<void> => {
+  const fullTodo = [...stop.done.slice(0, -1), ...stop.remaining];
+  const write = (name: string, body: string): Promise<void> =>
+    ctx.fs.writeUtf8(file(ctx, name), body);
+  await write('head-name', `${stop.headName}\n`);
+  await write('onto', `${stop.onto}\n`);
+  await write('orig-head', `${stop.origHead}\n`);
+  await write('git-rebase-todo', serializeRebaseTodo(stop.remaining));
+  if (stop.backupHeader !== undefined) {
+    await write('git-rebase-todo.backup', rebaseTodoBackup(fullTodo, stop.backupHeader));
+  }
+  await write('done', serializeRebaseTodo(stop.done));
+  await write('end', `${fullTodo.length}\n`);
+  await write('msgnum', `${stop.done.length}\n`);
+  await write('interactive', '');
+  await write('drop_redundant_commits', '');
+  await write('no-reschedule-failed-exec', '');
+  await writeRootRef(ctx, REBASE_HEAD_REF, stop.pickSha);
+};
+
 /** git unlinks `amend` before every step and drops `current-fixups` /
  *  `rewritten-pending` once their group ends, so a stop leaves exactly the
  *  markers it carries — a stale one would steer the next `continue`. */
@@ -210,7 +260,7 @@ const resolveEntries = async (
   return resolved;
 };
 
-export const readRebaseState = async (ctx: Context): Promise<RebaseState | undefined> => {
+export const readRebaseProgress = async (ctx: Context): Promise<RebaseProgress | undefined> => {
   if (!(await rebaseInProgress(ctx))) return undefined;
   const headName = (await ctx.fs.readUtf8(file(ctx, 'head-name'))).trimEnd();
   const onto = (await readOptionalOidFile(ctx, file(ctx, 'onto'))) as ObjectId;
@@ -220,6 +270,21 @@ export const readRebaseState = async (ctx: Context): Promise<RebaseState | undef
     ctx,
     parseRebaseTodo(await ctx.fs.readUtf8(file(ctx, 'git-rebase-todo'))),
   );
+  return {
+    headName,
+    onto,
+    origHead,
+    done,
+    remaining,
+    stoppedSha: await readRebaseHead(ctx),
+    rescheduled: !(await ctx.fs.exists(file(ctx, 'author-script'))),
+  };
+};
+
+export const readRebaseState = async (ctx: Context): Promise<RebaseState | undefined> => {
+  const progress = await readRebaseProgress(ctx);
+  if (progress === undefined) return undefined;
+  const { headName, onto, origHead, done, remaining, stoppedSha } = progress;
   const author = parseAuthorScript(await ctx.fs.readUtf8(file(ctx, 'author-script')));
   const message = await ctx.fs.readUtf8(file(ctx, 'message'));
   const amend = await readOptionalOidFile(ctx, file(ctx, 'amend'));
@@ -231,7 +296,7 @@ export const readRebaseState = async (ctx: Context): Promise<RebaseState | undef
     origHead,
     done,
     remaining,
-    stoppedSha: await readRebaseHead(ctx),
+    stoppedSha,
     author,
     message,
     ...(amend !== undefined ? { amend } : {}),
