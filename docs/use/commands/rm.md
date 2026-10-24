@@ -42,15 +42,19 @@ working file in every case; `force` overrides the valve entirely.
 
 ## Submodules
 
-A submodule (a gitlink entry) is also modified when its own check finds anything: the checkout moved off the recorded commit, a tracked file edited, or an untracked file present, whatever `ignore` is configured. Such a submodule is refused `RM_LOCAL_MODIFICATIONS` unless `force` is set.
+`rm` prepares a submodule (a gitlink entry) in git's order before anything leaves the working tree:
 
-- Before anything happens to a submodule, a working `.gitmodules` that differs by content from its staged entry is refused `GITMODULES_NOT_STAGED` — under `cached` and `force` too, and with nothing removed. A `.gitmodules` rewritten with the same bytes, or absent from the work tree, does not trigger it.
-- A clean submodule's directory is removed with everything beneath it. A submodule that was never initialized has no directory; only its index entry goes.
-- The `[submodule "<name>"]` section whose `path` is the removed path leaves `.gitmodules`, and the edited file is staged. A `.gitmodules` without such a section is left alone and not staged.
-- A repository kept in the submodule's own `.git` directory is first moved to `.git/modules/<name>` with `core.worktree` set, so its history survives; if `.git/modules/<name>` already holds a repository the move is refused `DIRECTORY_NOT_EMPTY`. An absorbed module under `.git/modules/<name>` is always kept. When no `.gitmodules` row names the path, git cannot name the module: the removal is refused `SUBMODULE_NAME_NOT_FOUND { path }` with nothing written (a gitfile-based or empty submodule without a row is still removed, `.gitmodules` untouched; `cached` never migrates, so it is never refused).
+1. A working `.gitmodules` that differs by content from its staged entry is refused `GITMODULES_NOT_STAGED` — under `cached` and `force` too, with nothing removed. A `.gitmodules` rewritten with the same bytes, or absent from the work tree, does not trigger it.
+2. Unless `cached` is set, every populated submodule is absorbed as git's `absorb_git_dir_into_superproject` does: a repository kept in the submodule's own `.git` directory moves to `.git/modules/<name>` with `core.worktree` set and a gitfile left behind, so its history survives; a nested submodule carrying its own `.git` directory moves under the outer module's `modules/` the same way. The move is refused `SUBMODULE_NAME_NOT_FOUND { path }` when no `.gitmodules` row names the path (the rows come from the working file, else from the staged blob), `SUBMODULE_GIT_DIR_NESTED { name, inside }` when a leading part of the name already is a repository under `.git/modules/`, and `DIRECTORY_NOT_EMPTY` when `.git/modules/<name>` is occupied. A path running through a symbolic link — the path itself or a leading directory — is refused `SUBMODULE_PATH_IS_SYMLINK { path, component? }` before anything is read, as git's `validate_submodule_path`. Like git, an absorption happens even when the safety valve then refuses the removal.
+3. Unless `force` is set, the safety valve judges each submodule as git's `check_local_mod` does. A regular file or symbolic link in place of the submodule, or a checkout whose HEAD moved off the recorded commit, is a local modification. A populated directory whose `.git` is not a gitfile (none at all, or a repository the absorption could not reach under `cached`), or whose nested submodules do not all use gitfiles, is a local modification too. Otherwise the checkout's own status decides — run with every nested gitlink's ignore mode forced to `none` and untracked files counted, as git runs `status --porcelain --ignore-submodules=none -uall` in the submodule. An empty directory is clean. Under `cached`, a submodule with only local modifications is removed from the index (git keeps the files), so a symbolic link in its place goes quietly; the symbolic-link validation above still runs on a populated directory.
+
+Then the removal:
+
+- A submodule's directory is removed with everything beneath it. A submodule that was never initialized has no directory; only its index entry goes.
+- The `[submodule "<name>"]` section whose `path` is the removed path leaves `.gitmodules`, and the edited file is staged. A `.gitmodules` without such a section, or absent from the work tree, is left alone and not staged. A `.gitmodules` the index holds unmerged is refused `GITMODULES_UNMERGED` — after the submodule's directory is gone and before the index is written, exactly as git dies there.
 - In a linked worktree the module moves into that worktree's own admin directory (`.git/worktrees/<wt>/modules/<name>`) and `core.worktree` is the relative path from there to the worktree's directory, as git writes it.
-- `cached` removes only the index entry: the directory and `.gitmodules` stay.
-- `force` removes a modified submodule the same way.
+- `cached` removes only the index entry: the directory and `.gitmodules` stay, and nothing is absorbed.
+- `force` skips the safety valve only; the `.gitmodules` check and the absorption still run.
 
 ## Merges in progress and resolve-undo
 
@@ -94,6 +98,10 @@ await repo.rm(['*.log']);
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `GITMODULES_NOT_STAGED` — a submodule is being removed while the working `.gitmodules` carries unstaged changes. Nothing is removed.
 - `SUBMODULE_NAME_NOT_FOUND { path }` — an embedded repository sits in the submodule's `.git` directory and no `.gitmodules` row names the path. Nothing is removed.
+- `SUBMODULE_GIT_DIR_NESTED { name, inside }` — the embedded repository would move under `.git/modules/<name>` while `.git/modules/<inside>`, a leading part of that name, already is a repository. Nothing is removed.
+- `SUBMODULE_PATH_IS_SYMLINK { path, component? }` — a populated submodule's path, or one of its leading directories (`component`), is a symbolic link. Nothing is removed.
+- `GITMODULES_UNMERGED` — the index holds `.gitmodules` unmerged while a submodule's section must leave it; the submodule's directory is already gone, the index untouched.
+- `WORKING_TREE_FILE_TOO_LARGE { path, size, limit }` — the working `.gitmodules` is past the size the library reads.
 - `RM_STAGED_CHANGES` / `RM_LOCAL_MODIFICATIONS` / `RM_STAGED_AND_LOCAL_CHANGES` — the safety valve refused (see above); each `data.paths` lists the refused paths.
 
 ## See also

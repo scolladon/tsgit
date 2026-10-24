@@ -588,3 +588,26 @@ never-refresh rule. No ADR, backlog or phase reference goes into source or test.
 - A `--ignore-submodules` option on `status`: git's CLI flag has no tsgit counterpart today, and
   R6 covers the configuration. Adding the option is new surface, not a fix.
 - `status.submoduleSummary` (p12): no data change, display only (ADR-249).
+
+## Review-round folds (git 2.55 pins)
+
+The review round found behaviour the implementation had not pinned. Each row below was run against git 2.55 (scrubbed environment, throwaway repositories, surprising rows three times) before the fold; the matching interop twins live in `gitlink-consumers-interop.test.ts`.
+
+| id | fixture | git 2.55 | tsgit after the fold |
+|---|---|---|---|
+| RV1 | `rm sub`, populated `sub` whose `.git` is gone, user file `sub/u` | exit 1 `the following file has local modifications` (`bad_to_remove_submodule`: `!submodule_uses_gitfile`), `sub/u` kept | `RM_LOCAL_MODIFICATIONS`, `sub/u` kept (was: removed with the file) |
+| RV2 | `rm --cached sub`, embedded `.git` directory, staged move | exit 1 `staged content different from both the file and the HEAD`, entry kept | `RM_STAGED_AND_LOCAL_CHANGES` |
+| RV3 | `rm --cached sub`, symbolic link in place of `sub` (to a file, an empty directory, nothing, or a repository) | exit 0, entry dropped, link kept (`ie_match_stat` type change is a local-only change `--cached` allows) | removed from the index, link kept (was: `SUBMODULE_PATH_IS_SYMLINK`) |
+| RV4 | `rm sub` / `rm -f sub`, symbolic link in place of a populated `sub` | exit 128 `expected submodule path 'sub' not to be a symbolic link` (`validate_submodule_path` inside the absorption), nothing written | `SUBMODULE_PATH_IS_SYMLINK { path }` (under `-f` was: the link's target half-absorbed) |
+| RV5 | `rm a/sub`, `rm --cached a/sub`, `rm -f a/sub` with `a -> c` a symbolic link | exit 128 `expected 'a' in submodule path 'a/sub' not to be a symbolic link`, `c/sub` intact; `--cached -f` drops the entry and touches nothing | `SUBMODULE_PATH_IS_SYMLINK { path: 'a/sub', component: 'a' }`; `--cached -f` removes the entry (was: `c/sub` migrated and deleted) |
+| RV6 | `rm sub`, embedded `.git` directory, edited `sub/f` | exit 1 local modifications, yet `.git/modules/sub` exists and `sub/.git` is a gitfile (`submodules_absorb_gitdir_if_needed` runs before `check_local_mod`) | `RM_LOCAL_MODIFICATIONS` after the absorption (was: refused with the directory in place) |
+| RV7 | `rm sub`, embedded, edited, no `.gitmodules` row | exit 128 `could not lookup name for submodule 'sub'` | `SUBMODULE_NAME_NOT_FOUND` (was: `RM_LOCAL_MODIFICATIONS`) |
+| RV8 | `rm sub`, edited, unstaged `.gitmodules` edit | exit 128 `please stage your changes to .gitmodules or stash them to proceed` | `GITMODULES_NOT_STAGED` (was: `RM_LOCAL_MODIFICATIONS`) |
+| RV9 | `rm a sub`, tracked `a`, embedded `sub`, `.git/modules/<name>` occupied | exit 128 `could not migrate git directory … Directory not empty`, `a` intact on disk and in the index | `DIRECTORY_NOT_EMPTY`, `a` intact (was: `a` deleted first) |
+| RV10 | `rm sub`, `.gitmodules` unmerged (stages 1–3), working copy clean or with markers | exit 128 `Cannot change unmerged .gitmodules, resolve merge conflicts first`; `sub` removed from disk, index untouched (`rm 'sub'` printed first) | `GITMODULES_UNMERGED`, same on-disk and index state (was: conflict resolved silently) |
+| RV11 | `rm sub`, gitfile `sub` holding nested `in` with an embedded `.git` | `Migrating git directory of 'sub/in' … to '…/.git/modules/sub/modules/in'`, exit 0 | nested repository migrated under the outer module's `modules/`, then removed (was: deleted with `sub`) |
+| RV12 | `rm sub`, nested `in` populated without a `.gitmodules` row in `sub` | exit 128 `could not lookup name for submodule 'in'` / `could not recurse into submodule 'sub'` | `SUBMODULE_NAME_NOT_FOUND { path: 'in' }` |
+| RV13 | `rm sub`, `.gitmodules` name `a/b`, `.git/modules/a` a repository | exit 128 `submodule git dir '.git/modules/a/b' is inside git dir '.git/modules/a'` / `refusing to create/use '.git/modules/a/b' in another submodule's git dir`, nothing removed | `SUBMODULE_GIT_DIR_NESTED { name: 'a/b', inside: 'a' }` |
+| RV14 | `rm sub`, `sub/.gitmodules` sets `ignore = all` for nested `in`, `in` moved | exit 1 local modifications (`status --porcelain --ignore-submodules=none -uall` in the checkout) | `RM_LOCAL_MODIFICATIONS` (was: removed) |
+| RV15 | `rm --cached sub`, nested `in` embedded, `sub` clean and unstaged | exit 0, entry dropped (local-only change) | removed from the index |
+| RV16 | `status`, gitlink with no `.gitmodules` row, `.git/config submodule.sub.ignore = all` (then `bogus`), checkout moved | `1 .M SC.. … sub`, exit 0 both times (git reads the per-submodule key only through a `.gitmodules` name) | row reported as moved; no `CONFIG_INVALID_ENUM_VALUE` (folded in the status batch) |

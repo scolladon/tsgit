@@ -601,6 +601,76 @@ const gitmodulesWithoutSection: Setup = async (repo) => {
   commitIn(repo, 'other section');
 };
 
+/** The populated checkout lost its `.git`; the user's file stays. */
+const withoutDotGit: Setup = async (repo) => rm(sub(repo, '.git'));
+/** `embedded`, the checkout then moved and the move staged. */
+const embeddedStagedMove: Setup = async (repo) => {
+  await embedded(repo);
+  await stagedMove(repo);
+};
+const embeddedEdited: Setup = async (repo) => {
+  await embedded(repo);
+  await edited(repo);
+};
+const embeddedWithoutNameEdited: Setup = async (repo) => {
+  await embeddedWithoutName(repo);
+  await edited(repo);
+};
+const editedWithUnstagedGitmodules: Setup = async (repo) => {
+  await edited(repo);
+  await unstagedGitmodulesEdit(repo);
+};
+const upstreamOf = (repo: string): string => path.join(path.dirname(repo), 'up');
+const NESTED = 'in';
+const nestedModuleDir = (repo: string): string => path.join(repo, ...MODULE_DIR, 'modules', NESTED);
+/** A nested submodule `in` inside `sub`, recorded by both; `gitmodulesExtra` lands in `sub`'s `.gitmodules` first. */
+const withNested = async (repo: string, gitmodulesExtra = ''): Promise<void> => {
+  gitIn(sub(repo), 'submodule', 'add', '-q', upstreamOf(repo), NESTED);
+  if (gitmodulesExtra !== '') await appendFile(sub(repo, GITMODULES), gitmodulesExtra);
+  gitIn(sub(repo), 'add', GITMODULES);
+  commitIn(sub(repo), 'nested');
+  gitIn(repo, 'add', SUBMODULE);
+  commitIn(repo, 'record nested');
+};
+/** `sub` keeps its gitfile while the nested `in` carries its repository in `sub/in/.git`. */
+const nestedEmbedded: Setup = async (repo) => {
+  await withNested(repo);
+  await rm(sub(repo, NESTED, '.git'));
+  await rename(nestedModuleDir(repo), sub(repo, NESTED, '.git'));
+  gitIn(repo, 'config', '--file', sub(repo, NESTED, '.git', 'config'), '--unset', 'core.worktree');
+};
+/** The nested `in` is ignored entirely by `sub`'s `.gitmodules`, then moved. */
+const nestedIgnoredMoved: Setup = async (repo) => {
+  await withNested(repo, '\tignore = all\n');
+  commitIn(sub(repo, NESTED), 'z');
+};
+/** The section is renamed `a/b` and the module directory moved to `.git/modules/a`, left in place as the embedded copy's source. */
+const nameClimbsIntoModule: Setup = async (repo) => {
+  gitIn(repo, 'config', '--file', GITMODULES, '--rename-section', 'submodule.sub', 'submodule.a/b');
+  gitIn(repo, 'add', GITMODULES);
+  commitIn(repo, 'rename');
+  await embeddedOverAbsorbed(repo);
+  await rename(path.join(repo, ...MODULE_DIR), path.join(repo, '.git', 'modules', 'a'));
+};
+/** `.gitmodules` conflicted by a merge, its working copy then rewritten clean while the index stays unmerged. */
+const unmergedGitmodules: Setup = async (repo) => {
+  const original = await readFile(path.join(repo, GITMODULES), 'utf8');
+  gitIn(repo, 'checkout', '-q', '-b', 'gm-side');
+  await writeFile(path.join(repo, GITMODULES), `${original}\tbranch = side\n`);
+  gitIn(repo, 'add', GITMODULES);
+  commitIn(repo, 'gm side');
+  gitIn(repo, 'checkout', '-q', 'main');
+  await writeFile(path.join(repo, GITMODULES), `${original}\tbranch = main\n`);
+  gitIn(repo, 'add', GITMODULES);
+  commitIn(repo, 'gm main');
+  try {
+    gitIn(repo, 'merge', '-q', 'gm-side');
+  } catch {
+    // The conflict is the fixture.
+  }
+  await writeFile(path.join(repo, GITMODULES), original);
+};
+
 const RM_ROWS: ReadonlyArray<RmRow> = [
   {
     title: 'a moved submodule',
@@ -760,6 +830,89 @@ const RM_ROWS: ReadonlyArray<RmRow> = [
     setup: nothing,
     paths: ['sub'],
     cached: true,
+  },
+  {
+    title: 'a populated checkout that lost its .git',
+    setup: withoutDotGit,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'an embedded repository with a staged move, index only',
+    setup: embeddedStagedMove,
+    paths: ['sub'],
+    cached: true,
+    refusal: { exit: 1, code: 'RM_STAGED_AND_LOCAL_CHANGES' },
+  },
+  {
+    title: 'a symlink in place of the submodule, index only',
+    setup: replacedBySymlink,
+    paths: ['sub'],
+    cached: true,
+  },
+  {
+    title: 'a symlink in place of the submodule, forced',
+    setup: replacedBySymlink,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+    refusal: DIED('SUBMODULE_PATH_IS_SYMLINK'),
+  },
+  {
+    title: 'an edited embedded repository',
+    setup: embeddedEdited,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'an edited embedded repository named by no .gitmodules row',
+    setup: embeddedWithoutNameEdited,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_NAME_NOT_FOUND'),
+  },
+  {
+    title: 'an edited submodule and an unstaged .gitmodules edit',
+    setup: editedWithUnstagedGitmodules,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('GITMODULES_NOT_STAGED'),
+  },
+  {
+    title: 'a tracked file and an embedded repository over a populated .git/modules entry',
+    setup: embeddedOverAbsorbed,
+    paths: ['k', 'sub'],
+    cached: false,
+    refusal: DIED('DIRECTORY_NOT_EMPTY'),
+  },
+  {
+    title: 'a submodule holding a nested embedded repository',
+    setup: nestedEmbedded,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a nested submodule the checkout ignores entirely, moved',
+    setup: nestedIgnoredMoved,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'an embedded repository whose module name climbs into another module',
+    setup: nameClimbsIntoModule,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_GIT_DIR_NESTED'),
+  },
+  {
+    title: 'an unmerged .gitmodules',
+    setup: unmergedGitmodules,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('GITMODULES_UNMERGED'),
   },
   {
     title: 'a tracked file behind a symlinked directory',

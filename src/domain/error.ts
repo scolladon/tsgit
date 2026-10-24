@@ -291,6 +291,12 @@ const eolLossDetail = (loss: 'crlf-to-lf' | 'lf-to-crlf', path: string): string 
     ? `CRLF would be replaced by LF in ${path}`
     : `LF would be replaced by CRLF in ${path}`;
 
+/** git names the first symlinked leading directory when one is at fault, else the path itself. */
+const symlinkedSubmodulePathDetail = (path: string, component: string | undefined): string =>
+  component === undefined
+    ? `expected submodule path '${path}' not to be a symbolic link`
+    : `expected '${component}' in submodule path '${path}' not to be a symbolic link`;
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -756,11 +762,15 @@ function extractDetail(data: TsgitErrorData): string {
     case 'SUBMODULE_PATH_EXISTS':
       return `'${data.path}' already exists in the index`;
     case 'SUBMODULE_PATH_IS_SYMLINK':
-      return `expected submodule path '${data.path}' not to be a symbolic link`;
+      return symlinkedSubmodulePathDetail(data.path, data.component);
     case 'SUBMODULE_NAME_NOT_FOUND':
       return `could not lookup name for submodule '${data.path}'`;
     case 'GITMODULES_NOT_STAGED':
       return 'please stage your changes to .gitmodules or stash them to proceed';
+    case 'GITMODULES_UNMERGED':
+      return 'Cannot change unmerged .gitmodules, resolve merge conflicts first';
+    case 'SUBMODULE_GIT_DIR_NESTED':
+      return `submodule git dir '.git/modules/${data.name}' is inside git dir '.git/modules/${data.inside}'`;
     case 'SUBMODULE_OBJECT_FORMAT_MISMATCH':
       return `cannot add a submodule of a different hash algorithm: local ${data.local}, remote ${data.remote}`;
     case 'WORKTREE_PATH_EXISTS':

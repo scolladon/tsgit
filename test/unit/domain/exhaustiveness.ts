@@ -252,6 +252,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'SUBMODULE_PATH_IS_SYMLINK':
     case 'SUBMODULE_NAME_NOT_FOUND':
     case 'GITMODULES_NOT_STAGED':
+    case 'GITMODULES_UNMERGED':
+    case 'SUBMODULE_GIT_DIR_NESTED':
     case 'WORKTREE_PATH_EXISTS':
     case 'BRANCH_CHECKED_OUT':
     case 'WORKTREE_LOCKED':

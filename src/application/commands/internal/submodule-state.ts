@@ -15,7 +15,10 @@ import {
   findLastSubsectionEntry,
   type LocatedConfigEntry,
 } from '../../primitives/config-read.js';
-import { probeGitlinkCheckout } from '../../primitives/internal/gitlink-head.js';
+import {
+  type GitlinkCheckout,
+  probeGitlinkCheckout,
+} from '../../primitives/internal/gitlink-head.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { type GitmodulesRow, parseGitmodules } from '../../primitives/parse-gitmodules.js';
 import { readBlob } from '../../primitives/read-blob.js';
@@ -55,23 +58,29 @@ const refuseSymlink = (
   return state;
 };
 
+export type RepositoryCheckout = Extract<GitlinkCheckout, { readonly kind: 'repository' }>;
+
+/** The repository a gitlink's `.git` leads to, refusing one git cannot read as git does; `undefined` when nothing is checked out there. */
+export const populatedCheckout = async (
+  ctx: Context,
+  path: FilePath,
+): Promise<RepositoryCheckout | undefined> => {
+  const checkout = await probeGitlinkCheckout(ctx, path);
+  if (checkout.kind === 'oversized') throw gitfileTooLarge(checkout.shown);
+  if (checkout.kind === 'broken') throw notARepository(checkout.shown);
+  return checkout.kind === 'none' ? undefined : checkout;
+};
+
 /** The submodule's own changes, read once its `.git` leads to a repository; one that leads to none refuses. */
 const insideState = async (
   ctx: Context,
   { path }: IndexEntry,
   state: SubmoduleState,
-  { childStatus, ignore }: SubmoduleDeps,
+  { childStatus }: SubmoduleDeps,
 ): Promise<SubmoduleState> => {
-  const checkout = await probeGitlinkCheckout(ctx, path);
-  if (checkout.kind === 'oversized') throw gitfileTooLarge(checkout.shown);
-  if (checkout.kind === 'broken') throw notARepository(checkout.shown);
-  if (checkout.kind === 'none') return state;
-  const inside = insideOf(await childStatus(await checkout.context()));
-  return {
-    ...state,
-    ...inside,
-    untrackedChanges: inside.untrackedChanges && ignore !== 'untracked',
-  };
+  const checkout = await populatedCheckout(ctx, path);
+  if (checkout === undefined) return state;
+  return { ...state, ...insideOf(await childStatus(await checkout.context())) };
 };
 
 /**
@@ -149,7 +158,8 @@ const readIndexedGitmodules = async (
   return parseGitmodules(new TextDecoder().decode(blob.content));
 };
 
-const readGitmodules = async (
+/** The `.gitmodules` rows git's `submodule_from_path` consults: the working file when present, else the staged blob; a working file past git's bound refuses. */
+export const readGitmodulesRows = async (
   ctx: Context,
   { workDir, stage0 }: GitmodulesSource,
 ): Promise<ReadonlyArray<GitmodulesRow>> => {
@@ -168,16 +178,19 @@ const sharedIgnore = async (ctx: Context): Promise<SubmoduleIgnore | undefined> 
 
 /**
  * The ignore mode of each gitlink. `diff.ignoreSubmodules` is validated up front;
- * nothing else is read for a repository without a gitlink.
+ * nothing else is read for a repository without a gitlink, nor under a forced mode.
  */
 export const submoduleIgnores = async (
   ctx: Context,
   gitmodules: GitmodulesSource,
   gitlinks: ReadonlyArray<FilePath>,
+  forced?: SubmoduleIgnore,
 ): Promise<ReadonlyMap<FilePath, SubmoduleIgnore>> => {
   const shared = await sharedIgnore(ctx);
+  // git's `--ignore-submodules=<mode>` on the command line overrides every configured mode.
+  if (forced !== undefined) return new Map(gitlinks.map((path) => [path, forced]));
   if (gitlinks.length === 0) return new Map();
-  const rows = await readGitmodules(ctx, gitmodules);
+  const rows = await readGitmodulesRows(ctx, gitmodules);
   const modes = await Promise.all(
     gitlinks.map(
       async (path): Promise<readonly [FilePath, SubmoduleIgnore]> => [

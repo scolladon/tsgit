@@ -3,7 +3,11 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { type ChangedPath, status } from '../../../../src/application/commands/status.js';
+import {
+  type ChangedPath,
+  status,
+  statusForDirtyCheck,
+} from '../../../../src/application/commands/status.js';
 import { deriveGitlinkContext } from '../../../../src/application/primitives/internal/submodule-context.js';
 import {
   invalidateIndexCache,
@@ -1076,6 +1080,61 @@ describe('status submodule field', () => {
           path: `${ctx.layout.workDir}/.gitmodules`,
           size: OVERSIZED_BYTES,
           limit: OVERSIZED_BYTES - 1,
+        });
+      });
+    });
+  });
+});
+
+describe('statusForDirtyCheck', () => {
+  describe('Given an untracked file and untrackedFiles set to no', () => {
+    describe('When the dirty-check status runs', () => {
+      it('Then nothing is listed as untracked', async () => {
+        // Arrange
+        const ctx = await withoutGitlink();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/stray`, 'stray\n');
+        const sut = statusForDirtyCheck;
+
+        // Act
+        const result = await sut(ctx, { untrackedFiles: 'no' });
+
+        // Assert
+        expect(result.untracked).toEqual([]);
+        expect(result.clean).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a submodule holding an untracked file and untrackedFiles set to no', () => {
+    describe('When the dirty-check status runs', () => {
+      it('Then the submodule reports no untracked changes either', async () => {
+        // Arrange
+        const { ctx } = await withRealSubmodule();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/stray`, 'stray\n');
+        const sut = statusForDirtyCheck;
+
+        // Act
+        const result = await sut(ctx, { untrackedFiles: 'no' });
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given .gitmodules ignoring the moved gitlink entirely and submoduleIgnore set to none', () => {
+    describe('When the dirty-check status runs', () => {
+      it('Then the gitlink row is reported as moved', async () => {
+        // Arrange
+        const ctx = await movedWith({ gitmodules: gitmodulesIgnoring('all') });
+        const sut = statusForDirtyCheck;
+
+        // Act
+        const result = await sut(ctx, { submoduleIgnore: 'none' });
+
+        // Assert
+        expect(result.changes.find((change) => change.path === 'sub')).toMatchObject({
+          unstaged: 'modified',
         });
       });
     });

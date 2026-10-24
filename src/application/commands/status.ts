@@ -172,6 +172,26 @@ const STATUS_SCAN_GRANULARITY = 100;
 export const status = (ctx: Context, opts: StatusOptions = {}): Promise<StatusResult> =>
   withFilterProcessPool(ctx, () => statusInScope(ctx, opts));
 
+/** git's `-uno` (`no`) or its default untracked walk (`all`). */
+export type UntrackedFilesMode = 'all' | 'no';
+
+/**
+ * How a dirty check runs a checkout's status — git's `-uno` and `--ignore-submodules=none`
+ * flags — never part of the public surface.
+ */
+export interface DirtyCheckStatusOptions extends StatusOptions {
+  /** git's `-uno`: no untracked walk, in this status and in the ones it runs on its own submodules. */
+  readonly untrackedFiles?: UntrackedFilesMode;
+  /** git's `--ignore-submodules=<mode>` on the command line: every gitlink takes it, the configured modes unread. */
+  readonly submoduleIgnore?: SubmoduleIgnore;
+}
+
+/** The status git runs inside a submodule for a dirty check. */
+export const statusForDirtyCheck = (
+  ctx: Context,
+  opts: DirtyCheckStatusOptions,
+): Promise<StatusResult> => withFilterProcessPool(ctx, () => statusInScope(ctx, opts));
+
 const OPTIONAL_LOCKS_ENV = 'GIT_OPTIONAL_LOCKS';
 
 /** Whether status may take the optional index lock: `refresh: false` wins without
@@ -199,15 +219,17 @@ interface LockedScan {
   readonly hidden: ReadonlySet<FilePath>;
   readonly workDir: string;
   readonly lock: IndexLock | undefined;
+  readonly untrackedFiles: UntrackedFilesMode;
 }
 
 /** Scans untracked, reports, then refreshes the index when able; the lock is released whatever happens. */
 const reportUnderLock = async (
   ctx: Context,
-  { index, tracked, trackedScan, submodules, hidden, workDir, lock }: LockedScan,
+  { index, tracked, trackedScan, submodules, hidden, workDir, lock, untrackedFiles }: LockedScan,
 ): Promise<StatusReport> => {
   try {
-    const untracked = await scanUntracked(ctx, index, tracked.trackedPaths);
+    const untracked =
+      untrackedFiles === 'no' ? [] : await scanUntracked(ctx, index, tracked.trackedPaths);
     const workingMap = withoutChanges(trackedScan.workingMap, hidden);
     const scanned = { workingMap, submodules, untracked };
     const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
@@ -234,7 +256,10 @@ const headViewOf = async (ctx: Context): Promise<HeadView> => {
   }
 };
 
-const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusResult> => {
+const statusInScope = async (
+  ctx: Context,
+  opts: DirtyCheckStatusOptions,
+): Promise<StatusResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
@@ -261,17 +286,21 @@ const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusR
 /** Scans the tracked tree, runs git's dirty check on its gitlinks (a refusal precedes any index write), then reports. */
 const scanAndReport = async (
   ctx: Context,
-  opts: StatusOptions,
+  opts: DirtyCheckStatusOptions,
   { index, tracked, workDir }: Pick<LockedScan, 'index' | 'tracked' | 'workDir'>,
 ): Promise<StatusReport> => {
   const trackedScan = await scanTrackedTree(ctx, index, tracked);
   const refresh = refreshEnabled(ctx, opts);
+  const untrackedFiles = opts.untrackedFiles ?? 'all';
   const gitmodules = { workDir, stage0: tracked.stage0Map };
-  const ignores = await submoduleIgnores(ctx, gitmodules, gitlinkPathsOf(tracked));
+  const paths = gitlinkPathsOf(tracked);
+  const ignores = await submoduleIgnores(ctx, gitmodules, paths, opts.submoduleIgnore);
   const hidden = hiddenOf(ignores);
-  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan, { refresh, ignores });
+  const dirtyChecks = { refresh, ignores, untrackedFiles };
+  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan, dirtyChecks);
   const lock = refresh ? await acquireOptionalIndexLock(ctx) : undefined;
-  return reportUnderLock(ctx, { index, tracked, trackedScan, submodules, hidden, workDir, lock });
+  const scan = { index, tracked, trackedScan, submodules, hidden, workDir, lock, untrackedFiles };
+  return reportUnderLock(ctx, scan);
 };
 
 /** The index's tracked entries: stage 0 by path, the unmerged groups, and every tracked path. */
@@ -349,20 +378,32 @@ const submoduleStatesOf = async (
   ctx: Context,
   tracked: TrackedEntries,
   scan: TrackedScan,
-  { refresh, ignores }: { readonly refresh: boolean; readonly ignores: SubmoduleIgnores },
+  { refresh, ignores, untrackedFiles }: DirtyChecks,
 ): Promise<SubmoduleStates> => {
-  const childStatus = (child: Context) => status(child, { refresh });
-  const states = await boundedMapFor(
-    ctx,
-    'ioBound',
-    dirtyChecksOf(tracked, scan, ignores),
-    async ([path, entry, delta, ignore]): Promise<readonly [FilePath, SubmoduleState]> => [
-      path,
-      await submoduleState(ctx, entry, delta, { childStatus, ignore }),
-    ],
-  );
-  return new Map(states);
+  const states = new Map<FilePath, SubmoduleState>();
+  // git runs the checkouts' statuses one after another.
+  for (const [path, entry, delta, ignore] of dirtyChecksOf(tracked, scan, ignores)) {
+    const childStatus = (child: Context) =>
+      statusForDirtyCheck(child, {
+        refresh,
+        untrackedFiles: childUntrackedFiles(untrackedFiles, ignore),
+      });
+    states.set(path, await submoduleState(ctx, entry, delta, { childStatus, ignore }));
+  }
+  return states;
 };
+
+interface DirtyChecks {
+  readonly refresh: boolean;
+  readonly ignores: SubmoduleIgnores;
+  readonly untrackedFiles: UntrackedFilesMode;
+}
+
+/** git's `is_submodule_modified` passes `-uno` down when untracked files are ignored, by flag or by the gitlink's mode. */
+const childUntrackedFiles = (
+  inherited: UntrackedFilesMode,
+  ignore: SubmoduleIgnore,
+): UntrackedFilesMode => (inherited === 'no' || ignore === 'untracked' ? 'no' : 'all');
 
 /** Write the refreshed stat data back, only when something is worth persisting:
  *  a drifted entry, or an entry racy against the index file's own mtime. */

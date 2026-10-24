@@ -11,9 +11,16 @@ export type SubmoduleError =
       readonly remote: string;
     }
   | { readonly code: 'SUBMODULE_PATH_EXISTS'; readonly path: string }
-  | { readonly code: 'SUBMODULE_PATH_IS_SYMLINK'; readonly path: FilePath }
+  | {
+      readonly code: 'SUBMODULE_PATH_IS_SYMLINK';
+      readonly path: FilePath;
+      /** The first leading directory of `path` that is a symbolic link, when the leaf itself is not the culprit. */
+      readonly component?: FilePath;
+    }
   | { readonly code: 'GITMODULES_NOT_STAGED' }
-  | { readonly code: 'SUBMODULE_NAME_NOT_FOUND'; readonly path: FilePath };
+  | { readonly code: 'GITMODULES_UNMERGED' }
+  | { readonly code: 'SUBMODULE_NAME_NOT_FOUND'; readonly path: FilePath }
+  | { readonly code: 'SUBMODULE_GIT_DIR_NESTED'; readonly name: string; readonly inside: string };
 
 /**
  * A relative submodule URL cannot be resolved because the base URL has no more
@@ -58,8 +65,12 @@ export const submodulePathExists = (path: string): TsgitError =>
  * git's dirty check — git's `fatal: expected submodule path '<path>' not to be
  * a symbolic link` (exit 128).
  */
-export const submodulePathIsSymlink = (path: FilePath): TsgitError =>
-  new TsgitError({ code: 'SUBMODULE_PATH_IS_SYMLINK', path });
+export const submodulePathIsSymlink = (path: FilePath, component?: FilePath): TsgitError =>
+  new TsgitError({
+    code: 'SUBMODULE_PATH_IS_SYMLINK',
+    path,
+    ...(component === undefined ? {} : { component }),
+  });
 
 /**
  * `rm` of a submodule refuses when the working `.gitmodules` differs from the
@@ -69,6 +80,23 @@ export const submodulePathIsSymlink = (path: FilePath): TsgitError =>
  */
 export const gitmodulesNotStaged = (): TsgitError =>
   new TsgitError({ code: 'GITMODULES_NOT_STAGED' });
+
+/**
+ * `rm` of a submodule refuses to edit a `.gitmodules` the index holds unmerged — git's
+ * `remove_path_from_gitmodules`: `fatal: Cannot change unmerged .gitmodules, resolve merge
+ * conflicts first` (exit 128), raised after the submodule's directory is gone and before
+ * the index is written, as git does.
+ */
+export const gitmodulesUnmerged = (): TsgitError => new TsgitError({ code: 'GITMODULES_UNMERGED' });
+
+/**
+ * Migrating an embedded repository refuses a module name whose leading part already names
+ * a repository under `modules/` — git's `validate_submodule_git_dir`: `error: submodule git
+ * dir '.git/modules/<name>' is inside git dir '.git/modules/<inside>'` then `fatal: refusing
+ * to create/use '.git/modules/<name>' in another submodule's git dir` (exit 128).
+ */
+export const submoduleGitDirNested = (name: string, inside: string): TsgitError =>
+  new TsgitError({ code: 'SUBMODULE_GIT_DIR_NESTED', name, inside });
 
 /**
  * `rm` must migrate an embedded .git directory into .git/modules/<name>, and git

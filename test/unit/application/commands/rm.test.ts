@@ -11,10 +11,12 @@ import {
   invalidateIndexCache,
   readIndex,
 } from '../../../../src/application/primitives/read-index.js';
+import { MAX_GITMODULES_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   rmLocalModifications,
   rmRecursiveWithoutR,
+  rmStagedAndLocalChanges,
 } from '../../../../src/domain/commands/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
@@ -37,6 +39,13 @@ import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { indexExtensionsOf } from '../primitives/helpers/index-extensions.js';
 import { seedIndex, stagesOf } from './add-index-fixtures.js';
 import { asBareContext, seedRepo } from './fixtures.js';
+import {
+  advanceSubmodule,
+  embedRepository,
+  withNestedSubmodule,
+  withSubmodule,
+  workPath,
+} from './submodule-fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -2125,6 +2134,390 @@ describe('Given an embedded repository removed from a linked worktree', () => {
       expect(await ctx.fs.readUtf8(`${linkedDir}/modules/sub/config`)).toContain(
         'worktree = ../../../../../wt/sub',
       );
+    });
+  });
+});
+
+/** Clone the staged `.gitmodules` entry into stages 1, 2 and 3, as a merge conflict leaves it. */
+const unmergeGitmodules = async (ctx: Context): Promise<void> => {
+  const index = await readIndex(ctx);
+  const staged = index.entries.find((e) => e.path === '.gitmodules');
+  if (staged === undefined) throw new Error('no staged .gitmodules');
+  const entries = [
+    ...index.entries.filter((e) => e.path !== '.gitmodules'),
+    ...([1, 2, 3] as const).map((stage) => ({ ...staged, flags: { ...staged.flags, stage } })),
+  ];
+  invalidateIndexCache(ctx);
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync({ ...index, entries, extensions: [] }, ctx),
+  );
+  invalidateIndexCache(ctx);
+};
+
+const indexPaths = async (ctx: Context): Promise<string[]> =>
+  (await readIndex(ctx)).entries.map((e) => `${e.path}@${e.flags.stage}`);
+
+describe('rm judging a submodule as git does', () => {
+  describe('Given a populated submodule directory that lost its .git', () => {
+    describe('When rm names the submodule', () => {
+      it('Then RM_LOCAL_MODIFICATIONS names it and the user file stays', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.rm(workPath(ctx, 'sub/.git'));
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['sub']), 'RM_LOCAL_MODIFICATIONS');
+
+        // Assert
+        expect(err.data).toEqual(rmLocalModifications(['sub' as FilePath]).data);
+        expect(await ctx.fs.exists(workPath(ctx, 'sub/u'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an embedded repository and a staged move of the gitlink', () => {
+    describe('When rm keeps the working tree with cached', () => {
+      it('Then it refuses the staged and local changes together and the entry stays', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await embedRepository(ctx, 'sub', `${ctx.layout.gitDir}/modules/sub`);
+        const embedded = deriveGitlinkContext(ctx, workPath(ctx, 'sub/.git'), 'sub' as FilePath);
+        await advanceSubmodule(ctx, embedded);
+        await add(ctx, ['sub']);
+        const sut = rm;
+
+        // Act
+        const err = await expectError(
+          () => sut(ctx, ['sub'], { cached: true }),
+          'RM_STAGED_AND_LOCAL_CHANGES',
+        );
+
+        // Assert
+        expect(err.data).toEqual(rmStagedAndLocalChanges(['sub' as FilePath]).data);
+        expect(await indexPaths(ctx)).toContain('sub@0');
+      });
+    });
+  });
+
+  describe('Given a symbolic link in place of the submodule', () => {
+    describe('When rm keeps the working tree with cached', () => {
+      it('Then the entry leaves the index and the link stays', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.rename(workPath(ctx, 'sub'), workPath(ctx, 'c'));
+        await ctx.fs.symlink('c', workPath(ctx, 'sub'));
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['sub'], { cached: true });
+
+        // Assert
+        expect(result.removed).toEqual(['sub']);
+        expect(await indexPaths(ctx)).toEqual(['k@0']);
+        expect((await ctx.fs.lstat(workPath(ctx, 'sub'))).isSymbolicLink).toBe(true);
+      });
+    });
+
+    describe('When rm forces the removal', () => {
+      it('Then it refuses the link before absorbing anything', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.rename(workPath(ctx, 'sub'), workPath(ctx, 'c'));
+        await ctx.fs.symlink('c', workPath(ctx, 'sub'));
+        const sut = rm;
+
+        // Act
+        const err = await expectError(
+          () => sut(ctx, ['sub'], { force: true }),
+          'SUBMODULE_PATH_IS_SYMLINK',
+        );
+
+        // Assert
+        expect(err.data).toEqual({ code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'sub' });
+        expect((await ctx.fs.lstat(workPath(ctx, 'c/.git'))).isFile).toBe(true);
+        expect(await indexPaths(ctx)).toContain('sub@0');
+      });
+    });
+  });
+
+  describe('Given a submodule below a symlinked leading directory', () => {
+    const symlinkedParent = async () => {
+      const fixture = await withSubmodule('a/sub', 'sub');
+      await fixture.ctx.fs.rename(workPath(fixture.ctx, 'a'), workPath(fixture.ctx, 'c'));
+      await fixture.ctx.fs.symlink('c', workPath(fixture.ctx, 'a'));
+      return fixture.ctx;
+    };
+
+    describe('When rm names the submodule', () => {
+      it('Then it refuses naming the component and the target stays', async () => {
+        // Arrange
+        const ctx = await symlinkedParent();
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['a/sub']), 'SUBMODULE_PATH_IS_SYMLINK');
+
+        // Assert
+        expect(err.data).toEqual({
+          code: 'SUBMODULE_PATH_IS_SYMLINK',
+          path: 'a/sub',
+          component: 'a',
+        });
+        expect(await ctx.fs.exists(workPath(ctx, 'c/sub/u'))).toBe(true);
+        expect(await indexPaths(ctx)).toContain('a/sub@0');
+      });
+    });
+
+    describe('When rm keeps the working tree with cached', () => {
+      it('Then it refuses the same way', async () => {
+        // Arrange
+        const ctx = await symlinkedParent();
+        const sut = rm;
+
+        // Act
+        const err = await expectError(
+          () => sut(ctx, ['a/sub'], { cached: true }),
+          'SUBMODULE_PATH_IS_SYMLINK',
+        );
+
+        // Assert
+        expect(err.data).toEqual({
+          code: 'SUBMODULE_PATH_IS_SYMLINK',
+          path: 'a/sub',
+          component: 'a',
+        });
+      });
+    });
+
+    describe('When rm forces an index-only removal', () => {
+      it('Then the entry leaves the index and the disk is untouched', async () => {
+        // Arrange
+        const ctx = await symlinkedParent();
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['a/sub'], { cached: true, force: true });
+
+        // Assert
+        expect(result.removed).toEqual(['a/sub']);
+        expect(await indexPaths(ctx)).toEqual(['k@0']);
+        expect(await ctx.fs.exists(workPath(ctx, 'c/sub/u'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an embedded repository named in .gitmodules with an edited file', () => {
+    describe('When rm names the submodule', () => {
+      it('Then it refuses the local modification once the repository is absorbed', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await embedRepository(ctx, 'sub', `${ctx.layout.gitDir}/modules/sub`);
+        await ctx.fs.writeUtf8(workPath(ctx, '.gitmodules'), GITMODULES_SUB);
+        await ctx.fs.writeUtf8(workPath(ctx, 'sub/u'), 'edited\n');
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['sub']), 'RM_LOCAL_MODIFICATIONS');
+
+        // Assert
+        expect(err.data).toEqual(rmLocalModifications(['sub' as FilePath]).data);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(true);
+        expect(await ctx.fs.readUtf8(workPath(ctx, 'sub/.git'))).toBe(
+          'gitdir: ../.git/modules/sub\n',
+        );
+      });
+    });
+  });
+
+  describe('Given an embedded repository with an edited file and no .gitmodules name', () => {
+    describe('When rm names the submodule', () => {
+      it('Then the missing name refuses before the local modification is judged', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await embedRepository(ctx, 'sub', `${ctx.layout.gitDir}/modules/sub`);
+        await ctx.fs.writeUtf8(workPath(ctx, 'sub/u'), 'edited\n');
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['sub']), 'SUBMODULE_NAME_NOT_FOUND');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'SUBMODULE_NAME_NOT_FOUND', path: 'sub' });
+      });
+    });
+  });
+
+  describe('Given an edited submodule and an unstaged .gitmodules edit', () => {
+    describe('When rm names the submodule', () => {
+      it('Then the unstaged .gitmodules refuses before the local modification is judged', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+        await ctx.fs.writeUtf8(work(ctx, 'sub/u'), 'edited\n');
+        await ctx.fs.writeUtf8(work(ctx, '.gitmodules'), `${GITMODULES_SUB}# edited\n`);
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['sub']), 'GITMODULES_NOT_STAGED');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'GITMODULES_NOT_STAGED' });
+      });
+    });
+  });
+
+  describe('Given a tracked file and an embedded repository whose modules entry is occupied', () => {
+    describe('When rm names both', () => {
+      it('Then DIRECTORY_NOT_EMPTY refuses with the file still tracked and on disk', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule('sub', 's');
+        await embedRepository(ctx, 'sub', `${ctx.layout.gitDir}/modules/s`);
+        await init(
+          deriveGitlinkContext(ctx, `${ctx.layout.gitDir}/modules/s`, 'other' as FilePath),
+        );
+        await ctx.fs.writeUtf8(
+          workPath(ctx, '.gitmodules'),
+          '[submodule "s"]\n\tpath = sub\n\turl = ../up\n',
+        );
+        const sut = rm;
+
+        // Act
+        await expectError(() => sut(ctx, ['k', 'sub']), 'DIRECTORY_NOT_EMPTY');
+
+        // Assert
+        expect(await ctx.fs.exists(workPath(ctx, 'k'))).toBe(true);
+        expect(await indexPaths(ctx)).toEqual(['k@0', 'sub@0']);
+      });
+    });
+  });
+
+  describe('Given .gitmodules unmerged in the index', () => {
+    describe('When rm names the submodule', () => {
+      it('Then GITMODULES_UNMERGED refuses once the directory is gone, the index untouched', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+        await unmergeGitmodules(ctx);
+        const before = await indexPaths(ctx);
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['sub']), 'GITMODULES_UNMERGED');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'GITMODULES_UNMERGED' });
+        expect(await ctx.fs.exists(work(ctx, 'sub'))).toBe(false);
+        expect(await indexPaths(ctx)).toEqual(before);
+        expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe(GITMODULES_SUB);
+      });
+    });
+  });
+
+  describe('Given a gitfile submodule holding a nested embedded repository', () => {
+    describe('When rm names the submodule', () => {
+      it('Then the nested repository moves under the submodule modules directory before the removal', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        const nested = await withNestedSubmodule(fixture);
+        const { ctx } = fixture;
+        await embedRepository(ctx, 'sub/in', nested.layout.gitDir);
+        await ctx.fs.writeUtf8(workPath(ctx, '.gitmodules'), GITMODULES_SUB);
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['sub']);
+
+        // Assert
+        expect(result.removed).toEqual(['sub']);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/modules/in/HEAD`)).toBe(true);
+        expect(await ctx.fs.exists(workPath(ctx, 'sub'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an embedded repository whose module name climbs into another module', () => {
+    describe('When rm names the submodule', () => {
+      it('Then it refuses naming the enclosing module and removes nothing', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule('sub', 'a');
+        await embedRepository(ctx, 'sub', `${ctx.layout.gitDir}/modules/a`);
+        await init(
+          deriveGitlinkContext(ctx, `${ctx.layout.gitDir}/modules/a`, 'other' as FilePath),
+        );
+        await ctx.fs.writeUtf8(
+          workPath(ctx, '.gitmodules'),
+          '[submodule "a/b"]\n\tpath = sub\n\turl = ../up\n',
+        );
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['sub']), 'SUBMODULE_GIT_DIR_NESTED');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'SUBMODULE_GIT_DIR_NESTED', name: 'a/b', inside: 'a' });
+        expect(await ctx.fs.exists(workPath(ctx, 'sub/u'))).toBe(true);
+        expect(await indexPaths(ctx)).toEqual(['k@0', 'sub@0']);
+      });
+    });
+  });
+
+  describe('Given a nested submodule the checkout ignores entirely, moved off its recorded commit', () => {
+    describe('When rm names the submodule', () => {
+      it('Then RM_LOCAL_MODIFICATIONS names it, the checkout ignore mode notwithstanding', async () => {
+        // Arrange
+        const fixture = await withSubmodule();
+        const nested = await withNestedSubmodule(fixture, {
+          gitmodules: '[submodule "in"]\n\tpath = in\n\turl = ../up\n\tignore = all\n',
+        });
+        const { ctx } = fixture;
+        await advanceSubmodule(ctx, nested, 'sub/in');
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['sub']), 'RM_LOCAL_MODIFICATIONS');
+
+        // Assert
+        expect(err.data).toEqual(rmLocalModifications(['sub' as FilePath]).data);
+      });
+    });
+  });
+
+  describe('Given a dirty working .gitmodules and a tracked regular file', () => {
+    describe('When rm names the file', () => {
+      it('Then the file goes and .gitmodules is left as it was', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+        const dirty = `${GITMODULES_SUB}# edited\n`;
+        await ctx.fs.writeUtf8(work(ctx, '.gitmodules'), dirty);
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['k']);
+
+        // Assert
+        expect(result.removed).toEqual(['k']);
+        expect(await ctx.fs.readUtf8(work(ctx, '.gitmodules'))).toBe(dirty);
+      });
+    });
+  });
+
+  describe('Given a working .gitmodules past the bound git reads', () => {
+    describe('When rm names the submodule', () => {
+      it('Then WORKING_TREE_FILE_TOO_LARGE refuses before anything is read', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.writeUtf8(workPath(ctx, '.gitmodules'), 'x'.repeat(MAX_GITMODULES_BYTES + 1));
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['sub']), 'WORKING_TREE_FILE_TOO_LARGE');
+
+        // Assert
+        expect(err.data).toMatchObject({
+          code: 'WORKING_TREE_FILE_TOO_LARGE',
+          size: MAX_GITMODULES_BYTES + 1,
+        });
+      });
     });
   });
 });

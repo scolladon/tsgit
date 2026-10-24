@@ -35,9 +35,13 @@ const NOT_A_DIRECTORY_CODES: ReadonlySet<string> = new Set([
   'NOT_A_DIRECTORY',
 ]);
 
-/** Where a checkout's repository lies on disk, the path git names it by when it is broken, and the filesystem that reaches it. */
+/** How `<path>/.git` reaches the repository: as the directory itself (a link to one included), or as a gitfile git reads. */
+export type CheckoutVia = 'directory' | 'gitfile';
+
+/** Where a checkout's repository lies on disk, how `.git` reaches it, the path git names it by when it is broken, and the filesystem that reaches it. */
 interface Located {
   readonly kind: 'located';
+  readonly via: CheckoutVia;
   readonly gitDir: string;
   readonly shown: FilePath;
   readonly fs: FileSystem;
@@ -50,6 +54,7 @@ export type GitlinkCheckout =
   | { readonly kind: 'broken'; readonly shown: FilePath }
   | {
       readonly kind: 'repository';
+      readonly via: CheckoutVia;
       readonly head: () => Promise<ObjectId | undefined>;
       readonly context: () => Promise<Context>;
     };
@@ -105,7 +110,7 @@ export const probeGitlinkCheckout = async (
     seedHeadFile(child, resolved);
     return resolveGitlinkHead(child);
   };
-  return { kind: 'repository', head, context };
+  return { kind: 'repository', via: located.via, head, context };
 };
 
 /**
@@ -204,7 +209,12 @@ const fileOf = (bytes: Uint8Array): HeadFile => ({
   content: TEXT_DECODER.decode(bytes),
 });
 
-/** git's `is_git_directory`: a repository directory holds `objects` and `refs`, searchable. */
+/** git's `is_git_directory`: `objects` and `refs` directories beside a HEAD it can validate. */
+export const isGitDirectory = async (fs: FileSystem, directory: string): Promise<boolean> =>
+  (await holdsObjectsAndRefs(fs, directory)) &&
+  isUsableHead((await boundedHeadFile(fs, directory)).judged);
+
+/** The `objects` and `refs` directories git's `is_git_directory` looks for. */
 const holdsObjectsAndRefs = async (fs: FileSystem, commonDir: string): Promise<boolean> =>
   (await isDirectory(fs, `${commonDir}${SEPARATOR}objects`)) &&
   (await isDirectory(fs, `${commonDir}${SEPARATOR}refs`));
@@ -247,6 +257,7 @@ const dotGitShown = (path: FilePath): FilePath => `${path}${SEPARATOR}${DOT_GIT}
 
 const directoryCheckout = (ctx: Context, checkout: string, path: FilePath): Located => ({
   kind: 'located',
+  via: 'directory',
   gitDir: `${checkout}${SEPARATOR}${DOT_GIT}`,
   shown: dotGitShown(path),
   fs: ctx.fs,
@@ -289,6 +300,7 @@ const linkedCheckout = async (ctx: Context, checkout: string, path: FilePath): P
   const gitDir = resolveWorktreePath(checkout, await metadataOf(ctx, dotGit).readlink(dotGit));
   return {
     kind: 'located',
+    via: 'directory',
     gitDir,
     shown: dotGitShown(path),
     fs: worktreeScopedFs(ctx, gitDir),
@@ -307,7 +319,13 @@ const gitfileCheckout = async (
     ? pointer.path
     : `${path}${SEPARATOR}${pointer.path}`;
   const gitDir = resolveWorktreePath(checkout, pointer.path);
-  return { kind: 'located', gitDir, shown: shown as FilePath, fs: worktreeScopedFs(ctx, gitDir) };
+  return {
+    kind: 'located',
+    via: 'gitfile',
+    gitDir,
+    shown: shown as FilePath,
+    fs: worktreeScopedFs(ctx, gitDir),
+  };
 };
 
 const lstatOrMissing = async (ctx: Context, absolute: string) => {

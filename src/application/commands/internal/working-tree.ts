@@ -9,6 +9,7 @@ import {
   validateWorkingTreePathOn,
 } from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
+import { lstatIfPresent } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
 
@@ -109,8 +110,8 @@ export const removeFile = async (ctx: Context, rawPath: string): Promise<void> =
 export const removeDirectory = async (ctx: Context, rawPath: string): Promise<void> => {
   const path = validateWorkingTreePathOn(rawPath, ctx);
   const full = repoPath(ctx, path);
-  const stat = await ctx.fs.lstat(full).catch(() => undefined);
-  if (stat === undefined || !stat.isDirectory || stat.isSymbolicLink) {
+  const stat = await lstatIfPresent(ctx.fs, full);
+  if (stat === undefined || !stat.isDirectory) {
     throw checkoutOverwriteDirty({ localChanges: [path], untracked: [] });
   }
   await ctx.fs.rmRecursive(full);
