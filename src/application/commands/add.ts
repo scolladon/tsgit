@@ -68,6 +68,7 @@ import { boundedMapFor, limiterFor } from '../primitives/internal/concurrency.js
 import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limiter.js';
 import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
+import { gitlinkHeadOf } from '../primitives/internal/gitlink-head.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import type { CommitOptions, IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
@@ -96,7 +97,6 @@ import { writeObject } from '../primitives/write-object.js';
 import type { IgnorePredicate } from './internal/add-ignore.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { type EmbeddedRepositories, embeddedRepositories } from './internal/embedded-repository.js';
-import { gitlinkHeadOf } from './internal/gitlink-head.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   type CommandPathspec,

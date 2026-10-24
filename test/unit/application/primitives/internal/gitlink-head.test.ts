@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   gitlinkHeadOf,
   probeGitlinkCheckout,
-} from '../../../../../src/application/commands/internal/gitlink-head.js';
+} from '../../../../../src/application/primitives/internal/gitlink-head.js';
 import { permissionDenied, TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
