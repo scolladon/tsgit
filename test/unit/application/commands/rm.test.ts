@@ -2572,6 +2572,27 @@ describe('rm reading .gitmodules as git does', () => {
     });
   });
 
+  describe('Given .gitmodules unmerged in the index and present in the work tree', () => {
+    describe('When rm names a regular file and the submodule', () => {
+      it('Then both leave the work tree in index order and GITMODULES_UNMERGED refuses after the submodule, the index untouched', async () => {
+        // Arrange
+        const { ctx } = await withStagedGitmodules(GITMODULES_SUB);
+        await unmergeGitmodules(ctx);
+        const before = await indexPaths(ctx);
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['k', 'sub']), 'GITMODULES_UNMERGED');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'GITMODULES_UNMERGED' });
+        expect(await ctx.fs.exists(work(ctx, 'k'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'sub'))).toBe(false);
+        expect(await indexPaths(ctx)).toEqual(before);
+      });
+    });
+  });
+
   describe('Given .gitmodules unmerged in the index', () => {
     describe('When rm names a regular file', () => {
       it('Then the file goes and nothing refuses', async () => {

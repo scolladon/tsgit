@@ -105,16 +105,15 @@ const checkoutGitlinks = async (child: Context): Promise<CheckoutGitlinks> => {
 const isDirectoryAt = async (ctx: Context, path: FilePath): Promise<boolean> =>
   (await lstatIfReachable(ctx.fs, checkoutDirOf(ctx, path)))?.isDirectory === true;
 
-/** `<path>/.git` as git's `stat` sees it, links followed: nothing usable, a regular file, a directory, or something else (a FIFO, a socket). */
-type DotGitShape = 'absent' | 'file' | 'directory' | 'other';
+/** `<path>/.git` as git's `stat` sees it, links followed: nothing usable, a regular file, or anything else (a directory, a FIFO, a socket). */
+type DotGitShape = 'absent' | 'file' | 'other';
 
 const dotGitShapeOf = async (ctx: Context, path: FilePath): Promise<DotGitShape> => {
   const dotGit = dotGitOf(ctx, path);
   const entry = await lstatIfReachable(ctx.fs, dotGit);
   const followed = entry?.isSymbolicLink === true ? await statOrUnreachable(ctx, dotGit) : entry;
   if (followed === undefined) return 'absent';
-  if (followed.isFile) return 'file';
-  return followed.isDirectory ? 'directory' : 'other';
+  return followed.isFile ? 'file' : 'other';
 };
 
 /**
@@ -187,10 +186,10 @@ const moduleNameOf = (path: FilePath, rows: ReadonlyArray<GitmodulesRow>): strin
 
 const moduleDirOf = (ctx: Context, name: string): string => `${ctx.layout.gitDir}/modules/${name}`;
 
-/** Whether a repository already lies inside the superproject's own git directory, where git leaves it: real paths on both sides, as git's `real_pathdup` compares them. */
+/** Whether a repository already lies inside the superproject's own git directory, where git leaves it: git's bare `starts_with` over the real paths, so a sibling spelled `.gitx` counts too. */
 const isInsideGitDir = async (ctx: Context, realGitDir: string): Promise<boolean> => {
   const common = (await realPathOf(ctx, commonGitDir(ctx))) ?? commonGitDir(ctx);
-  return realGitDir === common || realGitDir.startsWith(`${common}/`);
+  return realGitDir.startsWith(common);
 };
 
 /** The repository a checkout's `.git` really leads to, every link resolved; a chain git cannot resolve refuses before anything moves. */

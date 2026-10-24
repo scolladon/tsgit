@@ -521,6 +521,45 @@ describe('createLeadingPathScanner', () => {
     });
   });
 
+  describe('Given a classification still in flight when its prefix is invalidated', () => {
+    describe('When the verdict it settles is looked up again', () => {
+      it('Then the prefix is walked again: a verdict carries the generation its walk started from', async () => {
+        // Arrange
+        const seed = createMemoryContext();
+        await seed.fs.symlink('/outside/target', `${seed.layout.workDir}/a`);
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const baseLstat = seed.fs.lstat;
+        const lstats: string[] = [];
+        const fs = new Proxy(seed.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (p: string) => {
+              lstats.push(p);
+              await gate;
+              return baseLstat(p);
+            };
+          },
+        });
+        const sut = createLeadingPathScanner({ ...seed, fs });
+        const inFlight = sut.symlinkedLeadingComponent(path('a/f'));
+        sut.invalidate(path('a'));
+        release();
+        await inFlight;
+        const walked = lstats.length;
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('a/g'));
+
+        // Assert
+        expect(result).toBe('a');
+        expect(lstats.length).toBe(walked + 1);
+      });
+    });
+  });
+
   describe('Given a shared scanner whose first write materialises a prefix previously classified missing', () => {
     describe('When unlinkSymlinkedLeadingComponent runs for a deeper path after that write', () => {
       it('Then the stale missing verdict does not block the walk — the deeper symlink is still unlinked', async () => {

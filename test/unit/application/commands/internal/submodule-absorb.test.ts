@@ -965,6 +965,65 @@ describe('absorbGitDirs', () => {
       });
     });
   });
+
+  describe('Given a submodule whose .git is a link to a repository spelled .gitx beside the git directory', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then nothing moves: git compares the real paths as bare prefixes', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        const beside = `${ctx.layout.workDir}/.gitx`;
+        await ctx.fs.rename(`${ctx.layout.gitDir}/modules/sub`, beside);
+        await linkDotGitTo(ctx, '../.gitx');
+        const sut = absorbGitDirs;
+
+        // Act
+        await sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB);
+
+        // Assert
+        expect(await ctx.fs.exists(`${beside}/HEAD`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub`)).toBe(false);
+        expect(await isSymbolicLink(ctx, work(ctx, 'sub/.git'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a link leading nowhere', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then it is left alone as unpopulated and the link stays', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await linkDotGitTo(ctx, '../nowhere');
+        const sut = absorbGitDirs;
+
+        // Act
+        await sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB);
+
+        // Assert
+        expect(await isSymbolicLink(ctx, work(ctx, 'sub/.git'))).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a link to a plain file', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then it refuses as a repository git cannot read, following the link to the file', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.writeUtf8(work(ctx, 'hello'), 'hi\n');
+        await linkDotGitTo(ctx, '../hello');
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'NOT_A_REPOSITORY', path: 'sub/.git' });
+      });
+    });
+  });
 });
 
 describe('gitlinkLocalModification', () => {

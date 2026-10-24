@@ -517,7 +517,26 @@ const gitmodulesConflictedAndDeleted: Setup = async (repo) => {
   await rm(gitmodulesPath(repo));
 };
 
+/** HEAD records `.gitmodules` as a directory holding an ignoring row; nothing staged or in the work tree. */
+const gitmodulesAsTreeInHead: Setup = async (repo) => {
+  gitIn(repo, 'rm', '-q', '--cached', '.gitmodules');
+  await rm(gitmodulesPath(repo));
+  await mkdir(gitmodulesPath(repo));
+  await writeFile(
+    path.join(gitmodulesPath(repo), 'inner'),
+    `[submodule "${SUBMODULE}"]\n\tpath = ${SUBMODULE}\n\turl = ../up\n\tignore = all\n`,
+  );
+  gitIn(repo, 'add', '.gitmodules/inner');
+  commitIn(repo, 'gitmodules as a tree');
+  gitIn(repo, 'rm', '-q', '-r', '--cached', '.gitmodules');
+  await rm(gitmodulesPath(repo), { recursive: true });
+};
+
 const IGNORE_ROWS: ReadonlyArray<readonly [string, Setup]> = [
+  [
+    'a .gitmodules recorded as a directory in HEAD only, ignoring the submodule inside it, and a moved submodule',
+    compose(gitmodulesAsTreeInHead, moved),
+  ],
   [
     'a .gitmodules committed ignoring the submodule, then conflicted and deleted from the work tree, and a moved submodule',
     compose(committedGitmodules('all'), gitmodulesConflictedAndDeleted, moved),

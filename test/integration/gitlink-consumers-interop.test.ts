@@ -878,6 +878,31 @@ const dotGitEmptyDirectoryUnderNestedName: Setup = async (repo) => {
   await rm(sub(repo, '.git'));
   await mkdir(sub(repo, '.git'));
 };
+/** `sub/.git` links to the repository moved beside `.git` as `.gitx`: a bare prefix of the git directory. */
+const dotGitLinkedToGitDirSibling: Setup = async (repo) => {
+  await rename(path.join(repo, ...MODULE_DIR), path.join(repo, '.gitx'));
+  gitIn(repo, 'config', '--file', path.join(repo, '.gitx', 'config'), '--unset', 'core.worktree');
+  await rm(sub(repo, '.git'));
+  await symlink(path.join('..', '.gitx'), sub(repo, '.git'));
+};
+const dotGitLinkedNowhere: Setup = async (repo) => {
+  await rm(sub(repo, '.git'));
+  await symlink(path.join('..', 'nowhere'), sub(repo, '.git'));
+};
+const dotGitLinkedToPlainFile: Setup = async (repo) => {
+  await rm(sub(repo, '.git'));
+  await symlink(path.join('..', 'k'), sub(repo, '.git'));
+};
+/** HEAD records `.gitmodules` as a gitlink, nothing staged or in the work tree; the repository embedded. */
+const gitmodulesAsGitlinkInHead: Setup = async (repo) => {
+  const recorded = gitIn(repo, 'rev-parse', `HEAD:${SUBMODULE}`).trim();
+  gitIn(repo, 'rm', '-q', '--cached', GITMODULES);
+  await rm(path.join(repo, GITMODULES));
+  gitIn(repo, 'update-index', '--add', '--cacheinfo', `160000,${recorded},${GITMODULES}`);
+  commitIn(repo, 'gitmodules as a gitlink');
+  gitIn(repo, 'rm', '-q', '--cached', GITMODULES);
+  await embedded(repo);
+};
 
 const RM_ROWS: ReadonlyArray<RmRow> = [
   {
@@ -1270,6 +1295,41 @@ const RM_ROWS: ReadonlyArray<RmRow> = [
     paths: ['sub'],
     cached: false,
     refusal: DIED('SUBMODULE_GIT_DIR_NESTED'),
+  },
+  {
+    title: 'a .git linking to a repository spelled .gitx beside the git directory',
+    setup: dotGitLinkedToGitDirSibling,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'a .git linking to a repository spelled .gitx beside the git directory, forced',
+    setup: dotGitLinkedToGitDirSibling,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+  },
+  {
+    title: 'a .git linking nowhere, forced',
+    setup: dotGitLinkedNowhere,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+  },
+  {
+    title: 'a .git linking to a plain file',
+    setup: dotGitLinkedToPlainFile,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('NOT_A_REPOSITORY'),
+  },
+  {
+    title: 'a .gitmodules recorded as a gitlink in HEAD only and a repository carried in .git',
+    setup: gitmodulesAsGitlinkInHead,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_NAME_NOT_FOUND'),
   },
 ];
 

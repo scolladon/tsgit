@@ -1,15 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { submoduleState } from '../../../../../src/application/commands/internal/submodule-state.js';
+import { init } from '../../../../../src/application/commands/init.js';
+import {
+  readGitmodulesRows,
+  submoduleState,
+} from '../../../../../src/application/commands/internal/submodule-state.js';
 import type {
   ChangedPath,
   StatusResult,
   UnmergedEntry,
 } from '../../../../../src/application/commands/status.js';
 import type { WorkingTreeDelta } from '../../../../../src/application/primitives/compare-working-tree-entry.js';
+import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
+import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
-import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
+import type { FilePath, ObjectId, RefName } from '../../../../../src/domain/objects/object-id.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const OVERSIZED_BYTES = (1 << 20) + 1;
@@ -385,6 +394,86 @@ describe('submoduleState', () => {
         expect(received.map((child) => child.layout.workDir)).toEqual([
           `${ctx.layout.workDir}/sub`,
         ]);
+      });
+    });
+  });
+});
+
+describe('readGitmodulesRows', () => {
+  const AUTHOR = { name: 'T', email: 't@t', timestamp: 1_700_000_000, timezoneOffset: '+0000' };
+  const GITMODULES = '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n\tignore = all\n';
+
+  /** HEAD recording `.gitmodules` as `entry`, with no working or staged `.gitmodules`. */
+  const headRecording = async (
+    ctx: Context,
+    entry: (gitmodulesBlob: ObjectId) => ReturnType<typeof treeEntry>,
+  ): Promise<void> => {
+    const blob = (await writeObject(ctx, {
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new TextEncoder().encode(GITMODULES),
+    })) as ObjectId;
+    const commit = await createCommit(ctx, {
+      tree: await writeTree(ctx, [entry(blob)]),
+      parents: [],
+      author: AUTHOR,
+      committer: AUTHOR,
+      message: 'head\n',
+      extraHeaders: [],
+    });
+    await updateRef(ctx, 'refs/heads/main' as RefName, commit, { reflogMessage: 'seed' });
+  };
+
+  describe('Given HEAD recording .gitmodules as a directory, nothing staged or in the work tree', () => {
+    describe('When the rows are read', () => {
+      it('Then none is answered: git reads only a blob there', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await headRecording(ctx, (blob) => treeEntry(FILE_MODE.DIRECTORY, '.gitmodules', blob));
+        const sut = readGitmodulesRows;
+
+        // Act
+        const result = await sut(ctx, { workDir: ctx.layout.workDir as string, entries: [] });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given HEAD recording .gitmodules as a gitlink, nothing staged or in the work tree', () => {
+    describe('When the rows are read', () => {
+      it('Then none is answered: git reads only a blob there', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await headRecording(ctx, (blob) => treeEntry(FILE_MODE.GITLINK, '.gitmodules', blob));
+        const sut = readGitmodulesRows;
+
+        // Act
+        const result = await sut(ctx, { workDir: ctx.layout.workDir as string, entries: [] });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given HEAD recording .gitmodules as a blob, nothing staged or in the work tree', () => {
+    describe('When the rows are read', () => {
+      it('Then the HEAD blob is read', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await headRecording(ctx, (blob) => treeEntry(FILE_MODE.REGULAR, '.gitmodules', blob));
+        const sut = readGitmodulesRows;
+
+        // Act
+        const result = await sut(ctx, { workDir: ctx.layout.workDir as string, entries: [] });
+
+        // Assert
+        expect(result).toEqual([{ name: 'sub', path: 'sub', url: '../up', ignore: 'all' }]);
       });
     });
   });

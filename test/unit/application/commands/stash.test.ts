@@ -179,7 +179,9 @@ describe('stash push', () => {
   describe('Given three committed files sharing a directory', () => {
     describe('When push runs', () => {
       it('Then the directory is lstat-ed once per pass: the classification, the restore, the index refresh', async () => {
-        // Arrange
+        // Arrange — the clock stands still, so the index and the files share one second and
+        // every entry is racily clean: the refresh pass always runs.
+        vi.useFakeTimers({ toFake: ['Date'] });
         const ctx = createMemoryContext();
         await init(ctx);
         for (const name of ['d/a', 'd/b', 'd/c']) await commitFile(ctx, name, `${name}\n`, name);
@@ -188,7 +190,11 @@ describe('stash push', () => {
         const sut = stashPush;
 
         // Act
-        await sut(ctx, {});
+        try {
+          await sut(ctx, {});
+        } finally {
+          vi.useRealTimers();
+        }
 
         // Assert
         // Three passes walk the tree, each with its own leading-path memo: the classification of
