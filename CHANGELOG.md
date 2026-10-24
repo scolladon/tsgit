@@ -1,5 +1,18 @@
 # Changelog
 
+## [6.0.1](https://github.com/scolladon/tsgit/compare/v6.0.0...v6.0.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **pathspec:** match pathspecs with git's glob dialect and refuse unmatched globs atomically ([#326](https://github.com/scolladon/tsgit/issues/326)) ([8438d4f](https://github.com/scolladon/tsgit/commit/8438d4f080f0037347a344fb929351e477c1fad3))
+
+
+### Documentation
+
+* **backlog:** file 32.38–32.42, proven by git 2.55 twin probes ([#329](https://github.com/scolladon/tsgit/issues/329)) ([95704e7](https://github.com/scolladon/tsgit/commit/95704e7db12726180d155091d5b7feb7b79f25f5))
+* **backlog:** strike 32.30, delivered by [#326](https://github.com/scolladon/tsgit/issues/326) ([#328](https://github.com/scolladon/tsgit/issues/328)) ([36a8b9b](https://github.com/scolladon/tsgit/commit/36a8b9b7d66e4442618d510e127ff27bdcba31b5))
+
 ## [6.0.0](https://github.com/scolladon/tsgit/compare/v5.0.0...v6.0.0) (2026-10-21)
 
 
