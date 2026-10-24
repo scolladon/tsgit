@@ -651,3 +651,22 @@ The review round found behaviour the implementation had not pinned. Each row bel
 | RV44 | `rm sub` / `rm -f sub`, `sub/.git -> ../.gitx` with `.gitx` a repository beside `.git` | no `Migrating`: `absorb_git_dir_into_superproject` tests `starts_with(real_sub_git_dir, real_common_git_dir)` with no separator, so `.gitx` counts as inside; `rm` exit 1 local modifications, `rm -f` exit 0 keeping `.gitx` | the inside check is git's bare prefix over the real paths; was: `.gitx` relocated |
 | RV45 | `status` / `rm sub`, HEAD recording `.gitmodules` as a directory or as a gitlink, nothing staged or in the work tree | `error: reference '<oid>' does not point to a blob` / `error: unable to load config blob object '<oid>'`, then no rows: status exit 0 reporting the moved submodule, `rm sub` exit 128 `could not lookup name for submodule 'sub'` | `readRecordedGitmodules` reads only a blob entry; a tree or gitlink `.gitmodules` answers no row (the error line is git's stderr, not data) |
 | RV46 | `rm k sub`, `.gitmodules` unmerged and present | exit 128 `Cannot change unmerged .gitmodules` after `rm 'k'` and `rm 'sub'`: both leave the work tree in index order, the index untouched | `GITMODULES_UNMERGED` after the submodule's directory went, `k` gone too, index untouched |
+
+## Size-limit raise — status gitlink parity
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`),
+gzip bytes, against `main` at `95704e7d` built the same way at the same toolchain. Each failing
+row is raised by measurement − cap, rounded up to the next 0.1 kB; the raise happened once, after
+the review round converged (lesson 006). Every other row stays under its cap.
+
+| Row | baseline (main) | measured | old limit | new limit | carried by |
+|---|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 346.06 kB | 351.60 kB | 346.1 kB | 351.7 kB | the whole change in the single-file bundle |
+| Full library | 404.19 kB | 409.68 kB | 404.3 kB | 409.7 kB | every chunk below plus the per-command entries |
+| Chunks: domain | 127.43 kB | 127.84 kB | 127.5 kB | 127.9 kB | the submodule error members and their messages, `relativePathBetween` |
+| Chunks: primitives | 108.40 kB | 109.99 kB | 108.5 kB | 110.0 kB | the gitlink HEAD comparison, the probe's `via` and symlink arms, the scanner's verdict cache, the two-way keep in the clean merge arm, the real-path helper |
+| Chunks: commands-internal | 83.72 kB | 86.35 kB | 83.8 kB | 86.4 kB | the submodule ignore resolution with its HEAD fallback and unmerged gate, the absorption module, the pre-flight policies and the rescheduled-pick state |
+
+The compressed tarball cap (`tooling/verify-tarball.sh`) moves 1455 → 1473 KiB: the pack landed
+at 1 507 470 B against a 1 489 536 B baseline, 17 550 B over the old cap, for the same code
+shipped in every distribution form.
