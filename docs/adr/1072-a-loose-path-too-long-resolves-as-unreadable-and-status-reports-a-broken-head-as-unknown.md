@@ -50,7 +50,9 @@ symref cycle), pinned git-first in the part that lands it.
 
 - `PATH_TOO_LONG` joins the adapter error union, its message switch, the exhaustiveness switch
   and the error table; the memory and browser adapters never raise it.
-- `log` and `rev-parse` over a broken HEAD refuse with `PATH_TOO_LONG`, a refusal where git
-  refuses; git's message is not reproduced (ADR-249).
+- `log` and `rev-parse` over a broken HEAD refuse, a refusal where git refuses; git's message is
+  not reproduced (ADR-249). The code is the one tsgit gives an unborn HEAD: the revision
+  candidate ladder reads the unreadable chain as a dangling symref (the planner's trace, settled
+  as D10), so only a direct `resolveRef` surfaces `PATH_TOO_LONG` itself.
 - `checkout`, `commit` and `branch` over a broken HEAD are not pinned here; git dies at lock time
   with the same errno, and tsgit's write path surfaces the same fault.
