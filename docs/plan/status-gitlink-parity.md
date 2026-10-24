@@ -86,6 +86,7 @@
 | R8 rm of a gitlink | 13, 14 |
 | R9 no other behaviour change; every interop suite stays green | every part's gate |
 | ADR-1064 `ChangedPath.submodule` | 3 (field + commit flag), 6 (tracked/untracked flags) |
+| ADR-1071 `GITMODULES_NOT_STAGED` | 7 (member), 14 (throw site) |
 
 ## Decision candidates
 
@@ -96,7 +97,7 @@ recommendation; the orchestrator confirms or redirects before Part 5.
 |---|---|---|---|---|
 | D1 | How the dirty check runs the child's status without an import cycle (`status.ts` imports the new module; `check:architecture` / depcruise `no-circular` forbids the module importing `status.ts` back at runtime) | A. The module takes a `childStatus: (child: Context) => Promise<StatusResult>` parameter; `status.ts` and `rm.ts` pass `status` (type-only import of `StatusResult` is allowed). B. Extract the status core into a third module both import. C. Keep the child call inline in `status.ts`; the module only maps a `StatusResult` to flags | A | Smallest diff, keeps the dirty check in the module ADR-1063 names, and `rm` (ADR-1066) reuses it unchanged. B moves 400 lines. C splits the dirty check across two files and makes `rm` duplicate it |
 | D2 | How the module reaches the child repository | A. Add `context: () => Promise<Context>` to the `repository` variant of `GitlinkCheckout`, built exactly as `head()` builds its child (`deriveGitlinkContext` + `refStorageOf`). B. Re-locate `<path>/.git` inside the module. C. Expose `gitDir`/`commonDir`/`fs` on the variant | A | One derivation, same bounds as lesson 008; B forks the locator #326 pinned; C leaks the locator's internals to every caller |
-| D3 | `rm` of a submodule while the working `.gitmodules` has unstaged changes (git is expected to refuse; not pinned by the design) | A. Reuse an existing code (e.g. `RM_LOCAL_MODIFICATIONS { paths: ['.gitmodules'] }`). B. New error code naming the condition (needs an ADR, public surface). C. Pin in Part 14 and stop with a blocker if git refuses | C, then B | A misnames the condition; a new public code is a user decision, as ADR-1069 was |
+| D3 | `rm` of a submodule while the working `.gitmodules` has unstaged changes | A. Reuse an existing code (e.g. `RM_LOCAL_MODIFICATIONS { paths: ['.gitmodules'] }`). B. New error code naming the condition. C. Pin in Part 14 and stop with a blocker if git refuses | **Settled: B (ADR-1071).** Pinned on git 2.55 (design rows CO31–CO37): `rm sub`, `rm --cached sub` and `rm -f sub` all exit 128 `fatal: please stage your changes to .gitmodules or stash them to proceed` when the working `.gitmodules` differs from the index by content; a staged edit, a same-bytes rewrite and a deleted working file proceed. Code-only member `GITMODULES_NOT_STAGED` lands in Part 7, its throw site in Part 14 | A misnames the condition (exit 1, `-f` overrides it); git's refusal is exit 128 and `-f` does not override it |
 | D4 | stash's "index differs from HEAD only at gitlinks" test (git runs `diff-index --cached --ignore-submodules`) | A. Flatten HEAD and compare non-gitlink index entries when `iTree !== bTree`. B. Reuse `diffIndexAgainstTreeKeyed(index, headTree)` and drop changes where both sides are gitlinks or one side is absent and the other a gitlink. C. Synthesize a second tree with gitlinks replaced by HEAD's | B | Reuses status's own diff; keeps git's rule that a gitlink↔file type change still counts |
 | D5 | Where the `SUBMODULE_PATH_IS_SYMLINK` error member lands | A. Its own part (Part 7) with its domain test; its throw site lands in Part 9. B. Merged with its throw site (8 files, over the 6-file ceiling). C. Throw site first, `reports/api.json` deferred to a closing docs part | A | Keeps every part ≤ 6 files and `reports/api.json` in the part that changes the surface. Part 7's gate runs `npx knip` to confirm an export used only by tests is not reported; if it is, stop and hand back (fallback: B) |
 
@@ -412,18 +413,18 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/status-
 
 `fix(status): flag tracked and untracked changes inside a checked-out submodule`
 
-## Part 7 — Add the SUBMODULE_PATH_IS_SYMLINK error code
+## Part 7 — Add the SUBMODULE_PATH_IS_SYMLINK and GITMODULES_NOT_STAGED error codes
 
 ### Context
 
-ADR-1069; decision candidate D5. **Public**: a new member of the exported `TsgitErrorData` union. Surface gates paid here: the union, the message switch, the exhaustiveness switch, the documented error table, `reports/api.json`. The throw site lands in Part 9.
+ADR-1069 and ADR-1071; decision candidate D5. **Public**: two new members of the exported `TsgitErrorData` union. Surface gates paid here: the union, the message switch, the exhaustiveness switch, the documented error table, `reports/api.json`. The throw sites land in Part 9 (symlink) and Part 14 (`.gitmodules`).
 
 Files:
-- `src/domain/submodule/error.ts` — `SubmoduleError` (L4-12) gains `| { readonly code: 'SUBMODULE_PATH_IS_SYMLINK'; readonly path: FilePath }` (import `FilePath` type from ../objects/object-id.js); new constructor `submodulePathIsSymlink(path: FilePath): TsgitError` with a doc comment naming git's refusal (`expected submodule path '<path>' not to be a symbolic link`, exit 128, from the dirty check).
-- `src/domain/error.ts` — message switch: after `case 'SUBMODULE_PATH_EXISTS':` (near L749) add `case 'SUBMODULE_PATH_IS_SYMLINK': return \`expected submodule path '${data.path}' not to be a symbolic link\`;`.
-- `test/unit/domain/exhaustiveness.ts` — add `case 'SUBMODULE_PATH_IS_SYMLINK':` after `case 'SUBMODULE_PATH_EXISTS':` (L250).
-- `test/unit/domain/submodule/error.test.ts` — constructor rows (follow the file's `describe('<constructor>')` > Given/When/Then style, `const sut = …`).
-- `docs/use/errors.md` — "Repository state" table, row after `SUBMODULE_OBJECT_FORMAT_MISMATCH` (L275): `| \`SUBMODULE_PATH_IS_SYMLINK\` | \`path\` | \`status\` met a tracked gitlink whose path is a symbolic link while running git's dirty check. Mirrors git's \`expected submodule path '<path>' not to be a symbolic link\` (exit 128). Not raised when the submodule's ignore mode is \`dirty\` or \`all\`; the row then reads \`type-changed\`. |`
+- `src/domain/submodule/error.ts` — `SubmoduleError` (L4-12) gains `| { readonly code: 'SUBMODULE_PATH_IS_SYMLINK'; readonly path: FilePath }` (import `FilePath` type from ../objects/object-id.js) and the code-only member `| { readonly code: 'GITMODULES_NOT_STAGED' }` (precedent for a field-less member: `NOTHING_TO_COMMIT` in src/domain/commands/error.ts L48). New constructors `submodulePathIsSymlink(path: FilePath): TsgitError` (doc comment naming git's refusal `expected submodule path '<path>' not to be a symbolic link`, exit 128, from the dirty check) and `gitmodulesNotStaged(): TsgitError` (doc comment: git's `is_staging_gitmodules_ok` — `rm` of a submodule dies `please stage your changes to .gitmodules or stash them to proceed`, exit 128, when the working `.gitmodules` differs from the index by content, under `--cached` and `-f` too).
+- `src/domain/error.ts` — message switch: after `case 'SUBMODULE_PATH_EXISTS':` (near L749) add `case 'SUBMODULE_PATH_IS_SYMLINK': return \`expected submodule path '${data.path}' not to be a symbolic link\`;` and `case 'GITMODULES_NOT_STAGED': return 'please stage your changes to .gitmodules or stash them to proceed';`.
+- `test/unit/domain/exhaustiveness.ts` — add `case 'SUBMODULE_PATH_IS_SYMLINK':` and `case 'GITMODULES_NOT_STAGED':` after `case 'SUBMODULE_PATH_EXISTS':` (L250).
+- `test/unit/domain/submodule/error.test.ts` — constructor rows for both (follow the file's `describe('<constructor>')` > Given/When/Then style, `const sut = …`).
+- `docs/use/errors.md` — "Repository state" table, two rows after `SUBMODULE_OBJECT_FORMAT_MISMATCH` (L275): `| \`SUBMODULE_PATH_IS_SYMLINK\` | \`path\` | \`status\` met a tracked gitlink whose path is a symbolic link while running git's dirty check. Mirrors git's \`expected submodule path '<path>' not to be a symbolic link\` (exit 128). Not raised when the submodule's ignore mode is \`dirty\` or \`all\`; the row then reads \`type-changed\`. |` and `| \`GITMODULES_NOT_STAGED\` | — | \`rm\` of a submodule found the working \`.gitmodules\` differing from the index by content, so the section removal it must stage would clobber an unstaged edit. Mirrors git's \`please stage your changes to .gitmodules or stash them to proceed\` (exit 128); raised under \`cached\` and \`force\` too. An absent working \`.gitmodules\` or a same-bytes rewrite proceeds. |`
 - `reports/api.json` — `npm run docs:json`.
 
 ### TDD steps
@@ -433,8 +434,11 @@ One RED per function, run before its code.
 1. RED — `submodulePathIsSymlink('sub')` has `.data` `{ code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'sub' }`. Fails: the constructor does not exist (type error / import error).
 2. GREEN — union member, constructor, message case, exhaustiveness case (the compiler requires both switch cases once the member exists).
 3. GUARD — `.message` equals `SUBMODULE_PATH_IS_SYMLINK: expected submodule path 'sub' not to be a symbolic link` (passes: GREEN 2 added the message case the exhaustive switch forced).
-4. Docs — the errors.md row; `npm run docs:json`; stage `reports/api.json`.
-5. Run `npx knip`: it must not report `submodulePathIsSymlink` as an unused export (it is imported by its test). If it does, stop and hand back per D5 — do not add a throw site here.
+4. RED — `gitmodulesNotStaged()` has `.data` `{ code: 'GITMODULES_NOT_STAGED' }` and no other key. Fails: the constructor does not exist.
+5. GREEN — the second member, constructor, message case, exhaustiveness case.
+6. GUARD — `.message` equals `GITMODULES_NOT_STAGED: please stage your changes to .gitmodules or stash them to proceed`.
+7. Docs — the two errors.md rows; `npm run docs:json`; stage `reports/api.json`.
+8. Run `npx knip`: it must not report either constructor as an unused export (each is imported by its test). If it does, stop and hand back per D5 — do not add a throw site here.
 
 ### Gate
 
@@ -446,7 +450,7 @@ npx knip && npm run check:doc-links
 
 ### Commit
 
-`fix(status): add the SUBMODULE_PATH_IS_SYMLINK error code`
+`fix(status): add the SUBMODULE_PATH_IS_SYMLINK and GITMODULES_NOT_STAGED error codes`
 
 ## Part 8 — Resolve a submodule's ignore mode from config, .gitmodules and diff.ignoreSubmodules
 
@@ -726,7 +730,9 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink
 
 ### Context
 
-R8 (removal); ADR-1066; decision candidate D3. git: a clean submodule's directory is removed recursively; a .git directory inside it is first migrated into `.git/modules/<name>` (module `config` gets `core.worktree`, the worktree gets a gitfile, then the directory goes); the `.gitmodules` section whose `path` matches is removed and `.gitmodules` is staged; `.git/modules/<name>` is kept; `--cached` touches the index only; `-f` removes a modified submodule the same way. The `@writes` tag of rm.ts (L10-13: surface `rm`, kind `equivalent-under-readback`, format `git-index-tree-state`) stays; `check:write-surfaces` must stay green.
+R8 (removal); ADR-1066, ADR-1071 (decision candidate D3, settled — design rows CO31–CO37). git: before anything happens to a gitlink entry — under `--cached` and `-f` too — a stage-0 `.gitmodules` entry whose working file exists and differs by content refuses `please stage your changes to .gitmodules or stash them to proceed` (exit 128); then a clean submodule's directory is removed recursively; a .git directory inside it is first migrated into `.git/modules/<name>` (module `config` gets `core.worktree`, the worktree gets a gitfile, then the directory goes); the `.gitmodules` section whose `path` matches is removed and `.gitmodules` is staged (when no section matches, the file is left alone and not staged; when the working `.gitmodules` is absent, nothing is edited or staged for it); `.git/modules/<name>` is kept; `--cached` touches the index only; `-f` removes a modified submodule the same way. The `@writes` tag of rm.ts (L10-13: surface `rm`, kind `equivalent-under-readback`, format `git-index-tree-state`) stays; `check:write-surfaces` must stay green.
+
+`.gitmodules` staging check (ADR-1071): when any entry being removed is a gitlink, look up the stage-0 `.gitmodules` entry; if present, `compareWorkingTreeDelta(ctx, entry, provider, indexMtime)` — `modified` → `throw gitmodulesNotStaged()` (src/domain/submodule/error.ts, Part 7); `absent`, `unchanged` and `mode-changed` proceed (git compares content: a stat-only drift and a mode change are not `DATA_CHANGED`); a `type-changed` `.gitmodules` (a symlink) is pinned git-first and follows the pin. The check runs before the valve's own refusal order is consulted for the removal step, i.e. after `enforceSafetyValve` and before any removal or index edit, and it runs for `cached: true` as well.
 
 Files:
 - `src/application/commands/internal/working-tree.ts` — new `removeDirectory(ctx: Context, rawPath: string): Promise<void>` beside `removeFile` (L87-99): same `validateWorkingTreePathOn(rawPath, ctx)` + `repoPath`, refuses anything that is not a directory with `checkoutOverwriteDirty({ localChanges: [path], untracked: [] })` like `removeFile`, then `ctx.fs.rmRecursive(full)`.
@@ -740,7 +746,8 @@ Pinned bytes (git 2.55):
 - F2 unmoved, `rm sub`: exit 0; `sub` gone; `.gitmodules` empty and staged (`M  .gitmodules`, `D  sub`); staged blob id = git's (`e69de29…` when empty); .git/modules/sub kept. After `submodule deinit -f sub` (empty dir): same.
 - .git directory inside `sub` (embedded), `rm sub`: exit 0, stderr `Migrating git directory of 'sub' from '<abs>/sub/.git' to '<abs>/.git/modules/sub'` (display only — tsgit emits none), then as above; .git/modules/sub/config holds `core.worktree` = git's value (pin the bytes), module HEAD/objects intact.
 - moved, `rm -f sub`: exit 0, `sub` removed, `M  .gitmodules`, `D  sub`, .git/modules/sub kept.
-- To pin (git first): working `.gitmodules` with unstaged edits, `rm sub` (expected: git refuses `Please stage your changes to .gitmodules or stash them to proceed` — if so, stop and hand back per D3 with the pinned output); no `.gitmodules` section for `sub` (expected: a warning, removal proceeds, `.gitmodules` unchanged and not staged); `.git/modules/<name>` already present while sub/.git is a directory (record what git does).
+- Pinned (git 2.55, orchestrator, design CO31–CO37): working `.gitmodules` with an unstaged comment appended — `rm sub`, `rm --cached sub` and `rm -f sub` all exit 128 `fatal: please stage your changes to .gitmodules or stash them to proceed`, nothing removed or unstaged (` M .gitmodules` stays) → `GITMODULES_NOT_STAGED {}`. Same edit staged (`git add .gitmodules`) → proceeds as CO21 (`M  .gitmodules`, `D  sub`, file empty). `.gitmodules` rewritten with identical bytes (stat drift only) → proceeds as CO21. Working `.gitmodules` deleted and not staged → proceeds: ` D .gitmodules` stays unstaged, `D  sub`, no section edit and nothing staged for `.gitmodules`. A second submodule `sub2` committed → `.gitmodules` keeps exactly `[submodule "sub2"]\n\tpath = sub2\n\turl = ../up\n`, `M  .gitmodules`, `D  sub`.
+- To pin (git first): no `.gitmodules` section for `sub` (expected: a warning, removal proceeds, `.gitmodules` unchanged and not staged); `.git/modules/<name>` already present while sub/.git is a directory (record what git does); a symlink at `.gitmodules` (record whether git refuses).
 
 ### TDD steps
 
@@ -751,12 +758,14 @@ One RED per function, run before its code.
 3. RED — rm unit: clean gitfile submodule, `rm(ctx, ['sub'])` resolves, `sub` is gone, the index has no `sub`, `.git/modules/sub` still exists. Fails: `removeFile` rejects the directory with `CHECKOUT_OVERWRITE_DIRTY`.
 4. GREEN — gitlink entries removed through `removeDirectory`. GUARD — `force: true` on a moved submodule removes it the same way.
 5. RED — after step 3's call, the working `.gitmodules` no longer holds `[submodule "sub"]` and the index `.gitmodules` entry id is the blob of the new text. Fails: GREEN 4 leaves `.gitmodules` untouched.
-6. GREEN — section removal + staging. GUARD — `cached: true` leaves `.gitmodules` and `sub` untouched.
-7. RED — embedded `.git` directory submodule, `rm(ctx, ['sub'])` resolves and `.git/modules/sub` holds the former `sub/.git` (its `HEAD`) with `core.worktree` set. Fails: GREEN 4 deletes the repository with the directory.
-8. GREEN — migration before removal.
-9. Interop — rows above; "to pin" rows git-first.
-10. Docs — rm.md paragraph.
-11. REFACTOR — functions under 20 lines.
+6. GREEN — section removal + staging. GUARD — `cached: true` leaves `.gitmodules` and `sub` untouched. GUARD — a second section `sub2` survives byte-for-byte (`removeConfigSectionInText` removes one section).
+7. RED — working `.gitmodules` with an unstaged edit, `rm(ctx, ['sub'])` rejects `GITMODULES_NOT_STAGED` and leaves `sub`, the index and `.gitmodules` untouched. Fails: GREEN 6 edits and stages the file.
+8. GREEN — the staging check (Context) before any removal. GUARD — the same with `cached: true` rejects the same way; GUARD — the same with `force: true` rejects the same way; GUARD — `.gitmodules` rewritten with identical bytes proceeds; GUARD — working `.gitmodules` deleted proceeds and stages nothing for it (the index `.gitmodules` entry is unchanged).
+9. RED — embedded `.git` directory submodule, `rm(ctx, ['sub'])` resolves and `.git/modules/sub` holds the former `sub/.git` (its `HEAD`) with `core.worktree` set. Fails: GREEN 4 deletes the repository with the directory.
+10. GREEN — migration before removal.
+11. Interop — rows above (the pinned `.gitmodules` rows included); "to pin" rows git-first.
+12. Docs — rm.md paragraph (include the staging refusal).
+13. REFACTOR — functions under 20 lines.
 
 ### Gate
 
