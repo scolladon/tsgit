@@ -29,12 +29,14 @@ import {
   resolveUndoRecordOf,
 } from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec } from '../../domain/index.js';
+import { FILE_MODE } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { MATCH_LEVEL, type MatchLevel } from '../../domain/pathspec/wildcard.js';
 import type { Context } from '../../ports/context.js';
 import {
-  compareWorkingTreeEntry,
+  compareWorkingTreeDelta,
   isWorkingTreeModified,
+  type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
 import {
   pruneEmptiedDirectories,
@@ -50,7 +52,9 @@ import {
   trackPositives,
 } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
+import { submoduleState } from './internal/submodule-state.js';
 import { removeFile } from './internal/working-tree.js';
+import { status } from './status.js';
 
 // A predicate (not a static Set) so Stryker attributes per-test coverage to
 // each literal — a module-level `new Set([...])` initializer runs before any
@@ -197,6 +201,28 @@ interface LocalModCategories {
   readonly localOnly: ReadonlyArray<FilePath>;
 }
 
+/**
+ * git's `check_local_mod`: a gitlink is also modified when its dirty check finds anything,
+ * counting untracked files and ignoring the configured ignore mode.
+ */
+const isLocallyModified = async (
+  ctx: Context,
+  entry: IndexEntry,
+  delta: WorkingTreeDelta,
+): Promise<boolean> => {
+  if (entry.mode !== FILE_MODE.GITLINK) return isWorkingTreeModified(delta.status);
+  const state = await submoduleState(ctx, entry, delta, {
+    ignore: 'none',
+    childStatus: (child) => status(child),
+  });
+  return (
+    isWorkingTreeModified(delta.status) ||
+    state.commitChanged ||
+    state.trackedChanges ||
+    state.untrackedChanges
+  );
+};
+
 /** Classify entries by modification category for the safety valve. */
 const classifyEntries = async (
   ctx: Context,
@@ -210,9 +236,9 @@ const classifyEntries = async (
   const stagedOnly: FilePath[] = [];
   const localOnly: FilePath[] = [];
   for (const entry of entries) {
-    const worktree = await compareWorkingTreeEntry(ctx, entry, provider, indexMtime);
-    if (worktree === 'absent') continue;
-    const local = isWorkingTreeModified(worktree);
+    const delta = await compareWorkingTreeDelta(ctx, entry, provider, indexMtime);
+    if (delta.status === 'absent') continue;
+    const local = await isLocallyModified(ctx, entry, delta);
     const staged = isStaged(head, entry);
     if (staged && local) both.push(entry.path);
     else if (staged && !cached) stagedOnly.push(entry.path);

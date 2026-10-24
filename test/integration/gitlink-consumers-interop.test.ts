@@ -8,11 +8,11 @@
  *   surface:        checkout
  *   bucket:         cross-tool-interop
  *   unique:         checkout, merge, cherry-pick, rebase and stash leave a gitlink directory alone and remove an empty one as git does
- *   interopSurface: checkout, merge, stash
+ *   interopSurface: checkout, merge, stash, rm
  */
 
-import { existsSync, writeFileSync } from 'node:fs';
-import { cp, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { cp, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -21,6 +21,7 @@ import { checkout } from '../../src/application/commands/checkout.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
 import { rebaseContinue, rebaseRun } from '../../src/application/commands/rebase.js';
+import { rm as removePaths } from '../../src/application/commands/rm.js';
 import { stashPush } from '../../src/application/commands/stash.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
@@ -29,6 +30,7 @@ const ROW_TIMEOUT = 60_000;
 const PINNED_DATE = '@1700000000 +0000';
 const SUBMODULE = 'sub';
 const ABSENT = 'absent';
+const NOT_A_DIRECTORY = 'not-a-directory';
 
 type Setup = (repo: string) => Promise<void>;
 
@@ -330,6 +332,137 @@ const F3_ROWS: ReadonlyArray<Row> = [
   },
 ];
 
+interface RmRow {
+  readonly title: string;
+  readonly setup: Setup;
+  readonly paths: ReadonlyArray<string>;
+  readonly cached: boolean;
+  /** git's exit status, and the error code tsgit raises for it; `undefined` when the removal succeeds. */
+  readonly refusal?: { readonly exit: number; readonly code: string };
+}
+
+const OVERSIZED_GITFILE_BYTES = (1 << 20) + 1;
+const LOCAL_MODIFICATIONS = { exit: 1, code: 'RM_LOCAL_MODIFICATIONS' };
+const DIED = (code: string) => ({ exit: 128, code });
+
+const replacedByFile: Setup = async (repo) => {
+  await rm(sub(repo), { recursive: true });
+  await writeFile(sub(repo), 'plain\n');
+};
+const replacedBySymlink: Setup = async (repo) => {
+  await rm(sub(repo), { recursive: true });
+  await symlink('k', sub(repo));
+};
+const ignoringAll: Setup = async (repo) => {
+  gitIn(repo, 'config', '-f', '.gitmodules', 'submodule.sub.ignore', 'all');
+  gitIn(repo, 'add', '.gitmodules');
+  commitIn(repo, 'ignore all');
+  await untrackedInSubmodule(repo);
+};
+const withGitfile = (body: string): Setup => {
+  return (repo) => writeFile(sub(repo, '.git'), body);
+};
+const behindSymlinkedDirectory: Setup = async (repo) => {
+  await mkdir(path.join(repo, 'd'));
+  await writeFile(path.join(repo, 'd', 'f'), 'f\n');
+  gitIn(repo, 'add', 'd/f');
+  commitIn(repo, 'd');
+  await rename(path.join(repo, 'd'), path.join(repo, 'd2'));
+  await symlink('d2', path.join(repo, 'd'));
+};
+
+const RM_ROWS: ReadonlyArray<RmRow> = [
+  {
+    title: 'a moved submodule',
+    setup: moved,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'an edited submodule',
+    setup: edited,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'an untracked file in the submodule',
+    setup: untrackedInSubmodule,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'an untracked file in a submodule configured ignore = all',
+    setup: ignoringAll,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'a file in place of the submodule',
+    setup: replacedByFile,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title: 'a symlink in place of the submodule',
+    setup: replacedBySymlink,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_PATH_IS_SYMLINK'),
+  },
+  {
+    title: 'a submodule whose .git is past the size git reads',
+    setup: withGitfile('x'.repeat(OVERSIZED_GITFILE_BYTES)),
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('GITFILE_TOO_LARGE'),
+  },
+  {
+    title: 'a submodule whose .git is not a pointer',
+    setup: withGitfile('garbage\n'),
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('NOT_A_REPOSITORY'),
+  },
+  {
+    title: 'a moved submodule kept in the working tree',
+    setup: moved,
+    paths: ['sub'],
+    cached: true,
+  },
+  {
+    title: 'a tracked file behind a symlinked directory',
+    setup: behindSymlinkedDirectory,
+    paths: ['d/f'],
+    cached: false,
+  },
+];
+
+const gitRemoval = (repo: string, { paths, cached }: RmRow): number => {
+  try {
+    gitIn(repo, 'rm', '-q', ...(cached ? ['--cached'] : []), ...paths);
+    return 0;
+  } catch (error) {
+    return (error as { status: number }).status;
+  }
+};
+
+const tsgitRemoval = async (
+  repo: string,
+  { paths, cached }: RmRow,
+): Promise<string | undefined> => {
+  try {
+    await removePaths(createNodeContext({ workDir: repo }), paths, { cached });
+    return undefined;
+  } catch (error) {
+    return (error as { data: { code: string } }).data.code;
+  }
+};
+
 const STASH_ORIGINS = ['stash@{0}', 'stash@{0}^2'] as const;
 
 const stashObservation = (repo: string) => {
@@ -366,12 +499,20 @@ const STASH_ROWS: ReadonlyArray<Row> = [
 
 const filesUnder = async (dir: string): Promise<string[]> => {
   if (!existsSync(dir)) return [ABSENT];
+  if (!statSync(dir).isDirectory()) return [NOT_A_DIRECTORY];
   const names = await readdir(dir);
   return names.filter((name) => name !== '.git').sort();
 };
 
 const submoduleHead = (repo: string): string =>
   existsSync(path.join(sub(repo), '.git')) ? gitIn(sub(repo), 'rev-parse', 'HEAD').trim() : ABSENT;
+
+/** Git cannot read a status or a HEAD through a broken `.git`, so a removal is compared on what it leaves on disk. */
+const afterRemoval = async (repo: string) => ({
+  index: gitIn(repo, 'ls-files', '--stage'),
+  files: await filesUnder(sub(repo)),
+  behindLink: await filesUnder(path.join(repo, 'd2')),
+});
 
 const observed = async (repo: string) => ({
   index: gitIn(repo, 'ls-files', '--stage', SUBMODULE),
@@ -441,6 +582,34 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         },
       );
     };
+
+    describe.each(RM_ROWS.map((row, index) => [row.title, row, index] as const))(
+      'Given %s',
+      (_title, row, index) => {
+        describe('When both tools run rm', () => {
+          it(
+            'Then the refusal and the resulting state match git',
+            async () => {
+              // Arrange
+              const gitTwin = await twin(`rm-git-${index}`, fixture);
+              const tsgitTwin = await twin(`rm-tsgit-${index}`, fixture);
+              await row.setup(gitTwin);
+              await row.setup(tsgitTwin);
+
+              // Act
+              const gitExit = gitRemoval(gitTwin, row);
+              const tsgitCode = await tsgitRemoval(tsgitTwin, row);
+
+              // Assert
+              expect(gitExit).toBe(row.refusal?.exit ?? 0);
+              expect(tsgitCode).toBe(row.refusal?.code);
+              expect(await afterRemoval(tsgitTwin)).toEqual(await afterRemoval(gitTwin));
+            },
+            ROW_TIMEOUT,
+          );
+        });
+      },
+    );
 
     matchesGit('f2', ROWS, () => fixture);
     matchesGit('f3', F3_ROWS, () => fixtureWithMainCommit);

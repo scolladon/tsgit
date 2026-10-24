@@ -6,9 +6,16 @@ import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
-import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { deriveGitlinkContext } from '../../../../src/application/primitives/internal/submodule-context.js';
+import {
+  invalidateIndexCache,
+  readIndex,
+} from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { rmRecursiveWithoutR } from '../../../../src/domain/commands/error.js';
+import {
+  rmLocalModifications,
+  rmRecursiveWithoutR,
+} from '../../../../src/domain/commands/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
 import { fileNotFound, pathspecNoMatch, TsgitError } from '../../../../src/domain/index.js';
@@ -1539,6 +1546,167 @@ describe('Given a tracked backslash-named file a\\b beside a tracked ab', () => 
       expect(await ctx.fs.exists(work(ctx, 'a\\b'))).toBe(false);
       expect(await ctx.fs.exists(work(ctx, 'ab'))).toBe(true);
       expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['ab']);
+    });
+  });
+});
+
+/** A committed superproject whose gitlink `sub` records the HEAD of a real, clean submodule holding `u`. */
+const withCommittedSubmodule = async (): Promise<{ ctx: Context; child: Context }> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(work(ctx, 'k'), 'k\n');
+  await seedIndex(ctx, [{ path: 'k', text: 'k\n' }]);
+  const child = deriveGitlinkContext(ctx, `${ctx.layout.gitDir}/modules/sub`, 'sub' as FilePath);
+  await init(child);
+  await ctx.fs.writeUtf8(work(ctx, 'sub/.git'), 'gitdir: ../.git/modules/sub\n');
+  await ctx.fs.writeUtf8(work(ctx, 'sub/u'), 'u\n');
+  await seedIndex(child, [{ path: 'u', text: 'u\n' }]);
+  const { id } = await commit(child, { message: 'child', author: AUTHOR });
+  await seedIndex(ctx, [
+    { path: 'k', text: 'k\n' },
+    { path: 'sub', text: 'recorded\n', mode: FILE_MODE.GITLINK },
+  ]);
+  const index = await readIndex(ctx);
+  const entries = index.entries.map((e) => (e.path === 'sub' ? { ...e, id } : e));
+  invalidateIndexCache(ctx);
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync({ ...index, entries, extensions: [] }, ctx),
+  );
+  invalidateIndexCache(ctx);
+  await commit(ctx, { message: 'record', author: AUTHOR });
+  return { ctx, child };
+};
+
+describe('Given an unmoved submodule whose checkout has an edited tracked file', () => {
+  describe('When rm names the submodule', () => {
+    it('Then RM_LOCAL_MODIFICATIONS names it', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await ctx.fs.writeUtf8(work(ctx, 'sub/u'), 'edited\n');
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['sub']), 'RM_LOCAL_MODIFICATIONS');
+
+      // Assert
+      expect(err.data).toEqual(rmLocalModifications(['sub' as FilePath]).data);
+    });
+  });
+});
+
+const emptySubmoduleDirectory = async (ctx: Context): Promise<void> => {
+  await ctx.fs.rm(work(ctx, 'sub/.git'));
+  await ctx.fs.rm(work(ctx, 'sub/u'));
+  await ctx.fs.rm(work(ctx, 'sub'));
+};
+
+const GITMODULES_IGNORING_ALL = '[submodule "sub"]\n\tpath = sub\n\turl = ../up\n\tignore = all\n';
+const OVERSIZED_GITFILE_BYTES = (1 << 20) + 1;
+
+describe.each([
+  {
+    given: 'an untracked file in a submodule configured ignore = all',
+    arrange: async (ctx: Context) => {
+      await ctx.fs.writeUtf8(work(ctx, '.gitmodules'), GITMODULES_IGNORING_ALL);
+      await ctx.fs.writeUtf8(work(ctx, 'sub/n'), 'n\n');
+    },
+  },
+  {
+    given: 'a submodule whose checkout moved off the recorded commit',
+    arrange: async (ctx: Context, child: Context) => {
+      await ctx.fs.writeUtf8(work(ctx, 'sub/v'), 'v\n');
+      await seedIndex(child, [
+        { path: 'u', text: 'u\n' },
+        { path: 'v', text: 'v\n' },
+      ]);
+      await commit(child, { message: 'advance', author: AUTHOR });
+    },
+  },
+  {
+    given: 'a file in place of the submodule',
+    arrange: async (ctx: Context) => {
+      await emptySubmoduleDirectory(ctx);
+      await ctx.fs.writeUtf8(work(ctx, 'sub'), 'plain\n');
+    },
+  },
+])('Given $given', ({ arrange }) => {
+  describe('When rm names the submodule', () => {
+    it('Then RM_LOCAL_MODIFICATIONS names it', async () => {
+      // Arrange
+      const { ctx, child } = await withCommittedSubmodule();
+      await arrange(ctx, child);
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['sub']), 'RM_LOCAL_MODIFICATIONS');
+
+      // Assert
+      expect(err.data).toEqual(rmLocalModifications(['sub' as FilePath]).data);
+    });
+  });
+});
+
+describe.each([
+  {
+    given: 'a submodule whose .git is a gitfile past the size git reads',
+    gitfile: 'x'.repeat(OVERSIZED_GITFILE_BYTES),
+    expected: { code: 'GITFILE_TOO_LARGE', path: 'sub/.git' },
+  },
+  {
+    given: 'a submodule whose .git is a gitfile that is not a pointer',
+    gitfile: 'garbage\n',
+    expected: { code: 'NOT_A_REPOSITORY', path: 'sub/.git' },
+  },
+])('Given $given', ({ gitfile, expected }) => {
+  describe('When rm names the submodule', () => {
+    it('Then the dying gitfile reader refuses', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await ctx.fs.writeUtf8(work(ctx, 'sub/.git'), gitfile);
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['sub']), expected.code);
+
+      // Assert
+      expect(err.data).toEqual(expected);
+    });
+  });
+});
+
+describe('Given a symlink in place of the submodule', () => {
+  describe('When rm names the submodule', () => {
+    it('Then SUBMODULE_PATH_IS_SYMLINK names it', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await emptySubmoduleDirectory(ctx);
+      await ctx.fs.symlink('k', work(ctx, 'sub'));
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['sub']), 'SUBMODULE_PATH_IS_SYMLINK');
+
+      // Assert
+      expect(err.data).toEqual({ code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'sub' });
+    });
+  });
+});
+
+describe('Given an unmoved submodule whose checkout has an edited tracked file', () => {
+  describe('When rm keeps the working tree with cached', () => {
+    it('Then the gitlink leaves the index without a refusal', async () => {
+      // Arrange
+      const { ctx } = await withCommittedSubmodule();
+      await ctx.fs.writeUtf8(work(ctx, 'sub/u'), 'edited\n');
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['sub'], { cached: true });
+
+      // Assert
+      expect(result.removed).toEqual(['sub']);
+      expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['k']);
     });
   });
 });
