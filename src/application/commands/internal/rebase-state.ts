@@ -106,7 +106,7 @@ export interface RescheduledPick {
   /** The live todo, starting with the rescheduled pick. */
   readonly remaining: ReadonlyArray<RebaseTodoLine>;
   readonly pickSha: ObjectId;
-  readonly backupHeader?: RebaseBackupHeader;
+  readonly backupHeader: RebaseBackupHeader | undefined;
 }
 
 /** The part of the state every rebase stop carries, whatever stopped it. */

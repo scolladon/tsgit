@@ -353,7 +353,7 @@ describe('rebase-state', () => {
       it('Then no backup is written when none is given', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { backupHeader: _omitted, ...withoutBackup } = RESCHEDULED;
+        const withoutBackup = { ...RESCHEDULED, backupHeader: undefined };
 
         // Act
         await writeRescheduledPick(ctx, withoutBackup);

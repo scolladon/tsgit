@@ -8,6 +8,7 @@ import {
   assertCleanWorkTree,
   assertNoUnmergedEntries,
   stagedChangePaths,
+  stagedGitlinkChanges,
   unstagedChangePaths,
 } from '../../../../../src/application/commands/internal/clean-work-tree.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
@@ -789,6 +790,105 @@ describe('assertCleanIndex over gitlinks', () => {
           localChanges: ['sub'],
           untracked: [],
         });
+      });
+    });
+  });
+});
+
+describe('stagedGitlinkChanges', () => {
+  const emptyTree = (ctx: Context): Promise<ObjectId> =>
+    writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+
+  describe('Given a staged gitlink whose id differs from HEAD gitlink', () => {
+    describe('When queried', () => {
+      it('Then the path is listed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, [gitlinkEntry(C_COMMIT)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['sub']);
+      });
+    });
+  });
+
+  describe('Given a gitlink staged where HEAD has nothing', () => {
+    describe('When queried', () => {
+      it('Then the path is listed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await emptyTree(ctx);
+        await writeFramedIndex(ctx, [gitlinkEntry(C_COMMIT)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['sub']);
+      });
+    });
+  });
+
+  describe('Given a HEAD gitlink the index no longer has', () => {
+    describe('When queried', () => {
+      it('Then the path is listed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, []);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['sub']);
+      });
+    });
+  });
+
+  describe('Given a staged regular file change', () => {
+    describe('When queried', () => {
+      it('Then the path is not listed', async () => {
+        // Arrange
+        const { ctx, headTree } = await seedClean('f', 'one\n');
+        await ctx.fs.writeUtf8(work(ctx, 'f'), 'two\n');
+        await add(ctx, ['f']);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a gitlink replaced by a staged file', () => {
+    describe('When queried', () => {
+      it('Then the path is not listed, as the pre-flight already counts it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinkTree(ctx, A_COMMIT);
+        await writeFramedIndex(ctx, [stageEntry('sub', C_COMMIT, 0)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual([]);
       });
     });
   });

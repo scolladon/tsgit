@@ -16,6 +16,7 @@ import {
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -607,7 +608,308 @@ describe('rebaseRun', () => {
       });
     });
   });
+
+  describe('Given a staged gitlink the pre-flight ignores', () => {
+    describe('When onto records a different commit for the gitlink', () => {
+      it('Then the checkout refuses before anything is written', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_B });
+        const indexBefore = (await readIndex(ctx)).entries;
+
+        // Act
+        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(mainTip);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+        expect((await readIndex(ctx)).entries).toEqual(indexBefore);
+      });
+    });
+    describe('When onto agrees with HEAD on the gitlink', () => {
+      it('Then the first pick is refused as a dirty index', async () => {
+        // Arrange
+        const { ctx } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+
+        // Act
+        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+      });
+
+      it('Then HEAD is detached at onto with ORIG_HEAD on the old tip and the gitlink still staged', async () => {
+        // Arrange
+        const { ctx, mainTip, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+
+        // Act
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(await headIsSymbolic(ctx)).toBe(false);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(ontoTip);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(`${mainTip}\n`);
+        const staged = (await readIndex(ctx)).entries.find((entry) => entry.path === 'sub');
+        expect(staged?.id).toBe(GITLINK_C);
+        expect(staged?.mode).toBe(FILE_MODE.GITLINK);
+      });
+
+      it('Then the rebase state is exactly what git leaves for a rescheduled pick', async () => {
+        // Arrange
+        const { ctx, mainTip, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+
+        // Act
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Assert
+        const names = await ctx.fs.readdir(`${ctx.layout.gitDir}/rebase-merge`);
+        expect(names.map((entry) => entry.name).sort()).toEqual([
+          'done',
+          'drop_redundant_commits',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+        ]);
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${mainTip} # m\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${mainTip} # m\n`);
+        expect(await readMerge(ctx, 'onto')).toBe(`${ontoTip}\n`);
+        expect(await readMerge(ctx, 'orig-head')).toBe(`${mainTip}\n`);
+        expect(await readMerge(ctx, 'head-name')).toBe('refs/heads/main\n');
+        expect(await readMerge(ctx, 'end')).toBe('1\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('1\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${mainTip}\n`);
+      });
+    });
+    describe('When the refused rebase is aborted', () => {
+      it('Then the branch, HEAD and the index at the old tip are restored and the state is gone', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Act
+        const result = await rebaseAbort(ctx);
+
+        // Assert
+        expect(result).toEqual({ head: mainTip, headName: 'refs/heads/main' });
+        expect(await headIsSymbolic(ctx)).toBe(true);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(mainTip);
+        const sub = (await readIndex(ctx)).entries.find((entry) => entry.path === 'sub');
+        expect(sub?.id).toBe(GITLINK_A);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(false);
+      });
+    });
+
+    describe('When the refused rebase is continued with the gitlink still staged', () => {
+      it('Then it refuses again on the staged change and recounts the todo', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Act
+        const data = await dataOf(() => rebaseContinue(ctx));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+        expect(await readMerge(ctx, 'end')).toBe('2\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('1\n');
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${mainTip} # m\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${mainTip} # m\n`);
+      });
+    });
+
+    describe('When the refused rebase is continued after the gitlink was unstaged', () => {
+      it('Then the rescheduled pick is replayed and the rebase finishes', async () => {
+        // Arrange
+        const { ctx, mainTip, ontoTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+        await stageGitlink(ctx, GITLINK_A);
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        expect(await headIsSymbolic(ctx)).toBe(true);
+        const tip = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        expect(tip).not.toBe(mainTip);
+        expect((await readCommit(ctx, tip)).parents).toEqual([ontoTip]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+      });
+    });
+
+    describe('When there is nothing to replay', () => {
+      it('Then the rebase succeeds and the staged gitlink stays in the index', async () => {
+        // Arrange
+        const { ctx } = await seedStagedGitlink({ ontoSub: GITLINK_A, replays: false });
+
+        // Act
+        const result = await rebaseRun(ctx, { upstream: 'side' });
+
+        // Assert
+        expect(result.kind).not.toBe('conflict');
+        const sub = (await readIndex(ctx)).entries.find((entry) => entry.path === 'sub');
+        expect(sub?.id).toBe(GITLINK_C);
+      });
+    });
+    describe('When the gitlink was removed from the index', () => {
+      it('Then the removal is carried and the first pick is refused', async () => {
+        // Arrange
+        const { ctx } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await unstageGitlinkRemoval(ctx);
+
+        // Act
+        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['sub'],
+          untracked: [],
+        });
+        expect((await readIndex(ctx)).entries.map((entry) => entry.path)).toEqual([
+          'f.txt',
+          'o.txt',
+        ]);
+      });
+    });
+
+    describe('When HEAD is detached', () => {
+      it('Then the refused pick records a detached rebase', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedStagedGitlink({ ontoSub: GITLINK_A });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${mainTip}\n`);
+
+        // Act
+        await dataOf(() => rebaseRun(ctx, { upstream: 'side' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'head-name')).toBe('detached HEAD\n');
+      });
+    });
+  });
 });
+
+const GITLINK_A = 'a'.repeat(40) as ObjectId;
+const GITLINK_B = 'b'.repeat(40) as ObjectId;
+const GITLINK_C = 'c'.repeat(40) as ObjectId;
+
+const blobOf = (ctx: Context, text: string): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'blob',
+    content: new TextEncoder().encode(text),
+    id: '' as ObjectId,
+  });
+
+const gitlinkCommit = async (
+  ctx: Context,
+  commitInput: {
+    readonly parents: ReadonlyArray<ObjectId>;
+    readonly sub: ObjectId;
+    readonly files: Readonly<Record<string, string>>;
+    readonly message: string;
+  },
+): Promise<ObjectId> => {
+  const entries = [treeEntry(FILE_MODE.GITLINK, 'sub' as never, commitInput.sub)];
+  for (const [name, text] of Object.entries(commitInput.files)) {
+    entries.push(treeEntry(FILE_MODE.REGULAR, name as never, await blobOf(ctx, text)));
+  }
+  return createCommit(ctx, {
+    tree: await writeTree(ctx, entries),
+    parents: commitInput.parents,
+    author: FEAT_AUTHOR,
+    committer: FEAT_AUTHOR,
+    message: commitInput.message,
+    extraHeaders: [],
+  });
+};
+
+const pointBranch = (ctx: Context, name: string, id: ObjectId): Promise<void> =>
+  updateRef(ctx, `refs/heads/${name}` as RefName, id, { reflogMessage: 'branch: seed' });
+
+/** Stage `id` for the gitlink `sub`, as `git add sub` after the submodule moved. */
+const stageGitlink = async (ctx: Context, id: ObjectId): Promise<void> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const entries = (await readIndex(ctx)).entries.map((entry) =>
+      entry.path === 'sub' ? { ...entry, id } : entry,
+    );
+    await lock.commit(entries, 'update');
+  } finally {
+    await lock.release();
+  }
+};
+
+const unstageGitlinkRemoval = async (ctx: Context): Promise<void> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const kept = (await readIndex(ctx)).entries.filter((entry) => entry.path !== 'sub');
+    await lock.commit(kept, 'update');
+  } finally {
+    await lock.release();
+  }
+};
+
+/**
+ * main: base (sub = A) then m (edits f.txt); side: base then o (adds o.txt, sub = `ontoSub`).
+ * HEAD on main with the gitlink staged at C — a moved submodule after `git add sub`.
+ */
+const seedStagedGitlink = async ({
+  ontoSub,
+  replays = true,
+}: {
+  readonly ontoSub: ObjectId;
+  readonly replays?: boolean;
+}): Promise<{ ctx: Context; mainTip: ObjectId; ontoTip: ObjectId }> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  const base = await gitlinkCommit(ctx, {
+    parents: [],
+    sub: GITLINK_A,
+    files: { 'f.txt': 'f\n' },
+    message: 'base\n',
+  });
+  const mainTip = replays
+    ? await gitlinkCommit(ctx, {
+        parents: [base],
+        sub: GITLINK_A,
+        files: { 'f.txt': 'main\n' },
+        message: 'm\n',
+      })
+    : base;
+  const ontoTip = await gitlinkCommit(ctx, {
+    parents: [base],
+    sub: ontoSub,
+    files: { 'f.txt': 'f\n', 'o.txt': 'o\n' },
+    message: 'o\n',
+  });
+  await pointBranch(ctx, 'main', mainTip);
+  await pointBranch(ctx, 'side', ontoTip);
+  await reset(ctx, { mode: 'hard', rev: 'main' });
+  await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
+  await stageGitlink(ctx, GITLINK_C);
+  return { ctx, mainTip, ontoTip };
+};
 
 /** main: base, m1 (HEAD on main); an ORPHAN feature: f0 root (built via the
  *  primitives, no parent), f1 on top — sharing no history with main. HEAD on feature. */

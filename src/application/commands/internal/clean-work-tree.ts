@@ -152,3 +152,14 @@ export const stagedChangePaths = async (
   const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
   return [...(await stagedDirty(ctx, stage0, headTree, COUNTING_GITLINKS))].sort(comparePaths);
 };
+
+/** Staged changes git's `require_clean_work_tree` skips (submodules ignored), in raw-byte order. */
+export const stagedGitlinkChanges = async (
+  ctx: Context,
+  headTree: ObjectId,
+): Promise<ReadonlyArray<FilePath>> => {
+  const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
+  const refusedByPreflight = new Set(await stagedDirty(ctx, stage0, headTree, IGNORING_GITLINKS));
+  const counted = await stagedDirty(ctx, stage0, headTree, COUNTING_GITLINKS);
+  return counted.filter((path) => !refusedByPreflight.has(path)).sort(comparePaths);
+};

@@ -31,9 +31,10 @@ import { createNodeContext } from '../../src/adapters/node/index.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
-import { rebaseContinue, rebaseRun } from '../../src/application/commands/rebase.js';
+import { rebaseAbort, rebaseContinue, rebaseRun } from '../../src/application/commands/rebase.js';
 import { rm as removePaths } from '../../src/application/commands/rm.js';
 import { stashPush } from '../../src/application/commands/stash.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
 
@@ -226,6 +227,61 @@ const continueRebase: Step = {
   tsgit: (ctx) => rebaseContinue(ctx),
 };
 
+const REFUSED_EXIT_STATUS = 1;
+
+const exitStatusOf = (run: () => void): number => {
+  try {
+    run();
+    return 0;
+  } catch (error) {
+    return (error as { status: number }).status;
+  }
+};
+
+const codeOfRefusal = async (run: () => Promise<unknown>): Promise<string | undefined> => {
+  try {
+    await run();
+    return undefined;
+  } catch (error) {
+    return (error as TsgitError).data.code;
+  }
+};
+
+/** Both tools refuse (git: exit 1) and tsgit names `code`; whatever the refusal left is compared by the row. */
+const refusedStep = (
+  gitArgs: ReadonlyArray<string>,
+  tsgit: (ctx: Context) => Promise<unknown>,
+  code: string,
+): Step => ({
+  git: (repo) => {
+    expect(exitStatusOf(() => gitIn(repo, ...gitArgs))).toBe(REFUSED_EXIT_STATUS);
+  },
+  tsgit: async (ctx) => {
+    expect(await codeOfRefusal(() => tsgit(ctx))).toBe(code);
+  },
+});
+
+const refusedRebase = (upstream: string, code: string): Step =>
+  refusedStep(['rebase', upstream], (ctx) => rebaseRun(ctx, { upstream }), code);
+
+const refusedContinue: Step = refusedStep(
+  ['rebase', '--continue'],
+  (ctx) => rebaseContinue(ctx),
+  'WORKING_TREE_DIRTY',
+);
+
+const abortRebase: Step = {
+  git: gitStep('rebase', '--abort'),
+  tsgit: (ctx) => rebaseAbort(ctx),
+};
+
+const unstageSubmodule: Step = {
+  git: gitStep('restore', '--staged', SUBMODULE),
+  tsgit: async (_ctx, repo) => {
+    gitIn(repo, 'restore', '--staged', SUBMODULE);
+  },
+};
+
 interface Row {
   readonly title: string;
   readonly setup: Setup;
@@ -293,6 +349,11 @@ const ROWS: ReadonlyArray<Row> = [
     setup: moved,
     steps: [fastForwardTo('side')],
   },
+  {
+    title: 'a staged submodule move, rebase with nothing to replay',
+    setup: stagedMove,
+    steps: [rebaseOnto('side')],
+  },
 ];
 
 const F3_ROWS: ReadonlyArray<Row> = [
@@ -335,6 +396,31 @@ const F3_ROWS: ReadonlyArray<Row> = [
     title: 'an edited submodule, rebase onto a branch adding a file',
     setup: edited,
     steps: [rebaseOnto('side')],
+  },
+  {
+    title: 'a staged submodule move, rebase onto a branch agreeing on the submodule',
+    setup: stagedMove,
+    steps: [refusedRebase('side', 'WORKING_TREE_DIRTY')],
+  },
+  {
+    title: 'a staged submodule move, rebase onto a branch moving the submodule',
+    setup: stagedMove,
+    steps: [refusedRebase('other', 'CHECKOUT_OVERWRITE_DIRTY')],
+  },
+  {
+    title: 'a staged submodule move, refused rebase aborted',
+    setup: stagedMove,
+    steps: [refusedRebase('side', 'WORKING_TREE_DIRTY'), abortRebase],
+  },
+  {
+    title: 'a staged submodule move, refused rebase continued with the move still staged',
+    setup: stagedMove,
+    steps: [refusedRebase('side', 'WORKING_TREE_DIRTY'), refusedContinue],
+  },
+  {
+    title: 'a staged submodule move, refused rebase continued after the move was unstaged',
+    setup: stagedMove,
+    steps: [refusedRebase('side', 'WORKING_TREE_DIRTY'), unstageSubmodule, continueRebase],
   },
   {
     title: 'a submodule moved after a conflicted rebase was resolved, rebase continued',
@@ -681,7 +767,32 @@ const afterRemoval = async (repo: string) => ({
   moduleEntries: await filesUnder(path.join(repo, ...MODULE_DIR)),
 });
 
+const REBASE_STATE = ['.git', 'rebase-merge'] as const;
+const REBASE_ROOT_FILES = ['ORIG_HEAD', 'REBASE_HEAD'] as const;
+
+/** What a rebase in progress leaves on disk: HEAD, the marker files and every state file's bytes. */
+const rebaseObservation = async (repo: string) => {
+  const dir = path.join(repo, ...REBASE_STATE);
+  if (!existsSync(dir)) return ABSENT;
+  const files = await filesUnder(dir);
+  const contents = Object.fromEntries(
+    await Promise.all(files.map(async (name) => [name, await bytesOf(path.join(dir, name))])),
+  );
+  const rootFiles = await Promise.all(
+    REBASE_ROOT_FILES.map((name) => bytesOf(path.join(repo, '.git', name))),
+  );
+  const head = gitIn(repo, 'rev-parse', 'HEAD').trim();
+  return {
+    files,
+    contents,
+    rootFiles,
+    head,
+    headRef: outcomeOf(repo, 'symbolic-ref', '-q', 'HEAD'),
+  };
+};
+
 const observed = async (repo: string) => ({
+  rebase: await rebaseObservation(repo),
   index: gitIn(repo, 'ls-files', '--stage', SUBMODULE),
   head: submoduleHead(repo),
   files: await filesUnder(sub(repo)),
