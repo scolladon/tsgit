@@ -1215,25 +1215,17 @@ const treeWithCarried = async (
   { carried }: Pick<MergeCommitInput, 'carried'>,
   mergedTree: ObjectId,
 ): Promise<ObjectId> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — with nothing carried `projectCarried` leaves the flattened tree untouched and writing it back yields `mergedTree`; the guard only skips that round trip.
   if (carried.length === 0) return mergedTree;
-  const staged = stagedEntriesAt(await readIndex(ctx), carried);
+  const staged = stagedEntriesByPath(await readIndex(ctx));
   const projected = new Map((await flattenEscapedTree(ctx, mergedTree)).entries);
   projectCarried(projected, staged, carried);
   return writeFlatTree(ctx, projected);
 };
 
-/** The stage-0 entries at the carried paths, by the path as the pre-flight named it. */
-const stagedEntriesAt = (
-  index: GitIndex,
-  carried: ReadonlyArray<FilePath>,
-): ReadonlyMap<FilePath, IndexEntry> => {
-  const paths = new Set(carried);
-  return new Map(
-    index.entries
-      .filter((entry) => entry.flags.stage === 0 && paths.has(entry.path))
-      .map((entry) => [entry.path, entry]),
-  );
-};
+/** The index entries by path; only the carried paths are looked up, and the pre-flight refused any unmerged entry. */
+const stagedEntriesByPath = (index: GitIndex): ReadonlyMap<FilePath, IndexEntry> =>
+  new Map(index.entries.map((entry) => [entry.path, entry]));
 
 /**
  * Each carried path takes the index's version in the projection, or leaves it when the index

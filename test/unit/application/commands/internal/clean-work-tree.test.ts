@@ -7,6 +7,7 @@ import {
   assertCleanIndex,
   assertCleanWorkTree,
   assertNoUnmergedEntries,
+  indexDifferences,
   stagedChangePaths,
   stagedGitlinkChanges,
   unstagedChangePaths,
@@ -962,6 +963,97 @@ describe('stagedGitlinkChanges', () => {
 
         // Assert
         expect(result).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('refusal and carried-gitlink ordering', () => {
+  const gitlinksTree = (ctx: Context, names: ReadonlyArray<string>): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: names.map((name) =>
+        treeEntry(FILE_MODE.GITLINK, new TextEncoder().encode(name), A_COMMIT),
+      ),
+    });
+
+  const gitlinkAt = (path: string, id: ObjectId): IndexEntry => ({
+    ...stageEntry(path, id, 0),
+    mode: FILE_MODE.GITLINK,
+  });
+
+  describe('Given an unmerged path sorting after a staged-dirty path', () => {
+    describe('When the work tree is asserted clean', () => {
+      it('Then the refusal lists both in byte order, not unmerged first', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const emptyTree = await writeTree(ctx, []);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new Uint8Array(0),
+        });
+        await writeFramedIndexInGivenOrder(ctx, [stageEntry('a', id, 0), stageEntry('b', id, 1)]);
+        const sut = assertCleanWorkTree;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, emptyTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a', 'b'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a staged gitlink sorting after a HEAD gitlink the index dropped', () => {
+    describe('When the staged gitlink changes are queried', () => {
+      it('Then they come in byte order, not index entries before removals', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinksTree(ctx, ['a', 'z']);
+        await writeFramedIndex(ctx, [gitlinkAt('z', C_COMMIT)]);
+        const sut = stagedGitlinkChanges;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['a', 'z']);
+      });
+    });
+  });
+
+  describe('Given two gitlinks configured to be ignored, one moved and one dropped from the index', () => {
+    describe('When the index differences are read', () => {
+      it('Then the carried gitlinks come in byte order, not index entries before removals', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const headTree = await gitlinksTree(ctx, ['a', 'z']);
+        await ctx.fs.writeUtf8(
+          work(ctx, '.gitmodules'),
+          ['a', 'z']
+            .map(
+              (name) =>
+                `[submodule "${name}"]\n\tpath = ${name}\n\turl = ../${name}\n\tignore = all\n`,
+            )
+            .join(''),
+        );
+        await writeFramedIndex(ctx, [gitlinkAt('z', C_COMMIT)]);
+        const sut = indexDifferences;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual({ refused: [], carried: ['a', 'z'] });
       });
     });
   });
