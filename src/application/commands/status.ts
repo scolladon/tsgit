@@ -23,7 +23,12 @@ import {
   viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
-import { deriveWorkingMode, type FileMode, type RefName } from '../../domain/objects/index.js';
+import {
+  deriveWorkingMode,
+  FILE_MODE,
+  type FileMode,
+  type RefName,
+} from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import type {
@@ -88,6 +93,17 @@ export interface ChangedPath {
   readonly head?: BlobSide;
   readonly index?: BlobSide;
   readonly worktree?: WorktreeSide;
+  /**
+   * git's porcelain v2 `S<c><m><u>` submodule field, present on a row whose HEAD or index
+   * side is a gitlink and absent otherwise: `commitChanged` (`C`) is the submodule's HEAD
+   * differing from the recorded commit, `trackedChanges` (`M`) its own tracked changes,
+   * `untrackedChanges` (`U`) its untracked files.
+   */
+  readonly submodule?: {
+    readonly commitChanged: boolean;
+    readonly trackedChanges: boolean;
+    readonly untrackedChanges: boolean;
+  };
 }
 
 /**
@@ -370,6 +386,20 @@ const buildChanges = (
     .map((change) => ({ ...change, path: viewOfEscaped(change.path) }));
 };
 
+/** Whether a row's HEAD or index side is a gitlink: only those carry git's submodule field. */
+const submoduleOf = (
+  delta: WorkingTreeDelta | undefined,
+  head: { readonly mode: string } | undefined,
+  indexEntry: IndexEntry | undefined,
+): ChangedPath['submodule'] => {
+  if (head?.mode !== FILE_MODE.GITLINK && indexEntry?.mode !== FILE_MODE.GITLINK) return undefined;
+  return {
+    commitChanged: indexEntry?.mode === FILE_MODE.GITLINK && delta?.status === 'modified',
+    trackedChanges: false,
+    untrackedChanges: false,
+  };
+};
+
 /**
  * Build one `ChangedPath`: the staged/unstaged kinds plus the `head` (HEAD tree),
  * `index` (stage-0 entry), and `worktree` (working comparison) sides. Each side is
@@ -385,6 +415,7 @@ const buildChangedPath = (
 ): ChangedPath => {
   const head = headTree?.entries.get(path);
   const unstaged = delta === undefined ? undefined : toUnstagedKind(delta.status);
+  const submodule = submoduleOf(delta, head, indexEntry);
   return {
     path,
     ...(staged !== undefined && { staged }),
@@ -392,6 +423,7 @@ const buildChangedPath = (
     ...(head !== undefined && { head: { id: head.id, mode: head.mode } }),
     ...(indexEntry !== undefined && { index: { id: indexEntry.id, mode: indexEntry.mode } }),
     ...(delta?.worktreeMode !== undefined && { worktree: { mode: delta.worktreeMode } }),
+    ...(submodule !== undefined && { submodule }),
   };
 };
 

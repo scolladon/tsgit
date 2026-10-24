@@ -43,8 +43,10 @@ const ROW_TIMEOUT = 60_000;
 const PINNED_DATE = '@1700000000 +0000';
 const SETTLE_MS = 1_100;
 const ABSENT_MODE = '000000';
+const ABSENT_ID = '0'.repeat(40);
 const NO_CHANGE = '.';
 const SUBMODULE = 'sub';
+const NOT_A_SUBMODULE = 'N...';
 
 type Setup = (repo: string) => Promise<void>;
 
@@ -158,6 +160,15 @@ const ignoredUntracked: Setup = async (repo) => {
   await writeFile(path.join(moduleDir(repo), 'info', 'exclude'), 'n\n');
 };
 
+const stagedMoved: Setup = async (repo) => {
+  await moved(repo);
+  gitIn(repo, 'add', SUBMODULE);
+};
+
+const stagedDeletion: Setup = async (repo) => {
+  gitIn(repo, 'rm', '-q', '--cached', SUBMODULE);
+};
+
 const ROWS: ReadonlyArray<readonly [string, Setup]> = [
   ['a populated unmoved submodule', async () => {}],
   [
@@ -195,6 +206,8 @@ const ROWS: ReadonlyArray<readonly [string, Setup]> = [
     compose(moved, flagged('--assume-unchanged'), editedUpstreamFile),
   ],
   ['an untracked file ignored by the submodule exclude file', ignoredUntracked],
+  ['a moved submodule staged in the index', stagedMoved],
+  ['a submodule removed from the index only', stagedDeletion],
 ];
 
 const modeOf = (side: { readonly mode: string } | undefined): string => side?.mode ?? ABSENT_MODE;
@@ -207,21 +220,28 @@ const columnOf = (kind: ChangedPath['staged']): string => {
   return 'A';
 };
 
-/** git's `1 XY <sub> mH mI mW hH hI path` line minus the submodule field, rebuilt from the structured change. */
+const submoduleFieldOf = (submodule: ChangedPath['submodule']): string => {
+  if (submodule === undefined) return NOT_A_SUBMODULE;
+  const flag = (set: boolean, letter: string): string => (set ? letter : NO_CHANGE);
+  return `S${flag(submodule.commitChanged, 'C')}${flag(submodule.trackedChanges, 'M')}${flag(submodule.untrackedChanges, 'U')}`;
+};
+
+/** git's `1 XY <sub> mH mI mW hH hI path` line, rebuilt from the structured change. */
 const fieldsOf = (change: ChangedPath): string =>
   [
     `${columnOf(change.staged)}${columnOf(change.unstaged)}`,
+    submoduleFieldOf(change.submodule),
     modeOf(change.head),
     modeOf(change.index),
     modeOf(change.worktree),
-    change.head?.id ?? '',
-    change.index?.id ?? '',
+    change.head?.id ?? ABSENT_ID,
+    change.index?.id ?? ABSENT_ID,
     change.path,
   ].join(' ');
 
 const gitFieldsOf = (line: string): string => {
-  const [, xy, , mH, mI, mW, hH, hI, ...rest] = line.split(' ');
-  return [xy, mH, mI, mW, hH, hI, rest.join(' ')].join(' ');
+  const [, xy, subField, mH, mI, mW, hH, hI, ...rest] = line.split(' ');
+  return [xy, subField, mH, mI, mW, hH, hI, rest.join(' ')].join(' ');
 };
 
 const porcelain = (repo: string): string[] =>
