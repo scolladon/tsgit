@@ -62,8 +62,9 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   `ubuntu-latest` runner every headless WebKit page then fails
   `navigator.storage.getDirectory()` with `UnknownError: The operation failed for an unknown
   transient reason`, so the whole `e2e (webkit)` job goes red (reproduced twice on PR #295;
-  green on the previous build; Chromium and Firefox unaffected). Unpin once a later release
-  passes the WebKit e2e job.
+  green on the previous build; Chromium and Firefox unaffected; 1.64.1 fails the same way,
+  twice on PR #330). Unpin once a later release passes the WebKit e2e job — read this block
+  before every `npm outdated` remediation, a bump of a held row costs a CI round.
   **`@biomejs/biome` is held at 2.5.15**: release 2.6.0 declares every platform package at
   `2.6.0`, but `@biomejs/cli-darwin-arm64` is published only up to `2.5.15`, so `npm install`
   silently skips the unresolvable optional dependency and every `biome` invocation on an Apple
