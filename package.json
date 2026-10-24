@@ -1393,7 +1393,7 @@
     "typedoc": "0.28.20",
     "typescript": "6.0.3",
     "vitest": "4.1.11",
-    "wireit": "0.14.13",
+    "wireit": "0.15.0",
     "wrangler": "4.152.0"
   }
 }
