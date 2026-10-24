@@ -1,6 +1,6 @@
 # Plan — status and the comparison consumers treat a gitlink as git does
 
-> Source: design doc `docs/design/status-gitlink-parity.md` · ADRs 1063, 1064, 1065, 1066, 1067, 1068, 1069, 1070
+> Source: design doc `docs/design/status-gitlink-parity.md` · ADRs 1063, 1064, 1065, 1066, 1067, 1068, 1069, 1070, 1071, 1072 (Parts 15–17 inserted after the user ratified the long-HEAD fold)
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
@@ -87,6 +87,7 @@
 | R9 no other behaviour change; every interop suite stays green | every part's gate |
 | ADR-1064 `ChangedPath.submodule` | 3 (field + commit flag), 6 (tracked/untracked flags) |
 | ADR-1071 `GITMODULES_NOT_STAGED` | 7 (member), 14 (throw site) |
+| ADR-1072 broken HEAD (design LH1–LH8, SF11) | 15 (`PATH_TOO_LONG`), 16 (unreadable set, log/rev-parse twins), 17 (status unknown-HEAD state, LH + SF11 + r6–r9 rows) |
 
 ## Decision candidates
 
@@ -100,6 +101,9 @@ recommendation; the orchestrator confirms or redirects before Part 5.
 | D3 | `rm` of a submodule while the working `.gitmodules` has unstaged changes | A. Reuse an existing code (e.g. `RM_LOCAL_MODIFICATIONS { paths: ['.gitmodules'] }`). B. New error code naming the condition. C. Pin in Part 14 and stop with a blocker if git refuses | **Settled: B (ADR-1071).** Pinned on git 2.55 (design rows CO31–CO37): `rm sub`, `rm --cached sub` and `rm -f sub` all exit 128 `fatal: please stage your changes to .gitmodules or stash them to proceed` when the working `.gitmodules` differs from the index by content; a staged edit, a same-bytes rewrite and a deleted working file proceed. Code-only member `GITMODULES_NOT_STAGED` lands in Part 7, its throw site in Part 14 | A misnames the condition (exit 1, `-f` overrides it); git's refusal is exit 128 and `-f` does not override it |
 | D4 | stash's "index differs from HEAD only at gitlinks" test (git runs `diff-index --cached --ignore-submodules`) | A. Flatten HEAD and compare non-gitlink index entries when `iTree !== bTree`. B. Reuse `diffIndexAgainstTreeKeyed(index, headTree)` and drop changes where both sides are gitlinks or one side is absent and the other a gitlink. C. Synthesize a second tree with gitlinks replaced by HEAD's | B | Reuses status's own diff; keeps git's rule that a gitlink↔file type change still counts |
 | D5 | Where the `SUBMODULE_PATH_IS_SYMLINK` error member lands | A. Its own part (Part 7) with its domain test; its throw site lands in Part 9. B. Merged with its throw site (8 files, over the 6-file ceiling). C. Throw site first, `reports/api.json` deferred to a closing docs part | A | Keeps every part ≤ 6 files and `reports/api.json` in the part that changes the surface. Part 7's gate runs `npx knip` to confirm an export used only by tests is not reported; if it is, stop and hand back (fallback: B) |
+| D9 | Where `node-file-system.ts` gets `pathTooLong` from (Part 15) | A. Direct import from domain/error.js. B. Add it to the domain barrel (7th file). C. Inline the `TsgitError` | **Settled: A** | Adapters already import domain/error.js directly; keeps the part at 6 files |
+| D10 | What `log` / `rev-parse` refuse with over a broken HEAD (Part 16) | A. The code the candidate ladder yields (a dangling symref → the unborn-HEAD code). B. Special-case HEAD in the ladder so `PATH_TOO_LONG` propagates. C. Keep the code out of the unreadable set | **Settled: A** | A refusal where git refuses; ADR-1072's consequence amended accordingly |
+| D11 | How `status` drops the HEAD tree for an unreadable HEAD (Part 17) | A. Gate `readHeadTreeEscaped` on `resolveRevisionName(ctx, 'HEAD')` (git's `is_initial`). B. Thread a flag through four signatures. C. Catch around the tree read (would swallow a corrupt-tree fault) | **Settled: A** | No plumbing; equivalent for unborn and readable HEADs |
 
 ## Part 1 — Move the gitlink reader to the primitives tier
 
@@ -779,3 +783,177 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink
 ### Commit
 
 `fix(rm): remove a clean submodule and its .gitmodules section, migrating an embedded .git`
+## Part 15 — Name a path too long for the file system
+
+### Context
+
+ADR-1072 (first layer: the adapter names the errno). **Public**: a new member of the exported `TsgitErrorData` union (`AdapterError`). Surface gates paid here: the union, the message switch, the exhaustiveness switch, the documented error table, and reports/api.json (regenerate; stage it only if it changes — error-code literals were not emitted by name when Part 7 added two members, so it is expected byte-identical). The constructor `pathTooLong` is **internal**: only the node adapter and the tests import it; it is not re-exported from the package entry (src/index.ts re-exports `TsgitError` alone from src/domain/error.ts).
+
+No behaviour other than the error code changes in this part. After it, tsgit `status` over a HEAD whose target's loose path is too long rejects `PATH_TOO_LONG` instead of `UNSUPPORTED_OPERATION { operation: 'filesystem', reason: 'ENAMETOOLONG' }`; Parts 16 and 17 turn that into git's shape.
+
+Files:
+- `src/domain/error.ts` — `AdapterError` (L17-31 at df242b83): add `| { readonly code: 'PATH_TOO_LONG'; readonly path: string }` after the `FILE_NOT_FOUND` member. Constructor after `fileNotFound` (L138-139): `export const pathTooLong = (path: string): TsgitError => new TsgitError({ code: 'PATH_TOO_LONG', path });` with a one-line doc comment saying why it exists: the file system refused a path component or the whole path as too long (`ENAMETOOLONG`); git's files backend treats a loose ref whose `lstat` fails that way as not resolving. Message switch: after `case 'FILE_NOT_FOUND': return \`file not found: ${basename(data.path)}\`;` (L316-317) add `case 'PATH_TOO_LONG': return \`file name too long: ${basename(data.path)}\`;` (the C library's message for `ENAMETOOLONG`, lower-cased like its siblings; `basename` keeps directories out of the message like every path-bearing adapter code).
+- `test/unit/domain/exhaustiveness.ts` — add `case 'PATH_TOO_LONG':` after `case 'FILE_NOT_FOUND':` (L38). The `never` assignment at L291 makes the compiler demand it.
+- `test/unit/domain/error.test.ts` — `describe('domain error — AdapterError')` > `describe('factory functions')` (L76-77): a `describe("Given pathTooLong('/repo/.git/refs/heads/overlong')")` block after the `fileNotFound` block (L78-88), same shape (`When checking data` > `Then code is PATH_TOO_LONG and path preserved`, `expect(result.data).toEqual({ code: 'PATH_TOO_LONG', path: … })`). `describe('path sanitization in error.message (security)')` (L247): a `Given PATH_TOO_LONG with absolute path` block after the `PERMISSION_DENIED` one (L303-315), same shape: message contains `file name too long: overlong` and not the directory part. Import `pathTooLong` beside `fileNotFound` (L53).
+- `docs/use/errors.md` — "Adapters & I/O" table (L36-49). The table is alphabetical, so the row goes after `OPERATION_ABORTED` and before `PERMISSION_DENIED`: `| \`PATH_TOO_LONG\` | \`path\` | The file system refused a path component, or the whole path, as longer than it allows (\`ENAMETOOLONG\`; node adapter only — memory and browser never raise it). git treats a ref whose loose path is too long as not resolving: reading resolutions answer absent, and \`status\` reports such a HEAD as unknown. |` (the last clause becomes true at the end of Part 17; the three parts land in one PR).
+- `src/adapters/node/node-file-system.ts` — `mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError` (L308-334, `/** @internal */`): add `case 'ENAMETOOLONG': return pathTooLong(path);` after the `EISDIR` arm and before `default:`. One why-comment line: git's files backend treats any `lstat` errno but `ENOENT` as a ref that does not resolve, so the reader needs this errno told apart from an unsupported operation. Import: `import { pathTooLong } from '../../domain/error.js';` as a separate import line (decision candidate D9; precedent src/adapters/inflate.ts L11). Two `// Stryker disable next-line` comments sit above `case 'EPERM':` and `case 'ELOOP':` and bind to the line directly below each one: do not put anything between a comment and its case, and do not add a suppression to the new case.
+- `test/unit/adapters/node/node-file-system.test.ts` — `describe('mapErrno')` > `describe('Given an errno code on the underlying error')` > `describe('When mapping')` > the `it.each([...])('Then $label', …)` table (L1162-1256). Add a row after the `EISDIR` row: `{ code: 'ENAMETOOLONG', path: '/repo/.git/refs/heads/overlong', expectedCode: 'PATH_TOO_LONG', extra: (data) => { if (data.code === 'PATH_TOO_LONG') expect(data.path).toBe('/repo/.git/refs/heads/overlong'); }, label: 'ENAMETOOLONG returns PATH_TOO_LONG carrying the path' }`.
+
+Read-only references: src/domain/index.ts (the domain barrel; it lists the adapter constructors, and this part leaves it alone, see D9); test/unit/adapters/node/node-file-system-injected.test.ts `ERRNO_TABLE` (L93-101; leave it alone, since `mapErrno` is unit-tested through the table above).
+
+Known consumers that branched on `UNSUPPORTED_OPERATION`, where an `ENAMETOOLONG` now carries `PATH_TOO_LONG`. No row pins any of them, so do not edit them: `isWindowsSymlinkRefusal` (node-file-system.ts L245-256, Windows only), `classifyFault` (src/application/primitives/internal/pack-artefact-source.ts L44-56), the write fallback in src/application/commands/internal/working-tree.ts L60-72, `isStoreFault` (src/application/commands/internal/fsck/object-cache.ts L161). If an existing suite goes red because of one of them, stop and hand back `{ unit, reason, ≤3 options }`.
+
+**Decision candidate D9** (the orchestrator confirms): where `node-file-system.ts` gets `pathTooLong` from. A. A direct import from ../../domain/error.js, with the domain barrel untouched (keeps the part at 6 files; adapters already import from domain/error.js directly). B. Add it to the domain barrel (src/domain/index.ts) beside its siblings and import it in the existing block (consistent with the file's other constructors, but a 7th file). C. Inline `new TsgitError({ code: 'PATH_TOO_LONG', path })` in `mapErrno` (no constructor, but every other errno arm uses one). **Recommendation: A.**
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED: error.test.ts, `pathTooLong('/repo/.git/refs/heads/overlong').data` equals `{ code: 'PATH_TOO_LONG', path: '/repo/.git/refs/heads/overlong' }`. Fails because `pathTooLong` does not exist (`pathTooLong is not a function` / type error).
+2. GREEN: the union member, the constructor, the message case and the exhaustiveness case (the compiler forces both switch cases once the member exists).
+3. GUARD: the sanitization row. The message contains `file name too long: overlong` and does not contain `/repo/.git/refs/heads` (passes because GREEN 2 used `basename`). Also check that `.message` equals `PATH_TOO_LONG: file name too long: overlong` exactly, in the same `it`.
+4. RED: node-file-system.test.ts, the `ENAMETOOLONG` row of the `mapErrno` table. Fails because today `mapErrno` answers `UNSUPPORTED_OPERATION` (operation `filesystem`, reason `ENAMETOOLONG`).
+5. GREEN: the `ENAMETOOLONG` arm in `mapErrno`.
+6. GUARD: the `EOTHER` and `undefined` rows of the same table still answer `UNSUPPORTED_OPERATION` (pass because the new arm matches only `ENAMETOOLONG`).
+7. Docs: the errors.md row. Run `npm run docs:json`; if reports/api.json changed, stage it with the part (it is then the part's 7th path; record that in the hand-back).
+8. Run `npx knip`. It must not report `pathTooLong` (the adapter imports it). If it does, stop and hand back.
+
+### Gate
+
+```
+npx vitest run test/unit/domain test/unit/adapters/node && npm run check:types && ./node_modules/.bin/biome check src/domain/error.ts src/adapters/node/node-file-system.ts test/unit/domain/exhaustiveness.ts test/unit/domain/error.test.ts test/unit/adapters/node/node-file-system.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/domain/error.ts src/adapters/node/node-file-system.ts test/unit/domain/error.test.ts test/unit/adapters/node/node-file-system.test.ts docs/use/errors.md
+npx depcruise src/ --config .dependency-cruiser.cjs && npx knip && npm run check:doc-links
+npx vitest run test/unit/domain/error test/unit/adapters/node/node-file-system.test --coverage --coverage.include=src/domain/error.ts --coverage.include=src/adapters/node/node-file-system.ts --coverage.reporter=text
+```
+
+Read the "Coverage summary" block of the last command. The new constructor, message case and `mapErrno` arm must be covered; the per-file table lists only files below 100%.
+
+### Commit
+
+`fix(adapters): name a path too long for the file system`
+
+## Part 16 — Read a ref whose loose path is too long as unresolvable
+
+### Context
+
+ADR-1072 (second layer). git's `files_read_raw_ref` gives up on any `lstat` errno other than `ENOENT` without reading `packed-refs`, and `refs_resolve_ref_unsafe` returns NULL. In tsgit, that NULL is the `UNREADABLE_REF_CODES` set: every reading resolution (`resolveTerminalName`, `resolveRefForReading`, `refResolvesForReading`, `readRefCandidate`, and the callers that consult the set directly) answers absent for those codes, while `resolveRef` / `resolveRefOrMissing` still throw them. Adding `PATH_TOO_LONG` to the set is the whole source change. No new symbol.
+
+Effect on the commands (pinned by this part's interop rows). `rev-parse HEAD` and `log` over a HEAD whose target is too long go through `readRefCandidate` (src/application/commands/internal/commit-ish.ts `peeledCandidate`, src/application/commands/internal/revision-name.ts `resolveCandidate`). After this part the chain fault is unreadable, so `unreadableCandidate('HEAD')` re-reads HEAD alone (symbolic) and answers `{ kind: 'dangling-symref' }`. No warning is emitted, because `warnSkipped` in src/application/commands/internal/refname-ambiguity.ts L67-71 skips `HEAD` as git's `expand_ref` does. The ladder then misses, so tsgit refuses as it does for an unborn HEAD. The unit row in test/unit/application/commands/log.test.ts L283-305 pins `OBJECT_NOT_FOUND` for log over an unborn HEAD. Before this part, the same calls reject `PATH_TOO_LONG` (Part 15). Both are refusals where git refuses. See decision candidate D10 on the ADR's "refuse with PATH_TOO_LONG" wording.
+
+Files:
+- `src/application/primitives/resolve-ref.ts` — `export const UNREADABLE_REF_CODES: ReadonlySet<string>` (L26-31): add `'PATH_TOO_LONG'`. Rewrite its doc comment (L22-25), which says git returns NULL "for all four", so that it also names a loose path the file system refuses as too long (git's `lstat` failing with an errno other than `ENOENT`). The `// Stryker disable next-line StringLiteral` comments at L48, L69 and L128 bind to the line below each one; leave them where they are.
+- `test/unit/application/primitives/resolve-ref.test.ts` — add a fault helper beside `permissionDeniedOn` (L746-763):
+  `const pathTooLongOn = (base: Context, target: string): Context => ({ ...base, fs: { ...base.fs, lstatIfReachable: async (path) => { if (path === target) throw pathTooLong(path); return lstatIfReachable(base.fs, path); } } });`
+  Import `pathTooLong` from src/domain/error.ts (next to `permissionDenied`, L13) and `lstatIfReachable` from src/application/primitives/internal/fs-probes.ts. The memory file system provides `lstatIfReachable`, and `resolveDirect` (src/application/primitives/ref-store.ts L938-952) asks `isLooseMiss` → `lstatIfReachable(ctx.fs, path)` first, so the fault surfaces there exactly as the node adapter's `lstat` raises it. Fixture: `buildSeededContext({ refs: [{ name: 'refs/heads/main', id: MAIN_ID }] })` from test/unit/application/primitives/fixtures.ts. The target is `/repo/.git/refs/heads/overlong`. For the HEAD rows, also `await base.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/overlong\n')`. Rows go in the existing top-level describes: `describe('resolveRefForReading')` L765, `describe('resolveRef')` L28, `describe('resolveTerminalName')` L585, `describe('readRefCandidate')` L789. Each gets a `Given a ref whose loose path the file system refuses as too long` block. Error rows use try/catch (or `.catch((err: TsgitError) => err.data)` as the file's L778 does) and assert `{ code: 'PATH_TOO_LONG', path: target }`.
+- `test/integration/broken-head-interop.test.ts` — NEW suite. Part 17 extends it. Header: `@proves` with `surface: log, revParse`, `bucket: cross-tool-interop`, `unique: a HEAD whose branch cannot be read refuses log and rev-parse as git does`, `interopSurface: log, revParse`. Wrap it in `describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')`. Fixture (once, in `mkdtemp`): `git init -q -b main`, `k` = `k\n`, `git add k`, commit `c` (pinned dates, `-c user.name=t -c user.email=t@t -c commit.gpgsign=false`), then `u` = `u\n` and `git add u`. Copy the suite-local `pinnedEnv()` / `gitIn()` pattern from test/integration/status-gitlink-interop.test.ts L59-80 (they are not exported). Copy the fixture twice with `cp(…, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true })`. In EACH twin, write the HEAD with `writeFile(path.join(twin, '.git', 'HEAD'), \`ref: refs/heads/${'1'.repeat(LONG_NAME_LENGTH)}\n\`)`, with `const LONG_NAME_LENGTH = 5000`. git refuses to create that ref itself, so write the file directly. Build `createNodeContext({ workDir: tsgitTwin })` after the write. Run git through `tryRunGitWithExit(['-C', gitTwin, …], { env: pinnedEnv() })` from test/integration/interop-helpers.ts. Row timeout 60 s.
+
+Pinned bytes (git 2.55, orchestrator ×3 for LH1; LH4/LH5 ×1, re-run git first):
+- LH4: `git rev-parse HEAD` → exit 128, first stderr line `fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.`. tsgit: `revParse(ctx, 'HEAD')` (src/application/commands/rev-parse.ts L104) rejects. Assert the `.data` code you observe and every field of it.
+- LH5: `git log -1` → exit 128, stderr `fatal: your current branch appears to be broken`. tsgit: `log(ctx)` (src/application/commands/log.ts, which resolves `opts.rev ?? 'HEAD'` through `resolveCommit`) rejects. Assert the `.data` code you observe and every field of it (expected by trace: the unborn-HEAD code, `OBJECT_NOT_FOUND`; see D10).
+- Run git FIRST for each row, then tsgit. A git line that surprises is run three times. The library emits no message (ADR-249): the tsgit assertion is the refusal's structured data, never git's text.
+
+**Decision candidate D10** (the orchestrator confirms): ADR-1072's consequence says `log` and `rev-parse` over a broken HEAD "refuse with PATH_TOO_LONG". By trace, adding the code to the reading set makes them refuse with the unborn-HEAD code instead (the candidate ladder classifies HEAD as a dangling symref). A. Accept the observed code. It is a refusal where git refuses, and it matches how git's own ladder reads the HEAD (a NULL resolution). The orchestrator amends the ADR's consequence line. B. Special-case `HEAD` in the ladder so the chain fault propagates. That edits commit-ish.ts / revision-name.ts, outside this part, and it also changes the unborn behaviour's code path. C. Leave `PATH_TOO_LONG` out of the set and catch it in `status` only. This contradicts the ADR's decision, and `status`'s `resolveRevisionName(ctx, 'HEAD')` would still reject. **Recommendation: A.**
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED: `resolveRefForReading(pathTooLongOn(base, target), 'refs/heads/overlong')` resolves to `undefined`. Fails because today the fault is not in the set, so the call rejects `{ code: 'PATH_TOO_LONG', path: '/repo/.git/refs/heads/overlong' }`.
+2. GREEN: add `'PATH_TOO_LONG'` to `UNREADABLE_REF_CODES` and rewrite its doc comment.
+3. GUARD: `resolveRef(ctx, 'refs/heads/overlong')` rejects with `.data` equal to `{ code: 'PATH_TOO_LONG', path: target }` (passes because `resolveRef` never consults the set: the write and commit side still refuses).
+4. GUARD: with HEAD → `refs/heads/overlong`, `resolveTerminalName(ctx, 'HEAD')` resolves to `undefined` (passes because its catch uses the set GREEN 2 widened).
+5. GUARD: with HEAD → `refs/heads/overlong`, `readRefCandidate(ctx, 'HEAD')` resolves to `{ kind: 'dangling-symref' }` (passes because `unreadableCandidate` re-reads HEAD alone, which is symbolic and readable). This is the row the command-level behaviour below rests on.
+6. Interop: create test/integration/broken-head-interop.test.ts with the fixture and the LH4 and LH5 rows, git first. If tsgit resolves instead of refusing, stop and hand back with the red row: the fold would lie in the rev-parse ladder, outside this part.
+7. REFACTOR: none expected. Keep the doc comment terse and free of phase, ADR or row ids.
+
+### Gate
+
+```
+npx vitest run test/unit/application/primitives/resolve-ref test/unit/application/primitives/ref-store test/unit/application/commands/rev-parse test/unit/application/commands/log test/unit/application/commands/branch test/unit/application/commands/tag test/unit/application/commands/reflog test/unit/application/commands/rev-list test/unit/application/commands/status && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/resolve-ref.ts test/unit/application/primitives/resolve-ref.test.ts test/integration/broken-head-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/primitives/resolve-ref.ts test/unit/application/primitives/resolve-ref.test.ts test/integration/broken-head-interop.test.ts
+npx depcruise src/ --config .dependency-cruiser.cjs
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/broken-head-interop.test.ts test/integration/rev-parse-dwim-interop.test.ts test/integration/head-symlink-interop.test.ts
+```
+
+### Commit
+
+`fix(refs): read a ref whose loose path is too long as unresolvable, as git does`
+
+## Part 17 — Report a HEAD whose target cannot be read as unknown in status
+
+### Context
+
+ADR-1072 (third layer); design rows LH1–LH3, LH6–LH8 (LH7 = SF11). git's `wt_status_prepare` sets `s->branch` from resolving `HEAD`. That is NULL whenever the chain cannot be read (an `lstat` errno other than `ENOENT`, a target name that fails `check_refname_format`, a cycle, unparseable content), and git prints `# branch.head (unknown)`. `s->is_initial` comes from `repo_get_oid("HEAD")` failing, giving `# branch.oid (initial)`: every index entry is a staged add. An unborn branch (`ENOENT`) keeps its name. tsgit's structured form of `(unknown)` is `branch: undefined` with `detached: false`. Detached stays `branch: undefined, detached: true`. On a branch, `branch` is set. No new public field: the documented meaning of an existing pair is the surface change.
+
+Current code (src/application/commands/status.ts at df242b83; Parts 8–9 may shift it, so relocate by symbol):
+- `statusInScope(ctx: Context, opts: StatusOptions): Promise<StatusResult>` (L219-242) reads `const head = await readHeadRaw(ctx);` (L224; `readHeadRaw` / `branchRefFromHead` come from ./internal/repo-state.js, defined in src/application/primitives/internal/repo-state.ts L445-453; `readHeadRaw` throws `REF_NOT_FOUND` on a missing HEAD and propagates every parse fault, e.g. `INVALID_REF` for `ref: refs/heads/a..b`), and ends with `return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };` (L237).
+- `reportStatus(ctx, { index, tracked, scanned, workDir })` (L363-390) runs `await resolveRevisionName(ctx, HEAD_NAME);` (L379; src/application/commands/internal/revision-name.ts L46: git's `get_oid("HEAD")`, returns `ObjectId | undefined`; after Part 16 a broken HEAD reads as a dangling candidate there and answers `undefined`), then `const headTree = await readHeadTreeEscaped(ctx);` (L380). `readHeadTreeEscaped` → `readHeadTreeWith` (src/application/primitives/read-head-tree.ts L117-139) calls `resolveRef(ctx, 'HEAD')`, folds only `REF_NOT_FOUND` into `undefined`, and so rejects `PATH_TOO_LONG` / `INVALID_REF` / `REF_CYCLE_DETECTED`. That rejection is where the design's "today" column comes from.
+
+Change (decision candidate D11):
+- `reportStatus`: `const headId = await resolveRevisionName(ctx, HEAD_NAME); const headTree = headId === undefined ? undefined : await readHeadTreeEscaped(ctx);`. This is git's `is_initial`: no oid for HEAD means no HEAD tree. For an unborn HEAD it is equivalent (the tree read answered `undefined` anyway), and a readable HEAD keeps today's read.
+- `statusInScope`: replace the `readHeadRaw` line and the `branch`/`detached` expression with one call to a new private `headViewOf(ctx): Promise<Pick<StatusResult, 'branch' | 'detached'>>`, placed where `readHeadRaw` was called (before `readIndex`), and spread it into the result: `return { ...head, ...report };`.
+  ```ts
+  /** git's `branch.head`: the branch HEAD names, detached, or unknown when HEAD's chain cannot be read. */
+  const headViewOf = async (ctx: Context): Promise<HeadView> => {
+    try {
+      const head = await readHeadRaw(ctx);
+      await resolveRefOrMissing(ctx, HEAD_NAME);
+      return { branch: branchRefFromHead(head), detached: head.kind === 'direct' };
+    } catch (err) {
+      if (isUnreadableRef(err)) return UNKNOWN_HEAD;
+      throw err;
+    }
+  };
+  ```
+  with `type HeadView = Pick<StatusResult, 'branch' | 'detached'>` and `const UNKNOWN_HEAD: HeadView = { branch: undefined, detached: false };`. `resolveRefOrMissing` (src/application/primitives/resolve-ref.ts L105) answers `undefined` for an unborn target, so an unborn HEAD keeps its name. The call is unconditional on purpose: a detached HEAD resolves to its own id without a fault, so a `head.kind === 'symbolic'` guard would only add an equivalent mutant. A missing HEAD still rejects `REF_NOT_FOUND`, and a non-ref fault (e.g. `PERMISSION_DENIED`) still rejects. It costs one extra chain resolution per `status` call (loose-ref reads, no object read).
+- `src/application/primitives/resolve-ref.ts`: rename the private `const isUnreadable = (err: unknown): boolean => …` (L129) to `export const isUnreadableRef` (**internal**: imported by status.ts only, not barrelled, not public), give it a one-line doc comment, and update its two call sites (L143 in `unreadableCandidate`, L164 in `readRefCandidate`). Its `// Stryker disable next-line StringLiteral` comment (L128) must stay directly above the declaration line. Exporting the existing predicate means status.ts adds no `?? ''` fallback and no new equivalent mutant.
+
+Files:
+- `src/application/commands/status.ts` — `headViewOf`, `UNKNOWN_HEAD`, `HeadView`, the `statusInScope` and `reportStatus` edits. Imports: `isUnreadableRef`, `resolveRefOrMissing` from ../primitives/resolve-ref.js. Keep every function under 20 lines.
+- `src/application/primitives/resolve-ref.ts` — the `isUnreadableRef` export.
+- `test/unit/application/commands/status.test.ts` — new rows in the top-level describe that holds `Given a detached HEAD pointing at a commit oid` (L189-207), after that block. Fixture: `seedClean()` (L43-50; commits `a.txt`). Fault ctx in the file's own pattern (L345-362: `{ ...ctx, fs: { ...ctx.fs, <method>: async (path) => … } }`): `lstatIfReachable: async (path: string) => { if (path === target) throw pathTooLong(path); return lstatIfReachable(ctx.fs, path); }` with `target = \`${ctx.layout.gitDir}/refs/heads/overlong\``, after `await ctx.fs.writeUtf8(\`${ctx.layout.gitDir}/HEAD\`, 'ref: refs/heads/overlong\n')`. Import `pathTooLong` from src/domain/error.ts and `lstatIfReachable` from src/application/primitives/internal/fs-probes.ts. A helper `changeFor(result, path)` already exists in the file.
+- `docs/use/commands/status.md` — Signature (L16-17): trailing comments on the two fields: `branch` = `// the branch HEAD names; undefined when detached or unknown`, `detached` = `// true only when HEAD holds an object id`. Behaviour: replace the `**Detached HEAD:**` bullet (L85) with a `**HEAD states.**` bullet listing the three states. On a branch: `branch` set, `detached: false` (an unborn branch keeps its name). Detached: `branch` undefined, `detached: true`. Unknown: `branch` undefined, `detached: false`, git's `# branch.head (unknown)`. Unknown happens when HEAD's chain cannot be read: a target whose loose path the file system refuses as too long, a target name git refuses, or a symbolic cycle. The report then has no HEAD tree, so every staged entry is `added` with no `head` side, as in git's `# branch.oid (initial)`. Leave the Unborn HEAD bullet (L76) as it is.
+- `test/integration/broken-head-interop.test.ts` — extend Part 16's suite: header `surface: status, log, revParse`, `interopSurface: status, log, revParse`, and `unique:` reworded to cover status. The rows are listed under "Pinned bytes".
+- `test/integration/status-gitlink-interop.test.ts` — one entry in `ROWS` (L330-…) for SF11: `['a module HEAD naming a branch too long for the file system', async (repo) => writeFile(path.join(moduleDir(repo), 'HEAD'), \`ref: refs/heads/${'1'.repeat(LONG_NAME_LENGTH)}\n\`)]`, with `const LONG_NAME_LENGTH = 5000` beside the suite's constants (L44-53). `moduleDir` is at L88. The `describe.each(ROWS)` comparator (L459-482) checks the change fields and the untracked list against git.
+
+Pinned bytes (git 2.55). For the new suite, compare `git status --porcelain=v2 --branch` in the git twin with tsgit's `status(ctx)` in the tsgit twin. Rebuild git's ordinary lines from `ChangedPath` with a suite-local copy of the `fieldsOf` / `gitFieldsOf` pair (status-gitlink-interop.test.ts L397-415; not exported). The header lines are asserted structurally:
+- LH1 (orchestrator ×3): HEAD → `ref: refs/heads/<5000 × '1'>`. git exit 0, `# branch.oid (initial)`, `# branch.head (unknown)`, `1 A. N... 000000 100644 100644 <40 zeros> <blob> k` and the same for `u`. tsgit: `branch` undefined, `detached` false, changes equal git's lines (every `staged: 'added'`, no `head`), `untracked` empty, `clean` false.
+- LH2 (orchestrator): HEAD → `ref: refs/heads/<300 × 'a'>` (over `NAME_MAX`). Same as LH1.
+- LH3, GUARD (orchestrator, and run on tsgit by the Part 6 implementer: `branch: 'refs/heads/none'`): HEAD → `ref: refs/heads/none`. git `# branch.oid (initial)`, `# branch.head none`, the same `A.` lines. tsgit: `branch === 'refs/heads/none'`, `detached` false, the same changes.
+- LH6 (planner, ×3): LH1's HEAD, `git symbolic-ref HEAD` → exit 128, stderr exactly `fatal: No such ref: HEAD\n`. tsgit has no symbolic-ref command (none in src/application/commands/index.ts or the Repository facade), so the row asserts git's exit and stderr and tsgit's structured equivalent: `status(ctx).branch === undefined` with `detached === false` (HEAD names no branch).
+- LH8 (planner, ×3 each): HEAD → `ref: refs/heads/a..b`, and HEAD → `refs/heads/c1`, `refs/heads/c1` = `ref: refs/heads/c2\n`, `refs/heads/c2` = `ref: refs/heads/c1\n` (written with `writeFile`, after the copy, in each twin). git exit 0 for both, `# branch.oid (initial)`, `# branch.head (unknown)`, the same `A.` lines as LH1. tsgit: as LH1. If tsgit's repository discovery (src/repository/find-layout.ts `hasValidHead`) refuses the `a..b` HEAD before `status` runs, stop and hand back: the fold lies outside this part.
+- LH7 = SF11 (design row): superproject `status` with the module's HEAD → `ref: refs/heads/<5000 × '1'>` → git `1 .M S.M. 160000 160000 160000 <A> <A> sub`, exit 0. The child status now succeeds with every child index entry a staged add (tracked changes → `M`). The gitlink HEAD comparison folds the child's unreadable HEAD into "unchanged" (`checkedOutHead` in src/application/primitives/compare-working-tree-entry.ts catches the `TsgitError`), so `commitChanged` stays false.
+
+**Decision candidate D11** (the orchestrator confirms): how `status` drops the HEAD tree for an unreadable HEAD. A. Gate `readHeadTreeEscaped` on `resolveRevisionName(ctx, 'HEAD')`'s result, which `reportStatus` already computes. That is git's own `is_initial`, needs no plumbing, and is equivalent for unborn and readable HEADs. B. Thread a flag or a tree-loader from `statusInScope` through `scanAndReport` → `LockedScan` → `reportUnderLock` → `reportStatus`: four signatures for one bit. C. Catch the unreadable codes around `readHeadTreeEscaped`. That would also swallow an `INVALID_OBJECT_ID` raised while flattening a corrupt tree and report it as initial. **Recommendation: A.**
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED: status.test.ts `Given a HEAD whose branch's loose path is too long for the file system` > `When status` > `Then every index entry is a staged add with no head side`: `changeFor(result, 'a.txt')` has `staged: 'added'` and `head` undefined, and `clean` is false. Fails because `status` rejects `{ code: 'PATH_TOO_LONG', path: target }` from `readHeadTreeEscaped` (`reportStatus` reads the HEAD tree through `resolveRef`).
+2. GREEN: `reportStatus` gates the tree read on `resolveRevisionName`'s result.
+3. GUARD: the unborn row `Given an unborn HEAD with staged files` (L504-526, run today) still passes, because GREEN 2 is equivalent for an unborn HEAD.
+4. RED: same Given, `Then branch is undefined and detached is false`. Fails because `branch` is `'refs/heads/overlong'` (`branchRefFromHead` names the unreadable target).
+5. GREEN: `isUnreadableRef` export in resolve-ref.ts, `headViewOf` + `UNKNOWN_HEAD` in status.ts, `statusInScope` spreads the view.
+6. GUARD: `Given a HEAD naming a branch git refuses (a..b)`. `branch` undefined, `detached` false, `a.txt` a staged add. Passes because GREEN 5's catch wraps `readHeadRaw`, which rejects `INVALID_REF`, and GREEN 2 skips the tree because `resolveRevisionName` answers `undefined`.
+7. GUARD: `Given a HEAD whose branch is a symbolic cycle` (HEAD → `refs/heads/c1` → `c2` → `c1`, written with `ctx.fs.writeUtf8`). Same expectations. Passes because `resolveRefOrMissing` rejects `REF_CYCLE_DETECTED`, which is in the set.
+8. GUARD: `Given a HEAD whose branch's loose path cannot be read for a reason git does not fold` (the fault ctx throwing `permissionDenied(path)` instead): `status` rejects with `.data` equal to `{ code: 'PERMISSION_DENIED', path: target }`. Passes because `headViewOf` rethrows. This row covers the rethrow branch.
+9. GUARD: `Given an unborn HEAD`: `init` only, `status(ctx)` gives `branch === 'refs/heads/main'` and `detached === false` (passes because `resolveRefOrMissing` answers `undefined` without throwing). The existing detached row (L189-207, run today) still passes.
+10. Interop: extend test/integration/broken-head-interop.test.ts with LH1, LH2, LH3, LH6 and LH8, git first, and add the SF11 entry to `ROWS` in test/integration/status-gitlink-interop.test.ts. In the same suite add the four ignore-configuration rows Part 9 left out, from the design's SC table: r6 (`.gitmodules` `ignore = bogus`, moved → git exit 0, stderr `warning: Invalid parameter 'bogus' for config option 'submodule.sub.ignore'`, the `SC..` row shown; tsgit shows the row, no refusal), r7 (valueless `[submodule "sub"] ignore` in `.git/config`, and valueless `[diff] ignoreSubmodules` → git exit 128 `error: missing value for '<key>'` then `fatal: bad config variable …`; tsgit `CONFIG_MISSING_VALUE` with key, source, line — assert every field), r8 (`ignore = all`, gitlink staged via `update-index --cacheinfo 160000,<C>,sub` → `1 M. S... 160000 160000 160000 <A> <C> sub`, the staged column stays), r9 (`ignore = all`, `sub` replaced by a file, and `sub` removed → no line for either). If a pin disagrees with what is written here, git wins and the hand-back says so.
+11. Docs: the status.md Signature comments and the HEAD-states bullet.
+12. REFACTOR: functions under 20 lines; no phase, ADR or row ids in code or test titles.
+
+### Gate
+
+```
+npx vitest run test/unit/application/commands/status test/unit/application/primitives/resolve-ref test/unit/application/primitives/read-head-tree test/unit/application/commands/rev-parse test/unit/application/commands/log && npm run check:types && ./node_modules/.bin/biome check src/application/commands/status.ts src/application/primitives/resolve-ref.ts test/unit/application/commands/status.test.ts test/integration/broken-head-interop.test.ts test/integration/status-gitlink-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/commands/status.ts src/application/primitives/resolve-ref.ts test/unit/application/commands/status.test.ts test/integration/broken-head-interop.test.ts test/integration/status-gitlink-interop.test.ts docs/use/commands/status.md
+npx depcruise src/ --config .dependency-cruiser.cjs && npx knip && npm run check:doc-links
+npx vitest run test/unit/application/commands/status test/unit/application/primitives/resolve-ref --coverage --coverage.include=src/application/commands/status.ts --coverage.include=src/application/primitives/resolve-ref.ts --coverage.reporter=text
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/broken-head-interop.test.ts test/integration/status-gitlink-interop.test.ts test/integration/status-interop.test.ts test/integration/status-embedded-repository-interop.test.ts test/integration/head-symlink-interop.test.ts test/integration/rev-parse-dwim-interop.test.ts
+```
+
+### Commit
+
+`fix(status): report a HEAD whose target cannot be read as unknown, as git does`
