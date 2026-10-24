@@ -58,8 +58,11 @@ drops the untracked flag. The precedence is `.git/config submodule.<name>.ignore
   already excludes gitlinks (ADR-960) and is unchanged.
 - The child status refreshes and writes the submodule's index as git's child does (SX4), the
   "submodule cleanliness" consumer ADR-958 already names.
-- `parseGitmodules` gains the `ignore` key; the ignore sources are read only when the index holds
-  a stage-0 gitlink, so a repository without submodules pays nothing.
+- `parseGitmodules` gains the `ignore` key. `.gitmodules` and the per-name `submodule.<name>.ignore`
+  keys are read only when the index holds a stage-0 gitlink; `diff.ignoreSubmodules` is validated
+  on every `status` run, as git parses it at config load — a bogus value dies in a repository with
+  no submodule at all (design rows r1–r3, pinned after Part 8 refuted an earlier "pays nothing"
+  wording of this bullet).
 - `rm` reuses the same dirty check with the ignore mode forced to `none` (ADR-1066).
 - The structured surface for the flags is ADR-1064; the symlink refusal's error is ADR-1069; a
   failing child status is ADR-1070; an invalid ignore value is ADR-1068.
