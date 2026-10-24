@@ -3804,3 +3804,83 @@ describe('applyChangeset replacing a directory whose tracked child has a non-UTF
     });
   });
 });
+
+describe('applyChangeset over a gitlink directory', () => {
+  const OLD_ID = 'a'.repeat(40) as ObjectId;
+  const NEW_ID = 'b'.repeat(40) as ObjectId;
+
+  describe('Given an update entry whose previous mode is a gitlink over a populated directory', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it applies without refusal and leaves the directory files', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${WORKDIR}/sub/edited.txt`, enc('e'));
+        const changeset = makeChangeset([makeUpdate('sub', OLD_ID, NEW_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub/edited.txt`))).toBe('e');
+      });
+    });
+  });
+
+  describe('Given a delete entry whose previous mode is a gitlink over a populated directory', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it applies without refusal and leaves the directory in place', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${WORKDIR}/sub/edited.txt`, enc('e'));
+        const changeset = makeChangeset([makeDelete('sub', OLD_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub/edited.txt`))).toBe('e');
+      });
+    });
+  });
+
+  describe('Given a delete entry whose previous mode is a gitlink over an empty directory', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the directory is removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir(`${WORKDIR}/sub`);
+        const changeset = makeChangeset([makeDelete('sub', OLD_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/sub`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a regular-file update over a locally modified file', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it is still refused as a local change', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('old'));
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/f`, enc('edited'));
+        const changeset = makeChangeset([makeUpdate('f', oldId, newId)]);
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY' });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('edited');
+      });
+    });
+  });
+});

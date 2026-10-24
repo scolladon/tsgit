@@ -294,6 +294,8 @@ const evaluateDirtyPath = async (
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'update' || entry.kind === 'delete') {
     if (entry.previousId === undefined) return undefined;
+    // git's verify_uptodate returns early for a gitlink: the submodule's worktree is never compared.
+    if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
     return (await isDirtyUnder(ctx, await probe(), entry.path, absPath, entry.previousId))
       ? { class: 'local-changes', path: entry.path }
       : undefined;
@@ -371,7 +373,12 @@ const applyDeleteEntry = async (
   // git skips a removal silently when the leading directory is a symlink —
   // the delete is never attempted, not refused.
   if (await scanner.hasSymlinkedLeadingPath(entry.path)) return undefined;
-  await rmIfExists(ctx, joinPath(workdir, entry.path));
+  const abs = joinPath(workdir, entry.path);
+  // git's unlink_entry removes a gitlink with rmdir, leaving a populated directory in place.
+  if (entry.previousMode === FILE_MODE.GITLINK) {
+    return (await removeEmptyDirectory(ctx, abs)) ? entry.path : undefined;
+  }
+  await rmIfExists(ctx, abs);
   return entry.path;
 };
 
