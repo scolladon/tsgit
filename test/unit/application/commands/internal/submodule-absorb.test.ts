@@ -899,6 +899,72 @@ describe('absorbGitDirs', () => {
       });
     });
   });
+
+  describe('Given a submodule whose .git is a link to a work-tree link that leads into .git/modules', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then nothing moves: the chain resolves inside the git directory, where git leaves it', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.symlink('.git/modules/sub', work(ctx, 'lnk'));
+        await linkDotGitTo(ctx, '../lnk');
+        const sut = absorbGitDirs;
+
+        // Act
+        await sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB);
+
+        // Assert
+        expect(await isSymbolicLink(ctx, work(ctx, 'lnk'))).toBe(true);
+        expect(await isSymbolicLink(ctx, work(ctx, 'sub/.git'))).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a link to a work-tree link that leads to a repository elsewhere', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then the repository at the end of the chain moves and the intermediate link stays', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        const beside = resolveWorktreePath(work(ctx, 'sub'), '../ext');
+        await ctx.fs.rename(`${ctx.layout.gitDir}/modules/sub`, beside);
+        await ctx.fs.symlink('ext', work(ctx, 'lnk'));
+        await linkDotGitTo(ctx, '../lnk');
+        const headBytes = await ctx.fs.readUtf8(`${beside}/HEAD`);
+        const sut = absorbGitDirs;
+
+        // Act
+        await sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], ROWS_SUB);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/sub/HEAD`)).toBe(headBytes);
+        expect(await ctx.fs.exists(beside)).toBe(false);
+        expect(await isSymbolicLink(ctx, work(ctx, 'lnk'))).toBe(true);
+        expect(await ctx.fs.readUtf8(work(ctx, 'sub/.git'))).toBe('gitdir: ../.git/modules/sub\n');
+      });
+    });
+  });
+
+  describe('Given a submodule whose .git is a directory holding no repository, named a/b while modules/a is a repository', () => {
+    describe('When the matched gitlinks are absorbed', () => {
+      it('Then it refuses naming the enclosing module before creating anything', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await dotGitAsEmptyDirectory(ctx);
+        await init(deriveGitlinkContext(ctx, `${ctx.layout.gitDir}/modules/a`, 'a' as FilePath));
+        const rows = [{ name: 'a/b', path: 'sub' as FilePath, url: '../up' }];
+        const sut = absorbGitDirs;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, createLeadingPathScanner(ctx), ['sub' as FilePath], rows),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'SUBMODULE_GIT_DIR_NESTED', name: 'a/b', inside: 'a' });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules/a/b`)).toBe(false);
+      });
+    });
+  });
 });
 
 describe('gitlinkLocalModification', () => {

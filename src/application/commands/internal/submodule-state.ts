@@ -158,11 +158,18 @@ export const configuredSubmoduleIgnore = async (
   return own ?? (row.ignore === undefined ? undefined : ignoreModeOf(row.ignore));
 };
 
-/** Where `.gitmodules` is read from: the working tree, else the blob the index holds. */
+/** Where `.gitmodules` is read from: the working tree, else the blob the index records; the whole index tells an unmerged one. */
 export interface GitmodulesSource {
   readonly workDir: string;
-  readonly stage0: ReadonlyMap<FilePath, IndexEntry>;
+  readonly entries: ReadonlyArray<IndexEntry>;
 }
+
+/** git's `is_gitmodules_unmerged`: a `.gitmodules` entry at any stage above zero. */
+const isGitmodulesUnmerged = (entries: ReadonlyArray<IndexEntry>): boolean =>
+  entries.some((entry) => entry.path === GITMODULES_FILE && entry.flags.stage !== 0);
+
+const stage0GitmodulesOf = (entries: ReadonlyArray<IndexEntry>): IndexEntry | undefined =>
+  entries.find((entry) => entry.path === GITMODULES_FILE && entry.flags.stage === 0);
 
 /** The blob git's `HEAD:.gitmodules` names, when HEAD records one. */
 const headGitmodulesBlob = async (ctx: Context): Promise<ObjectId | undefined> => {
@@ -178,9 +185,9 @@ const NON_BLOB_MODES: ReadonlySet<FileMode> = new Set([FILE_MODE.DIRECTORY, FILE
 /** The recorded `.gitmodules` git falls back to without a working file: the staged blob, else HEAD's. */
 export const readRecordedGitmodules = async (
   ctx: Context,
-  stage0: ReadonlyMap<FilePath, IndexEntry>,
+  entries: ReadonlyArray<IndexEntry>,
 ): Promise<ReadonlyArray<GitmodulesRow>> => {
-  const id = stage0.get(GITMODULES_FILE as FilePath)?.id ?? (await headGitmodulesBlob(ctx));
+  const id = stage0GitmodulesOf(entries)?.id ?? (await headGitmodulesBlob(ctx));
   if (id === undefined) return [];
   const blob = await readBlob(ctx, id, { maxBytes: MAX_GITMODULES_BYTES });
   return parseGitmodules(new TextDecoder().decode(blob.content));
@@ -200,13 +207,18 @@ export const readWorkingGitmodules = async (
   return ctx.fs.readUtf8(path);
 };
 
-/** The `.gitmodules` rows git's `submodule_from_path` consults: the working file, else the staged blob, else HEAD's. */
+/**
+ * The `.gitmodules` rows git's `submodule_from_path` consults: the working file, else the staged
+ * blob, else HEAD's — and none at all while the index holds `.gitmodules` unmerged, as
+ * `repo_read_gitmodules` skips the whole read then.
+ */
 export const readGitmodulesRows = async (
   ctx: Context,
-  { workDir, stage0 }: GitmodulesSource,
+  { workDir, entries }: GitmodulesSource,
 ): Promise<ReadonlyArray<GitmodulesRow>> => {
+  if (isGitmodulesUnmerged(entries)) return [];
   const text = await readWorkingGitmodules(ctx, workDir);
-  return text === undefined ? readRecordedGitmodules(ctx, stage0) : parseGitmodules(text);
+  return text === undefined ? readRecordedGitmodules(ctx, entries) : parseGitmodules(text);
 };
 
 /** `diff.ignoreSubmodules`, which git parses on every run whether or not a submodule exists. */

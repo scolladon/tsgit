@@ -12,7 +12,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import {
   appendFile,
   cp,
@@ -855,6 +855,29 @@ const oversizedGitmodulesStaged: Setup = async (repo) => {
   await appendFile(path.join(repo, GITMODULES), `# ${'x'.repeat(OVERSIZED_GITFILE_BYTES)}\n`);
   gitIn(repo, 'add', GITMODULES);
 };
+/** `sub/.git` links to its own module through the superproject's canonical (realpath) spelling. */
+const dotGitLinkedIntoModulesCanonical: Setup = async (repo) => {
+  await rm(sub(repo, '.git'));
+  await symlink(path.join(realpathSync(repo), ...MODULE_DIR), sub(repo, '.git'));
+};
+/** `sub/.git` links to a work-tree link, which leads to the repository moved beside the superproject. */
+const dotGitLinkedThroughWorkTreeLink: Setup = async (repo) => {
+  const outside = `${repo}-ext`;
+  await rename(path.join(repo, ...MODULE_DIR), outside);
+  gitIn(repo, 'config', '--file', path.join(outside, 'config'), '--unset', 'core.worktree');
+  await symlink(path.relative(repo, outside), path.join(repo, 'lnk'));
+  await rm(sub(repo, '.git'));
+  await symlink(path.join('..', 'lnk'), sub(repo, '.git'));
+};
+/** The section renamed `a/b` with `.git/modules/a` a repository, and `sub/.git` an empty directory. */
+const dotGitEmptyDirectoryUnderNestedName: Setup = async (repo) => {
+  gitIn(repo, 'config', '--file', GITMODULES, '--rename-section', 'submodule.sub', 'submodule.a/b');
+  gitIn(repo, 'add', GITMODULES);
+  commitIn(repo, 'rename');
+  await rename(path.join(repo, ...MODULE_DIR), path.join(repo, '.git', 'modules', 'a'));
+  await rm(sub(repo, '.git'));
+  await mkdir(sub(repo, '.git'));
+};
 
 const RM_ROWS: ReadonlyArray<RmRow> = [
   {
@@ -1219,6 +1242,34 @@ const RM_ROWS: ReadonlyArray<RmRow> = [
     setup: oversizedGitmodulesStaged,
     paths: ['sub'],
     cached: true,
+  },
+  {
+    title: 'a .git linking to the repository under .git/modules through its canonical spelling',
+    setup: dotGitLinkedIntoModulesCanonical,
+    paths: ['sub'],
+    cached: false,
+    refusal: LOCAL_MODIFICATIONS,
+  },
+  {
+    title:
+      'a .git linking to the repository under .git/modules through its canonical spelling, forced',
+    setup: dotGitLinkedIntoModulesCanonical,
+    paths: ['sub'],
+    cached: false,
+    force: true,
+  },
+  {
+    title: 'a .git linking to a work-tree link that leads to a repository outside the working tree',
+    setup: dotGitLinkedThroughWorkTreeLink,
+    paths: ['sub'],
+    cached: false,
+  },
+  {
+    title: 'a .git that is an empty directory, named a/b while .git/modules/a is a repository',
+    setup: dotGitEmptyDirectoryUnderNestedName,
+    paths: ['sub'],
+    cached: false,
+    refusal: DIED('SUBMODULE_GIT_DIR_NESTED'),
   },
 ];
 

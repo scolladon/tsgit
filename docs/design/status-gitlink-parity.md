@@ -428,6 +428,16 @@ has a symlinked leading directory is `absent` (git's `check_removed` →
 `has_symlink_leading_path`). This applies to every mode: ST20 and ST21 prove the defect for
 files too, in the same function, so it is folded. The hot path cost is candidate 5.
 
+Measured after the review round (`npm run bench:ab 56976fc5 <head>` three times, then a
+CPU-profiled replay of `commit.bench`'s wide scenario — 500 directories × 4 files, one rewrite
+added and committed per iteration): 21.1 ms → 25.4 ms per iteration. The whole delta is the
+scanner's one `lstat` per distinct leading directory (1000 here: `dNNN` and `dNNN/sub`) during
+the cache-tree writer's refresh scan, on top of the 2000 entry `lstat`s it already issued. git
+2.55 pays the same count: `refresh_cache_ent` calls `has_symlink_leading_path` for every entry
+through its `lstat_cache`, so `update-index --refresh` reports `d/f: needs update` once `d` is a
+link while `commit` of another path still exits 0 and keeps `d/f` tracked. The cost is the pinned
+semantics' own; `status` over a small repository moves by the same mechanism (+11%).
+
 ### Part d — `status`'s dirty check (R5, R6), if candidate 1 = A
 
 New `src/application/commands/internal/submodule-dirt.ts` (name for the ADR phase), called by
@@ -635,3 +645,6 @@ The review round found behaviour the implementation had not pinned. Each row bel
 | RV38 | `rebase <onto>`, HEAD's `.gitmodules` says `ignore = all`, `<onto>`'s has no `ignore`, staged gitlink move | exit 0, `Rebasing (1/1)`, the replayed commit records the staged id (git's in-process submodule-config cache keeps the pre-flight modes); without the `ignore` in HEAD the first pick refuses as CO14b | the pre-flight modes are kept for the run (`ReplayContext.submoduleIgnores`); pinned for the B4 fold |
 | RV39 | `rebase <onto>` after `rm --cached sub` under a `.gitmodules` `ignore = none` | exit 1 `cannot rebase: Your index contains uncommitted changes.`; under `ignore = all` exit 0 (RV22) | `WORKING_TREE_DIRTY { localChanges: ['sub'] }` before HEAD moves |
 | RV40 | `cherry-pick` / `revert` / `rebase` with a pick, a staged gitlink ADDITION under `ignore = all` | exit 0 and the new commit records `160000 sub`; a rebase that fast-forwards records nothing and keeps the index entry | the index tree keeps a staged addition the two-way rule carried, so the pick commits it; was: committed without it |
+| RV41 | `rm sub` / `rm -f sub`, `sub/.git` a link naming the submodule's own `.git/modules/sub` through the superproject's canonical spelling (`/private/var/…` where the repository was opened as `/var/…`), or any symlinked ancestor | `real_pathdup` on both sides: the target lies inside the common dir, nothing is relocated; `rm` exit 1 local modifications, `rm -f` exit 0 keeping the module | both sides resolved with git's real-path walk (`realPathOf`, the alternates' `strbuf_realpath` port) before the inside check; was: a lexical compare moved a linked-worktree admin dir or another submodule's module directory |
+| RV42 | `rm sub`, `sub/.git -> ../lnk` with `lnk -> ../ext` (a chain ending outside the superproject) | exit 0, the repository at the end of the chain (`ext`) migrates to `.git/modules/s`; `lnk` stays (dangling) | the whole chain is resolved and the final directory renamed through a filesystem reaching it; was: the work-tree link `lnk` itself was moved into `modules/` and `sub` cut off |
+| RV43 | `rm sub` / `rm -f sub`, `sub/.git` an empty directory, `.gitmodules` name `a/b`, `.git/modules/a` a repository | exit 128 `refusing to create/use '.git/modules/a/b' in another submodule's git dir`, nothing created (`validate_submodule_git_dir` runs in the name arm too) | `SUBMODULE_GIT_DIR_NESTED { name: 'a/b', inside: 'a' }` before the `mkdir`; was: a directory created inside the other module's git dir |

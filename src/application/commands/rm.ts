@@ -230,9 +230,8 @@ const readGitmodules = async (
     return { text: undefined, rows: [], refusesEdit: present };
   }
   const text = await readWorkingGitmodules(ctx, workDir);
-  const stage0 = new Map(entries.filter(isStageZero).map((entry) => [entry.path, entry]));
   const rows =
-    text === undefined ? await readRecordedGitmodules(ctx, stage0) : parseGitmodules(text);
+    text === undefined ? await readRecordedGitmodules(ctx, entries) : parseGitmodules(text);
   return { text, rows, refusesEdit: false };
 };
 

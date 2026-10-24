@@ -19,7 +19,7 @@ import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-i
 import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { seedIndex } from './add-index-fixtures.js';
-import { withSubmodule } from './submodule-fixtures.js';
+import { unmergeEntry, withSubmodule } from './submodule-fixtures.js';
 
 const author = {
   name: 'Ada',
@@ -931,6 +931,27 @@ describe('status submodule field', () => {
 
         // Assert
         expect(rowIn(result, 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given .gitmodules committed with ignore = all, then left unmerged in the index and deleted from the work tree', () => {
+    describe('When status runs', () => {
+      it('Then the moved submodule is reported: git reads no .gitmodules row while it is unmerged', async () => {
+        // Arrange
+        const ctx = await movedWith({ gitmodules: gitmodulesIgnoring('all') });
+        await add(ctx, ['.gitmodules']);
+        await commit(ctx, { message: 'ignore all', author });
+        await unmergeEntry(ctx, '.gitmodules');
+        await ctx.fs.rm(`${ctx.layout.workDir}/.gitmodules`);
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(rowIn(result, 'sub')?.unstaged).toBe('modified');
+        expect(result.unmerged.map((entry) => entry.path)).toEqual(['.gitmodules']);
       });
     });
   });

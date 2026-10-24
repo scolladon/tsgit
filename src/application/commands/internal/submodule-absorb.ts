@@ -5,7 +5,7 @@
  * submodules included), `absorb_git_dir_into_superproject` moves every embedded
  * repository under `modules/` and `bad_to_remove_submodule` judges local changes.
  */
-import { dirname, TsgitError } from '../../../domain/error.js';
+import { dirname, permissionDenied, TsgitError } from '../../../domain/error.js';
 import type { IndexEntry } from '../../../domain/git-index/index.js';
 import { FILE_MODE } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
@@ -26,12 +26,14 @@ import {
   statOrUnreachable,
 } from '../../primitives/internal/gitlink-head.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
+import { realPathOf } from '../../primitives/internal/real-path.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
 import { deriveGitlinkContext } from '../../primitives/internal/submodule-context.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../../primitives/internal/symlinked-leading-path.js';
+import { worktreeScopedFs } from '../../primitives/internal/worktree-context.js';
 import type { GitmodulesRow } from '../../primitives/parse-gitmodules.js';
 import { commonGitDir } from '../../primitives/path-layout.js';
 import { readIndex } from '../../primitives/read-index.js';
@@ -88,16 +90,15 @@ interface CheckoutGitlinks {
   readonly rows: ReadonlyArray<GitmodulesRow>;
 }
 
-/** The gitlinks a checkout's index records and the `.gitmodules` rows naming them. */
+/** The gitlinks a checkout's index records and the `.gitmodules` rows naming them; a checkout recording none reads no `.gitmodules`, as git's foreach visits nothing. */
 const checkoutGitlinks = async (child: Context): Promise<CheckoutGitlinks> => {
   const { entries } = await readIndex(child);
-  const stage0 = entries.filter((entry) => entry.flags.stage === 0);
+  const gitlinks = entries
+    .filter((entry) => entry.flags.stage === 0 && entry.mode === FILE_MODE.GITLINK)
+    .map((entry) => entry.path);
+  if (gitlinks.length === 0) return { gitlinks, rows: [] };
   const workDir = requireWorkTree(child, COMMAND);
-  const source = { workDir, stage0: new Map(stage0.map((entry) => [entry.path, entry])) };
-  return {
-    gitlinks: stage0.filter((entry) => entry.mode === FILE_MODE.GITLINK).map((entry) => entry.path),
-    rows: await readGitmodulesRows(child, source),
-  };
+  return { gitlinks, rows: await readGitmodulesRows(child, { workDir, entries }) };
 };
 
 /** Whether a directory stands at the gitlink's path: git's `stat` of `<path>/.git` fails beneath anything else. */
@@ -186,10 +187,21 @@ const moduleNameOf = (path: FilePath, rows: ReadonlyArray<GitmodulesRow>): strin
 
 const moduleDirOf = (ctx: Context, name: string): string => `${ctx.layout.gitDir}/modules/${name}`;
 
-/** Whether a repository already lies inside the superproject's own git directory, where git leaves it. */
-const isInsideGitDir = (ctx: Context, gitDir: string): boolean => {
-  const common = commonGitDir(ctx);
-  return gitDir === common || gitDir.startsWith(`${common}/`);
+/** Whether a repository already lies inside the superproject's own git directory, where git leaves it: real paths on both sides, as git's `real_pathdup` compares them. */
+const isInsideGitDir = async (ctx: Context, realGitDir: string): Promise<boolean> => {
+  const common = (await realPathOf(ctx, commonGitDir(ctx))) ?? commonGitDir(ctx);
+  return realGitDir === common || realGitDir.startsWith(`${common}/`);
+};
+
+/** The repository a checkout's `.git` really leads to, every link resolved; a chain git cannot resolve refuses before anything moves. */
+const realRepositoryOf = async (
+  ctx: Context,
+  path: FilePath,
+  reached: Context,
+): Promise<string> => {
+  const real = await realPathOf(ctx, reached.layout.gitDir);
+  if (real === undefined) throw permissionDenied(dotGitOf(ctx, path));
+  return real;
 };
 
 /**
@@ -230,9 +242,10 @@ const removeDotGitLink = async (ctx: Context, path: FilePath): Promise<void> => 
 };
 
 /**
- * git's `relocate_single_git_dir_into_superproject`: the repository `.git` reaches — the
- * directory itself, or the one a link leads to — moves under `modules/<name>` unless it already
- * lies inside the superproject's git directory, and the checkout is connected back to it.
+ * git's `relocate_single_git_dir_into_superproject`: the repository `.git` really reaches — the
+ * directory itself, or the one a chain of links leads to — moves under `modules/<name>` unless
+ * it already lies inside the superproject's git directory, and the checkout is connected back
+ * to it. The move runs through a filesystem reaching the resolved repository, wherever it lies.
  * Answers the checkout's context as it is reached afterwards.
  */
 const relocateGitDir = async (
@@ -244,10 +257,11 @@ const relocateGitDir = async (
   const name = moduleNameOf(path, rows);
   await refuseNestedModuleDir(ctx, name);
   const reached = await checkout.context();
-  if (isInsideGitDir(ctx, reached.layout.gitDir)) return reached;
+  const realGitDir = await realRepositoryOf(ctx, path, reached);
+  if (await isInsideGitDir(ctx, realGitDir)) return reached;
   const moduleDir = moduleDirOf(ctx, name);
   await ctx.fs.mkdir(dirname(moduleDir));
-  await reached.fs.rename(reached.layout.gitDir, moduleDir);
+  await worktreeScopedFs(ctx, realGitDir).rename(realGitDir, moduleDir);
   await removeDotGitLink(ctx, path);
   return connectWorkTreeAndGitDir(ctx, path, moduleDir);
 };
@@ -258,7 +272,9 @@ const connectUnreadableCheckout = async (
   path: FilePath,
   rows: ReadonlyArray<GitmodulesRow>,
 ): Promise<void> => {
-  const moduleDir = moduleDirOf(ctx, moduleNameOf(path, rows));
+  const name = moduleNameOf(path, rows);
+  await refuseNestedModuleDir(ctx, name);
+  const moduleDir = moduleDirOf(ctx, name);
   await ctx.fs.mkdir(moduleDir);
   await connectWorkTreeAndGitDir(ctx, path, moduleDir);
 };

@@ -93,14 +93,13 @@ const gitlinkPaths = (
 /** The ignore mode each gitlink's submodule configuration declares; read only when a gitlink exists. */
 const configuredIgnores = async (
   ctx: Context,
-  stage0: ReadonlyArray<IndexEntry>,
+  entries: ReadonlyArray<IndexEntry>,
   headFlat: EscapedFlatTree,
 ): Promise<ConfiguredIgnores> => {
-  const paths = gitlinkPaths(stage0, headFlat);
+  const paths = gitlinkPaths(partitionIndex(entries).stage0, headFlat);
   const workDir = ctx.layout.workDir;
   if (paths.size === 0 || workDir === undefined) return new Map();
-  const stage0Map = new Map(stage0.map((entry) => [entry.path, entry]));
-  const rows = await readGitmodulesRows(ctx, { workDir, stage0: stage0Map });
+  const rows = await readGitmodulesRows(ctx, { workDir, entries });
   const modes = new Map<FilePath, SubmoduleIgnore>();
   for (const path of paths) {
     const mode = await configuredSubmoduleIgnore(ctx, path, rows);
@@ -119,11 +118,11 @@ export type SubmoduleIgnoreModes = ConfiguredIgnores;
 
 const policiesFor = async (
   ctx: Context,
-  stage0: ReadonlyArray<IndexEntry>,
+  entries: ReadonlyArray<IndexEntry>,
   headFlat: EscapedFlatTree,
   known?: SubmoduleIgnoreModes,
 ): Promise<Policies & { readonly modes: SubmoduleIgnoreModes }> => {
-  const modes = known ?? (await configuredIgnores(ctx, stage0, headFlat));
+  const modes = known ?? (await configuredIgnores(ctx, entries, headFlat));
   return { modes, preflight: preflightPolicy(modes), sequencer: sequencerPolicy(modes) };
 };
 
@@ -192,7 +191,7 @@ export const cleanWorkTreePreflight = async (
   const index = await readIndex(ctx);
   const { stage0, unmerged } = partitionIndex(index.entries);
   const headFlat = await flattenEscapedTree(ctx, headTree);
-  const { preflight, modes } = await policiesFor(ctx, stage0, headFlat);
+  const { preflight, modes } = await policiesFor(ctx, index.entries, headFlat);
   const refused = stagedDirtyAgainst(headFlat, stage0, preflight);
   refuseDirtyWorkTree([
     ...unmerged,
@@ -239,9 +238,10 @@ const refuseDirty = (dirty: ReadonlyArray<FilePath>): void => {
  * unstaged work-tree changes (the merge's would-overwrite check guards those).
  */
 export const assertCleanIndex = async (ctx: Context, headTree: ObjectId): Promise<void> => {
-  const { stage0, unmerged } = partitionIndex((await readIndex(ctx)).entries);
+  const { entries } = await readIndex(ctx);
+  const { stage0, unmerged } = partitionIndex(entries);
   const headFlat = await flattenEscapedTree(ctx, headTree);
-  const { sequencer } = await policiesFor(ctx, stage0, headFlat);
+  const { sequencer } = await policiesFor(ctx, entries, headFlat);
   refuseDirty([...unmerged, ...stagedDirtyAgainst(headFlat, stage0, sequencer)]);
 };
 
@@ -263,9 +263,10 @@ export const stagedChangePaths = async (
   headTree: ObjectId,
   modes?: SubmoduleIgnoreModes,
 ): Promise<ReadonlyArray<FilePath>> => {
-  const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
+  const { entries } = await readIndex(ctx);
+  const { stage0 } = partitionIndex(entries);
   const headFlat = await flattenEscapedTree(ctx, headTree);
-  const { sequencer } = await policiesFor(ctx, stage0, headFlat, modes);
+  const { sequencer } = await policiesFor(ctx, entries, headFlat, modes);
   return [...stagedDirtyAgainst(headFlat, stage0, sequencer)].sort(comparePaths);
 };
 
@@ -282,9 +283,10 @@ export const indexDifferences = async (
   ctx: Context,
   headTree: ObjectId,
 ): Promise<IndexDifferences> => {
-  const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
+  const { entries } = await readIndex(ctx);
+  const { stage0 } = partitionIndex(entries);
   const headFlat = await flattenEscapedTree(ctx, headTree);
-  const { sequencer } = await policiesFor(ctx, stage0, headFlat);
+  const { sequencer } = await policiesFor(ctx, entries, headFlat);
   const refused = new Set(stagedDirtyAgainst(headFlat, stage0, sequencer));
   const every = stagedDirtyAgainst(headFlat, stage0, EVERY_DIFFERENCE);
   return {
@@ -309,9 +311,10 @@ export const stagedGitlinkChanges = async (
   headTree: ObjectId,
   modes?: SubmoduleIgnoreModes,
 ): Promise<ReadonlyArray<FilePath>> => {
-  const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
+  const { entries } = await readIndex(ctx);
+  const { stage0 } = partitionIndex(entries);
   // HEAD is flattened once and read under both policies.
   const headFlat = await flattenEscapedTree(ctx, headTree);
-  const { preflight } = await policiesFor(ctx, stage0, headFlat, modes);
+  const { preflight } = await policiesFor(ctx, entries, headFlat, modes);
   return carriedPast(headFlat, stage0, stagedDirtyAgainst(headFlat, stage0, preflight));
 };

@@ -499,7 +499,29 @@ const assumeUnchanged: Setup = async (repo) => {
   gitIn(repo, 'update-index', '--assume-unchanged', SUBMODULE);
 };
 
+/** `.gitmodules` conflicted by a merge of two edits, the conflicted working file then deleted. */
+const gitmodulesConflictedAndDeleted: Setup = async (repo) => {
+  gitIn(repo, 'checkout', '-q', '-b', 'gm-side');
+  gitIn(repo, 'config', '--file', gitmodulesPath(repo), `submodule.${SUBMODULE}.branch`, 'side');
+  gitIn(repo, 'add', '.gitmodules');
+  commitIn(repo, 'gm side');
+  gitIn(repo, 'checkout', '-q', 'main');
+  gitIn(repo, 'config', '--file', gitmodulesPath(repo), `submodule.${SUBMODULE}.branch`, 'main');
+  gitIn(repo, 'add', '.gitmodules');
+  commitIn(repo, 'gm main');
+  try {
+    gitIn(repo, 'merge', '-q', 'gm-side');
+  } catch {
+    // The conflict is the fixture.
+  }
+  await rm(gitmodulesPath(repo));
+};
+
 const IGNORE_ROWS: ReadonlyArray<readonly [string, Setup]> = [
+  [
+    'a .gitmodules committed ignoring the submodule, then conflicted and deleted from the work tree, and a moved submodule',
+    compose(committedGitmodules('all'), gitmodulesConflictedAndDeleted, moved),
+  ],
   [
     'config all with no .gitmodules row anywhere and a moved submodule',
     compose(gitmodulesDropped, ownIgnore('all'), moved),
