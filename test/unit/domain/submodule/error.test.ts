@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { submoduleObjectFormatMismatch } from '../../../../src/domain/submodule/error.js';
+import type { FilePath } from '../../../../src/domain/objects/object-id.js';
+import {
+  gitmodulesNotStaged,
+  submoduleObjectFormatMismatch,
+  submodulePathIsSymlink,
+} from '../../../../src/domain/submodule/error.js';
 
 describe('submoduleObjectFormatMismatch', () => {
   describe('Given a superproject and a submodule source on different algorithms', () => {
@@ -39,6 +44,66 @@ describe('submoduleObjectFormatMismatch', () => {
           local: 'sha256',
           remote: 'sha1',
         });
+      });
+    });
+  });
+});
+
+describe('submodulePathIsSymlink', () => {
+  describe('Given a submodule path', () => {
+    describe('When the helper is called', () => {
+      it('Then the payload carries the code and the path', () => {
+        // Arrange
+        const sut = submodulePathIsSymlink;
+
+        // Act
+        const result = sut('sub' as FilePath);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'SUBMODULE_PATH_IS_SYMLINK', path: 'sub' });
+      });
+
+      it("Then the message mirrors git's refusal", () => {
+        // Arrange
+        const sut = submodulePathIsSymlink('sub' as FilePath);
+
+        // Act
+        const result = sut.message;
+
+        // Assert
+        expect(result).toBe(
+          "SUBMODULE_PATH_IS_SYMLINK: expected submodule path 'sub' not to be a symbolic link",
+        );
+      });
+    });
+  });
+});
+
+describe('gitmodulesNotStaged', () => {
+  describe('Given no input', () => {
+    describe('When the helper is called', () => {
+      it('Then the payload carries the code and no other key', () => {
+        // Arrange
+        const sut = gitmodulesNotStaged;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toStrictEqual({ code: 'GITMODULES_NOT_STAGED' });
+      });
+
+      it("Then the message mirrors git's refusal", () => {
+        // Arrange
+        const sut = gitmodulesNotStaged();
+
+        // Act
+        const result = sut.message;
+
+        // Assert
+        expect(result).toBe(
+          'GITMODULES_NOT_STAGED: please stage your changes to .gitmodules or stash them to proceed',
+        );
       });
     });
   });

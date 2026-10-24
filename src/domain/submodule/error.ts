@@ -1,4 +1,5 @@
 import { TsgitError } from '../error.js';
+import type { FilePath } from '../objects/object-id.js';
 
 /** Submodule-tier error codes. */
 export type SubmoduleError =
@@ -9,7 +10,9 @@ export type SubmoduleError =
       readonly local: string;
       readonly remote: string;
     }
-  | { readonly code: 'SUBMODULE_PATH_EXISTS'; readonly path: string };
+  | { readonly code: 'SUBMODULE_PATH_EXISTS'; readonly path: string }
+  | { readonly code: 'SUBMODULE_PATH_IS_SYMLINK'; readonly path: FilePath }
+  | { readonly code: 'GITMODULES_NOT_STAGED' };
 
 /**
  * A relative submodule URL cannot be resolved because the base URL has no more
@@ -48,3 +51,20 @@ export const submoduleObjectFormatMismatch = (local: string, remote: string): Ts
  */
 export const submodulePathExists = (path: string): TsgitError =>
   new TsgitError({ code: 'SUBMODULE_PATH_EXISTS', path });
+
+/**
+ * `status` met a tracked gitlink whose path is a symbolic link while running
+ * git's dirty check — git's `fatal: expected submodule path '<path>' not to be
+ * a symbolic link` (exit 128).
+ */
+export const submodulePathIsSymlink = (path: FilePath): TsgitError =>
+  new TsgitError({ code: 'SUBMODULE_PATH_IS_SYMLINK', path });
+
+/**
+ * `rm` of a submodule refuses when the working `.gitmodules` differs from the
+ * index by content — git's `is_staging_gitmodules_ok`: `fatal: please stage
+ * your changes to .gitmodules or stash them to proceed` (exit 128), under
+ * `--cached` and `-f` too.
+ */
+export const gitmodulesNotStaged = (): TsgitError =>
+  new TsgitError({ code: 'GITMODULES_NOT_STAGED' });

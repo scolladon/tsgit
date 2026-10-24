@@ -748,6 +748,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `submodule work tree '${data.path}' contains local modifications`;
     case 'SUBMODULE_PATH_EXISTS':
       return `'${data.path}' already exists in the index`;
+    case 'SUBMODULE_PATH_IS_SYMLINK':
+      return `expected submodule path '${data.path}' not to be a symbolic link`;
+    case 'GITMODULES_NOT_STAGED':
+      return 'please stage your changes to .gitmodules or stash them to proceed';
     case 'SUBMODULE_OBJECT_FORMAT_MISMATCH':
       return `cannot add a submodule of a different hash algorithm: local ${data.local}, remote ${data.remote}`;
     case 'WORKTREE_PATH_EXISTS':
