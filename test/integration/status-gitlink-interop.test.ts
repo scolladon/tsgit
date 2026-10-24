@@ -38,9 +38,12 @@ import {
   OVERSIZED_GITFILE_BYTES,
   runGit,
   runGitEnv,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const ROW_TIMEOUT = 60_000;
+const REFUSED_EXIT = 128;
+const MIB = 1 << 20;
 const PINNED_DATE = '@1700000000 +0000';
 const SETTLE_MS = 1_100;
 const ABSENT_MODE = '000000';
@@ -191,6 +194,89 @@ const linkedAway: Setup = async (repo) => {
   await rename(path.join(repo, DIRECTORY), away);
   await symlink(away, path.join(repo, DIRECTORY));
 };
+
+const writtenDotGit =
+  (body: string): Setup =>
+  async (repo) => {
+    await rm(sub(repo, '.git'));
+    await writeFile(sub(repo, '.git'), body);
+  };
+
+const sparseDotGit =
+  (size: number): Setup =>
+  async (repo) => {
+    await rm(sub(repo, '.git'));
+    makeSparseFile(sub(repo, '.git'), size);
+  };
+
+const emptyDirectoryDotGit: Setup = async (repo) => {
+  await rm(sub(repo, '.git'));
+  await mkdir(sub(repo, '.git'));
+};
+
+const moduleHeadGarbage: Setup = async (repo) =>
+  writeFile(path.join(moduleDir(repo), 'HEAD'), 'garbage');
+
+const moduleObjectsRemoved: Setup = async (repo) =>
+  rm(path.join(moduleDir(repo), 'objects'), { recursive: true });
+
+interface Refusal {
+  readonly title: string;
+  readonly setup: Setup;
+  readonly gitMessage: string;
+  readonly data: { readonly code: string; readonly path: string };
+}
+
+const REFUSALS: ReadonlyArray<Refusal> = [
+  {
+    title: 'a gitfile of exactly 1 MiB',
+    setup: sparseDotGit(MIB),
+    gitMessage: 'invalid gitfile format: sub/.git',
+    data: { code: 'NOT_A_REPOSITORY', path: 'sub/.git' },
+  },
+  {
+    title: 'a gitfile past 1 MiB',
+    setup: sparseDotGit(OVERSIZED_GITFILE_BYTES),
+    gitMessage: "too large to be a .git file: 'sub/.git'",
+    data: { code: 'GITFILE_TOO_LARGE', path: 'sub/.git' },
+  },
+  {
+    title: 'a gitfile past 1 MiB and a moved module HEAD',
+    setup: compose(moved, sparseDotGit(OVERSIZED_GITFILE_BYTES)),
+    gitMessage: "too large to be a .git file: 'sub/.git'",
+    data: { code: 'GITFILE_TOO_LARGE', path: 'sub/.git' },
+  },
+  {
+    title: 'an empty directory as .git',
+    setup: emptyDirectoryDotGit,
+    gitMessage: "'sub/.git' not recognized as a git repository",
+    data: { code: 'NOT_A_REPOSITORY', path: 'sub/.git' },
+  },
+  {
+    title: 'a gitfile naming a missing module directory',
+    setup: writtenDotGit('gitdir: ../.git/modules/nowhere\n'),
+    gitMessage: 'not a git repository: sub/../.git/modules/nowhere',
+    data: { code: 'NOT_A_REPOSITORY', path: 'sub/../.git/modules/nowhere' },
+  },
+  {
+    title: 'a gitfile that is not a pointer',
+    setup: writtenDotGit('garbage'),
+    gitMessage: 'invalid gitfile format: sub/.git',
+    data: { code: 'NOT_A_REPOSITORY', path: 'sub/.git' },
+  },
+  {
+    title: 'a module HEAD that is garbage',
+    setup: moduleHeadGarbage,
+    gitMessage: 'not a git repository: sub/../.git/modules/sub',
+    data: { code: 'NOT_A_REPOSITORY', path: 'sub/../.git/modules/sub' },
+  },
+  {
+    title: 'a module without its objects directory',
+    setup: moduleObjectsRemoved,
+    gitMessage: 'not a git repository: sub/../.git/modules/sub',
+    data: { code: 'NOT_A_REPOSITORY', path: 'sub/../.git/modules/sub' },
+  },
+];
 
 const ROWS: ReadonlyArray<readonly [string, Setup]> = [
   ['a populated unmoved submodule', async () => {}],
@@ -442,22 +528,97 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
-    describe('Given a submodule whose gitfile is oversized', () => {
-      describe('When status runs', () => {
+    const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run();
+      } catch (err) {
+        return (err as { data: unknown }).data;
+      }
+      return undefined;
+    };
+
+    describe.each(REFUSALS)('Given $title', ({ title, setup, gitMessage, data }) => {
+      describe('When status runs in both tools', () => {
         it(
-          'Then the comparison finds no commit and reports the gitlink unchanged',
+          'Then both refuse and tsgit names the path as git does',
           async () => {
             // Arrange
-            const tsgitTwin = await twin('tsgit-oversized');
-            await rm(sub(tsgitTwin, '.git'));
-            makeSparseFile(sub(tsgitTwin, '.git'), OVERSIZED_GITFILE_BYTES);
+            const gitTwin = await twin(`git-refusal-${title}`);
+            const tsgitTwin = await twin(`tsgit-refusal-${title}`);
+            await setup(gitTwin);
+            await setup(tsgitTwin);
+            const gitRun = tryRunGitWithExit(['-C', gitTwin, 'status'], { env: pinnedEnv() });
+            const sut = status;
+
+            // Act
+            const result = await refusalOf(() => sut(createNodeContext({ workDir: tsgitTwin })));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(REFUSED_EXIT);
+            expect(gitRun.stderr).toContain(gitMessage);
+            expect(result).toEqual(data);
+          },
+          NON_BLOCKING_TIMEOUT_MS,
+        );
+      });
+    });
+
+    describe('Given a submodule whose .git is a FIFO', () => {
+      describe('When status runs in both tools', () => {
+        it(
+          'Then neither refuses and neither reports a row',
+          async () => {
+            // Arrange
+            const gitTwin = await twin('git-fifo-dotgit');
+            const tsgitTwin = await twin('tsgit-fifo-dotgit');
+            for (const repo of [gitTwin, tsgitTwin]) {
+              await rm(sub(repo, '.git'));
+              makeFifo(sub(repo, '.git'));
+            }
+            const gitRun = tryRunGitWithExit(['-C', gitTwin, 'status', '--porcelain=v2'], {
+              env: pinnedEnv(),
+            });
             const sut = status;
 
             // Act
             const result = await sut(createNodeContext({ workDir: tsgitTwin }));
 
             // Assert
+            expect(gitRun.exitCode).toBe(0);
+            expect(gitChanges(gitRun.stdout.split('\n').filter(Boolean))).toEqual([]);
             expect(result.changes.filter((change) => change.path === SUBMODULE)).toEqual([]);
+          },
+          NON_BLOCKING_TIMEOUT_MS,
+        );
+      });
+    });
+
+    describe('Given a submodule whose HEAD is a FIFO held open', () => {
+      describe('When status runs', () => {
+        it(
+          'Then it is classified as no repository and refuses with the module path',
+          async () => {
+            // Arrange
+            const tsgitTwin = await twin('tsgit-fifo-outcome');
+            const head = path.join(moduleDir(tsgitTwin), 'HEAD');
+            await rm(head);
+            makeFifo(head);
+            const release = await open(head, constants.O_RDWR);
+            const sut = status;
+
+            // Act
+            const outcome = await sut(createNodeContext({ workDir: tsgitTwin }))
+              .then(
+                (result) => result.changes.filter((change) => change.path === SUBMODULE),
+                (err: { data: unknown }) => err.data,
+              )
+              .finally(() => release.close());
+
+            // Assert
+            expect(outcome).toEqual({
+              code: 'NOT_A_REPOSITORY',
+              path: 'sub/../.git/modules/sub',
+            });
           },
           NON_BLOCKING_TIMEOUT_MS,
         );

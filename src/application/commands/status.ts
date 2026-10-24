@@ -57,6 +57,7 @@ import { createGranularityTracker } from './internal/progress-tracker.js';
 import { pruneGitlinkDirectories } from './internal/prune-gitlink-directories.js';
 import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { resolveRevisionName } from './internal/revision-name.js';
+import { type SubmoduleState, submoduleState } from './internal/submodule-state.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
@@ -188,6 +189,7 @@ interface LockedScan {
   readonly index: GitIndex;
   readonly tracked: TrackedEntries;
   readonly trackedScan: TrackedScan;
+  readonly submodules: SubmoduleStates;
   readonly workDir: string;
   readonly lock: IndexLock | undefined;
 }
@@ -195,11 +197,11 @@ interface LockedScan {
 /** Scans untracked, reports, then refreshes the index when able; the lock is released whatever happens. */
 const reportUnderLock = async (
   ctx: Context,
-  { index, tracked, trackedScan, workDir, lock }: LockedScan,
+  { index, tracked, trackedScan, submodules, workDir, lock }: LockedScan,
 ): Promise<StatusReport> => {
   try {
     const untracked = await scanUntracked(ctx, index, tracked.trackedPaths);
-    const scanned = { workingMap: trackedScan.workingMap, untracked };
+    const scanned = { workingMap: trackedScan.workingMap, submodules, untracked };
     const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
     if (lock) await updateIndexIfAble(lock, index, trackedScan);
     return report;
@@ -219,16 +221,29 @@ const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusR
   // than fabricate an empty one — fabricating it would report every HEAD path as
   // a spurious staged deletion (git errors on a corrupt index too).
   const index = await readIndex(ctx);
-  const tracked = trackedEntriesOf(index);
   ctx.progress.start(STATUS_SCAN_OP);
   try {
-    const trackedScan = await scanTrackedTree(ctx, index, tracked);
-    const lock = refreshEnabled(ctx, opts) ? await acquireOptionalIndexLock(ctx) : undefined;
-    const report = await reportUnderLock(ctx, { index, tracked, trackedScan, workDir, lock });
+    const report = await scanAndReport(ctx, opts, {
+      index,
+      tracked: trackedEntriesOf(index),
+      workDir,
+    });
     return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
   } finally {
     ctx.progress.end(STATUS_SCAN_OP);
   }
+};
+
+/** Scans the tracked tree, runs git's dirty check on its gitlinks (a refusal precedes any index write), then reports. */
+const scanAndReport = async (
+  ctx: Context,
+  opts: StatusOptions,
+  { index, tracked, workDir }: Pick<LockedScan, 'index' | 'tracked' | 'workDir'>,
+): Promise<StatusReport> => {
+  const trackedScan = await scanTrackedTree(ctx, index, tracked);
+  const submodules = await submoduleStatesOf(ctx, tracked, trackedScan);
+  const lock = refreshEnabled(ctx, opts) ? await acquireOptionalIndexLock(ctx) : undefined;
+  return reportUnderLock(ctx, { index, tracked, trackedScan, submodules, workDir, lock });
 };
 
 /** The index's tracked entries: stage 0 by path, the unmerged groups, and every tracked path. */
@@ -254,8 +269,38 @@ const trackedEntriesOf = (index: GitIndex): TrackedEntries => {
 /** What the working tree holds: every tracked file's delta, and the untracked paths. */
 interface ScannedTree {
   readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly submodules: SubmoduleStates;
   readonly untracked: ReadonlyArray<FilePath>;
 }
+
+type SubmoduleStates = ReadonlyMap<FilePath, SubmoduleState>;
+
+/** A gitlink git neither assumes valid nor finds gone from disk; a skip-worktree one never yields a delta. */
+const isDirtyChecked = (entry: IndexEntry, delta: WorkingTreeDelta): boolean =>
+  entry.mode === FILE_MODE.GITLINK && !entry.flags.assumeValid && delta.status !== 'absent';
+
+/** git's dirty check runs over each gitlink the scan found on disk; it refuses a `.git` that leads to no repository. */
+const submoduleStatesOf = async (
+  ctx: Context,
+  tracked: TrackedEntries,
+  { workingMap }: TrackedScan,
+): Promise<SubmoduleStates> => {
+  const checked: Array<readonly [FilePath, IndexEntry, WorkingTreeDelta]> = [];
+  for (const [path, entry] of tracked.stage0Map) {
+    const delta = workingMap.get(path);
+    if (delta !== undefined && isDirtyChecked(entry, delta)) checked.push([path, entry, delta]);
+  }
+  const states = await boundedMapFor(
+    ctx,
+    'ioBound',
+    checked,
+    async ([path, entry, delta]): Promise<readonly [FilePath, SubmoduleState]> => [
+      path,
+      await submoduleState(ctx, entry, delta),
+    ],
+  );
+  return new Map(states);
+};
 
 /** Write the refreshed stat data back, only when something is worth persisting:
  *  a drifted entry, or an entry racy against the index file's own mtime. */
@@ -299,7 +344,7 @@ const reportStatus = async (
   const headTree = await readHeadTreeEscaped(ctx);
   const { unmerged: groups } = tracked.grouped;
   const stagedKindMap = collectStagedKinds(index, headTree, groups);
-  const changes = buildChanges(stagedKindMap, scanned.workingMap, headTree, tracked.stage0Map);
+  const changes = buildChanges(stagedKindMap, scanned, headTree, tracked.stage0Map);
   const unmerged = await buildUnmergedEntries(ctx, groups, workDir);
   const { untracked } = scanned;
   const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
@@ -364,7 +409,7 @@ const collectStagedKinds = (
  */
 const buildChanges = (
   stagedKindMap: ReadonlyMap<FilePath, ChangeKind>,
-  workingMap: ReadonlyMap<FilePath, WorkingTreeDelta>,
+  { workingMap, submodules }: Pick<ScannedTree, 'workingMap' | 'submodules'>,
   headTree: FlatTree | undefined,
   stage0Map: ReadonlyMap<FilePath, IndexEntry>,
 ): ChangedPath[] => {
@@ -379,6 +424,7 @@ const buildChanges = (
       workingMap.get(path),
       headTree,
       stage0Map.get(path),
+      submodules.get(path),
     ),
   );
   return changes
@@ -412,10 +458,11 @@ const buildChangedPath = (
   delta: WorkingTreeDelta | undefined,
   headTree: FlatTree | undefined,
   indexEntry: IndexEntry | undefined,
+  checked: SubmoduleState | undefined,
 ): ChangedPath => {
   const head = headTree?.entries.get(path);
   const unstaged = delta === undefined ? undefined : toUnstagedKind(delta.status);
-  const submodule = submoduleOf(delta, head, indexEntry);
+  const submodule = checked ?? submoduleOf(delta, head, indexEntry);
   return {
     path,
     ...(staged !== undefined && { staged }),
