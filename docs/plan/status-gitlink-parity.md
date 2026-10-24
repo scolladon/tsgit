@@ -1,6 +1,6 @@
 # Plan — status and the comparison consumers treat a gitlink as git does
 
-> Source: design doc `docs/design/status-gitlink-parity.md` · ADRs 1063, 1064, 1065, 1066, 1067, 1068, 1069, 1070, 1071, 1072 (Parts 15–17 inserted after the user ratified the long-HEAD fold)
+> Source: design doc `docs/design/status-gitlink-parity.md` · ADRs 1063–1073 (Parts 15–17 inserted after the user ratified the long-HEAD fold; 18–23 are pinned folds of divergences the implementation probes exposed)
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
@@ -91,6 +91,9 @@
 | R7 rebase with a staged gitlink (design CO14, CO14b, CO14c; regression fold) | 18 |
 | R7/R9 gitlink written over a file occupant (design CO39, CO40) | 19 |
 | R7 stash beyond a symbolic link (design CO38) | 20 |
+| ADR-1073 `SUBMODULE_NAME_NOT_FOUND` (design CO42) | 21 (member), 23 (throw site) |
+| R9 rm of a path already gone from the work tree (design CO41) | 22 |
+| R8 migration `core.worktree` in a linked worktree (design CO43) | 23 |
 
 ## Decision candidates
 
@@ -1080,3 +1083,122 @@ PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink
 ### Commit
 
 `fix(stash): refuse a tracked path beyond a symbolic link, as git does`
+
+## Part 21 — Add the SUBMODULE_NAME_NOT_FOUND error code
+
+### Context
+
+ADR-1073. **Public**: a new member of the exported `TsgitErrorData` union (`SubmoduleError`). Surface gates paid here: the union, the message switch, the exhaustiveness switch, the documented error table; reports/api.json is expected byte-identical (error-code literals are not emitted by name — Parts 7 and 15 confirmed). The throw site lands in Part 23. Same shape as Part 7.
+
+Files:
+- `src/domain/submodule/error.ts` — `SubmoduleError` gains `| { readonly code: 'SUBMODULE_NAME_NOT_FOUND'; readonly path: FilePath }`; constructor `submoduleNameNotFound(path: FilePath): TsgitError` with a doc comment: `rm` must migrate an embedded .git directory into .git/modules/<name> and git takes the name from the .gitmodules section whose `path` matches, dying `could not lookup name for submodule '<path>'` (exit 128) when there is none.
+- `src/domain/error.ts` — message switch: `case 'SUBMODULE_NAME_NOT_FOUND': return \`could not lookup name for submodule '${data.path}'\`;` beside the other `SUBMODULE_*` cases.
+- `test/unit/domain/exhaustiveness.ts` — the new case beside `SUBMODULE_PATH_IS_SYMLINK`.
+- `test/unit/domain/submodule/error.test.ts` — a payload row (`.data` strictly equals `{ code, path }`) and a `.message` row (`SUBMODULE_NAME_NOT_FOUND: could not lookup name for submodule 'sub'`), in the file's `describe('<constructor>')` > Given/When/Then style.
+- `docs/use/errors.md` — in the table that holds `SUBMODULE_PATH_IS_SYMLINK`, a row: `| \`SUBMODULE_NAME_NOT_FOUND\` | \`path\` | \`rm\` met an embedded repository (a \`.git\` directory at the gitlink's path) with no \`.gitmodules\` section whose \`path\` names it, so the directory cannot be migrated under \`.git/modules/<name>\`. Mirrors git's \`could not lookup name for submodule '<path>'\` (exit 128). Nothing is removed. |` — keep the column count.
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED — `submoduleNameNotFound('sub')` has `.data` `{ code: 'SUBMODULE_NAME_NOT_FOUND', path: 'sub' }`. Fails: the constructor does not exist.
+2. GREEN — union member, constructor, message case, exhaustiveness case.
+3. GUARD — `.message` equals `SUBMODULE_NAME_NOT_FOUND: could not lookup name for submodule 'sub'`.
+4. Docs — the errors.md row; `npm run docs:json` (stage reports/api.json only if it changed).
+5. `npx knip` must not report the constructor (its test imports it); if it does, stop and hand back.
+
+### Gate
+
+```
+npx vitest run test/unit/domain && npm run check:types && ./node_modules/.bin/biome check src/domain/submodule/error.ts src/domain/error.ts test/unit/domain/exhaustiveness.ts test/unit/domain/submodule/error.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/domain/submodule/error.ts src/domain/error.ts test/unit/domain/submodule/error.test.ts docs/use/errors.md
+npx knip && npm run check:doc-links
+```
+
+### Commit
+
+`fix(rm): add the SUBMODULE_NAME_NOT_FOUND error code`
+
+## Part 22 — Remove a tracked path already gone from the work tree, as git does
+
+### Context
+
+R9 (no other `rm` behaviour change beyond what the design names — this row was exposed by the Part 14 probes); design row CO41. git's `rm` after the user already deleted the file ("rm F; git rm F", the comment in builtin/rm.c) removes the index entry and exits 0 (`rm 'f'`, status `D  f`), also when the containing directory is gone. tsgit's `removeFile` (`src/application/commands/internal/working-tree.ts`, Part 14 placed `removeDirectory` beside it) maps EVERY `lstat` failure to `checkoutOverwriteDirty({ localChanges: [path], untracked: [] })`, so the rm loop's "FILE_NOT_FOUND is the only tolerable error: working file already gone" catch (rm.ts, the `removeFromWorkTree` helper Part 14 extracted) never sees `FILE_NOT_FOUND`. `removeFile` has one caller (that loop). The existing row `test/unit/application/commands/rm.test.ts` `describe('Given cached=false and a missing working file (CHECKOUT_OVERWRITE_DIRTY)')` (L675 at base, a mutation-kill row for the loop's catch) pins the refusal and is re-pinned to git: `rm(ctx, ['a.txt'])` resolves with `removed: ['a.txt']`, the index no longer holds `a.txt`, and the catch still rethrows any OTHER error (keep a row that makes `removeFile` throw `PERMISSION_DENIED` through a fake fs and asserts it propagates — that is what kills the mutants the old row killed).
+
+Files:
+- `src/application/commands/internal/working-tree.ts` — `removeFile`: the `lstat` failure arm lets `FILE_NOT_FOUND` through unchanged (rethrow it) and keeps mapping every other failure to `CHECKOUT_OVERWRITE_DIRTY`; `removeDirectory` keeps its shape (a missing submodule directory is already skipped by `removeSubmodule`).
+- `test/unit/application/commands/internal/working-tree.test.ts` — `removeFile` on a missing path rejects `FILE_NOT_FOUND { path: <full> }` (RED); on a path whose `lstat` is denied → `CHECKOUT_OVERWRITE_DIRTY` (GUARD).
+- `test/unit/application/commands/rm.test.ts` — the L675 row re-pinned; the propagate-other-error row.
+- `test/integration/rm-interop.test.ts` — CO41 twins: `f` deleted then `rm f`; `dd/f` with `dd` removed then `rm dd/f` (git `rm 'dd/f'`, exit 0, `D  dd/f`); compare `git ls-files --stage` and `git status --porcelain` on both twins.
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED — working-tree unit: `removeFile(ctx, 'gone.txt')` rejects with `.data.code === 'FILE_NOT_FOUND'`. Fails: today it rejects `CHECKOUT_OVERWRITE_DIRTY`.
+2. GREEN — rethrow `FILE_NOT_FOUND` from the `lstat` arm. GUARD — a denied `lstat` still maps to `CHECKOUT_OVERWRITE_DIRTY`; GUARD — a directory at the path still maps to `CHECKOUT_OVERWRITE_DIRTY`.
+3. RED (re-pin) — rm unit: tracked `a.txt` deleted from disk, `rm(ctx, ['a.txt'])` resolves with `removed: ['a.txt']` and the index has no `a.txt`. Fails: today `CHECKOUT_OVERWRITE_DIRTY`.
+4. GREEN — none needed beyond step 2 if the loop's catch already tolerates `FILE_NOT_FOUND` (then step 3 is a GUARD that passes after step 2 — report which). GUARD — the catch still rethrows: a fake fs whose `lstat` of the file rejects `permissionDenied` makes `rm` reject `CHECKOUT_OVERWRITE_DIRTY` (the mutant-killing row the old one was).
+5. Interop — CO41 twins in rm-interop.test.ts.
+6. REFACTOR — none expected.
+
+### Gate
+
+```
+npx vitest run test/unit/application/commands/rm test/unit/application/commands/internal/working-tree && npm run check:types && ./node_modules/.bin/biome check src/application/commands/internal/working-tree.ts test/unit/application/commands/internal/working-tree.test.ts test/unit/application/commands/rm.test.ts test/integration/rm-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/commands/internal/working-tree.ts test/unit/application/commands/internal/working-tree.test.ts test/unit/application/commands/rm.test.ts test/integration/rm-interop.test.ts
+npx vitest run test/unit/application/commands/rm test/unit/application/commands/internal/working-tree --coverage --coverage.include=src/application/commands/internal/working-tree.ts --coverage.include=src/application/commands/rm.ts --coverage.reporter=text
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/rm-interop.test.ts test/integration/gitlink-consumers-interop.test.ts
+```
+
+### Commit
+
+`fix(rm): remove a tracked path already gone from the work tree, as git does`
+
+## Part 23 — Refuse an embedded repository without a .gitmodules name and migrate with git's core.worktree in a linked worktree
+
+### Context
+
+ADR-1073; design rows CO42, CO43 (orchestrator pins, git 2.55). Two corrections to Part 14's migration in `src/application/commands/rm.ts`:
+
+1. **Name lookup (CO42).** rm.ts resolves `<name>` as `gitmodules.rows.find((row) => row.path === path)?.name ?? path` (L~189). git dies when no row matches AND the path holds an embedded .git directory: `fatal: could not lookup name for submodule 'sub'` (exit 128), nothing written — in the main worktree and in a linked one. With a gitfile-based or empty submodule and no row, git proceeds and leaves .gitmodules alone (Part 14's pinned row, keep it). So: when `migrateGitDir` would migrate (the .git is a directory) and no row named the path → `throw submoduleNameNotFound(path)` (Part 21) BEFORE `removeDirectory`, before the .gitmodules edit and before the index write — the refusal must leave the index untouched, so it runs in the pre-write pass that already performs the `GITMODULES_NOT_STAGED` check, or the migration probe moves ahead of the index lock. Read the write sequence (`rm`, `removeFromWorkTree`, `removeSubmodule`, `migrateGitDir`, `dropGitmodulesSections`) and place it where nothing has been written yet.
+2. **`core.worktree` (CO43).** git writes the module config's `core.worktree` as the relative path from the module directory to the working-tree path. In the main worktree that is ../../../sub, which `submoduleCoreWorktree(name, path)` (src/domain/submodule/gitlink-path.ts) produces from the name and path depths. In a linked worktree `wt`, git migrates into <super>/.git/worktrees/wt/modules/sub (= layout.gitDir/modules/<name>, which Part 14 already uses — no change) and writes worktree = ../../../../../../wt/sub. Add a pure helper in `src/domain/submodule/gitlink-path.ts`: `relativePathBetween(fromDirectory: string, toPath: string): string` over /-split absolute paths (drop the common prefix, '../'.repeat(remaining from-segments) + the remaining to-segments joined by /; both inputs absolute and normalised, as `ctx.layout.gitDir` and `joinPath(requireWorkTree(ctx, 'rm'), path)` are). `migrateGitDir` sets `core.worktree` to `relativePathBetween(moduleDir, joinPath(workDir, path))`. `submoduleCoreWorktree` stays for submodule.ts (out of this part; its linked-worktree behaviour is reported, not changed). Property lens: `normalise(join(fromDirectory, relativePathBetween(fromDirectory, toPath))) === toPath` round-trips for arbitrary segment lists — add the property to test/unit/domain/submodule/gitlink-path.properties.test.ts if that sibling exists, else as rows in the unit suite and say so.
+
+Files:
+- `src/application/commands/rm.ts` — the name refusal; `migrateGitDir`'s `core.worktree` value.
+- `test/unit/application/commands/rm.test.ts` — rows.
+- `src/domain/submodule/gitlink-path.ts` — `relativePathBetween`.
+- `test/unit/domain/submodule/gitlink-path.test.ts` — rows (main layout → ../../../sub; linked layout <root>/.git/worktrees/wt/modules/sub → <root>/wt/sub gives ../../../../../../wt/sub; a nested name a/b and a nested path x/y; identical directories → `.`? pin git's choice by reading `relative_path()` in git's path.c, or avoid the case: git never writes it).
+- `test/integration/gitlink-consumers-interop.test.ts` — CO42 (main worktree: F1 with the module dir moved into sub/.git and the .gitmodules section removed and committed → `rm sub` → git 128 + message; tsgit `SUBMODULE_NAME_NOT_FOUND { path: 'sub' }`; both leave index, `sub` and .gitmodules untouched), CO43 (F1, git worktree add ../wt -b wt, in `wt` replace `sub` by a copy of the upstream repository with its .git directory at the same HEAD, `rm sub` in `wt` on both twins — tsgit via `createNodeContext({ workDir: <wt twin> })` — compare the module's location, its config bytes, `git ls-files --stage`, `git status --porcelain`, .gitmodules).
+- `docs/use/commands/rm.md` — the "Submodules" section gains the name refusal (`SUBMODULE_NAME_NOT_FOUND`) and a sentence on linked worktrees (the module migrates into the worktree's own admin directory with git's `core.worktree`); the Throws list gains the code.
+
+Pinned bytes (git 2.55, orchestrator): CO42 — `fatal: could not lookup name for submodule 'sub'`, exit 128, nothing written (main and linked worktree). CO43 — stderr Migrating git directory of 'sub' from '<wt>/sub/.git' to '<super>/.git/worktrees/wt/modules/sub', exit 0, `rm 'sub'`; <super>/.git/worktrees/wt/modules/sub/config line 8 \tworktree = ../../../../../../wt/sub; `M  .gitmodules`, `D  sub` in `wt`. Run git first (×3) and follow the pin if a byte differs.
+
+### TDD steps
+
+One RED per function, run before its code.
+
+1. RED — gitlink-path unit: relativePathBetween('/r/.git/worktrees/wt/modules/sub', '/r/wt/sub') is ../../../../../../wt/sub. Fails: the function does not exist.
+2. GREEN — the helper. GUARD — relativePathBetween('/r/.git/modules/sub', '/r/sub') is ../../../sub (equal to `submoduleCoreWorktree('sub', 'sub')`); GUARD — nested name and path.
+3. RED — rm unit: embedded .git directory at `sub`, no .gitmodules row for `sub` → `rm(ctx, ['sub'])` rejects `SUBMODULE_NAME_NOT_FOUND { path: 'sub' }` and the index, `sub` and .gitmodules are untouched. Fails: Part 14 migrates under the path name and removes.
+4. GREEN — the refusal before any write. GUARD — a gitfile-based submodule without a row is still removed with .gitmodules untouched (Part 14's row); GUARD — with a row, the embedded migration proceeds.
+5. RED — rm unit over a linked-worktree context (build one with the memory adapter: a `layout` whose `gitDir` is <root>/.git/worktrees/wt with `commonDir` <root>/.git, `workDir` <root>/wt; look at how existing worktree unit suites build it — command grep -rln "commonDir:" test/unit/application | head): after `rm`, the migrated module's config holds worktree = ../../../../../../wt/sub. Fails: today ../../../sub.
+6. GREEN — `migrateGitDir` uses `relativePathBetween`. GUARD — the main-worktree row still writes ../../../sub (byte-identical to Part 14's pinned config).
+7. Interop — CO42, CO43 git-first.
+8. Docs — rm.md.
+9. REFACTOR — functions under 20 lines.
+
+### Gate
+
+```
+npx vitest run test/unit/application/commands/rm test/unit/domain/submodule && npm run check:types && ./node_modules/.bin/biome check src/application/commands/rm.ts src/domain/submodule/gitlink-path.ts test/unit/application/commands/rm.test.ts test/unit/domain/submodule/gitlink-path.test.ts test/integration/gitlink-consumers-interop.test.ts && npm run check:spelling
+npx tsc --noEmit -p tsconfig.json && npx cspell --no-progress src/application/commands/rm.ts src/domain/submodule/gitlink-path.ts test/unit/application/commands/rm.test.ts test/unit/domain/submodule/gitlink-path.test.ts test/integration/gitlink-consumers-interop.test.ts docs/use/commands/rm.md
+npx depcruise src/ --config .dependency-cruiser.cjs && npx knip && npm run check:write-surfaces && npm run check:doc-links
+npx vitest run test/unit/application/commands/rm test/unit/domain/submodule --coverage --coverage.include=src/application/commands/rm.ts --coverage.include=src/domain/submodule/gitlink-path.ts --coverage.reporter=text
+PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/integration/gitlink-consumers-interop.test.ts test/integration/rm-interop.test.ts test/integration/submodule-init-sync-deinit-interop.test.ts
+git config --local --list | command grep -i submodule || echo "shared config clean"
+```
+
+### Commit
+
+`fix(rm): refuse an embedded repository without a .gitmodules name and migrate with git's core.worktree`
