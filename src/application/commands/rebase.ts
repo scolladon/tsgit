@@ -1803,6 +1803,18 @@ const stoppedLineFields = (line: ReplayedLine, message: string) => ({
   patch: line.patch,
 });
 
+/** git holds a group's rewrites in `rewritten-pending`, under the original oids, until the group ends:
+ *  the base answers to the commit it was picked from, and none of them sits in `rewritten-list`. */
+const heldGroupRewrites = (replay: InteractiveReplay) => {
+  const [base, ...members] = replay.group.pending;
+  const baseSource = replay.rewritten.find(([, created]) => created === base)?.[0] ?? base;
+  const pending = [baseSource as ObjectId, ...members];
+  return {
+    pending,
+    rewritten: replay.rewritten.filter(([source]) => !pending.includes(source)),
+  };
+};
+
 /** The group files a meld leaves: the template so far, with the member. */
 const meldGroupFiles = (line: ReplayedLine, replay: InteractiveReplay) => {
   const { inst, cData } = line;
@@ -1818,7 +1830,7 @@ const meldGroupFiles = (line: ReplayedLine, replay: InteractiveReplay) => {
   ];
   return {
     currentFixups,
-    rewrittenPending: [...group.pending],
+    rewrittenPending: heldGroupRewrites(replay).pending,
     messageSquash,
     ...fixupOnlyMessage(currentFixups, group.baseMessage),
   };
@@ -1829,30 +1841,22 @@ const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFiel
   const files = meldGroupFiles(line, replay);
   return {
     ...stoppedLineFields(line, files.messageSquash),
-    rewritten: replay.rewritten,
+    rewritten: heldGroupRewrites(replay).rewritten,
     amend: replay.head,
     ...files,
     mergeMsg: files.messageSquash,
   };
 };
 
-/** A refused squash/fixup member: reschedule it with the group's files, not `rewritten-list`.
- *  git holds a group's rewrites in `rewritten-pending`, under the original oids, until the group ends. */
+/** A refused squash/fixup member: reschedule it with the group's files, not `rewritten-list`. */
 const refuseMeldMember = (
   ctx: Context,
   line: ReplayedLine,
   replay: InteractiveReplay,
   refusal: WorktreeRefusal,
 ): Promise<never> => {
-  const files = meldGroupFiles(line, replay);
-  const [base, ...members] = replay.group.pending;
-  const baseSource = replay.rewritten.find(([, created]) => created === base)?.[0] ?? base;
-  const rewrittenPending = [baseSource as ObjectId, ...members];
-  const held = {
-    ...replay,
-    rewritten: replay.rewritten.filter(([source]) => !rewrittenPending.includes(source)),
-  };
-  return refuseInteractiveLine(ctx, line, held, refusal, { ...files, rewrittenPending });
+  const held = { ...replay, rewritten: heldGroupRewrites(replay).rewritten };
+  return refuseInteractiveLine(ctx, line, held, refusal, meldGroupFiles(line, replay));
 };
 
 /** An interactive loop's refused line: reschedule it with the rewrites made so far,
@@ -2006,15 +2010,26 @@ const rebaseContinueInteractive = async (
     doneBefore: commitEntries(state.done),
     todo: commitEntries(state.remaining),
   };
-  const rewritten = [...(await readRewrittenList(ctx))];
+  const listed = await readRewrittenList(ctx);
   const tree = await writeContinuedIndex(ctx);
   const currentHead = await resolveRef(ctx, HEAD);
   const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
   // git's `commit_staged_changes` drops AUTO_MERGE once it commits the stop.
   if (resumeHead !== currentHead) await concludeStopCommit(ctx);
-  rewritten.push([stoppedCommit(state), resumeHead]);
+  const rewritten = [
+    ...listed,
+    ...(await pendingRewrites(ctx, resumeHead)),
+    [stoppedCommit(state), resumeHead] as const,
+  ];
   return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
 };
+
+/** The group members `rewritten-pending` holds land on the commit that ends their group. */
+const pendingRewrites = async (
+  ctx: Context,
+  head: ObjectId,
+): Promise<ReadonlyArray<readonly [ObjectId, ObjectId]>> =>
+  ((await readRewrittenPending(ctx)) ?? []).map((source) => [source, head] as const);
 
 /** The commit that concludes a stop takes its `AUTO_MERGE` and `MERGE_MSG` with it. */
 const concludeStopCommit = async (ctx: Context): Promise<void> => {
@@ -2113,6 +2128,10 @@ const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<
   };
   return replayInteractive(ctx, ic, target, {
     applied: [],
-    rewritten: await readRewrittenList(ctx),
+    rewritten: [
+      ...(await readRewrittenList(ctx)),
+      ...(await pendingRewrites(ctx, target)),
+      ...(state.currentFixups ?? []).map(({ oid }) => [oid, target] as const),
+    ],
   });
 };

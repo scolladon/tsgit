@@ -2267,13 +2267,15 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
 
 /** topic off base: t1 (a.txt clean), t2 (f.txt=TOPIC), t3 (c.txt clean); main
  *  advances with m1 (f.txt=MAIN) — replaying t2 onto main conflicts. */
-const seedTopicConflict = async (): Promise<{
+const seedTopicConflict = async (
+  hooks?: MemoryHookRunner,
+): Promise<{
   ctx: Context;
   t1: ObjectId;
   t2: ObjectId;
   t3: ObjectId;
 }> => {
-  const ctx = createMemoryContext();
+  const ctx = createMemoryContext(hooks === undefined ? undefined : { hooks });
   await init(ctx);
   await setUser(ctx);
   await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
@@ -2851,6 +2853,73 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         // Assert
         const head = await resolveRef(ctx, 'HEAD' as RefName);
         expect(await readMerge(ctx, 'amend')).toBe(`${head}\n`);
+      });
+    });
+
+    describe('When the group base was rebased before the meld conflicted', () => {
+      const stopped = async (hooks?: MemoryHookRunner) => {
+        const seeded = await seedTopicConflict(hooks);
+        await rebaseRun(seeded.ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: seeded.t1 },
+            { action: 'squash', oid: seeded.t2 },
+          ],
+        });
+        return seeded;
+      };
+
+      it('Then rewritten-pending names the base by its original oid and rewritten-list omits it', async () => {
+        // Arrange
+        const { ctx, t1 } = await stopped();
+        const sut = readMerge;
+
+        // Act
+        const pending = await sut(ctx, 'rewritten-pending');
+
+        // Assert
+        expect(pending).toBe(`${t1}\n`);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/rewritten-list`)).toBe(false);
+      });
+
+      it('Then post-rewrite maps the base and the member to the combined commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, t1, t2 } = await stopped(runner);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        expect(call?.stdin).toBe(`${t1} ${tip}\n${t2} ${tip}\n`);
+      });
+    });
+
+    describe('When the group base was rebased and the meld is skipped', () => {
+      it('Then post-rewrite maps the base and the skipped member to the kept group commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, t1, t2 } = await seedTopicConflict(runner);
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+          ],
+        });
+        const sut = rebaseSkip;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        expect(call?.stdin).toBe(`${t1} ${tip}\n${t2} ${tip}\n`);
       });
     });
 
