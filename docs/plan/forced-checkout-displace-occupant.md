@@ -171,6 +171,8 @@ warning: The following paths were already present and thus not updated despite s
 After fixing the above paths, you may want to run `git sparse-checkout reapply`.
 ```
 
+DC-G pin (git 2.55.0, `mktemp -d` throwaway, scrubbed env). Todo `label onto / pick A / label x / reset onto / exec echo occ > a / reset x / pick B`, rebased with `-i --rebase-merges main`: the `reset x` step refuses with "The following untracked working tree files would be overwritten by reset: a" and exits 1. The occupant `a=occ` stays, the index holds only `keep`, and HEAD stays at `onto`. `REBASE_HEAD` is absent. `git-rebase-todo` is `reset x` then `pick B`. `done` ends with `reset x`. `end` is `7` and `msgnum` is `6`, which are `writeRescheduledPick`'s formulas. The `rebase-merge/` file set is unchanged from the previous step (`done end git-rebase-todo git-rebase-todo.backup head-name interactive msgnum no-reschedule-failed-exec onto orig-head refs-to-delete rewritten-list`), with no `author-script`, `message` or `stopped-sha`. DC-A through DC-H are settled as recommended.
+
 ## Part 1 — Leading-file scanner verdict and the shared occupant classifier (add rules)
 
 ### Context
