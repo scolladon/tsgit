@@ -23,7 +23,7 @@
  *   unique:         a rebase either tool starts is resumable by the other, and both drop the same already-upstream commit
  *   interopSurface: rebaseMerge, reflog
  */
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1313,6 +1313,254 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
         expect(ours).toEqual(REFUSED);
         expect(oidAt(pair.ours, 'HEAD')).toBe(w);
         expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+    });
+
+    describe('When the refused line is interactive', () => {
+      type Verb = 'pick' | 'edit' | 'reword';
+      const TITLES = ['W', 'X', 'Z'] as const;
+
+      const gitRebaseI = (dir: string, upstream: string, verbs: ReadonlyArray<Verb>) => {
+        const edit = TITLES.map((title, i) => `s/^pick (\\S+ # ${title})$/${verbs[i]} $1/`).join(
+          ';',
+        );
+        return tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '-i', upstream], {
+          env: {
+            ...runGitEnv(),
+            GIT_AUTHOR_DATE: FIXED_DATE,
+            GIT_COMMITTER_DATE: FIXED_DATE,
+            GIT_SEQUENCE_EDITOR: `perl -i -pe '${edit}'`,
+            GIT_EDITOR: 'true',
+          },
+        });
+      };
+
+      const tsgitRebaseI = (dir: string, upstream: string, verbs: ReadonlyArray<Verb>) =>
+        tsgitRebase(dir, (repo) =>
+          repo.rebase.run({
+            upstream,
+            interactive: verbs.map((action, i) => {
+              const oid = oidAt(dir, `main~${2 - i}`);
+              return action === 'reword' ? { action, oid, message: 'X' } : { action, oid };
+            }),
+          }),
+        );
+
+      /** Both tools stopped on `edit W`, the occupant planted, `--continue` refused. */
+      const refusedAfterEditStop = async (): Promise<void> => {
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, false);
+        gitRebaseI(pair.peer, 'u', ['edit', 'pick', 'pick']);
+        await tsgitRebaseI(pair.ours, 'u', ['edit', 'pick', 'pick']);
+        for (const dir of [pair.peer, pair.ours]) plantOccupant(dir);
+        gitRebase(pair.peer, '--continue');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+      };
+
+      it.each(['pick', 'edit', 'reword'] as const)(
+        'Then a refused %s line at the start leaves the state git leaves',
+        async (verb) => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildOccupied(dir, false);
+            plantOccupant(dir);
+          }
+          const verbs = ['pick', verb, 'pick'] as const;
+
+          // Act
+          const peer = gitRebaseI(pair.peer, 'u', verbs);
+          const ours = await tsgitRebaseI(pair.ours, 'u', verbs);
+
+          // Assert
+          expect(peer.exitCode).toBe(1);
+          expect(ours).toEqual(REFUSED);
+          expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        },
+      );
+
+      it('Then an edit stop continued into the occupant leaves the state git leaves', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, false);
+        gitRebaseI(pair.peer, 'u', ['edit', 'pick', 'pick']);
+        await tsgitRebaseI(pair.ours, 'u', ['edit', 'pick', 'pick']);
+        for (const dir of [pair.peer, pair.ours]) plantOccupant(dir);
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      it.each(['--continue', '--skip'] as const)(
+        'Then %s with the occupant kept leaves the state git leaves',
+        async (flag) => {
+          // Arrange
+          await refusedAfterEditStop();
+
+          // Act
+          const peer = gitRebase(pair.peer, flag);
+          const ours = await tsgitRebase(pair.ours, (repo) =>
+            flag === '--skip' ? repo.rebase.skip() : repo.rebase.continue(),
+          );
+
+          // Assert
+          expect(peer.exitCode).toBe(1);
+          expect(ours).toEqual(REFUSED);
+          expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        },
+      );
+
+      it.each(['--continue', '--skip'] as const)(
+        'Then %s once the occupant is gone finishes on the same history',
+        async (flag) => {
+          // Arrange
+          await refusedAfterEditStop();
+          for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+          // Act
+          const peer = gitRebase(pair.peer, flag);
+          const ours = await tsgitRebase(pair.ours, (repo) =>
+            flag === '--skip' ? repo.rebase.skip() : repo.rebase.continue(),
+          );
+
+          // Assert
+          expect(peer.exitCode).toBe(0);
+          expect(ours).toBe('ok');
+          const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main').trim();
+          expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+          expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+        },
+      );
+
+      it('Then a staged change still refuses the retry and end is re-counted', async () => {
+        // Arrange
+        await refusedAfterEditStop();
+        for (const dir of [pair.peer, pair.ours]) {
+          rmSync(path.join(dir, 'n'));
+          writeWork(dir, 'z', 'z\n');
+          git(dir, 'add', 'z');
+        }
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: ['z'], untracked: [] });
+        const end = (dir: string): string =>
+          readFileSync(path.join(dir, '.git', 'rebase-merge', 'end'), 'utf8');
+        expect(end(pair.ours)).toBe(end(pair.peer));
+      });
+
+      it('Then a fast-forwarded edit followed by an occupied pick leaves the state git leaves', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, false);
+        const base = oidAt(pair.ours, 'main~3');
+        gitRebaseI(pair.peer, base, ['edit', 'pick', 'pick']);
+        await tsgitRebaseI(pair.ours, base, ['edit', 'pick', 'pick']);
+        for (const dir of [pair.peer, pair.ours]) plantOccupant(dir);
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      describe.each([
+        {
+          title: 'a directory would replace a removed tracked file',
+          prepare: (dir: string): void => {
+            git(dir, 'rm', '-q', 'keep');
+            mkdirSync(path.join(dir, 'keep'));
+            writeWork(dir, 'keep/u', 'u\n');
+          },
+        },
+        {
+          title: 'an untracked file stands where an unstaged tracked file was',
+          prepare: (dir: string): void => {
+            git(dir, 'rm', '-q', '--cached', 'keep');
+            writeWork(dir, 'keep', 'occ\n');
+          },
+        },
+      ])('When the skip of a rescheduled pick meets $title', ({ prepare }) => {
+        it('Then it refuses as git does and keeps the state', async () => {
+          // Arrange
+          await refusedAfterEditStop();
+          for (const dir of [pair.peer, pair.ours]) {
+            rmSync(path.join(dir, 'n'));
+            prepare(dir);
+          }
+          const stateOf = (dir: string): ReadonlyArray<unknown> => [
+            readdirSync(path.join(dir, '.git', 'rebase-merge')).sort(),
+            readFileSync(path.join(dir, '.git', 'rebase-merge', 'done'), 'utf8'),
+            git(dir, 'ls-files', '--stage'),
+          ];
+
+          // Act
+          const peer = gitRebase(pair.peer, '--skip');
+          const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.skip());
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect((ours as { code: string }).code).toBe('WORKING_TREE_DIRTY');
+          expect(stateOf(pair.ours)).toEqual(stateOf(pair.peer));
+        });
+      });
+
+      it('Then a refusal at a later line after a successful retry leaves the state git leaves', async () => {
+        // Arrange
+        const buildLater = (dir: string): void => {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configGit(dir);
+          for (const [file, title] of [
+            ['keep', 'base'],
+            ['uu', 'U'],
+          ] as const) {
+            if (title === 'U') git(dir, 'checkout', '-q', '-b', 'u');
+            writeWork(dir, file, `${file}\n`);
+            git(dir, 'add', file);
+            gitCommit(dir, title);
+          }
+          git(dir, 'checkout', '-q', 'main');
+          for (const [file, title] of [
+            ['w', 'W'],
+            ['x', 'X'],
+            ['n', 'Z'],
+          ] as const) {
+            writeWork(dir, file, `${file}\n`);
+            git(dir, 'add', file);
+            gitCommit(dir, title);
+          }
+        };
+        for (const dir of [pair.peer, pair.ours]) buildLater(dir);
+        gitRebaseI(pair.peer, 'u', ['edit', 'pick', 'pick']);
+        await tsgitRebaseI(pair.ours, 'u', ['edit', 'pick', 'pick']);
+        for (const dir of [pair.peer, pair.ours]) plantOccupant(dir);
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        // tsgit's committer date differs from git's pinned one, so rewritten commits differ in oid.
+        const unnamed = (dir: string): string =>
+          JSON.stringify(snapshot(dir)).replace(/([0-9a-f]{40}) [0-9a-f]{40}/g, '$1 <rewritten>');
+        expect(unnamed(pair.ours)).toEqual(unnamed(pair.peer));
+        for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+        expect(gitRebase(pair.peer, '--continue').exitCode).toBe(0);
+        expect(await tsgitRebase(pair.ours, (repo) => repo.rebase.continue())).toBe('ok');
+        const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main').trim();
+        expect(subjects(pair.ours)).toBe(subjects(pair.peer));
       });
     });
   });

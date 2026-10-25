@@ -1016,7 +1016,24 @@ const retryRescheduledPick = async (
   head: ObjectId,
 ): Promise<RebaseResult> => {
   const rc = { ...replayContextOf(progress), doneBefore: progress.done };
+  if (isInteractiveState(progress)) return retryInteractive(ctx, rc, head);
   return replayFrom(ctx, rc, head, { applied: [], rewritten: await readRewrittenList(ctx) });
+};
+
+/** An interactive reschedule retries through the interactive loop, which stops on `edit` lines. */
+const retryInteractive = async (
+  ctx: Context,
+  rc: ReplayContext,
+  head: ObjectId,
+): Promise<RebaseResult> => {
+  const ic: InteractiveContext = {
+    branch: rc.branch,
+    onto: rc.onto,
+    origHead: rc.origHead,
+    doneBefore: commitEntries(rc.doneBefore),
+    todo: commitEntries(rc.todo),
+  };
+  return replayInteractive(ctx, ic, head, { applied: [], rewritten: await readRewrittenList(ctx) });
 };
 
 /** git's `--skip` hard-resets to HEAD (dropping the staged change) and retries the rescheduled pick. */
@@ -1777,6 +1794,24 @@ const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFiel
   };
 };
 
+/** An interactive loop's refused line: reschedule it with the rewrites made so far. */
+const refuseInteractiveLine = (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  const { ic, index } = line;
+  const refused: RefusedLine = {
+    done: [...ic.doneBefore, ...ic.todo.slice(0, index + 1)],
+    remaining: ic.todo.slice(index),
+    commit: line.inst.oid,
+    author: line.cData.author,
+    rewritten: replay.rewritten,
+  };
+  return refuseRescheduled(ctx, ic, refused, refusal);
+};
+
 /** Any other line: step it, stopping on a conflict or an `edit`; a commit it
  *  produces opens a new meld group. */
 const replayStep = async (
@@ -1786,7 +1821,7 @@ const replayStep = async (
 ): Promise<InteractiveLineOutcome> => {
   const { inst, cData } = line;
   const step = await stepInstruction(ctx, inst, cData, replay.head);
-  if (step.kind === 'refused') throw workingTreeDirty(step);
+  if (step.kind === 'refused') return refuseInteractiveLine(ctx, line, replay, step);
   if (step.kind === 'conflict') {
     return { stop: await stopOnStepConflict(ctx, line, replay, step.conflicts) };
   }
@@ -1883,7 +1918,7 @@ const COMMIT_ACTIONS: ReadonlySet<string> = new Set([
  *  pure-pick stop resumes through the (identical) non-interactive path. An
  *  `amend` stop always carries a non-`pick` verb (`edit`/`squash`/`fixup`) in
  *  its todo, so the verb check subsumes an explicit `amend` test. */
-const isInteractiveState = (state: RebaseState): boolean =>
+const isInteractiveState = (state: Pick<RebaseState, 'done' | 'remaining'>): boolean =>
   [...state.done, ...state.remaining].some((e) => INTERACTIVE_VERBS.has(e.action));
 
 const INTERACTIVE_VERBS: ReadonlySet<string> = new Set([
