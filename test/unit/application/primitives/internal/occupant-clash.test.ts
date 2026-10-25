@@ -627,6 +627,25 @@ describe('classifyOccupant', () => {
       });
     });
 
+    describe('When the stat matches and the entry is not racy but the cached mode differs from the reached file mode', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const lookup = await arrangeTracked(ctx, { indexMtime: INDEX_WRITTEN_AFTER_ENTRY });
+        const tracked: TrackedLookup = async (target) => {
+          const found = await lookup(target);
+          if (found === undefined) return undefined;
+          return { ...found, entry: { ...found.entry, mode: FILE_MODE.EXECUTABLE } };
+        };
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT(REACHED));
+      });
+    });
+
     describe('When the entry is assume-unchanged and the reached file differs from the cached stat', () => {
       it('Then it is a local change at the entry path', async () => {
         // Arrange

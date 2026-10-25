@@ -243,6 +243,49 @@ describe('mergeResetWorktreeToCommit', () => {
     });
   });
 
+  describe('Given two local changes both blocking', () => {
+    describe('When the merge reset runs', () => {
+      it('Then only the first path is named', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c1 = await commitFiles(ctx, { a: 'v1\n', b: 'v1\n' });
+        await commitFiles(ctx, { a: 'v2\n', b: 'v2\n' });
+        await write(ctx, 'a', 'modified\n');
+        await write(ctx, 'b', 'modified\n');
+
+        // Act
+        const data = await catchData(() => mergeResetWorktreeToCommit(ctx, c1));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: ['a'], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given two untracked files where the target adds paths', () => {
+    describe('When the merge reset runs', () => {
+      it('Then only the first path is named', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c1 = await commitFiles(ctx, { a: 'v1\n', b: 'v1\n' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/a`);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/b`);
+        await add(ctx, ['a', 'b']);
+        await commit(ctx, { message: 'drop both', author });
+        await write(ctx, 'a', 'untracked\n');
+        await write(ctx, 'b', 'untracked\n');
+
+        // Act
+        const data = await catchData(() => mergeResetWorktreeToCommit(ctx, c1));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['a'] });
+      });
+    });
+  });
+
   describe('Given only a local change blocks', () => {
     describe('When the merge reset runs', () => {
       it('Then it names that path as a local change', async () => {
