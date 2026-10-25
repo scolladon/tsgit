@@ -99,6 +99,7 @@ import {
   type RebaseProgress,
   type RebaseState,
   type RebaseStop,
+  type RedundantCommitPolicy,
   readAutostash,
   readRebaseProgress,
   readRebaseState,
@@ -453,6 +454,8 @@ interface ReplayContext extends FinishSides {
   readonly todo: ReadonlyArray<PlannedLine>;
   /** Set on the initial (fresh-run) stop only — git writes the backup once. */
   readonly backupHeader?: RebaseBackupHeader;
+  /** Set by a flat start only: git writes its `--empty=drop` default once and reads it back on `continue`. */
+  readonly redundantCommits?: RedundantCommitPolicy;
   /** The submodule ignore modes the pre-flight read; a resumed run reads them afresh, as git's new process does. */
   readonly submoduleIgnores?: SubmoduleIgnoreModes;
 }
@@ -462,6 +465,12 @@ interface ReplaySeed {
   readonly applied: ReadonlyArray<RebasedCommit>;
   readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
 }
+
+/** The policy a start records; a resume leaves the file git already wrote. */
+const policyOf = (source: {
+  readonly redundantCommits?: RedundantCommitPolicy;
+}): { readonly redundantCommits?: RedundantCommitPolicy } =>
+  source.redundantCommits === undefined ? {} : { redundantCommits: source.redundantCommits };
 
 /** Persist the byte-faithful stop state when a replay conflicts. */
 const persistStop = async (
@@ -486,6 +495,7 @@ const persistStop = async (
     patch: cData.parents.length > 1 ? '' : await renderCommitPatch(ctx, cData),
     // Stryker disable next-line ConditionalExpression: equivalent — on a continue/skip re-stop `rc.backupHeader` is `undefined`, so forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(rc.backupHeader !== undefined ? { backupHeader: rc.backupHeader } : {}),
+    ...policyOf(rc),
     ...(cData.parents.length > 1 ? {} : { mergeMsg: message }),
   };
   await writeRebaseStop(ctx, stop);
@@ -565,6 +575,7 @@ const refuseResetStep = async (
     done: [...rc.doneBefore, ...rc.todo.slice(0, index + 1)],
     remaining: rc.todo.slice(index),
     backupHeader: rc.backupHeader,
+    ...policyOf(rc),
   });
   throw workingTreeDirty(refusal);
 };
@@ -640,6 +651,7 @@ const refuseDirtyIndexBeforeFirstPick = async (
     remaining: rc.todo,
     pickSha: first.oid,
     backupHeader: rc.backupHeader,
+    ...policyOf(rc),
   });
   throw workingTreeDirty({ localChanges: staged, untracked: [] });
 };
@@ -827,6 +839,7 @@ const startReplay = async (
     doneBefore: [],
     todo,
     backupHeader: backupHeaderOf(upstream, headCommit, onto),
+    redundantCommits: 'drop',
     submoduleIgnores: preflight.modes,
   };
   return replayFrom(ctx, rc, onto, { applied: [], rewritten: [] });
@@ -1349,6 +1362,8 @@ interface InteractiveContext {
   readonly doneBefore: ReadonlyArray<PlannedInstruction>;
   readonly todo: ReadonlyArray<PlannedInstruction>;
   readonly backupHeader?: RebaseBackupHeader;
+  /** Set by an interactive start only: git's `rebase -i` default writes no policy file. */
+  readonly redundantCommits?: RedundantCommitPolicy;
 }
 
 interface StopFields {
@@ -1389,6 +1404,7 @@ const persistInteractiveStop = async (
     patch: fields.patch,
     // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop`'s `if (field !== undefined)` skips exactly like the `{}` branch (byte-identical on-disk state).
     ...(ic.backupHeader !== undefined ? { backupHeader: ic.backupHeader } : {}),
+    ...policyOf(ic),
     ...optionalStopFields(fields),
   });
 };
@@ -1715,6 +1731,7 @@ const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promis
       shortOrigHead: shortOid(plan.headCommit),
       shortOnto: shortOid(plan.onto),
     },
+    redundantCommits: 'stop',
   };
   const seed: ReplaySeed = {
     applied: folded.map((t) => ({ source: t.oid, created: t.oid })),

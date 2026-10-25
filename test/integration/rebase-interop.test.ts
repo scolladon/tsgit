@@ -23,7 +23,7 @@
  *   unique:         a rebase either tool starts is resumable by the other, and both drop the same already-upstream commit
  *   interopSurface: rebaseMerge, reflog
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -758,6 +758,180 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
         // Assert
         expect(done.kind).toBe('rebased');
         expect(commitCount(dir)).toBe(4);
+      });
+    });
+  });
+
+  describe('Given a topic whose conflicting commit is followed by a commit main already has', () => {
+    /** base f; main U sets f and adds g; topic W sets f, E adds g as main does, Y adds h. HEAD on topic. */
+    const buildEmptiedTopic = (dir: string): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'f.txt', 'base\n');
+      git(dir, 'add', 'f.txt');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'topic');
+      for (const [rel, body, title] of [
+        ['f.txt', 'TOPIC\n', 'W'],
+        ['g.txt', 'g\n', 'E'],
+        ['h.txt', 'h\n', 'Y'],
+      ] as const) {
+        writeWork(dir, rel, body);
+        git(dir, 'add', rel);
+        gitCommit(dir, title);
+      }
+      git(dir, 'checkout', '-q', 'main');
+      writeWork(dir, 'f.txt', 'MAIN\n');
+      writeWork(dir, 'g.txt', 'g\n');
+      git(dir, 'add', 'f.txt', 'g.txt');
+      gitCommit(dir, 'U');
+      git(dir, 'checkout', '-q', 'topic');
+    };
+    const listing = (dir: string): ReadonlyArray<string> =>
+      readdirSync(path.join(dir, '.git', 'rebase-merge')).sort();
+    const POLICY = 'drop_redundant_commits';
+    const resolveF = (dir: string): void => {
+      writeWork(dir, 'f.txt', 'RESOLVED\n');
+      git(dir, 'add', 'f.txt');
+    };
+    const gitContinue = (dir: string) =>
+      tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '--continue'], {
+        env: runGitEnv(),
+      });
+    const startGit = (dir: string, interactive: boolean, editW = false): void => {
+      tryRunGit(['-C', dir, 'rebase', ...(interactive ? ['-i'] : []), 'main'], {
+        env: {
+          ...runGitEnv(),
+          GIT_SEQUENCE_EDITOR: editW ? "perl -i -pe 's/^pick (.* W)$/edit $1/'" : 'true',
+          GIT_EDITOR: 'true',
+        },
+      });
+    };
+    const startTsgit = async (dir: string, interactive: boolean, editW = false): Promise<void> => {
+      const [w, e, y] = ['topic~2', 'topic~1', 'topic'].map((r) => oidAt(dir, r));
+      const repo = await openRepository({ cwd: dir });
+      await repo.rebase.run({
+        upstream: 'main',
+        ...(interactive
+          ? {
+              interactive: [
+                { action: editW ? 'edit' : 'pick', oid: w as string },
+                { action: 'pick', oid: e as string },
+                { action: 'pick', oid: y as string },
+              ] as const,
+            }
+          : {}),
+      });
+      await repo.dispose();
+    };
+    const subjectsOf = (dir: string): string => git(dir, 'log', '--format=%s', 'HEAD').trim();
+
+    describe('When a flat rebase stops on the conflict', () => {
+      it('Then tsgit writes the files git does, the policy file included and no rewritten-list', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, false);
+
+        // Act
+        await startTsgit(pair.ours, false);
+
+        // Assert
+        expect(listing(pair.peer)).toContain(POLICY);
+        expect(listing(pair.peer)).not.toContain('rewritten-list');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+      });
+
+      it('Then git continuing the tsgit stop drops the emptied commit, as it does its own', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, false);
+        await startTsgit(pair.ours, false);
+        resolveF(pair.peer);
+        resolveF(pair.ours);
+
+        // Act
+        const ours = gitContinue(pair.ours);
+        const peer = gitContinue(pair.peer);
+
+        // Assert
+        expect([ours.exitCode, subjectsOf(pair.ours)]).toEqual([0, 'Y\nW\nU\nbase']);
+        expect([peer.exitCode, subjectsOf(pair.peer)]).toEqual([0, 'Y\nW\nU\nbase']);
+      });
+    });
+
+    describe('When an interactive rebase stops on the conflict', () => {
+      it('Then tsgit writes the files git does, with neither policy file nor rewritten-list', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, true);
+
+        // Act
+        await startTsgit(pair.ours, true);
+
+        // Assert
+        expect(listing(pair.peer)).not.toContain(POLICY);
+        expect(listing(pair.peer)).not.toContain('rewritten-list');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+      });
+
+      it('Then git continuing the tsgit stop stops on the emptied commit, as it does its own', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, true);
+        await startTsgit(pair.ours, true);
+        resolveF(pair.peer);
+        resolveF(pair.ours);
+
+        // Act
+        const ours = gitContinue(pair.ours);
+        const peer = gitContinue(pair.peer);
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours.exitCode).toBe(1);
+        expect(
+          readFileSync(path.join(pair.ours, '.git', 'rebase-merge', 'stopped-sha'), 'utf8'),
+        ).toBe(readFileSync(path.join(pair.peer, '.git', 'rebase-merge', 'stopped-sha'), 'utf8'));
+      });
+
+      it('Then git reads the policy file back: with it the emptied commit is dropped', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.ours);
+        await startTsgit(pair.ours, true);
+        resolveF(pair.ours);
+        writeFileSync(path.join(pair.ours, '.git', 'rebase-merge', POLICY), '');
+
+        // Act
+        const result = gitContinue(pair.ours);
+
+        // Assert
+        expect([result.exitCode, subjectsOf(pair.ours)]).toEqual([0, 'Y\nW\nU\nbase']);
+      });
+    });
+
+    describe('When an interactive rebase stops at `edit` on the first commit and is continued', () => {
+      it('Then the stop has no policy file and the continue stops on the emptied commit, as git', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, true, true);
+        await startTsgit(pair.ours, true, true);
+        for (const dir of [pair.peer, pair.ours]) {
+          resolveF(dir);
+          runGit(['-C', dir, 'commit', '-q', '-a', '--amend', '--no-edit']);
+        }
+
+        // Act
+        const ours = gitContinue(pair.ours);
+        const peer = gitContinue(pair.peer);
+
+        // Assert
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect([ours.exitCode, peer.exitCode]).toEqual([1, 1]);
       });
     });
   });

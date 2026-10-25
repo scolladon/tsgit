@@ -9,7 +9,8 @@
  * `git-rebase-todo` (remaining) + `git-rebase-todo.backup`, `done`, `message`,
  * `author-script`, `end`, `msgnum`, `interactive` (empty), `rewritten-list`,
  * `patch`, `drop_redundant_commits`/`no-reschedule-failed-exec` (empty),
- * `stopped-sha`.
+ * `stopped-sha`. `drop_redundant_commits` is written once, by a flat start (git's
+ * `--empty=drop` default); `rewritten-list` only once a rewrite is recorded.
  */
 
 import { invalidSequencerTodo } from '../../../domain/commands/error.js';
@@ -56,6 +57,9 @@ export interface CurrentFixup {
   readonly oid: ObjectId;
 }
 
+/** What git does with a pick that turns out empty: `drop` it (the flat default) or `stop` on it. */
+export type RedundantCommitPolicy = 'drop' | 'stop';
+
 /** Everything `writeRebaseStop` persists for one conflict stop. */
 export interface RebaseStop {
   readonly headName: string;
@@ -75,6 +79,9 @@ export interface RebaseStop {
    *  writes the backup once and never rewrites it, so `continue`/`skip` re-stops
    *  omit it and leave the existing file untouched. */
   readonly backupHeader?: RebaseBackupHeader;
+  /** Set on the initial stop only, like the backup: git writes the policy file once, at
+   *  the start, and reads it back on `continue`; unset leaves the file as it is. */
+  readonly redundantCommits?: RedundantCommitPolicy;
   /** The commit being amended — set on an `edit` stop (and a squash/fixup meld).
    *  Its presence is the marker that distinguishes an `edit` stop (clean index)
    *  from a conflict stop on `continue`. */
@@ -107,6 +114,8 @@ export interface RescheduledPick {
   readonly remaining: ReadonlyArray<RebaseTodoLine>;
   readonly pickSha: ObjectId;
   readonly backupHeader: RebaseBackupHeader | undefined;
+  /** As on `RebaseStop`: set by a start only. */
+  readonly redundantCommits?: RedundantCommitPolicy;
 }
 
 /** A `reset` step refused before it ran: the line is rescheduled, and no commit is named. */
@@ -119,6 +128,8 @@ export interface RescheduledLine {
   /** The live todo, starting with the rescheduled line. */
   readonly remaining: ReadonlyArray<RebaseTodoLine>;
   readonly backupHeader: RebaseBackupHeader | undefined;
+  /** As on `RebaseStop`: set by a start only. */
+  readonly redundantCommits?: RedundantCommitPolicy;
 }
 
 /** The part of the state every rebase stop carries, whatever stopped it. */
@@ -182,9 +193,11 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await write('end', `${fullTodo.length}\n`);
   await write('msgnum', `${stop.done.length}\n`);
   await write('interactive', '');
-  await write('rewritten-list', serializeRewritten(stop.rewritten));
+  if (stop.rewritten.length > 0) {
+    await write('rewritten-list', serializeRewritten(stop.rewritten));
+  }
   await write('patch', stop.patch);
-  await write('drop_redundant_commits', '');
+  if (stop.redundantCommits === 'drop') await write('drop_redundant_commits', '');
   await write('no-reschedule-failed-exec', '');
   await write('stopped-sha', `${stop.stoppedSha}\n`);
   const labels = stop.done.filter((line) => line.action === 'label');
@@ -215,7 +228,7 @@ const writeRescheduled = async (ctx: Context, stop: RescheduledLine): Promise<vo
   await write('end', `${fullTodo.length}\n`);
   await write('msgnum', `${stop.done.length}\n`);
   await write('interactive', '');
-  await write('drop_redundant_commits', '');
+  if (stop.redundantCommits === 'drop') await write('drop_redundant_commits', '');
   await write('no-reschedule-failed-exec', '');
 };
 

@@ -171,8 +171,62 @@ describe('rebase-state', () => {
 
         // Assert
         expect(await read(ctx, 'interactive')).toBe('');
-        expect(await read(ctx, 'drop_redundant_commits')).toBe('');
         expect(await read(ctx, 'no-reschedule-failed-exec')).toBe('');
+      });
+
+      it.each([
+        ['drop', true],
+        ['stop', false],
+      ] as const)(
+        'Then redundantCommits %s writes drop_redundant_commits: %s',
+        async (policy, written) => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          await writeRebaseStop(ctx, { ...STOP, redundantCommits: policy });
+
+          // Assert
+          expect(
+            await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/drop_redundant_commits`),
+          ).toBe(written);
+        },
+      );
+
+      it('Then an unset redundantCommits leaves an existing drop_redundant_commits untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, { ...STOP, redundantCommits: 'drop' });
+
+        // Act
+        await writeRebaseStop(ctx, STOP);
+
+        // Assert
+        expect(await read(ctx, 'drop_redundant_commits')).toBe('');
+      });
+
+      it('Then an unset redundantCommits writes no drop_redundant_commits', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, STOP);
+
+        // Assert
+        expect(
+          await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/drop_redundant_commits`),
+        ).toBe(false);
+      });
+
+      it('Then an empty rewritten list writes no rewritten-list', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, { ...STOP, rewritten: [] });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/rewritten-list`)).toBe(false);
       });
 
       it('Then stopped-sha and .git/REBASE_HEAD record the stopped commit', async () => {
@@ -325,7 +379,6 @@ describe('rebase-state', () => {
         // Assert
         expect(await entriesOf(ctx)).toEqual([
           'done',
-          'drop_redundant_commits',
           'end',
           'git-rebase-todo',
           'git-rebase-todo.backup',
@@ -374,8 +427,38 @@ describe('rebase-state', () => {
         expect(await read(ctx, 'onto')).toBe(`${ONTO}\n`);
         expect(await read(ctx, 'orig-head')).toBe(`${ORIG}\n`);
         expect(await read(ctx, 'interactive')).toBe('');
-        expect(await read(ctx, 'drop_redundant_commits')).toBe('');
         expect(await read(ctx, 'no-reschedule-failed-exec')).toBe('');
+      });
+
+      it.each([
+        ['drop', true],
+        ['stop', false],
+      ] as const)(
+        'Then redundantCommits %s writes drop_redundant_commits: %s',
+        async (policy, written) => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          await writeRescheduledPick(ctx, { ...RESCHEDULED, redundantCommits: policy });
+
+          // Assert
+          expect(
+            await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/drop_redundant_commits`),
+          ).toBe(written);
+        },
+      );
+
+      it('Then an unset redundantCommits leaves an existing drop_redundant_commits untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRescheduledPick(ctx, { ...RESCHEDULED, redundantCommits: 'drop' });
+
+        // Act
+        await writeRescheduledPick(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await read(ctx, 'drop_redundant_commits')).toBe('');
       });
 
       it('Then the backup lists the whole todo once and REBASE_HEAD names the pick', async () => {

@@ -1707,6 +1707,98 @@ describe('rebase edge cases', () => {
     });
   });
 
+  describe('Given the empty-commit policy file', () => {
+    const POLICY = 'drop_redundant_commits';
+    const policyExists = (ctx: Context): Promise<boolean> =>
+      ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`);
+    const seedTwoConflicts = async (interactive: boolean): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await setUser(ctx);
+      await writeAddCommit(ctx, 'f.txt', 'l1\nl2\nl3\n', 'base');
+      await branchCreate(ctx, { name: 'topic' });
+      await checkout(ctx, { rev: 'topic' });
+      const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
+      const t2 = await writeAddCommit(ctx, 'f.txt', 'l1\nT2\nl3\n', 't2');
+      const t3 = await writeAddCommit(ctx, 'f.txt', 'l1\nT2\nT3\n', 't3');
+      await checkout(ctx, { rev: 'main' });
+      await writeAddCommit(ctx, 'f.txt', 'l1\nM2\nM3\n', 'm1');
+      await checkout(ctx, { rev: 'topic' });
+      await rebaseRun(ctx, {
+        upstream: 'main',
+        ...(interactive
+          ? {
+              interactive: [
+                { action: 'pick', oid: t1 },
+                { action: 'pick', oid: t2 },
+                { action: 'pick', oid: t3 },
+              ] as const,
+            }
+          : {}),
+      });
+      return ctx;
+    };
+    const resolveAndContinue = async (ctx: Context): Promise<void> => {
+      await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nR2\nM3\n');
+      await add(ctx, ['f.txt']);
+      await rebaseContinue(ctx);
+    };
+
+    describe('When a flat rebase stops on a conflict', () => {
+      it('Then drop_redundant_commits is written', async () => {
+        // Arrange
+        const sut = await seedTwoConflicts(false);
+
+        // Act
+        const result = await policyExists(sut);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When an interactive rebase stops on a conflict', () => {
+      it('Then drop_redundant_commits is not written', async () => {
+        // Arrange
+        const sut = await seedTwoConflicts(true);
+
+        // Act
+        const result = await policyExists(sut);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When a flat rebase is continued into a second conflict', () => {
+      it('Then the re-stop does not rewrite the policy file', async () => {
+        // Arrange
+        const sut = await seedTwoConflicts(false);
+        await sut.fs.rm(`${sut.layout.gitDir}/rebase-merge/${POLICY}`);
+
+        // Act
+        await resolveAndContinue(sut);
+
+        // Assert
+        expect(await policyExists(sut)).toBe(false);
+      });
+    });
+
+    describe('When an interactive rebase is continued into a second conflict', () => {
+      it('Then the re-stop leaves a seeded policy file in place', async () => {
+        // Arrange
+        const sut = await seedTwoConflicts(true);
+        await sut.fs.writeUtf8(`${sut.layout.gitDir}/rebase-merge/${POLICY}`, '');
+
+        // Act
+        await resolveAndContinue(sut);
+
+        // Assert
+        expect(await policyExists(sut)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a continue whose next commit also conflicts', () => {
     describe('When it re-stops', () => {
       it('Then the rewritten-list carries every commit replayed so far', async () => {

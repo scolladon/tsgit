@@ -56,8 +56,6 @@ const REFUSAL_STATUS = 128;
 const readIfPresent = (file: string): string | undefined =>
   existsSync(file) ? readFileSync(file, 'utf8') : undefined;
 
-const NOT_YET_MIRRORED_STATE_FILES: ReadonlySet<string> = new Set(['rewritten-list']);
-
 const rebaseMerge = (dir: string, name?: string): string =>
   path.join(dir, '.git', 'rebase-merge', ...(name === undefined ? [] : [name]));
 
@@ -66,11 +64,7 @@ const rebaseState = (dir: string): ReadonlyArray<unknown> => [
   indexState(dir),
   tryRunGit(['-C', dir, 'rev-parse', 'HEAD']).stdout,
   tryRunGit(['-C', dir, 'symbolic-ref', '-q', 'HEAD']).stdout,
-  existsSync(rebaseMerge(dir))
-    ? readdirSync(rebaseMerge(dir))
-        .filter((name) => !NOT_YET_MIRRORED_STATE_FILES.has(name))
-        .sort()
-    : undefined,
+  existsSync(rebaseMerge(dir)) ? readdirSync(rebaseMerge(dir)).sort() : undefined,
   readIfPresent(rebaseMerge(dir, 'git-rebase-todo')),
   readIfPresent(rebaseMerge(dir, 'done')),
 ];
