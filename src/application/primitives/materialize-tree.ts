@@ -57,6 +57,7 @@ import {
   type ChangesetEntry,
   type ChangesetStats,
   computeChangeset,
+  pathFields,
 } from './compute-changeset.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
@@ -169,9 +170,11 @@ const writtenEntriesByPath = (
   return out;
 };
 
+const PATH_SEPARATOR = '/';
+
 const leadingDirectoriesOf = (path: string): string[] => {
   const dirs: string[] = [];
-  for (let i = path.indexOf('/'); i !== -1; i = path.indexOf('/', i + 1)) {
+  for (let i = path.indexOf(PATH_SEPARATOR); i !== -1; i = path.indexOf(PATH_SEPARATOR, i + 1)) {
     dirs.push(path.slice(0, i));
   }
   return dirs;
@@ -242,6 +245,7 @@ const lowestStageOfUnmerged = (index: GitIndex): Map<IndexPathKey, IndexEntry> =
   for (const entry of index.entries) {
     const key = indexPathKey(entry);
     if (entry.flags.stage === 0) merged.add(key);
+    // Stryker disable next-line EqualityOperator: equivalent — a tie needs two entries with the same path and stage, which an index cannot hold, so `>=` only swaps an entry for its twin.
     else if ((staged.get(key)?.flags.stage ?? Infinity) > entry.flags.stage) staged.set(key, entry);
   }
   for (const key of merged) staged.delete(key);
@@ -253,8 +257,7 @@ const resetUnmergedEntry = (low: IndexEntry, target: TargetEntry | undefined): C
   target === undefined
     ? {
         kind: 'delete',
-        path: low.path,
-        ...(low.pathBytes === undefined ? {} : { pathBytes: low.pathBytes }),
+        ...pathFields(low),
         mode: low.mode,
         id: undefined,
         previousId: undefined,
@@ -262,8 +265,7 @@ const resetUnmergedEntry = (low: IndexEntry, target: TargetEntry | undefined): C
       }
     : {
         kind: 'update',
-        path: target.path,
-        ...(target.pathBytes === undefined ? {} : { pathBytes: target.pathBytes }),
+        ...pathFields(target),
         mode: target.mode,
         id: target.id,
         previousId: undefined,
