@@ -4969,3 +4969,217 @@ describe('Given an update of a path reached through a symlinked leading director
     });
   });
 });
+
+describe('applyChangeset leaving occupants its pre-flight does not judge', () => {
+  describe('Given an unmerged update at a directory holding an untracked file', () => {
+    describe('When applyChangeset runs without force and without unmergedPaths', () => {
+      it('Then the path is not refused', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/d/u`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([unmergedUpdate('d', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).not.toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY' });
+      });
+    });
+  });
+
+  describe('Given a tracked file deleted over an emptied directory', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then the deletion is not refused', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('old'));
+        await ctx.fs.mkdir(`${WORKDIR}/f`);
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeDelete('f', oldId)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a lossy added entry under a path an untracked file occupies', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then the entry is not judged and the file stays', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([
+              makeAdd('d/x', id, FILE_MODE.REGULAR, {
+                pathBytes: Uint8Array.of(0x64, 0xff, 0x2f, 0x78),
+              }),
+            ]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toBeUndefined();
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given a tracked file already gone from an otherwise empty directory', () => {
+    describe('When applyChangeset deletes it', () => {
+      it('Then the empty directory is removed as git does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('old'));
+        await ctx.fs.mkdir(`${WORKDIR}/d`);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeDelete('d/gone', oldId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/d`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an unmerged update at a directory holding an ignored file', () => {
+    describe('When applyChangeset runs without force and with ignoredOccupants protect', () => {
+      it('Then the ignored file is not removed on its own', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/d/a.o`, enc('o'));
+        const removals = vi.spyOn(ctx.fs, 'rmRecursive');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([unmergedUpdate('d', newId)]),
+          force: false,
+          ignoredOccupants: 'protect',
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(removals.mock.calls.map(([path]) => path)).toEqual([`${WORKDIR}/d`]);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a plain file', ignore: '', options: {} },
+    { label: 'a file only a directory rule ignores', ignore: 'd/\n', options: {} },
+    {
+      label: 'an ignored file under ignoredOccupants protect',
+      ignore: 'd\n',
+      options: { ignoredOccupants: 'protect' as const },
+    },
+  ])('Given $label at d where an unmerged update of d/x is due', ({ ignore, options }) => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the file is kept and the write is refused', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc(ignore));
+        await ctx.fs.write(`${WORKDIR}/d`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([unmergedUpdate('d/x', newId)]),
+            force: false,
+            workdir: WORKDIR,
+            ...options,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'NOT_A_DIRECTORY' });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given an ignored file at d where an unmerged update of d/x is due', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the ignored file gives way to the write', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('d\n'));
+        await ctx.fs.write(`${WORKDIR}/d`, enc('o'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([unmergedUpdate('d/x', newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d/x`))).toBe('new');
+      });
+    });
+  });
+
+  describe('Given a process filter driver, a symlink and a regular file d/x', () => {
+    describe('When applyChangeset writes the entries one at a time', () => {
+      it('Then the leading directory of the regular file is made ahead of its write', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8(`${base.layout.gitDir}/config`, '[filter "a"]\n\tprocess = proc\n');
+        const ctx = { ...base, command: scriptedCommandRunner(new Uint8Array(0)).runner };
+        const link = await writeBlob(ctx, enc('target'));
+        const payload = await writeBlob(ctx, enc('payload'));
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('l', link, FILE_MODE.SYMLINK),
+            makeAdd('d/x', payload),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(mkdirSpy.mock.calls.map(([dir]) => dir)).toContain(`${WORKDIR}/d`);
+      });
+    });
+  });
+});

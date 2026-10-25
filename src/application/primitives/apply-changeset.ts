@@ -306,7 +306,7 @@ const untrackedClashOf = (verdict: OccupantVerdict): OccupantClash | undefined =
 // The untracked-protecting pre-flight of a forced apply: what the writer would clobber
 // without being told it may, and nothing about content.
 const evaluateProtectedPath: PathEvaluator = async (ctx, _probe, entry, scope) => {
-  if (isLossy(entry) || entry.kind === 'noop') return undefined;
+  if (isLossy(entry)) return undefined;
   if (entry.kind === 'add') {
     return untrackedClashOf(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
   }
@@ -438,13 +438,14 @@ const removeGitlinkDirectory = async (
   return undefined;
 };
 
-// git's unlink_entry leaves a directory standing where the entry was (warning),
-// and a path beneath a regular file is not there to remove.
+// git's unlink_entry leaves a directory standing where the entry was (warning); a file
+// already gone is no failure, so its directory is still scheduled for removal.
 const removeDeletedFile = async (ctx: Context, abs: string, path: FilePath): Promise<boolean> => {
   const stat = await lstatIfReachable(ctx.fs, abs);
-  if (stat === undefined) return false;
+  if (stat === undefined) return true;
   if (stat.isDirectory) {
     ctx.logger?.warn?.(`unable to unlink '${path}'`);
+    // Stryker disable next-line BooleanLiteral: equivalent — the directory standing at the path keeps its parent non-empty, so the prune it would schedule always refuses.
     return false;
   }
   await ctx.fs.rm(abs);
