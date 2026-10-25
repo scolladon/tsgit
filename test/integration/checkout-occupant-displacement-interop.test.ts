@@ -485,6 +485,55 @@ describe.skipIf(!GIT_AVAILABLE)(
       ['delete', DELETE_ROWS],
     ] as const;
 
+    interface ForcedCommand {
+      readonly label: string;
+      readonly git: ReadonlyArray<string>;
+      readonly tsgit: (repo: Repository) => Promise<unknown>;
+    }
+
+    const FORCED_COMMANDS: ReadonlyArray<ForcedCommand> = [
+      {
+        label: 'checkout -f t',
+        git: ['checkout', '-q', '-f', 't'],
+        tsgit: (r) => r.checkout({ rev: 't', force: true }),
+      },
+      {
+        label: 'reset --hard t',
+        git: ['reset', '-q', '--hard', 't'],
+        tsgit: (r) => r.reset({ mode: 'hard', rev: 't' }),
+      },
+      {
+        label: 'checkout t -- keep',
+        git: ['checkout', '-q', 't', '--', 'keep'],
+        tsgit: (r) => r.checkout({ source: 't', paths: ['keep'] }),
+      },
+    ];
+
+    describe.each(FORCED_COMMANDS)('Given the forced command $label', (command) => {
+      describe.each(DELETE_ROWS)('and the $shape delete occupant', (row) => {
+        describe('When both tools run it', () => {
+          it('Then the outcome, work tree and index match git', async () => {
+            // Arrange
+            for (const dir of [pair.peer, pair.ours]) {
+              buildHistory(dir, row.due, row.tracked);
+              row.occupant(dir);
+              writeFileSync(path.join(dir, 'other'), 'o\n');
+            }
+            repo = await openRepository({ cwd: pair.ours });
+
+            // Act
+            const expected = runGitCheckout(pair.peer, command.git);
+            await command.tsgit(repo);
+
+            // Assert
+            expect(expected).toEqual(OK);
+            expect(listing(pair.ours)).toEqual(listing(pair.peer));
+            expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+          });
+        });
+      });
+    });
+
     describe.each(VARIANTS)('Given the %s write path', (variant) => {
       describe.each(VARIANT_ROWS)('and the %s variant', (_label, rows) => {
         describe.each(rows)('and the $shape occupant', (row) => {

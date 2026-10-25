@@ -73,7 +73,6 @@ import {
   createWorkingTreeWriter,
   type WorkingTreeWriter,
 } from './internal/write-converted-entry.js';
-import { rmIfExists } from './internal/write-working-tree-file.js';
 import { everySourceLoadable } from './object-store.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
@@ -322,8 +321,20 @@ const applyDeleteEntry = async (
   if (entry.previousMode === FILE_MODE.GITLINK) {
     return (await removeEmptyDirectory(ctx, abs)) ? entry.path : undefined;
   }
-  await rmIfExists(ctx, abs);
-  return entry.path;
+  return (await removeDeletedFile(ctx, abs, entry.path)) ? entry.path : undefined;
+};
+
+// git's unlink_entry leaves a directory standing where the entry was (warning),
+// and a path beneath a regular file is not there to remove.
+const removeDeletedFile = async (ctx: Context, abs: string, path: FilePath): Promise<boolean> => {
+  const stat = await lstatIfReachable(ctx.fs, abs);
+  if (stat === undefined) return false;
+  if (stat.isDirectory) {
+    ctx.logger?.warn?.(`unable to unlink '${path}'`);
+    return false;
+  }
+  await ctx.fs.rm(abs);
+  return true;
 };
 
 // The decoded name would alias a different file, so nothing is written for

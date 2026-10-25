@@ -477,6 +477,78 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given a forced delete of a path beneath a regular file', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the file stays and nothing is deleted', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d`, enc('occupant'));
+
+        // Act
+        const result = await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/x', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('occupant');
+        expect(result.deleted).toBe(1);
+        expect(result.written).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a forced delete of a path that is now a populated directory', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the directory and its child stay and one warning is logged', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const warn = vi.fn();
+        const ctx = { ...base, logger: { warn } };
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/f/u`, enc('untracked'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('f', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f/u`))).toBe('untracked');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith("unable to unlink 'f'");
+      });
+    });
+  });
+
+  describe('Given a forced delete of a path that is now an empty directory', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the directory stays and one warning is logged', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const warn = vi.fn();
+        const ctx = { ...base, logger: { warn } };
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.mkdir(`${WORKDIR}/f`);
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('f', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/f`)).toBe(true);
+        expect(warn).toHaveBeenCalledWith("unable to unlink 'f'");
+      });
+    });
+  });
+
   describe('Given a delete entry that empties its leading directories', () => {
     describe('When applyChangeset runs with force', () => {
       it('Then every emptied directory is removed and the work tree root stays', async () => {
@@ -1263,11 +1335,11 @@ describe('applyChangeset', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            lstat: async (p: string) => {
+            lstatIfReachable: async (p: string) => {
               if (p === `${WORKDIR}/doomed.txt`) {
                 throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
               }
-              return ctx.fs.lstat(p);
+              return ctx.fs.lstatIfReachable?.(p);
             },
           },
         };
