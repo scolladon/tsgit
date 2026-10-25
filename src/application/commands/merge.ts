@@ -986,6 +986,7 @@ const tryTrivialMerge = async (
   );
   const merged = trivialMerge(base!.entries, ours!.entries, theirs!.entries);
   if (merged === undefined) return undefined;
+  if (!(await workTreeTakes(ctx, ours!.entries, merged))) return undefined;
   const ending = await commitCleanMerge(
     ctx,
     commit,
@@ -1419,7 +1420,10 @@ const octopusAttempt = async (
   strategy: string,
 ): Promise<StrategyAttempt> => {
   const ours = await flattenEscapedTree(ctx, await getTree(ctx, commit.ourId));
-  const result = await octopusMerge(ctx, commit.ourId, remotes);
+  const result = await octopusMerge(ctx, commit.ourId, remotes, (merged) =>
+    workTreeTakes(ctx, ours.entries, merged),
+  );
+  if (result.kind === 'refused') return FAILED;
   if (result.kind === 'clean')
     return { kind: 'clean', tree: result.tree, note: mergeMadeBy(strategy) };
   return {
@@ -1427,6 +1431,22 @@ const octopusAttempt = async (
     weight: conflictWeight(result.conflicts),
     persist: () => persistOctopusConflict(ctx, commit, result, ours.entries),
   };
+};
+
+/**
+ * Whether the work tree can take `merged` over `ours` without losing a local change: git's
+ * `read-tree -u` refuses before `write-tree` or `merge-one-file` write a merged object.
+ */
+const workTreeTakes = async (
+  ctx: Context,
+  ours: FlatEntries,
+  merged: FlatEntries,
+): Promise<boolean> => {
+  const outcomes = outcomesBetween(ours, merged, new Set());
+  const changed = changedPaths(outcomes, [], ours);
+  const removed = new Set(outcomes.filter(isDeleted).map((outcome) => outcome.path));
+  const found = await findWouldOverwrite(ctx, changed, await readIndex(ctx), removed);
+  return found.localChanges.length === 0 && found.untracked.length === 0;
 };
 
 /** The working-tree moves from `ours` to `target`: each path added or changed, then each removed. */

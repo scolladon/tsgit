@@ -445,10 +445,14 @@ const projectWorkingTree = async (
   tracked: ReadonlyArray<TrackedEntry>,
   scope: ConversionScope,
 ): Promise<WorkingTreeProjection> => {
-  const items = tracked.map((t) => ({ path: t.entry.path, item: t }));
+  const beyond = tracked.findIndex(({ state }) => state === 'beyond-symlink');
+  const reachable = beyond === -1 ? tracked : tracked.slice(0, beyond);
+  const items = reachable.map((t) => ({ path: t.entry.path, item: t }));
   const projected = await inInputOrder(ctx, scope, items, (t) =>
     projectEntry(ctx, workDir, scope, t),
   );
+  // git's add_to_index dies at the path beyond a symlink: later paths are never hashed.
+  if (beyond !== -1) throw pathspecBeyondSymlink(tracked[beyond]!.entry.path);
   return assembled(projected);
 };
 

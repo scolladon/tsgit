@@ -804,6 +804,7 @@ const SNAPSHOT_ROWS: ReadonlyArray<SnapshotRow> = [
     input: { rev: 't', strategy: 'resolve' },
     outcome: 'refused',
     snapshot: true,
+    sameObjects: true,
   },
   {
     id: 'Q33',
@@ -813,6 +814,7 @@ const SNAPSHOT_ROWS: ReadonlyArray<SnapshotRow> = [
     input: { rev: 't', strategy: 'resolve' },
     outcome: 'refused',
     snapshot: true,
+    sameObjects: true,
   },
   {
     id: 'Q13',
@@ -895,6 +897,7 @@ const SNAPSHOT_ROWS: ReadonlyArray<SnapshotRow> = [
     input: MERGE_T,
     outcome: 'refused',
     snapshot: true,
+    sameObjects: true,
   },
 ];
 
