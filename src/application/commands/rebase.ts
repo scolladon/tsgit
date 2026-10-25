@@ -111,7 +111,7 @@ import {
 } from './internal/rebase-state.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import {
-  hardResetWorktreeToCommit,
+  checkoutWorktreeToCommit,
   protectedResetWorktreeToCommit,
   type WorktreeRefusal,
 } from './internal/reset-worktree.js';
@@ -337,6 +337,7 @@ const detachHead = async (
   reflogAction: string,
   carried: ReadonlyArray<CarriedGitlink>,
 ): Promise<void> => {
+  await checkoutWorktreeToCommit(ctx, onto);
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
@@ -349,7 +350,6 @@ const detachHead = async (
       },
     },
   ]);
-  await hardResetWorktreeToCommit(ctx, onto);
   await restageCarried(ctx, carried);
 };
 
@@ -1151,6 +1151,7 @@ const detachInteractive = async (
   ontoName: string,
   foldedHead: ObjectId,
 ): Promise<void> => {
+  await checkoutWorktreeToCommit(ctx, foldedHead);
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
@@ -1159,13 +1160,13 @@ const detachInteractive = async (
       reflog: { oldId: fromHead, newId: foldedHead, message: rebaseStartCheckout(ontoName) },
     },
   ]);
-  await hardResetWorktreeToCommit(ctx, foldedHead);
 };
 
 /** Fast-forward the detached HEAD onto `target` (kept verbatim — its first parent
  *  is the current HEAD), recording git's `rebase: fast-forward`. */
 const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> => {
   const from = await resolveRef(ctx, HEAD);
+  await checkoutWorktreeToCommit(ctx, target);
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
@@ -1174,7 +1175,6 @@ const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> =>
       reflog: { oldId: from, newId: target, message: REBASE_FAST_FORWARD },
     },
   ]);
-  await hardResetWorktreeToCommit(ctx, target);
 };
 
 /** Create a replayed commit and advance the detached HEAD to it. `parent` is the

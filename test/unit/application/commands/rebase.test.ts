@@ -3933,3 +3933,95 @@ describe('rebase restaging a carried gitlink', () => {
     });
   });
 });
+
+describe('rebase start over an untracked occupant', () => {
+  const REFUSED = { code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['m1.txt'] };
+
+  const topicCommits = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
+    const t2 = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+    const t1 = (await readCommit(ctx, t2)).parents[0] as ObjectId;
+    return [t1, t2];
+  };
+
+  const expectUntouchedStart = async (ctx: Context, topicTip: ObjectId): Promise<void> => {
+    expect(await ctx.fs.readUtf8(work(ctx, 'm1.txt'))).toBe('untracked\n');
+    expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(topicTip);
+    expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/topic\n');
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+  };
+
+  describe('Given an untracked file where onto adds a path', () => {
+    describe('When the flat rebase starts', () => {
+      it('Then it refuses, HEAD stays on the branch and no rebase state is left', async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+        const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        await ctx.fs.writeUtf8(work(ctx, 'm1.txt'), 'untracked\n');
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, { upstream: 'main' }));
+
+        // Assert
+        expect(data).toEqual(REFUSED);
+        await expectUntouchedStart(ctx, topicTip);
+      });
+    });
+
+    describe('When the interactive rebase starts', () => {
+      it('Then it refuses, HEAD stays on the branch and no rebase state is left', async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+        const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        const [t1, t2] = await topicCommits(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'm1.txt'), 'untracked\n');
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() =>
+          sut(ctx, {
+            upstream: 'main',
+            interactive: [
+              { action: 'pick', oid: t1 as ObjectId },
+              { action: 'pick', oid: t2 as ObjectId },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(data).toEqual(REFUSED);
+        await expectUntouchedStart(ctx, topicTip);
+      });
+    });
+  });
+
+  describe('Given an untracked file where a fast-forward pick adds a path', () => {
+    describe('When the rebase continues from an edit stop', () => {
+      it('Then it refuses and HEAD stays on the edited commit', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+        await ctx.fs.writeUtf8(work(ctx, '2.txt'), 'untracked\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['2.txt'],
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c1);
+        expect(await ctx.fs.readUtf8(work(ctx, '2.txt'))).toBe('untracked\n');
+      });
+    });
+  });
+});

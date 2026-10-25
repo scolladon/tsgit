@@ -14,17 +14,19 @@ import { type WouldOverwriteClasses, workingTreeDirty } from '../../../domain/co
 import { comparePaths } from '../../../domain/diff/index.js';
 import { TsgitError } from '../../../domain/error.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
-import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
+import type { FilePath, ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type MaterializeTreeOpts, materializeTree } from '../../primitives/materialize-tree.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { readObject } from '../../primitives/read-object.js';
 import { loadSparseMatcher } from '../../primitives/read-sparse-checkout.js';
+import { resolveRef } from '../../primitives/resolve-ref.js';
+import { asMergeDirtyError } from '../merge.js';
 import { acquireIndexLock } from './index-update.js';
 
 type ResetMode = Pick<
   MaterializeTreeOpts,
-  'force' | 'forceRewriteAll' | 'unmergedPaths' | 'untrackedOccupants'
+  'force' | 'forceRewriteAll' | 'unmergedPaths' | 'untrackedOccupants' | 'headTree'
 >;
 
 const resetWorktreeToCommit = async (
@@ -134,4 +136,27 @@ const firstBlockingPathOnly = ({
     });
   }
   return workingTreeDirty({ localChanges: [], untracked: [firstUntracked] });
+};
+
+const HEAD = 'HEAD' as RefName;
+
+const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> => {
+  const commit = await readObject(ctx, commitId);
+  if (commit.type !== 'commit') throw unexpectedObjectType('commit', commit.type, commitId);
+  return commit.data.tree;
+};
+
+/**
+ * The unforced two-way checkout rebase runs before it moves HEAD (git's `could not detach HEAD`
+ * on refusal): a path HEAD and the target agree on keeps its occupant, an untracked occupant
+ * where the target writes refuses with every offending path and nothing is touched, an ignored
+ * one is overwritten.
+ */
+export const checkoutWorktreeToCommit = async (ctx: Context, target: ObjectId): Promise<void> => {
+  const headTree = await treeOf(ctx, await resolveRef(ctx, HEAD));
+  try {
+    await resetWorktreeToCommit(ctx, target, { force: false, headTree });
+  } catch (err) {
+    throw asMergeDirtyError(err);
+  }
 };

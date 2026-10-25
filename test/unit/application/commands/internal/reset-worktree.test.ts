@@ -6,15 +6,18 @@ import { checkout } from '../../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
+  checkoutWorktreeToCommit,
   hardResetWorktreeToCommit,
   mergeResetWorktreeToCommit,
   protectedResetWorktreeToCommit,
 } from '../../../../../src/application/commands/internal/reset-worktree.js';
 import { mergeRun } from '../../../../../src/application/commands/merge.js';
+import { rm } from '../../../../../src/application/commands/rm.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
+import { resolveRef } from '../../../../../src/application/primitives/resolve-ref.js';
 import { updateCoreConfig } from '../../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
-import type { AuthorIdentity, ObjectId } from '../../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -491,6 +494,65 @@ describe('protectedResetWorktreeToCommit', () => {
           localChanges: [],
           untracked: ['f', 'g'],
         });
+      });
+    });
+  });
+});
+
+describe('checkoutWorktreeToCommit', () => {
+  describe('Given an untracked file where the target adds f', () => {
+    describe('When the checkout runs', () => {
+      it('Then it refuses naming f and leaves HEAD, the index and the work tree untouched', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ f: 'v1\n' }, ['f']);
+        await asFile(ctx);
+        const indexBefore = await readIndex(ctx);
+        const headBefore = await resolveRef(ctx, 'HEAD' as RefName);
+
+        // Act
+        const data = await catchData(() => checkoutWorktreeToCommit(ctx, target));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['f'] });
+        expect(await readIndex(ctx)).toEqual(indexBefore);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(headBefore);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('untracked\n');
+      });
+    });
+  });
+
+  describe('Given an ignored file where the target adds f', () => {
+    describe('When the checkout runs', () => {
+      it('Then the ignored occupant is overwritten', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ f: 'v1\n' }, ['f']);
+        await write(ctx, '.gitignore', 'f\n');
+        await asFile(ctx);
+
+        // Act
+        await checkoutWorktreeToCommit(ctx, target);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('v1\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file at a path HEAD and the target agree on', () => {
+    describe('When the checkout runs', () => {
+      it('Then the file stays and the index keeps no entry for it', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ g: 'g\n', h: 'h\n' }, ['h']);
+        await rm(ctx, ['g'], { cached: true });
+        await write(ctx, 'g', 'untracked\n');
+
+        // Act
+        await checkoutWorktreeToCommit(ctx, target);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/g`)).toBe('untracked\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/h`)).toBe('h\n');
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).not.toContain('g');
       });
     });
   });
