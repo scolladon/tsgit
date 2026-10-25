@@ -524,7 +524,12 @@ export const applyMergeToWorktree = async (
   if (!merged.cleanMerge) rejectUnsupported(merged.conflicts);
 
   const changed = changedPaths(merged.outcomes, merged.conflicts, ours.entries);
-  const overwrite = await findWouldOverwrite(ctx, changed, input.currentIndex);
+  const overwrite = await findWouldOverwrite(
+    ctx,
+    changed,
+    input.currentIndex,
+    new Set(merged.outcomes.filter(isDeleted).map((outcome) => outcome.path)),
+  );
   if (overwrite.localChanges.length > 0 || overwrite.untracked.length > 0) {
     return {
       kind: 'would-overwrite',

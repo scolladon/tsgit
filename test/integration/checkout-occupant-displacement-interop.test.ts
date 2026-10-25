@@ -11,16 +11,7 @@
  *   unique:         checkout occupant classification runs against git
  *   interopSurface: checkout
  */
-import {
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TsgitError } from '../../src/domain/error.js';
@@ -32,32 +23,30 @@ import {
   makePeerPair,
   type PeerPair,
   runGit,
-  runGitEnv,
 } from './interop-helpers.js';
-
-const SYMLINK_MODE = '120000';
-const REGULAR_MODE = '100644';
-const GITLINK_MODE = '160000';
-const GITLINK_OID = '1111111111111111111111111111111111111111';
-const OCCUPANT = 'occupant\n';
-const UNTRACKED = 'untracked\n';
-const DANGLING_TARGET = 'nowhere';
-
-const COMMIT_ENV: NodeJS.ProcessEnv = {
-  ...runGitEnv(),
-  GIT_AUTHOR_NAME: 'Ada',
-  GIT_AUTHOR_EMAIL: 'ada@example.com',
-  GIT_AUTHOR_DATE: '1700000000 +0000',
-  GIT_COMMITTER_NAME: 'Ada',
-  GIT_COMMITTER_EMAIL: 'ada@example.com',
-  GIT_COMMITTER_DATE: '1700000000 +0000',
-};
-
-interface TreeEntry {
-  readonly mode: string;
-  readonly content: string;
-  readonly path: string;
-}
+import {
+  buildHistory,
+  danglingLinkAt,
+  directoryHolding,
+  emptyDirectoryAt,
+  fileAt,
+  gitlink,
+  ignoring,
+  indexState,
+  link1,
+  listing,
+  type Occupant,
+  OK,
+  type Outcome,
+  outcomeOfGitStderr,
+  refusedLocal,
+  refusedUntracked,
+  regular,
+  replacing,
+  symlink,
+  type TreeEntry,
+  v1,
+} from './occupant-displacement-fixtures.js';
 
 type Variant = 'pool' | 'one' | 'in-core';
 
@@ -68,136 +57,6 @@ const VARIANT_CONFIG: Readonly<Record<Variant, ReadonlyArray<readonly [string, s
 };
 
 const VARIANTS: ReadonlyArray<Variant> = ['pool', 'one', 'in-core'];
-
-const regular = (entryPath: string, content = 'v2\n'): TreeEntry => ({
-  mode: REGULAR_MODE,
-  content,
-  path: entryPath,
-});
-const symlink = (entryPath: string, target = 't-v2'): TreeEntry => ({
-  mode: SYMLINK_MODE,
-  content: target,
-  path: entryPath,
-});
-const gitlink = (entryPath: string): TreeEntry => ({
-  mode: GITLINK_MODE,
-  content: '',
-  path: entryPath,
-});
-
-const commitOn = (dir: string, entries: ReadonlyArray<TreeEntry>, parent?: string): string => {
-  runGit(['-C', dir, 'read-tree', '--empty']);
-  for (const entry of entries) {
-    const oid =
-      entry.mode === GITLINK_MODE
-        ? GITLINK_OID
-        : runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: entry.content }).trim();
-    runGit([
-      '-C',
-      dir,
-      'update-index',
-      '--add',
-      '--cacheinfo',
-      `${entry.mode},${oid},${entry.path}`,
-    ]);
-  }
-  const tree = runGit(['-C', dir, 'write-tree']).trim();
-  const parents = parent === undefined ? [] : ['-p', parent];
-  return runGit(['-C', dir, 'commit-tree', tree, ...parents, '-m', 'seed'], {
-    env: COMMIT_ENV,
-  }).trim();
-};
-
-const KEEP = regular('keep', 'keep\n');
-
-/** `main` holds `keep` and the tracked entries; `t` is its child and holds `keep` and the due entries. */
-const buildHistory = (
-  dir: string,
-  due: ReadonlyArray<TreeEntry>,
-  tracked: ReadonlyArray<TreeEntry> = [],
-): void => {
-  const main = commitOn(dir, [KEEP, ...tracked]);
-  const target = commitOn(dir, [KEEP, ...due], main);
-  runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
-  runGit(['-C', dir, 'update-ref', 'refs/heads/t', target]);
-  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
-};
-
-type Occupant = (dir: string) => void;
-
-/** The work tree gives up the tracked path (and its leading directory) before the occupant takes its place. */
-const replacing =
-  (trackedPath: string, occupant: Occupant): Occupant =>
-  (dir) => {
-    rmSync(path.join(dir, trackedPath.split('/')[0] ?? trackedPath), {
-      recursive: true,
-      force: true,
-    });
-    occupant(dir);
-  };
-const emptyDirectoryAt =
-  (rel: string): Occupant =>
-  (dir) =>
-    mkdirSync(path.join(dir, rel), { recursive: true });
-
-const fileAt =
-  (rel: string): Occupant =>
-  (dir) => {
-    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
-    writeFileSync(path.join(dir, rel), OCCUPANT);
-  };
-const danglingLinkAt =
-  (rel: string): Occupant =>
-  (dir) =>
-    symlinkSync(DANGLING_TARGET, path.join(dir, rel));
-const directoryHolding =
-  (rel: string, child: string): Occupant =>
-  (dir) => {
-    mkdirSync(path.join(dir, rel), { recursive: true });
-    writeFileSync(path.join(dir, rel, child), UNTRACKED);
-  };
-const ignoring =
-  (pattern: string, occupant: Occupant): Occupant =>
-  (dir) => {
-    writeFileSync(path.join(dir, '.git', 'info', 'exclude'), `${pattern}\n`);
-    occupant(dir);
-  };
-
-interface Outcome {
-  readonly refused: boolean;
-  readonly crash?: string;
-  readonly localChanges: ReadonlyArray<string>;
-  readonly untracked: ReadonlyArray<string>;
-}
-
-const OK: Outcome = { refused: false, localChanges: [], untracked: [] };
-const refusedUntracked = (...paths: ReadonlyArray<string>): Outcome => ({
-  refused: true,
-  localChanges: [],
-  untracked: paths,
-});
-
-const refusedLocal = (...paths: ReadonlyArray<string>): Outcome => ({
-  refused: true,
-  localChanges: paths,
-  untracked: [],
-});
-
-const LOCAL_CHANGES_HEADER = /local changes/;
-const UNTRACKED_HEADER = /untracked/;
-
-/** Reads the refusal class and paths git prints; `lose-untracked` is tsgit's `untracked` (ratified equivalence). */
-const outcomeOfGitStderr = (stderr: string): Outcome => {
-  const localChanges: string[] = [];
-  const untracked: string[] = [];
-  let bucket: string[] | undefined;
-  for (const line of stderr.split('\n')) {
-    if (line.startsWith('\t')) bucket?.push(line.slice(1));
-    else if (LOCAL_CHANGES_HEADER.test(line)) bucket = localChanges;
-    else if (UNTRACKED_HEADER.test(line)) bucket = untracked;
-  }
-  return { refused: true, localChanges, untracked };
-};
 
 const runGitCheckout = (dir: string, args: ReadonlyArray<string>): Outcome => {
   try {
@@ -227,22 +86,6 @@ const runTsgitCheckout = async (repo: Repository): Promise<Outcome> => {
     return outcomeOfTsgitError(err);
   }
 };
-
-const listing = (dir: string): string[] =>
-  readdirSync(dir, { recursive: true, withFileTypes: true })
-    .filter((entry) => !entry.parentPath.includes(`${path.sep}.git`) && entry.name !== '.git')
-    .map((entry) => {
-      const full = path.join(entry.parentPath, entry.name);
-      const rel = path.relative(dir, full);
-      if (lstatSync(full).isSymbolicLink()) return `${rel}@->${readlinkSync(full)}`;
-      return entry.isDirectory() ? `${rel}/` : `${rel}=${readFileSync(full, 'utf8')}`;
-    })
-    .sort();
-
-const indexState = (dir: string): string[] => [
-  runGit(['-C', dir, 'ls-files', '-s']),
-  runGit(['-C', dir, 'ls-files', '-t']),
-];
 
 interface AddRow {
   readonly shape: string;
@@ -311,9 +154,6 @@ interface ChangeRow {
   readonly occupant: Occupant;
   readonly git: Outcome;
 }
-
-const v1 = (entryPath: string): TreeEntry => regular(entryPath, 'v1\n');
-const link1 = (entryPath: string): TreeEntry => symlink(entryPath, 't-v1');
 
 const UPDATE_ROWS: ReadonlyArray<ChangeRow> = [
   {

@@ -510,6 +510,122 @@ describe('findWouldOverwrite stat cache', () => {
       });
     });
   });
+
+  describe('Given an untracked file where a leading directory of an added path must be', () => {
+    describe('When the added path is in the changed set', () => {
+      it('Then the file is reported untracked in place of the added path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'd', 'occupant\n');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d/x'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: ['d'] });
+      });
+    });
+  });
+
+  describe('Given a dangling symlink where a leading directory of an added path must be', () => {
+    describe('When the added path is in the changed set', () => {
+      it('Then the link is reported untracked in place of the added path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`);
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d/x'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: ['d'] });
+      });
+    });
+  });
+
+  describe('Given a directory holding only ignored files at an added path', () => {
+    describe('When the added path is in the changed set', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, '.gitignore', '*.log\n');
+        await work(ctx, 'd/noise.log', 'x\n');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given an ignored file at an added path', () => {
+    describe('When the added path is in the changed set', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, '.gitignore', '*.log\n');
+        await work(ctx, 'f.log', 'x\n');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('f.log'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given a file the merge deletes where a leading directory of an added path must be', () => {
+    describe('When that file is passed as removed', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'd', 'occupant\n');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d/x'), indexOf([]), set('d'));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given a clean tracked file where a leading directory of an added path must be', () => {
+    describe('When the added path is in the changed set', () => {
+      it('Then the tracked file is not reported untracked', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'd', 'v1\n');
+        const tracked = entryOf('d', await blob(ctx, 'v1\n'));
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d/x'), indexOf([tracked]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given a tracked changed path beneath a regular file', () => {
+    describe('When the path is in the changed set', () => {
+      it('Then it is reported as a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'd', 'occupant\n');
+        const tracked = entryOf('d/x', await blob(ctx, 'v1\n'));
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d/x'), indexOf([tracked]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: ['d/x'], untracked: [] });
+      });
+    });
+  });
 });
 
 describe('findTrackedBeyondSymlink', () => {

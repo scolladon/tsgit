@@ -18,7 +18,7 @@ import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { EolNotice } from '../../src/domain/eol/crlf-conversion.js';
-import type { TsgitError } from '../../src/domain/error.js';
+import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -31,6 +31,7 @@ import {
 import {
   GIT_AVAILABLE,
   git,
+  initBothRepos,
   lsStage,
   makePeerPair,
   type PeerPair,
@@ -39,6 +40,15 @@ import {
   tryRunGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import {
+  buildHistory,
+  indexState,
+  listing,
+  MERGE_FAMILY_ROWS,
+  OK,
+  type Outcome,
+  runGitOutcome,
+} from './occupant-displacement-fixtures.js';
 
 const AUTHOR = {
   name: 'Ada',
@@ -471,3 +481,81 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'stash apply and pop interop — occupant where the stash writes',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository | undefined;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('stash-occupant');
+      initBothRepos(pair.peer, pair.ours);
+      repo = undefined;
+    });
+
+    afterEach(async () => {
+      await repo?.dispose();
+      await pair.dispose();
+    });
+
+    /** The stash holds `t`'s change over `main`; the work tree is back on `main` before the occupant lands. */
+    const stashTargetChange = (dir: string): void => {
+      runGit(['-C', dir, 'read-tree', '-u', '--reset', 't']);
+      runGit(['-C', dir, 'stash', 'push', '-q']);
+    };
+
+    const pathsOf = (outcome: Outcome): Outcome => ({
+      refused: outcome.refused,
+      localChanges: [],
+      untracked: [...outcome.localChanges, ...outcome.untracked].sort(),
+    });
+
+    const runTsgitStash = async (
+      target: Repository,
+      command: 'stash apply' | 'stash pop',
+    ): Promise<Outcome> => {
+      try {
+        await (command === 'stash apply' ? target.stash.apply() : target.stash.pop());
+        return OK;
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        const { data } = err;
+        if (data.code !== 'STASH_APPLY_WOULD_OVERWRITE') {
+          return { refused: true, crash: data.code, localChanges: [], untracked: [] };
+        }
+        return { refused: true, localChanges: [], untracked: [...data.paths].sort() };
+      }
+    };
+
+    describe.each(['stash apply', 'stash pop'] as const)('Given %s', (command) => {
+      describe.each(MERGE_FAMILY_ROWS.filter((row) => row.commands.includes(command)))(
+        'and the $id occupant',
+        (row) => {
+          describe('When both tools run it', () => {
+            it('Then the outcome, work tree and index match git', async () => {
+              // Arrange
+              for (const dir of [pair.peer, pair.ours]) {
+                buildHistory(dir, row.due, row.tracked);
+                stashTargetChange(dir);
+                row.occupant(dir);
+              }
+              repo = await openRepository({ cwd: pair.ours });
+
+              // Act
+              const expected = runGitOutcome(pair.peer, command.split(' '), 1);
+              const result = await runTsgitStash(repo, command);
+
+              // Assert
+              expect(pathsOf(expected)).toEqual(pathsOf(row.git));
+              expect(result).toEqual(pathsOf(expected));
+              expect(listing(pair.ours)).toEqual(listing(pair.peer));
+              expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+            });
+          });
+        },
+      );
+    });
+  },
+);

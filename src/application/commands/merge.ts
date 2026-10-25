@@ -1341,7 +1341,7 @@ const persistOctopusConflict = async (
   const marked = result.conflicts.filter((conflict) => conflict.conflictContent !== undefined);
   const outcomes = outcomesBetween(ours, result.worktree, new Set(marked.map((c) => c.path)));
   const changed = changedPaths(outcomes, result.conflicts, ours);
-  await assertNothingOverwritten(ctx, changed);
+  await assertNothingOverwritten(ctx, changed, outcomes);
   validateMergeWritePaths(indexPathRulesOf(ctx), outcomes, result.conflicts, changed);
   const matcher = await loadSparseMatcher(ctx);
   const merged = outcomesBetween(new Map(), result.merged, new Set());
@@ -1714,7 +1714,7 @@ const refuseUnwritableConflicts = async (
 ): Promise<ReturnType<typeof changedPaths>> => {
   rejectUnsupportedConflicts(result.conflicts);
   const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
-  await assertNothingOverwritten(ctx, changed);
+  await assertNothingOverwritten(ctx, changed, result.outcomes);
   validateMergeWritePaths(indexPathRulesOf(ctx), result.outcomes, result.conflicts, changed);
   return changed;
 };
@@ -1763,10 +1763,12 @@ const writeConflictState = async (
 const assertNothingOverwritten = async (
   ctx: Context,
   changed: ReadonlySet<FilePath>,
+  outcomes: ReadonlyArray<MergeOutcome>,
 ): Promise<void> => {
   const currentIndex = await readIndex(ctx);
   await assertNoneBeyondSymlink(ctx, changed, currentIndex);
-  const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex);
+  const removed = new Set(outcomes.filter(isDeleted).map((outcome) => outcome.path));
+  const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex, removed);
   if (localChanges.length > 0 || untracked.length > 0) {
     throw workingTreeDirty({ localChanges, untracked });
   }

@@ -31,10 +31,13 @@ import { writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
+import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
   git,
+  initBothRepos,
   makePeerPair,
   type PeerPair,
   runGit,
@@ -43,6 +46,15 @@ import {
   tryRunGit,
   writeTreeOf,
 } from './interop-helpers.js';
+import {
+  buildHistory,
+  indexState,
+  listing,
+  MERGE_FAMILY_ROWS,
+  OK,
+  type Outcome,
+  runGitOutcome,
+} from './occupant-displacement-fixtures.js';
 
 const AUTHOR = {
   name: 'Ada',
@@ -372,3 +384,63 @@ function buildMergeRepo(dir: string): string {
   git(dir, 'checkout', '-q', 'main');
   return mergeId;
 }
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'cherry-pick interop — occupant where the pick writes',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository | undefined;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('cherry-pick-occupant');
+      initBothRepos(pair.peer, pair.ours);
+      repo = undefined;
+    });
+
+    afterEach(async () => {
+      await repo?.dispose();
+      await pair.dispose();
+    });
+
+    const runTsgitPick = async (target: Repository): Promise<Outcome> => {
+      try {
+        await target.cherryPick.run({ commits: ['t'] });
+        return OK;
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        const { data } = err;
+        if (data.code !== 'WORKING_TREE_DIRTY') {
+          return { refused: true, crash: data.code, localChanges: [], untracked: [] };
+        }
+        return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
+      }
+    };
+
+    describe.each(MERGE_FAMILY_ROWS.filter((row) => row.commands.includes('cherry-pick')))(
+      'Given the $id occupant',
+      (row) => {
+        describe('When both tools run cherry-pick t', () => {
+          it('Then the outcome, work tree and index match git', async () => {
+            // Arrange
+            for (const dir of [pair.peer, pair.ours]) {
+              buildHistory(dir, row.due, row.tracked);
+              row.occupant(dir);
+            }
+            repo = await openRepository({ cwd: pair.ours });
+
+            // Act
+            const expected = runGitOutcome(pair.peer, ['cherry-pick', 't'], 128);
+            const result = await runTsgitPick(repo);
+
+            // Assert
+            expect(expected).toEqual(row.git);
+            expect(result).toEqual(expected);
+            expect(listing(pair.ours)).toEqual(listing(pair.peer));
+            expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+          });
+        });
+      },
+    );
+  },
+);

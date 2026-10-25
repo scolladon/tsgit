@@ -9,8 +9,8 @@
  * `findWouldOverwrite` classifies each changed path that would lose working-tree
  * content: a tracked path whose working file is modified vs its stage-0 index
  * entry is a **local change**; a path absent from the index but present on disk
- * is **untracked**. The untracked-presence probe is `lstat`-based (no follow), so
- * a dangling symlink squatting a path still refuses (git's `lstat`-based probe).
+ * is **untracked**, judged by the shared occupant classifier (a dangling symlink
+ * still squats, an ignored file or a directory of ignored files does not).
  * Each class is returned sorted ascending; a path that is both classes is
  * reported as a local change only.
  */
@@ -22,11 +22,24 @@ import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { compareAndRefresh, isWorkingTreeModified, scopeOf } from './compare-working-tree-entry.js';
+import {
+  type ComparisonScope,
+  compareAndRefresh,
+  isWorkingTreeModified,
+  scopeOf,
+} from './compare-working-tree-entry.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import {
+  type ClashScope,
+  classifyOccupant,
+  createIgnoredProbe,
+} from './internal/occupant-clash.js';
 import { buildCheckinAttributeProvider } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
-import { createLeadingPathScanner } from './internal/symlinked-leading-path.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from './internal/symlinked-leading-path.js';
 
 export interface WouldOverwrite {
   readonly localChanges: ReadonlyArray<FilePath>;
@@ -80,19 +93,6 @@ export const changedPaths = (
   return paths;
 };
 
-/** Whether an untracked path is present on disk (lstat — no follow). */
-const isUntrackedPresent = async (ctx: Context, path: FilePath): Promise<boolean> => {
-  // An escaped name is never on disk: git's lstat of it fails, so it reads as absent.
-  if (hasEscapedBytes(path)) return false;
-  try {
-    // Stryker disable next-line StringLiteral: equivalent — the catch below swallows ANY exception (including this one) into `false` unconditionally, so the thrown error's `operation` text is never observed by any caller regardless of its content.
-    await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'findWouldOverwrite'), path));
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 /** Index entries keyed by path, stage-0 only. */
 const stage0ByPath = (currentIndex: GitIndex): Map<FilePath, IndexEntry> => {
   const byPath = new Map<FilePath, IndexEntry>();
@@ -103,35 +103,85 @@ const stage0ByPath = (currentIndex: GitIndex): Map<FilePath, IndexEntry> => {
   return byPath;
 };
 
+const NOTHING_REMOVED: ReadonlySet<FilePath> = new Set();
+
+const clashScopeOf = (
+  ctx: Context,
+  removed: ReadonlySet<FilePath>,
+  scanner: LeadingPathScanner,
+): ClashScope => {
+  const workdir = requireWorkTree(ctx, 'findWouldOverwrite');
+  return {
+    workdir,
+    removed: new Set([...removed].map((path) => joinPath(workdir, path))),
+    isIgnoredPath: createIgnoredProbe(ctx),
+    scanner,
+  };
+};
+
+const isBeneathFile = async (scanner: LeadingPathScanner, path: FilePath): Promise<boolean> =>
+  !hasEscapedBytes(path) && (await scanner.obstructingLeadingComponent(path))?.kind === 'file';
+
+/** The held spot an index-absent path would clobber, or `undefined` when it is clear. */
+const untrackedSquat = async (
+  ctx: Context,
+  path: FilePath,
+  byPath: ReadonlyMap<FilePath, IndexEntry>,
+  clashScope: ClashScope,
+): Promise<FilePath | undefined> => {
+  // An escaped name is never on disk: git's lstat of it fails, so it reads as absent.
+  if (hasEscapedBytes(path)) return undefined;
+  const verdict = await classifyOccupant(ctx, { kind: 'add', path }, clashScope);
+  if (verdict.kind !== 'clash') return undefined;
+  // A tracked component in the way is judged as its own entry, never as an untracked squat.
+  return byPath.has(verdict.clash.path) ? undefined : verdict.clash.path;
+};
+
+const isLocalChange = async (
+  ctx: Context,
+  tracked: { readonly path: FilePath; readonly entry: IndexEntry },
+  scanner: LeadingPathScanner,
+  scope: ComparisonScope,
+): Promise<boolean> => {
+  const { path, entry } = tracked;
+  // git's `verify_uptodate_1` returns early for a gitlink: a moved checkout is not local work.
+  if (entry.mode === FILE_MODE.GITLINK) return false;
+  if (await isBeneathFile(scanner, path)) return true;
+  const { delta } = await compareAndRefresh(ctx, entry, scope);
+  return isWorkingTreeModified(delta.status);
+};
+
 /**
  * Classify the changed paths that would lose working-tree content. Tracked
- * paths modified vs the stage-0 index go to `localChanges`; index-absent paths
- * present on disk go to `untracked`. A tracked path never enters the untracked
- * branch, so a both-classes path is reported as a local change only. Each class
- * is returned sorted ascending.
+ * paths modified vs the stage-0 index, or standing beneath a regular file, go to
+ * `localChanges`; index-absent paths whose spot is held (the path itself or a
+ * leading component, named in place) go to `untracked`. `removed` lists the
+ * paths the merge deletes, which never clash. A tracked path never enters the
+ * untracked branch, so a both-classes path is reported as a local change only.
+ * Each class is returned sorted ascending.
  */
 export const findWouldOverwrite = async (
   ctx: Context,
   paths: ReadonlySet<FilePath>,
   currentIndex: GitIndex,
+  removed: ReadonlySet<FilePath> = NOTHING_REMOVED,
 ): Promise<WouldOverwrite> => {
   const byPath = stage0ByPath(currentIndex);
   const provider = await buildCheckinAttributeProvider(ctx);
   // One leading-path memo for the whole scan: a shared directory is lstat-ed once.
-  const scope = scopeOf(provider, currentIndex.indexMtime, createLeadingPathScanner(ctx));
+  const scanner = createLeadingPathScanner(ctx);
+  const scope = scopeOf(provider, currentIndex.indexMtime, scanner);
+  const clashScope = clashScopeOf(ctx, removed, scanner);
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
   for (const path of paths) {
     const entry = byPath.get(path);
     if (entry === undefined) {
-      // A path the merge adds: an existing (untracked) working file would be clobbered.
-      if (await isUntrackedPresent(ctx, path)) untracked.push(path);
-      continue;
+      const squat = await untrackedSquat(ctx, path, byPath, clashScope);
+      if (squat !== undefined) untracked.push(squat);
+    } else if (await isLocalChange(ctx, { path, entry }, scanner, scope)) {
+      localChanges.push(path);
     }
-    // git's `verify_uptodate_1` returns early for a gitlink: a moved checkout is not local work.
-    if (entry.mode === FILE_MODE.GITLINK) continue;
-    const { delta } = await compareAndRefresh(ctx, entry, scope);
-    if (isWorkingTreeModified(delta.status)) localChanges.push(path);
   }
   return {
     localChanges: [...localChanges].sort(comparePaths).map(viewOfEscaped),
