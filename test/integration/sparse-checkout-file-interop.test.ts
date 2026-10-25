@@ -28,7 +28,6 @@ import {
   listing,
   type Occupant,
   regular,
-  replacing,
   symlink,
   type TreeEntry,
 } from './occupant-displacement-fixtures.js';
@@ -49,9 +48,15 @@ const REINCLUDE_ROWS: ReadonlyArray<ReincludeRow> = [
     shape: 'S3c',
     due: [symlink('l')],
     included: 'l',
-    occupant: replacing('l', directoryHolding('l', 'u')),
+    occupant: directoryHolding('l', 'u'),
   },
-  { shape: 'S3d', due: [symlink('d/l')], included: 'd', occupant: replacing('d/l', fileAt('d')) },
+  { shape: 'S3d', due: [symlink('d/l')], included: 'd', occupant: fileAt('d') },
+];
+
+const NARROW_ROWS: ReadonlyArray<{ readonly shape: string; readonly target: string }> = [
+  { shape: 'dangling', target: 'nowhere' },
+  { shape: 'live file', target: 'keep' },
+  { shape: 'directory', target: 'tgt' },
 ];
 
 describe.skipIf(!GIT_AVAILABLE)('sparse-checkout file interop', () => {
@@ -112,6 +117,31 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout file interop', () => {
             `/${row.included}`,
           ]);
           await repo.sparseCheckout.set({ patterns: ['/keep', `/${row.included}`], cone: false });
+
+          // Assert
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+  });
+
+  describe.each(NARROW_ROWS)('Given a tracked $shape symlink', (row) => {
+    describe('When both tools narrow the sparse set away from it', () => {
+      it('Then the work tree and index match git', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildHistory(dir, [], [regular('tgt/t'), symlink('l', row.target)]);
+          runGit(['-C', dir, 'config', 'core.sparseCheckout', 'true']);
+        }
+        const repo = await openRepository({ cwd: pair.ours });
+
+        try {
+          // Act
+          runGit(['-C', pair.peer, 'sparse-checkout', 'set', '--no-cone', '/keep', '/tgt']);
+          await repo.sparseCheckout.set({ patterns: ['/keep', '/tgt'], cone: false });
 
           // Assert
           expect(listing(pair.ours)).toEqual(listing(pair.peer));

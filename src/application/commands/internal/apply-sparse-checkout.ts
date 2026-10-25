@@ -80,8 +80,8 @@ const changesetPathOf = (entry: IndexEntry): Pick<ChangesetEntry, 'path' | 'path
 /**
  * Partition stage-0 entries. An excluded entry whose working-tree file exists
  * and is dirty is retained unless `force`; otherwise it is removable. The
- * single `ctx.fs.exists` result for each excluded path is threaded onto the
- * removable entry so `buildChangeset` need not re-check the same path.
+ * single no-follow probe result for each excluded path (a dangling link is
+ * present) is threaded onto the removable entry so `buildChangeset` need not re-check the same path.
  */
 const partition = async (
   ctx: Context,
@@ -103,7 +103,7 @@ const partition = async (
       continue;
     }
     const absPath = joinPath(workdir, entry.path);
-    const present = await ctx.fs.exists(absPath);
+    const present = (await lstatIfReachable(ctx.fs, absPath)) !== undefined;
     const dirty = present ? await isDirty(absPath, entry.id) : false;
     if (dirty && opts.force !== true) retained.push(entry);
     else removable.push({ entry, present });

@@ -102,6 +102,34 @@ describe('commands/internal/apply-sparse-checkout', () => {
     });
   });
 
+  describe.each([
+    ['dangling', 'nowhere'],
+    ['live', 'src/a'],
+  ])('Given an excluded tracked %s symlink', (_shape, target) => {
+    describe('When applySparseCheckout narrows', () => {
+      it('Then the link is removed and skip-worktree is set', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const srcId = await writeBlob(ctx, 'aaa');
+        const linkId = await writeBlob(ctx, target);
+        const link: IndexEntry = { ...makeEntry('l', linkId), mode: FILE_MODE.SYMLINK };
+        await seedIndex(ctx, [makeEntry('src/a', srcId), link]);
+        await seedWorkFile(ctx, 'src/a', 'aaa');
+        await ctx.fs.symlink(target, `${ctx.layout.workDir}/l`);
+
+        // Act
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 1, retained: [] });
+        expect(
+          await ctx.fs.lstat(`${ctx.layout.workDir}/l`).catch(() => undefined),
+        ).toBeUndefined();
+        expect((await readBackIndex(ctx)).get('l' as FilePath)?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
   describe('Given several excluded clean files', () => {
     describe('When applySparseCheckout narrows', () => {
       it('Then the attribute provider is built as often as for a single excluded file', async () => {
@@ -211,7 +239,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
         const ctx = createMemoryContext();
         await seedTwins(ctx);
         await seedWorkFile(ctx, view, 'other');
-        const exists = vi.spyOn(ctx.fs, 'exists');
+        const exists = vi.spyOn(ctx.fs, 'lstatIfReachable');
         const sut = applySparseCheckout;
 
         // Act
@@ -239,7 +267,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
           const lossy: IndexEntry = { ...makeEntry(view, lossyId), pathBytes: lossyBytes };
           await seedIndex(ctx, [lossy]);
           if (present) await seedWorkFile(ctx, view, 'untracked');
-          const exists = vi.spyOn(ctx.fs, 'exists');
+          const exists = vi.spyOn(ctx.fs, 'lstatIfReachable');
           const sut = applySparseCheckout;
 
           // Act
