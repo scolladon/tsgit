@@ -1,7 +1,7 @@
 # Design — forced-checkout-displace-occupant
 
 > Brief: backlog 32.29 — a checkout-family write must displace an occupant standing where git's checkout displaces it (a file or symlink in a leading path, a directory at the path), on every write path, while every unforced refusal matches git 2.55; every `applyChangeset` caller probed against git 2.55 with each occupant shape, forced and unforced.
-> Status: draft → self-reviewed ×3 → accepted → revised against ADRs 1075–1080 (O1–O3 folded by ADR-1079, re-pinned against git 2.55) → self-reviewed ×3 → revised against ADRs 1081–1082 (P9 in git's order; every formerly unpinned item pinned) → self-reviewed ×3
+> Status: draft → self-reviewed ×3 → accepted → revised against ADRs 1075–1080 (O1–O3 folded by ADR-1079, re-pinned against git 2.55) → self-reviewed ×3 → revised against ADRs 1081–1082 (P9 in git's order; every formerly unpinned item pinned) → self-reviewed ×3 → revised against ADR-1083 (OS3 folded as RC12/P11, the reschedule pinned against git 2.55) → self-reviewed ×3
 
 ## Context
 
@@ -125,6 +125,16 @@
   trivial merge) before any snapshot, `WORKING_TREE_DIRTY` as today. Otherwise every strategy fails on it after the
   snapshot: one `ort`-family strategy (`ort`, `recursive`, `subtree`) → `WORKING_TREE_DIRTY` with the staged paths (unchanged class); one `ours`,
   `octopus` or `resolve` → `MERGE_STRATEGY_FAILED`; several → `NO_MERGE_STRATEGY_HANDLED`.
+- R17 A rebase commit line (`pick`, `edit`, `reword`, `squash`, `fixup`, three-way merged or fast-forwarded) whose merge or checkout an
+  occupant refuses (R3/R4 classes) is rescheduled as git does, on a start, a `--continue` and a `--skip`, interactive or
+  not (A.5 R). The refusal is `WORKING_TREE_DIRTY` with the paths. HEAD stays on the last replayed commit. The line
+  heads `git-rebase-todo` and is appended to `done`; `msgnum` counts `done`, `end` counts `done` plus the todo minus one.
+  `REBASE_HEAD` names the line's commit and `author-script` holds its author. `amend`, `message`, `patch` and
+  `stopped-sha` are gone. `rewritten-list` records the rewrites so far (written only when there is one); inside a meld
+  group, `current-fixups` (the refused member included), `rewritten-pending`, `message-squash` and, for a fixup-only
+  group, `message-fixup` take its place. A following `--continue` refuses a staged change (`localChanges`, `end`
+  re-counted as `done` plus the todo) and otherwise retries the line, which a second refusal appends to `done` once more. `--skip` resets as R10
+  and then retries the line.
 
 ## Design
 
@@ -210,11 +220,20 @@ compare `git stash create` against tsgit's `stash push` with one identity on bot
 ran as 22 git/tsgit pairs, each tool starting its own rebase and git creating the merge-family stops. The two todo
 issues ran as git-started rebases continued by git in one copy and by tsgit in the other. Rows: A.5.
 
+**Revision #3 probe (ADR-1083).** Same isolation. Each tool starts its own rebase. The refused commit `X` has its own
+author (Xavier, 1700000500), so the source of `author-script` is visible. Each row dumps `.git/rebase-merge/` (file
+list; `done`, `git-rebase-todo`, `end`, `msgnum`, `author-script`, `rewritten-list` and the meld files, oids cut to 7),
+`REBASE_HEAD`, HEAD, `AUTO_MERGE`, `MERGE_MSG`, the work tree and the index, then runs a follow-up (`--skip` or
+`--continue`, occupant removed or kept) and dumps again. 10 git/tsgit pairs: the U1b interactive continue (R1–R4), a
+refusal after a successful pick (M), a non-interactive continue (N), a non-interactive start (S), a staged change on
+the rescheduled continue (T), a fast-forwarded pick (F). 5 verb rows (V) cover `pick`, `edit`, `reword`, `squash` and
+`fixup`; tsgit replayed four of them (`reword` needs a message the probe did not pass). Rows: A.5 R.
+
 ### Parity summary
 
 390 (shape, command) pairs probed, each on 2–3 write-path variants (Appendix A has every row). After folding
 refusal-class equivalences already ratified (git "would lose untracked files" ≡ `untracked`; `STASH_APPLY_WOULD_OVERWRITE`
-≡ git's refusal; "beyond a symbolic link" ≡ `localChanges`), **205 pairs diverge: 187 in the perimeter, 18 outside**. The revision probe adds 742 pairs (684 reset-family, merge-refusal and rebase-start pairs; 58 `stash push` pairs, stash trees included), 421 of them divergent; ADR-1079 puts them all in the perimeter. With O1–O3 folded, only O4 stays outside (8 `checkout -f HEAD` rows, ADR-1080). The revision #2 probe adds RC10b–d (ADR-1082) and two RC9 shapes (unmerged occupant, refused `--skip`), all in the perimeter; three sequencer findings stay outside (Out of perimeter).
+≡ git's refusal; "beyond a symbolic link" ≡ `localChanges`), **205 pairs diverge: 187 in the perimeter, 18 outside**. The revision probe adds 742 pairs (684 reset-family, merge-refusal and rebase-start pairs; 58 `stash push` pairs, stash trees included), 421 of them divergent; ADR-1079 puts them all in the perimeter. With O1–O3 folded, only O4 stays outside (8 `checkout -f HEAD` rows, ADR-1080). The revision #2 probe adds RC10b–d (ADR-1082) and two RC9 shapes (unmerged occupant, refused `--skip`), all in the perimeter. The revision #3 probe adds RC12 (ADR-1083): its 10 pairs all diverge, all in the perimeter. Two sequencer findings stay outside (Out of perimeter).
 
 | root cause | rows (Appendix A) | git 2.55 | tsgit main | perimeter |
 |---|---|---|---|---|
@@ -239,6 +258,7 @@ refusal-class equivalences already ratified (git "would lose untracked files" �
 | RC10c a strategy-level refusal ends the merge instead of rewinding to the next strategy | Q14 (`-s octopus -s ort`), Q25 (`-s ort -s ort`), both with `f/` over a tracked `f` | exit 0: the rewind replaces `f/` by HEAD's `f`, then `ort` merges | `PERMISSION_DENIED` (RC4b), occupant kept | in (ADR-1082) |
 | RC10d a staged change refused before the snapshot for every strategy | Q3, Q26 (`ort`); Q22 (`ours`); Q24 (octopus); Q30 (`-s ort -s ours`); Q32 (`--no-commit -s resolve`) | snapshot, then exit 2: `ort` lists the paths; others `Merge with strategy <s> failed` / `No merge strategy handled the merge` | `WORKING_TREE_DIRTY` before any write, no snapshot | in (ADR-1082) |
 | RC11 path restore keeps colliding index entries | T1 (`checkout t -- d/x` over a tracked `d`), T3 (`checkout t -- d` over tracked `d/x`, `d/y`) (A.4) | ok; the index drops `d` (T1), `d/x` and `d/y` (T3) | T1 `NOT_A_DIRECTORY` (RC1); T3 ok, but the index keeps `d/x`, `d/y` beside `d` | in (fold: same command, exposed by this probe) |
+| RC12 a rebase line refused by an occupant is not rescheduled | A.5 R: R1–R4, M, N, S, T, F, V | exit 1 untracked:n; the line heads the todo and ends `done`, `REBASE_HEAD` and `author-script` are the refused commit's, the previous stop's files gone, the rewrites so far recorded; every commit verb | the throw leaves the previous stop's files (M: the retry replays `X` twice; T: the staged change amends the `edit` commit); a start leaves no `rebase-merge/` and HEAD detached (S, V); a fast-forward overwrites the occupant (F, RC9c) | in (ADR-1083) |
 | O4 forced switch to the same commit is a no-op | every `/same` `checkout -f HEAD` (8 rows) | ok, occupant replaced by HEAD content | ok, occupant left | out (32.27) |
 
 The brief's three cases are RC2 (symlink and in-core regular writes only: the streamed regular writer already removes
@@ -296,6 +316,19 @@ pooled and the one-at-a-time paths.
     where git checks the index inside each strategy (after the snapshot), except on its trivial branch.
 - RC11 — `preserveOutOfScope` (`materialize-tree.ts:153-159`) keeps every out-of-scope index entry, including one
   that collides file/directory with a restored entry.
+- RC12 — `mergeIntoLockedIndex` (`internal/rebase-merges-steps.ts:151-152`) throws `workingTreeDirty` on a
+  `would-overwrite` merge. The throw escapes both replay loops before any state is written: `replayFrom`
+  (`rebase.ts:623`, via `replayLine` `:550` → `replayOne` `:386`) and `replayInteractive` (`:1485`, via `replayStep`
+  `:1620` → `stepPick` / `stepEdit` / `stepReword` → `produceOnto` `:1213`, and via `replayMeld` `:1570` →
+  `meldGroupMember` `:1447`). A continue or a skip therefore leaves the previous stop's files, written by `persistStop`
+  (`:462`) or `persistInteractiveStop` (`:1348`). A start (`startReplay` `:784`, `rebaseRunInteractive` `:1675`) has
+  written none. The fast-forward arm `fastForwardOnto` (`:1142`) moves HEAD and then forces the reset (RC9c), so F
+  overwrites the occupant. The reschedule writer exists: `writeRescheduledPick` (`internal/rebase-state.ts:191`). Its
+  only caller is `refuseDirtyIndexBeforeFirstPick` (`rebase.ts:601-620`), and it writes neither `author-script` nor
+  `rewritten-list`. `readRebaseProgress` (`internal/rebase-state.ts:280`) spots a reschedule by a missing
+  `author-script`. The occupant reschedule keeps that file (A.5 R), so the spot would miss it. `continueRescheduled`
+  and `skipRescheduled` (`rebase.ts:850-877`) retry through the non-interactive `replayFrom`, seeded with
+  `rewritten: []` (`:869`). The rewrites recorded before the reschedule (N, S: `W W'`) would be lost.
 
 ### Fix design
 
@@ -508,7 +541,74 @@ restored: T1), or lies beneath one (tracked `d/x`, `d/y` when `d` is restored: T
 The work tree needs nothing new: P1 displaces T1's tracked file `d` as a leading-path obstruction, and the existing
 directory clear removes T3's `d/`.
 
-**Consistency across P1–P10 (self-review).**
+**P11 — a refused rebase line is rescheduled (RC12, ADR-1083).** The refusal is caught where a commit-verb line (`pick`, `edit`, `reword`, `squash`,
+`fixup`) is replayed and written as git's reschedule. The same `WORKING_TREE_DIRTY` is then rethrown (DC12 decides the carrier: a guard or a
+typed outcome). Both loops share one helper:
+
+```ts
+// rebase.ts
+interface RefusedLine {
+  readonly done: ReadonlyArray<RebaseTodoLine>;      // doneBefore + todo[0..index], the refused line last
+  readonly remaining: ReadonlyArray<RebaseTodoLine>; // todo[index..], the refused line first
+  readonly commit: ObjectId;                        // → REBASE_HEAD
+  readonly author: CommitData['author'];            // → author-script
+  readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+  readonly meld?: MeldFiles;                        // current-fixups, rewritten-pending, message-squash, message-fixup
+}
+// RescheduleSides = what ReplayContext and InteractiveContext share: branch, onto, origHead, backupHeader
+const rescheduleRefusedLine = async (ctx: Context, run: RescheduleSides, line: RefusedLine): Promise<void> =>
+  writeRescheduledPick(ctx, {
+    headName: run.branch ?? 'detached HEAD', onto: run.onto, origHead: run.origHead,
+    backupHeader: run.backupHeader, ...line,       // line.commit → pickSha, line.author → stoppedAuthor
+  });
+```
+
+- Writer. `RescheduledPick` (`internal/rebase-state.ts:100`) gains the optional `stoppedAuthor`, `rewritten` and
+  `meld`. Without them the dirty-index reschedule keeps today's bytes (its pinned unit row has no `author-script` and
+  no `rewritten-list`). `writeRescheduledPick` (`:191`) writes `author-script` (`serializeAuthorScript`) and
+  `rewritten-list` (`serializeRewritten`, only when non-empty). The meld files go through `writeStopMarkers` (`:214`),
+  which also removes `amend`. It removes `message`, `patch` and `stopped-sha`, the files the previous stop left.
+  Run-level files (`head-name`, `onto`, `orig-head`, `interactive`, `no-reschedule-failed-exec`,
+  `drop_redundant_commits`) are rewritten with the same bytes. The backup is written only on a start
+  (`backupHeader` set), as today.
+- Loops. `replayFrom` (`rebase.ts:623`) reschedules at `rc.todo[i]` with `rewritten`. `replayInteractive` (`:1485`)
+  reschedules at `ic.todo[i]` with `replay.rewritten`, or, inside an open meld group, with that group's files.
+  `meldStopFields` (`:1594`) is the shape: `current-fixups` lists the group with the refused member, `rewritten-pending`
+  the group's sources, `message-squash` the template with the member's message (squash), `message-fixup` the base
+  message (fixup-only group). No `rewritten-list` is written there (V fixup and squash). The fast-forward arm
+  (`produceOnto` `:1209`) refuses before HEAD moves once P8c runs `fastForwardOnto` as an unforced checkout. P11 lands
+  after P8. Its refusal is rescheduled the same way: HEAD stays at W and `rewritten-list` gets `W W` (F).
+- Detection. `readRebaseProgress` (`internal/rebase-state.ts:280`) spots a reschedule by the stop-only file that both
+  reschedules lack (DC11), not by `author-script`.
+- Retry. `continueRescheduled` / `skipRescheduled` (`rebase.ts:850-877`) seed `rewritten` from `readRewrittenList`
+  (as `rebaseSkip` `:968` does) and dispatch on `isInteractiveState` (`:1722`). An interactive state replays through
+  `replayInteractive`, with its `InteractiveContext` built the way `rebaseContinueInteractive` (`:1735`) builds it.
+  A rescheduled meld member reopens its group from `current-fixups` minus that member, so the retry adds it back
+  once. The V interop rows check the group files against git's bytes after the retry; A.5 R pins them only at the
+  refusal. A flat state
+  replays through `replayFrom` as today. `doneBefore` is the read `done`, which already ends in the refused line, so
+  the retry appends it once more (R3: `edit W; pick X; pick X`, `end` 4, `msgnum` 3). The staged-change refusal of
+  `continueRescheduled` is unchanged: git refuses T with `end` re-counted, which `continueRescheduled` already writes.
+  `--skip` runs P8b's protected reset (`rebase.ts:875`) first, so the U1b rows refuse and keep the state.
+- Not touched. A rebase-merges `merge -C` line refused by an occupant (`recreateMerge`,
+  `internal/rebase-merges-steps.ts:210`) keeps today's throw; it was not probed. How to prove it: the A.5 R harness
+  with `--rebase-merges` and the occupant at a path the merge adds. P8b's refused `reset <label>` step keeps its
+  pinned shape.
+
+Pre-chewed context:
+
+| what | where |
+|---|---|
+| refusal origin | `mergeIntoLockedIndex`, `internal/rebase-merges-steps.ts:137` (throw `:151`); `MergeTreesOutcome` `:118` |
+| flat loop | `replayFrom` `rebase.ts:623`; `replayLine` `:550`; `replayOne` `:375`; `ReplayOutcome` `:191`; `LineOutcome` `:544`; `ReplayContext` `:444` |
+| interactive loop | `replayInteractive` `:1485`; `replayInstruction` `:1540`; `replayStep` `:1620`; `replayMeld` `:1570`; `meldGroupMember` `:1431`; `produceOnto` `:1202`; `InteractiveContext` `:1320`; `InteractiveReplay` `:1509` |
+| existing reschedule | `refuseDirtyIndexBeforeFirstPick` `:601` (the call shape to follow); `writeRescheduledPick` `internal/rebase-state.ts:191`; `RescheduledPick` `:100`; `RebaseProgress.rescheduled` `:121`, read `:280` |
+| stop writers to mirror | `persistInteractiveStop` `:1348`; `optionalStopFields` `:1372`; `meldStopFields` `:1594`; `writeRebaseStop` `internal/rebase-state.ts:156`; `writeStopMarkers` `:214` |
+| retry and skip | `rebaseContinue` `:832`; `continueRescheduled` `:850`; `retryRescheduledPick` `:863`; `skipRescheduled` `:873`; `rebaseSkip` `:968`; `rebaseContinueInteractive` `:1735`; `isInteractiveState` `:1722`; `commitEntries` `:1706` |
+| unit fixtures | `test/unit/application/commands/rebase.test.ts`: `seedStagedGitlink` and the reschedule file-list row (`:722`), `describe('rebase over a rescheduled pick with two picks')` (`:3808`), `readMerge`; `test/unit/application/commands/internal/rebase-state.test.ts` (writer rows) |
+| interop | `test/integration/rebase-interop.test.ts`, the "Given an edit stop" describe (`:711`), whose U1a rows already run each tool's own `rebase -i` |
+
+**Consistency across P1–P11 (self-review).**
 
 - The protected reset (P8b) uses P3/P4's classifier in forced mode, restricted to its untracked branches. P1's
   `every` policy covers what remains, so P1 gains no third clear policy for it. P5's `protected` policy stays
@@ -521,6 +621,8 @@ directory clear removes T3's `d/`.
 - P9 composes P7's snapshot builder, the hard reset (P1, P2) and the stash apply. P4 is unchanged; P9 turns its
   refusal into a strategy failure. The snapshot runs P7's path classes, so P7 lands before P9.
 - `untrackedOccupants` and P5's `ignoredOccupants` are orthogonal. No caller sets both: `pull-into-void` is unforced.
+- P11 sits on top of P8: P8b's protected reset is what refuses U1b's `--skip`, and P8c's unforced fast-forward is what
+  turns F into a refusal. P11 writes only the state, and it is the only part that writes rebase state on a refusal.
 
 Unforced refusals that already match (every SAME row of Appendix A) keep their code path: P3 only adds branches
 before the existing `isDirtyUnder` / `isUntrackedClash`, and their order (shape first, content second) is git's
@@ -544,13 +646,14 @@ P1–P6 touch `apply-changeset.ts`, `symlinked-leading-path.ts`, a new `occupant
 `apply-sparse-checkout.ts`, `pull-into-void.ts`, and add one option to `materialize-tree.ts`. P7–P10 add
 `reset-worktree.ts` (three helpers in place of one), `stash.ts` (snapshot path set, the snapshot entry and its identity option), `merge.ts`
 (trivial-branch gate, snapshot, rewind and failure mapping), `rebase.ts`, `abort-merge.ts`, `abort-sequencer-reset.ts`, `rebase-merges-steps.ts`, and two more
-options plus the collision rule in `materialize-tree.ts`. All of them sit in the shared chunk reached by
+options plus the collision rule in `materialize-tree.ts`. P11 touches `rebase.ts` and `internal/rebase-state.ts`. All of them sit in the shared chunk reached by
 `dist/esm/index.js`, `index.node.js`, `index.default.js`, `primitives/index.js` and `dist/browser/tsgit.js`.
 Per-command entries (`commands/checkout.js`, `reset.js`, `merge.js`, `pull.js`, `stash.js`, `cherry-pick.js`,
 `revert.js`, `rebase.js`, `sparse-checkout.js`) may carry part of it, depending on chunking. Expected growth is
-~650–1150 B gzip on each facade and on the browser bundle (P1–P6 ~200–350 B; P7, P8, P10 ~250–450 B; P9 ~200–350 B:
+~750–1350 B gzip on each facade and on the browser bundle (P1–P6 ~200–350 B; P7, P8, P10 ~250–450 B; P9 ~200–350 B:
 the trivial-branch gate, the snapshot split out of `stashAndReset`, the identity option, the rewind and the
-three-way failure mapping), above the 3–40 B headroom. The caps will trip and are re-measured and raised from a
+three-way failure mapping; P11 ~100–200 B: the reschedule guard in both loops, the writer's new fields, the retry
+dispatch), above the 3–40 B headroom. The caps will trip and are re-measured and raised from a
 clean measurement (`rm -rf dist .wireit` first) in the same change. `api.json` changes for ADR-1081's two enums, on
 top of ADR-1077's option; P9 adds no public option.
 
@@ -580,18 +683,16 @@ holds; widening was DC6, settled by ADR-1080.
   resets to `onto` and stops on `edit X` with `X` on `U`, keeping the `merge` line. tsgit's `rebase.continue()`
   commits `X` on top of `S1`, never runs the `label` or `reset` step, returns `stopped` with `remaining: 0` and empties
   the todo, so the merge step is lost. This is the sequencer's continue path, not occupant handling.
-- OS3 — an interactive continue does not reschedule a pick refused by an untracked occupant. Proof, A.5 U1b: git
-  starts the pick, fails with "untracked working tree files would be overwritten by merge: n" (exit 1) and
-  reschedules it, so `pick X` heads the todo and ends `done`. tsgit's `rebase.continue()` refuses
-  `WORKING_TREE_DIRTY` `untracked: [n]` up front, and `done` still ends `edit W`. The refusal class and the work tree
-  match; only the `done` bookkeeping differs. That bookkeeping belongs to the sequencer (`writeRescheduledPick`,
-  `rebase.ts:610`, only runs for a dirty index before the first pick). Scope: DC9.
+- OS4 — tsgit's interactive stops write `drop_redundant_commits`, which git's `rebase -i` never writes. Proof, A.5 R1:
+  git's file list after the `edit W` stop and the reschedule has no `drop_redundant_commits`; tsgit's has it, written
+  by `writeRebaseStop` (`internal/rebase-state.ts:175`). P11 keeps writing it, as every tsgit rebase state does
+  today; the stop writers are not otherwise touched here. Warn-and-ask.
 
 ## Decision candidates
 
 Settled, so not candidates: DC1 → ADR-1075, DC2 → ADR-1076, DC3 → ADR-1077, DC4 → ADR-1078, DC5 → ADR-1079 (O1–O3
 folded), DC6 → ADR-1080, DC7 → ADR-1081 (two optional enums), DC8 → ADR-1082 (snapshot before the strategies, git's
-order). Matching git sets the following, so none of them is a candidate (A.2–A.5): each caller's reset mode, the
+order), DC9 → ADR-1083 (option (a): the reschedule is folded, OS1 and OS2 stay out). Matching git sets the following, so none of them is a candidate (A.2–A.5): each caller's reset mode, the
 first-path-only refusal of `reset --merge`, the autostash and `ORIG_HEAD` ordering, the stash path-set rules, the
 unmerged-directory refusal, and the snapshot's identity, messages and placement. The same holds for the per-strategy
 dirty-index failure and its `MERGE_STRATEGY_FAILED` / `NO_MERGE_STRATEGY_HANDLED` codes, and for the rewind before
@@ -599,7 +700,9 @@ each later strategy.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC9 | Scope of OS3 (an interactive continue refuses an untracked occupant without rescheduling the pick) | (a) fold into this change: the interactive continue writes git's reschedule (`done` and todo both carry the pick) when its pick refuses (b) keep it out of the perimeter, and file it only if the user agrees, beside OS1 and OS2 (c) fold OS1–OS3 together as one sequencer part of this change | (b) | The refusal class, the paths and the work tree already match git, so only the sequencer's `done` bookkeeping differs, and OS1/OS2 live in the same todo machinery, which the brief does not cover. Against (b): the user's "fold, don't file" rule covers defects the change's own probes expose, and this one is one write in a path this change does not otherwise touch. (c) pulls in todo-grammar work (`break`, `exec`, `update-ref`) and the merges-aware continue. |
+| DC10 | How far P11 reaches. ADR-1083's decision names the interactive continue's pick; A.5 R shows the same throw on every loop and verb | (a) every loop (start, `--continue`, `--skip`; flat and interactive) and every commit verb, meld members and fast-forwards included (b) every loop for `pick` / `edit` / `reword` and fast-forwards; a refused `squash` / `fixup` keeps today's throw and goes to the user as a warn-and-ask (c) the interactive continue's `pick` only, as the ADR text reads | (a) | The refusal path and the writer are the same for all of them. S and V (no state, HEAD stranded) and M (`X` replayed twice) are worse than the U1b row that motivated the ADR. Under the fold rule, the change's own probes exposed them on the refusal path it rewrites. Against (a): the meld retry needs the group read back from `current-fixups`, which is new reading code; (b) saves that cost and leaves V squash/fixup divergent. (c) fixes only R1–R4 and leaves S's stranded HEAD. |
+| DC11 | How `readRebaseProgress` tells a reschedule from a stop, now that the occupant reschedule keeps `author-script` | (a) `message` absent (b) `stopped-sha` absent (c) the last `done` line equals the first todo line | (a) | Every tsgit and git stop writes `message`, and both reschedules lack it (A.5 R file lists, the dirty-index unit row). `readRebaseState` reads `message` unconditionally, so the guard and the read cannot drift apart. (b) is equivalent today but guards a file `readRebaseState` does not read. (c) misreads a todo that picks the same commit twice. |
+| DC12 | How a line's refusal reaches the loop | (a) a guard around one line's replay in each loop that catches only `WORKING_TREE_DIRTY`, writes the reschedule and rethrows the same error (b) a typed `{ kind: 'refused', localChanges, untracked }` outcome threaded through `MergeTreesOutcome`, `ReplayOutcome`, `Produced`, `Step`, the meld member's outcome and P8c's `checkoutWorktreeToCommit` | (a) | One site per loop covers the merge, the meld and the fast-forward arms alike. P8c's helper keeps throwing for the start callers, and the size headroom is 3–40 B. The guard wraps commit-verb lines only: a `reset <label>` refusal keeps P8b's handling and a `merge -C` line keeps its throw. Against (a): it relies on nothing else inside a commit-verb line raising `WORKING_TREE_DIRTY`. Today only the merge does (`internal/rebase-merges-steps.ts:152`), plus the fast-forward checkout once P8c lands. The other throws in `rebase.ts` (`:619`, `:858`, `:921`, `:1807`) run before the loop. (b) states the refusal in the types, as the house style prefers, at the cost of five widened unions and a second return shape for P8c's helper. |
 
 ## Test strategy
 
@@ -626,8 +729,12 @@ peers via `makePeerPair` / `runGit` / `runGitEnv`, git's stderr parsed only to e
   (A.5), and the U4 unmerged rows.
 - `test/integration/rebase-interop.test.ts`: `rebase --abort`, `rebase --skip`, start, fast-forward and `-i` start
   rows (untracked refusals, HEAD unmoved, no state written); the U1a `edit`-stop skip rows (each tool runs its own
-  `rebase -i`); the U1b rescheduled-pick skip (git-started rescheduled state, skipped by each tool: tsgit cannot
-  reschedule there on its own, OS3); the U4 `rebase --abort` / `--skip` rows.
+  `rebase -i`); the U1b rescheduled-pick skip (each tool reaches the reschedule itself through R1); the U4
+  `rebase --abort` / `--skip` rows. A new `describe('Given a rebase line refused by an untracked occupant')` carries
+  the A.5 R rows R1–R4, M, N, S, T, F and V (five verbs). Each tool runs its own rebase. The rows compare `done`,
+  `git-rebase-todo`, `end`, `msgnum`, `author-script`, `rewritten-list` and the meld files byte for byte, the
+  `rebase-merge/` file list, `REBASE_HEAD`, HEAD, the work tree and the index. They then run the follow-up and
+  compare the end state (HEAD oid with pinned dates, branch, history).
 - `test/integration/rebase-merges-interop.test.ts`: the `reset` step `/reset-adds` rows and the rescheduled-step
   state (A.5).
 - `test/integration/stash-interop.test.ts`: A.3 rows, comparing the W and I trees (`git ls-tree -r stash@{0}`,
@@ -668,6 +775,16 @@ Unit (memory adapter, Given/When/Then split, AAA, `sut`):
   committer apart; default unchanged for `stash push`), and the snapshot entry writes no ref and resets nothing.
 - `test/unit/application/commands/internal/abort-sequencer-reset.test.ts` (new): `ORIG_HEAD` is written after the reset
   by both `--skip` and `--abort`, and not at all on refusal.
+- `test/unit/application/commands/rebase.test.ts` (P11): a refused line on each loop, start / `--continue` / `--skip`,
+  flat and interactive, writes the reschedule (one row per written and removed file) and rethrows the same data. One
+  row per verb kind: commit verb, meld member (group files, no `rewritten-list`), fast-forward (HEAD unmoved). A
+  refusal after a successful pick records that pick's rewrite. The retry goes to the interactive loop only for an
+  interactive state. The retry seeds `rewritten` from `rewritten-list`. A second refusal appends the line once more.
+  A staged change still refuses the retry.
+- `test/unit/application/commands/internal/rebase-state.test.ts`: `writeRescheduledPick` with and without
+  `stoppedAuthor`, with an empty and a non-empty `rewritten`, with meld files, removing `amend` / `message` / `patch` /
+  `stopped-sha`; `readRebaseProgress`'s discriminator (DC11) on a stop, a dirty-index reschedule and an occupant
+  reschedule.
 - `test/unit/application/commands/abort-merge.test.ts`, `rebase.test.ts`, `internal/rebase-merges-steps.test.ts`,
   `cherry-pick.test.ts`, `revert.test.ts`: caller wiring, and nothing written to HEAD, `ORIG_HEAD` or the state files
   when the reset refuses.
@@ -2270,9 +2387,9 @@ refusal).
 | U1a | `rebase -i u` stopped on `edit X`; `git rm f`, then `f/u` | `rebase --skip` | 128 lose-untracked:f ("could not discard worktree changes"); HEAD, todo (`pick Y`), `done` (`edit X`) kept | ok: `f=v1` rewritten, `f/u` lost, rebase finished |
 | U1a | same stop; `git rm --cached f`, `f=occ` untracked | `rebase --skip` | 128 untracked:f ("would be overwritten by reset"); state kept | ok, `occ` lost |
 | U1a | same stop; `f/u` over tracked `f` (index keeps `f`) | `rebase --skip` | 0, `f=v1` (directory removed), rebase finished | ok, same (SAME) |
-| U1b | rescheduled pick (untracked `n` refused it; todo and `done` both carry `pick X`); `rm n`, `git rm keep`, then `keep/u` | `rebase --skip` | 128 lose-untracked:keep; state kept | not reached: tsgit does not reschedule (OS3) |
-| U1b | same; `rm n`, `git rm --cached f`, `f=occ` | `rebase --skip` | 128 untracked:f; state kept | not reached (OS3) |
-| U1b | same; `rm n` | `rebase --skip` | 0; `X` re-picked (`n=n`), finished | ok, same end state via the `edit`-stop skip |
+| U1b | rescheduled pick (A.5 R1: todo and `done` both carry `pick X`); `rm n`, `git rm keep`, then `keep/u` | `rebase --skip` | 128 lose-untracked:keep; state kept | main: the state is still the `edit` stop (RC12), whose skip succeeds: `keep/u` lost, rebase finished. Expected after P8b + P11: as git |
+| U1b | same; `rm n`, `git rm --cached f`, `f=occ` | `rebase --skip` | 128 untracked:f; state kept | main: ok via the `edit`-stop skip, `occ` lost. Expected after P8b + P11: as git |
+| U1b | same; `rm n` | `rebase --skip` | 0; `X` re-picked (`n=n`), finished | ok, same end state via the `edit`-stop skip. Expected after P11: same end state via `skipRescheduled` |
 | U2 | `cherry-pick A C` stopped on `C` (keep conflict, `f=v2` staged); `f/u` over `f` | `cherry-pick --skip` | 128 local:f (`Entry 'f' not uptodate`); HEAD, `ORIG_HEAD` (absent), `sequencer/`, `CHERRY_PICK_HEAD` unchanged | ok: `f/u` lost, `ORIG_HEAD` written, sequence ended |
 | U2 | `revert A C` stopped on `C`; `f/u` over `f` | `revert --skip`, `revert --abort` | 128 local:f; HEAD, `ORIG_HEAD` (absent), `sequencer/`, `REVERT_HEAD` unchanged | ok: `f/u` lost, `ORIG_HEAD` written (abort also moves HEAD) |
 | U3 | `merge t` stopped (`t` deletes `a`, changes `z`); `a=occ` untracked, `z/u` over `z` | `merge --abort` | 128 untracked:a ("Untracked working tree file 'a' would be overwritten") | ok, both occupants lost |
@@ -2283,6 +2400,27 @@ refusal).
 | U4 | `cherry-pick A C` / `revert A C` stopped; `keep/u` over `keep` | `--abort`, `--skip` (each) | 128 lose-untracked:keep; state kept | ok, `keep/u` lost, stop cleared |
 | U4 | `rebase u` stopped on conflicted `keep`; `keep/u` | `rebase --abort`, `rebase --skip` | 128 lose-untracked:keep; HEAD and `rebase-merge/` kept | ok, `keep/u` lost, rebase ended |
 | U4 | same stop; `keep=occ` file | `rebase --abort` | 0, `keep=m` | ok (SAME) |
+
+#### A.5 R — a rebase line refused by an occupant (git 2.55.0 vs tsgit main 4899565f; each tool starts its own rebase)
+
+History: `base` (`keep`); `u` = `U` (`uu`) on `base`; `main` = `W` (`w`), `X` (adds `n`), then `Y` (`y`) or `Z`
+(deletes `n`). The occupant is an untracked `n=occ`. W' / X' are the replayed commits. Every git refusal prints "The
+following untracked working tree files would be overwritten by merge: n" and exits 1. A git reschedule never leaves
+`amend`, `message`, `patch`, `stopped-sha`, `MERGE_MSG` or `AUTO_MERGE`.
+
+| row | setup → command | git 2.55 | tsgit main |
+|---|---|---|---|
+| R1 | `rebase -i u`, todo `edit W; pick X; pick Y`, stopped on `W`; `n=occ`; `rebase --continue` | exit 1 untracked:n. HEAD = W' detached. `REBASE_HEAD` = X. Files: `author-script done end git-rebase-todo git-rebase-todo.backup head-name interactive msgnum no-reschedule-failed-exec onto orig-head rewritten-list`. `done` = `edit W; pick X`. Todo = `pick X; pick Y`. `end` 3, `msgnum` 2. `rewritten-list` = `W W'` | `WORKING_TREE_DIRTY` untracked:[n], HEAD = W'. The state is still the `edit` stop: `REBASE_HEAD` = W, `done` = `edit W`, `msgnum` 1, `amend` / `message` / `patch` / `stopped-sha` kept, `rewritten-list` empty |
+| R1 → | `rm n`; `rebase --skip` | 0: `X`, `Y` replayed on W', branch at 88371f8 | 0, 88371f8 (via the `edit`-stop skip) |
+| R2 | R1's refusal; `rm n`; `rebase --continue` | 0, 88371f8 | 0, 88371f8 |
+| R3 | R1's refusal, occupant kept; `rebase --continue` | exit 1 untracked:n. `done` = `edit W; pick X; pick X`. Todo unchanged. `end` 4, `msgnum` 3. The rest as R1 | refusal; the state is still the `edit` stop, unchanged |
+| R4 | R1's refusal, occupant kept; `rebase --skip` | as R3 | as R3 |
+| M | todo `edit W; pick X; pick Y` with `Y` adding `n` (no `Z`); `n=occ` at the stop; `rebase --continue` | exit 1 untracked:n. HEAD = X'. `done` = `edit W; pick X; pick Y`. Todo = `pick Y`. `end` 3, `msgnum` 3. `rewritten-list` = `W W'; X X'`. Then `rm n` + `--continue`: 0, history `Y; X; W; U; base` | refusal, HEAD = X'. The state is still the `edit` stop: `done` = `edit W`, todo `pick X; pick Y`, `amend` = W'. Then `rm n` + `--continue`: 0, history `Y; X; X; W; U; base` (`X` replayed twice) |
+| N | `rebase u` (flat), `W` conflicts on `keep`; resolved and staged; `n=occ`; `rebase --continue` | exit 1 untracked:n after committing W'. `done` = `pick W; pick X`. Todo = `pick X`. `end` 2, `msgnum` 2. `rewritten-list` = `W W'`. Files as R1 plus `drop_redundant_commits`. Then `rm n` + `--skip`: 0, c5eb286 | refusal, HEAD = W'. The state is still the conflict stop: `done` = `pick W`, `stopped-sha` = W, `message`, `patch` kept, `rewritten-list` empty. Follow-up: 0, c5eb286 |
+| S | `n=occ` before a flat `rebase u` (`X` adds `n`, `Z` deletes it) | exit 1 untracked:n. HEAD = W'. `done` = `pick W; pick X`. Todo = `pick X; pick Z`. `end` 3, `msgnum` 2. `rewritten-list` = `W W'`. Then `rm n` + `--continue`: 0 | refusal, HEAD = W' detached, no `rebase-merge/`, branch unmoved. `--continue`: `NO_OPERATION_IN_PROGRESS` |
+| T | M's refusal; `rm n`; `z` staged; `rebase --continue` | exit 1 "you have staged changes in your working tree". `end` 4 (re-counted), the rest kept | 0: `z` amended into W', rebase finished (tsgit's todo there: `edit W; pick Y; pick X`) |
+| F | `rebase -i base`, todo `edit W; pick X; pick Y` (`W` fast-forwarded, HEAD = W); `n=occ`; `rebase --continue` (`X` would fast-forward) | exit 1 untracked:n. HEAD = W. `done` = `edit W; pick X`. Todo = `pick X; pick Y`. `rewritten-list` = `W W` | 0: `n=occ` overwritten by `X`, then deleted by `Y` (RC9c); rebase finished |
+| V | `n=occ` before `rebase -i u`, todo `pick W; <verb> X; pick Z`, `X` by Xavier | every verb (`pick`, `edit`, `reword`, `squash`, `fixup`): exit 1 untracked:n. HEAD = W'. `REBASE_HEAD` = X. `<verb> X` ends `done` and heads the todo. `author-script` = Xavier's (`GIT_AUTHOR_DATE='@1700000500 +0000'`). `end` 3, `msgnum` 2. `pick` / `edit` / `reword`: `rewritten-list` = `W W'`. `squash` / `fixup`: no `rewritten-list`, but `current-fixups` = `<verb> X`, `rewritten-pending` = W, `message-squash` (squash: W's and X's messages; fixup: W's); fixup adds `message-fixup` (W's). `rm n` + `--continue`: 0 (`edit`: stops on `edit X`) | `pick`, `edit`, `squash`, `fixup`: `WORKING_TREE_DIRTY` untracked:[n]. HEAD = W' detached, `ORIG_HEAD` = the old tip, no `rebase-merge/`, branch unmoved. `--continue`: `NO_OPERATION_IN_PROGRESS`. `reword` was not replayed: the probe passed no message, so tsgit refused `INVALID_OPTION`. Its line goes through the same `produceOnto` |
 
 #### A.5 T — rebase todo issues (git 2.55.0 starts; git and tsgit main continue)
 
