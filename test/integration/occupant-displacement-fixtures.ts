@@ -128,6 +128,13 @@ export const directoryHolding =
     mkdirSync(path.join(dir, rel), { recursive: true });
     writeFileSync(path.join(dir, rel, child), UNTRACKED);
   };
+/** A symlink at `rel` whose target holds a file at `child`: content is reachable through the link. */
+export const linkToContent =
+  (rel: string, holder: string, child: string): Occupant =>
+  (dir) => {
+    directoryHolding(holder, child)(dir);
+    symlinkSync(holder, path.join(dir, rel));
+  };
 export const ignoring =
   (pattern: string, occupant: Occupant): Occupant =>
   (dir) => {
@@ -241,6 +248,22 @@ export const MERGE_FAMILY_ROWS: ReadonlyArray<MergeFamilyRow> = [
     due: [symlink('d/l')],
     occupant: replacing('d/l', fileAt('d')),
     git: refusedLocal('d/l'),
+    commands: EVERY_COMMAND,
+  },
+  {
+    id: 'S3g/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', linkToContent('d', 'held', 'x')),
+    git: refusedLocal('d/x'),
+    commands: EVERY_COMMAND,
+  },
+  {
+    id: 'D5/delete',
+    tracked: [v1('d/x')],
+    due: [],
+    occupant: replacing('d/x', linkToContent('d', 'held', 'x')),
+    git: refusedLocal('d/x'),
     commands: EVERY_COMMAND,
   },
   {

@@ -31,6 +31,7 @@ import {
 import { joinPath } from './internal/join-working-tree-path.js';
 import {
   type ClashScope,
+  classifyBeneathObstruction,
   classifyOccupant,
   createIgnoredProbe,
 } from './internal/occupant-clash.js';
@@ -119,8 +120,13 @@ const clashScopeOf = (
   };
 };
 
-const isBeneathFile = async (scanner: LeadingPathScanner, path: FilePath): Promise<boolean> =>
-  !hasEscapedBytes(path) && (await scanner.obstructingLeadingComponent(path))?.kind === 'file';
+const isBlockedByObstruction = async (
+  ctx: Context,
+  path: FilePath,
+  clashScope: ClashScope,
+): Promise<boolean> =>
+  !hasEscapedBytes(path) &&
+  (await classifyBeneathObstruction(ctx, path, clashScope))?.kind === 'clash';
 
 /** The held spot an index-absent path would clobber, or `undefined` when it is clear. */
 const untrackedSquat = async (
@@ -150,13 +156,13 @@ const holdsUntrackedAtDeletion = async (
 const isLocalChange = async (
   ctx: Context,
   tracked: { readonly path: FilePath; readonly entry: IndexEntry },
-  scanner: LeadingPathScanner,
+  clashScope: ClashScope,
   scope: ComparisonScope,
 ): Promise<boolean> => {
   const { path, entry } = tracked;
   // git's `verify_uptodate_1` returns early for a gitlink: a moved checkout is not local work.
   if (entry.mode === FILE_MODE.GITLINK) return false;
-  if (await isBeneathFile(scanner, path)) return true;
+  if (await isBlockedByObstruction(ctx, path, clashScope)) return true;
   const { delta } = await compareAndRefresh(ctx, entry, scope);
   return isWorkingTreeModified(delta.status);
 };
@@ -190,7 +196,7 @@ export const findWouldOverwrite = async (
     if (entry === undefined) {
       const squat = await untrackedSquat(ctx, path, byPath, clashScope);
       if (squat !== undefined) untracked.push(squat);
-    } else if (await isLocalChange(ctx, { path, entry }, scanner, scope)) {
+    } else if (await isLocalChange(ctx, { path, entry }, clashScope, scope)) {
       const held = removed.has(path) && (await holdsUntrackedAtDeletion(ctx, path, clashScope));
       (held ? untracked : localChanges).push(path);
     }

@@ -119,19 +119,32 @@ const localChange = (path: FilePath): OccupantVerdict => ({
   clash: { class: 'local-changes', path },
 });
 
+// A file or symlink standing where a leading directory of a changed path must be. git's
+// verify_uptodate lstat()s the whole path: a regular file there makes it unreachable and
+// reads as a change; a symlink is followed, so content reachable beyond it is a change
+// and only an absent target reads as the entry deleted.
+export const classifyBeneathObstruction = async (
+  ctx: Context,
+  path: FilePath,
+  scope: Pick<ClashScope, 'workdir' | 'scanner'>,
+): Promise<OccupantVerdict | undefined> => {
+  const obstruction = await scope.scanner.obstructingLeadingComponent(path);
+  if (obstruction === undefined) return undefined;
+  if (obstruction.kind === 'file') return localChange(path);
+  const reached = await lstatIfReachable(ctx.fs, joinPath(scope.workdir, path));
+  return reached === undefined ? CLEAR : localChange(path);
+};
+
 // git's verify_uptodate lstat()s the entry and only ENOENT reads as absent: a
 // directory standing at the path is a change (an emptied or ignored-only one when
-// the entry is deleted), and so is a regular file standing in a leading directory's
-// place. A symlink there reads as the entry deleted, which is no change.
+// the entry is deleted).
 const classifyChangedPath = async (
   ctx: Context,
   shape: Extract<OccupantShape, { readonly kind: 'update' | 'delete' }>,
   scope: ClashScope,
 ): Promise<OccupantVerdict> => {
-  const obstruction = await scope.scanner.obstructingLeadingComponent(shape.path);
-  if (obstruction !== undefined) {
-    return obstruction.kind === 'file' ? localChange(shape.path) : CLEAR;
-  }
+  const beneath = await classifyBeneathObstruction(ctx, shape.path, scope);
+  if (beneath !== undefined) return beneath;
   const absPath = joinPath(scope.workdir, shape.path);
   const stat = await lstatIfReachable(ctx.fs, absPath);
   if (stat === undefined || !stat.isDirectory) return COMPARE_CONTENT;

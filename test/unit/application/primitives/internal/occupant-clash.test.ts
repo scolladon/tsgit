@@ -244,12 +244,50 @@ describe('classifyOccupant', () => {
     });
   });
 
-  describe('Given a symlink where the updated path leading directory is due', () => {
+  describe('Given a dangling symlink where the updated path leading directory is due', () => {
     describe('When the entry is updated', () => {
       it('Then it is clear', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`);
+
+        // Act
+        const result = await classifyChange(ctx, 'update', 'd/x', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe.each(['update', 'delete'] as const)(
+    'Given a symlink to a directory holding the %s path',
+    (kind) => {
+      describe('When the entry is classified', () => {
+        it('Then it is a local change at the entry path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(`${ctx.layout.workDir}/held`);
+          await ctx.fs.write(`${ctx.layout.workDir}/held/x`, BYTES);
+          await ctx.fs.symlink('held', `${ctx.layout.workDir}/d`);
+
+          // Act
+          const result = await classifyChange(ctx, kind, 'd/x', scopeOf(ctx));
+
+          // Assert
+          expect(result).toEqual(LOCAL_AT('d/x'));
+        });
+      });
+    },
+  );
+
+  describe('Given a symlink to a directory that lacks the updated path', () => {
+    describe('When the entry is updated', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/held`);
+        await ctx.fs.symlink('held', `${ctx.layout.workDir}/d`);
 
         // Act
         const result = await classifyChange(ctx, 'update', 'd/x', scopeOf(ctx));

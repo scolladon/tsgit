@@ -626,6 +626,41 @@ describe('findWouldOverwrite stat cache', () => {
       });
     });
   });
+
+  describe('Given a tracked changed path beneath a symlink to a directory holding it', () => {
+    describe('When the path is in the changed set', () => {
+      it('Then it is reported as a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'held/x', 'precious\n');
+        await ctx.fs.symlink('held', `${ctx.layout.workDir}/d`);
+        const tracked = entryOf('d/x', await blob(ctx, 'v1\n'));
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d/x'), indexOf([tracked]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: ['d/x'], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given a tracked changed path beneath a dangling symlink', () => {
+    describe('When the path is in the changed set', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`);
+        const tracked = entryOf('d/x', await blob(ctx, 'v1\n'));
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d/x'), indexOf([tracked]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+      });
+    });
+  });
 });
 
 describe('findTrackedBeyondSymlink', () => {

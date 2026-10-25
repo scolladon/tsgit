@@ -34,6 +34,7 @@ import {
   ignoring,
   indexState,
   link1,
+  linkToContent,
   listing,
   type Occupant,
   OK,
@@ -180,6 +181,13 @@ const UPDATE_ROWS: ReadonlyArray<ChangeRow> = [
     git: OK,
   },
   {
+    shape: 'S3g',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', linkToContent('d', 'held', 'x')),
+    git: refusedLocal('d/x'),
+  },
+  {
     shape: 'S3b',
     tracked: [v1('f')],
     due: [regular('f')],
@@ -264,6 +272,13 @@ const DELETE_ROWS: ReadonlyArray<ChangeRow> = [
     tracked: [v1('d/x')],
     due: [],
     occupant: replacing('d/x', fileAt('d')),
+    git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'D5',
+    tracked: [v1('d/x')],
+    due: [],
+    occupant: replacing('d/x', linkToContent('d', 'held', 'x')),
     git: refusedLocal('d/x'),
   },
   {
