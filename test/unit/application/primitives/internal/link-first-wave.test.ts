@@ -15,6 +15,7 @@ interface WriteSpec {
 }
 
 const recordingScanner = (events: string[]): LeadingPathScanner => ({
+  obstructingLeadingComponent: vi.fn(async () => undefined),
   hasSymlinkedLeadingPath: vi.fn(async () => false),
   symlinkedLeadingComponent: vi.fn(async () => undefined),
   unlinkSymlinkedLeadingComponent: vi.fn(async () => undefined),

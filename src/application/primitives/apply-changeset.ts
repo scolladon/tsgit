@@ -34,16 +34,22 @@ import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
-import { createConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { convertToGit } from './internal/convert-blob.js';
 import { removeEmptyDirectory } from './internal/empty-directories.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { lstatIfReachable } from './internal/fs-probes.js';
-import { buildRepoIgnorePredicate } from './internal/ignore-evaluator.js';
 import { indexEntryFromStat } from './internal/index-entry-from-stat.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { lazily } from './internal/lazily.js';
+import {
+  type ClashScope,
+  classifyOccupant,
+  createIgnoredProbe,
+  type IgnoredProbe,
+  type OccupantClash,
+  repoRelativePath,
+} from './internal/occupant-clash.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
 import {
   pruneEmptiedDirectories,
@@ -56,7 +62,6 @@ import {
   buildAttributeProvider,
   buildCheckinAttributeProvider,
 } from './internal/read-gitattributes.js';
-import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
   createLeadingPathScanner,
@@ -177,9 +182,6 @@ const isDirtyUnder = async (
   return !(await blobMatches(ctx, probe, path, absPath, expectedId));
 };
 
-const repoRelativePath = (ctx: Context, absPath: string): FilePath =>
-  absPath.slice(requireWorkTree(ctx, 'isWorkingTreeDirty').length + 1) as FilePath;
-
 export type WorkingTreeDirtyCheck = (absPath: string, expectedId: string) => Promise<boolean>;
 
 /**
@@ -205,91 +207,13 @@ export const isWorkingTreeDirty = async (
   expectedId: string,
 ): Promise<boolean> => createWorkingTreeDirtyCheck(ctx)(absPath, expectedId);
 
-type IgnoredProbe = (absPath: string, isDirectory: boolean) => Promise<boolean>;
-
-// What the untracked-clash check weighs a directory's occupants against: the paths
-// the changeset deletes, the repo's ignore rules (git removes ignored files along
-// with a directory that becomes a file), and the symlinks standing in the way.
-interface ClashScope {
-  readonly removed: ReadonlySet<string>;
-  readonly isIgnoredPath: IgnoredProbe;
-  readonly scanner: LeadingPathScanner;
-}
-
-// One ignore predicate per probe, built on first use. It grows a shared stack as it
-// meets directories, so concurrent questions are answered one at a time.
-const createIgnoredProbe = (ctx: Context): IgnoredProbe => {
-  const predicate = lazily(() => buildRepoIgnorePredicate(ctx));
-  const oneAtATime = createConcurrencyLimiter(1);
-  return (absPath, isDirectory) =>
-    oneAtATime.run(async () => (await predicate())(repoRelativePath(ctx, absPath), isDirectory));
-};
-
-// Whether a child of a directory that becomes a file outlives the changeset: a file
-// the changeset does not delete and the ignore rules do not match is an untracked
-// occupant, while emptied directories go away with it.
-const childSurvives = async (
-  ctx: Context,
-  absDir: string,
-  child: { readonly name: string; readonly isDirectory: boolean },
-  scope: ClashScope,
-): Promise<boolean> => {
-  const absChild = joinPath(absDir, child.name);
-  if (!child.isDirectory && scope.removed.has(absChild)) return false;
-  if (await scope.isIgnoredPath(absChild, child.isDirectory)) return false;
-  return child.isDirectory ? holdsSurvivor(ctx, absChild, scope) : true;
-};
-
-const holdsSurvivor = async (ctx: Context, absDir: string, scope: ClashScope): Promise<boolean> => {
-  for (const child of await ctx.fs.readdir(absDir)) {
-    if (await childSurvives(ctx, absDir, child, scope)) return true;
-  }
-  return false;
-};
-
-// A directory at an added path is the tracked tree being swapped for a file: its
-// tracked children arrive as `delete` entries and are dirty-checked on their own.
-const isUntrackedClash = async (
-  ctx: Context,
-  absPath: string,
-  scope: ClashScope,
-): Promise<boolean> => {
-  if (!(await pathIsOccupied(ctx, absPath))) return false;
-  const stat = await ctx.fs.lstat(absPath);
-  return !stat.isDirectory || holdsSurvivor(ctx, absPath, scope);
-};
-
-// git's check_leading_path: a symlink standing where a leading directory must be is
-// the clash, named in place of the added path — unless the changeset deletes it or
-// the ignore rules cover it. Nothing beyond the link is looked at.
-const untrackedClashOf = async (
-  ctx: Context,
-  workdir: string,
-  entry: ChangesetEntry,
-  scope: ClashScope,
-): Promise<FilePath | undefined> => {
-  const link = await scope.scanner.symlinkedLeadingComponent(entry.path);
-  if (link === undefined) {
-    const clashes = await isUntrackedClash(ctx, joinPath(workdir, entry.path), scope);
-    return clashes ? entry.path : undefined;
-  }
-  const absLink = joinPath(workdir, link);
-  if (scope.removed.has(absLink)) return undefined;
-  return (await scope.isIgnoredPath(absLink, false)) ? undefined : link;
-};
-
-interface DirtyClass {
-  readonly class: 'local-changes' | 'untracked';
-  readonly path: FilePath;
-}
-
 const evaluateDirtyPath = async (
   ctx: Context,
   probe: () => Promise<DirtyProbe>,
   workdir: string,
   entry: ChangesetEntry,
   scope: ClashScope,
-): Promise<DirtyClass | undefined> => {
+): Promise<OccupantClash | undefined> => {
   if (isLossy(entry)) return undefined;
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'update' || entry.kind === 'delete') {
@@ -302,8 +226,8 @@ const evaluateDirtyPath = async (
   }
   // Stryker disable next-line ConditionalExpression: equivalent — checkDirty only receives splitWaves' deletes and writes, which hold no noop, so an entry past the update/delete branch is always an add.
   if (entry.kind !== 'add') return undefined;
-  const clash = await untrackedClashOf(ctx, workdir, entry, scope);
-  return clash === undefined ? undefined : { class: 'untracked', path: clash };
+  const verdict = await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope);
+  return verdict.kind === 'clash' ? verdict.clash : undefined;
 };
 
 // The checkout path's tree->index boundary. Every `add`/`update` entry
@@ -344,6 +268,7 @@ const checkDirty = async (
   const probe = lazily(() => buildDirtyProbe(ctx));
   const scope: ClashScope = {
     removed: deletedPaths(workdir, entries),
+    workdir,
     isIgnoredPath: createIgnoredProbe(ctx),
     scanner: createLeadingPathScanner(ctx),
   };

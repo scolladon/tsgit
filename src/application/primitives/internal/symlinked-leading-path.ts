@@ -14,7 +14,15 @@ import { joinPath } from './join-working-tree-path.js';
 import { createPromiseMemo, type PromiseMemo } from './promise-memo.js';
 import { requireWorkTree } from './repo-state.js';
 
+/** A leading component that is not a directory: the symlink or regular file standing where a directory is due. */
+export interface LeadingObstruction {
+  readonly path: FilePath;
+  readonly kind: 'symlink' | 'file';
+}
+
 export interface LeadingPathScanner {
+  /** The first leading component of `path` (its directories, never the leaf) that is a symlink or a regular file — git's `check_leading_path`. */
+  readonly obstructingLeadingComponent: (path: FilePath) => Promise<LeadingObstruction | undefined>;
   /** True when any leading component of `path` (its directories, never the leaf) is a symlink. */
   readonly hasSymlinkedLeadingPath: (path: FilePath) => Promise<boolean>;
   /** The first leading component of `path` (its directories, never the leaf) that is a symlink — the path git names for it. */
@@ -95,7 +103,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   // per component — as long as no classification changed since it was walked.
   interface StampedVerdict {
     readonly generation: symbol;
-    readonly verdict: FilePath | undefined;
+    readonly verdict: LeadingObstruction | undefined;
   }
   const verdicts = new Map<string, StampedVerdict>();
   const workDir = requireWorkTree(ctx, 'createLeadingPathScanner');
@@ -138,22 +146,25 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
     }
   };
 
-  const walkLeadingComponents = async (path: FilePath): Promise<FilePath | undefined> => {
+  const walkLeadingComponents = async (path: FilePath): Promise<LeadingObstruction | undefined> => {
     const segments = path.split('/');
     // Stryker disable next-line StringLiteral: equivalent — split() always returns at least one element, so the '' default can never activate.
     let prefix = segments[0] ?? '';
     for (let i = 1; i < segments.length; i += 1) {
       const shape = await classifyPrefix(prefix);
-      // Nothing can sit beneath a missing prefix or a regular file, and a real
-      // filesystem refuses to stat there — stop walking rather than ask.
-      if (shape === 'missing' || shape === 'other') return undefined;
-      if (shape === 'symlink') return prefix as FilePath;
+      // Nothing can sit beneath a missing prefix, and a real filesystem refuses
+      // to stat beneath a regular file — the file itself is the obstruction.
+      if (shape === 'missing') return undefined;
+      if (shape === 'symlink') return { path: prefix as FilePath, kind: 'symlink' };
+      if (shape === 'other') return { path: prefix as FilePath, kind: 'file' };
       prefix = `${prefix}/${segments[i]}`;
     }
     return undefined;
   };
 
-  const symlinkedLeadingComponent = async (path: FilePath): Promise<FilePath | undefined> => {
+  const obstructingLeadingComponent = async (
+    path: FilePath,
+  ): Promise<LeadingObstruction | undefined> => {
     // Stryker disable next-line StringLiteral: equivalent — a key of the whole path only caches per path instead of per directory; the memo answers the same verdicts
     const slash = path.lastIndexOf('/');
     // A root-level path has no leading component to classify.
@@ -169,6 +180,11 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
     const verdict = await walkLeadingComponents(path);
     verdicts.set(directory, { generation: walked, verdict });
     return verdict;
+  };
+
+  const symlinkedLeadingComponent = async (path: FilePath): Promise<FilePath | undefined> => {
+    const obstruction = await obstructingLeadingComponent(path);
+    return obstruction?.kind === 'symlink' ? obstruction.path : undefined;
   };
 
   const hasSymlinkedLeadingPath = async (path: FilePath): Promise<boolean> =>
@@ -230,6 +246,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   };
 
   return {
+    obstructingLeadingComponent,
     hasSymlinkedLeadingPath,
     symlinkedLeadingComponent,
     unlinkSymlinkedLeadingComponent,
