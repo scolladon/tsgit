@@ -745,15 +745,27 @@ const refuseDirtyIndex = async (
 const entersTrivialBranch = ({ opts }: MergeCommitInput): boolean =>
   opts.commit !== false && opts.squash !== true && allowsTrivialMerge(opts.strategies);
 
+const STASH_FALLBACK_NAME = 'git stash';
+const STASH_FALLBACK_EMAIL = 'git@stash';
+
 /** git's `stash create` before the strategies run: the local changes, unreachable, signed as the merge commit will be. */
 const snapshotBeforeStrategies = async (
   ctx: Context,
   input: MergeRunInput,
 ): Promise<ObjectId | undefined> => {
-  const author = await resolveMergeAuthor(ctx, input);
-  const committer = resolveMergeCommitter(input, author);
+  const configured = await configuredUser(ctx);
+  const author = input.author ?? configured ?? stashFallbackIdentity();
+  const committer = input.committer ?? author;
   return snapshotLocalChanges(ctx, requireWorkTree(ctx, 'merge'), { author, committer });
 };
+
+/** git's `prepare_fallback_ident("git stash", "git@stash")`: `stash create` never refuses for want of an identity. */
+const stashFallbackIdentity = (): AuthorIdentity => ({
+  name: STASH_FALLBACK_NAME,
+  email: STASH_FALLBACK_EMAIL,
+  timestamp: Math.floor(Date.now() / 1000),
+  timezoneOffset: '+0000',
+});
 
 /** git's strategy loop for one head. */
 const twoHeadStrategy = (
@@ -2232,22 +2244,24 @@ export const buildConflictIndexEntries = (
   return combined;
 };
 
+const configuredUser = async (ctx: Context): Promise<AuthorIdentity | undefined> => {
+  const { user } = await readConfig(ctx);
+  // A signingKey-only `[user]` (no name/email) is not an identity.
+  if (user?.name === undefined || user?.email === undefined) return undefined;
+  return {
+    name: user.name,
+    email: user.email,
+    timestamp: Math.floor(Date.now() / 1000),
+    timezoneOffset: '+0000',
+  };
+};
+
 /** Resolve the merge-commit author. Exported for direct unit testing. */
 export const resolveMergeAuthor = async (
   ctx: Context,
   opts: MergeRunInput,
 ): Promise<AuthorIdentity> => {
-  const config = await readConfig(ctx);
-  // A signingKey-only `[user]` (no name/email) is not an identity.
-  const cfgUser =
-    config.user?.name !== undefined && config.user?.email !== undefined
-      ? {
-          name: config.user.name,
-          email: config.user.email,
-          timestamp: Math.floor(Date.now() / 1000),
-          timezoneOffset: '+0000',
-        }
-      : undefined;
+  const cfgUser = await configuredUser(ctx);
   const authorInput: { explicit?: AuthorIdentity; configUser?: AuthorIdentity } = {};
   if (opts.author !== undefined) authorInput.explicit = opts.author;
   if (cfgUser !== undefined) authorInput.configUser = cfgUser;

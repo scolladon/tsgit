@@ -7991,6 +7991,31 @@ describe('merge — snapshot of local changes before the strategies', () => {
     });
   });
 
+  describe('Given a local edit and no identity anywhere', () => {
+    describe('When merge runs', () => {
+      it('Then git stash signs both snapshot commits instead of the merge refusing for want of an identity', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature' }).catch(() => undefined);
+
+        // Assert
+        const wip = await readObject(ctx, (await snapshotOf(spy)) as ObjectId);
+        if (wip.type !== 'commit') throw new Error('not a commit');
+        const index = await readObject(ctx, wip.data.parents[1] as ObjectId);
+        if (index.type !== 'commit') throw new Error('not a commit');
+        const stash = { name: 'git stash', email: 'git@stash' };
+        expect([wip.data.author, wip.data.committer]).toEqual([
+          expect.objectContaining(stash),
+          expect.objectContaining(stash),
+        ]);
+        expect(index.data.author).toEqual(expect.objectContaining(stash));
+      });
+    });
+  });
+
   describe('Given a local edit and an octopus merge', () => {
     describe('When merge runs', () => {
       it('Then the snapshot is taken', async () => {
