@@ -106,12 +106,14 @@ import {
   serializeRewritten,
   writeAutostash,
   writeRebaseStop,
+  writeRescheduledLine,
   writeRescheduledPick,
 } from './internal/rebase-state.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import {
   hardResetWorktreeToCommit,
   protectedResetWorktreeToCommit,
+  type WorktreeRefusal,
 } from './internal/reset-worktree.js';
 import { writeContinuedIndex } from './internal/write-index-cache-tree.js';
 import { applyAutostash, createAutostash } from './stash.js';
@@ -549,19 +551,39 @@ type LineOutcome =
   | { readonly kind: 'moved'; readonly head: ObjectId }
   | { readonly kind: 'kept' };
 
+/** A refused `reset` step stays at the head of the todo and at the end of `done`, as git's does. */
+const refuseResetStep = async (
+  ctx: Context,
+  rc: ReplayContext,
+  index: number,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  await writeRescheduledLine(ctx, {
+    headName: rc.branch ?? 'detached HEAD',
+    onto: rc.onto,
+    origHead: rc.origHead,
+    done: [...rc.doneBefore, ...rc.todo.slice(0, index + 1)],
+    remaining: rc.todo.slice(index),
+    backupHeader: rc.backupHeader,
+  });
+  throw workingTreeDirty(refusal);
+};
+
 /** Run one todo line on the detached HEAD `cur`. */
 const replayLine = async (
   ctx: Context,
   rc: ReplayContext,
-  line: PlannedLine,
+  index: number,
   cur: ObjectId,
 ): Promise<LineOutcome> => {
+  const line = rc.todo[index]!;
   if (line.action === 'label') {
     await labelHead(ctx, line.label);
     return { kind: 'moved', head: cur };
   }
   if (line.action === 'reset') {
-    return { kind: 'moved', head: await resetToLabel(ctx, line.label, rc.reflogAction) };
+    const outcome = await resetToLabel(ctx, line.label, rc.reflogAction);
+    return outcome.kind === 'refused' ? refuseResetStep(ctx, rc, index, outcome) : outcome;
   }
   const cData = await readCommitData(ctx, line.oid);
   if (line.action !== 'merge') return replayOne(ctx, line.oid, cData, cur, rc.reflogAction);
@@ -636,7 +658,7 @@ const replayFrom = async (
   for (let i = 0; i < rc.todo.length; i += 1) {
     const line = rc.todo[i]!;
     await removeAutoMerge(ctx);
-    const outcome = await replayLine(ctx, rc, line, cur);
+    const outcome = await replayLine(ctx, rc, i, cur);
     if (outcome.kind === 'moved') cur = outcome.head;
     // git's dropped empty pick takes its AUTO_MERGE with it.
     else if (outcome.kind === 'empty') await removeAutoMerge(ctx);

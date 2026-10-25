@@ -8,6 +8,7 @@ import {
   readRewrittenList,
   rebaseInProgress,
   writeRebaseStop,
+  writeRescheduledLine,
   writeRescheduledPick,
 } from '../../../../../src/application/commands/internal/rebase-state.js';
 import type { AuthorIdentity, ObjectId } from '../../../../../src/domain/objects/index.js';
@@ -251,6 +252,48 @@ describe('rebase-state', () => {
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
         expect(await readRebaseHead(ctx)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a reset step refused before it ran', () => {
+    const PICK = { action: 'pick', oid: T1, subject: 't1' } as const;
+    const RESET = { action: 'reset', label: 'x' } as const;
+    const LAST = { action: 'pick', oid: T3, subject: 't3' } as const;
+    const RESCHEDULED = {
+      headName: 'refs/heads/topic',
+      onto: ONTO,
+      origHead: ORIG,
+      done: [PICK, RESET],
+      remaining: [RESET, LAST],
+      backupHeader: STOP.backupHeader,
+    } as const;
+
+    describe('When writeRescheduledLine persists it over a stale REBASE_HEAD', () => {
+      it('Then the reset heads the todo and ends done, with no REBASE_HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRescheduledPick(ctx, { ...RESCHEDULED, pickSha: T1 });
+
+        // Act
+        await writeRescheduledLine(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await read(ctx, 'git-rebase-todo')).toBe(`reset x\npick ${T3} # t3\n`);
+        expect(await read(ctx, 'done')).toBe(`pick ${T1} # t1\n\nreset x\n`);
+        expect(await readRebaseHead(ctx)).toBeUndefined();
+      });
+
+      it('Then end counts the whole todo and msgnum the done lines', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledLine(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await read(ctx, 'end')).toBe('3\n');
+        expect(await read(ctx, 'msgnum')).toBe('2\n');
       });
     });
   });

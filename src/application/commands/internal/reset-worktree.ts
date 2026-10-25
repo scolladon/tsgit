@@ -10,7 +10,7 @@
  * `cherry-pick --skip` / `--abort`.
  */
 
-import { workingTreeDirty } from '../../../domain/commands/error.js';
+import { type WouldOverwriteClasses, workingTreeDirty } from '../../../domain/commands/error.js';
 import { comparePaths } from '../../../domain/diff/index.js';
 import { TsgitError } from '../../../domain/error.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
@@ -20,7 +20,6 @@ import { type MaterializeTreeOpts, materializeTree } from '../../primitives/mate
 import { readIndex } from '../../primitives/read-index.js';
 import { readObject } from '../../primitives/read-object.js';
 import { loadSparseMatcher } from '../../primitives/read-sparse-checkout.js';
-import { asMergeDirtyError } from '../merge.js';
 import { acquireIndexLock } from './index-update.js';
 
 type ResetMode = Pick<
@@ -54,14 +53,22 @@ const resetWorktreeToCommit = async (
 export const hardResetWorktreeToCommit = (ctx: Context, commitId: ObjectId): Promise<void> =>
   resetWorktreeToCommit(ctx, commitId, { force: true, forceRewriteAll: true });
 
+/** A reset that stopped short because an untracked or dirty path would be overwritten. */
+export interface WorktreeRefusal extends WouldOverwriteClasses {
+  readonly kind: 'refused';
+}
+
+export type ResetOutcome = { readonly kind: 'reset' } | WorktreeRefusal;
+
 /**
- * `reset --hard` as `rebase --abort` / `--skip` run it: tracked changes are discarded, but an
- * untracked occupant is never overwritten (ignored ones are) and every offending path is listed.
+ * `reset --hard` as `rebase --abort` / `--skip` and a `--rebase-merges` `reset` step run it:
+ * tracked changes are discarded, but an untracked occupant is never overwritten (ignored ones
+ * are). A refusal lists every offending path and leaves the tree, index and HEAD untouched.
  */
-export const protectedResetWorktreeToCommit = async (
+export const attemptProtectedResetWorktreeToCommit = async (
   ctx: Context,
   commitId: ObjectId,
-): Promise<void> => {
+): Promise<ResetOutcome> => {
   try {
     await resetWorktreeToCommit(ctx, commitId, {
       force: true,
@@ -69,9 +76,25 @@ export const protectedResetWorktreeToCommit = async (
       untrackedOccupants: 'protect',
       unmergedPaths: 'reset',
     });
+    return { kind: 'reset' };
   } catch (err) {
-    throw asMergeDirtyError(err);
+    if (err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
+      return {
+        kind: 'refused',
+        localChanges: err.data.localChanges,
+        untracked: err.data.untracked,
+      };
+    }
+    throw err;
   }
+};
+
+export const protectedResetWorktreeToCommit = async (
+  ctx: Context,
+  commitId: ObjectId,
+): Promise<void> => {
+  const outcome = await attemptProtectedResetWorktreeToCommit(ctx, commitId);
+  if (outcome.kind === 'refused') throw workingTreeDirty(outcome);
 };
 
 /**

@@ -109,6 +109,18 @@ export interface RescheduledPick {
   readonly backupHeader: RebaseBackupHeader | undefined;
 }
 
+/** A `reset` step refused before it ran: the line is rescheduled, and no commit is named. */
+export interface RescheduledLine {
+  readonly headName: string;
+  readonly onto: ObjectId;
+  readonly origHead: ObjectId;
+  /** Completed instructions, including the rescheduled line (last). */
+  readonly done: ReadonlyArray<RebaseTodoLine>;
+  /** The live todo, starting with the rescheduled line. */
+  readonly remaining: ReadonlyArray<RebaseTodoLine>;
+  readonly backupHeader: RebaseBackupHeader | undefined;
+}
+
 /** The part of the state every rebase stop carries, whatever stopped it. */
 export interface RebaseProgress {
   readonly headName: string;
@@ -187,15 +199,15 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await writeRootRef(ctx, REBASE_HEAD_REF, stop.stoppedSha);
 };
 
-/** Persist git's state for a pick refused before it ran, exactly the files git leaves. */
-export const writeRescheduledPick = async (ctx: Context, stop: RescheduledPick): Promise<void> => {
+const writeRescheduled = async (ctx: Context, stop: RescheduledLine): Promise<void> => {
   const fullTodo = [...stop.done.slice(0, -1), ...stop.remaining];
   const write = (name: string, body: string): Promise<void> =>
     ctx.fs.writeUtf8(file(ctx, name), body);
   await write('head-name', `${stop.headName}\n`);
   await write('onto', `${stop.onto}\n`);
   await write('orig-head', `${stop.origHead}\n`);
-  await write('git-rebase-todo', serializeRebaseTodo(stop.remaining));
+  // git consumed the blank line that opens a block when it reached the rescheduled line.
+  await write('git-rebase-todo', serializeRebaseTodo(stop.remaining).replace(/^\n/, ''));
   if (stop.backupHeader !== undefined) {
     await write('git-rebase-todo.backup', rebaseTodoBackup(fullTodo, stop.backupHeader));
   }
@@ -205,7 +217,18 @@ export const writeRescheduledPick = async (ctx: Context, stop: RescheduledPick):
   await write('interactive', '');
   await write('drop_redundant_commits', '');
   await write('no-reschedule-failed-exec', '');
+};
+
+/** Persist git's state for a pick refused before it ran, exactly the files git leaves. */
+export const writeRescheduledPick = async (ctx: Context, stop: RescheduledPick): Promise<void> => {
+  await writeRescheduled(ctx, stop);
   await writeRootRef(ctx, REBASE_HEAD_REF, stop.pickSha);
+};
+
+/** Persist git's state for a `reset` step refused before it ran: no `REBASE_HEAD`, it names no commit. */
+export const writeRescheduledLine = async (ctx: Context, stop: RescheduledLine): Promise<void> => {
+  await writeRescheduled(ctx, stop);
+  await deleteRootRef(ctx, REBASE_HEAD_REF);
 };
 
 /** git unlinks `amend` before every step and drops `current-fixups` /

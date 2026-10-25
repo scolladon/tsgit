@@ -8,8 +8,10 @@ import { init } from '../../../../../src/application/commands/init.js';
 import {
   labelHead,
   recreateMerge,
+  resetToLabel,
 } from '../../../../../src/application/commands/internal/rebase-merges-steps.js';
 import { mergeRun } from '../../../../../src/application/commands/merge.js';
+import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../../src/application/primitives/resolve-ref.js';
@@ -146,6 +148,98 @@ describe('recreateMerge', () => {
         if (result.kind !== 'committed') throw new Error(`expected committed, got ${result.kind}`);
         expect(result.id).not.toBe(source);
         expect((await readCommit(ctx, result.id)).parents).toEqual([head, other]);
+      });
+    });
+  });
+});
+
+describe('recreateMerge fast-forward over an occupant', () => {
+  describe('Given an untracked file where the original merge adds a path', () => {
+    describe('When its merge is kept by fast-forward', () => {
+      it('Then it is refused naming the path, with the file and HEAD untouched', async () => {
+        // Arrange
+        const ctx = await newRepo();
+        const base = await commitFile(ctx, 'base');
+        await branchCreate(ctx, { name: 'side' });
+        await branchCreate(ctx, { name: 'head-line' });
+        await checkout(ctx, { rev: 'side' });
+        await commitFile(ctx, 's');
+        await checkout(ctx, { rev: 'head-line' });
+        const head = await commitFile(ctx, 'h');
+        await branchCreate(ctx, { name: 'original' });
+        await checkout(ctx, { rev: 'original' });
+        await mergeRun(ctx, { rev: 'side', fastForward: 'never', author: AUTHOR });
+        const source = await tip(ctx, 'original');
+        await checkout(ctx, { rev: head });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s`, 'occupant\n');
+        const step = {
+          source,
+          original: await readCommit(ctx, source),
+          labels: ['side'],
+          head,
+          reflogAction: REFLOG_ACTION,
+        };
+        const sut = recreateMerge;
+
+        // Act
+        const data = await sut(ctx, step).then(
+          () => undefined,
+          (err: unknown) => (err as { data: unknown }).data,
+        );
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['s'] });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/s`)).toBe('occupant\n');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(head);
+        expect(base).not.toBe(head);
+      });
+    });
+  });
+});
+
+describe('resetToLabel', () => {
+  describe('Given an untracked file where the label tree adds a path', () => {
+    describe('When the reset step runs', () => {
+      it('Then it is refused naming the path, with the file, HEAD and index untouched', async () => {
+        // Arrange
+        const ctx = await newRepo();
+        const base = await commitFile(ctx, 'base');
+        const labelled = await commitFile(ctx, 'a');
+        await labelHead(ctx, 'x');
+        await checkout(ctx, { rev: base });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'occupant\n');
+        const sut = resetToLabel;
+
+        // Act
+        const result = await sut(ctx, 'x', REFLOG_ACTION);
+
+        // Assert
+        expect(result).toEqual({ kind: 'refused', localChanges: [], untracked: ['a'] });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a`)).toBe('occupant\n');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(base);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['base']);
+        expect(labelled).not.toBe(base);
+      });
+    });
+  });
+
+  describe('Given a label whose tree can be materialised', () => {
+    describe('When the reset step runs', () => {
+      it('Then HEAD moves to the label and the outcome carries it', async () => {
+        // Arrange
+        const ctx = await newRepo();
+        const base = await commitFile(ctx, 'base');
+        const labelled = await commitFile(ctx, 'a');
+        await labelHead(ctx, 'x');
+        await checkout(ctx, { rev: base });
+        const sut = resetToLabel;
+
+        // Act
+        const result = await sut(ctx, 'x', REFLOG_ACTION);
+
+        // Assert
+        expect(result).toEqual({ kind: 'moved', head: labelled });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(labelled);
       });
     });
   });

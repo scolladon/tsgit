@@ -30,7 +30,11 @@ import { resolveCommitIsh } from './commit-ish.js';
 import { resolveCurrentIdentity } from './current-identity.js';
 import { treeOf } from './history-rewrite.js';
 import { writeMergeMode, writeMergeMsg } from './merge-state.js';
-import { hardResetWorktreeToCommit } from './reset-worktree.js';
+import {
+  attemptProtectedResetWorktreeToCommit,
+  type ResetOutcome,
+  type WorktreeRefusal,
+} from './reset-worktree.js';
 
 const HEAD = 'HEAD' as RefName;
 const REWRITTEN_PREFIX = 'refs/rewritten/';
@@ -66,33 +70,39 @@ export const labelHead = async (ctx: Context, label: string): Promise<void> => {
 };
 
 /** Move the detached HEAD to `target` with `message`, the index and work tree following. */
-const moveHead = async (ctx: Context, target: ObjectId, message: string): Promise<void> => {
+const moveHead = async (ctx: Context, target: ObjectId, message: string): Promise<ResetOutcome> => {
   const from = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, target);
+  const outcome = await attemptProtectedResetWorktreeToCommit(ctx, target);
+  if (outcome.kind === 'refused') return outcome;
   // git's ref transaction leaves an unchanged ref, and its reflog, alone.
-  if (from === target) return;
-  await getRefStore(ctx).applyRefUpdates([
-    { kind: 'set', name: HEAD, id: target, reflog: { oldId: from, newId: target, message } },
-  ]);
+  if (from !== target) {
+    await getRefStore(ctx).applyRefUpdates([
+      { kind: 'set', name: HEAD, id: target, reflog: { oldId: from, newId: target, message } },
+    ]);
+  }
+  return outcome;
 };
 
-/** git's `do_reset`. */
+/** git's `do_reset`; a refusal leaves HEAD where it was. */
 export const resetToLabel = async (
   ctx: Context,
   label: string,
   reflogAction: string,
-): Promise<ObjectId> => {
+): Promise<{ readonly kind: 'moved'; readonly head: ObjectId } | WorktreeRefusal> => {
   const { id } = await lookupLabel(ctx, label);
-  await moveHead(ctx, id, rebaseResetReflog(label, reflogAction));
-  return id;
+  const outcome = await moveHead(ctx, id, rebaseResetReflog(label, reflogAction));
+  return outcome.kind === 'refused' ? outcome : { kind: 'moved', head: id };
 };
 
 /** git's `fast_forward_to` from a rebase: HEAD moves to a kept commit. */
-export const fastForwardHead = (
+export const fastForwardHead = async (
   ctx: Context,
   target: ObjectId,
   reflogAction = REBASE_REFLOG_ACTION,
-): Promise<void> => moveHead(ctx, target, rebaseFastForwardReflog(reflogAction));
+): Promise<void> => {
+  const outcome = await moveHead(ctx, target, rebaseFastForwardReflog(reflogAction));
+  if (outcome.kind === 'refused') throw workingTreeDirty(outcome);
+};
 
 /** Every `refs/rewritten/` label the executed lines created, deleted as the rebase ends. */
 export const deleteRewrittenRefs = async (
