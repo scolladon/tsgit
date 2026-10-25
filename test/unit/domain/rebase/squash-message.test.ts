@@ -153,6 +153,21 @@ describe('rebase squash first-commit-message reader', () => {
       });
     });
 
+    describe('When given a lone block whose message ends without a newline', () => {
+      it('Then it returns the whole message with one trailing newline', () => {
+        // Arrange
+        const template =
+          '# This is a combination of 1 commit.\n# This is the 1st commit message:\n\nbase';
+        const sut = firstCommitMessage;
+
+        // Act
+        const result = sut(template);
+
+        // Assert
+        expect(result).toBe('base\n');
+      });
+    });
+
     describe('When given text that is not a combined template', () => {
       it('Then it returns undefined', () => {
         // Arrange
