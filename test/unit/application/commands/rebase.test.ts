@@ -1707,11 +1707,16 @@ describe('rebase edge cases', () => {
     });
   });
 
+  interface SeededConflicts {
+    readonly ctx: Context;
+    readonly picks: ReadonlyArray<string>;
+  }
+
   describe('Given the empty-commit policy file', () => {
     const POLICY = 'drop_redundant_commits';
     const policyExists = (ctx: Context): Promise<boolean> =>
       ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`);
-    const seedTwoConflicts = async (interactive: boolean): Promise<Context> => {
+    const seedTwoConflicts = async (): Promise<SeededConflicts> => {
       const ctx = createMemoryContext();
       await init(ctx);
       await setUser(ctx);
@@ -1724,63 +1729,59 @@ describe('rebase edge cases', () => {
       await checkout(ctx, { rev: 'main' });
       await writeAddCommit(ctx, 'f.txt', 'l1\nM2\nM3\n', 'm1');
       await checkout(ctx, { rev: 'topic' });
-      await rebaseRun(ctx, {
-        upstream: 'main',
-        ...(interactive
-          ? {
-              interactive: [
-                { action: 'pick', oid: t1 },
-                { action: 'pick', oid: t2 },
-                { action: 'pick', oid: t3 },
-              ] as const,
-            }
-          : {}),
-      });
+      return { ctx, picks: [t1, t2, t3] };
+    };
+    const rebaseOptions = (picks: ReadonlyArray<string>, interactive: boolean) => ({
+      upstream: 'main',
+      ...(interactive
+        ? { interactive: picks.map((oid) => ({ action: 'pick', oid }) as const) }
+        : {}),
+    });
+    const stoppedOnFirstConflict = async (interactive: boolean): Promise<Context> => {
+      const { ctx, picks } = await seedTwoConflicts();
+      await rebaseRun(ctx, rebaseOptions(picks, interactive));
       return ctx;
     };
-    const resolveAndContinue = async (ctx: Context): Promise<void> => {
+    const resolveConflict = async (ctx: Context): Promise<void> => {
       await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nR2\nM3\n');
       await add(ctx, ['f.txt']);
-      await rebaseContinue(ctx);
     };
 
     describe('When a flat rebase stops on a conflict', () => {
       it('Then drop_redundant_commits is written', async () => {
         // Arrange
-        const ctx = await seedTwoConflicts(false);
-
-        const sut = policyExists;
+        const { ctx, picks } = await seedTwoConflicts();
+        const sut = rebaseRun;
 
         // Act
-        const result = await sut(ctx);
+        await sut(ctx, rebaseOptions(picks, false));
 
         // Assert
-        expect(result).toBe(true);
+        expect(await policyExists(ctx)).toBe(true);
       });
     });
 
     describe('When an interactive rebase stops on a conflict', () => {
       it('Then drop_redundant_commits is not written', async () => {
         // Arrange
-        const ctx = await seedTwoConflicts(true);
-
-        const sut = policyExists;
+        const { ctx, picks } = await seedTwoConflicts();
+        const sut = rebaseRun;
 
         // Act
-        const result = await sut(ctx);
+        await sut(ctx, rebaseOptions(picks, true));
 
         // Assert
-        expect(result).toBe(false);
+        expect(await policyExists(ctx)).toBe(false);
       });
     });
 
     describe('When a flat rebase is continued into a second conflict', () => {
       it('Then the re-stop does not rewrite the policy file', async () => {
         // Arrange
-        const ctx = await seedTwoConflicts(false);
+        const ctx = await stoppedOnFirstConflict(false);
         await ctx.fs.rm(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`);
-
-        const sut = resolveAndContinue;
+        await resolveConflict(ctx);
+        const sut = rebaseContinue;
 
         // Act
         await sut(ctx);
@@ -1793,10 +1794,10 @@ describe('rebase edge cases', () => {
     describe('When an interactive rebase is continued into a second conflict', () => {
       it('Then the re-stop leaves a seeded policy file in place', async () => {
         // Arrange
-        const ctx = await seedTwoConflicts(true);
+        const ctx = await stoppedOnFirstConflict(true);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`, '');
-
-        const sut = resolveAndContinue;
+        await resolveConflict(ctx);
+        const sut = rebaseContinue;
 
         // Act
         await sut(ctx);
