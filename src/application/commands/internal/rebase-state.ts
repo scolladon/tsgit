@@ -383,7 +383,7 @@ export const readRebaseState = async (ctx: Context): Promise<RebaseState | undef
 };
 
 /** Parse `current-fixups` (`<verb> <oid>` lines), or `undefined` when absent. */
-const readCurrentFixups = async (
+export const readCurrentFixups = async (
   ctx: Context,
 ): Promise<ReadonlyArray<CurrentFixup> | undefined> => {
   const path = file(ctx, 'current-fixups');
@@ -399,7 +399,9 @@ const readCurrentFixups = async (
 };
 
 /** Parse `rewritten-pending` (`<oid>` lines), or `undefined` when absent. */
-const readRewrittenPending = async (ctx: Context): Promise<ReadonlyArray<ObjectId> | undefined> => {
+export const readRewrittenPending = async (
+  ctx: Context,
+): Promise<ReadonlyArray<ObjectId> | undefined> => {
   const path = file(ctx, 'rewritten-pending');
   if (!(await ctx.fs.exists(path))) return undefined;
   const oids: ObjectId[] = [];

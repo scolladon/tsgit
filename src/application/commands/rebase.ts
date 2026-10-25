@@ -110,9 +110,11 @@ import {
   type RebaseStop,
   type RedundantCommitPolicy,
   readAutostash,
+  readCurrentFixups,
   readRebaseProgress,
   readRebaseState,
   readRewrittenList,
+  readRewrittenPending,
   serializeRewritten,
   writeAutostash,
   writeRebaseStop,
@@ -1033,7 +1035,35 @@ const retryInteractive = async (
     doneBefore: commitEntries(rc.doneBefore),
     todo: commitEntries(rc.todo),
   };
-  return replayInteractive(ctx, ic, head, { applied: [], rewritten: await readRewrittenList(ctx) });
+  const group = await reopenedMeldGroup(ctx, ic.todo[0]);
+  // The group's earlier members sit in `rewritten-pending`, not `rewritten-list`: they land on the group head.
+  const held = (group?.pending ?? []).map((source) => [source, head] as const);
+  return replayInteractive(ctx, ic, head, {
+    applied: [],
+    rewritten: [...(await readRewrittenList(ctx)), ...held],
+    ...(group === undefined ? {} : { group }),
+  });
+};
+
+/** The group a rescheduled squash/fixup member left open, the member included: git's retry
+ *  appends it to the template again, so a squash message carries it twice. */
+const reopenedMeldGroup = async (
+  ctx: Context,
+  refused: PlannedInstruction | undefined,
+): Promise<MeldGroup | undefined> => {
+  if (refused?.action !== 'squash' && refused?.action !== 'fixup') return undefined;
+  const current = await readCurrentFixups(ctx);
+  const pending = await readRewrittenPending(ctx);
+  if (current === undefined || pending === undefined) return undefined;
+  const fixups = [...current];
+  const members = await Promise.all(
+    fixups.map(async ({ action, oid }) => ({
+      message: (await readCommitData(ctx, oid)).message,
+      skip: action === 'fixup',
+    })),
+  );
+  const baseMessage = (await readCommitData(ctx, pending[0] as ObjectId)).message;
+  return { baseMessage, members, fixups, pending: [...pending], inline: undefined };
 };
 
 /** git's `--skip` hard-resets to HEAD (dropping the staged change) and retries the rescheduled pick. */
@@ -1603,6 +1633,8 @@ const conflictResult = (
 interface ReplaySeed {
   readonly applied: ReadonlyArray<RebasedCommit>;
   readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+  /** The meld group a rescheduled member reopens; absent, the replay opens one on HEAD. */
+  readonly group?: MeldGroup;
 }
 
 /** Meld a squash/fixup member into the group commit at HEAD: recommit HEAD's
@@ -1670,7 +1702,7 @@ const replayInteractive = async (
     head: startHead,
     applied: [...seed.applied],
     rewritten: [...seed.rewritten],
-    group: await meldGroupFrom(ctx, startHead),
+    group: seed.group ?? (await meldGroupFrom(ctx, startHead)),
   };
   for (let i = 0; i < ic.todo.length; i += 1) {
     const outcome = await replayInstruction(ctx, ic, i, replay);
@@ -1753,7 +1785,7 @@ const replayMeld = async (
   const { ic, index, inst, cData } = line;
   const isLast = !meldContinues(ic.todo, index);
   const meld = await meldGroupMember(ctx, inst, cData, replay.head, replay.group, isLast);
-  if (meld.kind === 'refused') throw workingTreeDirty(meld);
+  if (meld.kind === 'refused') return refuseMeldMember(ctx, line, replay, meld);
   if (meld.kind === 'conflict') {
     await persistInteractiveStop(ctx, ic, index, meldStopFields(line, replay));
     return { stop: conflictResult(inst.oid, meld.conflicts, remainingAfter(line)) };
@@ -1769,11 +1801,11 @@ const stoppedLineFields = (line: ReplayedLine, message: string) => ({
   patch: line.patch,
 });
 
-/** The stop a conflicted meld persists: the group's template so far, with the member. */
-const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFields => {
+/** The group files a meld leaves: the template so far, with the member. */
+const meldGroupFiles = (line: ReplayedLine, replay: InteractiveReplay) => {
   const { inst, cData } = line;
   const { group } = replay;
-  const template = buildCombinedMessage([
+  const messageSquash = buildCombinedMessage([
     { message: group.baseMessage },
     ...group.members,
     { message: cData.message, skip: inst.action === 'fixup' },
@@ -1783,23 +1815,52 @@ const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFiel
     { action: inst.action as 'squash' | 'fixup', oid: inst.oid },
   ];
   return {
-    ...stoppedLineFields(line, template),
-    rewritten: replay.rewritten,
-    amend: replay.head,
     currentFixups,
     rewrittenPending: [...group.pending],
-    messageSquash: template,
+    messageSquash,
     ...fixupOnlyMessage(currentFixups, group.baseMessage),
-    mergeMsg: template,
   };
 };
 
-/** An interactive loop's refused line: reschedule it with the rewrites made so far. */
+/** The stop a conflicted meld persists. */
+const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFields => {
+  const files = meldGroupFiles(line, replay);
+  return {
+    ...stoppedLineFields(line, files.messageSquash),
+    rewritten: replay.rewritten,
+    amend: replay.head,
+    ...files,
+    mergeMsg: files.messageSquash,
+  };
+};
+
+/** A refused squash/fixup member: reschedule it with the group's files, not `rewritten-list`.
+ *  git holds a group's rewrites in `rewritten-pending`, under the original oids, until the group ends. */
+const refuseMeldMember = (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  const files = meldGroupFiles(line, replay);
+  const [base, ...members] = replay.group.pending;
+  const baseSource = replay.rewritten.find(([, created]) => created === base)?.[0] ?? base;
+  const rewrittenPending = [baseSource as ObjectId, ...members];
+  const held = {
+    ...replay,
+    rewritten: replay.rewritten.filter(([source]) => !rewrittenPending.includes(source)),
+  };
+  return refuseInteractiveLine(ctx, line, held, refusal, { ...files, rewrittenPending });
+};
+
+/** An interactive loop's refused line: reschedule it with the rewrites made so far,
+ *  and the open meld group's files when the line is a squash/fixup member. */
 const refuseInteractiveLine = (
   ctx: Context,
   line: ReplayedLine,
   replay: InteractiveReplay,
   refusal: WorktreeRefusal,
+  meld?: MeldMarkers,
 ): Promise<never> => {
   const { ic, index } = line;
   const refused: RefusedLine = {
@@ -1808,6 +1869,7 @@ const refuseInteractiveLine = (
     commit: line.inst.oid,
     author: line.cData.author,
     rewritten: replay.rewritten,
+    ...(meld === undefined ? {} : { meld }),
   };
   return refuseRescheduled(ctx, ic, refused, refusal);
 };

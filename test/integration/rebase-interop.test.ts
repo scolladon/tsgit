@@ -1317,7 +1317,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
     });
 
     describe('When the refused line is interactive', () => {
-      type Verb = 'pick' | 'edit' | 'reword';
+      type Verb = 'pick' | 'edit' | 'reword' | 'squash' | 'fixup';
       const TITLES = ['W', 'X', 'Z'] as const;
 
       const gitRebaseI = (dir: string, upstream: string, verbs: ReadonlyArray<Verb>) => {
@@ -1356,7 +1356,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
         await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
       };
 
-      it.each(['pick', 'edit', 'reword'] as const)(
+      it.each(['pick', 'edit', 'reword', 'squash', 'fixup'] as const)(
         'Then a refused %s line at the start leaves the state git leaves',
         async (verb) => {
           // Arrange
@@ -1374,6 +1374,55 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
           expect(peer.exitCode).toBe(1);
           expect(ours).toEqual(REFUSED);
           expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        },
+      );
+
+      it.each(['squash', 'fixup'] as const)(
+        'Then %s refused again by the kept occupant leaves the state git leaves',
+        async (verb) => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildOccupied(dir, false);
+            plantOccupant(dir);
+          }
+          const verbs = ['pick', verb, 'pick'] as const;
+          gitRebaseI(pair.peer, 'u', verbs);
+          await tsgitRebaseI(pair.ours, 'u', verbs);
+
+          // Act
+          const peer = gitRebase(pair.peer, '--continue');
+          const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+          // Assert
+          expect(peer.exitCode).toBe(1);
+          expect(ours).toEqual(REFUSED);
+          expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        },
+      );
+
+      it.each(['squash', 'fixup'] as const)(
+        'Then a refused %s member reopens its group once the occupant is gone',
+        async (verb) => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildOccupied(dir, false);
+            plantOccupant(dir);
+          }
+          const verbs = ['pick', verb, 'pick'] as const;
+          gitRebaseI(pair.peer, 'u', verbs);
+          await tsgitRebaseI(pair.ours, 'u', verbs);
+          for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+          // Act
+          const peer = gitRebase(pair.peer, '--continue');
+          const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+          // Assert
+          expect(peer.exitCode).toBe(0);
+          expect(ours).toBe('ok');
+          const history = (dir: string): string => git(dir, 'log', '--format=%an|%B', 'main');
+          expect(history(pair.ours)).toBe(history(pair.peer));
+          expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
         },
       );
 

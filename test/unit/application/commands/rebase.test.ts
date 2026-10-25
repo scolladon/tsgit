@@ -4410,14 +4410,16 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
   const OCCUPIED = { code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['n'] };
 
   /** base(keep); u: U; main: W(w), X(adds n by Xavier), Z(deletes n). */
-  const seed = async (): Promise<{
+  const seed = async (
+    hooks?: MemoryHookRunner,
+  ): Promise<{
     ctx: Context;
     base: ObjectId;
     w: ObjectId;
     x: ObjectId;
     z: ObjectId;
   }> => {
-    const ctx = createMemoryContext();
+    const ctx = createMemoryContext(hooks === undefined ? undefined : { hooks });
     await init(ctx);
     await setUser(ctx);
     const base = await writeAddCommit(ctx, 'keep', 'keep\n', 'base');
@@ -4647,6 +4649,110 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
       });
     },
   );
+
+  describe.each(['squash', 'fixup'] as const)('Given a %s member the occupant refuses', (verb) => {
+    const refusedMeld = async (hooks?: MemoryHookRunner) => {
+      const s = await seed(hooks);
+      await occupy(s.ctx);
+      const data = await dataOf(() =>
+        rebaseRun(s.ctx, {
+          upstream: 'u',
+          interactive: [
+            { action: 'pick', oid: s.w },
+            { action: verb, oid: s.x },
+            { action: 'pick', oid: s.z },
+          ],
+        }),
+      );
+      return { ...s, data };
+    };
+
+    describe('When the rebase runs', () => {
+      it('Then the group files are rescheduled and no rewritten-list or amend is left', async () => {
+        // Arrange / Act
+        const { ctx, w, x, data } = await refusedMeld();
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        const entries = await entriesOf(ctx);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`${verb} ${x}\n`);
+        expect(await readMerge(ctx, 'rewritten-pending')).toBe(`${w}\n`);
+        expect(entries).not.toContain('rewritten-list');
+        expect(entries).not.toContain('amend');
+        expect(entries.includes('message-fixup')).toBe(verb === 'fixup');
+      });
+
+      it('Then message-squash holds the group template', async () => {
+        // Arrange / Act
+        const { ctx } = await refusedMeld();
+
+        // Assert
+        const template = await readMerge(ctx, 'message-squash');
+        expect(template.startsWith('# This is a combination of 2 commits.\n')).toBe(true);
+        const lines = template.split('\n');
+        expect(lines).toContain('w');
+        expect(lines.includes('x')).toBe(verb === 'squash');
+      });
+    });
+
+    describe('When the occupant stays and the rebase continues', () => {
+      it('Then it is refused again with the group files and no rewritten-list', async () => {
+        // Arrange
+        const { ctx, w, x } = await refusedMeld();
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`${verb} ${x}\n${verb} ${x}\n`);
+        expect(await readMerge(ctx, 'rewritten-pending')).toBe(`${w}\n`);
+        expect(await entriesOf(ctx)).not.toContain('rewritten-list');
+      });
+    });
+
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then post-rewrite maps the group base and the member along with the rest', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await refusedMeld(runner);
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        const sources = (call?.stdin ?? '')
+          .trim()
+          .split('\n')
+          .map((l) => l.split(' ')[0]);
+        expect(sources).toEqual([w, x, z]);
+      });
+
+      it('Then the group is melded and the history is the one without a refusal', async () => {
+        // Arrange
+        const { ctx, w } = await refusedMeld();
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'HEAD' as RefName));
+        const melded = await readCommit(ctx, tip.parents[0] as ObjectId);
+        expect(tip.message).toBe('z\n');
+        // git's retry appends the rescheduled squash to its message once more
+        expect(melded.message).toBe(verb === 'squash' ? 'w\n\nx\n\nx\n' : 'w\n');
+        expect(melded.parents).not.toContain(w);
+        expect((await readCommit(ctx, melded.parents[0] as ObjectId)).message).toBe('U\n');
+      });
+    });
+  });
 
   describe('Given a fast-forwarded interactive pick the occupant refuses', () => {
     describe('When the edit stop before it is continued', () => {
