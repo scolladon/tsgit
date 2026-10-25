@@ -116,6 +116,19 @@ const makeUpdate = (
   ...bytesOf(opts),
 });
 
+const STAGED_ID = 'b'.repeat(40) as ObjectId;
+
+const unmergedUpdate = (path: string, newId: ObjectId): ChangesetEntry => ({
+  ...makeUpdate(path, STAGED_ID, newId),
+  previousId: undefined,
+  previousMode: undefined,
+});
+
+const unmergedDelete = (path: string): ChangesetEntry => ({
+  ...makeDelete(path, STAGED_ID),
+  previousId: undefined,
+});
+
 const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
   content: Uint8Array,
@@ -4127,6 +4140,419 @@ describe('applyChangeset over a gitlink directory', () => {
         // Assert
         expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
         expect(await ctx.fs.exists(`${WORKDIR}/d`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an unmerged update at a directory holding an untracked file', () => {
+    describe('When applyChangeset runs without force and with unmergedPaths reset', () => {
+      it('Then it refuses the path as untracked and keeps the file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/d/u`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([unmergedUpdate('d', newId)]),
+            force: false,
+            unmergedPaths: 'reset',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['d'],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d/u`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given an unmerged update at a directory of ignored files', () => {
+    describe('When applyChangeset runs without force and with unmergedPaths reset', () => {
+      it('Then the directory is replaced by the target file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/d/a.o`, enc('o'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([unmergedUpdate('d', newId)]),
+          force: false,
+          unmergedPaths: 'reset',
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('new');
+      });
+    });
+  });
+
+  describe('Given an unmerged update at a modified file', () => {
+    describe('When applyChangeset runs without force and with unmergedPaths reset', () => {
+      it('Then the file takes the target content with no up-to-date check', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/f`, enc('<<<<<<< markers'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([unmergedUpdate('f', newId)]),
+          force: false,
+          unmergedPaths: 'reset',
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('new');
+      });
+    });
+  });
+
+  describe('Given an unmerged delete at a directory holding an untracked file', () => {
+    describe('When applyChangeset runs without force and with unmergedPaths reset', () => {
+      it('Then it refuses the path as untracked and keeps the file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${WORKDIR}/d/u`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([unmergedDelete('d')]),
+            force: false,
+            unmergedPaths: 'reset',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d/u`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given an untracked file d where an added file d/x is due', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it refuses d as untracked and keeps the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/d`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeAdd('d/x', newId)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['d'],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given a dangling symlink d where an added file d/x is due', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it refuses d as untracked and keeps the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.symlink('nowhere', `${WORKDIR}/d`);
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeAdd('d/x', newId)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['d'],
+        });
+        expect((await ctx.fs.lstat(`${WORKDIR}/d`)).isSymbolicLink).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an untracked file f where an added file f is due', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it refuses f as untracked and keeps the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/f`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeAdd('f', newId)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['f'],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given a symlink f where an added file f is due', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it refuses f as untracked and keeps the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.symlink('nowhere', `${WORKDIR}/f`);
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeAdd('f', newId)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['f'],
+        });
+        expect((await ctx.fs.lstat(`${WORKDIR}/f`)).isSymbolicLink).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a directory f holding an untracked file where an added file f is due', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it refuses f as untracked and keeps the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/f/u`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeAdd('f', newId)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['f'],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f/u`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given a directory f holding an untracked file where f is deleted', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it refuses f as untracked and keeps the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${WORKDIR}/f/u`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeDelete('f', STAGED_ID)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['f'],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f/u`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given a directory f holding an untracked file where f is an unmerged update', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it refuses f as untracked and keeps the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/f/u`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([unmergedUpdate('f', newId)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['f'],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f/u`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given untracked files at the added paths z and a', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it refuses a, z as untracked and keeps the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/z`, enc('mine'));
+        await ctx.fs.write(`${WORKDIR}/a`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeAdd('z', newId), makeAdd('a', newId)]),
+            force: true,
+            untrackedOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['a', 'z'],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/a`))).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given a directory of ignored files where an added file f is due', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then the target file is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/f/a.o`, enc('o'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('f', newId)]),
+          force: true,
+          untrackedOccupants: 'protect',
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('new');
+      });
+    });
+  });
+
+  describe('Given an ignored file f where an added file f is due', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then the target file is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('f\n'));
+        await ctx.fs.write(`${WORKDIR}/f`, enc('o'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('f', newId)]),
+          force: true,
+          untrackedOccupants: 'protect',
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('new');
+      });
+    });
+  });
+
+  describe('Given a directory f holding an untracked file where f is updated', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then the target file is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/f/u`, enc('mine'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('f', STAGED_ID, newId)]),
+          force: true,
+          untrackedOccupants: 'protect',
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('new');
       });
     });
   });

@@ -1709,3 +1709,63 @@ describe('materializeTree carrying staged changes (headTree)', () => {
     });
   });
 });
+
+describe('materializeTree unmerged paths', () => {
+  describe('Given a conflicted path the target has', () => {
+    describe('When materialised without force and with unmergedPaths reset', () => {
+      it('Then the work file takes the target content and the index holds one stage-0 entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const workDir = ctx.layout.workDir;
+        const theirs = await writeBlob(ctx, 'theirs');
+        const target = await writeBlob(ctx, 'target');
+        const targetTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'c' as FilePath, target),
+        ]);
+        await ctx.fs.write(`${workDir}/c`, new TextEncoder().encode('<<<<<<< markers'));
+        const currentIndex: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [makeIndexEntry('c', theirs, 2), makeIndexEntry('c', theirs, 3)],
+        };
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        expect(new TextDecoder().decode(await ctx.fs.read(`${workDir}/c`))).toBe('target');
+        expect(result.newIndexEntries.map((e) => [e.path, e.flags.stage, e.id])).toEqual([
+          ['c', 0, target],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a conflicted path the target lacks', () => {
+    describe('When materialised without force and with unmergedPaths reset', () => {
+      it('Then the work file is deleted and the index holds no entry for it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const workDir = ctx.layout.workDir;
+        const ours = await writeBlob(ctx, 'ours');
+        const kept = await writeBlob(ctx, 'kept');
+        const targetTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'k' as FilePath, kept),
+        ]);
+        await ctx.fs.write(`${workDir}/c`, new TextEncoder().encode('<<<<<<< markers'));
+        const currentIndex: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [makeIndexEntry('c', ours, 2), makeIndexEntry('c', ours, 3)],
+        };
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        expect(await ctx.fs.exists(`${workDir}/c`)).toBe(false);
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['k']);
+      });
+    });
+  });
+});

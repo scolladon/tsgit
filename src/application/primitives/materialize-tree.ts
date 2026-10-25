@@ -46,7 +46,12 @@ import {
 } from '../../domain/objects/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
-import { applyChangesetWithAttributes, type IgnoredOccupants } from './apply-changeset.js';
+import {
+  applyChangesetWithAttributes,
+  type IgnoredOccupants,
+  type UnmergedPaths,
+  type UntrackedOccupants,
+} from './apply-changeset.js';
 import {
   type Changeset,
   type ChangesetEntry,
@@ -109,6 +114,16 @@ export interface MaterializeTreeOpts {
    * default `overwrite`.
    */
   readonly ignoredOccupants?: IgnoredOccupants;
+  /**
+   * `protect` refuses an untracked occupant even when forced (git's `reset_head` with
+   * `UNPACK_RESET_PROTECT_UNTRACKED`); default `overwrite`.
+   */
+  readonly untrackedOccupants?: UntrackedOccupants;
+  /**
+   * `reset` resets a conflicted path to the target without the up-to-date check; default
+   * `hidden`, where a conflicted path is invisible to the apply.
+   */
+  readonly unmergedPaths?: UnmergedPaths;
 }
 
 export interface MaterializeTreeResult {
@@ -194,6 +209,55 @@ const tallyStats = (entries: ReadonlyArray<ChangesetEntry>): ChangesetStats => {
   const stats = { add: 0, update: 0, delete: 0, noop: 0 };
   for (const entry of entries) stats[entry.kind] += 1;
   return stats;
+};
+
+const lowestStageOfUnmerged = (index: GitIndex): Map<IndexPathKey, IndexEntry> => {
+  const staged = new Map<IndexPathKey, IndexEntry>();
+  const merged = new Set<IndexPathKey>();
+  for (const entry of index.entries) {
+    const key = indexPathKey(entry);
+    if (entry.flags.stage === 0) merged.add(key);
+    else if ((staged.get(key)?.flags.stage ?? Infinity) > entry.flags.stage) staged.set(key, entry);
+  }
+  for (const key of merged) staged.delete(key);
+  return staged;
+};
+
+// An unmerged path has no previous version to compare, so its entry carries none.
+const resetUnmergedEntry = (low: IndexEntry, target: TargetEntry | undefined): ChangesetEntry =>
+  target === undefined
+    ? {
+        kind: 'delete',
+        path: low.path,
+        ...(low.pathBytes === undefined ? {} : { pathBytes: low.pathBytes }),
+        mode: low.mode,
+        id: undefined,
+        previousId: undefined,
+        previousMode: low.mode,
+      }
+    : {
+        kind: 'update',
+        path: target.path,
+        ...(target.pathBytes === undefined ? {} : { pathBytes: target.pathBytes }),
+        mode: target.mode,
+        id: target.id,
+        previousId: undefined,
+        previousMode: undefined,
+      };
+
+/** Makes conflicted paths visible to the apply: each becomes an update or delete to the target. */
+const projectUnmergedPaths = (
+  changeset: Changeset,
+  currentIndex: GitIndex,
+  target: ReadonlyArray<TargetEntry>,
+): Changeset => {
+  const unmerged = lowestStageOfUnmerged(currentIndex);
+  const targetByKey = new Map(target.map((e) => [indexPathKey(e), e]));
+  const entries = [
+    ...changeset.entries.filter((e) => !unmerged.has(indexPathKey(e))),
+    ...[...unmerged].map(([key, low]) => resetUnmergedEntry(low, targetByKey.get(key))),
+  ];
+  return { entries: entries.sort(pathComparatorFor(entries)), stats: tallyStats(entries) };
 };
 
 const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
@@ -394,7 +458,11 @@ export const materializeTree = async (
     pathRules.validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
   }
 
-  const rawChangeset = computeChangeset(plan.indexForDiff, plan.target);
+  const computed = computeChangeset(plan.indexForDiff, plan.target);
+  const rawChangeset =
+    opts.unmergedPaths === 'reset'
+      ? projectUnmergedPaths(computed, plan.indexForDiff, plan.target)
+      : computed;
   const changeset =
     opts.forceRewriteAll === true ? upgradeNoopsToUpdates(rawChangeset) : rawChangeset;
 
@@ -404,6 +472,8 @@ export const materializeTree = async (
       changeset,
       force: opts.force ?? false,
       ...(opts.ignoredOccupants && { ignoredOccupants: opts.ignoredOccupants }),
+      ...(opts.untrackedOccupants && { untrackedOccupants: opts.untrackedOccupants }),
+      ...(opts.unmergedPaths && { unmergedPaths: opts.unmergedPaths }),
       workdir: requireWorkTree(ctx, 'materializeTree'),
       ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
     },

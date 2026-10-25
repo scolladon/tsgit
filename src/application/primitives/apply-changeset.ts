@@ -46,6 +46,7 @@ import {
   type ClashScope,
   classifyOccupant,
   createIgnoredProbe,
+  holdsSurvivor,
   type IgnoredProbe,
   type OccupantClash,
   type OccupantVerdict,
@@ -77,6 +78,8 @@ import { everySourceLoadable } from './object-store.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
 export type IgnoredOccupants = 'overwrite' | 'protect';
+export type UntrackedOccupants = 'overwrite' | 'protect';
+export type UnmergedPaths = 'hidden' | 'reset';
 
 export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
@@ -89,6 +92,16 @@ export interface ApplyChangesetOpts {
    * default `overwrite`.
    */
   readonly ignoredOccupants?: IgnoredOccupants;
+  /**
+   * `protect` refuses an untracked occupant even when forced (git's `reset_head` with
+   * `UNPACK_RESET_PROTECT_UNTRACKED`); default `overwrite`.
+   */
+  readonly untrackedOccupants?: UntrackedOccupants;
+  /**
+   * `reset` treats an entry without a previous version (a conflicted path) as reset to the target,
+   * with no up-to-date check; default `hidden`.
+   */
+  readonly unmergedPaths?: UnmergedPaths;
 }
 
 export interface ApplyChangesetResult {
@@ -217,15 +230,31 @@ export const isWorkingTreeDirty = async (
 const verdictClash = (verdict: OccupantVerdict): OccupantClash | undefined =>
   verdict.kind === 'clash' ? verdict.clash : undefined;
 
+// An unmerged path has no version to compare; only a directory still holding a file the
+// changeset leaves behind stands in the way of the reset.
+const survivorClash = async (
+  ctx: Context,
+  path: FilePath,
+  scope: ClashScope,
+): Promise<OccupantClash | undefined> => {
+  const absPath = joinPath(scope.workdir, path);
+  const stat = await lstatIfReachable(ctx.fs, absPath);
+  if (stat?.isDirectory !== true) return undefined;
+  return (await holdsSurvivor(ctx, absPath, scope)) ? { class: 'untracked', path } : undefined;
+};
+
 const evaluateChangedPath = async (
   ctx: Context,
   probe: () => Promise<DirtyProbe>,
   entry: ChangesetEntry,
   kind: 'update' | 'delete',
   scope: ClashScope,
+  unmergedPaths: UnmergedPaths,
 ): Promise<OccupantClash | undefined> => {
   const { previousId } = entry;
-  if (previousId === undefined) return undefined;
+  if (previousId === undefined) {
+    return unmergedPaths === 'reset' ? survivorClash(ctx, entry.path, scope) : undefined;
+  }
   // git's verify_uptodate returns early for a gitlink: the submodule's worktree is never compared.
   if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
   const verdict = await classifyOccupant(ctx, { kind, path: entry.path }, scope);
@@ -245,14 +274,55 @@ const evaluateDirtyPath = async (
   probe: () => Promise<DirtyProbe>,
   entry: ChangesetEntry,
   scope: ClashScope,
+  unmergedPaths: UnmergedPaths,
 ): Promise<OccupantClash | undefined> => {
   if (isLossy(entry)) return undefined;
   if (entry.kind === 'update' || entry.kind === 'delete') {
-    return evaluateChangedPath(ctx, probe, entry, entry.kind, scope);
+    return evaluateChangedPath(ctx, probe, entry, entry.kind, scope, unmergedPaths);
   }
   // Stryker disable next-line ConditionalExpression: equivalent — checkDirty only receives splitWaves' deletes and writes, which hold no noop, so an entry past the update/delete branch is always an add.
   if (entry.kind !== 'add') return undefined;
   return verdictClash(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
+};
+
+type PathEvaluator = (
+  ctx: Context,
+  probe: () => Promise<DirtyProbe>,
+  entry: ChangesetEntry,
+  scope: ClashScope,
+) => Promise<OccupantClash | undefined>;
+
+const untrackedClashOf = (verdict: OccupantVerdict): OccupantClash | undefined => {
+  const clash = verdictClash(verdict);
+  return clash?.class === 'untracked' ? clash : undefined;
+};
+
+// The untracked-protecting pre-flight of a forced apply: what the writer would clobber
+// without being told it may, and nothing about content.
+const evaluateProtectedPath: PathEvaluator = async (ctx, _probe, entry, scope) => {
+  if (isLossy(entry) || entry.kind === 'noop') return undefined;
+  if (entry.kind === 'add') {
+    return untrackedClashOf(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
+  }
+  if (entry.previousId === undefined) return survivorClash(ctx, entry.path, scope);
+  if (entry.kind === 'update') return undefined;
+  return untrackedClashOf(await classifyOccupant(ctx, { kind: 'delete', path: entry.path }, scope));
+};
+
+const fullEvaluatorFor =
+  (unmergedPaths: UnmergedPaths): PathEvaluator =>
+  (ctx, probe, entry, scope) =>
+    evaluateDirtyPath(ctx, probe, entry, scope, unmergedPaths);
+
+// Which pre-flight the apply runs: the full one unforced, the untracked-only one when a
+// forced apply protects untracked occupants, none when forced and free to overwrite.
+const preflightOf = (
+  force: boolean,
+  untrackedOccupants: UntrackedOccupants,
+  unmergedPaths: UnmergedPaths,
+): PathEvaluator | undefined => {
+  if (!force) return fullEvaluatorFor(unmergedPaths);
+  return untrackedOccupants === 'protect' ? evaluateProtectedPath : undefined;
 };
 
 // The checkout path's tree->index boundary. Every `add`/`update` entry
@@ -286,6 +356,7 @@ const checkDirty = async (
   workdir: string,
   entries: ReadonlyArray<ChangesetEntry>,
   ignoredOccupants: IgnoredOccupants,
+  evaluate: PathEvaluator,
 ): Promise<WouldOverwriteClasses> => {
   // Fanned out through the ioBound pool — pure reads, so collection order
   // is free: refusal arrays are sorted with `comparePaths` below regardless
@@ -301,7 +372,7 @@ const checkDirty = async (
     scanner: createLeadingPathScanner(ctx),
   };
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
-    evaluateDirtyPath(ctx, probe, entry, scope),
+    evaluate(ctx, probe, entry, scope),
   );
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
@@ -727,8 +798,9 @@ const assertNoDirtyOverwrite = async (
   workdir: string,
   entries: ReadonlyArray<ChangesetEntry>,
   ignoredOccupants: IgnoredOccupants,
+  evaluate: PathEvaluator,
 ): Promise<void> => {
-  const dirty = await checkDirty(ctx, workdir, entries, ignoredOccupants);
+  const dirty = await checkDirty(ctx, workdir, entries, ignoredOccupants, evaluate);
   if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
     throw checkoutOverwriteDirty(dirty);
   }
@@ -769,8 +841,13 @@ const applyChangesetInScope = async (
   // pays a dirty probe — or a pool slot — for entries that carry no I/O.
   const { deletes, writes } = splitWaves(changeset.entries);
 
-  if (!force) {
-    await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes], ignoredOccupants);
+  const evaluate = preflightOf(
+    force,
+    opts.untrackedOccupants ?? 'overwrite',
+    opts.unmergedPaths ?? 'hidden',
+  );
+  if (evaluate !== undefined) {
+    await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes], ignoredOccupants, evaluate);
   }
 
   // One scanner per changeset application, shared by BOTH the delete-skip
