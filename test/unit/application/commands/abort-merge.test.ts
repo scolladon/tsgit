@@ -394,11 +394,10 @@ describe('mergeAbort', () => {
         expect(result.branch).toBe(MAIN);
       });
 
-      it('Then a clean-path file dirtied after the conflict is rewritten to the pre-merge content (forceRewriteAll)', async () => {
+      it('Then a clean-path file dirtied after the conflict keeps its local change, as reset --merge does', async () => {
         // Arrange — produce a conflict, then mutate a NON-conflicting path
         // (one whose stage-0 index entry already matches the target tree).
-        // Without `forceRewriteAll: true` the index→target diff would skip
-        // this path and the dirty bytes would survive the abort.
+        // git's `reset --merge` leaves such a path alone.
         const ctx = createMemoryContext();
         await init(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'base\n');
@@ -422,9 +421,53 @@ describe('mergeAbort', () => {
         // Act
         await mergeAbort(ctx);
 
-        // Assert — clean.txt restored from ORIG_HEAD's tree.
+        // Assert
         const result = await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`);
-        expect(result).toBe('shared\n');
+        expect(result).toBe('DIRTY\n');
+      });
+
+      it('Then a refused abort keeps the merge state, the stages and drops MERGE_AUTOSTASH unapplied', async () => {
+        // Arrange — an untracked file where the pre-merge tree needs `gone.txt` back.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'base\n');
+        await add(ctx, ['file.txt', 'gone.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/gone.txt`);
+        await add(ctx, ['file.txt', 'gone.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+        await add(ctx, ['file.txt']);
+        const mainTip = await commit(ctx, { message: 'on-main', author });
+        await mergeRun(ctx, { rev: 'feature', author });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/gone.txt`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'untracked\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_AUTOSTASH`, `${mainTip.id}\n`);
+        const indexBefore = await readIndex(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await mergeAbort(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['gone.txt'],
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_AUTOSTASH`)).toBe(false);
+        expect(await readIndex(ctx)).toEqual(indexBefore);
       });
 
       it('Then the index lock is released so a follow-up index write can proceed', async () => {

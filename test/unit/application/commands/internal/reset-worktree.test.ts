@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
+import { branchCreate } from '../../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { hardResetWorktreeToCommit } from '../../../../../src/application/commands/internal/reset-worktree.js';
+import {
+  hardResetWorktreeToCommit,
+  mergeResetWorktreeToCommit,
+} from '../../../../../src/application/commands/internal/reset-worktree.js';
+import { mergeRun } from '../../../../../src/application/commands/merge.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { updateCoreConfig } from '../../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -106,6 +112,187 @@ describe('hardResetWorktreeToCommit', () => {
         expect(data?.code).toBe('UNEXPECTED_OBJECT_TYPE');
         expect(data?.expected).toBe('commit');
         expect(data?.actual).toBe('blob');
+      });
+    });
+  });
+});
+
+type MemoryContext = ReturnType<typeof createMemoryContext>;
+
+const write = (ctx: MemoryContext, rel: string, content: string) =>
+  ctx.fs.writeUtf8(`${ctx.layout.workDir}/${rel}`, content);
+
+const commitFiles = async (ctx: MemoryContext, files: Readonly<Record<string, string>>) => {
+  for (const [rel, content] of Object.entries(files)) await write(ctx, rel, content);
+  await add(ctx, Object.keys(files));
+  return (await commit(ctx, { message: 'c', author })).id;
+};
+
+const catchData = async (run: () => Promise<unknown>) => {
+  try {
+    await run();
+  } catch (err) {
+    return (err as { data?: Record<string, unknown> }).data;
+  }
+  return undefined;
+};
+
+const seedConflictedMerge = async () => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await commitFiles(ctx, { 'file.txt': 'base\n' });
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
+  await commitFiles(ctx, { 'file.txt': 'FEATURE\n' });
+  await checkout(ctx, { rev: 'main' });
+  const mainTip = await commitFiles(ctx, { 'file.txt': 'MAIN\n' });
+  await mergeRun(ctx, { rev: 'feature', author });
+  return { ctx, mainTip };
+};
+
+const replaceFileWithDirectory = async (ctx: MemoryContext, rel: string, child: string) => {
+  await ctx.fs.rmRecursive(`${ctx.layout.workDir}/${rel}`);
+  await write(ctx, `${rel}/${child}`, 'untracked\n');
+};
+
+describe('mergeResetWorktreeToCommit', () => {
+  describe('Given a directory occupying a path the index and the target agree on', () => {
+    describe('When the merge reset runs', () => {
+      it('Then the occupant stays', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c1 = await commitFiles(ctx, { f: 'v1\n' });
+        await replaceFileWithDirectory(ctx, 'f', 'u');
+
+        // Act
+        await mergeResetWorktreeToCommit(ctx, c1);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/u`)).toBe('untracked\n');
+      });
+    });
+  });
+
+  describe('Given a local modification on a path the index and the target agree on', () => {
+    describe('When the merge reset runs', () => {
+      it('Then the modification stays', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c1 = await commitFiles(ctx, { f: 'v1\n' });
+        await write(ctx, 'f', 'modified\n');
+
+        // Act
+        await mergeResetWorktreeToCommit(ctx, c1);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('modified\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file where the target adds a path', () => {
+    describe('When the merge reset runs', () => {
+      it('Then it refuses WORKING_TREE_DIRTY and leaves the work tree and index', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c1 = await commitFiles(ctx, { a: 'v1\n', b: 'v1\n' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/b`);
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'drop b', author });
+        await write(ctx, 'b', 'untracked\n');
+        const indexBefore = await readIndex(ctx);
+
+        // Act
+        const data = await catchData(() => mergeResetWorktreeToCommit(ctx, c1));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['b'] });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/b`)).toBe('untracked\n');
+        expect(await readIndex(ctx)).toEqual(indexBefore);
+      });
+    });
+  });
+
+  describe('Given a local change on a then an untracked file on z, both blocking', () => {
+    describe('When the merge reset runs', () => {
+      it('Then only the first path is named, in its class', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c1 = await commitFiles(ctx, { a: 'v1\n', z: 'v1\n' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/z`);
+        await add(ctx, ['z']);
+        await commitFiles(ctx, { a: 'v2\n' });
+        await write(ctx, 'a', 'modified\n');
+        await write(ctx, 'z', 'untracked\n');
+
+        // Act
+        const data = await catchData(() => mergeResetWorktreeToCommit(ctx, c1));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: ['a'], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given an untracked file on a then a local change on z, both blocking', () => {
+    describe('When the merge reset runs', () => {
+      it('Then only the first path is named, in its class', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c1 = await commitFiles(ctx, { a: 'v1\n', z: 'v1\n' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/a`);
+        await add(ctx, ['a']);
+        await commitFiles(ctx, { z: 'v2\n' });
+        await write(ctx, 'a', 'untracked\n');
+        await write(ctx, 'z', 'modified\n');
+
+        // Act
+        const data = await catchData(() => mergeResetWorktreeToCommit(ctx, c1));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['a'] });
+      });
+    });
+  });
+
+  describe('Given an unmerged path holding a directory with an untracked file', () => {
+    describe('When the merge reset runs', () => {
+      it('Then it refuses naming the path as untracked', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedConflictedMerge();
+        await replaceFileWithDirectory(ctx, 'file.txt', 'u');
+
+        // Act
+        const data = await catchData(() => mergeResetWorktreeToCommit(ctx, mainTip));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['file.txt'],
+        });
+      });
+    });
+  });
+
+  describe('Given an unmerged path holding a directory with only ignored files', () => {
+    describe('When the merge reset runs', () => {
+      it('Then the path is reset to the target', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedConflictedMerge();
+        await write(ctx, '.gitignore', 'ign\n');
+        await replaceFileWithDirectory(ctx, 'file.txt', 'ign');
+
+        // Act
+        await mergeResetWorktreeToCommit(ctx, mainTip);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('MAIN\n');
       });
     });
   });
