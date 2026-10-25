@@ -48,6 +48,7 @@ import {
   entriesOf,
   type Variant,
 } from './stopped-state-fixtures.js';
+import { REBASE_RESET_PINS } from './stopped-state-pins.js';
 
 type Action = 'abort' | 'skip';
 
@@ -148,7 +149,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       return { expected, result };
     };
 
-    describe.each(SCENARIOS)('Given a stopped rebase, $name', ({ entries, actions }) => {
+    describe.each(SCENARIOS)('Given a stopped rebase, $name', ({ name, entries, actions }) => {
       describe.each(actions)('When --%s runs over an occupant', (action) => {
         describe.each(
           ABORT_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant }))),
@@ -158,6 +159,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             const occupant =
               variant === 'reset-adds' ? (row.addOccupant ?? row.occupant) : row.occupant;
             const stopEntries = entries(variant, row);
+            const pinned = REBASE_RESET_PINS[`${name}/${action}/${row.shape}/${variant}`];
             await stopBoth((dir) => buildStoppedMerge(dir, stopEntries));
             occupant(pair.peer);
             occupant(pair.ours);
@@ -166,6 +168,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             const { expected, result } = await finishOnBoth(action);
 
             // Assert
+            expect(expected).toEqual(pinned ?? expected);
             expect(result).toEqual(expected);
             expect(rebaseState(pair.ours)).toEqual(rebaseState(pair.peer));
           });

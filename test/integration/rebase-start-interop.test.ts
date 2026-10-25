@@ -38,11 +38,9 @@ import {
   type TreeEntry,
 } from './occupant-displacement-fixtures.js';
 import { ABORT_ROWS, type AbortRow, type Variant } from './stopped-state-fixtures.js';
+import { REBASE_START_PINS, type StartVerdict } from './stopped-state-pins.js';
 
 type Form = 'start' | 'interactive' | 'fast-forward';
-
-/** `precondition` is git's unstaged-changes refusal, which names no path: tsgit reports it as local changes. */
-type Verdict = 'ok' | 'precondition' | { readonly untracked: ReadonlyArray<string> };
 
 const REFUSAL_STATUSES: ReadonlySet<number> = new Set([1, 128]);
 const SIDE = regular('s', 's\n');
@@ -74,7 +72,7 @@ const buildHistory = (dir: string, form: Form, { head, target }: Sides): void =>
   runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
 };
 
-const gitRebase = (dir: string, form: Form): Verdict => {
+const gitRebase = (dir: string, form: Form): StartVerdict => {
   const interactive = form === 'interactive' ? ['-i'] : [];
   const result = tryRunGitWithExit(['-C', dir, 'rebase', ...interactive, 't'], {
     env: { ...COMMIT_ENV, GIT_SEQUENCE_EDITOR: 'true', GIT_EDITOR: 'true' },
@@ -87,13 +85,13 @@ const gitRebase = (dir: string, form: Form): Verdict => {
   return { untracked: outcomeOfGitStderr(result.stderr).untracked };
 };
 
-const verdictOf = (outcome: Outcome): Verdict => {
+const verdictOf = (outcome: Outcome): StartVerdict => {
   if (!outcome.refused) return 'ok';
   if (outcome.localChanges.length > 0 && outcome.untracked.length === 0) return 'precondition';
   return { untracked: outcome.untracked };
 };
 
-const tsgitRebase = async (dir: string, repo: Repository, form: Form): Promise<Verdict> => {
+const tsgitRebase = async (dir: string, repo: Repository, form: Form): Promise<StartVerdict> => {
   const oid = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
   const interactive = form === 'interactive' ? [{ action: 'pick' as const, oid }] : undefined;
   try {
@@ -156,6 +154,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase start checkout interop', { timeout: 60_0
           const result = await tsgitRebase(pair.ours, repo, form);
 
           // Assert
+          expect(expected).toEqual(REBASE_START_PINS[`${row.shape}/${variant}`] ?? expected);
           expect(result).toEqual(expected);
           expect(startState(pair.ours)).toEqual(startState(pair.peer));
         });

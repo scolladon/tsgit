@@ -51,6 +51,7 @@ import {
   entriesOf,
   firstClassified,
 } from './stopped-state-fixtures.js';
+import { RESET_MERGE_PINS } from './stopped-state-pins.js';
 
 const AUTHOR = {
   name: 'Ada',
@@ -218,10 +219,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort occupant interop', { timeout: 60_
       row,
       variant,
       occupant: variant === 'reset-adds' ? (row.addOccupant ?? row.occupant) : row.occupant,
+      pinned: RESET_MERGE_PINS[`${row.shape}/${variant}`],
     })),
   );
 
-  describe.each(CASES)('Given the stopped merge $id', ({ row, variant, occupant }) => {
+  describe.each(CASES)('Given the stopped merge $id', ({ row, variant, occupant, pinned }) => {
     describe('When both tools abort it', () => {
       it('Then the outcome, work tree, index and merge state match git', async () => {
         // Arrange
@@ -233,6 +235,7 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort occupant interop', { timeout: 60_
         const { expected, result } = await abortOnBoth();
 
         // Assert
+        expect(expected).toEqual(pinned ?? expected);
         expect(result).toEqual(expected);
         expect(listing(pair.ours)).toEqual(listing(pair.peer));
         expect(gitState(pair.ours)).toEqual(gitState(pair.peer));

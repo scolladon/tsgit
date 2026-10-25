@@ -45,6 +45,7 @@ import {
   entriesOf,
   firstClassified,
 } from './stopped-state-fixtures.js';
+import { RESET_MERGE_PINS } from './stopped-state-pins.js';
 
 type Tool = 'cherry-pick' | 'revert';
 type Action = 'abort' | 'skip';
@@ -152,10 +153,16 @@ interface Case {
   readonly id: string;
   readonly row: (typeof ABORT_ROWS)[number];
   readonly variant: Parameters<typeof entriesOf>[0];
+  readonly pinned: Outcome | undefined;
 }
 
 const CASES: ReadonlyArray<Case> = ABORT_ROWS.flatMap((row) =>
-  row.variants.map((variant) => ({ id: `${row.shape}/${variant}`, row, variant })),
+  row.variants.map((variant) => ({
+    id: `${row.shape}/${variant}`,
+    row,
+    variant,
+    pinned: RESET_MERGE_PINS[`${row.shape}/${variant}`],
+  })),
 );
 
 describe.skipIf(!GIT_AVAILABLE)(
@@ -201,7 +208,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe.each(TOOLS.flatMap((tool) => ACTIONS.map((action) => ({ tool, action }))))(
       '$tool --$action',
       ({ tool, action }) => {
-        describe.each(CASES)('Given the stopped pick $id', ({ row, variant }) => {
+        describe.each(CASES)('Given the stopped pick $id', ({ row, variant, pinned }) => {
           describe('When both tools finish it', () => {
             it('Then the outcome, work tree, index and pick state match git', async () => {
               // Arrange
@@ -216,6 +223,7 @@ describe.skipIf(!GIT_AVAILABLE)(
               const { expected, result } = await finishOnBoth(tool, action);
 
               // Assert
+              expect(expected).toEqual(pinned ?? expected);
               expect(result).toEqual(expected);
               expect(listing(pair.ours)).toEqual(listing(pair.peer));
               expect(gitState(tool, pair.ours)).toEqual(gitState(tool, pair.peer));
