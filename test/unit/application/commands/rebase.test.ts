@@ -4849,6 +4849,23 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
         expect(sources).toEqual([w, x, z]);
       });
 
+      it('Then post-rewrite maps the group base and the member to the melded commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await refusedMeld(runner);
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const melded = (await readCommit(ctx, tip)).parents[0];
+        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        expect(call?.stdin).toBe(`${w} ${melded}\n${x} ${melded}\n${z} ${tip}\n`);
+      });
+
       it('Then the group is melded and the history is the one without a refusal', async () => {
         // Arrange
         const { ctx, w } = await refusedMeld();
@@ -4867,6 +4884,33 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
         expect(melded.message).toBe(verb === 'squash' ? 'w\n\nx\n\nx\n' : 'w\n');
         expect(melded.parents).not.toContain(w);
         expect((await readCommit(ctx, melded.parents[0] as ObjectId)).message).toBe('U\n');
+      });
+    });
+  });
+
+  describe('Given a fixup group that no occupant refuses', () => {
+    describe('When the rebase runs', () => {
+      it('Then post-rewrite maps the group base and the member to the melded commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await seed(runner);
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'u',
+          interactive: [
+            { action: 'pick', oid: w },
+            { action: 'fixup', oid: x },
+            { action: 'pick', oid: z },
+          ],
+        });
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const melded = (await readCommit(ctx, tip)).parents[0];
+        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        expect(call?.stdin).toBe(`${w} ${melded}\n${x} ${melded}\n${z} ${tip}\n`);
       });
     });
   });

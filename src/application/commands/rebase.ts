@@ -1792,7 +1792,17 @@ const replayMeld = async (
     await persistInteractiveStop(ctx, ic, index, meldStopFields(line, replay));
     return { stop: conflictResult(inst.oid, meld.conflicts, remainingAfter(line)) };
   }
-  return { next: recordCreated(replay, inst.oid, meld.created) };
+  const recorded = recordCreated(replay, inst.oid, meld.created);
+  return { next: meldContinues(ic.todo, index) ? recorded : flushMeldGroup(recorded) };
+};
+
+/** git flushes `rewritten-pending` when its group ends: every member answers to the group's final commit. */
+const flushMeldGroup = (replay: InteractiveReplay): InteractiveReplay => {
+  const held = heldGroupRewrites(replay);
+  return {
+    ...replay,
+    rewritten: [...held.rewritten, ...held.pending.map((source) => [source, replay.head] as const)],
+  };
 };
 
 /** The fields every interactive stop records: the stopped commit, its author, a message, the patch. */
@@ -2010,26 +2020,43 @@ const rebaseContinueInteractive = async (
     doneBefore: commitEntries(state.done),
     todo: commitEntries(state.remaining),
   };
-  const listed = await readRewrittenList(ctx);
   const tree = await writeContinuedIndex(ctx);
   const currentHead = await resolveRef(ctx, HEAD);
   const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
   // git's `commit_staged_changes` drops AUTO_MERGE once it commits the stop.
   if (resumeHead !== currentHead) await concludeStopCommit(ctx);
-  const rewritten = [
-    ...listed,
-    ...(await pendingRewrites(ctx, resumeHead)),
-    [stoppedCommit(state), resumeHead] as const,
-  ];
-  return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
+  return replayInteractive(ctx, ic, resumeHead, await resumedSeed(ctx, ic, state, resumeHead));
 };
 
-/** The group members `rewritten-pending` holds land on the commit that ends their group. */
-const pendingRewrites = async (
+/** The stopped commit and the group members `rewritten-pending` holds, each once. */
+const heldSources = async (ctx: Context, state: RebaseState): Promise<ReadonlyArray<ObjectId>> => [
+  ...new Set([...((await readRewrittenPending(ctx)) ?? []), stoppedCommit(state)]),
+];
+
+/** What a resumed stop hands the replay: its held commits land on `head`, unless the next line
+ *  continues their meld group, which then holds them until it ends — as git's `record_in_rewritten`. */
+const resumedSeed = async (
   ctx: Context,
+  ic: InteractiveContext,
+  state: RebaseState,
   head: ObjectId,
-): Promise<ReadonlyArray<readonly [ObjectId, ObjectId]>> =>
-  ((await readRewrittenPending(ctx)) ?? []).map((source) => [source, head] as const);
+): Promise<ReplaySeed> => {
+  const held = await heldSources(ctx, state);
+  const listed = await readRewrittenList(ctx);
+  const [next] = ic.todo;
+  if (next?.action !== 'squash' && next?.action !== 'fixup') {
+    return {
+      applied: [],
+      rewritten: [...listed, ...held.map((source) => [source, head] as const)],
+    };
+  }
+  const group: MeldGroup = {
+    ...(await meldGroupFrom(ctx, head)),
+    pending: [...held],
+    fixups: [...(state.currentFixups ?? [])],
+  };
+  return { applied: [], rewritten: listed, group };
+};
 
 /** The commit that concludes a stop takes its `AUTO_MERGE` and `MERGE_MSG` with it. */
 const concludeStopCommit = async (ctx: Context): Promise<void> => {
@@ -2126,12 +2153,5 @@ const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<
     doneBefore: commitEntries(state.done),
     todo: commitEntries(state.remaining),
   };
-  return replayInteractive(ctx, ic, target, {
-    applied: [],
-    rewritten: [
-      ...(await readRewrittenList(ctx)),
-      ...(await pendingRewrites(ctx, target)),
-      ...(state.currentFixups ?? []).map(({ oid }) => [oid, target] as const),
-    ],
-  });
+  return replayInteractive(ctx, ic, target, await resumedSeed(ctx, ic, state, target));
 };

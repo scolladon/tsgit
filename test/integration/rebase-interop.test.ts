@@ -1102,6 +1102,136 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
     },
   );
 
+  describe('Given a fixup group whose members two untracked occupants refuse in turn', () => {
+    const HOOK_OUT = 'post-rewrite.out';
+    const MEMBERS = ['b', 'c', 'd'] as const;
+
+    /** base(keep); u: U; main: A (with a body), then b, c, d each adding its file, then E deleting c and d. */
+    const buildGroup = (dir: string): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'keep', 'keep\n');
+      git(dir, 'add', 'keep');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'u');
+      writeWork(dir, 'uu', 'u\n');
+      git(dir, 'add', 'uu');
+      gitCommit(dir, 'U');
+      git(dir, 'checkout', '-q', 'main');
+      for (const name of ['a', ...MEMBERS]) {
+        writeWork(dir, name, `${name}\n`);
+        git(dir, 'add', name);
+        gitCommit(dir, `${name} subject\n\n${name} body`);
+      }
+      git(dir, 'rm', '-q', 'c', 'd');
+      gitCommit(dir, 'E');
+      const hook = path.join(dir, '.git', 'hooks', 'post-rewrite');
+      writeFileSync(
+        hook,
+        `#!/bin/sh\n[ "$1" = rebase ] && cat >> "$(git rev-parse --git-dir)/${HOOK_OUT}"\n`,
+        {
+          mode: 0o755,
+        },
+      );
+      for (const name of ['c', 'd']) writeWork(dir, name, 'occupant\n');
+    };
+
+    const gitRebaseIFixups = (dir: string) => {
+      const edit = MEMBERS.map((name) => `s/^pick (\\S+ # ${name} subject)$/fixup $1/`).join(';');
+      return tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '-i', 'u'], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+          GIT_SEQUENCE_EDITOR: `perl -i -pe '${edit}'`,
+          GIT_EDITOR: 'true',
+        },
+      });
+    };
+
+    const gitRebaseStep = (dir: string, step: '--continue' | '--skip') =>
+      tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', step], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+          GIT_EDITOR: 'true',
+        },
+      });
+
+    const tsgitStep = async (
+      dir: string,
+      step: (repo: Awaited<ReturnType<typeof openRepository>>) => Promise<unknown>,
+    ): Promise<void> => {
+      const repo = await openRepository({ cwd: dir });
+      try {
+        await step(repo);
+      } catch (err) {
+        if ((err as TsgitError).data?.code !== 'WORKING_TREE_DIRTY') throw err;
+      } finally {
+        await repo.dispose();
+      }
+    };
+
+    /** The post-rewrite mapping with each created commit named by the order it first appears in. */
+    const rewriteGroups = (dir: string): ReadonlyArray<string> => {
+      const lines = readFileSync(path.join(dir, '.git', HOOK_OUT), 'utf8')
+        .trim()
+        .split('\n');
+      const created = [...new Set(lines.map((line) => line.split(' ')[1]))];
+      return lines.map((line) => {
+        const [source, target] = line.split(' ');
+        return `${source} -> ${created.indexOf(target as string)}`;
+      });
+    };
+
+    const startBoth = async (): Promise<void> => {
+      for (const dir of [pair.peer, pair.ours]) buildGroup(dir);
+      gitRebaseIFixups(pair.peer);
+      await tsgitStep(pair.ours, (repo) =>
+        repo.rebase.run({
+          upstream: 'u',
+          interactive: ['a', ...MEMBERS, 'E'].map((_name, i) => ({
+            action: i >= 1 && i <= 3 ? ('fixup' as const) : ('pick' as const),
+            oid: oidAt(pair.ours, `main~${4 - i}`),
+          })),
+        }),
+      );
+      for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'c'));
+      gitRebaseStep(pair.peer, '--continue');
+      await tsgitStep(pair.ours, (repo) => repo.rebase.continue());
+      for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'd'));
+    };
+
+    it('Then continuing maps every member to the final group commit, as git does', async () => {
+      // Arrange
+      await startBoth();
+
+      // Act
+      const peer = gitRebaseStep(pair.peer, '--continue');
+      await tsgitStep(pair.ours, (repo) => repo.rebase.continue());
+
+      // Assert
+      expect(peer.exitCode).toBe(0);
+      expect(rewriteGroups(pair.ours)).toEqual(rewriteGroups(pair.peer));
+      expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+    });
+
+    it('Then skipping maps every member to the kept group commit, as git does', async () => {
+      // Arrange
+      await startBoth();
+
+      // Act
+      const peer = gitRebaseStep(pair.peer, '--skip');
+      await tsgitStep(pair.ours, (repo) => repo.rebase.skip());
+
+      // Assert
+      expect(peer.exitCode).toBe(0);
+      expect(rewriteGroups(pair.ours)).toEqual(rewriteGroups(pair.peer));
+      expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+    });
+  });
+
   describe('Given a flat rebase line refused by an untracked occupant', () => {
     const REBASE_FILES = [
       'done',
