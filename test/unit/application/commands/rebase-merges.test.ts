@@ -12,6 +12,7 @@ import {
   rebaseRun,
   rebaseSkip,
 } from '../../../../src/application/commands/rebase.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
@@ -146,6 +147,25 @@ describe('rebaseRun with rebaseMerges', () => {
         'rebase (pick): c3',
         'rebase (pick): c2',
       ]);
+    });
+  });
+
+  describe('Given main already carries the merged side commit, When rebased with rebaseMerges and the result is read', () => {
+    it('Then the dropped merge is not reported as a rebased commit', async () => {
+      // Arrange
+      const { ctx } = await seed({ upstreamFile: 'y' });
+      const sut = rebaseRun;
+
+      // Act
+      const result = await sut(ctx, { upstream: 'main', rebaseMerges: true });
+
+      // Assert
+      const messages = await Promise.all(
+        (result.kind === 'rebased' ? result.commits : []).map(
+          async ({ created }) => (await readCommit(ctx, created)).message,
+        ),
+      );
+      expect(messages).toEqual(['c1\n', 'c2\n', 'c3\n']);
     });
   });
 
@@ -558,6 +578,141 @@ describe('rebaseContinue into a merge line an untracked occupant refuses', () =>
 
         // Assert
         expect(result.kind).toBe('rebased');
+      });
+    });
+  });
+});
+
+describe('rebaseContinue into a reset step an untracked occupant refuses', () => {
+  interface Seeded {
+    readonly ctx: Context;
+    readonly c1: ObjectId;
+    readonly s1: ObjectId;
+    readonly merge: ObjectId;
+  }
+
+  /** The side commit deletes `p` and conflicts on `k` with main; the reset step after it restores `p`. */
+  const seedStoppedBeforeReset = async (opts: { detached: boolean }): Promise<Seeded> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.appendUtf8(
+      `${ctx.layout.gitDir}/config`,
+      '\n[user]\n\tname = Ada\n\temail = a@x\n',
+    );
+    await commitFile(ctx, 'p');
+    await commitFile(ctx, 'k', 'base\n');
+    await branchCreate(ctx, { name: 'topic' });
+    await checkout(ctx, { rev: 'topic' });
+    const c1 = await commitFile(ctx, 'c1');
+    await checkout(ctx, { rev: 'main' });
+    await branchCreate(ctx, { name: 'side' });
+    await checkout(ctx, { rev: 'side' });
+    await rm(ctx, ['p']);
+    const s1 = await commitFile(ctx, 'k', 'side\n');
+    await checkout(ctx, { rev: 'topic' });
+    await mergeRun(ctx, { rev: 'side', fastForward: 'never', author: AUTHOR });
+    const merge = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+    await checkout(ctx, { rev: 'main' });
+    await commitFile(ctx, 'k', 'main\n');
+    await checkout(ctx, { rev: 'topic' });
+    if (opts.detached) await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${merge}\n`);
+    const stop = await rebaseRun(ctx, { upstream: 'main', rebaseMerges: true });
+    expect(stop.kind).toBe('conflict');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/k`, 'resolved\n');
+    await add(ctx, ['k']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/p`, 'occupant\n');
+    return { ctx, c1, s1, merge };
+  };
+
+  const refuse = async (ctx: Context): Promise<unknown> => {
+    try {
+      await rebaseContinue(ctx);
+    } catch (err) {
+      return (err as TsgitError).data;
+    }
+    throw new Error('expected an error');
+  };
+
+  const state = (ctx: Context, name: string): Promise<string> =>
+    gitFile(ctx, `rebase-merge/${name}`);
+
+  describe('Given the occupant sits where the reset step restores a path', () => {
+    describe('When the rebase continues', () => {
+      it('Then it refuses and keeps the occupant', async () => {
+        // Arrange
+        const { ctx } = await seedStoppedBeforeReset({ detached: false });
+        const sut = refuse;
+
+        // Act
+        const data = await sut(ctx);
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['p'] });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/p`)).toBe('occupant\n');
+      });
+
+      it('Then the refused reset stays at the head of the todo and at the end of done', async () => {
+        // Arrange
+        const { ctx, c1, s1, merge } = await seedStoppedBeforeReset({ detached: false });
+        const sut = refuse;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await state(ctx, 'git-rebase-todo')).toBe(
+          `reset onto\npick ${c1} # c1\nmerge -C ${merge} side # Merge branch 'side' into topic\n`,
+        );
+        expect(await state(ctx, 'done')).toBe(
+          `label onto\n\nreset onto\npick ${s1} # k\nlabel side\n\nreset onto\n`,
+        );
+        expect(await state(ctx, 'end')).toBe('7\n');
+        expect(await state(ctx, 'msgnum')).toBe('5\n');
+      });
+
+      it('Then head-name names the branch', async () => {
+        // Arrange
+        const { ctx } = await seedStoppedBeforeReset({ detached: false });
+        const sut = refuse;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await state(ctx, 'head-name')).toBe('refs/heads/topic\n');
+      });
+    });
+
+    describe('When the occupant is removed and the rebase continues again', () => {
+      it('Then the rescheduled reset runs, the merge is recreated and the labels are cleaned', async () => {
+        // Arrange
+        const { ctx } = await seedStoppedBeforeReset({ detached: false });
+        await refuse(ctx);
+        await ctx.fs.rm(`${ctx.layout.workDir}/p`);
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName));
+        expect(tip.parents).toHaveLength(2);
+        expect(await rewrittenRefs(ctx)).toEqual([]);
+      });
+    });
+
+    describe('When HEAD was detached and the rebase continues', () => {
+      it('Then head-name records a detached rebase', async () => {
+        // Arrange
+        const { ctx } = await seedStoppedBeforeReset({ detached: true });
+        const sut = refuse;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await state(ctx, 'head-name')).toBe('detached HEAD\n');
       });
     });
   });

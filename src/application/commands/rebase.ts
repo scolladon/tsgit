@@ -1046,7 +1046,7 @@ const retryInteractive = async (
     doneBefore: commitEntries(rc.doneBefore),
     todo: commitEntries(rc.todo),
   };
-  const group = await reopenedMeldGroup(ctx, ic.todo[0]);
+  const group = await reopenedMeldGroup(ctx);
   // The group's earlier members sit in `rewritten-pending`, not `rewritten-list`: they land on the group head.
   const held = (group?.pending ?? []).map((source) => [source, head] as const);
   return replayInteractive(ctx, ic, head, {
@@ -1057,15 +1057,13 @@ const retryInteractive = async (
 };
 
 /** The group a rescheduled squash/fixup member left open, the member included: git's retry
- *  appends it to the template again, so a squash message carries it twice. */
-const reopenedMeldGroup = async (
-  ctx: Context,
-  refused: PlannedInstruction | undefined,
-): Promise<MeldGroup | undefined> => {
-  if (refused?.action !== 'squash' && refused?.action !== 'fixup') return undefined;
+ *  appends it to the template again, so a squash message carries it twice. A refused pick
+ *  leaves no group markers, so it reopens none. */
+const reopenedMeldGroup = async (ctx: Context): Promise<MeldGroup | undefined> => {
   const current = await readCurrentFixups(ctx);
   const pending = await readRewrittenPending(ctx);
-  const baseMessage = firstCommitMessage((await readMessageSquash(ctx)) ?? '');
+  const squash = await readMessageSquash(ctx);
+  const baseMessage = squash === undefined ? undefined : firstCommitMessage(squash);
   if (current === undefined || pending === undefined || baseMessage === undefined) return undefined;
   const fixups = [...current];
   const members = await Promise.all(
