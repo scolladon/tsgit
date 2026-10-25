@@ -33,7 +33,7 @@ export interface OccupantClash {
 export type OccupantVerdict =
   | { readonly kind: 'clash'; readonly clash: OccupantClash }
   | { readonly kind: 'clear' }
-  // A plain file or symlink stands at the path: the caller hashes it against the index.
+  // A plain file or symlink stands at the path (the probe saw it): the caller hashes it against the index.
   | { readonly kind: 'compare-content' };
 
 export type OccupantShape =
@@ -147,7 +147,8 @@ const classifyChangedPath = async (
   if (beneath !== undefined) return beneath;
   const absPath = joinPath(scope.workdir, shape.path);
   const stat = await lstatIfReachable(ctx.fs, absPath);
-  if (stat === undefined || !stat.isDirectory) return COMPARE_CONTENT;
+  if (stat === undefined) return CLEAR;
+  if (!stat.isDirectory) return COMPARE_CONTENT;
   if (shape.kind === 'update') return localChange(shape.path);
   return (await holdsSurvivor(ctx, absPath, scope))
     ? untracked(shape.path)

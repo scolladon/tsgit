@@ -1118,6 +1118,38 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given an unforced update of a locally modified file', () => {
+    describe('When applyChangeset refuses it in the pre-flight', () => {
+      it('Then the path is probed twice', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('original'));
+        const newId = await writeBlob(ctx, enc('updated'));
+        await ctx.fs.write(`${WORKDIR}/mod.txt`, enc('local-edit'));
+        const probes = (
+          ['lstat', 'tryLstat', 'lstatIfReachable', 'lexists', 'exists'] as const
+        ).map((method) => vi.spyOn(ctx.fs, method));
+        const sut = applyChangeset;
+
+        // Act
+        await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeUpdate('mod.txt', oldId, newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        const target = `${WORKDIR}/mod.txt`;
+        const probesOfTarget = probes
+          .flatMap((probe) => probe.mock.calls)
+          .filter(([path]) => path === target);
+        expect(probesOfTarget).toHaveLength(2);
+      });
+    });
+  });
+
   describe('Given an update with modified working-tree content and force=false', () => {
     describe('When applyChangeset runs', () => {
       it('Then throws CHECKOUT_OVERWRITE_DIRTY with the offending path', async () => {
@@ -1491,26 +1523,27 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given an update whose target file is reported absent by the presence probe but readable', () => {
+  describe('Given an update whose target file is reported absent by the pre-flight stat but readable', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then treats it as non-dirty and does not throw', async () => {
-        // Arrange — the presence probe says absent; blobMatches must NOT run for an absent file
+        // Arrange — the pre-flight stat says absent; blobMatches must NOT run for an absent file
         const ctx = await buildSeededContext();
         const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
         const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
         // Working tree holds content that does NOT match previousId.
         const phantomPath = `${WORKDIR}/phantom.txt`;
         await ctx.fs.write(phantomPath, new TextEncoder().encode('mismatching-bytes'));
-        // Only the pre-write dirty probe asks for presence — the post-write index-entry
+        // Only the pre-flight stat answers absent — the post-write index-entry
         // lstat still sees the file applyChangeset itself just wrote.
         const wrappedCtx: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            lexists: async (p: string): Promise<boolean> => p !== phantomPath,
+            lstatIfReachable: async (p: string) =>
+              p === phantomPath ? undefined : ctx.fs.lstatIfReachable?.(p),
           },
         };
-        // Act — probe=absent short-circuits to non-dirty; no throw despite mismatching bytes
+        // Act — stat=absent short-circuits to non-dirty; no throw despite mismatching bytes
         const result = await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeUpdate('phantom.txt', oldId, newId)]),
           force: false,

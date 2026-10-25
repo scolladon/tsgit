@@ -399,7 +399,7 @@ describe('classifyOccupant', () => {
 
   describe('Given nothing at an updated path', () => {
     describe('When the entry is updated', () => {
-      it('Then its content is left to the caller', async () => {
+      it('Then it is clear', async () => {
         // Arrange
         const ctx = createMemoryContext();
 
@@ -407,7 +407,7 @@ describe('classifyOccupant', () => {
         const result = await classifyChange(ctx, 'update', 'd/x', scopeOf(ctx));
 
         // Assert
-        expect(result).toEqual({ kind: 'compare-content' });
+        expect(result).toEqual({ kind: 'clear' });
       });
     });
   });

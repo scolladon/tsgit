@@ -263,14 +263,14 @@ const evaluateChangedPath = async (
   if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
   const verdict = await classifyOccupant(ctx, { kind, path: entry.path }, scope);
   if (verdict.kind !== 'compare-content') return verdictClash(verdict);
-  const dirty = await isDirtyUnder(
+  const matches = await blobMatches(
     ctx,
     await probe(),
     entry.path,
     joinPath(scope.workdir, entry.path),
     previousId,
   );
-  return dirty ? { class: 'local-changes', path: entry.path } : undefined;
+  return matches ? undefined : { class: 'local-changes', path: entry.path };
 };
 
 const evaluateDirtyPath = async (
