@@ -8041,6 +8041,23 @@ describe('merge — snapshot of local changes before the strategies', () => {
         ]);
         expect(index.data.author).toEqual(expect.objectContaining(stash));
       });
+
+      it('Then the fallback identity is stamped in whole seconds', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+        vi.spyOn(Date, 'now').mockReturnValue(1_700_000_123_999);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature' }).catch(() => undefined);
+
+        // Assert
+        const wip = await readObject(ctx, (await snapshotOf(spy)) as ObjectId);
+        if (wip.type !== 'commit') throw new Error('not a commit');
+        expect(wip.data.author).toEqual(
+          expect.objectContaining({ timestamp: 1_700_000_123, timezoneOffset: '+0000' }),
+        );
+      });
     });
   });
 

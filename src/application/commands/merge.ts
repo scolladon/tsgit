@@ -765,6 +765,7 @@ const snapshotBeforeStrategies = async (
   const configured = await configuredUser(ctx);
   const author = input.author ?? configured ?? stashFallbackIdentity();
   const committer = input.committer ?? author;
+  // Stryker disable next-line StringLiteral: equivalent — mergeRun's `requireWorkTree(ctx, 'merge')` refuses a work-tree-less repository before any strategy or write reaches here, so the operation name is never rendered.
   return snapshotLocalChanges(ctx, requireWorkTree(ctx, 'merge'), { author, committer });
 };
 
@@ -885,6 +886,7 @@ const rewind = async (
 ): Promise<void> => {
   await hardResetWorktreeToCommit(ctx, commit.ourId);
   if (snapshot === undefined) return;
+  // Stryker disable next-line StringLiteral: equivalent — mergeRun's `requireWorkTree(ctx, 'merge')` refuses a work-tree-less repository before any strategy or write reaches here, so the operation name is never rendered.
   await restoreSnapshot(ctx, requireWorkTree(ctx, 'merge'), snapshot);
 };
 
@@ -2023,12 +2025,14 @@ const displaceIgnoredLeadingFiles = async (
   scanner: LeadingPathScanner,
 ): Promise<void> => {
   const isIgnoredPath = createIgnoredProbe(ctx);
+  // Stryker disable next-line StringLiteral: equivalent — mergeRun's `requireWorkTree(ctx, 'merge')` refuses a work-tree-less repository before any strategy or write reaches here, so the operation name is never rendered.
   const workDir = requireWorkTree(ctx, 'merge');
   for (const { path } of writes) {
     if (hasEscapedBytes(path)) continue;
     const obstruction = await scanner.obstructingLeadingComponent(path);
     if (obstruction?.kind !== 'file') continue;
     const absPath = joinPath(workDir, obstruction.path);
+    // Stryker disable next-line ConditionalExpression: equivalent — the pre-flight (`findOverwriteRefusal`) refuses every write path whose leading file is neither deleted nor ignored, so only an ignored file reaches this guard and removing it is what the guard would do anyway.
     if (!(await isIgnoredPath(absPath, false))) continue;
     await ctx.fs.rm(absPath);
     scanner.invalidate(obstruction.path);
@@ -2064,6 +2068,7 @@ const writeConflictingWorkingTree = async (
     removeChangedOutcome(ctx, outcome, scanner, surviving),
   );
   await runBounded(ctx, conflicts, (conflict) => removeDisplacedFile(ctx, conflict));
+  // Stryker disable next-line MethodExpression: equivalent — a deleted path's leading file would be refused by the pre-flight (git's `d/x` ENOTDIR 'local changes'), so a deletion never finds an ignored leading file to displace and the filter only narrows the scan.
   await displaceIgnoredLeadingFiles(ctx, [...touched.filter(isWrite), ...conflicts], scanner);
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool
@@ -2311,7 +2316,7 @@ export const buildConflictIndexEntries = (
 const configuredUser = async (ctx: Context): Promise<AuthorIdentity | undefined> => {
   const { user } = await readConfig(ctx);
   // A signingKey-only `[user]` (no name/email) is not an identity.
-  if (user?.name === undefined || user?.email === undefined) return undefined;
+  if (user?.name === undefined || user.email === undefined) return undefined;
   return {
     name: user.name,
     email: user.email,
