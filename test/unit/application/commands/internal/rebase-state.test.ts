@@ -338,6 +338,21 @@ describe('rebase-state', () => {
         expect(await readRebaseHead(ctx)).toBeUndefined();
       });
 
+      it.each(['message', 'patch', 'stopped-sha', 'author-script'])(
+        'Then the conflict stop file %s is removed',
+        async (name) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await writeRebaseStop(ctx, STOP);
+
+          // Act
+          await writeRescheduledLine(ctx, RESCHEDULED);
+
+          // Assert
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${name}`)).toBe(false);
+        },
+      );
+
       it('Then end counts the whole todo and msgnum the done lines', async () => {
         // Arrange
         const ctx = createMemoryContext();

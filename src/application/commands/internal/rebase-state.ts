@@ -280,6 +280,9 @@ const writeRefusedLineFiles = async (ctx: Context, stop: RescheduledPick): Promi
 export const writeRescheduledLine = async (ctx: Context, stop: RescheduledLine): Promise<void> => {
   await writeRescheduled(ctx, stop);
   await deleteRootRef(ctx, REBASE_HEAD_REF);
+  for (const stale of [...STALE_STOP_FILES, 'author-script']) {
+    await writeOrRemove(ctx, stale, undefined);
+  }
 };
 
 /** git unlinks `amend` before every step and drops `current-fixups` /
