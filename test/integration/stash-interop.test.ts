@@ -59,6 +59,7 @@ import {
   EVERY_VARIANT,
   type Variant,
 } from './stopped-state-fixtures.js';
+import { STASH_PUSH_PINS } from './stopped-state-pins.js';
 
 const AUTHOR = {
   name: 'Ada',
@@ -631,13 +632,21 @@ describe.skipIf(!GIT_AVAILABLE)(
       await pair.dispose();
     });
 
-    const tsgitRefuses = async (target: Repository): Promise<boolean> => {
+    const gitPushVerdict = (dir: string): string => {
+      const run = tryRunGitWithExit(['-C', dir, 'stash', 'push']);
+      if (run.exitCode === 0) return 'ok';
+      const beyondSymlink = run.exitCode === 1 && /beyond a symbolic link/.test(run.stderr);
+      if (!beyondSymlink) throw new Error(`unexpected exit ${run.exitCode}: ${run.stderr}`);
+      return 'beyond-symlink';
+    };
+
+    const tsgitPushVerdict = async (target: Repository): Promise<string> => {
       try {
         await target.stash.push();
-        return false;
+        return 'ok';
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
-        return true;
+        return err.data.code === 'PATHSPEC_BEYOND_SYMLINK' ? 'beyond-symlink' : err.data.code;
       }
     };
 
@@ -656,11 +665,12 @@ describe.skipIf(!GIT_AVAILABLE)(
           repo = await openRepository({ cwd: pair.ours });
 
           // Act
-          const expected = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push']);
-          const refused = await tsgitRefuses(repo);
+          const expected = gitPushVerdict(pair.peer);
+          const result = await tsgitPushVerdict(repo);
 
           // Assert
-          expect(refused).toBe(expected.exitCode !== 0);
+          expect(expected).toBe(STASH_PUSH_PINS[`${row.shape}/${variant}`] ?? expected);
+          expect(result).toBe(expected);
           expect(listing(pair.ours)).toEqual(listing(pair.peer));
           expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
           expect(snapshotTrees(pair.ours)).toEqual(snapshotTrees(pair.peer));
