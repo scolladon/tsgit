@@ -1,7 +1,7 @@
 # Design — forced-checkout-displace-occupant
 
 > Brief: backlog 32.29 — a checkout-family write must displace an occupant standing where git's checkout displaces it (a file or symlink in a leading path, a directory at the path), on every write path, while every unforced refusal matches git 2.55; every `applyChangeset` caller probed against git 2.55 with each occupant shape, forced and unforced.
-> Status: draft → self-reviewed ×3 → accepted → revised against ADRs 1075–1080 (O1–O3 folded by ADR-1079, re-pinned against git 2.55) → self-reviewed ×3
+> Status: draft → self-reviewed ×3 → accepted → revised against ADRs 1075–1080 (O1–O3 folded by ADR-1079, re-pinned against git 2.55) → self-reviewed ×3 → revised against ADRs 1081–1082 (P9 in git's order; every formerly unpinned item pinned) → self-reviewed ×3
 
 ## Context
 
@@ -51,7 +51,7 @@
 | `internal/abort-sequencer-reset.ts:31` (from `cherry-pick.ts`, `revert.ts`) | `cherry-pick --skip`, `revert --skip` | `reset --merge` |
 | `rebase.ts:1000` | `rebase --abort` (merge backend; git's apply backend gave identical rows on all 50 pairs) | untracked-protecting hard reset |
 | `rebase.ts:978` | `rebase --skip` | untracked-protecting hard reset |
-| `rebase.ts:875`, `rebase.ts:1842` | `rebase --skip` of a rescheduled pick, of an interactive stop | not probed separately (Still unpinned) |
+| `rebase.ts:875`, `rebase.ts:1842` | `rebase --skip` of a rescheduled pick, of an `edit` stop | untracked-protecting hard reset (A.5 U1) |
 | `internal/rebase-merges-steps.ts:71` | rebase-merges `reset <label>` | untracked-protecting hard reset |
 | `rebase.ts:347` (`detachHead`), `:1137` (`detachInteractive`), `:1152` (`fastForwardOnto`) | `rebase t`, `rebase -i t`, `rebase t` when HEAD is an ancestor of `t` | two-way checkout, unforced; a refusal leaves HEAD and the branch unmoved |
 
@@ -89,17 +89,19 @@
   per-prefix memo the symlink check already walks.
 - R9 `merge --abort` and `cherry-pick` / `revert` `--abort` / `--skip` reset as git's `reset --merge`: a path whose
   index entry equals the target is not touched (its occupant or local change stays); every other path runs R3's
-  unforced rules from the index to the target; unmerged paths are reset without a check. A refusal names only the
-  first offending path, with R3's class, and leaves the work tree, index, HEAD, `ORIG_HEAD`, `MERGE_HEAD` /
-  `CHERRY_PICK_HEAD` / `REVERT_HEAD` and `sequencer/` as they were. `merge --abort` consumes `MERGE_AUTOSTASH` before
-  its reset, so a refused abort neither applies nor stores it, as git does.
+  unforced rules from the index to the target. A refusal names only the first offending path in path order, whatever its class, and leaves the work tree, index, HEAD, `ORIG_HEAD`,
+  `MERGE_HEAD` / `CHERRY_PICK_HEAD` / `REVERT_HEAD` and `sequencer/` as they were (a refused `--skip` included). An
+  unmerged path is reset without the up-to-date check, except that a directory holding an untracked file there refuses
+  `untracked: [path]`; a file, a symlink or a directory of ignored files there is overwritten. `merge --abort`
+  consumes `MERGE_AUTOSTASH` before its reset, so a refused abort neither applies nor stores it, as git does.
 - R10 `rebase --abort`, `rebase --skip` and the rebase-merges `reset <label>` step reset as git's untracked-protecting
   hard reset: paths in the current index are rewritten as `reset --hard` (P1 displaces, P2 keeps and warns); an
   untracked occupant where the reset adds a path (a file or symlink at the path or in a leading component, a directory
   holding an untracked file) and a directory holding an untracked file where it deletes one refuse
   `untracked: [...]`, every offending path listed; ignored occupants are overwritten. A refusal leaves the rebase
   stopped: abort and skip keep `rebase-merge/` and HEAD; a refused `reset` step is back at the head of the todo and
-  recorded in `done`.
+  recorded in `done`. The skip of an `edit` stop and of a rescheduled pick resets the same way. An unmerged path holding
+  a directory with an untracked file refuses `untracked: [path]`; a file there is overwritten.
 - R11 Rebase start (`rebase t`, `rebase -i t`, fast-forward onto `t`) moves HEAD by an unforced two-way checkout:
   untracked occupants refuse (`untracked`), ignored ones are overwritten, and a refusal leaves HEAD, the branch, the
   work tree and the absence of rebase state as they were.
@@ -107,12 +109,22 @@
   index entry; an index entry absent from HEAD whose work file is missing or unreachable keeps the index entry and is
   never refused as beyond a symlink; a HEAD entry absent from the index is recorded from the work tree when a file or
   symlink stands there, and refuses beyond a symlink. Its reset stays git's `reset --hard`.
-- R13 A refused non-fast-forward merge, clean or conflicting, restores as git does: a tracked path beyond a symlink
-  refuses (`localChanges`) before the strategy runs, with nothing touched; after a would-overwrite refusal the work
-  tree is reset hard to HEAD and the local changes re-applied. Net effect: an occupant a stash cannot record is
-  replaced by HEAD content, and a local modification survives.
+- R13 A true merge (not a fast-forward, not up to date, not a successful trivial in-index merge) snapshots its local
+  changes before the first strategy whenever the index or a tracked work-tree path differs from HEAD, writing the
+  objects `git stash create` writes, byte for byte (A.5 Q rows): `--squash`, `--no-commit` and any strategy list
+  included. Untracked files and stat-only changes write nothing. A tracked path beyond a symlink refuses
+  `PATHSPEC_BEYOND_SYMLINK` after the snapshot's index commit is written, before any strategy.
 - R14 Path restore (`checkout <rev> -- <p>`) drops index entries that collide file/directory with a restored entry: a
   tracked `d` when `d/x` is restored, tracked `d/*` when `d` is restored.
+- R15 Before every strategy after the first, before re-running a best conflicting strategy that was not the last one
+  tried, and after no strategy handled the merge, the work tree and index are reset hard to HEAD and the snapshot
+  re-applied with its index. Net effect on a refused merge: an occupant a stash
+  cannot record is replaced by HEAD content; local modifications and staged changes survive. A strategy-level refusal
+  (would-overwrite, dirty index) hands over to the next strategy, as git does.
+- R16 A staged change refuses a trivial-branch merge (one head, one base, committing, every strategy allowing the
+  trivial merge) before any snapshot, `WORKING_TREE_DIRTY` as today. Otherwise every strategy fails on it after the
+  snapshot: one `ort`-family strategy (`ort`, `recursive`, `subtree`) → `WORKING_TREE_DIRTY` with the staged paths (unchanged class); one `ours`,
+  `octopus` or `resolve` → `MERGE_STRATEGY_FAILED`; several → `NO_MERGE_STRATEGY_HANDLED`.
 
 ## Design
 
@@ -187,11 +199,22 @@ protects untracked files. The rebase-merges `reset` step, `rebase --skip` and th
 porcelain refusals ("would be overwritten by reset", "by checkout" at the start). `stash push`'s 6 misses are the S3a
 and S3e snapshot refusals, which end the command before its reset.
 
+**Revision #2 probe (ADRs 1081–1082).** Same isolation, author and committer pinned apart (`GIT_AUTHOR_*` = Ada at
+1700000000, `GIT_COMMITTER_*` = Bob at 1700000100) so the snapshot's identity source is visible. Each merge row lists
+the objects the command added that no ref reaches (`cat-file --batch-all-objects` before and after, minus
+`rev-list --objects --all`), with every new commit's raw bytes and every new tree's listing. 37 git-only merge rows
+cover clean, work-tree-dirty, index-dirty, untracked-only and stat-only trees; fast-forward, `--squash`, `--no-commit`,
+`--ff-only`; `ort`, `resolve` (trivial and not), `ours`, octopus and strategy lists; detached HEAD; conflicts and
+refusals. 15 of them were replayed with tsgit (main code, `user.*` = Ada, `Date.now` pinned). Two snapshot SHA rows
+compare `git stash create` against tsgit's `stash push` with one identity on both sides. The formerly unpinned items
+ran as 22 git/tsgit pairs, each tool starting its own rebase and git creating the merge-family stops. The two todo
+issues ran as git-started rebases continued by git in one copy and by tsgit in the other. Rows: A.5.
+
 ### Parity summary
 
 390 (shape, command) pairs probed, each on 2–3 write-path variants (Appendix A has every row). After folding
 refusal-class equivalences already ratified (git "would lose untracked files" ≡ `untracked`; `STASH_APPLY_WOULD_OVERWRITE`
-≡ git's refusal; "beyond a symbolic link" ≡ `localChanges`), **205 pairs diverge: 187 in the perimeter, 18 outside**. The revision probe adds 742 pairs (684 reset-family, merge-refusal and rebase-start pairs; 58 `stash push` pairs, stash trees included), 421 of them divergent; ADR-1079 puts them all in the perimeter. With O1–O3 folded, only O4 stays outside (8 `checkout -f HEAD` rows, ADR-1080).
+≡ git's refusal; "beyond a symbolic link" ≡ `localChanges`), **205 pairs diverge: 187 in the perimeter, 18 outside**. The revision probe adds 742 pairs (684 reset-family, merge-refusal and rebase-start pairs; 58 `stash push` pairs, stash trees included), 421 of them divergent; ADR-1079 puts them all in the perimeter. With O1–O3 folded, only O4 stays outside (8 `checkout -f HEAD` rows, ADR-1080). The revision #2 probe adds RC10b–d (ADR-1082) and two RC9 shapes (unmerged occupant, refused `--skip`), all in the perimeter; three sequencer findings stay outside (Out of perimeter).
 
 | root cause | rows (Appendix A) | git 2.55 | tsgit main | perimeter |
 |---|---|---|---|---|
@@ -210,6 +233,11 @@ refusal-class equivalences already ratified (git "would lose untracked files" �
 | RC9b rebase aborts, skips and `reset` step overwrite untracked occupants | `rebase --abort`, `rebase --skip`, rebase-merges `reset`: every S shape and Y3 `/reset-adds`; S2, S3c, Y3 `/reset-deletes` | refuses `untracked` / `lose-untracked`, every path listed; ignored overwritten | overwrites (S2, S3a, S3b, S3c, S3e, S3f, Y3: untracked data lost) or crashes | in (ADR-1079) |
 | RC9c rebase start overwrites untracked occupants | `rebase t`, `rebase -i t`, fast-forward: every S shape and Y3 `/reset-adds` | two-way checkout refuses `untracked` ("could not detach HEAD"), HEAD unmoved, no rebase state | overwrites (S2, S3a, S3b, S3c, S3e, S3f, Y3) or crashes | in (ADR-1079) |
 | RC10 non-ff merge refusal skips git's save and restore | `merge t (non-ff)`, clean and conflicting: S1, S2, S3c, S3d, I1, I2, I4, Y3 `/reset-updates` `/reset-adds`; S3a, S3e `/same` | exit 2, work tree reset to HEAD and the local changes re-applied; S3a, S3e `/same`: exit 128 beyond-symlink before merging | refuses with the occupant kept, or crashes; S3a, S3e `/same` merge through | in (ADR-1079) |
+| RC9d unmerged path replaced by a directory holding an untracked file | U4 (A.5): `merge --abort`, `cherry-pick` / `revert` `--abort` / `--skip`, `rebase --abort` / `--skip` | exit 128 lose-untracked:keep; stop and index kept | ok, `keep/u` deleted, stop cleared | in (ADR-1079) |
+| RC9e refused `cherry-pick` / `revert` `--skip` | U2 (A.5) | exit 128 local:f; HEAD, `ORIG_HEAD`, `sequencer/`, `CHERRY_PICK_HEAD` / `REVERT_HEAD` unchanged | ok, `f/u` deleted, `ORIG_HEAD` written, sequence ended | in (ADR-1079) |
+| RC10b a dirty true merge leaves no snapshot | every dirty non-trivial row of A.5 Q (Q1, Q3, Q4, Q8, Q10, Q11, Q12, Q14, Q15, Q16, Q17, Q18, Q20, Q22–Q29, Q30, Q32, Q33) | `index on …` and `WIP on …` commits, W tree and blobs, unreachable | nothing written | in (ADR-1082) |
+| RC10c a strategy-level refusal ends the merge instead of rewinding to the next strategy | Q14 (`-s octopus -s ort`), Q25 (`-s ort -s ort`), both with `f/` over a tracked `f` | exit 0: the rewind replaces `f/` by HEAD's `f`, then `ort` merges | `PERMISSION_DENIED` (RC4b), occupant kept | in (ADR-1082) |
+| RC10d a staged change refused before the snapshot for every strategy | Q3, Q26 (`ort`); Q22 (`ours`); Q24 (octopus); Q30 (`-s ort -s ours`); Q32 (`--no-commit -s resolve`) | snapshot, then exit 2: `ort` lists the paths; others `Merge with strategy <s> failed` / `No merge strategy handled the merge` | `WORKING_TREE_DIRTY` before any write, no snapshot | in (ADR-1082) |
 | RC11 path restore keeps colliding index entries | T1 (`checkout t -- d/x` over a tracked `d`), T3 (`checkout t -- d` over tracked `d/x`, `d/y`) (A.4) | ok; the index drops `d` (T1), `d/x` and `d/y` (T3) | T1 `NOT_A_DIRECTORY` (RC1); T3 ok, but the index keeps `d/x`, `d/y` beside `d` | in (fold: same command, exposed by this probe) |
 | O4 forced switch to the same commit is a no-op | every `/same` `checkout -f HEAD` (8 rows) | ok, occupant replaced by HEAD content | ok, occupant left | out (32.27) |
 
@@ -261,6 +289,11 @@ pooled and the one-at-a-time paths.
   refuses, resets hard and re-applies them (`builtin/merge.c` `save_state` / `restore_state`: supporting evidence).
   `assertNoneBeyondSymlink` (`:1779`) scans only the merge's changed paths. git's snapshot dies on any tracked path
   beyond a symlink (S3a, S3e `/same`).
+  - RC10b — nothing in `twoHeadMerge` (`:666-698`) or the octopus path (`manyHeadMerge`, `:921-950`) writes the snapshot.
+  - RC10c — `tryStrategies` (`:767-788`) never rewinds; `commitCleanAttempt`'s refusal (`:791-801`) escapes the
+    loop, so the next strategy never runs.
+  - RC10d — `refuseDirtyIndex` (`:715-722`) runs for every strategy list before `underAutostash`'s strategies,
+    where git checks the index inside each strategy (after the snapshot), except on its trivial branch.
 - RC11 — `preserveOutOfScope` (`materialize-tree.ts:153-159`) keeps every out-of-scope index entry, including one
   that collides file/directory with a restored entry.
 
@@ -376,8 +409,8 @@ and P2 keeps a directory at a deleted index-only path with git's warning (Y3 `/r
 | `protectedResetWorktreeToCommit` | `rebase.ts:875`, `:978`, `:1000`, `:1842`, `rebase-merges-steps.ts:71` | untracked-protecting hard reset | `force: true`, `forceRewriteAll: true`, `untrackedOccupants: 'protect'`, `unmergedPaths: 'reset'` |
 | `checkoutWorktreeToCommit` | `rebase.ts:347`, `:1137`, `:1152` | two-way checkout | `force: false`, `headTree` = the current HEAD tree |
 
-(`untrackedOccupants` and `unmergedPaths` are the option shape recommended in DC7. `rebase.ts:875` and `:1842` are
-assigned with `rebase --skip` but not pinned separately: see Still unpinned.)
+(`untrackedOccupants` and `unmergedPaths` are the option shape of ADR-1081. `rebase.ts:875` and `:1842` are pinned
+separately (A.5 U1): git refuses the untracked occupant at a path the skip adds back and keeps the stop.)
 
 - P8a — `reset --merge`. Without `forceRewriteAll`, `computeChangeset` classifies every path whose index entry equals
   the target `noop`, so its occupant or local change stays (every `/same` row, M1). The rest goes through P3's
@@ -385,11 +418,16 @@ assigned with `rebase --skip` but not pinned separately: see Still unpinned.)
   local. Update at a directory → local. Delete at a directory holding an untracked file → untracked; holding only
   ignored files → local. Add beneath a file or symlink, or at a file or symlink → untracked unless ignored. Unmerged
   paths (`unmergedPaths: 'reset'`) are projected as tracked `update`s (or `delete`s, when the target lacks them),
-  exempt from the dirty check: git rewrites the conflicted `keep` on every row and never refuses it. git names only the first offending path (Y3:
-  `f`, not `g`), so the helper rethrows `WORKING_TREE_DIRTY` with the first path of `localChanges ∪ untracked` in
-  `comparePaths` order. The refusal comes before any write, so every state file stays as it was. Ordering fix:
-  `abortSequencerReset` (`abort-sequencer-reset.ts:39`) writes `ORIG_HEAD` after the reset (A.5: a refused
-  multi-pick abort leaves `ORIG_HEAD` unchanged). `mergeAbort` keeps taking `MERGE_AUTOSTASH` before the reset (A.5).
+  exempt from the up-to-date check: git rewrites a modified conflicted `keep`, a file or a symlink standing there,
+  and a directory of ignored files (A.5 U4). One shape still refuses: a directory holding an untracked file at the
+  unmerged path → `untracked: [path]` (git: "would lose untracked files in it"). The `unmergedPaths: 'reset'` branch
+  therefore asks P3's directory-survivor probe and nothing else. git names only the first offending path in path
+  order, whatever its class (Y3: `f`, not `g`; U3: `a` both when `a` is the untracked add and when it is the
+  directory update). So the helper rethrows `WORKING_TREE_DIRTY` with the first path of `localChanges ∪ untracked` in
+  `comparePaths` order, in its own class. The refusal comes before any write, so every state file stays as it was.
+  Ordering fix: `abortSequencerReset` (`abort-sequencer-reset.ts:39`) and `skipSequencerReset` (`:30`) write
+  `ORIG_HEAD` after the reset. A.5 shows a refused multi-pick abort and a refused `cherry-pick` / `revert --skip` both
+  leave `ORIG_HEAD` unchanged. `mergeAbort` keeps taking `MERGE_AUTOSTASH` before the reset (A.5).
 - P8b — untracked-protecting hard reset. Every target path is rewritten (P1 `every`) after a pre-flight that runs
   only the untracked rules, through P3/P4's `classifyOccupant`. On `add` entries (path absent from the current
   stage-0 index), the add branch applies: a leading file or symlink → `untracked: [component]`; a file or symlink at
@@ -399,30 +437,70 @@ assigned with `rebase --skip` but not pinned separately: see Still unpinned.)
   the tracked `f`. Every offending path is reported (Y3: `f` and `g`). Once untracked occupants are refused,
   `clearOccupants`' `every` policy only meets ignored or tracked-path occupants, which git overwrites (I1, I2, I4
   `/reset-adds`): no new policy. A refused `reset` step leaves the rebase stopped, with `reset <label>` at the head of
-  `git-rebase-todo` and at the end of `done` (A.5).
+  `git-rebase-todo` and at the end of `done` (A.5). Unmerged paths follow P8a's rule (A.5 U4: `rebase --abort` and
+  `--skip` refuse a directory of untracked files at the conflicted `keep` and overwrite a file there). `rebase.ts:875`
+  (rescheduled pick) and `:1842` (`edit` stop) skip with this reset to HEAD (A.5 U1). A refusal keeps the todo and
+  `done` as they were.
 - P8c — rebase start. `detachHead` (`rebase.ts:327`), `detachInteractive` (`:1123`) and `fastForwardOnto` (`:1142`)
   run the checkout before the HEAD update, and before any rebase state is written. git refuses with "could not
   detach HEAD", leaving HEAD on the branch and no `rebase-merge/`. The dirty-tree precondition already refuses every
   tracked change (those rows are SAME), so with index == HEAD the two-way checkout refuses only untracked occupants
   and overwrites ignored ones (I1, I4 `/reset-adds`).
 
-**P9 — a refused non-fast-forward merge restores as git does (RC10).** tsgit refuses before its first write, so a
-snapshot taken at refusal time equals the one git takes before the strategy. P9 takes it only on refusal (DC8):
+**P9 — a true merge snapshots before its strategies and rewinds as git does (RC10, ADR-1082).** git's order, pinned
+row by row in A.5 (Q rows). It replaces the earlier refusal-time snapshot and up-front scan:
 
-1. Before `tryStrategies` (`merge.ts:767`, true merges only), the beyond-symlink guard scans every tracked path,
-   not only the changed ones: git's snapshot dies on S3a, S3e `/same` (exit 128) before merging. It reuses
-   `findTrackedBeyondSymlink` with the shared scanner.
-2. On a would-overwrite refusal from `commitCleanMerge` (`merge.ts:1182`, through `materialiseNonConflictTree`) or
-   from `persistConflictState` (`:1688`, through `assertNothingOverwritten`), once `materialiseAndApply` has released
-   its index lock: snapshot the local
-   changes with P7's builder (no ref written), hard-reset to HEAD (`force` + `forceRewriteAll`: P1 displaces, P2
-   keeps), re-apply the snapshot to the work tree when it holds changes, then rethrow the refusal unchanged.
+```ts
+// merge.ts — twoHeadMerge (:666) and manyHeadMerge (:921), inside underAutostash, after the ff / up-to-date exits
+if (entersTrivialBranch(commit, bases)) {   // one remote head, one base, commit !== false, squash !== true,
+  carried = await refuseDirtyIndex(...);    //   allowsTrivialMerge(strategies): unchanged, WTD, no snapshot (Q21, Q31)
+  const trivial = await tryTrivialMerge(...);
+  if (trivial !== undefined) return trivial; // no snapshot (Q13)
+}
+const snapshot = await snapshotLocalChanges(ctx, workDir, identities);  // undefined on a clean tree (Q2, Q5, Q6)
+return tryStrategies(ctx, commit, attempt, snapshot);
+```
 
-Observed net effect (A.2 `merge t (non-ff…)` rows). A directory at a tracked path (S2, S3c, I2) is replaced by HEAD's
-file or link. A file in a leading path (S1, S3d, I1, I4) is removed: the snapshot recorded the tracked entry as
-deleted, so the re-apply deletes it from the work tree again, and the index stays at HEAD. A local modification
-survives (M1, Y3 `g`). Fast-forward merges keep their refusal without a restore (A.1 `merge t (ff)` rows: occupant
-kept).
+1. **Trivial branch.** git checks the index, then tries its in-index merge, before any snapshot. That branch requires
+   one remote head, one merge base, a committing merge (Q32: `--no-commit -s resolve` takes the snapshot), and
+   strategies that all allow it. Today `twoHeadStrategy` (`:731`) gates `tryTrivialMerge` (`:884`) on
+   `allowsTrivialMerge` alone and `refuseDirtyIndex` runs before every strategy list (`:693`, `:946`): both move
+   under `entersTrivialBranch`. Off that branch, `refuseDirtyIndex` becomes the per-strategy dirty-index failure of
+   step 3. It keeps its `carried` gitlink answer, which `tryTrivialMerge` and the commit still read.
+2. **Snapshot.** `snapshotLocalChanges` is the first half of `stashAndReset` (`stash.ts:489`): `findLocalChanges`,
+   then `createStashCommits` (`:576`) when `hasLocalChanges`, with no ref written and no reset. Same commits, same
+   order: index commit, then the W tree, then the WIP commit. A tracked path beyond a symlink therefore refuses
+   `PATHSPEC_BEYOND_SYMLINK` (P7's builder) after the index commit is written, as git's `stash create` dies (exit 128,
+   S3a `/same` rows: one unreachable `index on` commit). Identity: git's `stash create` inherits the merge's
+   environment, so the snapshot's author is the merge's author and its committer the merge's committer (A.5 Q rows:
+   author Ada, committer Bob). `stashCommitWriter` (`stash.ts:538`) gains an optional `{ author, committer }`, which
+   `twoHeadMerge` fills from `resolveMergeAuthor` / `resolveMergeCommitter` (`merge.ts:2123`, `:2145`). `stash push`
+   and `createAutostash` keep `resolveReflogIdentity` for both. Messages, parents and trees come from the existing
+   writer unchanged: `index on <branch>: <abbrev> <subject>` + LF; `WIP on <branch>: <abbrev> <subject>` with no
+   trailing LF; `(no branch)` when detached; parents `[HEAD]` and `[HEAD, index commit]`; never an untracked commit.
+   With equal identities tsgit's `stash push` already writes `git stash create`'s exact SHAs (A.5: `387b9e5…`,
+   `f0f8389…`).
+3. **Strategy loop (`tryStrategies`, `:767`).** Before every strategy after the first: `rewind` = hard reset to HEAD
+   (`force` + `forceRewriteAll`: P1 displaces, P2 keeps), then the snapshot re-applied with its index
+   (`applyStashCommit`, `stash.ts:842`, `restoreIndex: true`, git's `stash apply --index`) when there is one. A
+   strategy fails, and the loop moves on, when its clean write refuses (P4's would-overwrite, `commitCleanAttempt`) or
+   when the index differs from HEAD (the `carried` gitlinks excepted). On a dirty index the `ort` family fails with the staged paths, and `ours`,
+   octopus and `resolve` fail bare. No clean strategy, some conflict: rewind first unless the best conflicting
+   strategy was the last one tried (git re-runs it on a restored tree), then persist it. Nothing handled: rewind, then
+   throw. One `ort`-family refusal gives `WORKING_TREE_DIRTY` with its paths, unchanged (Q16; RV23 of
+   `status-gitlink-parity.md`). One other strategy gives `MERGE_STRATEGY_FAILED`. Several give
+   `NO_MERGE_STRATEGY_HANDLED` (Q30). `assertNoneBeyondSymlink` (`:1779`) stays for the merge's own changed paths:
+   the snapshot only guards tracked ones.
+
+Observed net effect (A.2 `merge t (non-ff…)` rows, A.5 Q rows). A directory at a tracked path (S2, S3c, I2) is
+replaced by HEAD's file or link. A file in a leading path (S1, S3d, I1, I4) is removed: the snapshot recorded the
+tracked entry as deleted, so the re-apply deletes it from the work tree again, and the index stays at HEAD. A local
+modification survives (M1, Y3 `g`, Q16), and so does a staged change (Q3, Q4: `M ` / `MM` after the restore). With
+`-s octopus -s ort` or `-s ort -s ort` over `f/` (Q14, Q25), the rewind destroys `f/u` and `ort` then merges: exit 0.
+Fast-forward merges (`merge t`, `--squash` of a descendant: Q7, Q9) never snapshot and keep their refusal without a
+restore (A.1 `merge t (ff)` rows: occupant kept). The restore writes no object beyond the snapshot: HEAD is the
+snapshot's base, so the re-apply's trees are the snapshot's own (Q16, Q4). `--autostash` stashes and resets before the
+strategies run, which leaves a clean tree (row Q2 applies; not probed with an occupant).
 
 **P10 — path restore drops colliding index entries (RC11).** `preserveOutOfScope` (`materialize-tree.ts:153`) drops
 an out-of-scope entry whose path is a leading directory of a restored target entry (tracked `d` when `d/x` is
@@ -435,11 +513,13 @@ directory clear removes T3's `d/`.
 - The protected reset (P8b) uses P3/P4's classifier in forced mode, restricted to its untracked branches. P1's
   `every` policy covers what remains, so P1 gains no third clear policy for it. P5's `protected` policy stays
   specific to the unforced `ignoredOccupants: 'protect'`.
-- The merge reset (P8a) is P3's unforced pre-flight. Its only additions are the unmerged exemption, which P8b shares,
-  and the first-path narrowing, which happens at the caller.
+- The merge reset (P8a) is P3's unforced pre-flight. Its only additions are the unmerged rule (no up-to-date check;
+  only a directory of untracked files refuses), which P8b shares, and the first-path narrowing, which happens at the
+  caller.
 - P2's warning now also fires from the protected reset and the stash reset (git warns on I2 `/reset-deletes` and Y3
   `/reset-deletes`), still through ADR-1078's logger.
-- P9 composes P7 (snapshot) and the hard reset (P1, P2). P4 is unchanged; P9 wraps its refusal.
+- P9 composes P7's snapshot builder, the hard reset (P1, P2) and the stash apply. P4 is unchanged; P9 turns its
+  refusal into a strategy failure. The snapshot runs P7's path classes, so P7 lands before P9.
 - `untrackedOccupants` and P5's `ignoredOccupants` are orthogonal. No caller sets both: `pull-into-void` is unforced.
 
 Unforced refusals that already match (every SAME row of Appendix A) keep their code path: P3 only adds branches
@@ -462,15 +542,17 @@ existing `materializeTree` writers.
 
 P1–P6 touch `apply-changeset.ts`, `symlinked-leading-path.ts`, a new `occupant-clash.ts`, `find-would-overwrite.ts`,
 `apply-sparse-checkout.ts`, `pull-into-void.ts`, and add one option to `materialize-tree.ts`. P7–P10 add
-`reset-worktree.ts` (three helpers in place of one), `stash.ts` (snapshot path set), `merge.ts` (restore and the
-up-front scan), `rebase.ts`, `abort-merge.ts`, `abort-sequencer-reset.ts`, `rebase-merges-steps.ts`, and two more
+`reset-worktree.ts` (three helpers in place of one), `stash.ts` (snapshot path set, the snapshot entry and its identity option), `merge.ts`
+(trivial-branch gate, snapshot, rewind and failure mapping), `rebase.ts`, `abort-merge.ts`, `abort-sequencer-reset.ts`, `rebase-merges-steps.ts`, and two more
 options plus the collision rule in `materialize-tree.ts`. All of them sit in the shared chunk reached by
 `dist/esm/index.js`, `index.node.js`, `index.default.js`, `primitives/index.js` and `dist/browser/tsgit.js`.
 Per-command entries (`commands/checkout.js`, `reset.js`, `merge.js`, `pull.js`, `stash.js`, `cherry-pick.js`,
 `revert.js`, `rebase.js`, `sparse-checkout.js`) may carry part of it, depending on chunking. Expected growth is
-~500–900 B gzip on each facade and on the browser bundle (P1–P6 ~200–350 B; P7–P10 ~300–550 B), above the 3–40 B
-headroom. The caps will trip and are re-measured and raised from a clean measurement (`rm -rf dist .wireit` first) in
-the same change. `api.json` changes for DC7 (a) or (b), on top of ADR-1077's option.
+~650–1150 B gzip on each facade and on the browser bundle (P1–P6 ~200–350 B; P7, P8, P10 ~250–450 B; P9 ~200–350 B:
+the trivial-branch gate, the snapshot split out of `stashAndReset`, the identity option, the rewind and the
+three-way failure mapping), above the 3–40 B headroom. The caps will trip and are re-measured and raised from a
+clean measurement (`rm -rf dist .wireit` first) in the same change. `api.json` changes for ADR-1081's two enums, on
+top of ADR-1077's option; P9 adds no public option.
 
 ### 32.27 verdict — different defect, same family
 
@@ -488,32 +570,36 @@ holds; widening was DC6, settled by ADR-1080.
 - O4 = 32.27 (above), kept separate by ADR-1080.
 - How to prove next (not proven here): `checkout -f HEAD` with a tracked file whose content alone was modified —
   run the same harness row with a content edit instead of an occupant.
-
-### Still unpinned (pin before the part that depends on it)
-
-- `rebase.ts:875` (skipping a rescheduled pick) and `rebase.ts:1842` (skipping an interactive stop): P8 assigns them
-  the protected reset with `rebase --skip`. Pin: stop a `rebase -i` on an `edit` and on a rescheduled pick, plant an
-  untracked file where the skip adds a path back, run `rebase --skip` in both tools.
-- `cherry-pick --skip` / `revert --skip` refused mid-sequence: does `ORIG_HEAD` move? Pin: the A.5 multi-pick row
-  with an occupant at a path where HEAD and the index disagree, then `--skip`. Until pinned, `skipSequencerReset`
-  keeps its order.
-- `reset --merge` naming one path when the refusals mix classes (an untracked occupant at an added path plus a
-  directory at an updated one): P8a assumes path order. Pin: one abort holding both, check which path git names.
-- An unmerged path whose conflicted file was itself replaced by an occupant (P8a and P8b exempt unmerged paths from
-  the pre-flight). Pin: replace the conflicted `keep` by a directory holding an untracked file, then each abort.
-- Restore after other true-merge refusals: `merge --squash`, `merge --no-commit`, and a strategy that fails without
-  a would-overwrite refusal. Pin each with S2 `/reset-updates` before widening P9 beyond the probed `merge t`.
+- OS1 — tsgit cannot read a `break` todo line. Proof, A.5 T1 and T1b: git starts `rebase -i u` with `break` after
+  the first pick, or before it, and stops. `git rebase --continue` finishes (exit 0). tsgit's `rebase.continue()` on
+  the same state throws `INVALID_SEQUENCER_TODO` (reason `break`) and leaves the state as it was. Faulty code:
+  `parseLine` (`src/domain/rebase/todo.ts`) accepts only the six commit verbs, `label`, `reset` and `merge -C`.
+  `RebaseInstruction` cannot express `break` either. This is todo parsing, not occupant handling.
+- OS2 — tsgit runs a git-started `--rebase-merges` rebase past an `edit` stop as a flat todo. Proof, A.5 T2: git
+  stops on `edit S1` with `label s; reset onto; edit X; merge -C <M> s` still to run. `git rebase --continue` labels,
+  resets to `onto` and stops on `edit X` with `X` on `U`, keeping the `merge` line. tsgit's `rebase.continue()`
+  commits `X` on top of `S1`, never runs the `label` or `reset` step, returns `stopped` with `remaining: 0` and empties
+  the todo, so the merge step is lost. This is the sequencer's continue path, not occupant handling.
+- OS3 — an interactive continue does not reschedule a pick refused by an untracked occupant. Proof, A.5 U1b: git
+  starts the pick, fails with "untracked working tree files would be overwritten by merge: n" (exit 1) and
+  reschedules it, so `pick X` heads the todo and ends `done`. tsgit's `rebase.continue()` refuses
+  `WORKING_TREE_DIRTY` `untracked: [n]` up front, and `done` still ends `edit W`. The refusal class and the work tree
+  match; only the `done` bookkeeping differs. That bookkeeping belongs to the sequencer (`writeRescheduledPick`,
+  `rebase.ts:610`, only runs for a dirty index before the first pick). Scope: DC9.
 
 ## Decision candidates
 
 Settled, so not candidates: DC1 → ADR-1075, DC2 → ADR-1076, DC3 → ADR-1077, DC4 → ADR-1078, DC5 → ADR-1079 (O1–O3
-folded), DC6 → ADR-1080. Each caller's reset mode, the first-path-only refusal of `reset --merge`, the autostash and
-`ORIG_HEAD` ordering, and the stash path-set rules are set by matching git (A.2–A.5), so none of them is a candidate.
+folded), DC6 → ADR-1080, DC7 → ADR-1081 (two optional enums), DC8 → ADR-1082 (snapshot before the strategies, git's
+order). Matching git sets the following, so none of them is a candidate (A.2–A.5): each caller's reset mode, the
+first-path-only refusal of `reset --merge`, the autostash and `ORIG_HEAD` ordering, the stash path-set rules, the
+unmerged-directory refusal, and the snapshot's identity, messages and placement. The same holds for the per-strategy
+dirty-index failure and its `MERGE_STRATEGY_FAILED` / `NO_MERGE_STRATEGY_HANDLED` codes, and for the rewind before
+each later strategy.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC7 | How P8's reset modes reach `applyChangeset` | (a) two optional additive enums on `MaterializeTreeOpts` / `ApplyChangesetOpts`, siblings of ADR-1077's `ignoredOccupants`: `untrackedOccupants: 'overwrite' \| 'protect'` (read with `force: true`) and `unmergedPaths: 'hidden' \| 'reset'` (b) one enum `resetMode: 'merge' \| 'protect-untracked'` naming git's reset flavour (c) internal only: a non-exported materialise entry used by `reset-worktree.ts`; public options unchanged | (a) | CLAUDE.md: commands are built from the primitives users get, so (c) keeps the abort semantics out of their reach. Orthogonal enums compose with `force` and `ignoredOccupants`, where (b) needs a mode per combination. (a) and (b) change `api.json` additively. |
-| DC8 | When P9 takes its snapshot | (a) only on refusal: the up-front beyond-symlink scan of every tracked path, then snapshot, reset and re-apply after a refusal (b) git's order: snapshot before every true-merge strategy (c) only on refusal, without the up-front scan | (a) | Observably identical to git, since tsgit writes nothing before it refuses. (b) hashes every modified file on every successful merge, for objects no ref reaches. (c) diverges on S3a, S3e `/same`: git exits 128, tsgit merges. |
+| DC9 | Scope of OS3 (an interactive continue refuses an untracked occupant without rescheduling the pick) | (a) fold into this change: the interactive continue writes git's reschedule (`done` and todo both carry the pick) when its pick refuses (b) keep it out of the perimeter, and file it only if the user agrees, beside OS1 and OS2 (c) fold OS1–OS3 together as one sequencer part of this change | (b) | The refusal class, the paths and the work tree already match git, so only the sequencer's `done` bookkeeping differs, and OS1/OS2 live in the same todo machinery, which the brief does not cover. Against (b): the user's "fold, don't file" rule covers defects the change's own probes expose, and this one is one write in a path this change does not otherwise touch. (c) pulls in todo-grammar work (`break`, `exec`, `update-ref`) and the merges-aware continue. |
 
 ## Test strategy
 
@@ -532,17 +618,26 @@ peers via `makePeerPair` / `runGit` / `runGitEnv`, git's stderr parsed only to e
 - `test/integration/pull-fetch-head-interop.test.ts` (has the http-backend transport) — I1, I2, I6 into unborn and S1
   `/add` ff.
 - `test/integration/merge-abort-interop.test.ts`: A.2 `merge --abort` rows (S1–S3f, I1, I2, I4, M1, Y3 × the four
-  reset variants), the first-path-only refusal (Y3), state kept on refusal, and `MERGE_AUTOSTASH` consumed (A.5).
-- `test/integration/cherry-pick-interop.test.ts` and `revert-interop.test.ts`: the `--abort` / `--skip` rows, and the
-  refused multi-pick abort leaving `ORIG_HEAD`, HEAD and `sequencer/` (A.5).
+  reset variants), the first-path-only refusal (Y3, both U3 orders), state kept on refusal, `MERGE_AUTOSTASH`
+  consumed (A.5), and the U4 unmerged rows (directory of untracked files refuses; directory of ignored files, file,
+  symlink overwritten).
+- `test/integration/cherry-pick-interop.test.ts` and `revert-interop.test.ts`: the `--abort` / `--skip` rows, the
+  refused multi-pick abort and the refused `--skip` (U2) leaving `ORIG_HEAD`, HEAD, `sequencer/` and the pick head
+  (A.5), and the U4 unmerged rows.
 - `test/integration/rebase-interop.test.ts`: `rebase --abort`, `rebase --skip`, start, fast-forward and `-i` start
-  rows (untracked refusals, HEAD unmoved, no state written).
+  rows (untracked refusals, HEAD unmoved, no state written); the U1a `edit`-stop skip rows (each tool runs its own
+  `rebase -i`); the U1b rescheduled-pick skip (git-started rescheduled state, skipped by each tool: tsgit cannot
+  reschedule there on its own, OS3); the U4 `rebase --abort` / `--skip` rows.
 - `test/integration/rebase-merges-interop.test.ts`: the `reset` step `/reset-adds` rows and the rescheduled-step
   state (A.5).
 - `test/integration/stash-interop.test.ts`: A.3 rows, comparing the W and I trees (`git ls-tree -r stash@{0}`,
   `stash@{0}^2`) as well as the work tree and index.
 - `test/integration/merge-tracked-dirty-conflict-refusal-interop.test.ts`: the clean and conflicting non-ff restore
-  rows, and the up-front S3a, S3e `/same` refusal.
+  rows, the S3a, S3e `/same` snapshot refusal, and every A.5 Q row (except Q7, Q9 and Q19, which only show that a
+  fast-forward writes no snapshot). Each row compares the work tree, the index, the outcome class, and the set of objects
+  no ref reaches. To make the sets comparable, the peers pin identities: git takes `GIT_AUTHOR_*` /
+  `GIT_COMMITTER_*`, and tsgit takes the same values through `merge`'s `author` / `committer` inputs. Strategy-list
+  rows (Q11, Q12, Q14, Q25, Q30) and the `--squash` / `--no-commit` restore rows (Q27, Q28) included.
 - `test/integration/checkout-file-directory-swap-interop.test.ts`: T1, T2, T3 (A.4).
 
 Unit (memory adapter, Given/When/Then split, AAA, `sut`):
@@ -557,13 +652,22 @@ Unit (memory adapter, Given/When/Then split, AAA, `sut`):
 - `test/unit/application/commands/internal/apply-sparse-checkout.test.ts` — P6 rows (dangling link, leading file).
 - `test/unit/application/commands/pull.test.ts` — `ignoredOccupants: 'protect'` reaches the apply.
 - `test/unit/application/commands/internal/reset-worktree.test.ts`: the three helpers; first-path narrowing; unmerged
-  paths reset without a check; one row per protected-reset branch (add beneath file / symlink, add at file / symlink,
+  paths reset without the up-to-date check, but refused for a directory holding an untracked file (and not for one
+  holding only ignored files); one row per protected-reset branch (add beneath file / symlink, add at file / symlink,
   add at a directory with and without an untracked survivor, delete at a directory, ignored expendable).
 - `test/unit/application/primitives/materialize-tree.test.ts`: `untrackedOccupants`, `unmergedPaths`, and the P10
   rule in both directions.
 - `test/unit/application/commands/stash.test.ts`: P7, one row per path class of the table.
-- `test/unit/application/commands/merge.test.ts`: P9 order (snapshot → reset → re-apply → rethrow), nothing re-applied
-  on an empty snapshot, the up-front scan.
+- `test/unit/application/commands/merge.test.ts`: P9 order, one row per guard. Trivial branch first: no snapshot,
+  with `--no-commit`, `--squash`, two bases and two heads each leaving it. A clean tree writes no snapshot. The
+  snapshot is written before the first strategy. The rewind runs before each later strategy and not before the
+  first. A refused clean write moves to the next strategy. The best conflict is persisted after a rewind unless it was
+  the last strategy tried. The restore runs when nothing handled the merge. The failure codes map three ways. The
+  merge's author and committer reach the snapshot.
+- `test/unit/application/commands/stash.test.ts` (P9 part): the identity option of `stashCommitWriter` (author and
+  committer apart; default unchanged for `stash push`), and the snapshot entry writes no ref and resets nothing.
+- `test/unit/application/commands/internal/abort-sequencer-reset.test.ts` (new): `ORIG_HEAD` is written after the reset
+  by both `--skip` and `--abort`, and not at all on refusal.
 - `test/unit/application/commands/abort-merge.test.ts`, `rebase.test.ts`, `internal/rebase-merges-steps.test.ts`,
   `cherry-pick.test.ts`, `revert.test.ts`: caller wiring, and nothing written to HEAD, `ORIG_HEAD` or the state files
   when the reset refuses.
@@ -2109,3 +2213,81 @@ printed `000`). The I tree matched git on every pair and is omitted.
 | `cherry-pick A C`: `A` applied, `C` stopped; a directory replaces `f` (which `A` changed); `cherry-pick --abort` | exit 128 local:f; HEAD, `ORIG_HEAD`, `sequencer/`, `CHERRY_PICK_HEAD` unchanged | not run (`abort-sequencer-reset.ts:39` writes `ORIG_HEAD` before the reset) |
 | same stop, `cherry-pick --skip` | exit 0: the index entry of `f` equals HEAD, so it is untouched; `ORIG_HEAD` = HEAD; sequence finished | not run |
 | rebase-merges `reset onto` refused (S2 `/reset-adds`) | exit 1 lose-untracked:f; `reset onto` heads `git-rebase-todo` and ends `done`; HEAD detached at the last pick | overwrites, deleting `f/u`, and completes the rebase |
+
+#### A.5 Q — the true-merge snapshot (git 2.55.0; tsgit main 4899565f where run)
+
+History: `base` (`keep`, `f=v1`, `dirty=d0`) → `main` adds `side` ("side subject"); `t` sets `f=v2`; `t2` (octopus
+rows) adds `z`. "Two-sided" rows add `g`, changed on both sides. Environment: author Ada 1700000000 +0000, committer Bob
+1700000100 +0000. "Snapshot" = the `index on main: bd40de3 side subject` commit (tree = the index, parent HEAD; LF
+after the subject) and the `WIP on main: bd40de3 side subject` commit (tree = W, parents HEAD and the index commit;
+no LF after the subject), both author Ada and committer Bob, never a third (untracked) commit; plus the W tree and the
+work-tree blobs not already stored. "Result tree" = the merge's own tree (git and tsgit both write it before a
+refusal).
+
+| row | before `merge` | command | git 2.55: exit; objects no ref reaches; tree after | tsgit main |
+|---|---|---|---|---|
+| Q1 | `dirty` modified | `merge t` (non-ff) | 0; snapshot (`3c5e344` index, `6a3c50b` WIP, W `e5d7737`, blob `2680cfd`) | ok; nothing |
+| Q2 | clean | `merge t` | 0; nothing | — |
+| Q3 | `dirty` staged | `merge t` | 2 local:dirty + `Merge with strategy ort failed`; snapshot (I = W tree); restored `M  dirty` | WTD local:[dirty]; nothing |
+| Q4 | `dirty` staged, then changed again | `merge t` | 2 as Q3; snapshot (I tree, W tree, blob); restored `MM dirty` | — |
+| Q5 | untracked file only | `merge t` | 0; nothing | — |
+| Q6 | `dirty` touched, content unchanged | `merge t` | 0; nothing | — |
+| Q7 | `dirty` modified, `t` a descendant | `merge t` (ff) | 0; nothing | — |
+| Q8 | `dirty` modified | `merge --squash t` | 0; snapshot + result tree | ok; result tree only |
+| Q9 | as Q7 | `merge --squash t` | 0; nothing | — |
+| Q10 | `dirty` modified | `merge --no-commit t` | 0; snapshot + result tree | ok (stopped); result tree only |
+| Q11 | `dirty` modified | `merge -s ours -s ort t` | 0; snapshot | — |
+| Q12 | `dirty` modified | `merge -s octopus -s ort t` | 0; snapshot; rewound tree keeps `dirty=mod` | — |
+| Q13 | `dirty` modified | `merge -s resolve t` (trivial) | 0; nothing (in-index merge) | — |
+| Q14 | `f/u` over tracked `f` | `merge -s octopus -s ort t` | 0; `index on` + `WIP on` (W = HEAD's tree); the rewind deletes `f/u`, `ort` merges (`f=v2`). A second run repeated it. | `PERMISSION_DENIED`, `f/` kept; result tree only |
+| Q15 | `dirty` modified, detached HEAD | `merge t` | 0; snapshot named `index on (no branch): bd40de3 side subject` / `WIP on (no branch): …` | — |
+| Q16 | `dirty` modified, `f/u` over tracked `f` | `merge t` | 2 local:f + `Merge with strategy ort failed`; snapshot + result tree; restored `f=v1`, `dirty=mod`, `f/u` gone | `PERMISSION_DENIED`, `f/` kept; result tree only |
+| Q17 | `dirty` modified; `keep` conflicts | `merge t` | 1; snapshot + ort's conflict trees; no restore | conflict; ort's trees only |
+| Q18 | untracked file + `dirty` modified | `merge t` | 0; snapshot (two commits only) | — |
+| Q19 | `dirty` modified | `merge --ff-only t` (non-ff) | 128; nothing | — |
+| Q20 | `dirty` modified; two-sided | `merge -s resolve t` | 0; snapshot | ok; nothing |
+| Q21 | `dirty` staged | `merge -s resolve t` (trivial) | 2 local:dirty, no strategy line; nothing | WTD local:[dirty]; nothing (SAME) |
+| Q22 | `dirty` staged | `merge -s ours t` | 2 `Merge with strategy ours failed`; snapshot | WTD local:[dirty]; nothing |
+| Q23 | `dirty` modified | `merge t t2` (octopus) | 0; snapshot + an intermediate tree | — |
+| Q24 | `dirty` staged | `merge t t2` | 2 `Merge with strategy octopus failed`; snapshot | WTD local:[dirty]; nothing |
+| Q25 | `f/u` over tracked `f` | `merge -s ort -s ort t` | 0; as Q14 (the first `ort` refuses local:f) | `PERMISSION_DENIED`, `f/` kept |
+| Q26 | `dirty` staged | `merge --squash t` | 2 as Q3; snapshot | — |
+| Q27 | as Q16 | `merge --no-commit t` | 2; as Q16 | — |
+| Q28 | as Q16 | `merge --squash t` | 2; as Q16 | — |
+| Q29 | `f/u` over tracked `f`; two-sided | `merge -s resolve t` | 2 `Entry 'f' not uptodate` + `Merge with strategy resolve failed`; snapshot; restored, `f/u` gone | `PERMISSION_DENIED`, `f/` kept |
+| Q30 | `dirty` staged | `merge -s ort -s ours t` | 2 local:dirty + `No merge strategy handled the merge`; snapshot | WTD local:[dirty]; nothing |
+| Q31 | `dirty` staged; two-sided | `merge -s resolve t` | 2 local:dirty, no strategy line; nothing | WTD local:[dirty]; nothing (SAME) |
+| Q32 | `dirty` staged | `merge --no-commit -s resolve t` | 2 `Merge with strategy resolve failed`; snapshot | — |
+| Q33 | as Q16 | `merge -s resolve t` (trivial trees) | 2 `Entry 'f' not uptodate` + `Merge with strategy resolve failed`; snapshot | — |
+| S3a `/same` | `d -> nowhere` over tracked `d/x` (with or without `dirty` modified) | `merge t` | 128 `'d/x' is beyond a symbolic link`, `Cannot save the current worktree state`, `stash failed`; one `index on main: 4caedad d` commit; tree untouched | (A.2: merges through) |
+| SHA1 | as Q1, author = committer = Ada 1700000000 | `git stash create` / tsgit `stash push` | `387b9e532a2c…` | `387b9e532a2c…` (SAME bytes) |
+| SHA2 | as Q4, same identity | same | `f0f8389d5b28…` | `f0f8389d5b28…` (SAME bytes) |
+
+#### A.5 U — formerly unpinned items (git 2.55.0 vs tsgit main 4899565f)
+
+| row | stop, then occupant | command | git 2.55 | tsgit main |
+|---|---|---|---|---|
+| U1a | `rebase -i u` stopped on `edit X`; `git rm f`, then `f/u` | `rebase --skip` | 128 lose-untracked:f ("could not discard worktree changes"); HEAD, todo (`pick Y`), `done` (`edit X`) kept | ok: `f=v1` rewritten, `f/u` lost, rebase finished |
+| U1a | same stop; `git rm --cached f`, `f=occ` untracked | `rebase --skip` | 128 untracked:f ("would be overwritten by reset"); state kept | ok, `occ` lost |
+| U1a | same stop; `f/u` over tracked `f` (index keeps `f`) | `rebase --skip` | 0, `f=v1` (directory removed), rebase finished | ok, same (SAME) |
+| U1b | rescheduled pick (untracked `n` refused it; todo and `done` both carry `pick X`); `rm n`, `git rm keep`, then `keep/u` | `rebase --skip` | 128 lose-untracked:keep; state kept | not reached: tsgit does not reschedule (OS3) |
+| U1b | same; `rm n`, `git rm --cached f`, `f=occ` | `rebase --skip` | 128 untracked:f; state kept | not reached (OS3) |
+| U1b | same; `rm n` | `rebase --skip` | 0; `X` re-picked (`n=n`), finished | ok, same end state via the `edit`-stop skip |
+| U2 | `cherry-pick A C` stopped on `C` (keep conflict, `f=v2` staged); `f/u` over `f` | `cherry-pick --skip` | 128 local:f (`Entry 'f' not uptodate`); HEAD, `ORIG_HEAD` (absent), `sequencer/`, `CHERRY_PICK_HEAD` unchanged | ok: `f/u` lost, `ORIG_HEAD` written, sequence ended |
+| U2 | `revert A C` stopped on `C`; `f/u` over `f` | `revert --skip`, `revert --abort` | 128 local:f; HEAD, `ORIG_HEAD` (absent), `sequencer/`, `REVERT_HEAD` unchanged | ok: `f/u` lost, `ORIG_HEAD` written (abort also moves HEAD) |
+| U3 | `merge t` stopped (`t` deletes `a`, changes `z`); `a=occ` untracked, `z/u` over `z` | `merge --abort` | 128 untracked:a ("Untracked working tree file 'a' would be overwritten") | ok, both occupants lost |
+| U3 | swapped (`t` deletes `z`, changes `a`); `z=occ`, `a/u` over `a` | `merge --abort` | 128 local:a (`Entry 'a' not uptodate`) | ok, both lost |
+| U4 | `merge t` stopped on conflicted `keep`; `keep/u` over `keep` | `merge --abort` | 128 lose-untracked:keep ("Updating 'keep' would lose untracked files in it"); `MERGE_HEAD`, stages kept | ok, `keep/u` lost |
+| U4 | same; `keep/ign`, ignored | `merge --abort` | 0, `keep=m` | ok (SAME) |
+| U4 | same; `keep` a file, or a symlink | `merge --abort` | 0, `keep=m` | ok (SAME) |
+| U4 | `cherry-pick A C` / `revert A C` stopped; `keep/u` over `keep` | `--abort`, `--skip` (each) | 128 lose-untracked:keep; state kept | ok, `keep/u` lost, stop cleared |
+| U4 | `rebase u` stopped on conflicted `keep`; `keep/u` | `rebase --abort`, `rebase --skip` | 128 lose-untracked:keep; HEAD and `rebase-merge/` kept | ok, `keep/u` lost, rebase ended |
+| U4 | same stop; `keep=occ` file | `rebase --abort` | 0, `keep=m` | ok (SAME) |
+
+#### A.5 T — rebase todo issues (git 2.55.0 starts; git and tsgit main continue)
+
+| row | git-started stop | `git rebase --continue` | tsgit `rebase.continue()` |
+|---|---|---|---|
+| T1 | `rebase -i u`, todo `pick X; break; pick Y`: stopped after `X` (`done` ends `break`) | 0, finished (`Y` on `X` on `U`) | `INVALID_SEQUENCER_TODO` reason `break`; state unchanged |
+| T1b | todo `break; pick X; pick Y`: stopped on `U` | 0, finished | `INVALID_SEQUENCER_TODO` reason `break`; state unchanged |
+| T2 | `rebase -i --rebase-merges u`, every `pick` → `edit`: stopped on `S1`, todo `label s; reset onto; edit X; merge -C <M> s` | 0: label, reset to `onto`, stopped on `edit X` with `X` on `U`; todo `merge -C <M> s` | ok `stopped` `remaining: 0`: `X` committed on `S1` (no label, no reset), todo emptied, the merge step lost |
