@@ -300,7 +300,7 @@ const shouldRefresh = (entry: IndexEntry, stat: FileStat): boolean =>
   !entry.flags.intentToAdd &&
   !matchesContentStat(entry, stat);
 
-const compareFile = async (
+export const compareFile = async (
   ctx: Context,
   entry: IndexEntry,
   absPath: string,

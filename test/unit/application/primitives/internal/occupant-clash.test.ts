@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { indexEntryFromStat } from '../../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import type { IndexMtime } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
 import {
   type ClashScope,
   classifyOccupant,
   type IgnoredProbe,
+  type TrackedLookup,
 } from '../../../../../src/application/primitives/internal/occupant-clash.js';
+import { serializeAndHash } from '../../../../../src/application/primitives/internal/serialize-and-hash.js';
 import { createLeadingPathScanner } from '../../../../../src/application/primitives/internal/symlinked-leading-path.js';
-import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
+import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
+import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const path = (s: string): FilePath => s as FilePath;
@@ -15,6 +20,7 @@ const BYTES = new Uint8Array([1]);
 interface ScopeOptions {
   readonly removed?: ReadonlyArray<string>;
   readonly ignored?: ReadonlyArray<string>;
+  readonly tracked?: TrackedLookup;
 }
 
 const scopeOf = (ctx: Context, options: ScopeOptions = {}): ClashScope => {
@@ -26,6 +32,7 @@ const scopeOf = (ctx: Context, options: ScopeOptions = {}): ClashScope => {
     removed: new Set((options.removed ?? []).map((p) => `${workdir}/${p}`)),
     isIgnoredPath,
     scanner: createLeadingPathScanner(ctx),
+    tracked: options.tracked ?? (async () => undefined),
   };
 };
 
@@ -408,6 +415,120 @@ describe('classifyOccupant', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given a symlink to a regular file where the updated path leading directory is due', () => {
+    describe.each(['update', 'delete'] as const)('When the entry is %s-classified', (kind) => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/held`, BYTES);
+        await ctx.fs.symlink('held', `${ctx.layout.workDir}/d`);
+
+        // Act
+        const result = await classifyChange(ctx, kind, 'd/x', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT('d/x'));
+      });
+    });
+  });
+
+  describe('Given a path reached through a symlinked directory', () => {
+    const CONTENT = new TextEncoder().encode('v1\n');
+    const LONG_AGO: IndexMtime = { seconds: 4_000_000_000, nanoseconds: 0 };
+    const REACHED = 'd/x';
+
+    const blobIdOf = async (ctx: Context, bytes: Uint8Array): Promise<ObjectId> =>
+      (await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content: bytes })).id;
+
+    const arrangeTracked = async (
+      ctx: Context,
+      options: { readonly indexMtime: IndexMtime; readonly cachedFrom?: Uint8Array },
+    ): Promise<TrackedLookup> => {
+      const workdir = ctx.layout.workDir ?? '';
+      await ctx.fs.mkdir(`${workdir}/held`);
+      await ctx.fs.write(`${workdir}/held/x`, options.cachedFrom ?? CONTENT);
+      const stat = await ctx.fs.lstat(`${workdir}/held/x`);
+      const id = await blobIdOf(ctx, CONTENT);
+      const entry = indexEntryFromStat(stat, FILE_MODE.REGULAR, id, path(REACHED));
+      await ctx.fs.symlink('held', `${workdir}/d`);
+      return async () => ({ entry, indexMtime: options.indexMtime });
+    };
+
+    describe('When the reached file still matches the cached stat', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tracked = await arrangeTracked(ctx, { indexMtime: LONG_AGO });
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+
+    describe('When the reached file differs from the cached stat', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tracked = await arrangeTracked(ctx, { indexMtime: LONG_AGO });
+        await ctx.fs.write(`${ctx.layout.workDir}/held/x`, new Uint8Array([1, 2, 3, 4, 5]));
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT(REACHED));
+      });
+    });
+
+    describe('When the entry is racy and the reached content equals the index blob', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const racy: IndexMtime = { seconds: 0, nanoseconds: 0 };
+        const tracked = await arrangeTracked(ctx, { indexMtime: racy });
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+
+    describe('When the entry is racy and the reached content differs at the same size', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const racy: IndexMtime = { seconds: 0, nanoseconds: 0 };
+        const sameSize = new TextEncoder().encode('v2\n');
+        const tracked = await arrangeTracked(ctx, { indexMtime: racy, cachedFrom: sameSize });
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT(REACHED));
+      });
+    });
+
+    describe('When the index holds no entry for the path', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await arrangeTracked(ctx, { indexMtime: LONG_AGO });
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT(REACHED));
       });
     });
   });

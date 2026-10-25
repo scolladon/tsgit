@@ -1,10 +1,12 @@
 /** History, occupant and outcome builders shared by the occupant-displacement interop suites. */
 import {
+  cpSync,
   lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -135,6 +137,29 @@ export const linkToContent =
     directoryHolding(holder, child)(dir);
     symlinkSync(holder, path.join(dir, rel));
   };
+/** A symlink at `rel` to a regular file: the tracked child cannot be reached through it. */
+export const linkToFile =
+  (rel: string, holder: string): Occupant =>
+  (dir) => {
+    writeFileSync(path.join(dir, holder), OCCUPANT);
+    rmSync(path.join(dir, rel), { recursive: true, force: true });
+    symlinkSync(holder, path.join(dir, rel));
+  };
+/** The tracked directory moved to `holder` (same inodes) and a symlink to it left at `rel`. */
+export const movedBehindLink =
+  (rel: string, holder: string): Occupant =>
+  (dir) => {
+    renameSync(path.join(dir, rel), path.join(dir, holder));
+    symlinkSync(holder, path.join(dir, rel));
+  };
+/** The tracked directory copied to `holder` (new inodes) and a symlink to the copy left at `rel`. */
+export const copiedBehindLink =
+  (rel: string, holder: string): Occupant =>
+  (dir) => {
+    cpSync(path.join(dir, rel), path.join(dir, holder), { recursive: true });
+    rmSync(path.join(dir, rel), { recursive: true, force: true });
+    symlinkSync(holder, path.join(dir, rel));
+  };
 export const ignoring =
   (pattern: string, occupant: Occupant): Occupant =>
   (dir) => {
@@ -255,6 +280,30 @@ export const MERGE_FAMILY_ROWS: ReadonlyArray<MergeFamilyRow> = [
     tracked: [v1('d/x')],
     due: [regular('d/x')],
     occupant: replacing('d/x', linkToContent('d', 'held', 'x')),
+    git: refusedLocal('d/x'),
+    commands: EVERY_COMMAND,
+  },
+  {
+    id: 'S3h/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: linkToFile('d', 'held'),
+    git: refusedLocal('d/x'),
+    commands: EVERY_COMMAND,
+  },
+  {
+    id: 'S3i/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: movedBehindLink('d', 'held'),
+    git: OK,
+    commands: EVERY_COMMAND,
+  },
+  {
+    id: 'S3j/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: copiedBehindLink('d', 'held'),
     git: refusedLocal('d/x'),
     commands: EVERY_COMMAND,
   },

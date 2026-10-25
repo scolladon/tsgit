@@ -51,6 +51,7 @@ import {
   type OccupantClash,
   type OccupantVerdict,
   repoRelativePath,
+  type TrackedLookup,
 } from './internal/occupant-clash.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
 import {
@@ -76,6 +77,7 @@ import {
   type WorkingTreeWriter,
 } from './internal/write-converted-entry.js';
 import { everySourceLoadable } from './object-store.js';
+import { readIndex } from './read-index.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
 export type IgnoredOccupants = 'overwrite' | 'protect';
@@ -353,6 +355,21 @@ const deletedPaths = (
     entries.filter((e) => e.kind === 'delete' && !isLossy(e)).map((e) => joinPath(workdir, e.path)),
   );
 
+// The index is read only when a path is reached through a symlinked directory.
+const trackedLookupOf = (ctx: Context): TrackedLookup => {
+  const byPath = lazily(async () => {
+    const index = await readIndex(ctx);
+    const entries = new Map<FilePath, IndexEntry>();
+    for (const entry of index.entries) if (entry.flags.stage === 0) entries.set(entry.path, entry);
+    return { entries, indexMtime: index.indexMtime };
+  });
+  return async (path) => {
+    const { entries, indexMtime } = await byPath();
+    const entry = entries.get(path);
+    return entry === undefined ? undefined : { entry, indexMtime };
+  };
+};
+
 const NEVER_IGNORED: IgnoredProbe = async () => false;
 
 const checkDirty = async (
@@ -374,6 +391,7 @@ const checkDirty = async (
     workdir,
     isIgnoredPath: ignoredOccupants === 'protect' ? NEVER_IGNORED : createIgnoredProbe(ctx),
     scanner: createLeadingPathScanner(ctx),
+    tracked: trackedLookupOf(ctx),
   };
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
     evaluate(ctx, probe, entry, scope),

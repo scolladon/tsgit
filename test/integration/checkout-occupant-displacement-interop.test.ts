@@ -26,6 +26,7 @@ import {
 } from './interop-helpers.js';
 import {
   buildHistory,
+  copiedBehindLink,
   danglingLinkAt,
   directoryHolding,
   emptyDirectoryAt,
@@ -35,7 +36,9 @@ import {
   indexState,
   link1,
   linkToContent,
+  linkToFile,
   listing,
+  movedBehindLink,
   type Occupant,
   OK,
   type Outcome,
@@ -188,6 +191,27 @@ const UPDATE_ROWS: ReadonlyArray<ChangeRow> = [
     git: refusedLocal('d/x'),
   },
   {
+    shape: 'S3h',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: linkToFile('d', 'held'),
+    git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'S3i',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: movedBehindLink('d', 'held'),
+    git: OK,
+  },
+  {
+    shape: 'S3j',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: copiedBehindLink('d', 'held'),
+    git: refusedLocal('d/x'),
+  },
+  {
     shape: 'S3b',
     tracked: [v1('f')],
     due: [regular('f')],
@@ -279,6 +303,27 @@ const DELETE_ROWS: ReadonlyArray<ChangeRow> = [
     tracked: [v1('d/x')],
     due: [],
     occupant: replacing('d/x', linkToContent('d', 'held', 'x')),
+    git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'D6',
+    tracked: [v1('d/x')],
+    due: [],
+    occupant: linkToFile('d', 'held'),
+    git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'D7',
+    tracked: [v1('d/x')],
+    due: [],
+    occupant: movedBehindLink('d', 'held'),
+    git: OK,
+  },
+  {
+    shape: 'D8',
+    tracked: [v1('d/x')],
+    due: [],
+    occupant: copiedBehindLink('d', 'held'),
     git: refusedLocal('d/x'),
   },
   {

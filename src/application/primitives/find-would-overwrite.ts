@@ -28,6 +28,7 @@ import {
   isWorkingTreeModified,
   scopeOf,
 } from './compare-working-tree-entry.js';
+import type { IndexMtime } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import {
   type ClashScope,
@@ -110,6 +111,8 @@ const clashScopeOf = (
   ctx: Context,
   removed: ReadonlySet<FilePath>,
   scanner: LeadingPathScanner,
+  byPath: ReadonlyMap<FilePath, IndexEntry>,
+  indexMtime: IndexMtime | undefined,
 ): ClashScope => {
   const workdir = requireWorkTree(ctx, 'findWouldOverwrite');
   return {
@@ -117,6 +120,10 @@ const clashScopeOf = (
     removed: new Set([...removed].map((path) => joinPath(workdir, path))),
     isIgnoredPath: createIgnoredProbe(ctx),
     scanner,
+    tracked: async (path) => {
+      const entry = byPath.get(path);
+      return entry === undefined ? undefined : { entry, indexMtime };
+    },
   };
 };
 
@@ -188,7 +195,7 @@ export const findWouldOverwrite = async (
   // One leading-path memo for the whole scan: a shared directory is lstat-ed once.
   const scanner = createLeadingPathScanner(ctx);
   const scope = scopeOf(provider, currentIndex.indexMtime, scanner);
-  const clashScope = clashScopeOf(ctx, removed, scanner);
+  const clashScope = clashScopeOf(ctx, removed, scanner, byPath, currentIndex.indexMtime);
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
   for (const path of paths) {
