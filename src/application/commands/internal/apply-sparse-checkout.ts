@@ -24,9 +24,14 @@ import {
   createWorkingTreeDirtyCheck,
 } from '../../primitives/apply-changeset.js';
 import type { Changeset, ChangesetEntry } from '../../primitives/compute-changeset.js';
+import { lstatIfReachable } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { attributeBlobLookup } from '../../primitives/internal/read-gitattributes.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from '../../primitives/internal/symlinked-leading-path.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { acquireIndexLock } from './index-update.js';
 
@@ -136,15 +141,42 @@ const noopEntry = (entry: IndexEntry): ChangesetEntry => ({
   previousMode: entry.mode,
 });
 
-/** An included entry is `noop` when its file is on disk, else `add`; a lossy one is never probed, its decoded name being another file. */
+/** An included entry's changeset entry, and the leading component that kept it from being written, if one did. */
+interface IncludedChange {
+  readonly change: ChangesetEntry;
+  readonly obstruction?: string;
+}
+
+/** What git prints, as one warning, when re-included entries met a file or link on their leading path. */
+const ALREADY_PRESENT_HEADER =
+  'The following paths were already present and thus not updated despite sparse patterns:\n';
+const REAPPLY_HINT =
+  '\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
+
+/**
+ * An included entry is `noop` when anything stands at its path (a dangling link counts) or a file or link
+ * stands on its leading path, else `add`; a lossy one is never probed, its decoded name being another file.
+ */
 const includedChange = async (
   ctx: Context,
   workdir: string,
+  scanner: LeadingPathScanner,
   entry: IndexEntry,
-): Promise<ChangesetEntry> => {
-  if (isLossy(entry)) return addEntry(entry);
-  const present = await ctx.fs.exists(joinPath(workdir, entry.path));
-  return present ? noopEntry(entry) : addEntry(entry);
+): Promise<IncludedChange> => {
+  if (isLossy(entry)) return { change: addEntry(entry) };
+  if ((await lstatIfReachable(ctx.fs, joinPath(workdir, entry.path))) !== undefined) {
+    return { change: noopEntry(entry) };
+  }
+  const blocker = await scanner.obstructingLeadingComponent(entry.path);
+  if (blocker === undefined) return { change: addEntry(entry) };
+  return { change: noopEntry(entry), obstruction: blocker.path };
+};
+
+const warnAlreadyPresent = (ctx: Context, obstructions: ReadonlyArray<string>): void => {
+  if (obstructions.length === 0) return;
+  ctx.logger?.warn?.(
+    `${ALREADY_PRESENT_HEADER}${obstructions.map((component) => `\t${component}\n`).join('')}${REAPPLY_HINT}`,
+  );
 };
 
 /**
@@ -152,7 +184,8 @@ const includedChange = async (
  * removable excluded file still on disk, `add` every included file currently
  * absent, `noop` everything else. Removable entries reuse the existence
  * result the partition step already computed; only included entries are
- * stat-checked here, never a lossy one.
+ * stat-checked here, never a lossy one. Warns once, as git does, for the
+ * included entries a leading file or link kept from being written.
  */
 const buildChangeset = async (
   ctx: Context,
@@ -163,7 +196,14 @@ const buildChangeset = async (
   for (const { entry, present } of part.removable) {
     entries.push(present ? deleteEntry(entry) : noopEntry(entry));
   }
-  for (const entry of part.included) entries.push(await includedChange(ctx, workdir, entry));
+  const scanner = createLeadingPathScanner(ctx);
+  const obstructions: string[] = [];
+  for (const entry of part.included) {
+    const { change, obstruction } = await includedChange(ctx, workdir, scanner, entry);
+    entries.push(change);
+    if (obstruction !== undefined) obstructions.push(obstruction);
+  }
+  warnAlreadyPresent(ctx, obstructions);
   const stats = { add: 0, update: 0, delete: 0, noop: 0 };
   for (const e of entries) stats[e.kind] += 1;
   return { entries, stats };

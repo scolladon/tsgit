@@ -679,4 +679,88 @@ describe('commands/internal/apply-sparse-checkout', () => {
       });
     });
   });
+
+  describe('Given a regular file where a re-included entry leading directory is due', () => {
+    describe('When applySparseCheckout includes the entry', () => {
+      it('Then nothing is written, the file is kept, skip-worktree is cleared and one warning names the file', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const warnings: string[] = [];
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        const id = await writeBlob(ctx, 'xxx');
+        const skipped: IndexEntry = {
+          ...makeEntry('d/x', id),
+          flags: { ...STAGE0_FLAGS, skipWorktree: true },
+        };
+        await seedIndex(ctx, [skipped]);
+        await seedWorkFile(ctx, 'd', 'occupant');
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: undefined });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: [] });
+        expect(decoder.decode(await ctx.fs.read(`${ctx.layout.workDir}/d`))).toBe('occupant');
+        expect((await readBackIndex(ctx)).get('d/x' as FilePath)?.flags.skipWorktree).toBe(false);
+        expect(warnings).toEqual([
+          'The following paths were already present and thus not updated despite sparse patterns:\n\td\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a dangling symlink at a re-included path', () => {
+    describe('When applySparseCheckout includes the entry', () => {
+      it('Then the link is kept and nothing is warned', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const warnings: string[] = [];
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        const id = await writeBlob(ctx, 'xxx');
+        const skipped: IndexEntry = {
+          ...makeEntry('f', id),
+          flags: { ...STAGE0_FLAGS, skipWorktree: true },
+        };
+        await seedIndex(ctx, [skipped]);
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/f`);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: undefined });
+
+        // Assert
+        expect(result.materialized).toBe(0);
+        expect(await ctx.fs.readlink(`${ctx.layout.workDir}/f`)).toBe('nowhere');
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two re-included entries under one file', () => {
+    describe('When applySparseCheckout includes them', () => {
+      it('Then one warning lists the file once per entry', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const warnings: string[] = [];
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        const id = await writeBlob(ctx, 'xxx');
+        const skip = (path: string): IndexEntry => ({
+          ...makeEntry(path, id),
+          flags: { ...STAGE0_FLAGS, skipWorktree: true },
+        });
+        await seedIndex(ctx, [skip('d/x'), skip('d/y')]);
+        await seedWorkFile(ctx, 'd', 'occupant');
+        const sut = applySparseCheckout;
+
+        // Act
+        await sut(ctx, { matcher: undefined });
+
+        // Assert
+        expect(warnings).toEqual([
+          'The following paths were already present and thus not updated despite sparse patterns:\n\td\n\td\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+        ]);
+      });
+    });
+  });
 });
