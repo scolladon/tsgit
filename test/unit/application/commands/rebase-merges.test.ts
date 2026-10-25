@@ -448,3 +448,99 @@ const conflictingSeed = async (): Promise<{ ctx: Context; merge: ObjectId }> => 
   await checkout(ctx, { rev: 'topic' });
   return { ctx, merge };
 };
+
+describe('rebaseContinue into a merge line an untracked occupant refuses', () => {
+  /** The rebase stops on c2; its resolution continues into the merge, which adds `y`. */
+  const seedStoppedBeforeMerge = async (): Promise<{ ctx: Context; merge: ObjectId }> => {
+    const { ctx } = await seed();
+    const merge = (await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName)))
+      .parents[0] as ObjectId;
+    await checkout(ctx, { rev: 'main' });
+    await commitFile(ctx, 'c2', 'main\n');
+    await checkout(ctx, { rev: 'topic' });
+    const stop = await rebaseRun(ctx, { upstream: 'main', rebaseMerges: true });
+    expect(stop.kind).toBe('conflict');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c2`, 'resolved\n');
+    await add(ctx, ['c2']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/y`, 'occ\n');
+    return { ctx, merge };
+  };
+
+  const refusal = async (ctx: Context): Promise<unknown> => {
+    try {
+      await rebaseContinue(ctx);
+    } catch (err) {
+      return (err as TsgitError).data;
+    }
+    throw new Error('expected an error');
+  };
+
+  const state = (ctx: Context, name: string): Promise<string> =>
+    gitFile(ctx, `rebase-merge/${name}`);
+
+  describe('Given the occupant sits where the merge adds a path', () => {
+    describe('When the rebase continues', () => {
+      it('Then it refuses and leaves the occupant and HEAD on the resolved pick', async () => {
+        // Arrange
+        const { ctx } = await seedStoppedBeforeMerge();
+        const sut = refusal;
+
+        // Act
+        const data = await sut(ctx);
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['y'] });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/y`)).toBe('occ\n');
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect((await readCommit(ctx, head)).message).toBe('c2\n');
+      });
+
+      it('Then the todo heads with the merge line, done ends with it and REBASE_HEAD names the original merge', async () => {
+        // Arrange
+        const { ctx, merge } = await seedStoppedBeforeMerge();
+        const sut = refusal;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const line = `merge -C ${merge} side # Merge branch 'side' into topic\n`;
+        expect((await state(ctx, 'git-rebase-todo')).startsWith(line)).toBe(true);
+        expect((await state(ctx, 'done')).endsWith(line)).toBe(true);
+        expect(await gitFile(ctx, 'REBASE_HEAD')).toBe(`${merge}\n`);
+      });
+
+      it('Then end and msgnum advance and no message, patch or stopped-sha remain', async () => {
+        // Arrange
+        const { ctx } = await seedStoppedBeforeMerge();
+        const sut = refusal;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await state(ctx, 'msgnum')).toBe('9\n');
+        expect(await state(ctx, 'end')).toBe('10\n');
+        for (const stale of ['message', 'patch', 'stopped-sha']) {
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${stale}`)).toBe(false);
+        }
+      });
+    });
+
+    describe('When the occupant is removed and the rebase continues again', () => {
+      it('Then the merge is recreated and the rebase finishes', async () => {
+        // Arrange
+        const { ctx } = await seedStoppedBeforeMerge();
+        await refusal(ctx);
+        await ctx.fs.rm(`${ctx.layout.workDir}/y`);
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+      });
+    });
+  });
+});

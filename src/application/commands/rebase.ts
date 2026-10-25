@@ -19,7 +19,13 @@ import { type ConflictType, type MergeConflict, replayLabels } from '../../domai
 import { amendedExtraHeaders } from '../../domain/objects/amend-headers.js';
 import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import type { FileMode, FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FileMode,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../domain/objects/index.js';
 import {
   buildCombinedMessage,
   type CombinedMessageEntry,
@@ -27,6 +33,7 @@ import {
   type RebaseLabelLine,
   type RebaseResetLine,
   type RebaseTodoAction,
+  type RebaseTodoLine,
 } from '../../domain/rebase/index.js';
 import {
   REBASE_FAST_FORWARD,
@@ -97,6 +104,7 @@ import { resolveRebaseSides } from './internal/rebase-revisions.js';
 import {
   clearRebaseState,
   dropFixupGroup,
+  type MeldMarkers,
   type RebaseProgress,
   type RebaseState,
   type RebaseStop,
@@ -666,6 +674,70 @@ const refuseDirtyIndexBeforeFirstPick = async (
   throw workingTreeDirty({ localChanges: staged, untracked: [] });
 };
 
+/** What a rebase run and its loops share when a line is rescheduled. */
+interface RescheduleSides {
+  readonly branch: RefName | undefined;
+  readonly onto: ObjectId;
+  readonly origHead: ObjectId;
+  readonly backupHeader?: RebaseBackupHeader;
+  readonly redundantCommits?: RedundantCommitPolicy;
+}
+
+/** A commit line refused by an untracked occupant, as git's reschedule records it. */
+interface RefusedLine {
+  /** `done` before the line plus the line itself, last. */
+  readonly done: ReadonlyArray<RebaseTodoLine>;
+  /** The live todo, starting with the line. */
+  readonly remaining: ReadonlyArray<RebaseTodoLine>;
+  /** The commit `REBASE_HEAD` names. */
+  readonly commit: ObjectId;
+  /** Its author, for `author-script`; a `merge -C` line writes none. */
+  readonly author?: AuthorIdentity;
+  readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+  readonly meld?: MeldMarkers;
+}
+
+/** Leave git's rescheduled state for a refused line, then raise the refusal as the public error. */
+const refuseRescheduled = async (
+  ctx: Context,
+  run: RescheduleSides,
+  line: RefusedLine,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  const { commit: pickSha, author: stoppedAuthor, ...rest } = line;
+  await writeRescheduledPick(ctx, {
+    headName: run.branch ?? 'detached HEAD',
+    onto: run.onto,
+    origHead: run.origHead,
+    backupHeader: run.backupHeader,
+    ...policyOf(run),
+    ...rest,
+    pickSha,
+    ...(stoppedAuthor === undefined ? {} : { stoppedAuthor }),
+  });
+  throw workingTreeDirty(refusal);
+};
+
+/** A flat loop's refused line: reschedule it with the rewrites made so far. */
+const refuseFlatLine = async (
+  ctx: Context,
+  rc: ReplayContext,
+  index: number,
+  rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  const line = rc.todo[index] as PlannedPick | PlannedMerge;
+  const author = line.action === 'merge' ? undefined : (await readCommitData(ctx, line.oid)).author;
+  const refused: RefusedLine = {
+    done: [...rc.doneBefore, ...rc.todo.slice(0, index + 1)],
+    remaining: rc.todo.slice(index),
+    commit: line.oid,
+    ...(author === undefined ? {} : { author }),
+    rewritten,
+  };
+  return refuseRescheduled(ctx, rc, refused, refusal);
+};
+
 interface FlatProgress {
   cur: ObjectId;
   readonly applied: RebasedCommit[];
@@ -682,13 +754,14 @@ const advanceFlat = async (
 ): Promise<RebaseResult | undefined> => {
   switch (outcome.kind) {
     case 'refused':
-      throw workingTreeDirty(outcome);
+      return refuseFlatLine(ctx, rc, index, flat.rewritten, outcome);
     case 'moved':
       flat.cur = outcome.head;
       return undefined;
-    // git's dropped empty pick takes its AUTO_MERGE with it.
+    // git's dropped empty pick takes its AUTO_MERGE with it, and is recorded as rewritten to HEAD.
     case 'empty':
       await removeAutoMerge(ctx);
+      flat.rewritten.push([(rc.todo[index] as PlannedPick).oid, flat.cur]);
       return undefined;
     case 'conflict':
       return stopOnConflict(ctx, rc, { index, cur: flat.cur }, outcome.conflicts, flat.rewritten);
@@ -937,13 +1010,13 @@ const continueRescheduled = async (
 };
 
 /** The rescheduled pick sits in `done` and in the live todo; the retry replays it from the todo, which lists it in `done` once more as git does. */
-const retryRescheduledPick = (
+const retryRescheduledPick = async (
   ctx: Context,
   progress: RebaseProgress,
   head: ObjectId,
 ): Promise<RebaseResult> => {
   const rc = { ...replayContextOf(progress), doneBefore: progress.done };
-  return replayFrom(ctx, rc, head, { applied: [], rewritten: [] });
+  return replayFrom(ctx, rc, head, { applied: [], rewritten: await readRewrittenList(ctx) });
 };
 
 /** git's `--skip` hard-resets to HEAD (dropping the staged change) and retries the rescheduled pick. */

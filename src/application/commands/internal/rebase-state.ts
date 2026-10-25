@@ -99,10 +99,23 @@ export interface RebaseStop {
   readonly mergeMsg?: string;
 }
 
+/** The group files an open squash/fixup meld leaves behind a stop. */
+export interface MeldMarkers {
+  /** In-flight squash/fixup group members (`current-fixups`), in meld order. */
+  readonly currentFixups?: ReadonlyArray<CurrentFixup>;
+  /** Original oids already folded into the running squashed commit (`rewritten-pending`). */
+  readonly rewrittenPending?: ReadonlyArray<ObjectId>;
+  /** Backup of the running combined message (`message-squash`). */
+  readonly messageSquash?: string;
+  /** The group base's message while every melded member is a plain fixup (`message-fixup`). */
+  readonly messageFixup?: string;
+}
+
 /**
- * What git leaves when a pick is refused before it runs (a dirty index): the pick sits in
- * both `done` and the live todo, so a `continue` retries it. No commit was attempted, so
- * there is no message, author, patch or rewritten list.
+ * What git leaves when a pick is refused before it runs (a dirty index or an untracked
+ * occupant): the pick sits in both `done` and the live todo, so a `continue` retries it.
+ * No commit was attempted, so there is no message or patch; an occupant refusal also leaves
+ * the refused commit's author and the rewrites so far.
  */
 export interface RescheduledPick {
   readonly headName: string;
@@ -116,6 +129,12 @@ export interface RescheduledPick {
   readonly backupHeader: RebaseBackupHeader | undefined;
   /** As on `RebaseStop`: set by a start only. */
   readonly redundantCommits?: RedundantCommitPolicy;
+  /** The refused commit's author (`author-script`); unset leaves the file as it is. */
+  readonly stoppedAuthor?: AuthorIdentity;
+  /** `old new` pairs for the lines that committed before the refusal (`rewritten-list`). */
+  readonly rewritten?: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+  /** The open meld group's files, when the refused line is a squash/fixup member. */
+  readonly meld?: MeldMarkers;
 }
 
 /** A `reset` step refused before it ran: the line is rescheduled, and no commit is named. */
@@ -140,7 +159,7 @@ export interface RebaseProgress {
   readonly done: ReadonlyArray<ResolvedRebaseTodoEntry>;
   readonly remaining: ReadonlyArray<ResolvedRebaseTodoEntry>;
   readonly stoppedSha: ObjectId | undefined;
-  /** True when the stop is a refused pick (no `author-script`): `continue` retries it. */
+  /** True when the stop is a refused pick (no `message`): `continue` retries it. */
   readonly rescheduled: boolean;
 }
 
@@ -212,6 +231,9 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await writeRootRef(ctx, REBASE_HEAD_REF, stop.stoppedSha);
 };
 
+/** Files a conflict or `edit` stop writes and a refused line must not inherit. */
+const STALE_STOP_FILES = ['message', 'patch', 'stopped-sha'] as const;
+
 const writeRescheduled = async (ctx: Context, stop: RescheduledLine): Promise<void> => {
   const fullTodo = [...stop.done.slice(0, -1), ...stop.remaining];
   const write = (name: string, body: string): Promise<void> =>
@@ -235,7 +257,23 @@ const writeRescheduled = async (ctx: Context, stop: RescheduledLine): Promise<vo
 /** Persist git's state for a pick refused before it ran, exactly the files git leaves. */
 export const writeRescheduledPick = async (ctx: Context, stop: RescheduledPick): Promise<void> => {
   await writeRescheduled(ctx, stop);
+  await writeRefusedLineFiles(ctx, stop);
   await writeRootRef(ctx, REBASE_HEAD_REF, stop.pickSha);
+};
+
+/** The files only a refused commit line leaves, and the ones a previous stop must not leave behind. */
+const writeRefusedLineFiles = async (ctx: Context, stop: RescheduledPick): Promise<void> => {
+  if (stop.stoppedAuthor !== undefined) {
+    await ctx.fs.writeUtf8(file(ctx, 'author-script'), serializeAuthorScript(stop.stoppedAuthor));
+  }
+  if (stop.rewritten !== undefined && stop.rewritten.length > 0) {
+    await ctx.fs.writeUtf8(file(ctx, 'rewritten-list'), serializeRewritten(stop.rewritten));
+  }
+  await writeStopMarkers(ctx, stop.meld ?? {});
+  if (stop.meld?.messageSquash !== undefined) {
+    await ctx.fs.writeUtf8(file(ctx, 'message-squash'), stop.meld.messageSquash);
+  }
+  for (const stale of STALE_STOP_FILES) await writeOrRemove(ctx, stale, undefined);
 };
 
 /** Persist git's state for a `reset` step refused before it ran: no `REBASE_HEAD`, it names no commit. */
@@ -247,7 +285,10 @@ export const writeRescheduledLine = async (ctx: Context, stop: RescheduledLine):
 /** git unlinks `amend` before every step and drops `current-fixups` /
  *  `rewritten-pending` once their group ends, so a stop leaves exactly the
  *  markers it carries — a stale one would steer the next `continue`. */
-const writeStopMarkers = async (ctx: Context, stop: RebaseStop): Promise<void> => {
+const writeStopMarkers = async (
+  ctx: Context,
+  stop: MeldMarkers & { readonly amend?: ObjectId },
+): Promise<void> => {
   await writeOrRemove(ctx, 'amend', stop.amend === undefined ? undefined : `${stop.amend}\n`);
   await writeOrRemove(ctx, 'message-fixup', stop.messageFixup);
   await writeOrRemove(
@@ -313,7 +354,7 @@ export const readRebaseProgress = async (ctx: Context): Promise<RebaseProgress |
     done,
     remaining,
     stoppedSha: await readRebaseHead(ctx),
-    rescheduled: !(await ctx.fs.exists(file(ctx, 'author-script'))),
+    rescheduled: !(await ctx.fs.exists(file(ctx, 'message'))),
   };
 };
 

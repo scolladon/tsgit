@@ -4117,3 +4117,285 @@ describe('rebase start over an untracked occupant', () => {
     });
   });
 });
+
+describe('rebase over a line an untracked occupant refuses', () => {
+  const XAVIER: AuthorIdentity = {
+    name: 'Xavier',
+    email: 'xavier@y',
+    timestamp: 1_700_000_500,
+    timezoneOffset: '+0000',
+  };
+  const OCCUPIED = { code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['n'] };
+
+  /** base(keep); u: U; main: W(w), X(adds n), Z(deletes n); `n` is an untracked occupant. */
+  const seedOccupied = async (): Promise<{
+    ctx: Context;
+    w: ObjectId;
+    x: ObjectId;
+    z: ObjectId;
+  }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await setUser(ctx);
+    await writeAddCommit(ctx, 'keep', 'keep\n', 'base');
+    await branchCreate(ctx, { name: 'u' });
+    await checkout(ctx, { rev: 'u' });
+    await writeAddCommit(ctx, 'uu', 'uu\n', 'U');
+    await checkout(ctx, { rev: 'main' });
+    const w = await writeAddCommit(ctx, 'w', 'w\n', 'w');
+    const x = await writeAddCommit(ctx, 'n', 'n\n', 'x', XAVIER);
+    await rm(ctx, ['n']);
+    const z = (await commit(ctx, { message: 'z', author: FEAT_AUTHOR })).id;
+    await ctx.fs.writeUtf8(work(ctx, 'n'), 'occ\n');
+    return { ctx, w, x, z };
+  };
+
+  const entriesOf = async (ctx: Context): Promise<string[]> =>
+    (await ctx.fs.readdir(`${ctx.layout.gitDir}/rebase-merge`)).map((entry) => entry.name).sort();
+
+  describe('Given the occupant refuses the second pick of a flat start', () => {
+    describe('When the rebase runs', () => {
+      it('Then it throws the occupant refusal', async () => {
+        // Arrange
+        const { ctx } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+      });
+
+      it('Then HEAD is the rewritten first pick and the occupant is untouched', async () => {
+        // Arrange
+        const { ctx, w } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect((await readCommit(ctx, head)).message).toBe('w\n');
+        expect(head).not.toBe(w);
+        expect(await ctx.fs.readUtf8(work(ctx, 'n'))).toBe('occ\n');
+      });
+
+      it('Then done ends with the refused line and the todo heads with it', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${w} # w\npick ${x} # x\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${x} # x\npick ${z} # z\n`);
+      });
+
+      it('Then end counts the whole todo and msgnum the lines run', async () => {
+        // Arrange
+        const { ctx } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'end')).toBe('3\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('2\n');
+      });
+
+      it('Then author-script holds the refused commit author and REBASE_HEAD names it', async () => {
+        // Arrange
+        const { ctx, x } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'author-script')).toBe(
+          "GIT_AUTHOR_NAME='Xavier'\nGIT_AUTHOR_EMAIL='xavier@y'\nGIT_AUTHOR_DATE='@1700000500 +0000'\n",
+        );
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${x}\n`);
+      });
+
+      it('Then rewritten-list records the first pick', async () => {
+        // Arrange
+        const { ctx, w } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${head}\n`);
+      });
+
+      it('Then the state files are exactly the ones git leaves', async () => {
+        // Arrange
+        const { ctx } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual([
+          'author-script',
+          'done',
+          'drop_redundant_commits',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+          'rewritten-list',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a conflict stop whose resolution is continued into an occupant', () => {
+    const seedStopped = async (): Promise<{ ctx: Context; w: ObjectId; x: ObjectId }> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await setUser(ctx);
+      await writeAddCommit(ctx, 'keep', 'keep\n', 'base');
+      await branchCreate(ctx, { name: 'u' });
+      await checkout(ctx, { rev: 'u' });
+      await writeAddCommit(ctx, 'keep', 'u\n', 'U');
+      await checkout(ctx, { rev: 'main' });
+      const w = await writeAddCommit(ctx, 'keep', 'w\n', 'w');
+      const x = await writeAddCommit(ctx, 'n', 'n\n', 'x', XAVIER);
+      await rm(ctx, ['n']);
+      await commit(ctx, { message: 'z', author: FEAT_AUTHOR });
+      const stop = await rebaseRun(ctx, { upstream: 'u' });
+      expect(stop.kind).toBe('conflict');
+      await ctx.fs.writeUtf8(work(ctx, 'keep'), 'resolved\n');
+      await add(ctx, ['keep']);
+      await ctx.fs.writeUtf8(work(ctx, 'n'), 'occ\n');
+      return { ctx, w, x };
+    };
+
+    describe('When the rebase continues', () => {
+      it('Then the stop files of the conflict are gone and the refused line is rescheduled', async () => {
+        // Arrange
+        const { ctx, x } = await seedStopped();
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        for (const stale of ['message', 'patch', 'stopped-sha']) {
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${stale}`)).toBe(false);
+        }
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${x}\n`);
+        expect(await readMerge(ctx, 'msgnum')).toBe('2\n');
+      });
+
+      it('Then the rewrite of the resolved pick is recorded', async () => {
+        // Arrange
+        const { ctx, w } = await seedStopped();
+        const sut = rebaseContinue;
+
+        // Act
+        await dataOf(() => sut(ctx));
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${head}\n`);
+      });
+    });
+  });
+
+  describe('Given a refused line retried while the occupant stays', () => {
+    describe('When the rebase continues', () => {
+      it('Then it is refused again and done lists the line once more', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seedOccupied();
+        await dataOf(() => rebaseRun(ctx, { upstream: 'u' }));
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${w} # w\npick ${x} # x\npick ${x} # x\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${x} # x\npick ${z} # z\n`);
+        expect(await readMerge(ctx, 'end')).toBe('4\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('3\n');
+      });
+    });
+
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then the rebase finishes', async () => {
+        // Arrange
+        const { ctx } = await seedOccupied();
+        await dataOf(() => rebaseRun(ctx, { upstream: 'u' }));
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+      });
+    });
+  });
+
+  describe('Given a second occupant refusing a later line after the first retry succeeded', () => {
+    describe('When the rebase continues', () => {
+      it('Then the rewrite list carries every pick committed before and after the first refusal', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seedOccupied();
+        await writeAddCommit(ctx, 'q', 'q\n', 'q');
+        await dataOf(() => rebaseRun(ctx, { upstream: 'u' }));
+        await ctx.fs.rm(work(ctx, 'n'));
+        await ctx.fs.writeUtf8(work(ctx, 'q'), 'occ\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['q'] });
+        const pairs = (await readMerge(ctx, 'rewritten-list')).trim().split('\n');
+        expect(pairs.map((pair) => pair.split(' ')[0])).toEqual([w, x, z]);
+      });
+    });
+  });
+
+  describe('Given a fast-forward pick the occupant refuses', () => {
+    describe('When a flat rebase --onto runs', () => {
+      it('Then HEAD stays and the dropped pick is recorded as rewritten to itself', async () => {
+        // Arrange
+        const { ctx, w, x } = await seedOccupied();
+        const base = (await readCommit(ctx, w)).parents[0] as ObjectId;
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, { upstream: base, onto: w }));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(w);
+        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${w}\n`);
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${w} # w\npick ${x} # x\n`);
+        expect(await ctx.fs.readUtf8(work(ctx, 'n'))).toBe('occ\n');
+      });
+    });
+  });
+});

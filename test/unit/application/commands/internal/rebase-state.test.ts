@@ -545,6 +545,139 @@ describe('rebase-state', () => {
         expect(result).toBeUndefined();
       });
     });
+
+    describe('When the refused line carries its author and the rewrites so far', () => {
+      const REFUSED = {
+        ...RESCHEDULED,
+        stoppedAuthor: ADA,
+        rewritten: [[T1, NEW1]] as ReadonlyArray<readonly [ObjectId, ObjectId]>,
+      } as const;
+
+      it('Then author-script holds that author', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledPick(ctx, REFUSED);
+
+        // Assert
+        expect(await read(ctx, 'author-script')).toBe(
+          "GIT_AUTHOR_NAME='Ada'\nGIT_AUTHOR_EMAIL='ada@example.com'\nGIT_AUTHOR_DATE='@1700000000 +0000'\n",
+        );
+      });
+
+      it('Then rewritten-list holds the pairs', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledPick(ctx, REFUSED);
+
+        // Assert
+        expect(await read(ctx, 'rewritten-list')).toBe(`${T1} ${NEW1}\n`);
+      });
+
+      it('Then the file list is the conflict stop minus the stop-only files', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledPick(ctx, REFUSED);
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual([
+          'author-script',
+          'done',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+          'rewritten-list',
+        ]);
+      });
+    });
+
+    describe('When the refused line has no rewrites', () => {
+      it('Then no rewritten-list is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRescheduledPick(ctx, { ...RESCHEDULED, stoppedAuthor: ADA, rewritten: [] });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/rewritten-list`)).toBe(false);
+      });
+    });
+
+    describe('When the refused line sits in an open meld group', () => {
+      it('Then the group files are written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const meld = {
+          currentFixups: [{ action: 'squash', oid: T2 }] as const,
+          rewrittenPending: [T1],
+          messageSquash: 'one\n\ntwo\n',
+          messageFixup: 'one\n',
+        };
+
+        // Act
+        await writeRescheduledPick(ctx, { ...RESCHEDULED, meld });
+
+        // Assert
+        expect(await read(ctx, 'current-fixups')).toBe(`squash ${T2}\n`);
+        expect(await read(ctx, 'rewritten-pending')).toBe(`${T1}\n`);
+        expect(await read(ctx, 'message-squash')).toBe('one\n\ntwo\n');
+        expect(await read(ctx, 'message-fixup')).toBe('one\n');
+      });
+    });
+
+    describe('When a previous stop left its files behind', () => {
+      it.each([
+        'amend',
+        'message',
+        'patch',
+        'stopped-sha',
+        'current-fixups',
+        'rewritten-pending',
+        'message-fixup',
+      ])('Then %s is removed', async (name) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, {
+          ...STOP,
+          amend: T2,
+          currentFixups: [{ action: 'fixup', oid: T2 }],
+          rewrittenPending: [T1],
+          messageFixup: 'x\n',
+        });
+
+        // Act
+        await writeRescheduledPick(ctx, { ...RESCHEDULED, stoppedAuthor: ADA });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${name}`)).toBe(false);
+      });
+    });
+
+    describe('When readRebaseProgress reads an occupant reschedule that carries an author', () => {
+      it('Then it is flagged rescheduled', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRescheduledPick(ctx, { ...RESCHEDULED, stoppedAuthor: ADA });
+
+        // Act
+        const result = await readRebaseProgress(ctx);
+
+        // Assert
+        expect(result?.rescheduled).toBe(true);
+      });
+    });
   });
 
   describe('Given an interactive edit stop', () => {

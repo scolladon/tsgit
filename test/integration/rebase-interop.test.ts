@@ -23,7 +23,7 @@
  *   unique:         a rebase either tool starts is resumable by the other, and both drop the same already-upstream commit
  *   interopSurface: rebaseMerge, reflog
  */
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1100,6 +1100,222 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       });
     },
   );
+
+  describe('Given a flat rebase line refused by an untracked occupant', () => {
+    const REBASE_FILES = [
+      'done',
+      'git-rebase-todo',
+      'end',
+      'msgnum',
+      'author-script',
+      'rewritten-list',
+    ] as const;
+    const XAVIER_ENV = { GIT_AUTHOR_DATE: '1700000500 +0000' };
+    const commitAs = (dir: string, title: string, env: NodeJS.ProcessEnv = {}): void => {
+      runGit(['-C', dir, 'commit', '-q', '-m', title, '--author', 'Xavier <xavier@y>'], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+          ...env,
+        },
+      });
+    };
+
+    /** base(keep); u: U; main: W, X (adds n, by Xavier), Z (deletes n). `conflict` makes W and U both set keep. */
+    const buildOccupied = (dir: string, conflict: boolean): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'keep', 'keep\n');
+      git(dir, 'add', 'keep');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'u');
+      writeWork(dir, conflict ? 'keep' : 'uu', 'u\n');
+      git(dir, 'add', '.');
+      gitCommit(dir, 'U');
+      git(dir, 'checkout', '-q', 'main');
+      writeWork(dir, conflict ? 'keep' : 'w', 'w\n');
+      git(dir, 'add', '.');
+      gitCommit(dir, 'W');
+      writeWork(dir, 'n', 'n\n');
+      git(dir, 'add', 'n');
+      commitAs(dir, 'X', XAVIER_ENV);
+      git(dir, 'rm', '-q', 'n');
+      gitCommit(dir, 'Z');
+    };
+
+    const plantOccupant = (dir: string): void => writeWork(dir, 'n', 'occ\n');
+
+    const snapshot = (dir: string): ReadonlyArray<unknown> => {
+      const head = oidAt(dir, 'HEAD');
+      const state = path.join(dir, '.git', 'rebase-merge');
+      const read = (file: string): string | undefined =>
+        existsSync(file) ? readFileSync(file, 'utf8').replaceAll(head, '<HEAD>') : undefined;
+      return [
+        head === oidAt(dir, 'main') ? 'main' : 'moved',
+        existsSync(state) ? readdirSync(state).sort() : undefined,
+        ...REBASE_FILES.map((name) => read(path.join(state, name))),
+        read(path.join(dir, '.git', 'REBASE_HEAD')),
+        readFileSync(path.join(dir, 'n'), 'utf8'),
+        git(dir, 'ls-files', '--stage'),
+      ];
+    };
+
+    const gitRebase = (dir: string, ...args: ReadonlyArray<string>) =>
+      tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', ...args], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+        },
+      });
+
+    const tsgitRebase = async (
+      dir: string,
+      step: (repo: Awaited<ReturnType<typeof openRepository>>) => Promise<unknown>,
+    ): Promise<unknown> => {
+      const repo = await openRepository({ cwd: dir });
+      try {
+        await step(repo);
+        return 'ok';
+      } catch (err) {
+        return (err as TsgitError).data;
+      } finally {
+        await repo.dispose();
+      }
+    };
+
+    const REFUSED = { code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['n'] };
+
+    describe('When the refused line is the second pick of a start', () => {
+      it('Then tsgit leaves the state git leaves', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+
+        // Act
+        const peer = gitRebase(pair.peer, 'u');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      it('Then the retry with the occupant kept leaves the state git leaves', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      it('Then continuing once the occupant is gone finishes on the same history', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+        for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(ours).toBe('ok');
+        const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main').trim();
+        expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
+
+      it('Then skipping once the occupant is gone finishes on the same history', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+        for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+        // Act
+        const peer = gitRebase(pair.peer, '--skip');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.skip());
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(ours).toBe('ok');
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
+    });
+
+    describe('When the refused line follows a resolved conflict', () => {
+      it('Then tsgit leaves the state git leaves and none of the conflict stop', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, true);
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+        for (const dir of [pair.peer, pair.ours]) {
+          writeWork(dir, 'keep', 'resolved\n');
+          git(dir, 'add', 'keep');
+          plantOccupant(dir);
+        }
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+    });
+
+    describe('When a fast-forward pick is the refused line', () => {
+      it('Then HEAD stays and the dropped pick is recorded as git records it', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        const [base, w] = ['main~3', 'main~2'].map((rev) => oidAt(pair.ours, rev)) as [
+          string,
+          string,
+        ];
+
+        // Act
+        const peer = gitRebase(pair.peer, '--onto', w, base);
+        const ours = await tsgitRebase(pair.ours, (repo) =>
+          repo.rebase.run({ upstream: base, onto: w }),
+        );
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(oidAt(pair.ours, 'HEAD')).toBe(w);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+    });
+  });
 });
 
 /** main: a-b-c-d; `side` at b; `feat` off `side` adds f and tracks main. HEAD left on feat. */
