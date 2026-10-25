@@ -781,20 +781,16 @@ const clearDirectoryAt = async (
   else if (policy === 'ignored') await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
 };
 
-// A regular file standing where a directory is due: forced it goes; otherwise only when
-// ignored, as the clash check already refused any other one.
+// A regular file standing where a directory is due goes, as git's create_directories unlinks it:
+// the clash check has already refused every one it was meant to protect, and what it did not
+// judge (an unmerged path being reset) is replaced.
 const displaceFile = async (
   ctx: Context,
   workdir: string,
   obstruction: LeadingObstruction,
-  policy: OccupantPolicy,
-  isIgnoredPath: IgnoredProbe,
   scanner: LeadingPathScanner,
 ): Promise<void> => {
-  const absPath = joinPath(workdir, obstruction.path);
-  if (policy === 'every' || (policy === 'ignored' && (await isIgnoredPath(absPath, false)))) {
-    await ctx.fs.rm(absPath);
-  }
+  await ctx.fs.rm(joinPath(workdir, obstruction.path));
   scanner.invalidate(obstruction.path);
 };
 
@@ -810,7 +806,7 @@ const clearOccupants = async (
     if (isLossy(entry)) continue;
     const obstruction = await scanner.obstructingLeadingComponent(entry.path);
     if (obstruction?.kind === 'file') {
-      await displaceFile(ctx, workdir, obstruction, policy, isIgnoredPath, scanner);
+      await displaceFile(ctx, workdir, obstruction, scanner);
       continue;
     }
     if (obstruction !== undefined) continue;

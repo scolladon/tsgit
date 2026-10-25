@@ -5107,7 +5107,7 @@ describe('applyChangeset leaving occupants its pre-flight does not judge', () =>
     },
   ])('Given $label at d where an unmerged update of d/x is due', ({ ignore, options }) => {
     describe('When applyChangeset runs without force', () => {
-      it('Then the file is kept and the write is refused', async () => {
+      it('Then the file gives way to the directory holding x', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const newId = await writeBlob(ctx, enc('new'));
@@ -5126,30 +5126,7 @@ describe('applyChangeset leaving occupants its pre-flight does not judge', () =>
         );
 
         // Assert
-        expect(outcome).toMatchObject({ code: 'NOT_A_DIRECTORY' });
-        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('mine');
-      });
-    });
-  });
-
-  describe('Given an ignored file at d where an unmerged update of d/x is due', () => {
-    describe('When applyChangeset runs without force', () => {
-      it('Then the ignored file gives way to the write', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const newId = await writeBlob(ctx, enc('new'));
-        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('d\n'));
-        await ctx.fs.write(`${WORKDIR}/d`, enc('o'));
-        const sut = applyChangeset;
-
-        // Act
-        await sut(ctx, {
-          changeset: makeChangeset([unmergedUpdate('d/x', newId)]),
-          force: false,
-          workdir: WORKDIR,
-        });
-
-        // Assert
+        expect(outcome).toBeUndefined();
         expect(dec(await ctx.fs.read(`${WORKDIR}/d/x`))).toBe('new');
       });
     });

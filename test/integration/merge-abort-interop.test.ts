@@ -38,6 +38,8 @@ import {
   ignoring,
   indexState,
   listing,
+  NESTED_CONFLICT,
+  NESTED_OCCUPANTS,
   type Occupant,
   OK,
   type Outcome,
@@ -323,6 +325,26 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort occupant interop', { timeout: 60_
       });
     },
   );
+
+  describe.each(NESTED_OCCUPANTS)('Given the unmerged d/x beneath %s', (_label, occupant) => {
+    describe('When both tools abort it', () => {
+      it('Then d/x is restored as in git and the merge state is cleared', async () => {
+        // Arrange
+        await stopBoth(NESTED_CONFLICT);
+        occupant(pair.peer);
+        occupant(pair.ours);
+
+        // Act
+        const { expected, result } = await abortOnBoth();
+
+        // Assert
+        expect(expected).toEqual(OK);
+        expect(result).toEqual(expected);
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
+      });
+    });
+  });
 
   describe('Given a gitlink modified upstream and deleted here, then its directory populated', () => {
     describe('When both tools abort it', () => {

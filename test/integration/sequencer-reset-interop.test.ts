@@ -32,6 +32,8 @@ import {
   indexState,
   KEEP,
   listing,
+  NESTED_CONFLICT,
+  NESTED_OCCUPANTS,
   type Outcome,
   regular,
   replacing,
@@ -263,6 +265,27 @@ describe.skipIf(!GIT_AVAILABLE)(
               // Assert
               expect(expected).toEqual({ refused: true, localChanges: [], untracked: ['keep'] });
               expect(result).toEqual(expected);
+              expect(gitState(tool, pair.ours)).toEqual(gitState(tool, pair.peer));
+            });
+          });
+        });
+
+        describe.each(NESTED_OCCUPANTS)('Given the unmerged d/x beneath %s', (_label, occupant) => {
+          describe('When both tools finish it', () => {
+            it('Then d/x is restored as in git and the pick state matches', async () => {
+              // Arrange
+              await stopBoth(tool, (dir) => buildStopped(tool, dir, NESTED_CONFLICT), [
+                REVISION[tool],
+              ]);
+              occupant(pair.peer);
+              occupant(pair.ours);
+
+              // Act
+              const { expected, result } = await finishOnBoth(tool, action);
+
+              // Assert
+              expect(result).toEqual(expected);
+              expect(listing(pair.ours)).toEqual(listing(pair.peer));
               expect(gitState(tool, pair.ours)).toEqual(gitState(tool, pair.peer));
             });
           });

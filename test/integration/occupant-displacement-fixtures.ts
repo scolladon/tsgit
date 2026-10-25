@@ -432,3 +432,21 @@ export const runGitOutcome = (
     return outcomeOfGitStderr(stderr.toString());
   }
 };
+
+/** A merge-family stop whose conflicted path sits one directory down, so a replaced `d` obstructs its restoration. */
+export const NESTED_CONFLICT = {
+  base: [v1('d/x')],
+  main: [regular('d/x', 'm\n')],
+  theirs: [regular('d/x', 't\n')],
+};
+
+export const NESTED_OCCUPANTS: ReadonlyArray<readonly [string, Occupant]> = [
+  ['an untracked file d', replacing('d/x', fileAt('d'))],
+  ['an ignored file d', replacing('d/x', ignoring('d', fileAt('d')))],
+  ['a symlink d', replacing('d/x', (dir) => symlinkSync('nowhere', path.join(dir, 'd')))],
+  ['a directory d holding an untracked file', replacing('d/x', directoryHolding('d', 'u'))],
+  [
+    'a directory d holding an ignored file',
+    replacing('d/x', ignoring('d/u', directoryHolding('d', 'u'))),
+  ],
+];
