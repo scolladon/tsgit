@@ -33,14 +33,22 @@ import {
   rebaseRun,
   rebaseSkip,
 } from '../../src/application/commands/rebase.js';
+import { TsgitError } from '../../src/domain/error.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
-import { indexState, listing } from './occupant-displacement-fixtures.js';
+import {
+  indexState,
+  listing,
+  OK,
+  type Outcome,
+  outcomeOfGitStderr,
+} from './occupant-displacement-fixtures.js';
 import {
   ABORT_ROWS,
   type AbortRow,
   buildStoppedMerge,
   entriesOf,
 } from './stopped-state-fixtures.js';
+import { REBASE_MERGES_RESET_PINS } from './stopped-state-pins.js';
 
 const EPOCH = 1_700_000_000;
 const DATED_ENV = {
@@ -243,6 +251,19 @@ const resetStepState = (dir: string) => ({
   rebaseHead: readGit(dir, 'REBASE_HEAD'),
 });
 
+/** Git's precondition refusal names no path while tsgit lists the tracked change, so only untracked paths are comparable. */
+const comparable = (outcome: Outcome): Outcome =>
+  outcome.untracked.length === 0 ? { ...outcome, localChanges: [] } : outcome;
+
+const tsgitRefusal = (err: unknown): Outcome => {
+  if (!(err instanceof TsgitError)) throw err;
+  const data = err.data;
+  if (data.code !== 'WORKING_TREE_DIRTY') {
+    return { refused: true, crash: data.code, localChanges: [], untracked: [] };
+  }
+  return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
+};
+
 const refusedResetState = (dir: string) => ({
   head: git(dir, 'rev-parse', 'HEAD'),
   occupant: readFileSync(path.join(dir, 'p'), 'utf8'),
@@ -441,23 +462,23 @@ describe.skipIf(!GIT_AVAILABLE)('rebase --rebase-merges interop', () => {
           const sut = rebaseContinue;
 
           // Act
-          const gitExit = tryRunGitWithExit(['-C', dirs.theirs, 'rebase', '--continue'], {
+          const gitRun = tryRunGitWithExit(['-C', dirs.theirs, 'rebase', '--continue'], {
             env: DATED_ENV,
-          }).exitCode;
-          const failure = await sut(tsgitAt(dirs.ours)).then(
-            () => undefined,
-            (err: unknown) => err,
-          );
+          });
+          const gitExit = gitRun.exitCode;
+          const expected = gitExit === 0 ? OK : comparable(outcomeOfGitStderr(gitRun.stderr));
+          const result = await sut(tsgitAt(dirs.ours)).then(() => OK, tsgitRefusal);
 
           // Assert
-          expect(failure !== undefined).toBe(gitExit !== 0);
+          expect(expected).toEqual(REBASE_MERGES_RESET_PINS[`${row.shape}/${variant}`] ?? expected);
+          expect(comparable(result)).toEqual(expected);
           expect(listing(dirs.ours)).toEqual(listing(dirs.theirs));
           expect(indexState(dirs.ours)).toEqual(indexState(dirs.theirs));
           if (variant === 'reset-adds' && !GIT_DISPLACES_IGNORED_ADDS.has(row.shape)) {
             expect(gitExit).toBe(1);
             expect(readGit(dirs.theirs, 'rebase-merge/git-rebase-todo')).toMatch(/^reset /);
           }
-          if (variant === 'reset-adds' && gitExit !== 0) {
+          if (gitExit !== 0) {
             expect(resetStepState(dirs.ours)).toEqual(resetStepState(dirs.theirs));
           }
         });
