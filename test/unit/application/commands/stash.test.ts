@@ -3,9 +3,11 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { hardResetWorktreeToCommit } from '../../../../src/application/commands/internal/reset-worktree.js';
 import {
   applyAutostash,
   createAutostash,
+  restoreSnapshot,
   snapshotLocalChanges,
   stashApply,
   stashDrop,
@@ -2438,6 +2440,78 @@ describe('snapshotLocalChanges', () => {
 
         // Assert
         expect(result).toBeUndefined();
+        expect(await looseObjectIds(ctx)).toEqual(before);
+      });
+    });
+  });
+});
+
+describe('restoreSnapshot', () => {
+  const committer: AuthorIdentity = {
+    name: 'Bob',
+    email: 'bob@example.com',
+    timestamp: 1_700_000_100,
+    timezoneOffset: '+0000',
+  };
+
+  const blobIdOf = async (ctx: Context, content: string): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode(content),
+      id: '' as ObjectId,
+    });
+
+  const stagedIdOf = async (ctx: Context, path: string): Promise<ObjectId | undefined> =>
+    (await readIndex(ctx)).entries.find((entry) => entry.path === path)?.id;
+
+  const snapshotThenReset = async (ctx: Context): Promise<ObjectId> => {
+    const workDir = `${ctx.layout.workDir}`;
+    const snapshot = (await snapshotLocalChanges(ctx, workDir, { author, committer })) as ObjectId;
+    await hardResetWorktreeToCommit(ctx, await headId(ctx));
+    return snapshot;
+  };
+
+  describe('Given a snapshot of a staged change and of a staged change edited again', () => {
+    describe('When the tree was reset to HEAD and the snapshot is restored', () => {
+      it('Then the work tree and the index hold the changes the snapshot recorded', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'b.txt', 'b-committed\n', 'add b');
+        await write(ctx, 'a.txt', 'a-staged\n');
+        await add(ctx, ['a.txt']);
+        await write(ctx, 'b.txt', 'b-staged\n');
+        await add(ctx, ['b.txt']);
+        await write(ctx, 'b.txt', 'b-edited\n');
+        const snapshot = await snapshotThenReset(ctx);
+        expect(await read(ctx, 'b.txt')).toBe('b-committed\n');
+
+        // Act
+        await restoreSnapshot(ctx, `${ctx.layout.workDir}`, snapshot);
+
+        // Assert
+        expect(await read(ctx, 'a.txt')).toBe('a-staged\n');
+        expect(await read(ctx, 'b.txt')).toBe('b-edited\n');
+        expect(await stagedIdOf(ctx, 'a.txt')).toBe(await blobIdOf(ctx, 'a-staged\n'));
+        expect(await stagedIdOf(ctx, 'b.txt')).toBe(await blobIdOf(ctx, 'b-staged\n'));
+      });
+    });
+  });
+
+  describe('Given a snapshot of an unstaged edit', () => {
+    describe('When the snapshot is restored over the reset tree', () => {
+      it('Then the edit is back, unstaged, and no object was written', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const snapshot = await snapshotThenReset(ctx);
+        const before = await looseObjectIds(ctx);
+
+        // Act
+        await restoreSnapshot(ctx, `${ctx.layout.workDir}`, snapshot);
+
+        // Assert
+        expect(await read(ctx, 'a.txt')).toBe('edited\n');
+        expect(await stagedIdOf(ctx, 'a.txt')).toBe(await blobIdOf(ctx, 'committed\n'));
         expect(await looseObjectIds(ctx)).toEqual(before);
       });
     });

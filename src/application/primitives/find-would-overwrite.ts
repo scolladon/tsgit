@@ -137,6 +137,16 @@ const untrackedSquat = async (
   return byPath.has(verdict.clash.path) ? undefined : verdict.clash.path;
 };
 
+/** A directory still holding what git does not track where the merge deletes a tracked path: untracked data in the way, not a local change. */
+const holdsUntrackedAtDeletion = async (
+  ctx: Context,
+  path: FilePath,
+  clashScope: ClashScope,
+): Promise<boolean> => {
+  const verdict = await classifyOccupant(ctx, { kind: 'delete', path }, clashScope);
+  return verdict.kind === 'clash' && verdict.clash.class === 'untracked';
+};
+
 const isLocalChange = async (
   ctx: Context,
   tracked: { readonly path: FilePath; readonly entry: IndexEntry },
@@ -156,8 +166,9 @@ const isLocalChange = async (
  * paths modified vs the stage-0 index, or standing beneath a regular file, go to
  * `localChanges`; index-absent paths whose spot is held (the path itself or a
  * leading component, named in place) go to `untracked`. `removed` lists the
- * paths the merge deletes, which never clash. A tracked path never enters the
- * untracked branch, so a both-classes path is reported as a local change only.
+ * paths the merge deletes, which never clash; a tracked one that a directory
+ * holding untracked files now occupies is `untracked`, as git's `lose-untracked`.
+ * Any other tracked path is reported as a local change only.
  * Each class is returned sorted ascending.
  */
 export const findWouldOverwrite = async (
@@ -180,7 +191,8 @@ export const findWouldOverwrite = async (
       const squat = await untrackedSquat(ctx, path, byPath, clashScope);
       if (squat !== undefined) untracked.push(squat);
     } else if (await isLocalChange(ctx, { path, entry }, scanner, scope)) {
-      localChanges.push(path);
+      const held = removed.has(path) && (await holdsUntrackedAtDeletion(ctx, path, clashScope));
+      (held ? untracked : localChanges).push(path);
     }
   }
   return {

@@ -679,4 +679,64 @@ describe('findTrackedBeyondSymlink', () => {
       });
     });
   });
+
+  describe('Given a tracked path replaced by a directory holding an untracked file', () => {
+    describe('When the merge deletes the path', () => {
+      it('Then the path is untracked, not a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const committed = await blob(ctx, 'committed\n');
+        await work(ctx, 'f/u', 'untracked\n');
+
+        // Act
+        const result = await findWouldOverwrite(
+          ctx,
+          set('f'),
+          indexOf([entryOf('f', committed)]),
+          set('f'),
+        );
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: ['f'] });
+      });
+    });
+
+    describe('When the merge updates the path', () => {
+      it('Then the path is a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const committed = await blob(ctx, 'committed\n');
+        await work(ctx, 'f/u', 'untracked\n');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('f'), indexOf([entryOf('f', committed)]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: ['f'], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given a tracked path replaced by a directory holding only a path the merge deletes', () => {
+    describe('When the merge deletes both', () => {
+      it('Then the path is a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const committed = await blob(ctx, 'committed\n');
+        await work(ctx, 'f/u', 'tracked\n');
+
+        // Act
+        const result = await findWouldOverwrite(
+          ctx,
+          set('f', 'f/u'),
+          indexOf([entryOf('f', committed), entryOf('f/u', committed)]),
+          set('f', 'f/u'),
+        );
+
+        // Assert
+        expect(result.untracked).toEqual([]);
+        expect(result.localChanges).toContain('f');
+      });
+    });
+  });
 });

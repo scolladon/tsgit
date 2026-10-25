@@ -88,6 +88,7 @@ import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
+import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   hasLinkMode,
   runLinkFirstWave,
@@ -98,6 +99,7 @@ import {
   readUiDiffAlgorithm,
 } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
+import { createIgnoredProbe } from '../primitives/internal/occupant-clash.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import {
   type SurvivingDirectories,
@@ -177,10 +179,16 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
+import { hardResetWorktreeToCommit, type WorktreeRefusal } from './internal/reset-worktree.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { signCommitData } from './internal/sign-request.js';
 import { buildSquashMessage } from './internal/squash-message.js';
-import { applyMergeAutostash, createAutostash, snapshotLocalChanges } from './stash.js';
+import {
+  applyMergeAutostash,
+  createAutostash,
+  restoreSnapshot,
+  snapshotLocalChanges,
+} from './stash.js';
 
 const PREVIOUS_BRANCH_SHORTHAND = '-';
 const PREVIOUS_BRANCH = '@{-1}';
@@ -359,10 +367,17 @@ interface HeadlessSquash {
 /** How the merge machinery ends: a result, or a squash that ends without a new head. */
 type MergeEnding = MergeResult | HeadlessSquash;
 
-const headless = async (squashed: Promise<SquashedResult>): Promise<HeadlessSquash> => ({
-  kind: 'headless-squash',
-  result: await squashed,
-});
+const headless = (squashed: SquashedResult | WorktreeRefusal): HeadlessSquash | WorktreeRefusal =>
+  isRefusal(squashed) ? squashed : { kind: 'headless-squash', result: squashed };
+
+/** A write that would overwrite a local change or an untracked path: the strategy that asked for it failed. */
+const isRefusal = (outcome: { readonly kind: string }): outcome is WorktreeRefusal =>
+  outcome.kind === 'refused';
+
+const refusalAsError = <T extends { readonly kind: string }>(outcome: T | WorktreeRefusal): T => {
+  if (isRefusal(outcome)) throw workingTreeDirty(outcome);
+  return outcome;
+};
 
 const resultOf = (ending: MergeEnding): MergeResult =>
   ending.kind === 'headless-squash' ? ending.result : ending;
@@ -696,8 +711,8 @@ const twoHeadMerge = async (
       const trivial = await tryTrivialMerge(ctx, commit, theirId, bases);
       if (trivial !== undefined) return trivial;
     }
-    await snapshotBeforeStrategies(ctx, input);
-    return twoHeadStrategy(ctx, commit, remote, bases);
+    const snapshot = await snapshotBeforeStrategies(ctx, input);
+    return twoHeadStrategy(ctx, commit, snapshot, remote, bases);
   });
 };
 
@@ -741,16 +756,16 @@ const snapshotBeforeStrategies = async (
 };
 
 /** git's strategy loop for one head. */
-const twoHeadStrategy = async (
+const twoHeadStrategy = (
   ctx: Context,
   commit: MergeCommitInput,
+  snapshot: ObjectId | undefined,
   remote: MergeRemote,
   bases: ReadonlyArray<ObjectId>,
-): Promise<MergeEnding> => {
-  return tryStrategies(ctx, commit, (strategy) =>
+): Promise<MergeEnding> =>
+  tryStrategies(ctx, commit, snapshot, (strategy) =>
     twoHeadAttempt(ctx, commit, { remote, bases, strategy }),
   );
-};
 
 /** What one strategy makes of the merge, before anything is written. */
 type StrategyAttempt =
@@ -770,36 +785,84 @@ interface ConflictAttempt {
   readonly kind: 'conflict';
   /** git's `evaluate_result`: each unmerged path's diff-files record and its index stages. */
   readonly weight: number;
-  readonly persist: () => Promise<MergeEnding>;
+  readonly persist: () => Promise<MergeEnding | WorktreeRefusal>;
 }
 
 const FAILED: StrategyAttempt = { kind: 'failed' };
 
+/** What a strategy loop leaves when none handled the merge: the last refusal of a write, if any. */
+interface Unhandled {
+  readonly kind: 'unhandled';
+  readonly refusal: WorktreeRefusal | undefined;
+}
+
 /**
  * git's strategy loop: the first strategy to merge cleanly commits; else the
  * last of those leaving the fewest conflicts writes them; else none handled it.
+ * The tree is rewound to HEAD, local changes restored, before each strategy after
+ * the first, as git's `restore_state` does.
  */
 const tryStrategies = async (
   ctx: Context,
   commit: MergeCommitInput,
+  snapshot: ObjectId | undefined,
   attempt: (strategy: string) => Promise<StrategyAttempt>,
 ): Promise<MergeEnding> => {
-  const { strategies } = commit.opts;
-  let best: ConflictAttempt | undefined;
   ctx.progress.start(MERGE_WRITE_FILES_OP);
   try {
-    for (const strategy of strategies) {
-      const tried = await attempt(strategy);
-      if (tried.kind === 'clean') return await commitCleanAttempt(ctx, commit, tried);
-      if (tried.kind === 'conflict') best = preferConflict(best, tried);
-    }
-    if (best !== undefined) return await best.persist();
+    const ending = await runStrategies(ctx, commit, snapshot, attempt);
+    if (ending.kind !== 'unhandled') return ending;
+    await rewind(ctx, commit, snapshot);
+    throw unhandledMerge(commit.opts.strategies, ending.refusal);
   } finally {
     ctx.progress.end(MERGE_WRITE_FILES_OP);
   }
-  throw strategies.length === 1
-    ? mergeStrategyFailed(strategies[0]!)
-    : noMergeStrategyHandled(strategies);
+};
+
+const runStrategies = async (
+  ctx: Context,
+  commit: MergeCommitInput,
+  snapshot: ObjectId | undefined,
+  attempt: (strategy: string) => Promise<StrategyAttempt>,
+): Promise<MergeEnding | Unhandled> => {
+  const { strategies } = commit.opts;
+  let best: (ConflictAttempt & { readonly at: number }) | undefined;
+  let refusal: WorktreeRefusal | undefined;
+  for (const [at, strategy] of strategies.entries()) {
+    if (at > 0) await rewind(ctx, commit, snapshot);
+    const tried = await attempt(strategy);
+    if (tried.kind === 'conflict') best = preferConflict(best, { ...tried, at });
+    if (tried.kind !== 'clean') continue;
+    const ending = await commitCleanAttempt(ctx, commit, tried);
+    if (!isRefusal(ending)) return ending;
+    refusal = ending;
+  }
+  if (best === undefined) return { kind: 'unhandled', refusal };
+  if (best.at < strategies.length - 1) await rewind(ctx, commit, snapshot);
+  const ending = await best.persist();
+  return isRefusal(ending) ? { kind: 'unhandled', refusal: ending } : ending;
+};
+
+/** git's `reset --hard` to HEAD, then `stash apply --index` of the local changes the merge saved. */
+const rewind = async (
+  ctx: Context,
+  commit: MergeCommitInput,
+  snapshot: ObjectId | undefined,
+): Promise<void> => {
+  await hardResetWorktreeToCommit(ctx, commit.ourId);
+  if (snapshot === undefined) return;
+  await restoreSnapshot(ctx, requireWorkTree(ctx, 'merge'), snapshot);
+};
+
+/** A lone `ort`-family strategy whose write was refused leaves the dirty-tree refusal; else git's failure lines. */
+const unhandledMerge = (
+  strategies: ReadonlyArray<string>,
+  refusal: WorktreeRefusal | undefined,
+): TsgitError => {
+  const [only] = strategies;
+  if (strategies.length > 1) return noMergeStrategyHandled(strategies);
+  if (refusal !== undefined && ORT_STRATEGIES.has(only!)) return workingTreeDirty(refusal);
+  return mergeStrategyFailed(only!);
 };
 
 /** Commit a clean attempt; an ort result is recorded in `AUTO_MERGE` before anything else is written. */
@@ -807,7 +870,7 @@ const commitCleanAttempt = async (
   ctx: Context,
   commit: MergeCommitInput,
   tried: Extract<StrategyAttempt, { readonly kind: 'clean' }>,
-): Promise<MergeEnding> => {
+): Promise<MergeEnding | WorktreeRefusal> => {
   if (tried.changed !== undefined) {
     await assertNoneBeyondSymlink(ctx, tried.changed, await readIndex(ctx));
   }
@@ -911,7 +974,14 @@ const tryTrivialMerge = async (
   );
   const merged = trivialMerge(base!.entries, ours!.entries, theirs!.entries);
   if (merged === undefined) return undefined;
-  return commitCleanMerge(ctx, commit, await writeFlatTree(ctx, merged), IN_INDEX_MERGE);
+  const ending = await commitCleanMerge(
+    ctx,
+    commit,
+    await writeFlatTree(ctx, merged),
+    IN_INDEX_MERGE,
+  );
+  // git's read_tree_trivial fails on a write it must refuse, and the strategies then run.
+  return isRefusal(ending) ? undefined : ending;
 };
 
 /** git's `ours` strategy: HEAD's tree is the result, once the index matches it. */
@@ -960,8 +1030,8 @@ const manyHeadMerge = async (
   return underAutostash(ctx, opts, async () => {
     const carried = await refuseDirtyIndex(ctx, ourId);
     const commit = { opts, internal, branch, ourId, parents, named, carried };
-    await snapshotBeforeStrategies(ctx, input);
-    return manyHeadStrategy(ctx, commit, remotes);
+    const snapshot = await snapshotBeforeStrategies(ctx, input);
+    return manyHeadStrategy(ctx, commit, snapshot, remotes);
   });
 };
 
@@ -985,9 +1055,10 @@ const survivingRemotes = async (
 const manyHeadStrategy = (
   ctx: Context,
   commit: MergeCommitInput,
+  snapshot: ObjectId | undefined,
   remotes: ReadonlyArray<OctopusRemote>,
 ): Promise<MergeEnding> =>
-  tryStrategies(ctx, commit, (strategy) => {
+  tryStrategies(ctx, commit, snapshot, (strategy) => {
     if (strategy === 'ours') return oursAttempt(ctx, commit);
     if (strategy !== 'octopus') return Promise.resolve(FAILED);
     return octopusAttempt(ctx, commit, remotes, strategy);
@@ -1041,58 +1112,64 @@ const SURVIVOR_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
 ]);
 
 /**
- * Map `materializeTree`'s checkout-flavoured dirty refusal to the merge-family
- * `WORKING_TREE_DIRTY` code, so the whole 3-way merge family speaks one
- * would-overwrite error; any other error passes through untouched. Exported for
- * direct unit testing.
- */
-export const asMergeDirtyError = (err: unknown): unknown =>
-  err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY'
-    ? workingTreeDirty({ localChanges: err.data.localChanges, untracked: err.data.untracked })
-    : err;
-
-/**
  * Materialise a non-conflict merge result (clean true-merge or fast-forward) to
  * the working tree + index: write the target tree's delta against the current
  * index and return the post-write stage-0 entries for the caller to commit under
- * its index lock. Mirrors the clean branch of `applyMergeToWorktree`; the
- * conflict path keeps its own sparse-aware writers.
+ * its index lock, or the refusal when a local change or untracked path is in the
+ * way. Mirrors the clean branch of `applyMergeToWorktree`; the conflict path
+ * keeps its own sparse-aware writers.
  */
-const materialiseNonConflictTree = async (
+const attemptNonConflictTree = async (
   ctx: Context,
   targetTree: ObjectId,
   headTree: ObjectId,
-): Promise<ReadonlyArray<IndexEntry>> => {
+): Promise<
+  { readonly kind: 'written'; readonly entries: ReadonlyArray<IndexEntry> } | WorktreeRefusal
+> => {
   const currentIndex = await readIndex(ctx);
   try {
     // git's two-way rule: a path HEAD and the target agree on keeps its index entry and work file.
     const result = await materializeTree(ctx, { targetTree, currentIndex, headTree, force: false });
-    return result.newIndexEntries;
+    return { kind: 'written', entries: result.newIndexEntries };
   } catch (err) {
-    throw asMergeDirtyError(err);
+    if (err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
+      return {
+        kind: 'refused',
+        localChanges: err.data.localChanges,
+        untracked: err.data.untracked,
+      };
+    }
+    throw err;
   }
 };
 
 /**
  * Materialise a non-conflict merge result (`targetTree`) to the working tree +
  * index under the index lock, then run `apply` (the ref/commit step) and return
- * its result — releasing the lock either way. Shared by the clean true-merge and
- * fast-forward branches so the lock ceremony lives in one place.
+ * its result — releasing the lock either way — or the refusal, nothing written.
  */
-const materialiseAndApply = async <T extends MergeEnding>(
+const attemptMaterialiseAndApply = async <T extends MergeEnding>(
   ctx: Context,
   trees: { readonly target: ObjectId; readonly head: ObjectId },
   apply: () => Promise<T>,
-): Promise<T> => {
+): Promise<T | WorktreeRefusal> => {
   const lock = await acquireIndexLock(ctx);
   try {
-    const entries = await materialiseNonConflictTree(ctx, trees.target, trees.head);
-    await lock.commit(entries, 'replace');
+    const written = await attemptNonConflictTree(ctx, trees.target, trees.head);
+    if (written.kind === 'refused') return written;
+    await lock.commit(written.entries, 'replace');
     return await apply();
   } finally {
     await lock.release();
   }
 };
+
+/** The fast-forward, squash and signing-failure paths, where a refusal is the error git raises. */
+const materialiseAndApply = async <T extends MergeEnding>(
+  ctx: Context,
+  trees: { readonly target: ObjectId; readonly head: ObjectId },
+  apply: () => Promise<T>,
+): Promise<T> => refusalAsError(await attemptMaterialiseAndApply(ctx, trees, apply));
 
 /** What a merge commit records: its message and identities, the branch it advances, its parents. */
 interface MergeCommitInput {
@@ -1109,16 +1186,23 @@ interface MergeCommitInput {
 }
 
 /** git's `--squash` `finish`: stage `tree` and write `SQUASH_MSG`, leaving HEAD where it is. */
+const attemptSquashInto = async (
+  ctx: Context,
+  tree: ObjectId,
+  ourId: ObjectId,
+  heads: ReadonlyArray<ObjectId>,
+): Promise<SquashedResult | WorktreeRefusal> =>
+  attemptMaterialiseAndApply(ctx, { target: tree, head: await getTree(ctx, ourId) }, async () => {
+    await writeSquashMsg(ctx, await buildSquashMessage(ctx, ourId, heads));
+    return { kind: 'squashed', origHead: ourId };
+  });
+
 const squashInto = async (
   ctx: Context,
   tree: ObjectId,
   ourId: ObjectId,
   heads: ReadonlyArray<ObjectId>,
-): Promise<SquashedResult> =>
-  materialiseAndApply(ctx, { target: tree, head: await getTree(ctx, ourId) }, async () => {
-    await writeSquashMsg(ctx, await buildSquashMessage(ctx, ourId, heads));
-    return { kind: 'squashed', origHead: ourId };
-  });
+): Promise<SquashedResult> => refusalAsError(await attemptSquashInto(ctx, tree, ourId, heads));
 
 /**
  * The state a conflicted merge stops in: `--squash` keeps `SQUASH_MSG` and a
@@ -1151,8 +1235,8 @@ const stopBeforeCommit = async (
   ourId: ObjectId,
   heads: ReadonlyArray<ObjectId>,
   message: string = `${opts.message}\n`,
-): Promise<MergeEnding> =>
-  materialiseAndApply(ctx, { target: tree, head: await getTree(ctx, ourId) }, async () => {
+): Promise<MergeEnding | WorktreeRefusal> =>
+  attemptMaterialiseAndApply(ctx, { target: tree, head: await getTree(ctx, ourId) }, async () => {
     await writeMergeHeads(ctx, heads);
     await writeMergeMode(ctx, opts.fastForward);
     await writeMergeMsg(ctx, message);
@@ -1200,10 +1284,10 @@ const commitCleanMerge = async (
   input: MergeCommitInput,
   mergedTree: ObjectId,
   note: string,
-): Promise<MergeEnding> => {
+): Promise<MergeEnding | WorktreeRefusal> => {
   const { opts, ourId, parents } = input;
   const heads = parents.filter((id) => id !== ourId);
-  if (opts.squash === true) return headless(squashInto(ctx, mergedTree, ourId, heads));
+  if (opts.squash === true) return headless(await attemptSquashInto(ctx, mergedTree, ourId, heads));
   if (opts.commit === false) return stopBeforeCommit(ctx, opts, mergedTree, ourId, heads);
   // git commits the index it leaves after the merge: the carried gitlinks ride into the commit.
   const commitData = await mergeCommitData(
@@ -1214,11 +1298,15 @@ const commitCleanMerge = async (
   // git dies on a failed signing with the merge materialised and its state kept, MERGE_MSG
   // as `prepare_to_commit` wrote it: the message without its final newline.
   const gpgSignature = await mergeSignature(ctx, opts, commitData).catch(async (error: unknown) => {
-    await stopBeforeCommit(ctx, opts, mergedTree, ourId, heads, commitData.message.slice(0, -1));
+    refusalAsError(
+      await stopBeforeCommit(ctx, opts, mergedTree, ourId, heads, commitData.message.slice(0, -1)),
+    );
     throw error;
   });
-  return materialiseAndApply(ctx, { target: mergedTree, head: await getTree(ctx, ourId) }, () =>
-    writeMergeCommit(ctx, input, { commitData, gpgSignature }, note),
+  return attemptMaterialiseAndApply(
+    ctx,
+    { target: mergedTree, head: await getTree(ctx, ourId) },
+    () => writeMergeCommit(ctx, input, { commitData, gpgSignature }, note),
   );
 };
 
@@ -1353,11 +1441,12 @@ const persistOctopusConflict = async (
   commit: MergeCommitInput,
   result: Extract<OctopusResult, { readonly kind: 'conflict' }>,
   ours: FlatEntries,
-): Promise<MergeEnding> => {
+): Promise<MergeEnding | WorktreeRefusal> => {
   const marked = result.conflicts.filter((conflict) => conflict.conflictContent !== undefined);
   const outcomes = outcomesBetween(ours, result.worktree, new Set(marked.map((c) => c.path)));
   const changed = changedPaths(outcomes, result.conflicts, ours);
-  await assertNothingOverwritten(ctx, changed, outcomes);
+  const refusal = await findOverwriteRefusal(ctx, changed, outcomes);
+  if (refusal !== undefined) return refusal;
   validateMergeWritePaths(indexPathRulesOf(ctx), outcomes, result.conflicts, changed);
   const matcher = await loadSparseMatcher(ctx);
   const merged = outcomesBetween(new Map(), result.merged, new Set());
@@ -1704,36 +1793,20 @@ export const writeNestedTree = async (
 const persistConflictState = async (
   ctx: Context,
   opts: SettledMerge,
-  result: Extract<MergeTreeResult, { readonly kind: 'conflict' }>,
+  result: ConflictedTree,
   ourId: ObjectId,
   theirId: ObjectId,
-): Promise<MergeEnding> => {
-  const changed = await refuseUnwritableConflicts(ctx, result);
+): Promise<MergeEnding | WorktreeRefusal> => {
+  rejectUnsupportedConflicts(result.conflicts);
+  const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
+  const refusal = await findOverwriteRefusal(ctx, changed, result.outcomes);
+  if (refusal !== undefined) return refusal;
+  validateMergeWritePaths(indexPathRulesOf(ctx), result.outcomes, result.conflicts, changed);
   await writeConflictState(ctx, { opts, result, ourId, theirId }, changed);
   return conflictOutcome(opts, result.conflicts, theirId, ourId);
 };
 
 type ConflictedTree = Extract<MergeTreeResult, { readonly kind: 'conflict' }>;
-
-/**
- * Every refusal, before the first write; returns the paths the merge changes.
- * The whole-set path gate is hoisted above the write wave and above
- * `acquireIndexLock`: every outcome/conflict path this call is about to write
- * is validated in one upfront pass, so a hostile name anywhere in the batch
- * refuses before the FIRST byte is written, not partway through the
- * concurrent write wave — mirrors `validateChangesetPaths`
- * (apply-changeset.ts) and `restoreUntracked`'s pre-pass (stash.ts).
- */
-const refuseUnwritableConflicts = async (
-  ctx: Context,
-  result: ConflictedTree,
-): Promise<ReturnType<typeof changedPaths>> => {
-  rejectUnsupportedConflicts(result.conflicts);
-  const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
-  await assertNothingOverwritten(ctx, changed, result.outcomes);
-  validateMergeWritePaths(indexPathRulesOf(ctx), result.outcomes, result.conflicts, changed);
-  return changed;
-};
 
 /**
  * AUTO_MERGE, then — under the index lock — the working tree, the stop state
@@ -1772,22 +1845,21 @@ const writeConflictState = async (
 };
 
 /**
- * Refuse before any write when materialising the merge would clobber a
+ * The refusal, before any write, when materialising the merge would clobber a
  * tracked working file with local changes, or squat an untracked file on a
  * path the merge adds — pure, lock-free reads, so the refusal is atomic.
  */
-const assertNothingOverwritten = async (
+const findOverwriteRefusal = async (
   ctx: Context,
   changed: ReadonlySet<FilePath>,
   outcomes: ReadonlyArray<MergeOutcome>,
-): Promise<void> => {
+): Promise<WorktreeRefusal | undefined> => {
   const currentIndex = await readIndex(ctx);
   await assertNoneBeyondSymlink(ctx, changed, currentIndex);
   const removed = new Set(outcomes.filter(isDeleted).map((outcome) => outcome.path));
   const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex, removed);
-  if (localChanges.length > 0 || untracked.length > 0) {
-    throw workingTreeDirty({ localChanges, untracked });
-  }
+  if (localChanges.length === 0 && untracked.length === 0) return undefined;
+  return { kind: 'refused', localChanges, untracked };
 };
 
 /**
@@ -1878,6 +1950,28 @@ const survivingFor = (
         ),
   );
 
+/**
+ * git's checkout removes an ignored file standing where a leading directory is due; the
+ * pre-flight refused any other file in the way, and the deleted ones are already gone.
+ */
+const displaceIgnoredLeadingFiles = async (
+  ctx: Context,
+  writes: ReadonlyArray<{ readonly path: FilePath }>,
+  scanner: LeadingPathScanner,
+): Promise<void> => {
+  const isIgnoredPath = createIgnoredProbe(ctx);
+  const workDir = requireWorkTree(ctx, 'merge');
+  for (const { path } of writes) {
+    if (hasEscapedBytes(path)) continue;
+    const obstruction = await scanner.obstructingLeadingComponent(path);
+    if (obstruction?.kind !== 'file') continue;
+    const absPath = joinPath(workDir, obstruction.path);
+    if (!(await isIgnoredPath(absPath, false))) continue;
+    await ctx.fs.rm(absPath);
+    scanner.invalidate(obstruction.path);
+  }
+};
+
 const writeConflictingWorkingTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
@@ -1907,6 +2001,7 @@ const writeConflictingWorkingTree = async (
     removeChangedOutcome(ctx, outcome, scanner, surviving),
   );
   await runBounded(ctx, conflicts, (conflict) => removeDisplacedFile(ctx, conflict));
+  await displaceIgnoredLeadingFiles(ctx, [...touched.filter(isWrite), ...conflicts], scanner);
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't

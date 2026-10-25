@@ -24,6 +24,7 @@ import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
+  initBothRepos,
   lsStage,
   makePeerPair,
   type PeerPair,
@@ -32,6 +33,13 @@ import {
   tryRunGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import {
+  indexState,
+  listing,
+  outcomeOfGitStderr,
+  regular,
+} from './occupant-displacement-fixtures.js';
+import { ABORT_ROWS, buildStoppedMerge, entriesOf } from './stopped-state-fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -614,8 +622,22 @@ const SPLIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_DATE: `${BOB.timestamp} ${BOB.timezoneOffset}`,
 };
 
-type Graph = 'diverged' | 'descendant' | 'conflicting' | 'two-sided' | 'beyond-symlink';
-type LocalState = 'modified' | 'clean' | 'untracked' | 'touched' | 'untracked-and-modified';
+type Graph =
+  | 'diverged'
+  | 'descendant'
+  | 'conflicting'
+  | 'two-sided'
+  | 'beyond-symlink'
+  | 'tracked-f'
+  | 'tracked-f-two-sided';
+type LocalState =
+  | 'modified'
+  | 'clean'
+  | 'untracked'
+  | 'touched'
+  | 'untracked-and-modified'
+  | 'directory-over-f'
+  | 'modified-and-directory-over-f';
 type Outcome = 'ok' | 'conflict' | 'refused';
 
 interface SnapshotRow {
@@ -627,6 +649,8 @@ interface SnapshotRow {
   readonly outcome: Outcome;
   readonly snapshot: boolean;
   readonly detached?: boolean;
+  /** The tools add the same unreachable objects, blobs and trees included. */
+  readonly sameObjects?: boolean;
 }
 
 const MERGE_T = { rev: 't' };
@@ -710,6 +734,84 @@ const SNAPSHOT_ROWS: ReadonlyArray<SnapshotRow> = [
     git: ['-s', 'ours', '-s', 'ort', 't'],
     input: { rev: 't', strategy: ['ours', 'ort'] },
     outcome: 'ok',
+    snapshot: true,
+  },
+  {
+    id: 'Q12',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['-s', 'octopus', '-s', 'ort', 't'],
+    input: { rev: 't', strategy: ['octopus', 'ort'] },
+    outcome: 'ok',
+    snapshot: true,
+    sameObjects: true,
+  },
+  {
+    id: 'Q14',
+    graph: 'tracked-f',
+    local: 'directory-over-f',
+    git: ['-s', 'octopus', '-s', 'ort', 't'],
+    input: { rev: 't', strategy: ['octopus', 'ort'] },
+    outcome: 'ok',
+    snapshot: true,
+    sameObjects: true,
+  },
+  {
+    id: 'Q16',
+    graph: 'tracked-f',
+    local: 'modified-and-directory-over-f',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'refused',
+    snapshot: true,
+    sameObjects: true,
+  },
+  {
+    id: 'Q25',
+    graph: 'tracked-f',
+    local: 'directory-over-f',
+    git: ['-s', 'ort', '-s', 'ort', 't'],
+    input: { rev: 't', strategy: ['ort', 'ort'] },
+    outcome: 'ok',
+    snapshot: true,
+    sameObjects: true,
+  },
+  {
+    id: 'Q27',
+    graph: 'tracked-f',
+    local: 'modified-and-directory-over-f',
+    git: ['--no-commit', 't'],
+    input: { rev: 't', commit: false },
+    outcome: 'refused',
+    snapshot: true,
+    sameObjects: true,
+  },
+  {
+    id: 'Q28',
+    graph: 'tracked-f',
+    local: 'modified-and-directory-over-f',
+    git: ['--squash', 't'],
+    input: { rev: 't', squash: true },
+    outcome: 'refused',
+    snapshot: true,
+    sameObjects: true,
+  },
+  {
+    id: 'Q29',
+    graph: 'tracked-f-two-sided',
+    local: 'directory-over-f',
+    git: ['-s', 'resolve', 't'],
+    input: { rev: 't', strategy: 'resolve' },
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
+    id: 'Q33',
+    graph: 'tracked-f',
+    local: 'modified-and-directory-over-f',
+    git: ['-s', 'resolve', 't'],
+    input: { rev: 't', strategy: 'resolve' },
+    outcome: 'refused',
     snapshot: true,
   },
   {
@@ -849,30 +951,42 @@ describe.skipIf(!GIT_AVAILABLE)(
     const TWO_SIDED_BASE = '1\n2\n3\n4\n5\n6\n7\n8\n9\n';
 
     const buildGraph = async (graph: Graph): Promise<void> => {
+      const tracksF = graph === 'tracked-f' || graph === 'tracked-f-two-sided';
+      const twoSided = graph === 'two-sided' || graph === 'tracked-f-two-sided';
       await writeBoth('dirty', 'base\n');
       await writeBoth('keep', 'k0\n');
       await writeBoth('two', TWO_SIDED_BASE);
       await writeBoth('d/x', 'x\n');
-      await commitBoth('base', ['dirty', 'keep', 'two', 'd/x']);
+      if (tracksF) await writeBoth('f', 'v1\n');
+      await commitBoth('base', ['dirty', 'keep', 'two', 'd/x', ...(tracksF ? ['f'] : [])]);
       await branchBoth('t2');
       await writeBoth('t2-file', 't2\n');
       await commitBoth('t2', ['t2-file']);
       await checkoutBoth('main');
       await branchBoth('t');
       if (graph === 'conflicting') await writeBoth('keep', 'kT\n');
-      if (graph === 'two-sided') await writeBoth('two', TWO_SIDED_BASE.replace('1\n', 'T\n'));
+      if (twoSided) await writeBoth('two', TWO_SIDED_BASE.replace('1\n', 'T\n'));
+      if (tracksF) await writeBoth('f', 'v2\n');
       await writeBoth('t-file', 't\n');
-      await commitBoth('t', ['t-file', 'keep', 'two']);
+      await commitBoth('t', ['t-file', 'keep', 'two', ...(tracksF ? ['f'] : [])]);
       await checkoutBoth('main');
       if (graph === 'descendant') return;
       if (graph === 'conflicting') await writeBoth('keep', 'kO\n');
-      if (graph === 'two-sided') await writeBoth('two', TWO_SIDED_BASE.replace('9\n', 'O\n'));
+      if (twoSided) await writeBoth('two', TWO_SIDED_BASE.replace('9\n', 'O\n'));
       await writeBoth('o-file', 'o\n');
       await commitBoth('o', ['o-file', 'keep', 'two']);
     };
 
     const applyLocal = async (local: LocalState): Promise<void> => {
-      if (local === 'modified' || local === 'untracked-and-modified') {
+      if (local === 'directory-over-f' || local === 'modified-and-directory-over-f') {
+        for (const dir of [pair.peer, pair.ours]) await rm(path.join(dir, 'f'));
+        await writeBoth('f/u', 'untracked\n');
+      }
+      if (
+        local === 'modified' ||
+        local === 'untracked-and-modified' ||
+        local === 'modified-and-directory-over-f'
+      ) {
         await writeBoth('dirty', 'LOCAL\n');
       }
       if (local === 'untracked' || local === 'untracked-and-modified') {
@@ -962,7 +1076,9 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(messagesOf(pair.ours, oursNew)).toEqual(messagesOf(pair.peer, peerNew));
           expect(commitsOf(pair.ours, oursNew).length > 0).toBe(row.snapshot);
           expect(commitsOf(pair.ours, oursNew)).toEqual(commitsOf(pair.peer, peerNew));
+          if (row.sameObjects === true) expect(oursNew).toEqual(peerNew);
           expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
           expect(statusOf(pair.ours)).toBe(statusOf(pair.peer));
           expect(headOf(pair.ours)).toBe(headOf(pair.peer));
         });
@@ -1026,5 +1142,118 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     const headOf = (dir: string): string => runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+  },
+);
+
+interface MergeResultShape {
+  readonly kind: 'ok' | 'conflict' | 'beyond-symlink' | 'refused' | `crash ${string}`;
+  readonly localChanges: ReadonlyArray<string>;
+  readonly untracked: ReadonlyArray<string>;
+}
+
+const sortedShape = (shape: MergeResultShape): MergeResultShape => ({
+  ...shape,
+  localChanges: [...shape.localChanges].sort(),
+  untracked: [...shape.untracked].sort(),
+});
+
+const NONE = { localChanges: [], untracked: [] } as const;
+
+const gitMergeShape = (dir: string, extra: ReadonlyArray<string>): MergeResultShape => {
+  const result = tryRunGitWithExit(['-C', dir, 'merge', '-m', 'm', ...extra, 't'], {
+    env: SPLIT_ENV,
+  });
+  if (result.exitCode === 0) return { kind: 'ok', ...NONE };
+  if (result.exitCode === 1) return { kind: 'conflict', ...NONE };
+  if (result.exitCode === 128 && result.stderr.includes('beyond a symbolic link')) {
+    return { kind: 'beyond-symlink', ...NONE };
+  }
+  if (result.exitCode !== 2)
+    throw new Error(`unexpected exit ${result.exitCode}: ${result.stderr}`);
+  const { localChanges, untracked } = outcomeOfGitStderr(result.stderr);
+  return sortedShape({ kind: 'refused', localChanges, untracked });
+};
+
+const tsgitMergeShape = async (repo: Repository): Promise<MergeResultShape> => {
+  try {
+    const result = await repo.merge.run({ rev: 't', message: 'm', author: AUTHOR, committer: BOB });
+    return { kind: result.kind === 'conflict' ? 'conflict' : 'ok', ...NONE };
+  } catch (error) {
+    const data = (error as { data?: Record<string, unknown> }).data ?? {};
+    if (data.code === 'PATHSPEC_BEYOND_SYMLINK') return { kind: 'beyond-symlink', ...NONE };
+    if (data.code !== 'WORKING_TREE_DIRTY') return { kind: `crash ${String(data.code)}`, ...NONE };
+    return sortedShape({
+      kind: 'refused',
+      localChanges: data.localChanges as ReadonlyArray<string>,
+      untracked: data.untracked as ReadonlyArray<string>,
+    });
+  }
+};
+
+const MERGE_KINDS = [
+  { label: 'non-ff', stopped: { keepMain: 'keep\n' } },
+  { label: 'non-ff, conflicting', stopped: {} },
+] as const;
+
+const MATRIX = ABORT_ROWS.flatMap((row) =>
+  row.variants.flatMap((variant) =>
+    MERGE_KINDS.map((kind) => ({
+      id: `${row.shape}/${variant} merge t (${kind.label})`,
+      row,
+      variant,
+      stopped: kind.stopped,
+    })),
+  ),
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'merge interop — occupants in the rewind between strategies',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository | undefined;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('merge-rewind-occupant');
+      initBothRepos(pair.peer, pair.ours);
+      repo = undefined;
+    });
+
+    afterEach(async () => {
+      await repo?.dispose();
+      await pair.dispose();
+    });
+
+    const withSide = (entries: ReturnType<typeof entriesOf>): ReturnType<typeof entriesOf> => ({
+      base: [...entries.base, regular('side', 'base\n')],
+      main: [...entries.main, regular('side', 'base\n')],
+      theirs: [...entries.theirs, regular('side', 'base\n')],
+    });
+
+    describe.each(MATRIX)('Given $id', ({ row, variant, stopped }) => {
+      describe('When both tools merge', () => {
+        it('Then the outcome, work tree, index and HEAD match git', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildStoppedMerge(dir, withSide(entriesOf(variant, row)), stopped);
+            row.occupant(dir);
+            await writeFile(path.join(dir, 'side'), 's\n');
+          }
+          repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          const expected = gitMergeShape(pair.peer, []);
+          const result = await tsgitMergeShape(repo);
+
+          // Assert
+          expect(result).toEqual(expected);
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+          expect(runGit(['-C', pair.ours, 'rev-parse', 'HEAD'])).toBe(
+            runGit(['-C', pair.peer, 'rev-parse', 'HEAD']),
+          );
+        });
+      });
+    });
   },
 );

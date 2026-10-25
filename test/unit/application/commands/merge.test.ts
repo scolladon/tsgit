@@ -7,8 +7,9 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { treeOf as commitTreeOf } from '../../../../src/application/commands/internal/history-rewrite.js';
+import { asMergeDirtyError } from '../../../../src/application/commands/internal/merge-dirty-error.js';
+import * as resetWorktreeMod from '../../../../src/application/commands/internal/reset-worktree.js';
 import {
-  asMergeDirtyError,
   buildConflictIndexEntries,
   type MergeRunInput,
   materialiseConflictBytes,
@@ -8008,6 +8009,328 @@ describe('merge — snapshot of local changes before the strategies', () => {
 
         // Assert
         expect(await snapshotOf(spy)).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+  });
+});
+
+describe('merge — rewind and restore between strategies', () => {
+  const put = (ctx: Context, path: string, content: string) =>
+    ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+  const readWork = (ctx: Context, path: string) => ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`);
+
+  const commitPath = async (ctx: Context, path: string, content: string, message: string) => {
+    await put(ctx, path, content);
+    await add(ctx, [path]);
+    await commit(ctx, { message, author });
+  };
+
+  const NINE_LINES = '1\n2\n3\n4\n5\n6\n7\n8\n9\n';
+
+  /**
+   * `main` and `t` diverge; `t` rewrites `f`, and `keep` when `conflicting`. A `twoSided` pair
+   * edits `two` on both sides, so no in-index merge settles it.
+   */
+  const diverged = async ({ conflicting = false, twoSided = false } = {}): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await commitPath(ctx, 'f', 'v1\n', 'base-f');
+    await commitPath(ctx, 'two', NINE_LINES, 'base-two');
+    await commitPath(ctx, 'keep', 'k0\n', 'base-keep');
+    await commitPath(ctx, 'dirty', 'base\n', 'base-dirty');
+    await branchCreate(ctx, { name: 't' });
+    await checkout(ctx, { rev: 't' });
+    await commitPath(ctx, 'f', 'v2\n', 'on-t');
+    if (twoSided) await commitPath(ctx, 'two', NINE_LINES.replace('1\n', 'T\n'), 'on-t-two');
+    if (conflicting) await commitPath(ctx, 'keep', 'kT\n', 'on-t-keep');
+    await checkout(ctx, { rev: 'main' });
+    await commitPath(ctx, 'o-file', 'o\n', 'on-main');
+    if (twoSided) await commitPath(ctx, 'two', NINE_LINES.replace('9\n', 'O\n'), 'on-main-two');
+    if (conflicting) await commitPath(ctx, 'keep', 'kM\n', 'on-main-keep');
+    return ctx;
+  };
+
+  /** A directory holding an untracked file stands where `f` is tracked, and `dirty` is edited. */
+  const directoryOverTrackedF = async (ctx: Context): Promise<void> => {
+    await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+    await put(ctx, 'f/u', 'untracked\n');
+    await put(ctx, 'dirty', 'LOCAL\n');
+  };
+
+  const refusalOf = async (run: () => Promise<unknown>): Promise<TsgitError> => {
+    try {
+      await run();
+    } catch (error) {
+      return error as TsgitError;
+    }
+    throw new Error('expected a refusal');
+  };
+
+  const spyOnRewind = () => vi.spyOn(resetWorktreeMod, 'hardResetWorktreeToCommit');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a directory over a tracked path and ort named twice', () => {
+    describe('When merge runs', () => {
+      it('Then the first ort refuses, the rewind removes the directory and the second merges', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 't', strategy: ['ort', 'ort'], author });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(await readWork(ctx, 'f')).toBe('v2\n');
+        expect(await readWork(ctx, 'dirty')).toBe('LOCAL\n');
+      });
+    });
+  });
+
+  describe('Given a directory over a tracked path and a single ort', () => {
+    describe('When merge is refused', () => {
+      it('Then it names the path as a local change and restores the tree as it rewound it', async () => {
+        // Arrange
+        const ctx = await diverged();
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author }));
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
+        expect(await readWork(ctx, 'f')).toBe('v1\n');
+        expect(await readWork(ctx, 'dirty')).toBe('LOCAL\n');
+      });
+    });
+  });
+
+  describe('Given a single strategy that merges cleanly', () => {
+    describe('When merge runs', () => {
+      it('Then nothing is rewound', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        await mergeRun(ctx, { rev: 't', author });
+
+        // Assert
+        expect(rewind).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a first strategy that fails and a second that merges', () => {
+    describe('When merge runs', () => {
+      it('Then the tree is rewound to HEAD once, before the second', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const rewind = spyOnRewind();
+
+        // Act
+        await mergeRun(ctx, { rev: 't', strategy: ['octopus', 'ort'], author });
+
+        // Assert
+        expect(rewind.mock.calls.map(([, target]) => target)).toEqual([head]);
+      });
+    });
+  });
+
+  describe('Given the best conflicting strategy is the last one tried', () => {
+    describe('When merge runs', () => {
+      it('Then only the rewind before it happens', async () => {
+        // Arrange
+        const ctx = await diverged({ conflicting: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 't', strategy: ['octopus', 'ort'], author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(rewind).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given the best conflicting strategy was not the last one tried', () => {
+    describe('When merge runs', () => {
+      it('Then the tree is rewound again before the conflict is written', async () => {
+        // Arrange
+        const ctx = await diverged({ conflicting: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 't', strategy: ['ort', 'octopus'], author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(rewind).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given the only strategy is not handled', () => {
+    describe('When merge runs with octopus', () => {
+      it('Then it is rewound and fails with that strategy', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        const refusal = await refusalOf(() =>
+          mergeRun(ctx, { rev: 't', strategy: 'octopus', author }),
+        );
+
+        // Assert
+        expect(refusal.data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'octopus' });
+        expect(rewind).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('When merge runs with resolve and a strategy option', () => {
+      it('Then it fails with resolve, not as a dirty tree', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          mergeRun(ctx, { rev: 't', strategy: 'resolve', strategyOptions: ['theirs'], author }),
+        );
+
+        // Assert
+        expect(refusal.data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'resolve' });
+      });
+    });
+  });
+
+  describe('Given several strategies and none handles the merge', () => {
+    describe('When merge runs', () => {
+      it('Then it is rewound and fails naming every strategy', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        const refusal = await refusalOf(() =>
+          mergeRun(ctx, { rev: 't', strategy: ['octopus', 'octopus'], author }),
+        );
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'NO_MERGE_STRATEGY_HANDLED',
+          strategies: ['octopus', 'octopus'],
+        });
+        expect(rewind).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given a conflicting merge whose clean path is blocked by a directory', () => {
+    describe('When merge is refused', () => {
+      it('Then it names the path as a local change and restores the tree', async () => {
+        // Arrange
+        const ctx = await diverged({ conflicting: true });
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author }));
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
+        expect(await readWork(ctx, 'f')).toBe('v1\n');
+      });
+    });
+  });
+
+  describe.each([
+    ['--no-commit', { commit: false }],
+    ['--squash', { squash: true }],
+  ])('Given %s over a directory at a tracked path', (_label, extra) => {
+    describe('When merge is refused', () => {
+      it('Then it names the path as a local change and restores the tree', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author, ...extra }));
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
+        expect(await readWork(ctx, 'f')).toBe('v1\n');
+        expect(await readWork(ctx, 'dirty')).toBe('LOCAL\n');
+      });
+    });
+  });
+
+  describe('Given an ignored file where the merge adds a path beneath it and conflicts elsewhere', () => {
+    describe('When merge runs', () => {
+      it('Then the conflict is written and the ignored file gives way to the directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitPath(ctx, 'keep', 'k0\n', 'base');
+        await branchCreate(ctx, { name: 't' });
+        await checkout(ctx, { rev: 't' });
+        await commitPath(ctx, 'keep', 'kT\n', 'on-t-keep');
+        await commitPath(ctx, 'd/x', 'v2\n', 'on-t-add');
+        await checkout(ctx, { rev: 'main' });
+        await commitPath(ctx, 'keep', 'kM\n', 'on-main-keep');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'd\n');
+        await put(ctx, 'd', 'ignored\n');
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 't', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await readWork(ctx, 'd/x')).toBe('v2\n');
+      });
+    });
+  });
+
+  describe('Given a fast-forward over a directory at a tracked path', () => {
+    describe('When merge is refused', () => {
+      it('Then nothing is rewound and the directory stays', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitPath(ctx, 'f', 'v1\n', 'base');
+        await branchCreate(ctx, { name: 't' });
+        await checkout(ctx, { rev: 't' });
+        await commitPath(ctx, 'f', 'v2\n', 'on-t');
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await put(ctx, 'f/u', 'untracked\n');
+        const rewind = spyOnRewind();
+
+        // Act
+        const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author }));
+
+        // Assert
+        expect(refusal.data.code).toBe('WORKING_TREE_DIRTY');
+        expect(rewind).not.toHaveBeenCalled();
+        expect(await readWork(ctx, 'f/u')).toBe('untracked\n');
       });
     });
   });

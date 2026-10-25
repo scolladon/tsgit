@@ -632,6 +632,18 @@ export const snapshotLocalChanges = async (
   }
 };
 
+/**
+ * git's `stash apply --index` over a snapshot a merge took: the work-tree and staged changes
+ * come back over a tree reset to the snapshot's base, which can only apply without conflict.
+ */
+export const restoreSnapshot = async (
+  ctx: Context,
+  workDir: string,
+  snapshot: ObjectId,
+): Promise<void> => {
+  await applyStashCommit(ctx, workDir, snapshot, { restoreIndex: true });
+};
+
 interface CommitInputs {
   readonly base: BaseState;
   readonly found: LocalChanges;

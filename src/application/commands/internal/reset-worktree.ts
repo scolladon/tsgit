@@ -21,8 +21,8 @@ import { readIndex } from '../../primitives/read-index.js';
 import { readObject } from '../../primitives/read-object.js';
 import { loadSparseMatcher } from '../../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../../primitives/resolve-ref.js';
-import { asMergeDirtyError } from '../merge.js';
 import { acquireIndexLock } from './index-update.js';
+import { asMergeDirtyError } from './merge-dirty-error.js';
 
 type ResetMode = Pick<
   MaterializeTreeOpts,
