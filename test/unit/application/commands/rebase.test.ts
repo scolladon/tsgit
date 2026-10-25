@@ -4728,6 +4728,45 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
     },
   );
 
+  describe('Given every line of an interactive rebase is a pick and the second is refused', () => {
+    describe('When the interactive rebase runs', () => {
+      it('Then the state directory holds the flat reschedule files without the empty-commit policy', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seed();
+        await occupy(ctx);
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() =>
+          sut(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'pick', oid: w },
+              { action: 'pick', oid: x },
+              { action: 'pick', oid: z },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual([
+          'author-script',
+          'done',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+          'rewritten-list',
+        ]);
+      });
+    });
+  });
+
   describe.each(['squash', 'fixup'] as const)('Given a %s member the occupant refuses', (verb) => {
     const refusedMeld = async (hooks?: MemoryHookRunner) => {
       const s = await seed(hooks);
