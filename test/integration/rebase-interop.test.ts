@@ -1203,42 +1203,48 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'd'));
     };
 
-    it('Then the reopened group leaves the message-fixup bytes git leaves', async () => {
-      // Arrange / Act
-      await startBoth();
+    describe('When the second refusal is left standing', () => {
+      it('Then the reopened group leaves the message-fixup bytes git leaves', async () => {
+        // Arrange / Act
+        await startBoth();
 
-      // Assert
-      const stateFile = (dir: string): string =>
-        readFileSync(path.join(dir, '.git', 'rebase-merge', 'message-fixup'), 'utf8');
-      expect(stateFile(pair.ours)).toBe(stateFile(pair.peer));
+        // Assert
+        const stateFile = (dir: string): string =>
+          readFileSync(path.join(dir, '.git', 'rebase-merge', 'message-fixup'), 'utf8');
+        expect(stateFile(pair.ours)).toBe(stateFile(pair.peer));
+      });
     });
 
-    it('Then continuing maps every member to the final group commit, as git does', async () => {
-      // Arrange
-      await startBoth();
+    describe('When the rebase continues', () => {
+      it('Then continuing maps every member to the final group commit, as git does', async () => {
+        // Arrange
+        await startBoth();
 
-      // Act
-      const peer = gitRebaseStep(pair.peer, '--continue');
-      await tsgitStep(pair.ours, (repo) => repo.rebase.continue());
+        // Act
+        const peer = gitRebaseStep(pair.peer, '--continue');
+        await tsgitStep(pair.ours, (repo) => repo.rebase.continue());
 
-      // Assert
-      expect(peer.exitCode).toBe(0);
-      expect(rewriteGroups(pair.ours)).toEqual(rewriteGroups(pair.peer));
-      expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(rewriteGroups(pair.ours)).toEqual(rewriteGroups(pair.peer));
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
     });
 
-    it('Then skipping maps every member to the kept group commit, as git does', async () => {
-      // Arrange
-      await startBoth();
+    describe('When the rebase skips', () => {
+      it('Then skipping maps every member to the kept group commit, as git does', async () => {
+        // Arrange
+        await startBoth();
 
-      // Act
-      const peer = gitRebaseStep(pair.peer, '--skip');
-      await tsgitStep(pair.ours, (repo) => repo.rebase.skip());
+        // Act
+        const peer = gitRebaseStep(pair.peer, '--skip');
+        await tsgitStep(pair.ours, (repo) => repo.rebase.skip());
 
-      // Assert
-      expect(peer.exitCode).toBe(0);
-      expect(rewriteGroups(pair.ours)).toEqual(rewriteGroups(pair.peer));
-      expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(rewriteGroups(pair.ours)).toEqual(rewriteGroups(pair.peer));
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
     });
   });
 
