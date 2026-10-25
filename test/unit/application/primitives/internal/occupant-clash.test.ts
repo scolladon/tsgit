@@ -10,6 +10,7 @@ import {
 } from '../../../../../src/application/primitives/internal/occupant-clash.js';
 import { serializeAndHash } from '../../../../../src/application/primitives/internal/serialize-and-hash.js';
 import { createLeadingPathScanner } from '../../../../../src/application/primitives/internal/symlinked-leading-path.js';
+import { TsgitError } from '../../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -20,13 +21,19 @@ const BYTES = new Uint8Array([1]);
 interface ScopeOptions {
   readonly removed?: ReadonlyArray<string>;
   readonly ignored?: ReadonlyArray<string>;
+  // Ignored the way a directory-only pattern (`build/`) is: for a directory, never for a file.
+  readonly ignoredAsDirectory?: ReadonlyArray<string>;
   readonly tracked?: TrackedLookup;
 }
 
 const scopeOf = (ctx: Context, options: ScopeOptions = {}): ClashScope => {
   const workdir = ctx.layout.workDir ?? '';
   const ignored = new Set((options.ignored ?? []).map((p) => `${workdir}/${p}`));
-  const isIgnoredPath: IgnoredProbe = async (abs) => ignored.has(abs);
+  const ignoredDirectories = new Set(
+    (options.ignoredAsDirectory ?? []).map((p) => `${workdir}/${p}`),
+  );
+  const isIgnoredPath: IgnoredProbe = async (abs, isDirectory) =>
+    ignored.has(abs) || (isDirectory && ignoredDirectories.has(abs));
   return {
     workdir,
     removed: new Set((options.removed ?? []).map((p) => `${workdir}/${p}`)),
@@ -170,6 +177,26 @@ describe('classifyOccupant', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given a file at the added path named like a directory-only ignore pattern', () => {
+    describe('When the ignore rules cover directories of that name only', () => {
+      it('Then it is untracked at the added path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/build`, BYTES);
+
+        // Act
+        const result = await classify(
+          ctx,
+          'build',
+          scopeOf(ctx, { ignoredAsDirectory: ['build'] }),
+        );
+
+        // Assert
+        expect(result).toEqual({ kind: 'clash', clash: { class: 'untracked', path: 'build' } });
       });
     });
   });
@@ -419,6 +446,50 @@ describe('classifyOccupant', () => {
     });
   });
 
+  describe('Given a symlink to a directory whose beyond-link probe fails for another reason', () => {
+    describe('When the entry is updated', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/held`);
+        await ctx.fs.symlink('held', `${ctx.layout.workDir}/d`);
+        const refusal = new TsgitError({ code: 'PERMISSION_DENIED', path: 'd/x' });
+        const failing: Context = {
+          ...ctx,
+          fs: { ...ctx.fs, tryLstat: async () => Promise.reject(refusal) } as Context['fs'],
+        };
+
+        // Act
+        const caught = await classifyChange(failing, 'update', 'd/x', scopeOf(ctx)).catch(
+          (err: unknown) => err,
+        );
+
+        // Assert
+        expect(caught).toBe(refusal);
+      });
+    });
+  });
+
+  describe('Given a regular file where the updated path leading directory is due on an adapter whose probe reads a miss beneath a file as absent', () => {
+    describe('When the entry is updated', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/d`, BYTES);
+        const absentBeneathFile: Context = {
+          ...ctx,
+          fs: { ...ctx.fs, tryLstat: async () => undefined } as Context['fs'],
+        };
+
+        // Act
+        const result = await classifyChange(absentBeneathFile, 'update', 'd/x', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT('d/x'));
+      });
+    });
+  });
+
   describe('Given a symlink to a regular file where the updated path leading directory is due', () => {
     describe.each(['update', 'delete'] as const)('When the entry is %s-classified', (kind) => {
       it('Then it is a local change at the entry path', async () => {
@@ -484,6 +555,24 @@ describe('classifyOccupant', () => {
 
         // Assert
         expect(result).toEqual(LOCAL_AT(REACHED));
+      });
+    });
+
+    describe('When the stat matches, the entry is not racy and the reached content differs at the same size', () => {
+      it('Then it is clear, the cached stat settling it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sameSize = new TextEncoder().encode('v2\n');
+        const tracked = await arrangeTracked(ctx, {
+          indexMtime: INDEX_WRITTEN_AFTER_ENTRY,
+          cachedFrom: sameSize,
+        });
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
       });
     });
 

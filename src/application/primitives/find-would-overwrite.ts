@@ -114,6 +114,7 @@ const clashScopeOf = (
   byPath: ReadonlyMap<FilePath, IndexEntry>,
   indexMtime: IndexMtime | undefined,
 ): ClashScope => {
+  // Stryker disable next-line StringLiteral: equivalent — the caller built the leading-path scanner from this same ctx first, and that requireWorkTree throws before this label can.
   const workdir = requireWorkTree(ctx, 'findWouldOverwrite');
   return {
     workdir,

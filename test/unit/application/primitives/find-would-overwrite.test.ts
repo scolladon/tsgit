@@ -7,6 +7,7 @@ import {
   findTrackedBeyondSymlink,
   findWouldOverwrite,
 } from '../../../../src/application/primitives/find-would-overwrite.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
@@ -130,6 +131,22 @@ describe('findWouldOverwrite', () => {
         // Assert
         expect(result).toEqual({ localChanges: [], untracked: [] });
         expect(lstat).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a file literally named like an escaped key and absent from the index', () => {
+    describe('When the changed set carries the escaped key', () => {
+      it('Then it is not reported untracked', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, '\uDCFF.txt', 'view file\n');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('\uDCFF.txt'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
       });
     });
   });
@@ -641,6 +658,34 @@ describe('findWouldOverwrite stat cache', () => {
 
         // Assert
         expect(result).toEqual({ localChanges: ['d/x'], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given a tracked changed path beneath a symlink to a directory holding it unchanged', () => {
+    describe('When the index is newer than the entry', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'held/x', 'v1\n');
+        await ctx.fs.symlink('held', `${ctx.layout.workDir}/d`);
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/held/x`);
+        const tracked = indexEntryFromStat(
+          stat,
+          FILE_MODE.REGULAR,
+          await blob(ctx, 'v1\n'),
+          'd/x' as FilePath,
+        );
+        const index: GitIndex = {
+          ...indexOf([tracked]),
+          indexMtime: { seconds: 4_000_000_000, nanoseconds: 0 },
+        };
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('d/x'), index);
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
       });
     });
   });
