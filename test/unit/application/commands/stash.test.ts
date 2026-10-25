@@ -17,6 +17,7 @@ import {
 } from '../../../../src/application/commands/stash.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
 import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
@@ -206,6 +207,26 @@ describe('stash push', () => {
         expect(
           lstat.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/d`),
         ).toHaveLength(3);
+      });
+    });
+  });
+
+  describe('Given only the work tree differs from an unchanged index', () => {
+    describe('When the stash is pushed', () => {
+      it('Then HEAD is not flattened to look for index-lost paths', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const headTree = (await commitOf(ctx, await headId(ctx))).tree;
+        const flatten = vi.spyOn(flattenTreeMod, 'flattenEscapedTree');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(flatten.mock.calls.filter(([, tree]) => tree === headTree)).toEqual([]);
+        flatten.mockRestore();
       });
     });
   });

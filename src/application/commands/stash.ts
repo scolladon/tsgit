@@ -274,7 +274,8 @@ type TrackedEntry = IndexedEntry | HeadOnlyEntry;
 
 /** What the snapshot weighs each path against: HEAD's paths and the shared leading-path memo. */
 interface SnapshotScope {
-  readonly head: EscapedFlatTree;
+  /** `undefined` when the index tree is HEAD's: every index path is then HEAD's and none is lost. */
+  readonly head: EscapedFlatTree | undefined;
   readonly provider: AttributeProvider;
   readonly indexMtime: GitIndex['indexMtime'];
   readonly scanner: LeadingPathScanner;
@@ -312,7 +313,7 @@ const classifyEntry = async (
   if (entry.flags.skipWorktree) return { kind: 'indexed', entry, state: 'unchanged' };
   // git stashes with --ignore-submodules: the index id of a gitlink rides into the W tree as it is.
   if (isGitlink(entry.mode)) return { kind: 'indexed', entry, state: 'unchanged' };
-  const indexed = scope.head.entries.has(escapedPathOf(entry));
+  const indexed = scope.head === undefined || scope.head.entries.has(escapedPathOf(entry));
   // git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink.
   if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
     return { kind: 'indexed', entry, state: 'beyond-symlink' };
@@ -364,7 +365,7 @@ const classifyTracked = async (
   ctx: Context,
   index: GitIndex,
   provider: AttributeProvider,
-  head: EscapedFlatTree,
+  head: EscapedFlatTree | undefined,
 ): Promise<ReadonlyArray<TrackedEntry>> => {
   const scanner = createLeadingPathScanner(ctx);
   const scope: SnapshotScope = { head, provider, indexMtime: index.indexMtime, scanner };
@@ -379,9 +380,12 @@ const classifyTracked = async (
   const classified = (await configuresFilterDriver(ctx))
     ? await inIndexOrder(ctx, index.entries, classify)
     : await classify();
-  const headOnly = await boundedMapFor(ctx, 'ioBound', headOnlyPaths(head, index), (path) =>
-    classifyHeadOnly(ctx, path, head, scanner),
-  );
+  const headOnly =
+    head === undefined
+      ? []
+      : await boundedMapFor(ctx, 'ioBound', headOnlyPaths(head, index), (path) =>
+          classifyHeadOnly(ctx, path, head, scanner),
+        );
   return [...classified, ...headOnly].filter((tracked) => tracked !== undefined);
 };
 
@@ -495,14 +499,8 @@ const countsAsLocalChange = (change: DiffChange): boolean => {
   }
 };
 
-const differsBeyondGitlinks = (
-  index: GitIndex,
-  iTree: ObjectId,
-  base: BaseState,
-  head: EscapedFlatTree,
-): boolean => {
-  // Stryker disable next-line ConditionalExpression: equivalent — identical trees diff to no changes, so `.some` over them is false either way; the guard only skips the diff.
-  if (iTree === base.bTree) return false;
+const differsBeyondGitlinks = (index: GitIndex, head: EscapedFlatTree | undefined): boolean => {
+  if (head === undefined) return false;
   return diffIndexAgainstTreeKeyed(index, head).changes.some(countsAsLocalChange);
 };
 
@@ -513,10 +511,10 @@ const findLocalChanges = async (
 ): Promise<LocalChanges> => {
   const index = await readIndex(ctx);
   const scope = await buildConversionScope(ctx);
-  const head = await flattenEscapedTree(ctx, base.bTree);
-  const tracked = await classifyTracked(ctx, index, scope.provider, head);
   const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
-  const stagedBeyondGitlinks = differsBeyondGitlinks(index, iTree, base, head);
+  const head = iTree === base.bTree ? undefined : await flattenEscapedTree(ctx, base.bTree);
+  const tracked = await classifyTracked(ctx, index, scope.provider, head);
+  const stagedBeyondGitlinks = differsBeyondGitlinks(index, head);
   const untrackedFiles = opts.includeUntracked ? await listUntracked(ctx, index) : [];
   return { iTree, stagedBeyondGitlinks, scope, tracked, untrackedFiles };
 };
