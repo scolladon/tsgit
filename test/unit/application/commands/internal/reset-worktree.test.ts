@@ -6,6 +6,7 @@ import { checkout } from '../../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
+  attemptCheckoutWorktreeToCommit,
   checkoutWorktreeToCommit,
   hardResetWorktreeToCommit,
   mergeResetWorktreeToCommit,
@@ -494,6 +495,47 @@ describe('protectedResetWorktreeToCommit', () => {
           localChanges: [],
           untracked: ['f', 'g'],
         });
+      });
+    });
+  });
+});
+
+describe('attemptCheckoutWorktreeToCommit', () => {
+  describe('Given an untracked file where the target adds f', () => {
+    describe('When the checkout is attempted', () => {
+      it('Then it returns the refusal naming f and writes nothing', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ f: 'v1\n' }, ['f']);
+        await asFile(ctx);
+        const indexBefore = await readIndex(ctx);
+        const headBefore = await resolveRef(ctx, 'HEAD' as RefName);
+        const sut = attemptCheckoutWorktreeToCommit;
+
+        // Act
+        const result = await sut(ctx, target);
+
+        // Assert
+        expect(result).toEqual({ kind: 'refused', localChanges: [], untracked: ['f'] });
+        expect(await readIndex(ctx)).toEqual(indexBefore);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(headBefore);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('untracked\n');
+      });
+    });
+  });
+
+  describe('Given no occupant where the target adds f', () => {
+    describe('When the checkout is attempted', () => {
+      it('Then it reports checked-out and f is written', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ f: 'v1\n' }, ['f']);
+        const sut = attemptCheckoutWorktreeToCommit;
+
+        // Act
+        const result = await sut(ctx, target);
+
+        // Assert
+        expect(result).toEqual({ kind: 'checked-out' });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('v1\n');
       });
     });
   });

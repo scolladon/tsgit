@@ -22,7 +22,6 @@ import { readObject } from '../../primitives/read-object.js';
 import { loadSparseMatcher } from '../../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../../primitives/resolve-ref.js';
 import { acquireIndexLock } from './index-update.js';
-import { asMergeDirtyError } from './merge-dirty-error.js';
 
 type ResetMode = Pick<
   MaterializeTreeOpts,
@@ -80,15 +79,15 @@ export const attemptProtectedResetWorktreeToCommit = async (
     });
     return { kind: 'reset' };
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
-      return {
-        kind: 'refused',
-        localChanges: err.data.localChanges,
-        untracked: err.data.untracked,
-      };
-    }
-    throw err;
+    return refusalOrRethrow(err);
   }
+};
+
+const refusalOrRethrow = (err: unknown): WorktreeRefusal => {
+  if (err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY') {
+    return { kind: 'refused', localChanges: err.data.localChanges, untracked: err.data.untracked };
+  }
+  throw err;
 };
 
 export const protectedResetWorktreeToCommit = async (
@@ -146,17 +145,28 @@ const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> => {
   return commit.data.tree;
 };
 
+export type CheckoutOutcome = { readonly kind: 'checked-out' } | WorktreeRefusal;
+
 /**
  * The unforced two-way checkout rebase runs before it moves HEAD (git's `could not detach HEAD`
  * on refusal): a path HEAD and the target agree on keeps its occupant, an untracked occupant
  * where the target writes refuses with every offending path and nothing is touched, an ignored
  * one is overwritten.
  */
-export const checkoutWorktreeToCommit = async (ctx: Context, target: ObjectId): Promise<void> => {
+export const attemptCheckoutWorktreeToCommit = async (
+  ctx: Context,
+  target: ObjectId,
+): Promise<CheckoutOutcome> => {
   const headTree = await treeOf(ctx, await resolveRef(ctx, HEAD));
   try {
     await resetWorktreeToCommit(ctx, target, { force: false, headTree });
+    return { kind: 'checked-out' };
   } catch (err) {
-    throw asMergeDirtyError(err);
+    return refusalOrRethrow(err);
   }
+};
+
+export const checkoutWorktreeToCommit = async (ctx: Context, target: ObjectId): Promise<void> => {
+  const outcome = await attemptCheckoutWorktreeToCommit(ctx, target);
+  if (outcome.kind === 'refused') throw workingTreeDirty(outcome);
 };

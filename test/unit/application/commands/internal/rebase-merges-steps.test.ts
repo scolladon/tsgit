@@ -7,6 +7,7 @@ import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
   labelHead,
+  mergeTreesUnderLock,
   recreateMerge,
   resetToLabel,
 } from '../../../../../src/application/commands/internal/rebase-merges-steps.js';
@@ -182,16 +183,88 @@ describe('recreateMerge fast-forward over an occupant', () => {
         const sut = recreateMerge;
 
         // Act
-        const data = await sut(ctx, step).then(
-          () => undefined,
-          (err: unknown) => (err as { data: unknown }).data,
-        );
+        const result = await sut(ctx, step);
 
         // Assert
-        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['s'] });
+        expect(result).toEqual({ kind: 'refused', localChanges: [], untracked: ['s'] });
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/s`)).toBe('occupant\n');
         expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(head);
         expect(base).not.toBe(head);
+      });
+    });
+  });
+});
+
+describe('recreateMerge three-way merge over an occupant', () => {
+  describe('Given an untracked file where the merged label adds a path', () => {
+    describe('When its merge is recreated on a different head', () => {
+      it('Then it is refused naming the path, with the file and HEAD untouched and the index unlocked', async () => {
+        // Arrange
+        const ctx = await newRepo();
+        await commitFile(ctx, 'base');
+        await branchCreate(ctx, { name: 'side' });
+        await branchCreate(ctx, { name: 'other' });
+        await checkout(ctx, { rev: 'side' });
+        await commitFile(ctx, 's');
+        await checkout(ctx, { rev: 'other' });
+        const mergedOn = await commitFile(ctx, 'h');
+        await branchCreate(ctx, { name: 'head-line' });
+        await checkout(ctx, { rev: 'head-line' });
+        const head = await commitFile(ctx, 'o');
+        await checkout(ctx, { rev: 'other' });
+        await mergeRun(ctx, { rev: 'side', fastForward: 'never', author: AUTHOR });
+        const source = await tip(ctx, 'other');
+        await checkout(ctx, { rev: head });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s`, 'occupant\n');
+        const step = {
+          source,
+          original: await readCommit(ctx, source),
+          labels: ['side'],
+          head,
+          reflogAction: REFLOG_ACTION,
+        };
+        const sut = recreateMerge;
+
+        // Act
+        const result = await sut(ctx, step);
+
+        // Assert
+        expect(result).toEqual({ kind: 'refused', localChanges: [], untracked: ['s'] });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/s`)).toBe('occupant\n');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(head);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+        expect(mergedOn).not.toBe(head);
+      });
+    });
+  });
+});
+
+describe('mergeTreesUnderLock', () => {
+  describe('Given an untracked file where the merge adds a path', () => {
+    describe('When the trees are merged under the lock', () => {
+      it('Then it returns the refusal with the path and leaves the index unlocked', async () => {
+        // Arrange
+        const ctx = await newRepo();
+        const base = await commitFile(ctx, 'base');
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        const theirs = await commitFile(ctx, 's');
+        await checkout(ctx, { rev: base });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s`, 'occupant\n');
+        const sut = mergeTreesUnderLock;
+
+        // Act
+        const result = await sut(ctx, {
+          baseTree: (await readCommit(ctx, base)).tree,
+          ours: base,
+          theirsTree: (await readCommit(ctx, theirs)).tree,
+          labels: { base: 'base', ours: 'HEAD', theirs: 'side' },
+        });
+
+        // Assert
+        expect(result).toEqual({ kind: 'refused', localChanges: [], untracked: ['s'] });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/s`)).toBe('occupant\n');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
       });
     });
   });

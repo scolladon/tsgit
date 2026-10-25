@@ -35,6 +35,7 @@ import {
   rebaseActionReflog,
   rebaseContinueReflog,
   rebaseEditReflog,
+  rebaseFastForwardReflog,
   rebaseFinishOnto,
   rebaseFinishReturningTo,
   rebasePickReflog,
@@ -84,7 +85,7 @@ import { previousCheckoutArg } from './internal/prior-checkout.js';
 import { canFastForward } from './internal/rebase-fast-forward.js';
 import {
   deleteRewrittenRefs,
-  fastForwardHead,
+  type FastForwardOutcome,
   labelHead,
   mergeTreesUnderLock,
   recreateMerge,
@@ -112,6 +113,7 @@ import {
 } from './internal/rebase-state.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import {
+  attemptCheckoutWorktreeToCommit,
   checkoutWorktreeToCommit,
   protectedResetWorktreeToCommit,
   type WorktreeRefusal,
@@ -197,7 +199,8 @@ export type RebaseResult =
 type ReplayOutcome =
   | { readonly kind: 'committed'; readonly id: ObjectId }
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-  | { readonly kind: 'empty' };
+  | { readonly kind: 'empty' }
+  | WorktreeRefusal;
 
 /** A resolved work-list entry (full oid + subject) threaded through the replay.
  *  The non-interactive path only ever plans `pick`. */
@@ -385,12 +388,9 @@ const replayOne = async (
   ourId: ObjectId,
   reflogAction: string,
 ): Promise<ReplayOutcome> => {
-  if (cData.parents[0] === ourId) {
-    await fastForwardHead(ctx, source, reflogAction);
-    return { kind: 'committed', id: source };
-  }
+  if (cData.parents[0] === ourId) return fastForwardReplayed(ctx, source, reflogAction);
   const outcome = await mergeUnderLock(ctx, source, cData, ourId);
-  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  if (outcome.kind !== 'clean') return outcome;
   // git keeps a commit that started empty and drops only one the replay made empty.
   if (outcome.mergedTree === outcome.oursTree && !(await isOriginallyEmpty(ctx, cData))) {
     return { kind: 'empty' };
@@ -399,6 +399,16 @@ const replayOne = async (
     kind: 'committed',
     id: await commitPick(ctx, outcome.mergedTree, cData, ourId, reflogAction),
   };
+};
+
+/** Keep `source` verbatim by fast-forwarding to it; an occupant refuses before HEAD moves. */
+const fastForwardReplayed = async (
+  ctx: Context,
+  source: ObjectId,
+  reflogAction: string,
+): Promise<ReplayOutcome> => {
+  const moved = await fastForwardOnto(ctx, source, rebaseFastForwardReflog(reflogAction));
+  return moved.kind === 'refused' ? moved : { kind: 'committed', id: source };
 };
 
 /** Commit a clean pick's tree onto `ourId` and advance HEAD with `rebase (pick)`. */
@@ -656,6 +666,43 @@ const refuseDirtyIndexBeforeFirstPick = async (
   throw workingTreeDirty({ localChanges: staged, untracked: [] });
 };
 
+interface FlatProgress {
+  cur: ObjectId;
+  readonly applied: RebasedCommit[];
+  readonly rewritten: Array<readonly [ObjectId, ObjectId]>;
+}
+
+/** Fold one flat line's outcome into `flat`; a conflict is the stop to return. */
+const advanceFlat = async (
+  ctx: Context,
+  rc: ReplayContext,
+  index: number,
+  outcome: LineOutcome,
+  flat: FlatProgress,
+): Promise<RebaseResult | undefined> => {
+  switch (outcome.kind) {
+    case 'refused':
+      throw workingTreeDirty(outcome);
+    case 'moved':
+      flat.cur = outcome.head;
+      return undefined;
+    // git's dropped empty pick takes its AUTO_MERGE with it.
+    case 'empty':
+      await removeAutoMerge(ctx);
+      return undefined;
+    case 'conflict':
+      return stopOnConflict(ctx, rc, { index, cur: flat.cur }, outcome.conflicts, flat.rewritten);
+    default: {
+      const line = rc.todo[index] as PlannedPick | PlannedMerge;
+      const created = outcome.kind === 'committed' ? outcome.id : flat.cur;
+      if (outcome.kind === 'committed') flat.applied.push({ source: line.oid, created });
+      flat.rewritten.push([line.oid, created]);
+      flat.cur = created;
+      return undefined;
+    }
+  }
+};
+
 /** Replay `rc.todo` from the detached HEAD `ourId`; stop on conflict, else finish. */
 const replayFrom = async (
   ctx: Context,
@@ -663,26 +710,18 @@ const replayFrom = async (
   ourId: ObjectId,
   seed: ReplaySeed,
 ): Promise<RebaseResult> => {
-  let cur = ourId;
-  const applied: RebasedCommit[] = [...seed.applied];
-  const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
+  const flat: FlatProgress = {
+    cur: ourId,
+    applied: [...seed.applied],
+    rewritten: [...seed.rewritten],
+  };
   await refuseDirtyIndexBeforeFirstPick(ctx, rc, ourId);
   for (let i = 0; i < rc.todo.length; i += 1) {
-    const line = rc.todo[i]!;
     await removeAutoMerge(ctx);
-    const outcome = await replayLine(ctx, rc, i, cur);
-    if (outcome.kind === 'moved') cur = outcome.head;
-    // git's dropped empty pick takes its AUTO_MERGE with it.
-    else if (outcome.kind === 'empty') await removeAutoMerge(ctx);
-    else if (outcome.kind === 'conflict') {
-      return stopOnConflict(ctx, rc, { index: i, cur }, outcome.conflicts, rewritten);
-    } else if ('oid' in line) {
-      const created = outcome.kind === 'committed' ? outcome.id : cur;
-      if (outcome.kind === 'committed') applied.push({ source: line.oid, created });
-      rewritten.push([line.oid, created]);
-      cur = created;
-    }
+    const stop = await advanceFlat(ctx, rc, i, await replayLine(ctx, rc, i, flat.cur), flat);
+    if (stop !== undefined) return stop;
   }
+  const { cur, applied, rewritten } = flat;
   await finishRebase(ctx, rc, cur);
   await firePostRewrite(ctx, rewritten);
   await deleteRewrittenRefs(ctx, [...rc.doneBefore, ...rc.todo]);
@@ -1177,17 +1216,23 @@ const detachInteractive = async (
 
 /** Fast-forward the detached HEAD onto `target` (kept verbatim — its first parent
  *  is the current HEAD), recording git's `rebase: fast-forward`. */
-const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> => {
+const fastForwardOnto = async (
+  ctx: Context,
+  target: ObjectId,
+  reflog: string,
+): Promise<FastForwardOutcome> => {
   const from = await resolveRef(ctx, HEAD);
-  await checkoutWorktreeToCommit(ctx, target);
+  const checkout = await attemptCheckoutWorktreeToCommit(ctx, target);
+  if (checkout.kind === 'refused') return checkout;
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
       name: HEAD,
       id: target,
-      reflog: { oldId: from, newId: target, message: REBASE_FAST_FORWARD },
+      reflog: { oldId: from, newId: target, message: reflog },
     },
   ]);
+  return { kind: 'moved' };
 };
 
 /** Create a replayed commit and advance the detached HEAD to it. `parent` is the
@@ -1229,11 +1274,18 @@ const commitAndAdvance = async (
 type Step =
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
   | { readonly kind: 'advanced'; readonly created: ObjectId }
-  | { readonly kind: 'edit-stop'; readonly created: ObjectId };
+  | { readonly kind: 'edit-stop'; readonly created: ObjectId }
+  | WorktreeRefusal;
 
 type Produced =
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-  | { readonly kind: 'committed'; readonly created: ObjectId };
+  | { readonly kind: 'committed'; readonly created: ObjectId }
+  | WorktreeRefusal;
+
+const fastForwardProduced = async (ctx: Context, target: ObjectId): Promise<Produced> => {
+  const moved = await fastForwardOnto(ctx, target, REBASE_FAST_FORWARD);
+  return moved.kind === 'refused' ? moved : { kind: 'committed', created: target };
+};
 
 /** Produce a commit onto HEAD: fast-forward when its parent is HEAD (oid kept,
  *  `rebase: fast-forward`), else a 3-way cherry-pick committed with `reflog`. */
@@ -1244,12 +1296,9 @@ const produceOnto = async (
   head: ObjectId,
   reflog: string,
 ): Promise<Produced> => {
-  if (cData.parents[0] === head) {
-    await fastForwardOnto(ctx, inst.oid);
-    return { kind: 'committed', created: inst.oid };
-  }
+  if (cData.parents[0] === head) return fastForwardProduced(ctx, inst.oid);
   const outcome = await mergeUnderLock(ctx, inst.oid, cData, head);
-  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  if (outcome.kind !== 'clean') return outcome;
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
     parent: head,
@@ -1275,7 +1324,7 @@ const stepPick = async (
     head,
     rebasePickReflog(subjectLine(cData.message)),
   );
-  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  if (produced.kind !== 'committed') return produced;
   return { kind: 'advanced', created: produced.created };
 };
 
@@ -1293,7 +1342,7 @@ const stepEdit = async (
     head,
     rebaseEditReflog(subjectLine(cData.message)),
   );
-  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  if (produced.kind !== 'committed') return produced;
   return { kind: 'edit-stop', created: produced.created };
 };
 
@@ -1319,7 +1368,7 @@ const stepReword = async (
     head,
     rebaseRewordReflog(subjectLine(cData.message)),
   );
-  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  if (produced.kind !== 'committed') return produced;
   return { kind: 'advanced', created: await amendMessage(ctx, produced.created, message) };
 };
 
@@ -1469,6 +1518,11 @@ interface ReplaySeed {
 /** Meld a squash/fixup member into the group commit at HEAD: recommit HEAD's
  *  parent with HEAD's tree + the member's changes, under the running (or, at the
  *  group end, the cleaned) combined message. Returns the new group commit. */
+type MeldOutcome =
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+  | { readonly kind: 'committed'; readonly created: ObjectId; readonly message: string }
+  | WorktreeRefusal;
+
 const meldGroupMember = async (
   ctx: Context,
   inst: PlannedInstruction,
@@ -1476,17 +1530,10 @@ const meldGroupMember = async (
   head: ObjectId,
   group: MeldGroup,
   isLast: boolean,
-): Promise<
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-  | {
-      readonly kind: 'committed';
-      readonly created: ObjectId;
-      readonly message: string;
-    }
-> => {
+): Promise<MeldOutcome> => {
   const headData = await readCommitData(ctx, head);
   const outcome = await mergeUnderLock(ctx, inst.oid, cData, head);
-  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  if (outcome.kind !== 'clean') return outcome;
   const message = joinMeldGroup(group, inst, cData, isLast);
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
@@ -1616,6 +1663,7 @@ const replayMeld = async (
   const { ic, index, inst, cData } = line;
   const isLast = !meldContinues(ic.todo, index);
   const meld = await meldGroupMember(ctx, inst, cData, replay.head, replay.group, isLast);
+  if (meld.kind === 'refused') throw workingTreeDirty(meld);
   if (meld.kind === 'conflict') {
     await persistInteractiveStop(ctx, ic, index, meldStopFields(line, replay));
     return { stop: conflictResult(inst.oid, meld.conflicts, remainingAfter(line)) };
@@ -1665,6 +1713,7 @@ const replayStep = async (
 ): Promise<InteractiveLineOutcome> => {
   const { inst, cData } = line;
   const step = await stepInstruction(ctx, inst, cData, replay.head);
+  if (step.kind === 'refused') throw workingTreeDirty(step);
   if (step.kind === 'conflict') {
     return { stop: await stopOnStepConflict(ctx, line, replay, step.conflicts) };
   }

@@ -5,7 +5,6 @@
  * fast-forward when nothing under it changed, else a merge of HEAD with the
  * label committed with the original's message and author.
  */
-import { workingTreeDirty } from '../../../domain/commands/error.js';
 import { unsupportedOperation } from '../../../domain/error.js';
 import { type MergeConflict, type MergeLabels, mergeLabels } from '../../../domain/merge/index.js';
 import type { CommitData } from '../../../domain/objects/commit.js';
@@ -94,14 +93,16 @@ export const resetToLabel = async (
   return outcome.kind === 'refused' ? outcome : { kind: 'moved', head: id };
 };
 
-/** git's `fast_forward_to` from a rebase: HEAD moves to a kept commit. */
+export type FastForwardOutcome = { readonly kind: 'moved' } | WorktreeRefusal;
+
+/** git's `fast_forward_to` from a rebase: HEAD moves to a kept commit, unless an occupant refuses. */
 export const fastForwardHead = async (
   ctx: Context,
   target: ObjectId,
   reflogAction = REBASE_REFLOG_ACTION,
-): Promise<void> => {
+): Promise<FastForwardOutcome> => {
   const outcome = await moveHead(ctx, target, rebaseFastForwardReflog(reflogAction));
-  if (outcome.kind === 'refused') throw workingTreeDirty(outcome);
+  return outcome.kind === 'refused' ? outcome : { kind: 'moved' };
 };
 
 /** Every `refs/rewritten/` label the executed lines created, deleted as the rebase ends. */
@@ -128,7 +129,8 @@ export interface MergeTreesInput {
 
 export type MergeTreesOutcome =
   | { readonly kind: 'clean'; readonly mergedTree: ObjectId; readonly oursTree: ObjectId }
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> };
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+  | WorktreeRefusal;
 
 /** A three-way merge into the index and work tree under the index lock; nothing is committed. */
 export const mergeTreesUnderLock = async (
@@ -158,8 +160,9 @@ const mergeIntoLockedIndex = async (
     currentIndex: await readIndex(ctx),
     labels: input.labels,
   });
-  if (res.kind === 'would-overwrite')
-    throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
+  if (res.kind === 'would-overwrite') {
+    return { kind: 'refused', localChanges: res.localChanges, untracked: res.untracked };
+  }
   if (res.kind === 'conflict') {
     await lock.commit(res.indexEntries, 'replace');
     return { kind: 'conflict', conflicts: res.conflicts };
@@ -180,7 +183,8 @@ export interface MergeStep {
 export type MergeStepOutcome =
   | { readonly kind: 'committed'; readonly id: ObjectId }
   | { readonly kind: 'kept' }
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> };
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+  | WorktreeRefusal;
 
 /** git's `can_fast_forward` for `merge -C`: HEAD and every merged label are the original's parents. */
 const keepsOriginalParents = (step: MergeStep, merged: ReadonlyArray<ObjectId>): boolean => {
@@ -197,12 +201,13 @@ export const recreateMerge = async (ctx: Context, step: MergeStep): Promise<Merg
   }
   const theirs = await lookupLabel(ctx, label!);
   if (keepsOriginalParents(step, [theirs.id])) {
-    await fastForwardHead(ctx, step.source, step.reflogAction);
-    return { kind: 'committed', id: step.source };
+    const moved = await fastForwardHead(ctx, step.source, step.reflogAction);
+    return moved.kind === 'refused' ? moved : { kind: 'committed', id: step.source };
   }
   const [base] = await mergeBasesOf(ctx, [step.head, theirs.id]);
   if (base === theirs.id) return { kind: 'kept' };
   const merged = await mergeLabelInto(ctx, step.head, theirs, base);
+  if (merged.kind === 'refused') return merged;
   if (merged.kind === 'conflict') {
     await persistMergeStop(ctx, theirs.id, step.original.message);
     return merged;
