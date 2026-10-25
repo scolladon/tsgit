@@ -807,6 +807,31 @@ holds; widening was DC6, settled by ADR-1080.
   policy file back. This is replay semantics, not occupant handling. P12 fixes only the file tsgit writes. Warn-and-ask
   (DC13).
 
+## As shipped — deviations from the text above
+
+Implementation, review and validation settled these points against git 2.55. Where they disagree with the parts
+above, this section is the record.
+
+- `hardResetWorktreeToCommit` is kept, not removed. The merge strategy loop's rewind is exactly git's
+  `reset --hard HEAD`, so it is that helper's remaining caller.
+- A refused `merge -C` line is rescheduled, not thrown. git 2.55 heads the todo with the merge line, ends `done` with
+  it, advances `end`/`msgnum`, names the `-C` commit in `REBASE_HEAD` and writes its author to `author-script`. A
+  fast-forward refusal unlinks `author-script`; that arm is unreachable from tsgit's own todo grammar.
+- A refused meld member reopens its group from the full `current-fixups`, the refused member included. git appends the
+  member again on retry, so a squash message carries it twice and a second refusal lists it twice.
+- A meld group's members map to the group's final commit in `rewritten-list` and `post-rewrite`, whether or not the
+  group stopped. git also fires one `post-rewrite amend` call per meld commit, and one when `--continue` amends an
+  `edit` stop.
+- A path beyond a symlinked leading directory is judged as git's `verify_uptodate` judges it: `ENOENT` is clear,
+  `ENOTDIR` is a local change, and a reachable file is compared with the index entry's cached stat. An
+  assume-unchanged or skip-worktree entry is re-checked, and a racy entry falls back to content with its checkin
+  attributes.
+- A true merge takes git's snapshot with git's fallback identity, `git stash <git@stash>`, when none is configured.
+  A refused merge leaves no merged blob or tree behind.
+- `merge --abort` leaves a populated submodule directory at an unmerged gitlink and warns `unable to rmdir '<path>':
+  Directory not empty`. A modify/delete conflict on a gitlink writes an empty directory without reading the object.
+- Sparse narrowing removes a tracked symbolic link of any shape, a dangling one included.
+
 ## Decision candidates
 
 Settled, so not candidates: DC1 → ADR-1075, DC2 → ADR-1076, DC3 → ADR-1077, DC4 → ADR-1078, DC5 → ADR-1079 (O1–O3
