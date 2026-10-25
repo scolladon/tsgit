@@ -4664,6 +4664,7 @@ describe('merge — labels threading (slice 4)', () => {
 });
 
 describe('writeConflictToTree (direct)', () => {
+  const SUBMODULE_COMMIT = '2'.repeat(40) as ObjectId;
   const seedBlob = async (
     ctx: ReturnType<typeof createMemoryContext>,
     text: string,
@@ -4953,6 +4954,34 @@ describe('writeConflictToTree (direct)', () => {
         expect(data?.reason).toBe("'..' segment rejected");
         expect(data?.offset).toBe(NO_PARSER_OFFSET);
         expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a modify-delete conflict whose surviving side is a gitlink absent from the object store', () => {
+    describe('When writeConflictToTree runs', () => {
+      it.each([
+        {
+          label: 'theirs survives',
+          over: { theirId: SUBMODULE_COMMIT, theirMode: FILE_MODE.GITLINK },
+        },
+        {
+          label: 'ours survives',
+          over: { ourId: SUBMODULE_COMMIT, ourMode: FILE_MODE.GITLINK },
+        },
+      ])('Then an empty directory is left at the path when $label', async ({ over }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const conflict = conflictOf({ type: 'modify-delete', ...over });
+
+        // Act
+        await writeConflictToTree(ctx, conflict, await createMergeResultWriter(ctx, [], []));
+
+        // Assert
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isDirectory).toBe(true);
+        expect(await ctx.fs.readdir(`${ctx.layout.workDir}/p`)).toEqual([]);
       });
     });
   });
