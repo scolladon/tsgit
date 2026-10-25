@@ -4,6 +4,7 @@ import {
   refusedLocal,
   refusedUntracked,
 } from './occupant-displacement-fixtures.js';
+import { ABORT_ROWS, type AbortRow } from './stopped-state-fixtures.js';
 
 /** git's verdict for a rebase start; `precondition` is its unstaged-changes refusal, which names no path. */
 export type StartVerdict = 'ok' | 'precondition' | { readonly untracked: ReadonlyArray<string> };
@@ -48,6 +49,7 @@ export const RESET_MERGE_PINS: Readonly<Partial<Record<string, Outcome>>> = {
   'S3f/reset-deletes': refusedLocal('f'),
   'I1/same': OK,
   'I1/reset-updates': refusedLocal('d/x'),
+  'I1/reset-adds': OK,
   'I1/reset-deletes': refusedLocal('d/x'),
   'I2/same': OK,
   'I2/reset-updates': refusedLocal('f'),
@@ -55,6 +57,7 @@ export const RESET_MERGE_PINS: Readonly<Partial<Record<string, Outcome>>> = {
   'I2/reset-deletes': refusedLocal('f'),
   'I4/same': OK,
   'I4/reset-updates': refusedLocal('d/l'),
+  'I4/reset-adds': OK,
   'I4/reset-deletes': refusedLocal('d/l'),
   'M1/same': OK,
   'M1/reset-updates': refusedLocal('f'),
@@ -173,6 +176,45 @@ export const REBASE_RESET_PINS: Readonly<Partial<Record<string, Outcome>>> = {
   'merge/skip/Y3/reset-adds': OK,
   'merge/abort/Y3/reset-deletes': refusedUntracked('f'),
   'merge/skip/Y3/reset-deletes': OK,
+  'merge/abort/S1/same': OK,
+  'merge/abort/S1/reset-updates': OK,
+  'merge/skip/S1/same': OK,
+  'merge/skip/S1/reset-updates': OK,
+  'pick changes entry/skip/S1/same': OK,
+  'pick changes entry/skip/S1/reset-updates': OK,
+  'merge/skip/S1/reset-deletes': OK,
+  'merge/abort/S3c/same': OK,
+  'merge/abort/S3c/reset-updates': OK,
+  'merge/skip/S3c/same': OK,
+  'merge/skip/S3c/reset-updates': OK,
+  'pick changes entry/skip/S3c/same': OK,
+  'pick changes entry/skip/S3c/reset-updates': OK,
+  'merge/skip/S3c/reset-deletes': OK,
+  'merge/abort/S3d/same': OK,
+  'merge/abort/S3d/reset-updates': OK,
+  'merge/skip/S3d/same': OK,
+  'merge/skip/S3d/reset-updates': OK,
+  'pick changes entry/skip/S3d/same': OK,
+  'pick changes entry/skip/S3d/reset-updates': OK,
+  'merge/skip/S3d/reset-deletes': OK,
+  'merge/abort/I1/same': OK,
+  'merge/abort/I1/reset-updates': OK,
+  'merge/skip/I1/same': OK,
+  'merge/skip/I1/reset-updates': OK,
+  'pick changes entry/skip/I1/same': OK,
+  'pick changes entry/skip/I1/reset-updates': OK,
+  'merge/skip/I1/reset-deletes': OK,
+  'merge/abort/I4/same': OK,
+  'merge/abort/I4/reset-updates': OK,
+  'merge/skip/I4/same': OK,
+  'merge/skip/I4/reset-updates': OK,
+  'pick changes entry/skip/I4/same': OK,
+  'pick changes entry/skip/I4/reset-updates': OK,
+  'merge/skip/I4/reset-deletes': OK,
+  'merge/abort/I1/reset-adds': OK,
+  'pick changes entry/skip/I1/reset-adds': OK,
+  'merge/abort/I4/reset-adds': OK,
+  'pick changes entry/skip/I4/reset-adds': OK,
 };
 
 /** git's pinned verdict per `<shape>/<variant>` for the checkout a rebase runs before it moves HEAD. */
@@ -211,6 +253,7 @@ export const REBASE_START_PINS: Readonly<Partial<Record<string, StartVerdict>>> 
   'S3f/reset-deletes': 'precondition',
   'I1/same': 'precondition',
   'I1/reset-updates': 'precondition',
+  'I1/reset-adds': 'ok',
   'I1/reset-deletes': 'precondition',
   'I2/same': 'precondition',
   'I2/reset-updates': 'precondition',
@@ -218,6 +261,7 @@ export const REBASE_START_PINS: Readonly<Partial<Record<string, StartVerdict>>> 
   'I2/reset-deletes': 'precondition',
   'I4/same': 'precondition',
   'I4/reset-updates': 'precondition',
+  'I4/reset-adds': 'ok',
   'I4/reset-deletes': 'precondition',
   'M1/same': 'precondition',
   'M1/reset-updates': 'precondition',
@@ -262,6 +306,7 @@ export const REBASE_MERGES_RESET_PINS: Readonly<Partial<Record<string, Outcome>>
   'S3f/reset-deletes': PRECONDITION,
   'I1/same': PRECONDITION,
   'I1/reset-updates': PRECONDITION,
+  'I1/reset-adds': OK,
   'I1/reset-deletes': PRECONDITION,
   'I2/same': PRECONDITION,
   'I2/reset-updates': PRECONDITION,
@@ -269,6 +314,7 @@ export const REBASE_MERGES_RESET_PINS: Readonly<Partial<Record<string, Outcome>>
   'I2/reset-deletes': PRECONDITION,
   'I4/same': PRECONDITION,
   'I4/reset-updates': PRECONDITION,
+  'I4/reset-adds': OK,
   'I4/reset-deletes': PRECONDITION,
   'M1/same': PRECONDITION,
   'M1/reset-updates': PRECONDITION,
@@ -342,3 +388,24 @@ export const STASH_PUSH_PINS: Readonly<Partial<Record<string, StashPushVerdict>>
   'Y3/reset-adds': 'ok',
   'Y3/reset-deletes': 'ok',
 };
+
+const keysOf = (rows: ReadonlyArray<AbortRow>): ReadonlyArray<string> =>
+  rows.flatMap((row) => row.variants.map((variant) => `${row.shape}/${variant}`));
+
+const prefixed = (prefix: string, keys: ReadonlyArray<string>): ReadonlyArray<string> =>
+  keys.map((key) => `${prefix}/${key}`);
+
+/** The `<scenario>/<action>` pairs the rebase `--abort` / `--skip` matrix runs. */
+const REBASE_RESET_RUNS: ReadonlyArray<string> = [
+  'merge/abort',
+  'merge/skip',
+  'pick changes entry/skip',
+];
+
+/** Every key each matrix looks its pin up with, as the interop files enumerate their rows. */
+export const LIVE_PIN_KEYS = {
+  reset: keysOf(ABORT_ROWS),
+  rebaseReset: REBASE_RESET_RUNS.flatMap((run) => prefixed(run, keysOf(ABORT_ROWS))),
+  rebaseStart: keysOf(ABORT_ROWS.filter((row) => row.shape !== 'Y3')),
+  rebaseMergesReset: keysOf(ABORT_ROWS),
+} as const;
