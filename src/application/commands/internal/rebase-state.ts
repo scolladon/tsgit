@@ -294,7 +294,7 @@ const writeStopMarkers = async (
   await writeOrRemove(
     ctx,
     'current-fixups',
-    stop.currentFixups?.map((f) => `${f.action} ${f.oid}\n`).join(''),
+    stop.currentFixups?.map((f) => `${f.action} ${f.oid}`).join('\n'),
   );
   await writeOrRemove(
     ctx,

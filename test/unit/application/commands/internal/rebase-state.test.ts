@@ -630,7 +630,7 @@ describe('rebase-state', () => {
         await writeRescheduledPick(ctx, { ...RESCHEDULED, meld });
 
         // Assert
-        expect(await read(ctx, 'current-fixups')).toBe(`squash ${T2}\n`);
+        expect(await read(ctx, 'current-fixups')).toBe(`squash ${T2}`);
         expect(await read(ctx, 'rewritten-pending')).toBe(`${T1}\n`);
         expect(await read(ctx, 'message-squash')).toBe('one\n\ntwo\n');
         expect(await read(ctx, 'message-fixup')).toBe('one\n');
@@ -732,7 +732,7 @@ describe('rebase-state', () => {
         await writeRebaseStop(ctx, SQUASH_STOP);
 
         // Assert
-        expect(await read(ctx, 'current-fixups')).toBe(`squash ${T2}\nfixup ${T3}\n`);
+        expect(await read(ctx, 'current-fixups')).toBe(`squash ${T2}\nfixup ${T3}`);
       });
 
       it('Then rewritten-pending lists each already-folded oid', async () => {

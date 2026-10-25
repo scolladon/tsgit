@@ -2897,7 +2897,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
           expect(stop.commit).toBe(t2);
           expect(stop.remaining).toBe(1); // the trailing `drop t3`
         }
-        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${t2}\n`);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${t2}`);
         // The picked t1 (group base) is pending its rewrite to the final group oid.
         expect((await readMerge(ctx, 'rewritten-pending')).trim()).toMatch(/^[0-9a-f]{40}$/);
         expect(await readMerge(ctx, 'message-squash')).toContain(
@@ -3076,7 +3076,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
 
         // Assert — the fixup member is commented out under the skip header
         expect(stop.kind).toBe('conflict');
-        expect(await readMerge(ctx, 'current-fixups')).toBe(`fixup ${t2}\n`);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`fixup ${t2}`);
         expect(await readMerge(ctx, 'message-squash')).toContain(
           '# The commit message #2 will be skipped:',
         );
@@ -3260,7 +3260,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         // Assert — the folded a (verbatim oid) is the lone pending rewrite
         expect(stop.kind).toBe('conflict');
         if (stop.kind === 'conflict') expect(stop.commit).toBe(z);
-        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${z}\n`);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${z}`);
         expect((await readMerge(ctx, 'rewritten-pending')).trim()).toBe(a);
       });
     });
@@ -4684,7 +4684,7 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
         // Assert
         expect(data).toEqual(OCCUPIED);
         const entries = await entriesOf(ctx);
-        expect(await readMerge(ctx, 'current-fixups')).toBe(`${verb} ${x}\n`);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`${verb} ${x}`);
         expect(await readMerge(ctx, 'rewritten-pending')).toBe(`${w}\n`);
         expect(entries).not.toContain('rewritten-list');
         expect(entries).not.toContain('amend');
@@ -4715,7 +4715,7 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
 
         // Assert
         expect(data).toEqual(OCCUPIED);
-        expect(await readMerge(ctx, 'current-fixups')).toBe(`${verb} ${x}\n${verb} ${x}\n`);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`${verb} ${x}\n${verb} ${x}`);
         expect(await readMerge(ctx, 'rewritten-pending')).toBe(`${w}\n`);
         expect(await entriesOf(ctx)).not.toContain('rewritten-list');
       });
