@@ -233,11 +233,14 @@ const verdictClash = (verdict: OccupantVerdict): OccupantClash | undefined =>
 
 // An unmerged path has no version to compare; only a directory still holding a file the
 // changeset leaves behind stands in the way of the reset.
+// A gitlink's directory is the submodule's own checkout, which git never reads: the
+// removal leaves it standing, so it is no survivor.
 const survivorClash = async (
   ctx: Context,
-  path: FilePath,
+  { path, previousMode }: ChangesetEntry,
   scope: ClashScope,
 ): Promise<OccupantClash | undefined> => {
+  if (previousMode === FILE_MODE.GITLINK) return undefined;
   const absPath = joinPath(scope.workdir, path);
   const stat = await lstatIfReachable(ctx.fs, absPath);
   if (stat?.isDirectory !== true) return undefined;
@@ -254,7 +257,7 @@ const evaluateChangedPath = async (
 ): Promise<OccupantClash | undefined> => {
   const { previousId } = entry;
   if (previousId === undefined) {
-    return unmergedPaths === 'reset' ? survivorClash(ctx, entry.path, scope) : undefined;
+    return unmergedPaths === 'reset' ? survivorClash(ctx, entry, scope) : undefined;
   }
   // git's verify_uptodate returns early for a gitlink: the submodule's worktree is never compared.
   if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
@@ -305,7 +308,7 @@ const evaluateProtectedPath: PathEvaluator = async (ctx, _probe, entry, scope) =
   if (entry.kind === 'add') {
     return untrackedClashOf(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
   }
-  if (entry.previousId === undefined) return survivorClash(ctx, entry.path, scope);
+  if (entry.previousId === undefined) return survivorClash(ctx, entry, scope);
   if (entry.kind === 'update') return undefined;
   return untrackedClashOf(await classifyOccupant(ctx, { kind: 'delete', path: entry.path }, scope));
 };
@@ -400,10 +403,21 @@ const applyDeleteEntry = async (
   if (await scanner.hasSymlinkedLeadingPath(entry.path)) return undefined;
   const abs = joinPath(workdir, entry.path);
   // git's unlink_entry removes a gitlink with rmdir, leaving a populated directory in place.
-  if (entry.previousMode === FILE_MODE.GITLINK) {
-    return (await removeEmptyDirectory(ctx, abs)) ? entry.path : undefined;
-  }
+  if (entry.previousMode === FILE_MODE.GITLINK) return removeGitlinkDirectory(ctx, abs, entry.path);
   return (await removeDeletedFile(ctx, abs, entry.path)) ? entry.path : undefined;
+};
+
+// git's remove_or_warn: rmdir on a gitlink, warning when a directory refuses to go.
+const removeGitlinkDirectory = async (
+  ctx: Context,
+  abs: string,
+  path: FilePath,
+): Promise<FilePath | undefined> => {
+  if (await removeEmptyDirectory(ctx, abs)) return path;
+  if ((await lstatIfReachable(ctx.fs, abs))?.isDirectory === true) {
+    ctx.logger?.warn?.(`unable to rmdir '${path}': Directory not empty`);
+  }
+  return undefined;
 };
 
 // git's unlink_entry leaves a directory standing where the entry was (warning),

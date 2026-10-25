@@ -4306,6 +4306,49 @@ describe('applyChangeset over a gitlink directory', () => {
     });
   });
 
+  describe('Given an unmerged gitlink delete over a populated directory', () => {
+    describe('When applyChangeset runs without force and with unmergedPaths reset', () => {
+      it('Then it leaves the directory in place and warns as git does', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const warn = vi.fn();
+        const ctx = { ...base, logger: { warn } };
+        await ctx.fs.write(`${WORKDIR}/sub/child`, enc('mine'));
+        const changeset = makeChangeset([
+          { ...unmergedDelete('sub'), previousMode: FILE_MODE.GITLINK },
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, unmergedPaths: 'reset', workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub/child`))).toBe('mine');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith("unable to rmdir 'sub': Directory not empty");
+      });
+    });
+  });
+
+  describe('Given a gitlink delete over a directory that is already gone', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it does not warn', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const warn = vi.fn();
+        const ctx = { ...base, logger: { warn } };
+        const changeset = makeChangeset([makeDelete('sub', OLD_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given an untracked file d where an added file d/x is due', () => {
     describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
       it('Then it refuses d as untracked and keeps the occupant', async () => {

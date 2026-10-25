@@ -34,6 +34,7 @@ import {
   COMMIT_ENV,
   directoryHolding,
   fileAt,
+  gitlink,
   ignoring,
   indexState,
   listing,
@@ -328,6 +329,30 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort occupant interop', { timeout: 60_
       });
     },
   );
+
+  describe('Given a gitlink modified upstream and deleted here, then its directory populated', () => {
+    describe('When both tools abort it', () => {
+      it('Then the directory is left untracked and the merge state is cleared as in git', async () => {
+        // Arrange
+        const bumped = '2222222222222222222222222222222222222222';
+        const entries = { base: [gitlink('sub')], main: [], theirs: [gitlink('sub', bumped)] };
+        for (const dir of [pair.peer, pair.ours]) {
+          buildStoppedMerge(dir, entries);
+          stopGitMerge(dir);
+          directoryHolding('sub', 'child')(dir);
+        }
+
+        // Act
+        const { expected, result } = await abortOnBoth();
+
+        // Assert
+        expect(expected).toEqual(OK);
+        expect(result).toEqual(expected);
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
+      });
+    });
+  });
 
   describe('Given a merge stopped with --autostash, then a directory replacing the updated f', () => {
     describe('When both tools abort it', () => {

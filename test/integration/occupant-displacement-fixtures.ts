@@ -46,9 +46,10 @@ export const symlink = (entryPath: string, target = 't-v2'): TreeEntry => ({
   content: target,
   path: entryPath,
 });
-export const gitlink = (entryPath: string): TreeEntry => ({
+/** A gitlink's `content` is the commit id it pins. */
+export const gitlink = (entryPath: string, commit = GITLINK_OID): TreeEntry => ({
   mode: GITLINK_MODE,
-  content: '',
+  content: commit,
   path: entryPath,
 });
 
@@ -61,7 +62,7 @@ export const commitOn = (
   for (const entry of entries) {
     const oid =
       entry.mode === GITLINK_MODE
-        ? GITLINK_OID
+        ? entry.content
         : runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: entry.content }).trim();
     runGit([
       '-C',
