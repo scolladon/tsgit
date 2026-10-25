@@ -19,6 +19,7 @@ import { invalidateConfigCache } from '../../../../src/application/primitives/co
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import { hashBlob } from '../../../../src/application/primitives/hash-blob.js';
 import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
@@ -2174,6 +2175,37 @@ describe('stash push beyond a symbolic link', () => {
     });
   });
 
+  describe('Given a path beyond a symlink followed by a later edited file', () => {
+    describe('When push runs', () => {
+      it('Then the later file is never hashed into the object store', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/f', 'x\n', 'add d/f');
+        await commitFile(ctx, 'z', 'v1\n', 'add z');
+        await write(ctx, 'copy/f', 'x\n');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await ctx.fs.symlink('copy', `${ctx.layout.workDir}/d`);
+        await write(ctx, 'z', 'never hashed\n');
+        const laterBlob = await hashBlob(ctx, new TextEncoder().encode('never hashed\n'), {
+          write: false,
+        });
+        const sut = stashPush;
+
+        // Act
+        const outcome = await sut(ctx, {}).catch((error: unknown) => error);
+
+        // Assert
+        expect(outcome instanceof TsgitError && outcome.data).toEqual({
+          code: 'PATHSPEC_BEYOND_SYMLINK',
+          path: 'd/f',
+        });
+        await expect(readObject(ctx, laterBlob)).rejects.toMatchObject({
+          data: { code: 'OBJECT_NOT_FOUND' },
+        });
+      });
+    });
+  });
+
   describe('Given a tracked symlink that is a leaf, not a leading directory', () => {
     describe('When push runs after the link was retargeted', () => {
       it('Then it stashes normally', async () => {
@@ -2311,6 +2343,48 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         // Assert
         const blob = await readObject(ctx, result.entries.get('f' as FilePath)?.id as ObjectId);
         expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('on disk\n');
+      });
+    });
+  });
+
+  describe('Given a CRLF file removed from the index and still on disk under core.autocrlf true', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree blob is LF, as no index blob exists to keep its CRLF', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'a\r\nb\r\n', 'add crlf f');
+        await unstagePath(ctx, 'f');
+        await configure(ctx, '[core]\n\tautocrlf = true\n');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        const blob = await readObject(ctx, result.entries.get('f' as FilePath)?.id as ObjectId);
+        expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('a\nb\n');
+      });
+    });
+  });
+
+  describe('Given a gitlink with no checkout and a tracked file edited', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree keeps the gitlink at its index id', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+        await write(ctx, 'a.txt', 'edited\n');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.get('sub' as FilePath)).toMatchObject({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
       });
     });
   });

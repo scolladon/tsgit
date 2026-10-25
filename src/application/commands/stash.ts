@@ -282,6 +282,7 @@ interface SnapshotScope {
 }
 
 const statReachable = (ctx: Context, path: FilePath): Promise<FileStat | undefined> =>
+  // Stryker disable next-line StringLiteral: equivalent — the operation names only the bare-repo refusal, and every caller already passed requireWorkTree on this same immutable layout.
   lstatIfReachable(ctx.fs, joinPath(requireWorkTree(ctx, 'stash'), path));
 
 const isDirectoryAt = async (ctx: Context, path: FilePath): Promise<boolean> =>
@@ -297,6 +298,7 @@ const snapshotState = async (
   status: WorkingTreeComparison,
 ): Promise<SnapshotState> => {
   if (status === 'absent') return indexed ? 'absent' : 'unchanged';
+  // Stryker disable next-line ConditionalExpression: equivalent — an unchanged non-gitlink entry never has a directory at its path (a directory compares type-changed), so the fall-through returns the same status after one extra lstat.
   if (status === 'unchanged') return status;
   return (await isDirectoryAt(ctx, entry.path)) ? 'occluded' : status;
 };
@@ -428,7 +430,6 @@ const projectEntry = async (
   tracked: TrackedEntry,
 ): Promise<Hashed> => {
   const { entry, state } = tracked;
-  if (state === 'beyond-symlink') throw pathspecBeyondSymlink(entry.path);
   if (state === 'absent') return { entry: undefined, notice: undefined };
   if (state === 'unchanged' || state === 'occluded') return { entry, notice: undefined };
   const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
