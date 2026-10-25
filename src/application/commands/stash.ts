@@ -34,7 +34,12 @@ import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/mer
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
-import { deriveWorkingMode, type FilePath, type ObjectId } from '../../domain/objects/index.js';
+import {
+  type AuthorIdentity,
+  deriveWorkingMode,
+  type FilePath,
+  type ObjectId,
+} from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { applyMergeToWorktree, mergeTreesToTree } from '../primitives/apply-merge-to-worktree.js';
@@ -244,8 +249,12 @@ interface WorkingTreeProjection {
   readonly eolNotices: ReadonlyArray<EolNotice>;
 }
 
-/** A work-tree comparison, or `occluded`: a directory hides the file, so the index entry rides on and the path still counts as changed. */
-type SnapshotState = WorkingTreeComparison | 'occluded';
+/**
+ * A work-tree comparison, or `occluded`: a directory hides the file, so the index entry rides on
+ * and the path still counts as changed; or `beyond-symlink`: the path lies past a symlink, which
+ * git refuses only once it has written the index commit.
+ */
+type SnapshotState = WorkingTreeComparison | 'occluded' | 'beyond-symlink';
 
 /** An index entry measured against its work-tree file. */
 interface IndexedEntry {
@@ -306,7 +315,7 @@ const classifyEntry = async (
   const indexed = scope.head.entries.has(escapedPathOf(entry));
   // git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink.
   if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
-    throw pathspecBeyondSymlink(entry.path);
+    return { kind: 'indexed', entry, state: 'beyond-symlink' };
   }
   const { delta } = await compareAndRefresh(
     ctx,
@@ -415,6 +424,7 @@ const projectEntry = async (
   tracked: TrackedEntry,
 ): Promise<Hashed> => {
   const { entry, state } = tracked;
+  if (state === 'beyond-symlink') throw pathspecBeyondSymlink(entry.path);
   if (state === 'absent') return { entry: undefined, notice: undefined };
   if (state === 'unchanged' || state === 'occluded') return { entry, notice: undefined };
   const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
@@ -602,10 +612,31 @@ const stashAndReset = async (
   }
 };
 
+/**
+ * git's `stash create` as a merge runs it: the local changes as an unreachable WIP commit,
+ * with no ref written and nothing reset. `undefined` when nothing differs from HEAD.
+ */
+export const snapshotLocalChanges = async (
+  ctx: Context,
+  workDir: string,
+  identities: SnapshotIdentities,
+): Promise<ObjectId | undefined> => {
+  const base = await resolveBase(ctx, await readHeadRaw(ctx));
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const found = await findLocalChanges(ctx, {}, base);
+    if (!hasLocalChanges(found)) return undefined;
+    return (await createStashCommits(ctx, workDir, { base, found, opts: {}, identities })).stash;
+  } finally {
+    await lock.release();
+  }
+};
+
 interface CommitInputs {
   readonly base: BaseState;
   readonly found: LocalChanges;
   readonly opts: StashPushInput;
+  readonly identities?: SnapshotIdentities;
 }
 
 interface StashWrite {
@@ -615,6 +646,12 @@ interface StashWrite {
   readonly untracked: UntrackedProjection;
 }
 
+/** Who signs the snapshot commits; `stash push` signs with the reflog identity instead. */
+interface SnapshotIdentities {
+  readonly author: AuthorIdentity;
+  readonly committer: AuthorIdentity;
+}
+
 interface StashCommitWriter {
   readonly index: (tree: ObjectId) => Promise<ObjectId>;
   readonly untracked: (tree: ObjectId) => Promise<ObjectId>;
@@ -622,12 +659,18 @@ interface StashCommitWriter {
   readonly stashMessage: string;
 }
 
+const reflogIdentities = async (ctx: Context): Promise<SnapshotIdentities> => {
+  const identity = await resolveReflogIdentity(ctx);
+  return { author: identity, committer: identity };
+};
+
 const stashCommitWriter = async (
   ctx: Context,
   base: BaseState,
   opts: StashPushInput,
+  identities?: SnapshotIdentities,
 ): Promise<StashCommitWriter> => {
-  const identity = await resolveReflogIdentity(ctx);
+  const { author, committer } = identities ?? (await reflogIdentities(ctx));
   const branch = stashBranchLabel(base.branchRef);
   const abbrev = abbreviateOid(base.b);
   const { subject } = base;
@@ -643,8 +686,8 @@ const stashCommitWriter = async (
     createCommit(ctx, {
       tree,
       parents,
-      author: identity,
-      committer: identity,
+      author,
+      committer,
       message,
       extraHeaders: [],
     });
@@ -665,8 +708,8 @@ const createStashCommits = async (
   workDir: string,
   inputs: CommitInputs,
 ): Promise<StashWrite> => {
-  const { base, found, opts } = inputs;
-  const writer = await stashCommitWriter(ctx, base, opts);
+  const { base, found, opts, identities } = inputs;
+  const writer = await stashCommitWriter(ctx, base, opts, identities);
   const i = await writer.index(found.iTree);
   const untracked = await hashUntracked(ctx, workDir, found.untrackedFiles, found.scope);
   const u =

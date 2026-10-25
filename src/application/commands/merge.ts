@@ -180,7 +180,7 @@ import {
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { signCommitData } from './internal/sign-request.js';
 import { buildSquashMessage } from './internal/squash-message.js';
-import { applyMergeAutostash, createAutostash } from './stash.js';
+import { applyMergeAutostash, createAutostash, snapshotLocalChanges } from './stash.js';
 
 const PREVIOUS_BRANCH_SHORTHAND = '-';
 const PREVIOUS_BRANCH = '@{-1}';
@@ -692,6 +692,11 @@ const twoHeadMerge = async (
   return underAutostash(ctx, opts, async () => {
     const carried = await refuseDirtyIndex(ctx, ourId);
     const commit = { opts, internal, branch, ourId, parents, named, carried };
+    if (entersTrivialBranch(commit)) {
+      const trivial = await tryTrivialMerge(ctx, commit, theirId, bases);
+      if (trivial !== undefined) return trivial;
+    }
+    await snapshotBeforeStrategies(ctx, input);
     return twoHeadStrategy(ctx, commit, remote, bases);
   });
 };
@@ -721,17 +726,27 @@ const refuseDirtyIndex = async (
   return carried;
 };
 
-/** git's trivial in-index merge where every strategy allows it, then its strategy loop for one head. */
+/** git's `allow_trivial`, cleared by `--no-commit` and `--squash`: only a merge about to commit tries the in-index merge. */
+const entersTrivialBranch = ({ opts }: MergeCommitInput): boolean =>
+  opts.commit !== false && opts.squash !== true && allowsTrivialMerge(opts.strategies);
+
+/** git's `stash create` before the strategies run: the local changes, unreachable, signed as the merge commit will be. */
+const snapshotBeforeStrategies = async (
+  ctx: Context,
+  input: MergeRunInput,
+): Promise<ObjectId | undefined> => {
+  const author = await resolveMergeAuthor(ctx, input);
+  const committer = resolveMergeCommitter(input, author);
+  return snapshotLocalChanges(ctx, requireWorkTree(ctx, 'merge'), { author, committer });
+};
+
+/** git's strategy loop for one head. */
 const twoHeadStrategy = async (
   ctx: Context,
   commit: MergeCommitInput,
   remote: MergeRemote,
   bases: ReadonlyArray<ObjectId>,
 ): Promise<MergeEnding> => {
-  if (allowsTrivialMerge(commit.opts.strategies)) {
-    const trivial = await tryTrivialMerge(ctx, commit, remote.id, bases);
-    if (trivial !== undefined) return trivial;
-  }
   return tryStrategies(ctx, commit, (strategy) =>
     twoHeadAttempt(ctx, commit, { remote, bases, strategy }),
   );
@@ -945,6 +960,7 @@ const manyHeadMerge = async (
   return underAutostash(ctx, opts, async () => {
     const carried = await refuseDirtyIndex(ctx, ourId);
     const commit = { opts, internal, branch, ourId, parents, named, carried };
+    await snapshotBeforeStrategies(ctx, input);
     return manyHeadStrategy(ctx, commit, remotes);
   });
 };

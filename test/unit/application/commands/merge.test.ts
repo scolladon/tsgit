@@ -21,6 +21,7 @@ import {
 } from '../../../../src/application/commands/merge.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import * as stashMod from '../../../../src/application/commands/stash.js';
 import { tagCreate, tagDelete } from '../../../../src/application/commands/tag.js';
 import {
   createMergeResultWriter,
@@ -622,7 +623,7 @@ describe('merge', () => {
     'Given theirs deletes a/x, a was swapped for a symlink to real and the merge %s',
     (_title, conflicting) => {
       describe('When merge', () => {
-        it('Then it refuses with WORKING_TREE_DIRTY on a/x before any ref, index or work-tree write', async () => {
+        it('Then it refuses beyond the symbolic link on a/x before any ref, index or work-tree write', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await init(ctx);
@@ -660,9 +661,8 @@ describe('merge', () => {
 
           // Assert
           expect((error as TsgitError).data).toEqual({
-            code: 'WORKING_TREE_DIRTY',
-            localChanges: ['a/x'],
-            untracked: [],
+            code: 'PATHSPEC_BEYOND_SYMLINK',
+            path: 'a/x',
           });
           expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
@@ -2371,7 +2371,13 @@ describe('merge — updateRef CAS guard', () => {
   // Patch readUtf8 so the SECOND read of `refs/heads/main` (the updateRef
   // CAS read) returns a fabricated id, simulating a concurrent ref move.
   // resolveRef reads it once first; the CAS reads it again.
-  const patchStaleMainRef = (ctx: ReturnType<typeof createMemoryContext>): void => {
+  /** The reads of `main` the local-changes snapshot adds before the merge commit's own. */
+  const SNAPSHOT_HEAD_READS = 1;
+
+  const patchStaleMainRef = (
+    ctx: ReturnType<typeof createMemoryContext>,
+    readsBeforeStale = 1,
+  ): void => {
     const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
     const staleId = '1'.repeat(40);
     let mainReads = 0;
@@ -2379,7 +2385,7 @@ describe('merge — updateRef CAS guard', () => {
     (ctx.fs as { openWithNoFollow: typeof original }).openWithNoFollow = async (path, mode) => {
       if (path !== refPath) return original(path, mode);
       mainReads += 1;
-      if (mainReads > 1) await ctx.fs.writeUtf8(refPath, `${staleId}\n`);
+      if (mainReads > readsBeforeStale) await ctx.fs.writeUtf8(refPath, `${staleId}\n`);
       return original(path, mode);
     };
   };
@@ -2433,7 +2439,7 @@ describe('merge — updateRef CAS guard', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
         await commit(ctx, { message: 'on-main', author });
-        patchStaleMainRef(ctx);
+        patchStaleMainRef(ctx, SNAPSHOT_HEAD_READS + 1);
 
         // Act
         let caught: unknown;
@@ -7832,6 +7838,176 @@ describe('merge — a distinct-types conflict validates each side with the mode 
         // Assert
         expect(result.kind).toBe('conflict');
         expect(await stagesOf(ctx)).toEqual(['gitmod:2', 'gitmod~1:3', 'readme.txt:0']);
+      });
+    });
+  });
+});
+
+describe('merge — snapshot of local changes before the strategies', () => {
+  const committer: AuthorIdentity = {
+    name: 'Bob',
+    email: 'bob@example.com',
+    timestamp: 1_700_000_100,
+    timezoneOffset: '+0000',
+  };
+
+  const put = (ctx: Context, path: string, content: string) =>
+    ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+  const commitPath = async (ctx: Context, path: string, content: string, message: string) => {
+    await put(ctx, path, content);
+    await add(ctx, [path]);
+    await commit(ctx, { message, author });
+  };
+
+  /** main and feature each add one file to a shared base; a.txt is then edited in the work tree. */
+  const divergedWithEdit = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await commitPath(ctx, 'a.txt', 'a\n', 'base');
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await commitPath(ctx, 'd.txt', 'd\n', 'on-feature');
+    await checkout(ctx, { rev: 'main' });
+    await commitPath(ctx, 'c.txt', 'c\n', 'on-main');
+    await put(ctx, 'a.txt', 'edited\n');
+    return ctx;
+  };
+
+  const spyOnSnapshot = () => vi.spyOn(stashMod, 'snapshotLocalChanges');
+
+  const snapshotOf = async (spy: ReturnType<typeof spyOnSnapshot>) =>
+    spy.mock.results[0]?.type === 'return' ? await spy.mock.results[0].value : 'not called';
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a trivially mergeable pair, every strategy allowing the trivial merge', () => {
+    describe('When merge commits', () => {
+      it('Then no snapshot is taken', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'feature', strategy: 'resolve', author });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(spy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the same pair', () => {
+    describe.each([
+      ['--no-commit', { commit: false }],
+      ['--squash', { squash: true }],
+    ])('When merge runs %s with resolve', (_label, extra) => {
+      it('Then the snapshot is taken', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', strategy: 'resolve', author, ...extra });
+
+        // Assert
+        expect(await snapshotOf(spy)).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+
+    describe('When merge runs with a strategy that refuses the trivial merge', () => {
+      it('Then the snapshot is taken', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(await snapshotOf(spy)).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+  });
+
+  describe('Given a clean work tree and a true merge', () => {
+    describe('When merge runs', () => {
+      it('Then the snapshot finds nothing to record', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        await put(ctx, 'a.txt', 'a\n');
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(await snapshotOf(spy)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a local edit and a true merge', () => {
+    describe('When merge runs', () => {
+      it('Then the snapshot exists before the first strategy starts', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const order: string[] = [];
+        const real = stashMod.snapshotLocalChanges;
+        vi.spyOn(stashMod, 'snapshotLocalChanges').mockImplementation(async (...args) => {
+          const id = await real(...args);
+          order.push('snapshot');
+          return id;
+        });
+        const reporter = { ...recordingProgress().reporter, start: () => order.push('strategies') };
+
+        // Act
+        await mergeRun(withProgress(ctx, reporter), { rev: 'feature', author });
+
+        // Assert
+        expect(order).toEqual(['snapshot', 'strategies']);
+      });
+
+      it('Then the merge author and committer sign both snapshot commits', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author, committer });
+
+        // Assert
+        const wip = await readObject(ctx, (await snapshotOf(spy)) as ObjectId);
+        if (wip.type !== 'commit') throw new Error('not a commit');
+        const index = await readObject(ctx, wip.data.parents[1] as ObjectId);
+        if (index.type !== 'commit') throw new Error('not a commit');
+        expect([wip.data.author, wip.data.committer]).toEqual([author, committer]);
+        expect([index.data.author, index.data.committer]).toEqual([author, committer]);
+      });
+    });
+  });
+
+  describe('Given a local edit and an octopus merge', () => {
+    describe('When merge runs', () => {
+      it('Then the snapshot is taken', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        await checkout(ctx, { rev: 'feature' });
+        await branchCreate(ctx, { name: 'other' });
+        await checkout(ctx, { rev: 'other' });
+        await commitPath(ctx, 'e.txt', 'e\n', 'on-other');
+        await checkout(ctx, { rev: 'main' });
+        await put(ctx, 'a.txt', 'edited\n');
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: ['feature', 'other'], author });
+
+        // Assert
+        expect(await snapshotOf(spy)).toMatch(/^[0-9a-f]{40}$/);
       });
     });
   });

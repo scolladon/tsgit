@@ -16,9 +16,9 @@
  *   unique:         conflict-path tracked-dirty / untracked overwrite refusal matches git
  *   interopSurface: merge
  */
-import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
@@ -30,6 +30,7 @@ import {
   runGit,
   runGitEnv,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -596,5 +597,434 @@ describe.skipIf(!GIT_AVAILABLE)(
         ? current
         : `${current}[core]\n\tsparseCheckout = true\n`;
     };
+  },
+);
+
+const BOB: AuthorIdentity = {
+  name: 'Bob',
+  email: 'bob@example.com',
+  timestamp: 1_700_000_100,
+  timezoneOffset: '+0000',
+};
+
+const SPLIT_ENV: NodeJS.ProcessEnv = {
+  ...COMMIT_ENV,
+  GIT_COMMITTER_NAME: BOB.name,
+  GIT_COMMITTER_EMAIL: BOB.email,
+  GIT_COMMITTER_DATE: `${BOB.timestamp} ${BOB.timezoneOffset}`,
+};
+
+type Graph = 'diverged' | 'descendant' | 'conflicting' | 'two-sided' | 'beyond-symlink';
+type LocalState = 'modified' | 'clean' | 'untracked' | 'touched' | 'untracked-and-modified';
+type Outcome = 'ok' | 'conflict' | 'refused';
+
+interface SnapshotRow {
+  readonly id: string;
+  readonly graph: Graph;
+  readonly local: LocalState;
+  readonly git: ReadonlyArray<string>;
+  readonly input: Record<string, unknown>;
+  readonly outcome: Outcome;
+  readonly snapshot: boolean;
+  readonly detached?: boolean;
+}
+
+const MERGE_T = { rev: 't' };
+const SNAPSHOT_ROWS: ReadonlyArray<SnapshotRow> = [
+  {
+    id: 'Q1',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'ok',
+    snapshot: true,
+  },
+  {
+    id: 'Q2',
+    graph: 'diverged',
+    local: 'clean',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'ok',
+    snapshot: false,
+  },
+  {
+    id: 'Q5',
+    graph: 'diverged',
+    local: 'untracked',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'ok',
+    snapshot: false,
+  },
+  {
+    id: 'Q6',
+    graph: 'diverged',
+    local: 'touched',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'ok',
+    snapshot: false,
+  },
+  {
+    id: 'Q7',
+    graph: 'descendant',
+    local: 'modified',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'ok',
+    snapshot: false,
+  },
+  {
+    id: 'Q8',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['--squash', 't'],
+    input: { rev: 't', squash: true },
+    outcome: 'ok',
+    snapshot: true,
+  },
+  {
+    id: 'Q9',
+    graph: 'descendant',
+    local: 'modified',
+    git: ['--squash', 't'],
+    input: { rev: 't', squash: true },
+    outcome: 'ok',
+    snapshot: false,
+  },
+  {
+    id: 'Q10',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['--no-commit', 't'],
+    input: { rev: 't', commit: false },
+    outcome: 'ok',
+    snapshot: true,
+  },
+  {
+    id: 'Q11',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['-s', 'ours', '-s', 'ort', 't'],
+    input: { rev: 't', strategy: ['ours', 'ort'] },
+    outcome: 'ok',
+    snapshot: true,
+  },
+  {
+    id: 'Q13',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['-s', 'resolve', 't'],
+    input: { rev: 't', strategy: 'resolve' },
+    outcome: 'ok',
+    snapshot: false,
+  },
+  {
+    id: 'Q15',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'ok',
+    snapshot: true,
+    detached: true,
+  },
+  {
+    id: 'Q17',
+    graph: 'conflicting',
+    local: 'modified',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'conflict',
+    snapshot: true,
+  },
+  {
+    id: 'Q18',
+    graph: 'diverged',
+    local: 'untracked-and-modified',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'ok',
+    snapshot: true,
+  },
+  {
+    id: 'Q19',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['--ff-only', 't'],
+    input: { rev: 't', fastForward: 'only' },
+    outcome: 'refused',
+    snapshot: false,
+  },
+  {
+    id: 'Q20',
+    graph: 'two-sided',
+    local: 'modified',
+    git: ['-s', 'resolve', 't'],
+    input: { rev: 't', strategy: 'resolve' },
+    outcome: 'ok',
+    snapshot: true,
+  },
+  {
+    id: 'Q23',
+    graph: 'diverged',
+    local: 'modified',
+    git: ['t', 't2'],
+    input: { rev: ['t', 't2'] },
+    outcome: 'ok',
+    snapshot: true,
+  },
+  {
+    id: 'S3a /same',
+    graph: 'beyond-symlink',
+    local: 'clean',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
+    id: 'S3a /same with dirty',
+    graph: 'beyond-symlink',
+    local: 'modified',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'refused',
+    snapshot: true,
+  },
+];
+
+const outcomeOfExit = (exitCode: number): Outcome => {
+  if (exitCode === 0) return 'ok';
+  return exitCode === 1 ? 'conflict' : 'refused';
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'merge interop — snapshot of local changes before the strategies',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('merge-snapshot');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      repo = await openRepository({ cwd: pair.ours });
+      await repo.init();
+    });
+
+    afterEach(async () => {
+      vi.useRealTimers();
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    const writeBoth = async (rel: string, content: string): Promise<void> => {
+      for (const dir of [pair.peer, pair.ours]) {
+        await mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+        await writeFile(path.join(dir, rel), content);
+      }
+    };
+
+    const commitBoth = async (message: string, paths: ReadonlyArray<string>): Promise<void> => {
+      runGit(['-C', pair.peer, 'add', ...paths]);
+      await repo.add(paths);
+      runGit(['-C', pair.peer, 'commit', '-q', '-m', message], { env: SPLIT_ENV });
+      await repo.commit({ message, author: AUTHOR, committer: BOB });
+    };
+
+    const branchBoth = async (name: string): Promise<void> => {
+      runGit(['-C', pair.peer, 'checkout', '-q', '-b', name]);
+      await repo.branch.create({ name });
+      await repo.checkout({ rev: name });
+    };
+
+    const checkoutBoth = async (rev: string): Promise<void> => {
+      runGit(['-C', pair.peer, 'checkout', '-q', rev]);
+      await repo.checkout({ rev });
+    };
+
+    const TWO_SIDED_BASE = '1\n2\n3\n4\n5\n6\n7\n8\n9\n';
+
+    const buildGraph = async (graph: Graph): Promise<void> => {
+      await writeBoth('dirty', 'base\n');
+      await writeBoth('keep', 'k0\n');
+      await writeBoth('two', TWO_SIDED_BASE);
+      await writeBoth('d/x', 'x\n');
+      await commitBoth('base', ['dirty', 'keep', 'two', 'd/x']);
+      await branchBoth('t2');
+      await writeBoth('t2-file', 't2\n');
+      await commitBoth('t2', ['t2-file']);
+      await checkoutBoth('main');
+      await branchBoth('t');
+      if (graph === 'conflicting') await writeBoth('keep', 'kT\n');
+      if (graph === 'two-sided') await writeBoth('two', TWO_SIDED_BASE.replace('1\n', 'T\n'));
+      await writeBoth('t-file', 't\n');
+      await commitBoth('t', ['t-file', 'keep', 'two']);
+      await checkoutBoth('main');
+      if (graph === 'descendant') return;
+      if (graph === 'conflicting') await writeBoth('keep', 'kO\n');
+      if (graph === 'two-sided') await writeBoth('two', TWO_SIDED_BASE.replace('9\n', 'O\n'));
+      await writeBoth('o-file', 'o\n');
+      await commitBoth('o', ['o-file', 'keep', 'two']);
+    };
+
+    const applyLocal = async (local: LocalState): Promise<void> => {
+      if (local === 'modified' || local === 'untracked-and-modified') {
+        await writeBoth('dirty', 'LOCAL\n');
+      }
+      if (local === 'untracked' || local === 'untracked-and-modified') {
+        await writeBoth('stray', 'stray\n');
+      }
+      if (local === 'touched') await writeBoth('dirty', 'base\n');
+    };
+
+    const unreachable = (dir: string): ReadonlySet<string> => {
+      const all = runGit(['-C', dir, 'cat-file', '--batch-all-objects', '--batch-check']);
+      const reached = new Set(
+        runGit(['-C', dir, 'rev-list', '--objects', '--all'])
+          .split('\n')
+          .map((line) => line.split(' ')[0]),
+      );
+      return new Set(
+        all
+          .split('\n')
+          .filter((line) => line !== '')
+          .map((line) => line.split(' ')[0] as string)
+          .filter((id) => !reached.has(id)),
+      );
+    };
+
+    const created = (before: ReadonlySet<string>, after: ReadonlySet<string>): string[] =>
+      [...after].filter((id) => !before.has(id)).sort();
+
+    const commitsOf = (dir: string, ids: ReadonlyArray<string>): string[] =>
+      ids.filter((id) => runGit(['-C', dir, 'cat-file', '-t', id]).trim() === 'commit');
+
+    const messagesOf = (dir: string, ids: ReadonlyArray<string>): string[] =>
+      commitsOf(dir, ids)
+        .map((id) =>
+          runGit(['-C', dir, 'cat-file', 'commit', id]).split('\n\n').slice(1).join('\n\n'),
+        )
+        .sort();
+
+    const tsgitOutcome = async (
+      input: Record<string, unknown>,
+    ): Promise<{ outcome: Outcome; code?: string | undefined }> => {
+      try {
+        const result = await repo.merge.run({
+          message: 'm',
+          author: AUTHOR,
+          committer: BOB,
+          ...input,
+        } as Parameters<Repository['merge']['run']>[0]);
+        return { outcome: result.kind === 'conflict' ? 'conflict' : 'ok' };
+      } catch (error) {
+        return { outcome: 'refused', code: (error as { data?: { code?: string } }).data?.code };
+      }
+    };
+
+    const statusOf = (dir: string): string =>
+      runGit(['-C', dir, 'status', '--porcelain', '--untracked-files=all']);
+
+    describe.each(SNAPSHOT_ROWS)('Row $id', (row) => {
+      describe('When both tools merge', () => {
+        it('Then the outcome, index, work tree and unreachable objects match', async () => {
+          // Arrange
+          await buildGraph(row.graph);
+          if (row.detached === true) {
+            runGit(['-C', pair.peer, 'checkout', '-q', '--detach']);
+            await repo.checkout({ rev: runGit(['-C', pair.ours, 'rev-parse', 'HEAD']).trim() });
+          }
+          if (row.graph === 'beyond-symlink') {
+            for (const dir of [pair.peer, pair.ours]) {
+              await rm(path.join(dir, 'd'), { recursive: true });
+              await symlink('nowhere', path.join(dir, 'd'));
+            }
+          }
+          await applyLocal(row.local);
+          const peerBefore = unreachable(pair.peer);
+          const oursBefore = unreachable(pair.ours);
+
+          // Act
+          const peer = tryRunGitWithExit(['-C', pair.peer, 'merge', '-m', 'm', ...row.git], {
+            env: SPLIT_ENV,
+          });
+          const ours = await tsgitOutcome(row.input);
+
+          // Assert
+          const peerNew = created(peerBefore, unreachable(pair.peer));
+          const oursNew = created(oursBefore, unreachable(pair.ours));
+          expect(ours.outcome).toBe(outcomeOfExit(peer.exitCode));
+          expect(ours.outcome).toBe(row.outcome);
+          expect(messagesOf(pair.ours, oursNew)).toEqual(messagesOf(pair.peer, peerNew));
+          expect(commitsOf(pair.ours, oursNew).length > 0).toBe(row.snapshot);
+          expect(commitsOf(pair.ours, oursNew)).toEqual(commitsOf(pair.peer, peerNew));
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          expect(statusOf(pair.ours)).toBe(statusOf(pair.peer));
+          expect(headOf(pair.ours)).toBe(headOf(pair.peer));
+        });
+      });
+    });
+
+    describe('Given a beyond-symlink refusal', () => {
+      describe('When tsgit merges', () => {
+        it('Then it names the path beyond the symbolic link', async () => {
+          // Arrange
+          await buildGraph('beyond-symlink');
+          for (const dir of [pair.ours]) {
+            await rm(path.join(dir, 'd'), { recursive: true });
+            await symlink('nowhere', path.join(dir, 'd'));
+          }
+
+          // Act
+          const sut = await tsgitOutcome(MERGE_T);
+
+          // Assert
+          expect(sut).toEqual({ outcome: 'refused', code: 'PATHSPEC_BEYOND_SYMLINK' });
+        });
+      });
+    });
+
+    describe.each([
+      ['SHA1', async () => writeBoth('dirty', 'LOCAL\n')],
+      [
+        'SHA2',
+        async () => {
+          await writeBoth('dirty', 'STAGED\n');
+          runGit(['-C', pair.peer, 'add', 'dirty']);
+          await repo.add(['dirty']);
+          await writeBoth('dirty', 'LOCAL\n');
+        },
+      ],
+    ])('Row %s', (_id, arrangeLocal) => {
+      describe('When git stash create and tsgit stash push share one identity', () => {
+        it('Then both write the same WIP commit', async () => {
+          // Arrange
+          await buildGraph('descendant');
+          await arrangeLocal();
+          await appendFile(
+            path.join(pair.ours, '.git', 'config'),
+            `[user]\n\tname = ${AUTHOR.name}\n\temail = ${AUTHOR.email}\n`,
+          );
+          vi.useFakeTimers({ toFake: ['Date'] });
+          vi.setSystemTime(AUTHOR.timestamp * 1000);
+
+          // Act
+          const peerStash = runGit(['-C', pair.peer, 'stash', 'create'], {
+            env: COMMIT_ENV,
+          }).trim();
+          await repo.stash.push();
+
+          // Assert
+          vi.useRealTimers();
+          expect(runGit(['-C', pair.ours, 'rev-parse', 'stash@{0}']).trim()).toBe(peerStash);
+        });
+      });
+    });
+
+    const headOf = (dir: string): string => runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
   },
 );

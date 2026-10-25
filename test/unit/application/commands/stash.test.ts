@@ -6,6 +6,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import {
   applyAutostash,
   createAutostash,
+  snapshotLocalChanges,
   stashApply,
   stashDrop,
   stashList,
@@ -2377,6 +2378,93 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
 
         // Assert
         expect(sut.entries.has('d/x' as FilePath)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('snapshotLocalChanges', () => {
+  const workDirOf = (ctx: Context): string => `${ctx.layout.workDir}`;
+  const committer: AuthorIdentity = {
+    name: 'Bob',
+    email: 'bob@example.com',
+    timestamp: 1_700_000_100,
+    timezoneOffset: '+0000',
+  };
+
+  describe('Given a modified tracked file', () => {
+    describe('When the snapshot is taken with a distinct author and committer', () => {
+      it('Then the WIP commit carries both identities and the index commit too', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+
+        // Act
+        const result = await snapshotLocalChanges(ctx, workDirOf(ctx), { author, committer });
+
+        // Assert
+        const wip = await commitOf(ctx, result as ObjectId);
+        const index = await commitOf(ctx, wip.parents[1] as ObjectId);
+        expect([wip.author, wip.committer]).toEqual([author, committer]);
+        expect([index.author, index.committer]).toEqual([author, committer]);
+        expect(wip.parents[0]).toBe(await headId(ctx));
+        expect(index.parents).toEqual([await headId(ctx)]);
+      });
+
+      it('Then it writes no stash ref, resets nothing and the tree stays edited', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+
+        // Act
+        await snapshotLocalChanges(ctx, workDirOf(ctx), { author, committer });
+
+        // Assert
+        expect(await readStashStack(ctx)).toEqual([]);
+        expect(await read(ctx, 'a.txt')).toBe('edited\n');
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When the snapshot is taken', () => {
+      it('Then it returns undefined and writes no object', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const before = await looseObjectIds(ctx);
+
+        // Act
+        const result = await snapshotLocalChanges(ctx, workDirOf(ctx), { author, committer });
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(await looseObjectIds(ctx)).toEqual(before);
+      });
+    });
+  });
+});
+
+describe('stash push beyond a symbolic link, object order', () => {
+  describe('Given a tracked path whose leading directory became a dangling symlink', () => {
+    describe('When push refuses', () => {
+      it('Then exactly the index commit was written first', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'v1\n', 'add d/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`);
+        const before = await looseObjectIds(ctx);
+
+        // Act
+        const refusal = await attemptStashPush(ctx, {});
+
+        // Assert
+        const written = await commitsWrittenSince(ctx, before);
+        expect((refusal as TsgitError).data).toEqual({
+          code: 'PATHSPEC_BEYOND_SYMLINK',
+          path: 'd/x',
+        });
+        expect(written.map((c) => c.message)).toEqual([expect.stringMatching(/^index on main: /)]);
       });
     });
   });

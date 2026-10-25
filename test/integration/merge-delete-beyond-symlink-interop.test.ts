@@ -128,7 +128,10 @@ describe.skipIf(!GIT_AVAILABLE)(
 
             // Assert
             expect(peerRun.ok).toBe(false);
-            expect(oursError).toMatchObject({ data: { code: 'WORKING_TREE_DIRTY' } });
+            expect(peerRun.stderr).toContain("'a/x' is beyond a symbolic link");
+            expect(oursError).toMatchObject({
+              data: { code: 'PATHSPEC_BEYOND_SYMLINK', path: 'a/x' },
+            });
             expect(snapshot(pair.peer)).toEqual(before);
             expect(snapshot(pair.ours)).toEqual(before);
           });
