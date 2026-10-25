@@ -4045,6 +4045,66 @@ describe('applyChangeset over a gitlink directory', () => {
     });
   });
 
+  describe('Given a populated directory at a path a forced update turns into a symlink', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the directory is gone and the link is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('old'));
+        const newId = await writeBlob(ctx, enc('../target.txt'));
+        await ctx.fs.write(`${WORKDIR}/l/u`, enc('untracked'));
+        const changeset = makeChangeset([makeUpdate('l', oldId, newId, FILE_MODE.SYMLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect(await ctx.fs.readlink(`${WORKDIR}/l`)).toBe('../target.txt');
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a populated directory at a path a forced update writes a file', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the directory is gone and the file is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tautocrlf = true\n');
+        invalidateConfigCache(ctx);
+        const oldId = await writeBlob(ctx, enc('old\n'));
+        const newId = await writeBlob(ctx, enc('new\n'));
+        await ctx.fs.write(`${WORKDIR}/f/u`, enc('untracked'));
+        const changeset = makeChangeset([makeUpdate('f', oldId, newId)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('new\r\n');
+      });
+    });
+  });
+
+  describe('Given a populated directory at a path a forced update writes a gitlink', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the directory and its files stay', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${WORKDIR}/sub/inner.txt`, enc('i'));
+        const changeset = makeChangeset([makeUpdate('sub', OLD_ID, NEW_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub/inner.txt`))).toBe('i');
+      });
+    });
+  });
+
   describe('Given a regular-file update over a locally modified file', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then it is still refused as a local change', async () => {

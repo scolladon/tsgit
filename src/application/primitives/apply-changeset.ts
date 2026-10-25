@@ -781,7 +781,7 @@ const clearOccupants = async (
       continue;
     }
     if (obstruction !== undefined) continue;
-    if (entry.kind !== 'add' || entry.mode === FILE_MODE.GITLINK) continue;
+    if (entry.mode === FILE_MODE.GITLINK) continue;
     await clearDirectoryAt(ctx, joinPath(workdir, entry.path), policy, isIgnoredPath);
   }
 };

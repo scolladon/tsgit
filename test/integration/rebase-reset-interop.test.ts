@@ -110,19 +110,6 @@ const pickChangesEntry = (variant: Variant, row: AbortRow): ReturnType<typeof en
   return byVariant[variant];
 };
 
-const DISPLACING_SHAPES: ReadonlySet<string> = new Set(['S1', 'S3c', 'S3d', 'I1', 'I4']);
-
-/** The reset must write a tracked path through an occupant sitting on it: git displaces the occupant, a separate behaviour. */
-const rewritesThroughOccupant = (
-  row: AbortRow,
-  variant: Variant,
-  stopEntries: ReturnType<typeof entriesOf>,
-  action: Action,
-): boolean => {
-  const target = action === 'abort' ? stopEntries.main : stopEntries.theirs;
-  return DISPLACING_SHAPES.has(row.shape) && variant !== 'reset-adds' && target.length > 0;
-};
-
 interface Scenario {
   readonly name: string;
   readonly entries: (variant: Variant, row: AbortRow) => ReturnType<typeof entriesOf>;
@@ -170,13 +157,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe.each(SCENARIOS)('Given a stopped rebase, $name', ({ entries, actions }) => {
       describe.each(actions)('When --%s runs over an occupant', (action) => {
         describe.each(
-          ABORT_ROWS.flatMap((row) =>
-            row.variants
-              .filter(
-                (variant) => !rewritesThroughOccupant(row, variant, entries(variant, row), action),
-              )
-              .map((variant) => ({ row, variant })),
-          ),
+          ABORT_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant }))),
         )('Given $row.shape/$variant', ({ row, variant }) => {
           it('Then the outcome, work tree, index and stop state match git', async () => {
             // Arrange
