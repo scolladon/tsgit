@@ -159,7 +159,6 @@ const matchesCachedStat = async (
   absPath: string,
   stat: FileStat,
 ): Promise<boolean> => {
-  if (entry.flags.assumeValid) return true;
   if (deriveWorkingMode(stat) !== entry.mode || !matchesContentStat(entry, stat)) return false;
   if (indexMtime !== undefined && !isRacy(entry, indexMtime)) return true;
   const provider = await buildCheckinAttributeProvider(ctx);

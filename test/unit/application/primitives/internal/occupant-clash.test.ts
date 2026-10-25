@@ -438,7 +438,7 @@ describe('classifyOccupant', () => {
 
   describe('Given a path reached through a symlinked directory', () => {
     const CONTENT = new TextEncoder().encode('v1\n');
-    const LONG_AGO: IndexMtime = { seconds: 4_000_000_000, nanoseconds: 0 };
+    const INDEX_WRITTEN_AFTER_ENTRY: IndexMtime = { seconds: 4_000_000_000, nanoseconds: 0 };
     const REACHED = 'd/x';
 
     const blobIdOf = async (ctx: Context, bytes: Uint8Array): Promise<ObjectId> =>
@@ -462,7 +462,7 @@ describe('classifyOccupant', () => {
       it('Then it is clear', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const tracked = await arrangeTracked(ctx, { indexMtime: LONG_AGO });
+        const tracked = await arrangeTracked(ctx, { indexMtime: INDEX_WRITTEN_AFTER_ENTRY });
 
         // Act
         const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
@@ -476,7 +476,7 @@ describe('classifyOccupant', () => {
       it('Then it is a local change at the entry path', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const tracked = await arrangeTracked(ctx, { indexMtime: LONG_AGO });
+        const tracked = await arrangeTracked(ctx, { indexMtime: INDEX_WRITTEN_AFTER_ENTRY });
         await ctx.fs.write(`${ctx.layout.workDir}/held/x`, new Uint8Array([1, 2, 3, 4, 5]));
 
         // Act
@@ -538,11 +538,32 @@ describe('classifyOccupant', () => {
       });
     });
 
+    describe('When the entry is assume-unchanged and the reached file differs from the cached stat', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const lookup = await arrangeTracked(ctx, { indexMtime: INDEX_WRITTEN_AFTER_ENTRY });
+        const tracked: TrackedLookup = async (target) => {
+          const found = await lookup(target);
+          if (found === undefined) return undefined;
+          const flags = { ...found.entry.flags, assumeValid: true };
+          return { ...found, entry: { ...found.entry, flags } };
+        };
+        await ctx.fs.write(`${ctx.layout.workDir}/held/x`, new Uint8Array([1, 2, 3, 4, 5]));
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT(REACHED));
+      });
+    });
+
     describe('When the index holds no entry for the path', () => {
       it('Then it is a local change at the entry path', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        await arrangeTracked(ctx, { indexMtime: LONG_AGO });
+        await arrangeTracked(ctx, { indexMtime: INDEX_WRITTEN_AFTER_ENTRY });
 
         // Act
         const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx));

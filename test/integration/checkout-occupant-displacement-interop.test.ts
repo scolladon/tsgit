@@ -25,6 +25,7 @@ import {
   runGit,
 } from './interop-helpers.js';
 import {
+  assumingUnchanged,
   buildHistory,
   copiedBehindLink,
   danglingLinkAt,
@@ -210,6 +211,20 @@ const UPDATE_ROWS: ReadonlyArray<ChangeRow> = [
     due: [regular('d/x')],
     occupant: copiedBehindLink('d', 'held'),
     git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'S3k',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: assumingUnchanged('d/x', copiedBehindLink('d', 'held')),
+    git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'S3l',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: assumingUnchanged('d/x', movedBehindLink('d', 'held')),
+    git: OK,
   },
   {
     shape: 'S3b',

@@ -160,6 +160,13 @@ export const copiedBehindLink =
     rmSync(path.join(dir, rel), { recursive: true, force: true });
     symlinkSync(holder, path.join(dir, rel));
   };
+/** The index trusts `rel` is unchanged (assume-unchanged) before the occupant takes its place. */
+export const assumingUnchanged =
+  (rel: string, occupant: Occupant): Occupant =>
+  (dir) => {
+    runGit(['-C', dir, 'update-index', '--assume-unchanged', rel]);
+    occupant(dir);
+  };
 export const ignoring =
   (pattern: string, occupant: Occupant): Occupant =>
   (dir) => {
