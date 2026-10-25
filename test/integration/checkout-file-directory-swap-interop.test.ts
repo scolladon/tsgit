@@ -384,3 +384,139 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+const commitFileThenDirectory = (dir: string, fileFirst: boolean): void => {
+  const writeFile = (): void => {
+    writeFileSync(path.join(dir, 'd'), 'v1\n');
+    git(dir, 'add', 'd');
+  };
+  const writeDirectory = (): void => {
+    mkdirSync(path.join(dir, 'd'));
+    writeFileSync(path.join(dir, 'd', 'x'), 'v2\n');
+    writeFileSync(path.join(dir, 'd', 'y'), 'v3\n');
+    git(dir, 'add', 'd');
+  };
+  const [onMain, onTarget] = fileFirst ? [writeFile, writeDirectory] : [writeDirectory, writeFile];
+  onMain();
+  git(dir, 'commit', '-q', '-m', 'main');
+  git(dir, 'checkout', '-q', '-b', 't');
+  git(dir, 'rm', '-q', '-r', '-f', 'd');
+  onTarget();
+  git(dir, 'commit', '-q', '-m', 'target');
+  git(dir, 'checkout', '-q', 'main');
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'checkout interop — path restore over a colliding index entry',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    const open = async (fileFirst: boolean, modifyD: boolean): Promise<void> => {
+      pair = await makePeerPair('checkout-path-restore-collision');
+      initBothRepos(pair.peer, pair.ours);
+      for (const dir of [pair.peer, pair.ours]) {
+        commitFileThenDirectory(dir, fileFirst);
+        if (modifyD) writeFileSync(path.join(dir, 'd'), 'local\n');
+      }
+      repo = await openRepository({ cwd: pair.ours });
+    };
+
+    const expectSameState = (): void => {
+      expect(listWorkTree(pair.ours)).toEqual(listWorkTree(pair.peer));
+      expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+    };
+
+    describe.each([
+      ['T1 checkout t -- d/x', ['checkout', 't', '--', 'd/x'], { source: 't', paths: ['d/x'] }],
+      ['T1 checkout t -- d', ['checkout', 't', '--', 'd'], { source: 't', paths: ['d'] }],
+    ])('Given a tracked file d and t tracking d/x, %s', (_label, gitArgs, options) => {
+      describe('When both tools restore the path', () => {
+        it('Then d becomes a directory and the index keeps the restored entries only', async () => {
+          // Arrange
+          await open(true, false);
+          git(pair.peer, ...gitArgs);
+
+          // Act
+          await repo.checkout(options);
+
+          // Assert
+          expect(lstatSync(path.join(pair.ours, 'd')).isDirectory()).toBe(true);
+          expectSameState();
+        });
+      });
+    });
+
+    describe('Given a modified tracked file d and t tracking d/x', () => {
+      describe('When both tools restore d/x', () => {
+        it('Then the local change to d is gone and the index keeps d/x only', async () => {
+          // Arrange
+          await open(true, true);
+          git(pair.peer, 'checkout', 't', '--', 'd/x');
+
+          // Act
+          await repo.checkout({ source: 't', paths: ['d/x'] });
+
+          // Assert
+          expect(readFileSync(path.join(pair.ours, 'd', 'x'), 'utf8')).toBe('v2\n');
+          expectSameState();
+        });
+      });
+    });
+
+    describe('Given a tracked file d and t tracking d/x, with a forced switch', () => {
+      describe('When both tools checkout -f t', () => {
+        it('Then d becomes a directory, matching git', async () => {
+          // Arrange
+          await open(true, false);
+          git(pair.peer, 'checkout', '-q', '-f', 't');
+
+          // Act
+          await repo.checkout({ rev: 't', force: true });
+
+          // Assert
+          expectSameState();
+        });
+      });
+    });
+
+    describe('Given a tracked file d and t tracking d/x, with a hard reset', () => {
+      describe('When both tools reset --hard t', () => {
+        it('Then d becomes a directory, matching git', async () => {
+          // Arrange
+          await open(true, false);
+          git(pair.peer, 'reset', '-q', '--hard', 't');
+
+          // Act
+          await repo.reset({ mode: 'hard', rev: 't' });
+
+          // Assert
+          expectSameState();
+        });
+      });
+    });
+
+    describe('Given tracked d/x and d/y and t tracking a file d', () => {
+      describe('When both tools restore d', () => {
+        it('Then d is a file and the index holds d only', async () => {
+          // Arrange
+          await open(false, false);
+          git(pair.peer, 'checkout', 't', '--', 'd');
+
+          // Act
+          await repo.checkout({ source: 't', paths: ['d'] });
+
+          // Assert
+          expect(lstatSync(path.join(pair.ours, 'd')).isFile()).toBe(true);
+          expectSameState();
+        });
+      });
+    });
+  },
+);

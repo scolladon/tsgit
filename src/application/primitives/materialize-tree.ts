@@ -169,14 +169,39 @@ const writtenEntriesByPath = (
   return out;
 };
 
-/** Every stage of every out-of-scope path survives, so another path's conflict is kept. */
+const leadingDirectoriesOf = (path: string): string[] => {
+  const dirs: string[] = [];
+  for (let i = path.indexOf('/'); i !== -1; i = path.indexOf('/', i + 1)) {
+    dirs.push(path.slice(0, i));
+  }
+  return dirs;
+};
+
+/** A path a restored target entry would stand on, or lie beneath, as a file or directory. */
+const collidesWithTarget = (
+  path: string,
+  targetPaths: ReadonlySet<string>,
+  targetDirectories: ReadonlySet<string>,
+): boolean =>
+  targetDirectories.has(path) || leadingDirectoriesOf(path).some((d) => targetPaths.has(d));
+
+/**
+ * Every stage of every out-of-scope path survives, so another path's conflict is kept, except
+ * a path colliding with a restored one as file and directory — git's path restore drops it.
+ */
 const preserveOutOfScope = (
   currentIndex: GitIndex,
   scopedPaths: ReadonlySet<FilePath> | undefined,
-): IndexEntry[] =>
-  scopedPaths === undefined
-    ? []
-    : currentIndex.entries.filter((e) => !scopedPaths.has(escapedPathOf(e)));
+  target: ReadonlyArray<TargetEntry>,
+): IndexEntry[] => {
+  if (scopedPaths === undefined) return [];
+  const targetPaths = new Set<string>(target.map((t) => t.path));
+  const targetDirectories = new Set<string>(target.flatMap((t) => leadingDirectoriesOf(t.path)));
+  return currentIndex.entries.filter((e) => {
+    const path = escapedPathOf(e);
+    return !scopedPaths.has(path) && !collidesWithTarget(path, targetPaths, targetDirectories);
+  });
+};
 
 const pickEntry = (
   entry: TargetEntry,
@@ -196,7 +221,7 @@ const mergeNewIndexEntries = (
   const writtenByPath = writtenEntriesByPath(writtenEntries);
   const oldByPath = indexEntriesByPath(currentIndex);
 
-  const merged: IndexEntry[] = preserveOutOfScope(currentIndex, scopedPaths);
+  const merged: IndexEntry[] = preserveOutOfScope(currentIndex, scopedPaths, target);
   for (const entry of target) {
     const picked = pickEntry(entry, writtenByPath, oldByPath);
     if (picked !== undefined) merged.push(picked);

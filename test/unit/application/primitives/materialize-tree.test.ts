@@ -337,6 +337,67 @@ describe('materializeTree', () => {
     });
   });
 
+  describe('Given a scoped restore of d/x over an index tracking a file d', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the colliding entry d is dropped and only d/x remains', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idX = await writeBlob(ctx, 'x');
+        const idD = await writeBlob(ctx, 'd');
+        const treeId = await writeTree(ctx, [
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'd' as FilePath,
+            await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, idX)]),
+          ),
+        ]);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry('d', idD)] };
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: index,
+          paths: new Set(['d/x' as FilePath]),
+          force: true,
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => [e.path, e.id])).toEqual([['d/x', idX]]);
+      });
+    });
+  });
+
+  describe('Given a scoped restore of a file d over an index tracking d/x and d/y', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the entries beneath d are dropped and only d remains', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idD = await writeBlob(ctx, 'd');
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'd' as FilePath, idD)]);
+        const index: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [
+            makeIndexEntry('d/x', await writeBlob(ctx, 'x')),
+            makeIndexEntry('d/y', await writeBlob(ctx, 'y')),
+          ],
+        };
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: index,
+          paths: new Set(['d' as FilePath]),
+          force: true,
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => [e.path, e.id])).toEqual([['d', idD]]);
+      });
+    });
+  });
+
   describe('Given a scoped restore with a stage-0 index entry out of scope', () => {
     describe('When materializeTree runs', () => {
       it('Then that entry IS preserved in newIndexEntries', async () => {
