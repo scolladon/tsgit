@@ -76,12 +76,19 @@ import {
 import { everySourceLoadable } from './object-store.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
+export type IgnoredOccupants = 'overwrite' | 'protect';
+
 export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
   readonly force: boolean;
   readonly workdir: string;
   /** The ref and commit the checkout moves to, told to a smudging process filter. */
   readonly checkoutMetadata?: CheckoutMetadata;
+  /**
+   * `protect` refuses an ignored occupant like an untracked one (git's `overwrite_ignore = 0`);
+   * default `overwrite`.
+   */
+  readonly ignoredOccupants?: IgnoredOccupants;
 }
 
 export interface ApplyChangesetResult {
@@ -272,10 +279,13 @@ const deletedPaths = (
     entries.filter((e) => e.kind === 'delete' && !isLossy(e)).map((e) => joinPath(workdir, e.path)),
   );
 
+const NEVER_IGNORED: IgnoredProbe = async () => false;
+
 const checkDirty = async (
   ctx: Context,
   workdir: string,
   entries: ReadonlyArray<ChangesetEntry>,
+  ignoredOccupants: IgnoredOccupants,
 ): Promise<WouldOverwriteClasses> => {
   // Fanned out through the ioBound pool — pure reads, so collection order
   // is free: refusal arrays are sorted with `comparePaths` below regardless
@@ -287,7 +297,7 @@ const checkDirty = async (
   const scope: ClashScope = {
     removed: deletedPaths(workdir, entries),
     workdir,
-    isIgnoredPath: createIgnoredProbe(ctx),
+    isIgnoredPath: ignoredOccupants === 'protect' ? NEVER_IGNORED : createIgnoredProbe(ctx),
     scanner: createLeadingPathScanner(ctx),
   };
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
@@ -642,8 +652,13 @@ const removeIgnoredBelow = async (
 // Forced, that is everything; otherwise only the ignored files, as the clash check
 // already refused anything else. A gitlink leaves its directory alone, and a symlink
 // in the leading path is replaced by the write, never followed.
-// Forced, every occupant goes; otherwise only the ignored ones.
-type OccupantPolicy = 'every' | 'ignored';
+// Forced, every occupant goes; otherwise only the ignored ones, or none when ignored occupants are protected.
+type OccupantPolicy = 'every' | 'ignored' | 'protected';
+
+const occupantPolicyOf = (force: boolean, ignoredOccupants: IgnoredOccupants): OccupantPolicy => {
+  if (force) return 'every';
+  return ignoredOccupants === 'protect' ? 'protected' : 'ignored';
+};
 
 const clearOccupants = async (
   ctx: Context,
@@ -660,7 +675,7 @@ const clearOccupants = async (
     const stat = await lstatIfReachable(ctx.fs, absPath);
     if (stat?.isDirectory !== true) continue;
     if (policy === 'every') await ctx.fs.rmRecursive(absPath);
-    else await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
+    else if (policy === 'ignored') await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
   }
 };
 
@@ -672,13 +687,13 @@ const applyAllEntries = async (
   writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
   surviving: SurvivingDirectories,
-  force: boolean,
+  policy: OccupantPolicy,
 ): Promise<ApplyChangesetResult> => {
   const total = deletes.length + writes.length;
   const counter: ProgressCounter = { current: 0 };
 
   const deleted = await applyDeleteWave(ctx, workdir, deletes, surviving, scanner, total, counter);
-  await clearOccupants(ctx, workdir, writes, force ? 'every' : 'ignored');
+  await clearOccupants(ctx, workdir, writes, policy);
   const writtenEntries = await applyWriteWave(
     ctx,
     workdir,
@@ -711,8 +726,9 @@ const assertNoDirtyOverwrite = async (
   ctx: Context,
   workdir: string,
   entries: ReadonlyArray<ChangesetEntry>,
+  ignoredOccupants: IgnoredOccupants,
 ): Promise<void> => {
-  const dirty = await checkDirty(ctx, workdir, entries);
+  const dirty = await checkDirty(ctx, workdir, entries, ignoredOccupants);
   if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
     throw checkoutOverwriteDirty(dirty);
   }
@@ -745,6 +761,7 @@ const applyChangesetInScope = async (
   direction: AttributeDirection | undefined,
 ): Promise<ApplyChangesetResult> => {
   const { changeset, force, workdir } = opts;
+  const ignoredOccupants = opts.ignoredOccupants ?? 'overwrite';
 
   validateChangesetPaths(indexPathRulesOf(ctx), changeset);
 
@@ -752,7 +769,9 @@ const applyChangesetInScope = async (
   // pays a dirty probe — or a pool slot — for entries that carry no I/O.
   const { deletes, writes } = splitWaves(changeset.entries);
 
-  if (!force) await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes]);
+  if (!force) {
+    await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes], ignoredOccupants);
+  }
 
   // One scanner per changeset application, shared by BOTH the delete-skip
   // check and the write-side unlink: its per-directory memo means a deep
@@ -765,5 +784,14 @@ const applyChangesetInScope = async (
     // Stryker disable next-line ArrayDeclaration: equivalent — without a deletion nothing is scheduled for pruning, so the surviving set is never consulted.
     deletes.length === 0 ? [] : writtenPaths(changeset.entries),
   );
-  return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner, surviving, force);
+  return applyAllEntries(
+    ctx,
+    deletes,
+    writes,
+    workdir,
+    writer,
+    scanner,
+    surviving,
+    occupantPolicyOf(force, ignoredOccupants),
+  );
 };

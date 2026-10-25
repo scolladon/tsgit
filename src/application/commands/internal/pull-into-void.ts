@@ -45,6 +45,7 @@ const checkoutFromEmptyTree = async (ctx: Context, tree: ObjectId): Promise<void
       targetTree: tree,
       currentIndex,
       force: false,
+      ignoredOccupants: 'protect',
       paths: new Set(target.entries.keys()),
     }).catch((err: unknown) => {
       throw asMergeDirtyError(err);

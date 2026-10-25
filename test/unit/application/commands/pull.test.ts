@@ -298,6 +298,29 @@ describe('pull', () => {
     });
   });
 
+  describe('Given a pull into an unborn branch over an ignored file at an incoming path', () => {
+    describe('When pull', () => {
+      it('Then it refuses WORKING_TREE_DIRTY untracked a.txt and writes nothing', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'a.txt\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'mine');
+
+        // Act
+        const result = await pullError(() => unbornPull(ctx, main));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['a.txt'],
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('mine');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/fresh`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given HEAD names an unborn branch with a staged file the fetched head also holds', () => {
     describe('When pull', () => {
       it('Then it refuses with WORKING_TREE_DIRTY naming the file and HEAD stays unborn', async () => {

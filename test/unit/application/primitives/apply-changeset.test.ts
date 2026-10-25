@@ -4052,4 +4052,82 @@ describe('applyChangeset over a gitlink directory', () => {
       });
     });
   });
+
+  describe('Given an ignored file f where an added file f is due', () => {
+    describe('When applyChangeset runs without force and with ignoredOccupants protect', () => {
+      it('Then it refuses untracked f and keeps the ignored occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('f\n'));
+        await ctx.fs.write(`${WORKDIR}/f`, enc('o'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('f', newId)]),
+            force: false,
+            ignoredOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['f'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/f`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a directory f of ignored files where an added file f is due', () => {
+    describe('When applyChangeset runs without force and with ignoredOccupants protect', () => {
+      it('Then it refuses untracked f and keeps the ignored occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/f/a.o`, enc('o'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('f', newId)]),
+            force: false,
+            ignoredOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['f'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/f/a.o`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an ignored leading file d where an added file d/x is due', () => {
+    describe('When applyChangeset runs without force and with ignoredOccupants protect', () => {
+      it('Then it refuses untracked d and keeps the ignored occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('d\n'));
+        await ctx.fs.write(`${WORKDIR}/d`, enc('o'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('d/x', newId)]),
+            force: false,
+            ignoredOccupants: 'protect',
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/d`)).toBe(true);
+      });
+    });
+  });
 });

@@ -25,10 +25,31 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { pull } from '../../src/application/commands/pull.js';
+import { TsgitError } from '../../src/domain/error.js';
 import { errorDataCode } from '../../src/domain/error-data-code.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { backendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  buildHistory,
+  danglingLinkAt,
+  directoryHolding,
+  fileAt,
+  ignoring,
+  indexState,
+  link1,
+  listing,
+  type Occupant,
+  OK,
+  type Outcome,
+  refusedUntracked,
+  regular,
+  replacing,
+  runGitOutcome,
+  symlink,
+  type TreeEntry,
+  v1,
+} from './occupant-displacement-fixtures.js';
 
 const PEER_URL = 'https://example.com/peer.git';
 const SHORT_URL = 'https://example.com/peer';
@@ -609,6 +630,258 @@ describe.skipIf(!GIT_AVAILABLE)('pull into an unborn HEAD interop', () => {
         for (const dir of [ours, theirs]) {
           expect(existsSync(path.join(dir, '.git', 'refs', 'heads', 'main'))).toBe(false);
         }
+      });
+    });
+  });
+});
+
+interface UnbornPullRow {
+  readonly id: string;
+  readonly tracked: ReadonlyArray<TreeEntry>;
+  readonly due: ReadonlyArray<TreeEntry>;
+  readonly occupant: Occupant;
+  readonly git: Outcome;
+}
+
+const ignoredFile = (rel: string): Occupant => ignoring(rel, fileAt(rel));
+
+const UNBORN_ADD_ROWS: ReadonlyArray<UnbornPullRow> = [
+  { id: 'S1/add', due: [regular('d/x')], occupant: fileAt('d'), git: refusedUntracked('d') },
+  {
+    id: 'S2/add',
+    due: [regular('f')],
+    occupant: directoryHolding('f', 'u'),
+    git: refusedUntracked('f'),
+  },
+  {
+    id: 'S3a/add',
+    due: [regular('d/x')],
+    occupant: danglingLinkAt('d'),
+    git: refusedUntracked('d'),
+  },
+  { id: 'S3b/add', due: [regular('f')], occupant: danglingLinkAt('f'), git: refusedUntracked('f') },
+  {
+    id: 'S3c/add',
+    due: [symlink('l')],
+    occupant: directoryHolding('l', 'u'),
+    git: refusedUntracked('l'),
+  },
+  { id: 'S3d/add', due: [symlink('d/l')], occupant: fileAt('d'), git: refusedUntracked('d') },
+  {
+    id: 'S3e/add',
+    due: [symlink('d/l')],
+    occupant: danglingLinkAt('d'),
+    git: refusedUntracked('d'),
+  },
+  { id: 'S3f/add', due: [symlink('f')], occupant: fileAt('f'), git: refusedUntracked('f') },
+  { id: 'I1/add', due: [regular('d/x')], occupant: ignoredFile('d'), git: refusedUntracked('d') },
+  {
+    id: 'I2/add',
+    due: [regular('f')],
+    occupant: ignoring('f/u', directoryHolding('f', 'u')),
+    git: refusedUntracked('f'),
+  },
+  {
+    id: 'I3/add',
+    due: [regular('d/x')],
+    occupant: ignoring('d', danglingLinkAt('d')),
+    git: refusedUntracked('d'),
+  },
+  { id: 'I4/add', due: [symlink('d/l')], occupant: ignoredFile('d'), git: refusedUntracked('d') },
+  {
+    id: 'I5/add',
+    due: [symlink('l')],
+    occupant: ignoring('l/u', directoryHolding('l', 'u')),
+    git: refusedUntracked('l'),
+  },
+  { id: 'I6/add', due: [regular('f')], occupant: ignoredFile('f'), git: refusedUntracked('f') },
+].map((row) => ({ ...row, tracked: [] }));
+
+const UNBORN_UPDATE_ROWS: ReadonlyArray<UnbornPullRow> = [
+  {
+    id: 'S1/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', fileAt('d')),
+    git: refusedUntracked('d'),
+  },
+  {
+    id: 'S2/update',
+    tracked: [v1('f')],
+    due: [regular('f')],
+    occupant: replacing('f', directoryHolding('f', 'u')),
+    git: refusedUntracked('f'),
+  },
+  {
+    id: 'S3a/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', danglingLinkAt('d')),
+    git: refusedUntracked('d'),
+  },
+  {
+    id: 'S3b/update',
+    tracked: [v1('f')],
+    due: [regular('f')],
+    occupant: replacing('f', danglingLinkAt('f')),
+    git: refusedUntracked('f'),
+  },
+  {
+    id: 'S3c/update',
+    tracked: [link1('l')],
+    due: [symlink('l')],
+    occupant: replacing('l', directoryHolding('l', 'u')),
+    git: refusedUntracked('l'),
+  },
+  {
+    id: 'S3d/update',
+    tracked: [link1('d/l')],
+    due: [symlink('d/l')],
+    occupant: replacing('d/l', fileAt('d')),
+    git: refusedUntracked('d'),
+  },
+  {
+    id: 'S3e/update',
+    tracked: [link1('d/l')],
+    due: [symlink('d/l')],
+    occupant: replacing('d/l', danglingLinkAt('d')),
+    git: refusedUntracked('d'),
+  },
+  {
+    id: 'S3f/update',
+    tracked: [link1('f')],
+    due: [symlink('f')],
+    occupant: replacing('f', fileAt('f')),
+    git: refusedUntracked('f'),
+  },
+  {
+    id: 'I1/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', ignoredFile('d')),
+    git: refusedUntracked('d'),
+  },
+  {
+    id: 'I2/update',
+    tracked: [v1('f')],
+    due: [regular('f')],
+    occupant: replacing('f', ignoring('f/u', directoryHolding('f', 'u'))),
+    git: refusedUntracked('f'),
+  },
+  {
+    id: 'I3/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', ignoring('d', danglingLinkAt('d'))),
+    git: refusedUntracked('d'),
+  },
+  {
+    id: 'I4/update',
+    tracked: [link1('d/l')],
+    due: [symlink('d/l')],
+    occupant: replacing('d/l', ignoredFile('d')),
+    git: refusedUntracked('d'),
+  },
+  {
+    id: 'I5/update',
+    tracked: [link1('l')],
+    due: [symlink('l')],
+    occupant: replacing('l', ignoring('l/u', directoryHolding('l', 'u'))),
+    git: refusedUntracked('l'),
+  },
+];
+
+const UNBORN_DELETE_ROWS: ReadonlyArray<UnbornPullRow> = [
+  {
+    id: 'D1/delete',
+    tracked: [v1('d/x')],
+    due: [],
+    occupant: replacing('d/x', fileAt('d')),
+    git: OK,
+  },
+  {
+    id: 'D2/delete',
+    tracked: [v1('f')],
+    due: [],
+    occupant: replacing('f', directoryHolding('f', 'u')),
+    git: OK,
+  },
+  {
+    id: 'D3/delete',
+    tracked: [link1('l')],
+    due: [],
+    occupant: replacing('l', directoryHolding('l', 'u')),
+    git: OK,
+  },
+  {
+    id: 'D4/delete',
+    tracked: [link1('d/l')],
+    due: [],
+    occupant: replacing('d/l', fileAt('d')),
+    git: OK,
+  },
+];
+
+const UNBORN_PULL_ROWS = [...UNBORN_ADD_ROWS, ...UNBORN_UPDATE_ROWS, ...UNBORN_DELETE_ROWS];
+
+const outcomeOfTsgitPull = (err: unknown): Outcome => {
+  if (!(err instanceof TsgitError)) throw err;
+  const data = err.data;
+  if (data.code !== 'WORKING_TREE_DIRTY') {
+    return { refused: true, crash: data.code, localChanges: [], untracked: [] };
+  }
+  return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
+};
+
+describe.skipIf(!GIT_AVAILABLE)('pull into an unborn branch over an occupant interop', () => {
+  describe.each(UNBORN_PULL_ROWS)('Given the $id occupant', (row) => {
+    describe('When both tools pull self t into an unborn branch', () => {
+      it('Then the outcome, work tree and index match git', async () => {
+        // Arrange
+        const caseRoot = path.join(root, `unborn-occupant-${row.id.replace('/', '-')}`);
+        const serveRoot = path.join(caseRoot, 'serve');
+        const dirs = { ours: path.join(caseRoot, 'ours'), theirs: path.join(caseRoot, 'theirs') };
+        for (const dir of Object.values(dirs)) {
+          dated(['init', '-q', '-b', 'main', dir]);
+          buildHistory(dir, row.due, row.tracked);
+        }
+        dated(['clone', '-q', '--bare', dirs.ours, path.join(serveRoot, 'self.git')]);
+        dated(['-C', dirs.ours, 'remote', 'add', 'self', 'https://example.com/self.git']);
+        dated(['-C', dirs.theirs, 'remote', 'add', 'self', path.join(serveRoot, 'self.git')]);
+        for (const dir of Object.values(dirs)) {
+          dated(['-C', dir, 'symbolic-ref', 'HEAD', 'refs/heads/fresh']);
+          rmSync(path.join(dir, '.git', 'index'));
+          rmSync(path.join(dir, 'keep'));
+          row.occupant(dir);
+          writeFileSync(path.join(dir, 'other'), 'o\n');
+        }
+        const ctx = {
+          ...createNodeContext({ workDir: dirs.ours }),
+          transport: backendTransport(serveRoot),
+        };
+        const sut = pull;
+
+        // Act
+        const expected = runGitOutcome(
+          dirs.theirs,
+          ['pull', '-q', '--no-rebase', '--no-edit', 'self', 't'],
+          1,
+        );
+        const result = await sut(ctx, {
+          remote: 'self',
+          ref: 't',
+          rebase: false,
+          author: IDENTITY,
+          committer: IDENTITY,
+        })
+          .then((): Outcome => OK)
+          .catch(outcomeOfTsgitPull);
+
+        // Assert
+        expect(expected).toEqual(row.git);
+        expect(result).toEqual(expected);
+        expect(listing(dirs.ours)).toEqual(listing(dirs.theirs));
+        expect(indexState(dirs.ours)).toEqual(indexState(dirs.theirs));
       });
     });
   });

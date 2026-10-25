@@ -46,7 +46,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
-import { applyChangesetWithAttributes } from './apply-changeset.js';
+import { applyChangesetWithAttributes, type IgnoredOccupants } from './apply-changeset.js';
 import {
   type Changeset,
   type ChangesetEntry,
@@ -104,6 +104,11 @@ export interface MaterializeTreeOpts {
    * its index entry and work file, and a path the index changed to a third version refuses.
    */
   readonly headTree?: ObjectId;
+  /**
+   * `protect` refuses an ignored occupant like an untracked one (git's `overwrite_ignore = 0`);
+   * default `overwrite`.
+   */
+  readonly ignoredOccupants?: IgnoredOccupants;
 }
 
 export interface MaterializeTreeResult {
@@ -398,6 +403,7 @@ export const materializeTree = async (
     {
       changeset,
       force: opts.force ?? false,
+      ...(opts.ignoredOccupants && { ignoredOccupants: opts.ignoredOccupants }),
       workdir: requireWorkTree(ctx, 'materializeTree'),
       ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
     },
