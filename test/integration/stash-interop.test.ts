@@ -14,7 +14,6 @@
  *   unique:         stash push/apply index+tree state matches canonical git stash
  *   interopSurface: stash
  */
-import { rmSync } from 'node:fs';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -51,14 +50,8 @@ import {
   OK,
   type Outcome,
   runGitOutcome,
-  v1,
 } from './occupant-displacement-fixtures.js';
-import {
-  ABORT_ROWS,
-  type AbortRow,
-  EVERY_VARIANT,
-  type Variant,
-} from './stopped-state-fixtures.js';
+import { type AbortRow, STASH_PUSH_ROWS, type Variant } from './stopped-state-fixtures.js';
 import { STASH_PUSH_PINS } from './stopped-state-pins.js';
 
 const AUTHOR = {
@@ -571,23 +564,6 @@ describe.skipIf(!GIT_AVAILABLE)(
   },
 );
 
-const CONTROL_ROWS: ReadonlyArray<AbortRow> = [
-  {
-    shape: 'N0',
-    tracked: [v1('f')],
-    due: [{ ...v1('f'), content: 'v2\n' }],
-    occupant: () => undefined,
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'N1',
-    tracked: [v1('f')],
-    due: [{ ...v1('f'), content: 'v2\n' }],
-    occupant: (dir) => rmSync(path.join(dir, 'f'), { force: true }),
-    variants: EVERY_VARIANT,
-  },
-];
-
 /** `HEAD` holds the target, the index the current state: the A.3 variants of the stash snapshot. */
 const stashSides = (variant: Variant, row: AbortRow) => {
   const sides: Record<Variant, { head: AbortRow['tracked']; staged: AbortRow['tracked'] }> = {
@@ -651,9 +627,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     };
 
     describe.each(
-      [...ABORT_ROWS, ...CONTROL_ROWS].flatMap((row) =>
-        row.variants.map((variant) => ({ row, variant })),
-      ),
+      STASH_PUSH_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant }))),
     )('Given $row.shape/$variant', ({ row, variant }) => {
       describe('When stash push runs in each', () => {
         it('Then the outcome, work tree, index and both snapshot trees match git', async () => {

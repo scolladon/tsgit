@@ -37,7 +37,7 @@ import {
   regular,
   type TreeEntry,
 } from './occupant-displacement-fixtures.js';
-import { ABORT_ROWS, type AbortRow, type Variant } from './stopped-state-fixtures.js';
+import { type AbortRow, REBASE_START_ROWS, type Variant } from './stopped-state-fixtures.js';
 import { REBASE_START_PINS, type StartVerdict } from './stopped-state-pins.js';
 
 type Form = 'start' | 'interactive' | 'fast-forward';
@@ -117,9 +117,7 @@ const startState = (dir: string): ReadonlyArray<unknown> => [
   existsSync(path.join(dir, '.git', 'rebase-merge')),
 ];
 
-const ROWS = ABORT_ROWS.filter((row) => row.shape !== 'Y3').flatMap((row) =>
-  row.variants.map((variant) => ({ row, variant })),
-);
+const ROWS = REBASE_START_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant })));
 
 describe.skipIf(!GIT_AVAILABLE)('rebase start checkout interop', { timeout: 60_000 }, () => {
   let pair: PeerPair;

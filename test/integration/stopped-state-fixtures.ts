@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { runGit } from './interop-helpers.js';
 import {
@@ -195,3 +195,40 @@ export const firstClassified = (stderr: string): Outcome => {
   if (untracked !== undefined) return { refused: true, localChanges: [], untracked: [untracked] };
   return outcomeOfGitStderr(stderr);
 };
+
+/** Rows that never reach an occupant clash: `stash push` is compared on them too. */
+export const CONTROL_ROWS: ReadonlyArray<AbortRow> = [
+  {
+    shape: 'N0',
+    tracked: [v1('f')],
+    due: [{ ...v1('f'), content: 'v2\n' }],
+    occupant: () => undefined,
+    variants: EVERY_VARIANT,
+  },
+  {
+    shape: 'N1',
+    tracked: [v1('f')],
+    due: [{ ...v1('f'), content: 'v2\n' }],
+    occupant: (dir) => rmSync(path.join(dir, 'f'), { force: true }),
+    variants: EVERY_VARIANT,
+  },
+];
+
+/** The rows the `stash push` matrix runs. */
+export const STASH_PUSH_ROWS: ReadonlyArray<AbortRow> = [...ABORT_ROWS, ...CONTROL_ROWS];
+
+/** The rows a rebase start runs over: Y3 needs a stopped state a start never has. */
+export const REBASE_START_ROWS: ReadonlyArray<AbortRow> = ABORT_ROWS.filter(
+  (row) => row.shape !== 'Y3',
+);
+
+export type RebaseResetAction = 'abort' | 'skip';
+
+/** Each stopped-rebase scenario and the `--abort` / `--skip` actions run over its occupant rows. */
+export const REBASE_RESET_SCENARIOS = [
+  { name: 'merge', actions: ['abort', 'skip'] },
+  { name: 'pick changes entry', actions: ['skip'] },
+] as const satisfies ReadonlyArray<{
+  readonly name: string;
+  readonly actions: ReadonlyArray<RebaseResetAction>;
+}>;

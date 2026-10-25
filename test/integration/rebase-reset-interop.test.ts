@@ -46,11 +46,13 @@ import {
   type AbortRow,
   buildStoppedMerge,
   entriesOf,
+  REBASE_RESET_SCENARIOS,
+  type RebaseResetAction,
   type Variant,
 } from './stopped-state-fixtures.js';
 import { REBASE_RESET_PINS } from './stopped-state-pins.js';
 
-type Action = 'abort' | 'skip';
+type Action = RebaseResetAction;
 
 const REFUSAL_STATUS = 128;
 
@@ -111,10 +113,17 @@ interface Scenario {
   readonly actions: ReadonlyArray<Action>;
 }
 
-const SCENARIOS: ReadonlyArray<Scenario> = [
-  { name: 'merge', entries: entriesOf, actions: ['abort', 'skip'] },
-  { name: 'pick changes entry', entries: pickChangesEntry, actions: ['skip'] },
-];
+const ENTRIES_BY_SCENARIO: Readonly<
+  Record<(typeof REBASE_RESET_SCENARIOS)[number]['name'], Scenario['entries']>
+> = {
+  merge: entriesOf,
+  'pick changes entry': pickChangesEntry,
+};
+
+const SCENARIOS: ReadonlyArray<Scenario> = REBASE_RESET_SCENARIOS.map((scenario) => ({
+  ...scenario,
+  entries: ENTRIES_BY_SCENARIO[scenario.name],
+}));
 
 describe.skipIf(!GIT_AVAILABLE)(
   'rebase --abort / --skip reset interop',

@@ -4,7 +4,13 @@ import {
   refusedLocal,
   refusedUntracked,
 } from './occupant-displacement-fixtures.js';
-import { ABORT_ROWS, type AbortRow } from './stopped-state-fixtures.js';
+import {
+  ABORT_ROWS,
+  type AbortRow,
+  REBASE_RESET_SCENARIOS,
+  REBASE_START_ROWS,
+  STASH_PUSH_ROWS,
+} from './stopped-state-fixtures.js';
 
 /** git's verdict for a rebase start; `precondition` is its unstaged-changes refusal, which names no path. */
 export type StartVerdict = 'ok' | 'precondition' | { readonly untracked: ReadonlyArray<string> };
@@ -396,16 +402,15 @@ const prefixed = (prefix: string, keys: ReadonlyArray<string>): ReadonlyArray<st
   keys.map((key) => `${prefix}/${key}`);
 
 /** The `<scenario>/<action>` pairs the rebase `--abort` / `--skip` matrix runs. */
-const REBASE_RESET_RUNS: ReadonlyArray<string> = [
-  'merge/abort',
-  'merge/skip',
-  'pick changes entry/skip',
-];
+const REBASE_RESET_RUNS: ReadonlyArray<string> = REBASE_RESET_SCENARIOS.flatMap(
+  ({ name, actions }) => actions.map((action) => `${name}/${action}`),
+);
 
 /** Every key each matrix looks its pin up with, as the interop files enumerate their rows. */
 export const LIVE_PIN_KEYS = {
   reset: keysOf(ABORT_ROWS),
   rebaseReset: REBASE_RESET_RUNS.flatMap((run) => prefixed(run, keysOf(ABORT_ROWS))),
-  rebaseStart: keysOf(ABORT_ROWS.filter((row) => row.shape !== 'Y3')),
+  rebaseStart: keysOf(REBASE_START_ROWS),
   rebaseMergesReset: keysOf(ABORT_ROWS),
+  stashPush: keysOf(STASH_PUSH_ROWS),
 } as const;

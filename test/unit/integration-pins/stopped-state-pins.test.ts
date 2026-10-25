@@ -5,6 +5,7 @@ import {
   REBASE_RESET_PINS,
   REBASE_START_PINS,
   RESET_MERGE_PINS,
+  STASH_PUSH_PINS,
 } from '../../integration/stopped-state-pins.js';
 
 /** Rows compared with live git alone because the plan pins no verdict for them. */
@@ -18,6 +19,7 @@ const LIVE_ONLY = {
   ]),
   rebaseStart: new Set<string>([]),
   rebaseMergesReset: new Set<string>([]),
+  stashPush: new Set<string>([]),
 };
 
 const TABLES = [
@@ -25,6 +27,7 @@ const TABLES = [
   ['rebaseReset', REBASE_RESET_PINS],
   ['rebaseStart', REBASE_START_PINS],
   ['rebaseMergesReset', REBASE_MERGES_RESET_PINS],
+  ['stashPush', STASH_PUSH_PINS],
 ] as const;
 
 describe('Given a pin table of git verdicts', () => {
