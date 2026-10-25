@@ -1251,7 +1251,9 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
   describe('Given a squash and fixup group rebased with a post-rewrite hook', () => {
     const HOOK_OUT = 'post-rewrite-calls.out';
     const NAMES = ['a', 'b', 'c', 'd', 'e'] as const;
-    const VERBS = ['pick', 'squash', 'fixup', 'drop', 'pick'] as const;
+    type Verb = 'pick' | 'squash' | 'fixup' | 'drop' | 'edit';
+    const MELD_VERBS: ReadonlyArray<Verb> = ['pick', 'squash', 'fixup', 'drop', 'pick'];
+    const EDIT_VERBS: ReadonlyArray<Verb> = ['edit', 'pick', 'pick', 'pick', 'pick'];
     const OID_LENGTH = 40;
 
     /** base; u adds `upstreamFile`; main: a, b, c, d, e, each adding its own file. */
@@ -1279,8 +1281,8 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       );
     };
 
-    const gitRebaseGroup = (dir: string) => {
-      const edit = NAMES.map((name, i) => `s/^pick (\\S+ # ${name} subject)$/${VERBS[i]} $1/`).join(
+    const gitRebaseGroup = (dir: string, verbs: ReadonlyArray<Verb>) => {
+      const edit = NAMES.map((name, i) => `s/^pick (\\S+ # ${name} subject)$/${verbs[i]} $1/`).join(
         ';',
       );
       return tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '-i', 'u'], {
@@ -1294,13 +1296,13 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       });
     };
 
-    const tsgitRebaseGroup = async (dir: string) => {
+    const tsgitRebaseGroup = async (dir: string, verbs: ReadonlyArray<Verb>) => {
       const repo = await openRepository({ cwd: dir });
       try {
         return await repo.rebase.run({
           upstream: 'u',
           interactive: NAMES.map((_name, i) => ({
-            action: VERBS[i] as 'pick',
+            action: verbs[i] as 'pick',
             oid: oidAt(dir, `main~${NAMES.length - 1 - i}`),
           })),
         });
@@ -1328,10 +1330,10 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       it('Then post-rewrite amend fires for each meld before the rebase call, as git does', async () => {
         // Arrange
         for (const dir of [pair.peer, pair.ours]) buildGroup(dir, 'uu');
-        const peer = gitRebaseGroup(pair.peer);
+        const peer = gitRebaseGroup(pair.peer, MELD_VERBS);
 
         // Act
-        const result = await tsgitRebaseGroup(pair.ours);
+        const result = await tsgitRebaseGroup(pair.ours, MELD_VERBS);
 
         // Assert
         expect(peer.exitCode).toBe(0);
@@ -1345,8 +1347,8 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       it('Then post-rewrite amend fires for the resolution and the fixup before the rebase call', async () => {
         // Arrange
         for (const dir of [pair.peer, pair.ours]) buildGroup(dir, 'b');
-        gitRebaseGroup(pair.peer);
-        const stop = await tsgitRebaseGroup(pair.ours);
+        gitRebaseGroup(pair.peer, MELD_VERBS);
+        const stop = await tsgitRebaseGroup(pair.ours, MELD_VERBS);
         for (const dir of [pair.peer, pair.ours]) {
           writeWork(dir, 'b', 'b\n');
           git(dir, 'add', 'b');
@@ -1373,6 +1375,34 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
         expect(peer.exitCode).toBe(0);
         expect(result.kind).toBe('rebased');
         expect(argvOf(pair.peer)).toEqual(['== amend', '== amend', '== rebase']);
+        expect(hookCalls(pair.ours)).toBe(hookCalls(pair.peer));
+      });
+    });
+    describe('When an edit stop is amended with a staged change and continued', () => {
+      it('Then post-rewrite amend fires for the amended commit before the rebase call, as git does', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildGroup(dir, 'uu');
+        gitRebaseGroup(pair.peer, EDIT_VERBS);
+        const stop = await tsgitRebaseGroup(pair.ours, EDIT_VERBS);
+        for (const dir of [pair.peer, pair.ours]) {
+          writeWork(dir, 'extra', 'extra\n');
+          git(dir, 'add', 'extra');
+        }
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        const peer = tryRunGitWithExit(
+          ['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue'],
+          { env: { ...runGitEnv(), GIT_AUTHOR_DATE: FIXED_DATE, GIT_COMMITTER_DATE: FIXED_DATE } },
+        );
+        const result = await repo.rebase.continue();
+        await repo.dispose();
+
+        // Assert
+        expect(stop.kind).toBe('stopped');
+        expect(peer.exitCode).toBe(0);
+        expect(result.kind).toBe('rebased');
+        expect(argvOf(pair.peer)).toEqual(['== amend', '== rebase']);
         expect(hookCalls(pair.ours)).toBe(hookCalls(pair.peer));
       });
     });

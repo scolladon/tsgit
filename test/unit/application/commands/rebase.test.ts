@@ -2391,6 +2391,30 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
     });
   });
 
+  describe('Given an edit stop amended by a staged change and a post-rewrite hook', () => {
+    describe('When continue is called', () => {
+      it('Then post-rewrite amend maps the edited commit to the amended one', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        const base = await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        const c1 = await writeAddCommit(ctx, '1.txt', '1\n', 'c1 subject');
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(work(ctx, 'extra.txt'), 'extra\n');
+        await add(ctx, ['extra.txt']);
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(amendRewrites(runner).map((call) => call.stdin)).toEqual([`${c1} ${tip}\n`]);
+      });
+    });
+  });
+
   describe('Given an edit stop continued with no tree change and a post-rewrite hook', () => {
     describe('When continue is called', () => {
       it('Then post-rewrite still maps the edited commit to HEAD', async () => {

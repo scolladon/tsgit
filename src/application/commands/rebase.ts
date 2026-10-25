@@ -2104,7 +2104,7 @@ const amendEditStop = async (
   editedHead: ObjectId,
 ): Promise<ObjectId> => {
   const amendCommit = await readCommitData(ctx, editedHead);
-  return commitAndAdvance(ctx, {
+  const created = await commitAndAdvance(ctx, {
     tree,
     parent: amendCommit.parents[0],
     expected: editedHead,
@@ -2113,6 +2113,8 @@ const amendEditStop = async (
     reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),
     carried: amendedExtraHeaders(amendCommit.extraHeaders),
   });
+  await fireAmendRewrite(ctx, editedHead, created);
+  return created;
 };
 
 /** Changes staged on top of a commit the caller made at an edit stop: git
