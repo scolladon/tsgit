@@ -416,6 +416,12 @@ export const readRewrittenPending = async (
   return oids;
 };
 
+/** The group template `message-squash` holds, or `undefined` when absent. */
+export const readMessageSquash = async (ctx: Context): Promise<string | undefined> => {
+  const path = file(ctx, 'message-squash');
+  return (await ctx.fs.exists(path)) ? ctx.fs.readUtf8(path) : undefined;
+};
+
 /** Read the accumulated `rewritten-list` old→new pairs (for carry-forward across
  *  a `continue`/`skip` re-stop). Empty when absent. */
 export const readRewrittenList = async (

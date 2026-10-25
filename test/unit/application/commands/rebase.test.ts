@@ -4763,6 +4763,36 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
     });
   });
 
+  describe('Given a reworded group base whose squash member the occupant refuses', () => {
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then the retried group keeps the reworded base message', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seed();
+        await occupy(ctx);
+        await dataOf(() =>
+          rebaseRun(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'reword', oid: w, message: 'w reworded' },
+              { action: 'squash', oid: x },
+              { action: 'pick', oid: z },
+            ],
+          }),
+        );
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'HEAD' as RefName));
+        const melded = await readCommit(ctx, tip.parents[0] as ObjectId);
+        expect(melded.message).toBe('w reworded\n\nx\n\nx\n');
+      });
+    });
+  });
+
   describe('Given a fast-forwarded interactive pick the occupant refuses', () => {
     describe('When the edit stop before it is continued', () => {
       it('Then HEAD stays on the edited commit and rewritten-list maps it to itself', async () => {

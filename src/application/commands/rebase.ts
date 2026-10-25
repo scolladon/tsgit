@@ -29,6 +29,7 @@ import type {
 import {
   buildCombinedMessage,
   type CombinedMessageEntry,
+  firstCommitMessage,
   type RebaseBackupHeader,
   type RebaseLabelLine,
   type RebaseResetLine,
@@ -111,6 +112,7 @@ import {
   type RedundantCommitPolicy,
   readAutostash,
   readCurrentFixups,
+  readMessageSquash,
   readRebaseProgress,
   readRebaseState,
   readRewrittenList,
@@ -1054,7 +1056,8 @@ const reopenedMeldGroup = async (
   if (refused?.action !== 'squash' && refused?.action !== 'fixup') return undefined;
   const current = await readCurrentFixups(ctx);
   const pending = await readRewrittenPending(ctx);
-  if (current === undefined || pending === undefined) return undefined;
+  const baseMessage = firstCommitMessage((await readMessageSquash(ctx)) ?? '');
+  if (current === undefined || pending === undefined || baseMessage === undefined) return undefined;
   const fixups = [...current];
   const members = await Promise.all(
     fixups.map(async ({ action, oid }) => ({
@@ -1062,7 +1065,6 @@ const reopenedMeldGroup = async (
       skip: action === 'fixup',
     })),
   );
-  const baseMessage = (await readCommitData(ctx, pending[0] as ObjectId)).message;
   return { baseMessage, members, fixups, pending: [...pending], inline: undefined };
 };
 
