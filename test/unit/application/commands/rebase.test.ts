@@ -47,6 +47,10 @@ const FEAT_AUTHOR: AuthorIdentity = {
   timezoneOffset: '+0200',
 };
 
+const rebaseRewrites = (runner: MemoryHookRunner) =>
+  runner.calls.filter((call) => call.name === 'post-rewrite' && call.args[0] === 'rebase');
+const amendRewrites = (runner: MemoryHookRunner) =>
+  runner.calls.filter((call) => call.name === 'post-rewrite' && call.args[0] === 'amend');
 const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
 const setUser = (ctx: Context): Promise<void> =>
   ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[user]\n\tname = Ada\n\temail = rb@x\n');
@@ -2410,7 +2414,7 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         await rebaseContinue(ctx);
 
         // Assert
-        const result = runner.calls.filter((call) => call.name === 'post-rewrite');
+        const result = rebaseRewrites(runner);
         expect(result.map((call) => call.stdin)).toEqual([`${c1} ${c1}\n${c2} ${c2}\n`]);
       });
     });
@@ -2894,8 +2898,26 @@ describe('rebaseRun (interactive squash / fixup)', () => {
 
         // Assert
         const tip = await resolveRef(ctx, 'HEAD' as RefName);
-        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        const [call] = rebaseRewrites(runner);
         expect(call?.stdin).toBe(`${t1} ${tip}\n${t2} ${tip}\n`);
+      });
+
+      it('Then post-rewrite amend maps the rebased base to the resolution commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx } = await stopped(runner);
+        const rebasedBase = await resolveRef(ctx, 'HEAD' as RefName);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const [call] = amendRewrites(runner);
+        expect(call?.stdin).toBe(`${rebasedBase} ${tip}\n`);
+        expect(amendRewrites(runner)).toHaveLength(1);
       });
     });
 
@@ -2918,7 +2940,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
 
         // Assert
         const tip = await resolveRef(ctx, 'HEAD' as RefName);
-        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        const [call] = rebaseRewrites(runner);
         expect(call?.stdin).toBe(`${t1} ${tip}\n${t2} ${tip}\n`);
       });
     });
@@ -3494,7 +3516,7 @@ describe('rebase — hooks', () => {
         const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        const postRewrite = runner.calls.filter((c) => c.name === 'post-rewrite');
+        const postRewrite = rebaseRewrites(runner);
         expect(postRewrite).toHaveLength(1);
         expect(postRewrite[0]?.args).toEqual(['rebase']);
         expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(result));
@@ -3527,7 +3549,7 @@ describe('rebase — hooks', () => {
         expect(result.kind).toBe('rebased');
         // An interactive rebase always does work, so pre-rebase fires too.
         expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
-        const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
+        const postRewrite = rebaseRewrites(runner);
         expect(postRewrite).toHaveLength(1);
         expect(postRewrite[0]?.args).toEqual(['rebase']);
         expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(result));
@@ -3625,7 +3647,7 @@ describe('rebase — hooks', () => {
 
         // Assert — the finishing post-rewrite leads with the pre-stop `t1` pair.
         expect(result.kind).toBe('rebased');
-        const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
+        const postRewrite = rebaseRewrites(runner);
         expect(postRewrite).toHaveLength(1);
         const stdin = postRewrite[0]?.stdin ?? '';
         expect(stdin.startsWith(`${t1} `)).toBe(true);
@@ -4841,7 +4863,7 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
         await sut(ctx);
 
         // Assert
-        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        const [call] = rebaseRewrites(runner);
         const sources = (call?.stdin ?? '')
           .trim()
           .split('\n')
@@ -4862,7 +4884,7 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
         // Assert
         const tip = await resolveRef(ctx, 'HEAD' as RefName);
         const melded = (await readCommit(ctx, tip)).parents[0];
-        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        const [call] = rebaseRewrites(runner);
         expect(call?.stdin).toBe(`${w} ${melded}\n${x} ${melded}\n${z} ${tip}\n`);
       });
 
@@ -4909,8 +4931,64 @@ describe('rebase -i over a line an untracked occupant refuses', () => {
         // Assert
         const tip = await resolveRef(ctx, 'HEAD' as RefName);
         const melded = (await readCommit(ctx, tip)).parents[0];
-        const [call] = runner.calls.filter((c) => c.name === 'post-rewrite');
+        const [call] = rebaseRewrites(runner);
         expect(call?.stdin).toBe(`${w} ${melded}\n${x} ${melded}\n${z} ${tip}\n`);
+      });
+
+      it('Then post-rewrite amend fires for the meld, before the rebase call', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await seed(runner);
+        const sut = rebaseRun;
+
+        // Act
+        const result = await sut(ctx, {
+          upstream: 'u',
+          interactive: [
+            { action: 'pick', oid: w },
+            { action: 'fixup', oid: x },
+            { action: 'pick', oid: z },
+          ],
+        });
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const melded = (await readCommit(ctx, tip)).parents[0];
+        const rebasedBase = result.kind === 'rebased' ? result.commits[0]?.created : undefined;
+        const labels = runner.calls.filter((c) => c.name === 'post-rewrite').map((c) => c.args);
+        expect(labels).toEqual([['amend'], ['rebase']]);
+        expect(amendRewrites(runner)[0]?.stdin).toBe(`${rebasedBase} ${melded}\n`);
+      });
+    });
+  });
+
+  describe('Given a three-member fixup group whose middle member the occupant refuses', () => {
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then post-rewrite maps every member to the final group commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await seed(runner);
+        await occupy(ctx);
+        await dataOf(() =>
+          rebaseRun(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'pick', oid: w },
+              { action: 'fixup', oid: x },
+              { action: 'fixup', oid: z },
+            ],
+          }),
+        );
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const [call] = rebaseRewrites(runner);
+        expect(call?.stdin).toBe(`${w} ${tip}\n${x} ${tip}\n${z} ${tip}\n`);
       });
     });
   });

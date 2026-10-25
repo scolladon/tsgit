@@ -1248,6 +1248,136 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
     });
   });
 
+  describe('Given a squash and fixup group rebased with a post-rewrite hook', () => {
+    const HOOK_OUT = 'post-rewrite-calls.out';
+    const NAMES = ['a', 'b', 'c', 'd', 'e'] as const;
+    const VERBS = ['pick', 'squash', 'fixup', 'drop', 'pick'] as const;
+    const OID_LENGTH = 40;
+
+    /** base; u adds `upstreamFile`; main: a, b, c, d, e, each adding its own file. */
+    const buildGroup = (dir: string, upstreamFile: 'uu' | 'b'): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'keep', 'keep\n');
+      git(dir, 'add', 'keep');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'u');
+      writeWork(dir, upstreamFile, 'UP\n');
+      git(dir, 'add', upstreamFile);
+      gitCommit(dir, 'U');
+      git(dir, 'checkout', '-q', 'main');
+      for (const name of NAMES) {
+        writeWork(dir, name, `${name}\n`);
+        git(dir, 'add', name);
+        gitCommit(dir, `${name} subject`);
+      }
+      const hook = path.join(dir, '.git', 'hooks', 'post-rewrite');
+      writeFileSync(
+        hook,
+        `#!/bin/sh\n{ echo "== $1"; cat; } >> "$(git rev-parse --git-dir)/${HOOK_OUT}"\n`,
+        { mode: 0o755 },
+      );
+    };
+
+    const gitRebaseGroup = (dir: string) => {
+      const edit = NAMES.map((name, i) => `s/^pick (\\S+ # ${name} subject)$/${VERBS[i]} $1/`).join(
+        ';',
+      );
+      return tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '-i', 'u'], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+          GIT_SEQUENCE_EDITOR: `perl -i -pe '${edit}'`,
+          GIT_EDITOR: 'true',
+        },
+      });
+    };
+
+    const tsgitRebaseGroup = async (dir: string) => {
+      const repo = await openRepository({ cwd: dir });
+      try {
+        return await repo.rebase.run({
+          upstream: 'u',
+          interactive: NAMES.map((_name, i) => ({
+            action: VERBS[i] as 'pick',
+            oid: oidAt(dir, `main~${NAMES.length - 1 - i}`),
+          })),
+        });
+      } finally {
+        await repo.dispose();
+      }
+    };
+
+    /** The hook's calls with each object id named by the order it first appears in. */
+    const hookCalls = (dir: string): string => {
+      const text = readFileSync(path.join(dir, '.git', HOOK_OUT), 'utf8');
+      const seen: string[] = [];
+      return text.replace(new RegExp(`[0-9a-f]{${OID_LENGTH}}`, 'g'), (oid) => {
+        if (!seen.includes(oid)) seen.push(oid);
+        return `<${seen.indexOf(oid)}>`;
+      });
+    };
+
+    const argvOf = (dir: string): ReadonlyArray<string> =>
+      hookCalls(dir)
+        .split('\n')
+        .filter((line) => line.startsWith('== '));
+
+    describe('When nothing stops the rebase', () => {
+      it('Then post-rewrite amend fires for each meld before the rebase call, as git does', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildGroup(dir, 'uu');
+        const peer = gitRebaseGroup(pair.peer);
+
+        // Act
+        const result = await tsgitRebaseGroup(pair.ours);
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(result.kind).toBe('rebased');
+        expect(argvOf(pair.peer)).toEqual(['== amend', '== amend', '== rebase']);
+        expect(hookCalls(pair.ours)).toBe(hookCalls(pair.peer));
+      });
+    });
+
+    describe('When the squash conflicts and the rebase continues', () => {
+      it('Then post-rewrite amend fires for the resolution and the fixup before the rebase call', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildGroup(dir, 'b');
+        gitRebaseGroup(pair.peer);
+        const stop = await tsgitRebaseGroup(pair.ours);
+        for (const dir of [pair.peer, pair.ours]) {
+          writeWork(dir, 'b', 'b\n');
+          git(dir, 'add', 'b');
+        }
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        const peer = tryRunGitWithExit(
+          ['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue'],
+          {
+            env: {
+              ...runGitEnv(),
+              GIT_AUTHOR_DATE: FIXED_DATE,
+              GIT_COMMITTER_DATE: FIXED_DATE,
+              GIT_EDITOR: 'true',
+            },
+          },
+        );
+        const result = await repo.rebase.continue();
+        await repo.dispose();
+
+        // Assert
+        expect(stop.kind).toBe('conflict');
+        expect(peer.exitCode).toBe(0);
+        expect(result.kind).toBe('rebased');
+        expect(argvOf(pair.peer)).toEqual(['== amend', '== amend', '== rebase']);
+        expect(hookCalls(pair.ours)).toBe(hookCalls(pair.peer));
+      });
+    });
+  });
+
   describe('Given a flat rebase line refused by an untracked occupant', () => {
     const REBASE_FILES = [
       'done',

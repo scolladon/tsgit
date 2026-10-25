@@ -138,6 +138,8 @@ export type { ConflictType } from '../../domain/merge/index.js';
 const HEAD = 'HEAD' as RefName;
 /** `post-rewrite`'s command-name argument when fired from a rebase. */
 const REBASE_REWRITE_LABEL = 'rebase';
+/** `post-rewrite`'s command-name argument for a commit amended in place, as a squash/fixup does. */
+const AMEND_REWRITE_LABEL = 'amend';
 
 /** The interactive instruction verbs (`git rebase -i`). */
 export type RebaseInteractiveAction = RebaseTodoAction;
@@ -577,6 +579,13 @@ const firePostRewrite = async (
     stdin: serializeRewritten(rewritten),
   });
 };
+
+/** git amends the group commit for each squash/fixup, and so fires `post-rewrite amend` for it. */
+const fireAmendRewrite = (ctx: Context, previous: ObjectId, created: ObjectId): Promise<void> =>
+  runInformationalHook(ctx, 'post-rewrite', {
+    args: [AMEND_REWRITE_LABEL],
+    stdin: serializeRewritten([[previous, created]]),
+  });
 
 type LineOutcome =
   | ReplayOutcome
@@ -1792,6 +1801,7 @@ const replayMeld = async (
     await persistInteractiveStop(ctx, ic, index, meldStopFields(line, replay));
     return { stop: conflictResult(inst.oid, meld.conflicts, remainingAfter(line)) };
   }
+  await fireAmendRewrite(ctx, replay.head, meld.created);
   const recorded = recordCreated(replay, inst.oid, meld.created);
   return { next: meldContinues(ic.todo, index) ? recorded : flushMeldGroup(recorded) };
 };
@@ -2123,7 +2133,7 @@ const commitFixupResolution = async (
   const baseData = await readCommitData(ctx, currentHead);
   // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
   const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
-  return commitAndAdvance(ctx, {
+  const created = await commitAndAdvance(ctx, {
     tree,
     parent: baseData.parents[0],
     expected: currentHead,
@@ -2132,6 +2142,8 @@ const commitFixupResolution = async (
     reflog: rebaseContinueReflog(subjectLine(message)),
     carried: amendedExtraHeaders(baseData.extraHeaders),
   });
+  await fireAmendRewrite(ctx, currentHead, created);
+  return created;
 };
 
 /** A squash/fixup conflict stop also carries `amend` (the group commit), but
