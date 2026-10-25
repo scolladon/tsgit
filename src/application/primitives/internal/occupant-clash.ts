@@ -9,13 +9,14 @@ import { deriveWorkingMode } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileStat } from '../../../ports/file-system.js';
-import { compareFile, isWorkingTreeModified } from '../compare-working-tree-entry.js';
+import { compareFile, isWorkingTreeModified, scopeOf } from '../compare-working-tree-entry.js';
 import { createConcurrencyLimiter } from './concurrency-limiter.js';
 import { lstatIfPresent, lstatIfReachable } from './fs-probes.js';
 import { buildRepoIgnorePredicate } from './ignore-evaluator.js';
 import { type IndexMtime, isRacy, matchesContentStat } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
 import { lazily } from './lazily.js';
+import { buildCheckinAttributeProvider } from './read-gitattributes.js';
 import { requireWorkTree } from './repo-state.js';
 import type { LeadingPathScanner } from './symlinked-leading-path.js';
 
@@ -161,7 +162,8 @@ const matchesCachedStat = async (
   if (entry.flags.assumeValid) return true;
   if (deriveWorkingMode(stat) !== entry.mode || !matchesContentStat(entry, stat)) return false;
   if (indexMtime !== undefined && !isRacy(entry, indexMtime)) return true;
-  const { status } = await compareFile(ctx, entry, absPath, stat, {});
+  const provider = await buildCheckinAttributeProvider(ctx);
+  const { status } = await compareFile(ctx, entry, absPath, stat, scopeOf(provider));
   return !isWorkingTreeModified(status);
 };
 

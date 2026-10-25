@@ -518,6 +518,26 @@ describe('classifyOccupant', () => {
       });
     });
 
+    describe('When the entry is racy and the reached content differs only by an eol conversion its attributes apply', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const racy: IndexMtime = { seconds: 0, nanoseconds: 0 };
+        const crlf = new TextEncoder().encode('v1\r\n');
+        const tracked = await arrangeTracked(ctx, { indexMtime: racy, cachedFrom: crlf });
+        await ctx.fs.write(
+          `${ctx.layout.workDir}/.gitattributes`,
+          new TextEncoder().encode('d/x text eol=crlf\n'),
+        );
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+
     describe('When the index holds no entry for the path', () => {
       it('Then it is a local change at the entry path', async () => {
         // Arrange
