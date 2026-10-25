@@ -2170,7 +2170,6 @@ export const writeOutcomeToTree = async (
 };
 
 const gitlinkSurvivorId = (conflict: MergeConflict): ObjectId | undefined => {
-  if (!SURVIVOR_CONFLICT_TYPES.has(conflict.type)) return undefined;
   const survivorMode = conflict.ourId === undefined ? conflict.theirMode : conflict.ourMode;
   if (survivorMode !== FILE_MODE.GITLINK) return undefined;
   return conflict.ourId ?? conflict.theirId;
