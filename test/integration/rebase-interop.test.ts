@@ -41,6 +41,7 @@ import {
   tryRunGitWithExit,
   writeTreeOf,
 } from './interop-helpers.js';
+import { outcomeOfGitStderr } from './occupant-displacement-fixtures.js';
 
 const FIXED_DATE = '1700000000 +0000';
 
@@ -1288,6 +1289,32 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
         expect(ours).toEqual(REFUSED);
         expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
       });
+
+      it('Then skipping once the occupant is gone finishes on the same history', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, true);
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+        for (const dir of [pair.peer, pair.ours]) {
+          writeWork(dir, 'keep', 'resolved\n');
+          git(dir, 'add', 'keep');
+          plantOccupant(dir);
+        }
+        gitRebase(pair.peer, '--continue');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+        for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+        // Act
+        const peer = gitRebase(pair.peer, '--skip');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.skip());
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(ours).toBe('ok');
+        const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main').trim();
+        expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
     });
 
     describe('When a fast-forward pick is the refused line', () => {
@@ -1526,6 +1553,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       describe.each([
         {
           title: 'a directory would replace a removed tracked file',
+          gitClass: /would lose untracked files/,
           prepare: (dir: string): void => {
             git(dir, 'rm', '-q', 'keep');
             mkdirSync(path.join(dir, 'keep'));
@@ -1534,12 +1562,13 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
         },
         {
           title: 'an untracked file stands where an unstaged tracked file was',
+          gitClass: /untracked working tree files would be overwritten/,
           prepare: (dir: string): void => {
             git(dir, 'rm', '-q', '--cached', 'keep');
             writeWork(dir, 'keep', 'occ\n');
           },
         },
-      ])('the skip of a rescheduled pick meets $title', ({ prepare }) => {
+      ])('the skip of a rescheduled pick meets $title', ({ gitClass, prepare }) => {
         it('Then it refuses as git does and keeps the state', async () => {
           // Arrange
           await refusedAfterEditStop();
@@ -1559,7 +1588,17 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
 
           // Assert
           expect(peer.exitCode).toBe(128);
-          expect((ours as { code: string }).code).toBe('WORKING_TREE_DIRTY');
+          expect(peer.stderr).toMatch(gitClass);
+          expect(outcomeOfGitStderr(peer.stderr)).toEqual({
+            refused: true,
+            localChanges: [],
+            untracked: ['keep'],
+          });
+          expect(ours).toEqual({
+            code: 'WORKING_TREE_DIRTY',
+            localChanges: [],
+            untracked: ['keep'],
+          });
           expect(stateOf(pair.ours)).toEqual(stateOf(pair.peer));
         });
       });
