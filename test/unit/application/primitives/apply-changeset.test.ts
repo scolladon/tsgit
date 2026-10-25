@@ -12,10 +12,12 @@ import { invalidateConfigCache } from '../../../../src/application/primitives/co
 import * as blobSourceMod from '../../../../src/application/primitives/internal/blob-source.js';
 import * as concurrencyMod from '../../../../src/application/primitives/internal/concurrency.js';
 import * as ignoreEvaluatorMod from '../../../../src/application/primitives/internal/ignore-evaluator.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import * as readGitattributesMod from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import type {
@@ -26,7 +28,7 @@ import type {
 import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { FileStat, WriteOptions } from '../../../../src/ports/file-system.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, serializeIndexFixtureAsync } from './fixtures.js';
 import { createInterleavingFs } from './support/interleaving-fs.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -4884,6 +4886,85 @@ describe('applyChangeset displacing a leading regular file', () => {
           expect(lstatted.filter((path) => path === `${WORKDIR}/a`).length).toBeLessThanOrEqual(2);
           expect(lstatted.filter((path) => path === `${WORKDIR}/b`).length).toBeLessThanOrEqual(2);
         });
+      });
+    });
+  });
+});
+
+describe('Given an update of a path reached through a symlinked leading directory', () => {
+  const REACHED = 'd/x';
+  const HELD = `${WORKDIR}/held/x`;
+
+  const arrange = async (stage: 0 | 2) => {
+    const ctx = await buildSeededContext();
+    const oldId = await writeBlob(ctx, enc('v1\n'));
+    const newId = await writeBlob(ctx, enc('v2\n'));
+    await ctx.fs.mkdir(`${WORKDIR}/held`);
+    await ctx.fs.write(HELD, enc('v1\n'));
+    await ctx.fs.symlink('held', `${WORKDIR}/d`);
+    const entry = indexEntryFromStat(
+      await ctx.fs.lstat(HELD),
+      FILE_MODE.REGULAR,
+      oldId,
+      REACHED as FilePath,
+    );
+    const index = {
+      version: 2 as const,
+      entries: [{ ...entry, flags: { ...STAGE0_FLAGS, stage } }],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+    return { ctx, changeset: makeChangeset([makeUpdate(REACHED, oldId, newId)]) };
+  };
+
+  describe('When the reached file matches the index cached stat', () => {
+    it('Then the update is applied', async () => {
+      // Arrange
+      const { ctx, changeset } = await arrange(0);
+      const sut = applyChangeset;
+
+      // Act
+      const outcome = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+      // Assert
+      expect(outcome).toBeUndefined();
+    });
+  });
+
+  describe('When the reached file no longer matches the index cached stat', () => {
+    it('Then it refuses naming the path as a local change', async () => {
+      // Arrange
+      const { ctx, changeset } = await arrange(0);
+      await ctx.fs.write(HELD, enc('local edit\n'));
+      const sut = applyChangeset;
+
+      // Act
+      const outcome = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+      // Assert
+      expect(outcome).toMatchObject({
+        code: 'CHECKOUT_OVERWRITE_DIRTY',
+        localChanges: [REACHED],
+        untracked: [],
+      });
+    });
+  });
+
+  describe('When the index holds the path only as a conflicted entry', () => {
+    it('Then it refuses naming the path as a local change', async () => {
+      // Arrange
+      const { ctx, changeset } = await arrange(2);
+      const sut = applyChangeset;
+
+      // Act
+      const outcome = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+      // Assert
+      expect(outcome).toMatchObject({
+        code: 'CHECKOUT_OVERWRITE_DIRTY',
+        localChanges: [REACHED],
+        untracked: [],
       });
     });
   });
