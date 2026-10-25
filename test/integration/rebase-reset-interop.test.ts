@@ -152,7 +152,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe.each(actions)('When --%s runs over an occupant', (action) => {
         describe.each(
           ABORT_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant }))),
-        )('Given $row.shape/$variant', ({ row, variant }) => {
+        )('over $row.shape/$variant', ({ row, variant }) => {
           it('Then the outcome, work tree, index and stop state match git', async () => {
             // Arrange
             const occupant =
@@ -174,7 +174,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe.each(['abort', 'skip'] as const)(
-      'Given a stop on a conflicted keep replaced by a directory holding an untracked file, --%s',
+      'Given a stop on a conflicted keep replaced by a directory holding an untracked file, When --%s runs',
       (action) => {
         it('Then both tools refuse naming keep and keep the stop state', async () => {
           // Arrange
@@ -194,7 +194,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       },
     );
 
-    describe('Given a stop on a conflicted keep replaced by an untracked file, --abort', () => {
+    describe('Given a stop on a conflicted keep replaced by an untracked file, When --abort runs', () => {
       it('Then both tools abort and keep the picked side', async () => {
         // Arrange
         await stopBoth((dir) => buildStoppedMerge(dir, { base: [], main: [], theirs: [] }));

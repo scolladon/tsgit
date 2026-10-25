@@ -1539,7 +1539,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
             writeWork(dir, 'keep', 'occ\n');
           },
         },
-      ])('When the skip of a rescheduled pick meets $title', ({ prepare }) => {
+      ])('the skip of a rescheduled pick meets $title', ({ prepare }) => {
         it('Then it refuses as git does and keeps the state', async () => {
           // Arrange
           await refusedAfterEditStop();

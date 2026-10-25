@@ -1747,10 +1747,12 @@ describe('rebase edge cases', () => {
     describe('When a flat rebase stops on a conflict', () => {
       it('Then drop_redundant_commits is written', async () => {
         // Arrange
-        const sut = await seedTwoConflicts(false);
+        const ctx = await seedTwoConflicts(false);
+
+        const sut = policyExists;
 
         // Act
-        const result = await policyExists(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(result).toBe(true);
@@ -1760,10 +1762,12 @@ describe('rebase edge cases', () => {
     describe('When an interactive rebase stops on a conflict', () => {
       it('Then drop_redundant_commits is not written', async () => {
         // Arrange
-        const sut = await seedTwoConflicts(true);
+        const ctx = await seedTwoConflicts(true);
+
+        const sut = policyExists;
 
         // Act
-        const result = await policyExists(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(result).toBe(false);
@@ -1773,28 +1777,32 @@ describe('rebase edge cases', () => {
     describe('When a flat rebase is continued into a second conflict', () => {
       it('Then the re-stop does not rewrite the policy file', async () => {
         // Arrange
-        const sut = await seedTwoConflicts(false);
-        await sut.fs.rm(`${sut.layout.gitDir}/rebase-merge/${POLICY}`);
+        const ctx = await seedTwoConflicts(false);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`);
+
+        const sut = resolveAndContinue;
 
         // Act
-        await resolveAndContinue(sut);
+        await sut(ctx);
 
         // Assert
-        expect(await policyExists(sut)).toBe(false);
+        expect(await policyExists(ctx)).toBe(false);
       });
     });
 
     describe('When an interactive rebase is continued into a second conflict', () => {
       it('Then the re-stop leaves a seeded policy file in place', async () => {
         // Arrange
-        const sut = await seedTwoConflicts(true);
-        await sut.fs.writeUtf8(`${sut.layout.gitDir}/rebase-merge/${POLICY}`, '');
+        const ctx = await seedTwoConflicts(true);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`, '');
+
+        const sut = resolveAndContinue;
 
         // Act
-        await resolveAndContinue(sut);
+        await sut(ctx);
 
         // Assert
-        expect(await policyExists(sut)).toBe(true);
+        expect(await policyExists(ctx)).toBe(true);
       });
     });
   });

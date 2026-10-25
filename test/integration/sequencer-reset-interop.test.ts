@@ -270,7 +270,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     );
 
     describe.each(ACTIONS)(
-      'cherry-pick a c stopped on c, then a directory replacing f, --%s',
+      'Given a cherry-pick a c stopped on c, then a directory replacing f, --%s',
       (action) => {
         describe('When both tools finish it', () => {
           it('Then the outcome, work tree, index, ORIG_HEAD and sequencer match git', async () => {

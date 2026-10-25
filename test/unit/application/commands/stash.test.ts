@@ -2205,10 +2205,11 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         const indexed = await idOfIndexed(ctx, 'f');
 
         // Act
-        const sut = await savedWorkTree(ctx);
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.entries.get('f' as FilePath)?.id).toBe(indexed);
+        expect(result.entries.get('f' as FilePath)?.id).toBe(indexed);
       });
     });
   });
@@ -2243,10 +2244,11 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         const indexed = await idOfIndexed(ctx, 'n');
 
         // Act
-        const sut = await savedWorkTree(ctx);
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.entries.get('n' as FilePath)?.id).toBe(indexed);
+        expect(result.entries.get('n' as FilePath)?.id).toBe(indexed);
       });
     });
   });
@@ -2263,10 +2265,11 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         const indexed = await idOfIndexed(ctx, 'd/x');
 
         // Act
-        const sut = await savedWorkTree(ctx);
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.entries.get('d/x' as FilePath)?.id).toBe(indexed);
+        expect(result.entries.get('d/x' as FilePath)?.id).toBe(indexed);
       });
     });
   });
@@ -2281,10 +2284,11 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         await write(ctx, 'f', 'on disk\n');
 
         // Act
-        const sut = await savedWorkTree(ctx);
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
 
         // Assert
-        const blob = await readObject(ctx, sut.entries.get('f' as FilePath)?.id as ObjectId);
+        const blob = await readObject(ctx, result.entries.get('f' as FilePath)?.id as ObjectId);
         expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('on disk\n');
       });
     });
@@ -2301,10 +2305,11 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         await unstagePath(ctx, 'l');
 
         // Act
-        const sut = await savedWorkTree(ctx);
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.entries.get('l' as FilePath)?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(result.entries.get('l' as FilePath)?.mode).toBe(FILE_MODE.SYMLINK);
       });
     });
   });
@@ -2320,10 +2325,11 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         await write(ctx, 'f/u', 'untracked\n');
 
         // Act
-        const sut = await savedWorkTree(ctx);
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.entries.has('f' as FilePath)).toBe(false);
+        expect(result.entries.has('f' as FilePath)).toBe(false);
       });
     });
   });
@@ -2338,10 +2344,11 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/f`);
 
         // Act
-        const sut = await savedWorkTree(ctx);
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.entries.has('f' as FilePath)).toBe(false);
+        expect(result.entries.has('f' as FilePath)).toBe(false);
       });
     });
   });
@@ -2376,10 +2383,11 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         await write(ctx, 'd', 'occupant\n');
 
         // Act
-        const sut = await savedWorkTree(ctx);
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.entries.has('d/x' as FilePath)).toBe(false);
+        expect(result.entries.has('d/x' as FilePath)).toBe(false);
       });
     });
   });

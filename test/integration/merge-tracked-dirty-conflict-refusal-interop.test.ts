@@ -1137,7 +1137,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     const statusOf = (dir: string): string =>
       runGit(['-C', dir, 'status', '--porcelain', '--untracked-files=all']);
 
-    describe.each(SNAPSHOT_ROWS)('Row $id', (row) => {
+    describe.each(SNAPSHOT_ROWS)('Given the snapshot row $id', (row) => {
       describe('When both tools merge', () => {
         it('Then the outcome, index, work tree and unreachable objects match', async () => {
           // Arrange
@@ -1190,10 +1190,10 @@ describe.skipIf(!GIT_AVAILABLE)(
           }
 
           // Act
-          const sut = await tsgitOutcome(MERGE_T);
+          const result = await tsgitOutcome(MERGE_T);
 
           // Assert
-          expect(sut).toEqual({ outcome: 'refused', code: 'PATHSPEC_BEYOND_SYMLINK' });
+          expect(result).toEqual({ outcome: 'refused', code: 'PATHSPEC_BEYOND_SYMLINK' });
         });
       });
     });
@@ -1209,7 +1209,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           await writeBoth('dirty', 'LOCAL\n');
         },
       ],
-    ])('Row %s', (_id, arrangeLocal) => {
+    ])('Given the stash row %s', (_id, arrangeLocal) => {
       describe('When git stash create and tsgit stash push share one identity', () => {
         it('Then both write the same WIP commit', async () => {
           // Arrange

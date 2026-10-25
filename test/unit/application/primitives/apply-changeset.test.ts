@@ -4656,7 +4656,7 @@ describe('applyChangeset displacing a leading regular file', () => {
     vi.restoreAllMocks();
   });
 
-  describe.each(WRITE_PATHS)('Given $name', ({ config, spawns }) => {
+  describe.each(WRITE_PATHS)('$name write path', ({ config, spawns }) => {
     describe('Given a regular file d where a file d/x is added', () => {
       describe('When applyChangeset runs forced', () => {
         it('Then d is removed before the first write and d/x is written', async () => {
