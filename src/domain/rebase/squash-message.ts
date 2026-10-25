@@ -63,11 +63,11 @@ const FIRST_BLOCK_OPENING =
   /^# This is a combination of \d+ commits?\.\n# This is the 1st commit message:\n\n/;
 const NEXT_BLOCK_OPENING = /\n\n# (?:This is the commit message|The commit message) #\d+/;
 
-/** The base message of a template `buildCombinedMessage` made, or `undefined` for any other text. */
+/** The base message of a template `buildCombinedMessage` made, as the template carries it — one trailing newline, the bytes git commits — or `undefined` for any other text. */
 export const firstCommitMessage = (template: string): string | undefined => {
   const opening = FIRST_BLOCK_OPENING.exec(template);
   if (opening === null) return undefined;
   const rest = template.slice(opening[0].length);
   const next = rest.search(NEXT_BLOCK_OPENING);
-  return normalise(next === -1 ? rest : rest.slice(0, next));
+  return `${normalise(next === -1 ? rest : rest.slice(0, next))}\n`;
 };

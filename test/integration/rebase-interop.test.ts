@@ -1203,6 +1203,16 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'd'));
     };
 
+    it('Then the reopened group leaves the message-fixup bytes git leaves', async () => {
+      // Arrange / Act
+      await startBoth();
+
+      // Assert
+      const stateFile = (dir: string): string =>
+        readFileSync(path.join(dir, '.git', 'rebase-merge', 'message-fixup'), 'utf8');
+      expect(stateFile(pair.ours)).toBe(stateFile(pair.peer));
+    });
+
     it('Then continuing maps every member to the final group commit, as git does', async () => {
       // Arrange
       await startBoth();

@@ -132,14 +132,14 @@ describe('rebase squash first-commit-message reader', () => {
   describe('Given firstCommitMessage', () => {
     describe('When given a template built from several members', () => {
       it.each([
-        { label: 'a kept member', members: [keep('base'), keep('next')], base: 'base' },
-        { label: 'a skipped member', members: [keep('base'), skip('next')], base: 'base' },
+        { label: 'a kept member', members: [keep('base'), keep('next')], base: 'base\n' },
+        { label: 'a skipped member', members: [keep('base'), skip('next')], base: 'base\n' },
         {
           label: 'a multi-line base',
           members: [keep('base\n\nbody'), keep('next')],
-          base: 'base\n\nbody',
+          base: 'base\n\nbody\n',
         },
-        { label: 'the base alone', members: [keep('base')], base: 'base' },
+        { label: 'the base alone', members: [keep('base')], base: 'base\n' },
       ])('Then it returns the base message of $label', ({ members, base }) => {
         // Arrange
         const template = buildCombinedMessage(members);

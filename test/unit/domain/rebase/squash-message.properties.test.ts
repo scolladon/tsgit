@@ -35,7 +35,7 @@ describe('rebase squash combined-message properties', () => {
               { message: base },
               ...rest.map(([message, skip]) => ({ message, skip })),
             ]);
-            expect(firstCommitMessage(template)).toBe(base.replace(/\n+$/, ''));
+            expect(firstCommitMessage(template)).toBe(`${base.replace(/\n+$/, '')}\n`);
           },
         ),
         { numRuns: 200 },
