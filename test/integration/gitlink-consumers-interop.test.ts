@@ -1764,17 +1764,15 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
             // Assert — git's `try_merge_strategy` refuses with exit 2; its `restore_state` then
             // resets the index through a stash round trip that does not carry a staged gitlink,
-            // so git alone ends with the move unstaged (a pinned residual); the refusal, HEAD and
-            // the absent merge state match.
+            // so both tools end with the move unstaged; the refusal, HEAD and the absent merge
+            // state match too.
             expect(gitExit).toBe(MERGE_REFUSED_EXIT_STATUS);
             expect(code).toBe('WORKING_TREE_DIRTY');
             for (const repo of [gitTwin, tsgitTwin]) {
               expect(gitIn(repo, 'rev-parse', 'HEAD')).toBe(headBefore);
               expect(existsSync(path.join(repo, '.git', 'MERGE_HEAD'))).toBe(false);
+              expect(gitIn(repo, 'status', '--porcelain')).toContain(' M sub');
             }
-            // The residual itself, pinned on both sides: git unstaged the move, tsgit kept it.
-            expect(gitIn(gitTwin, 'status', '--porcelain')).toContain(' M sub');
-            expect(gitIn(tsgitTwin, 'status', '--porcelain')).toContain('M  sub');
           },
           ROW_TIMEOUT,
         );
