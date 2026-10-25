@@ -14,6 +14,7 @@
  *   unique:         stash push/apply index+tree state matches canonical git stash
  *   interopSurface: stash
  */
+import { rmSync } from 'node:fs';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -42,13 +43,22 @@ import {
 } from './interop-helpers.js';
 import {
   buildHistory,
+  commitOn,
   indexState,
+  KEEP,
   listing,
   MERGE_FAMILY_ROWS,
   OK,
   type Outcome,
   runGitOutcome,
+  v1,
 } from './occupant-displacement-fixtures.js';
+import {
+  ABORT_ROWS,
+  type AbortRow,
+  EVERY_VARIANT,
+  type Variant,
+} from './stopped-state-fixtures.js';
 
 const AUTHOR = {
   name: 'Ada',
@@ -556,6 +566,106 @@ describe.skipIf(!GIT_AVAILABLE)(
           });
         },
       );
+    });
+  },
+);
+
+const CONTROL_ROWS: ReadonlyArray<AbortRow> = [
+  {
+    shape: 'N0',
+    tracked: [v1('f')],
+    due: [{ ...v1('f'), content: 'v2\n' }],
+    occupant: () => undefined,
+    variants: EVERY_VARIANT,
+  },
+  {
+    shape: 'N1',
+    tracked: [v1('f')],
+    due: [{ ...v1('f'), content: 'v2\n' }],
+    occupant: (dir) => rmSync(path.join(dir, 'f'), { force: true }),
+    variants: EVERY_VARIANT,
+  },
+];
+
+/** `HEAD` holds the target, the index the current state: the A.3 variants of the stash snapshot. */
+const stashSides = (variant: Variant, row: AbortRow) => {
+  const sides: Record<Variant, { head: AbortRow['tracked']; staged: AbortRow['tracked'] }> = {
+    same: { head: row.tracked, staged: row.tracked },
+    'reset-updates': { head: row.tracked, staged: row.due },
+    'reset-adds': { head: row.tracked, staged: [] },
+    'reset-deletes': { head: [], staged: row.due },
+  };
+  return sides[variant];
+};
+
+const buildStashState = (dir: string, variant: Variant, row: AbortRow): void => {
+  const { head, staged } = stashSides(variant, row);
+  const main = commitOn(dir, [KEEP, ...head]);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+  commitOn(dir, [KEEP, ...staged]);
+  runGit(['-C', dir, 'checkout-index', '-f', '-a']);
+};
+
+const snapshotTrees = (dir: string): ReadonlyArray<unknown> =>
+  ['stash@{0}', 'stash@{0}^2'].map((rev) => {
+    const listed = tryRunGit(['-C', dir, 'ls-tree', '-r', rev]);
+    return { ok: listed.ok, tree: listed.stdout };
+  });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'stash push interop — the work-tree tree git snapshots',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository | undefined;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('stash-snapshot');
+      initBothRepos(pair.peer, pair.ours);
+      repo = undefined;
+    });
+
+    afterEach(async () => {
+      await repo?.dispose();
+      await pair.dispose();
+    });
+
+    const tsgitRefuses = async (target: Repository): Promise<boolean> => {
+      try {
+        await target.stash.push();
+        return false;
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        return true;
+      }
+    };
+
+    describe.each(
+      [...ABORT_ROWS, ...CONTROL_ROWS].flatMap((row) =>
+        row.variants.map((variant) => ({ row, variant })),
+      ),
+    )('Given $row.shape/$variant', ({ row, variant }) => {
+      describe('When stash push runs in each', () => {
+        it('Then the outcome, work tree, index and both snapshot trees match git', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildStashState(dir, variant, row);
+            row.occupant(dir);
+          }
+          repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          const expected = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push']);
+          const refused = await tsgitRefuses(repo);
+
+          // Assert
+          expect(refused).toBe(expected.exitCode !== 0);
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+          expect(snapshotTrees(pair.ours)).toEqual(snapshotTrees(pair.peer));
+        });
+      });
     });
   },
 );

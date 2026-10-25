@@ -16,6 +16,7 @@ import {
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
 import type { DiffChange } from '../../domain/diff/diff-change.js';
+import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { isGitlink } from '../../domain/diff/index.js';
 import { diffIndexAgainstTreeKeyed } from '../../domain/diff/index-diff.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
@@ -23,6 +24,7 @@ import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {
+  escapedPathOf,
   type IndexPath,
   indexPathKey,
   indexPathOfEscaped,
@@ -57,6 +59,7 @@ import {
 } from '../primitives/internal/clean-order.js';
 import { boundedMapFor, limiterFor } from '../primitives/internal/concurrency.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
+import { lstatIfReachable } from '../primitives/internal/fs-probes.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -241,46 +244,125 @@ interface WorkingTreeProjection {
   readonly eolNotices: ReadonlyArray<EolNotice>;
 }
 
-interface TrackedEntry {
+/** A work-tree comparison, or `occluded`: a directory hides the file, so the index entry rides on and the path still counts as changed. */
+type SnapshotState = WorkingTreeComparison | 'occluded';
+
+/** An index entry measured against its work-tree file. */
+interface IndexedEntry {
+  readonly kind: 'indexed';
   readonly entry: IndexEntry;
-  readonly state: WorkingTreeComparison;
+  readonly state: SnapshotState;
 }
+
+/** A path HEAD holds and the index lost, still standing in the work tree: git snapshots it from disk. */
+interface HeadOnlyEntry {
+  readonly kind: 'head-only';
+  readonly entry: IndexEntry;
+  readonly state: 'modified';
+}
+
+type TrackedEntry = IndexedEntry | HeadOnlyEntry;
+
+/** What the snapshot weighs each path against: HEAD's paths and the shared leading-path memo. */
+interface SnapshotScope {
+  readonly head: EscapedFlatTree;
+  readonly provider: AttributeProvider;
+  readonly indexMtime: GitIndex['indexMtime'];
+  readonly scanner: LeadingPathScanner;
+}
+
+const statReachable = (ctx: Context, path: FilePath): Promise<FileStat | undefined> =>
+  lstatIfReachable(ctx.fs, joinPath(requireWorkTree(ctx, 'stash'), path));
+
+const isDirectoryAt = async (ctx: Context, path: FilePath): Promise<boolean> =>
+  (await statReachable(ctx, path))?.isDirectory === true;
+
+/**
+ * git keeps the index entry for a path its work tree cannot answer for: a directory standing
+ * there, or — for an index-only path — nothing reachable at all.
+ */
+const snapshotState = async (
+  ctx: Context,
+  { entry, indexed }: { readonly entry: IndexEntry; readonly indexed: boolean },
+  status: WorkingTreeComparison,
+): Promise<SnapshotState> => {
+  if (status === 'absent') return indexed ? 'absent' : 'unchanged';
+  if (status === 'unchanged') return status;
+  return (await isDirectoryAt(ctx, entry.path)) ? 'occluded' : status;
+};
 
 /** One entry against its work-tree file; a conflicted stage is not a tracked file to compare. */
 const classifyEntry = async (
   ctx: Context,
   entry: IndexEntry,
-  provider: AttributeProvider,
-  indexMtime: GitIndex['indexMtime'],
-  scanner: LeadingPathScanner,
+  scope: SnapshotScope,
 ): Promise<TrackedEntry | undefined> => {
   // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
   if (entry.flags.stage !== 0) return undefined;
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
-  if (entry.flags.skipWorktree) return { entry, state: 'unchanged' };
+  if (entry.flags.skipWorktree) return { kind: 'indexed', entry, state: 'unchanged' };
   // git stashes with --ignore-submodules: the index id of a gitlink rides into the W tree as it is.
-  if (isGitlink(entry.mode)) return { entry, state: 'unchanged' };
-  // git builds the work-tree tree through add_to_index, which dies on a path beyond a symlink.
-  if (await scanner.hasSymlinkedLeadingPath(entry.path)) throw pathspecBeyondSymlink(entry.path);
-  const { delta } = await compareAndRefresh(ctx, entry, scopeOf(provider, indexMtime, scanner));
-  return { entry, state: delta.status };
+  if (isGitlink(entry.mode)) return { kind: 'indexed', entry, state: 'unchanged' };
+  const indexed = scope.head.entries.has(escapedPathOf(entry));
+  // git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink.
+  if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
+    throw pathspecBeyondSymlink(entry.path);
+  }
+  const { delta } = await compareAndRefresh(
+    ctx,
+    entry,
+    scopeOf(scope.provider, scope.indexMtime, scope.scanner),
+  );
+  return {
+    kind: 'indexed',
+    entry,
+    state: await snapshotState(ctx, { entry, indexed }, delta.status),
+  };
+};
+
+/** A HEAD path the index lost: recorded from the work tree where a file or link stands, else not at all. */
+const classifyHeadOnly = async (
+  ctx: Context,
+  path: FilePath,
+  head: EscapedFlatTree,
+  scanner: LeadingPathScanner,
+): Promise<TrackedEntry | undefined> => {
+  const headEntry = head.entries.get(path);
+  // A gitlink rides on the index id (--ignore-submodules); a lossy name has no string path to stat.
+  if (headEntry === undefined || isGitlink(headEntry.mode) || hasEscapedBytes(path))
+    return undefined;
+  if (await scanner.hasSymlinkedLeadingPath(path)) throw pathspecBeyondSymlink(path);
+  const stat = await statReachable(ctx, path);
+  if (stat === undefined || stat.isDirectory) return undefined;
+  return {
+    kind: 'head-only',
+    entry: stage0Entry(path, headEntry.id, headEntry.mode),
+    state: 'modified',
+  };
+};
+
+const headOnlyPaths = (head: EscapedFlatTree, index: GitIndex): ReadonlyArray<FilePath> => {
+  const indexed = new Set(index.entries.map(indexPathKey));
+  return [...head.entries.keys()].filter((path) => !indexed.has(keyOfPath(path)));
 };
 
 /**
- * Compare every stage-0 entry with its work-tree file, without hashing anything for the stash.
- * The comparisons fan out through the `ioBound` bucket; a clean driver, when one is configured,
- * still hears the paths in index order.
+ * Compare every stage-0 entry with its work-tree file, without hashing anything for the stash,
+ * then add the HEAD paths the index lost. The comparisons fan out through the `ioBound` bucket;
+ * a clean driver, when one is configured, still hears the paths in index order.
  */
 const classifyTracked = async (
   ctx: Context,
   index: GitIndex,
   provider: AttributeProvider,
+  head: EscapedFlatTree,
 ): Promise<ReadonlyArray<TrackedEntry>> => {
   const scanner = createLeadingPathScanner(ctx);
+  const scope: SnapshotScope = { head, provider, indexMtime: index.indexMtime, scanner };
   const classify = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', index.entries, async (entry) => {
       try {
-        return await classifyEntry(ctx, entry, provider, index.indexMtime, scanner);
+        return await classifyEntry(ctx, entry, scope);
       } finally {
         order?.release(entry.path);
       }
@@ -288,7 +370,10 @@ const classifyTracked = async (
   const classified = (await configuresFilterDriver(ctx))
     ? await inIndexOrder(ctx, index.entries, classify)
     : await classify();
-  return classified.filter((tracked) => tracked !== undefined);
+  const headOnly = await boundedMapFor(ctx, 'ioBound', headOnlyPaths(head, index), (path) =>
+    classifyHeadOnly(ctx, path, head, scanner),
+  );
+  return [...classified, ...headOnly].filter((tracked) => tracked !== undefined);
 };
 
 /**
@@ -327,16 +412,18 @@ const projectEntry = async (
   ctx: Context,
   workDir: string,
   scope: ConversionScope,
-  { entry, state }: TrackedEntry,
+  tracked: TrackedEntry,
 ): Promise<Hashed> => {
+  const { entry, state } = tracked;
   if (state === 'absent') return { entry: undefined, notice: undefined };
-  if (state === 'unchanged') return { entry, notice: undefined };
+  if (state === 'unchanged' || state === 'occluded') return { entry, notice: undefined };
   const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
+  // A HEAD-only path has no index blob: git's index-CRLF rule finds nothing to consult.
   const { id, mode, notice } = await hashFileAt(ctx, workDir, {
     path: entry.path,
     stat,
     scope,
-    indexBlob: entry.id,
+    ...(tracked.kind === 'indexed' && { indexBlob: entry.id }),
   });
   return { entry: stage0Entry(entry.path, id, mode), notice };
 };
@@ -394,16 +481,15 @@ const countsAsLocalChange = (change: DiffChange): boolean => {
   }
 };
 
-const differsBeyondGitlinks = async (
-  ctx: Context,
+const differsBeyondGitlinks = (
   index: GitIndex,
   iTree: ObjectId,
   base: BaseState,
-): Promise<boolean> => {
-  // Stryker disable next-line ConditionalExpression: equivalent — identical trees diff to no changes, so `.some` over them is false either way; the guard only skips the flatten.
+  head: EscapedFlatTree,
+): boolean => {
+  // Stryker disable next-line ConditionalExpression: equivalent — identical trees diff to no changes, so `.some` over them is false either way; the guard only skips the diff.
   if (iTree === base.bTree) return false;
-  const baseTree = await flattenEscapedTree(ctx, base.bTree);
-  return diffIndexAgainstTreeKeyed(index, baseTree).changes.some(countsAsLocalChange);
+  return diffIndexAgainstTreeKeyed(index, head).changes.some(countsAsLocalChange);
 };
 
 const findLocalChanges = async (
@@ -413,9 +499,10 @@ const findLocalChanges = async (
 ): Promise<LocalChanges> => {
   const index = await readIndex(ctx);
   const scope = await buildConversionScope(ctx);
-  const tracked = await classifyTracked(ctx, index, scope.provider);
+  const head = await flattenEscapedTree(ctx, base.bTree);
+  const tracked = await classifyTracked(ctx, index, scope.provider, head);
   const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
-  const stagedBeyondGitlinks = await differsBeyondGitlinks(ctx, index, iTree, base);
+  const stagedBeyondGitlinks = differsBeyondGitlinks(index, iTree, base, head);
   const untrackedFiles = opts.includeUntracked ? await listUntracked(ctx, index) : [];
   return { iTree, stagedBeyondGitlinks, scope, tracked, untrackedFiles };
 };
