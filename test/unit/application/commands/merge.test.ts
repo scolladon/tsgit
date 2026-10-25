@@ -8529,7 +8529,11 @@ describe('merge — rewind and restore between strategies', () => {
         const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author }));
 
         // Assert
-        expect(refusal.data.code).toBe('WORKING_TREE_DIRTY');
+        expect(refusal.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
         expect(rewind).not.toHaveBeenCalled();
         expect(await readWork(ctx, 'f/u')).toBe('untracked\n');
       });

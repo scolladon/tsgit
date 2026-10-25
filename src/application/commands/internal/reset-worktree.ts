@@ -123,18 +123,16 @@ const firstBlockingPathOnly = ({
   readonly localChanges: ReadonlyArray<FilePath>;
   readonly untracked: ReadonlyArray<FilePath>;
 }): TsgitError => {
-  const firstLocal = [...localChanges].sort(comparePaths)[0];
-  const firstUntracked = [...untracked].sort(comparePaths)[0];
-  if (
-    firstUntracked === undefined ||
-    (firstLocal !== undefined && comparePaths(firstLocal, firstUntracked) < 0)
-  ) {
-    return workingTreeDirty({
-      localChanges: firstLocal === undefined ? [] : [firstLocal],
-      untracked: [],
-    });
-  }
-  return workingTreeDirty({ localChanges: [], untracked: [firstUntracked] });
+  const earliestLocal = [...localChanges].sort(comparePaths).slice(0, 1);
+  const earliestUntracked = [...untracked].sort(comparePaths).slice(0, 1);
+  const [firstLocal] = earliestLocal;
+  const [firstUntracked] = earliestUntracked;
+  const localLeads =
+    firstLocal !== undefined &&
+    (firstUntracked === undefined || comparePaths(firstLocal, firstUntracked) < 0);
+  return localLeads
+    ? workingTreeDirty({ localChanges: earliestLocal, untracked: [] })
+    : workingTreeDirty({ localChanges: [], untracked: earliestUntracked });
 };
 
 const HEAD = 'HEAD' as RefName;

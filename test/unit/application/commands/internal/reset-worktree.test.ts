@@ -243,6 +243,25 @@ describe('mergeResetWorktreeToCommit', () => {
     });
   });
 
+  describe('Given only a local change blocks', () => {
+    describe('When the merge reset runs', () => {
+      it('Then it names that path as a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const c1 = await commitFiles(ctx, { x: 'v1\n' });
+        await commitFiles(ctx, { x: 'v2\n' });
+        await write(ctx, 'x', 'modified\n');
+
+        // Act
+        const data = await catchData(() => mergeResetWorktreeToCommit(ctx, c1));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: ['x'], untracked: [] });
+      });
+    });
+  });
+
   describe('Given an untracked file on a then a local change on z, both blocking', () => {
     describe('When the merge reset runs', () => {
       it('Then only the first path is named, in its class', async () => {
