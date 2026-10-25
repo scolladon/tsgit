@@ -705,9 +705,17 @@ const twoHeadMerge = async (
   if (opts.fastForward === 'only') throw nonFastForward(branch ?? HEAD, ourId, theirId);
   const parents = [ourId, theirId];
   return underAutostash(ctx, opts, async () => {
-    const carried = await refuseDirtyIndex(ctx, ourId);
-    const commit = { opts, internal, branch, ourId, parents, named, carried };
+    const commit = {
+      opts,
+      internal,
+      branch,
+      ourId,
+      parents,
+      named,
+      ...(await stagedChanges(ctx, ourId)),
+    };
     if (entersTrivialBranch(commit)) {
+      refuseStagedChanges(commit);
       const trivial = await tryTrivialMerge(ctx, commit, theirId, bases);
       if (trivial !== undefined) return trivial;
     }
@@ -728,21 +736,22 @@ const fastForwardOrSquash = (
       : fastForward(ctx, opts, internal, branch, heads),
   );
 
-/**
- * git's `index_has_changes` before any strategy runs: a staged change refuses the merge with
- * nothing written; the gitlink differences a configured `all` hides are answered to be carried.
- */
-const refuseDirtyIndex = async (
+/** What the index holds beyond HEAD: the staged paths, and the gitlink differences a configured `all` hides, to be carried. */
+const stagedChanges = async (
   ctx: Context,
   ourId: ObjectId,
-): Promise<ReadonlyArray<FilePath>> => {
+): Promise<Pick<MergeCommitInput, 'staged' | 'carried'>> => {
   const { refused, carried } = await indexDifferences(ctx, await getTree(ctx, ourId));
-  if (refused.length > 0) throw workingTreeDirty({ localChanges: refused, untracked: [] });
-  return carried;
+  return { staged: refused, carried };
+};
+
+/** git's `index_has_changes` on the trivial branch: a staged change refuses the merge with nothing written. */
+const refuseStagedChanges = ({ staged }: Pick<MergeCommitInput, 'staged'>): void => {
+  if (staged.length > 0) throw workingTreeDirty({ localChanges: staged, untracked: [] });
 };
 
 /** git's `allow_trivial`, cleared by `--no-commit` and `--squash`: only a merge about to commit tries the in-index merge. */
-const entersTrivialBranch = ({ opts }: MergeCommitInput): boolean =>
+const entersTrivialBranch = ({ opts }: Pick<MergeCommitInput, 'opts'>): boolean =>
   opts.commit !== false && opts.squash !== true && allowsTrivialMerge(opts.strategies);
 
 const STASH_FALLBACK_NAME = 'git stash';
@@ -842,6 +851,10 @@ const runStrategies = async (
   let refusal: WorktreeRefusal | undefined;
   for (const [at, strategy] of strategies.entries()) {
     if (at > 0) await rewind(ctx, commit, snapshot);
+    if (commit.staged.length > 0) {
+      refusal = stagedRefusal(strategy, commit.staged) ?? refusal;
+      continue;
+    }
     const tried = await attempt(strategy);
     if (tried.kind === 'conflict') best = preferConflict(best, { ...tried, at });
     if (tried.kind !== 'clean') continue;
@@ -854,6 +867,15 @@ const runStrategies = async (
   const ending = await best.persist();
   return isRefusal(ending) ? { kind: 'unhandled', refusal: ending } : ending;
 };
+
+/** A staged change fails every strategy; an `ort`-family one reports the staged paths, the others fail bare. */
+const stagedRefusal = (
+  strategy: string,
+  staged: ReadonlyArray<FilePath>,
+): WorktreeRefusal | undefined =>
+  ORT_STRATEGIES.has(strategy)
+    ? { kind: 'refused', localChanges: staged, untracked: [] }
+    : undefined;
 
 /** git's `reset --hard` to HEAD, then `stash apply --index` of the local changes the merge saved. */
 const rewind = async (
@@ -1041,8 +1063,15 @@ const manyHeadMerge = async (
   const keepsHead = reduced.includes(ourId) || opts.fastForward === 'never';
   const parents = [...(keepsHead ? [ourId] : []), ...remotes.map((remote) => remote.id)];
   return underAutostash(ctx, opts, async () => {
-    const carried = await refuseDirtyIndex(ctx, ourId);
-    const commit = { opts, internal, branch, ourId, parents, named, carried };
+    const commit = {
+      opts,
+      internal,
+      branch,
+      ourId,
+      parents,
+      named,
+      ...(await stagedChanges(ctx, ourId)),
+    };
     const snapshot = await snapshotBeforeStrategies(ctx, input);
     return manyHeadStrategy(ctx, commit, snapshot, remotes);
   });
@@ -1194,6 +1223,8 @@ interface MergeCommitInput {
   readonly parents: ReadonlyArray<ObjectId>;
   /** Every head as named, in order: a commit's first name is the one git's `merge_remote_util` keeps. */
   readonly named: ReadonlyArray<MergeRemote>;
+  /** The paths the index changes from HEAD, gitlinks a configured `all` hides excepted: each strategy fails on them. */
+  readonly staged: ReadonlyArray<FilePath>;
   /** Gitlink differences the index holds that a configured `all` hides from git's pre-check; they ride into the result. */
   readonly carried: ReadonlyArray<FilePath>;
 }

@@ -637,7 +637,9 @@ type LocalState =
   | 'touched'
   | 'untracked-and-modified'
   | 'directory-over-f'
-  | 'modified-and-directory-over-f';
+  | 'modified-and-directory-over-f'
+  | 'staged'
+  | 'staged-and-modified';
 type Outcome = 'ok' | 'conflict' | 'refused';
 
 interface SnapshotRow {
@@ -881,6 +883,87 @@ const SNAPSHOT_ROWS: ReadonlyArray<SnapshotRow> = [
     snapshot: true,
   },
   {
+    id: 'Q3',
+    graph: 'diverged',
+    local: 'staged',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
+    id: 'Q4',
+    graph: 'diverged',
+    local: 'staged-and-modified',
+    git: ['t'],
+    input: MERGE_T,
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
+    id: 'Q21',
+    graph: 'diverged',
+    local: 'staged',
+    git: ['-s', 'resolve', 't'],
+    input: { rev: 't', strategy: 'resolve' },
+    outcome: 'refused',
+    snapshot: false,
+  },
+  {
+    id: 'Q22',
+    graph: 'diverged',
+    local: 'staged',
+    git: ['-s', 'ours', 't'],
+    input: { rev: 't', strategy: 'ours' },
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
+    id: 'Q24',
+    graph: 'diverged',
+    local: 'staged',
+    git: ['t', 't2'],
+    input: { rev: ['t', 't2'] },
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
+    id: 'Q26',
+    graph: 'diverged',
+    local: 'staged',
+    git: ['--squash', 't'],
+    input: { rev: 't', squash: true },
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
+    id: 'Q30',
+    graph: 'diverged',
+    local: 'staged',
+    git: ['-s', 'ort', '-s', 'ours', 't'],
+    input: { rev: 't', strategy: ['ort', 'ours'] },
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
+    id: 'Q31',
+    graph: 'two-sided',
+    local: 'staged',
+    git: ['-s', 'resolve', 't'],
+    input: { rev: 't', strategy: 'resolve' },
+    outcome: 'refused',
+    snapshot: false,
+  },
+  {
+    id: 'Q32',
+    graph: 'diverged',
+    local: 'staged',
+    git: ['--no-commit', '-s', 'resolve', 't'],
+    input: { rev: 't', commit: false, strategy: 'resolve' },
+    outcome: 'refused',
+    snapshot: true,
+  },
+  {
     id: 'S3a /same',
     graph: 'beyond-symlink',
     local: 'clean',
@@ -980,6 +1063,12 @@ describe.skipIf(!GIT_AVAILABLE)(
       await commitBoth('o', ['o-file', 'keep', 'two']);
     };
 
+    const stageDirty = async (): Promise<void> => {
+      await writeBoth('dirty', 'STAGED\n');
+      runGit(['-C', pair.peer, 'add', 'dirty']);
+      await repo.add(['dirty']);
+    };
+
     const applyLocal = async (local: LocalState): Promise<void> => {
       if (local === 'directory-over-f' || local === 'modified-and-directory-over-f') {
         for (const dir of [pair.peer, pair.ours]) await rm(path.join(dir, 'f'));
@@ -996,6 +1085,8 @@ describe.skipIf(!GIT_AVAILABLE)(
         await writeBoth('stray', 'stray\n');
       }
       if (local === 'touched') await writeBoth('dirty', 'base\n');
+      if (local === 'staged' || local === 'staged-and-modified') await stageDirty();
+      if (local === 'staged-and-modified') await writeBoth('dirty', 'LOCAL\n');
     };
 
     const unreachable = (dir: string): ReadonlySet<string> => {

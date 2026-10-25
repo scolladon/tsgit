@@ -6170,7 +6170,7 @@ describe('merge — several heads (octopus)', () => {
 
   describe('Given a change staged on main', () => {
     describe('When merge is given two heads', () => {
-      it("Then octopus refuses the index that differs from HEAD, as git's diff-index does", async () => {
+      it("Then octopus fails on the index that differs from HEAD, as git's diff-index does", async () => {
         // Arrange
         const ctx = await seedOctopus();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s`, 's\n');
@@ -6184,9 +6184,8 @@ describe('merge — several heads (octopus)', () => {
 
         // Assert
         expect((caught as TsgitError).data).toEqual({
-          code: 'WORKING_TREE_DIRTY',
-          localChanges: ['s'],
-          untracked: [],
+          code: 'MERGE_STRATEGY_FAILED',
+          strategy: 'octopus',
         });
       });
     });
@@ -8034,6 +8033,183 @@ describe('merge — snapshot of local changes before the strategies', () => {
 
         // Assert
         expect(await snapshotOf(spy)).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+  });
+});
+
+describe('merge — a staged change fails each strategy after the snapshot', () => {
+  const put = (ctx: Context, path: string, content: string) =>
+    ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+  const commitPath = async (ctx: Context, path: string, content: string, message: string) => {
+    await put(ctx, path, content);
+    await add(ctx, [path]);
+    await commit(ctx, { message, author });
+  };
+
+  /** main, t and t2 diverge from a shared base; `dirty` is then staged on main. */
+  const divergedWithStaged = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await commitPath(ctx, 'dirty', 'base\n', 'base');
+    for (const name of ['t', 't2']) {
+      await branchCreate(ctx, { name });
+      await checkout(ctx, { rev: name });
+      await commitPath(ctx, `${name}-file`, `${name}\n`, `on-${name}`);
+      await checkout(ctx, { rev: 'main' });
+    }
+    await commitPath(ctx, 'o-file', 'o\n', 'on-main');
+    await put(ctx, 'dirty', 'STAGED\n');
+    await add(ctx, ['dirty']);
+    return ctx;
+  };
+
+  const failureOf = async (ctx: Context, input: Partial<Parameters<typeof mergeRun>[1]>) => {
+    const caught = await mergeRun(ctx, { rev: 't', author, ...input } as Parameters<
+      typeof mergeRun
+    >[1]).catch((error: unknown) => error);
+    return (caught as TsgitError).data;
+  };
+
+  const spyOnSnapshot = () => vi.spyOn(stashMod, 'snapshotLocalChanges');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a staged change and a lone ort strategy', () => {
+    describe('When merge runs', () => {
+      it('Then the snapshot is taken and the merge refuses the staged path', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, {});
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['dirty'],
+          untracked: [],
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(await readIndex(ctx).then((i) => i.entries.some((e) => e.path === 'dirty'))).toBe(
+          true,
+        );
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/dirty`)).toBe('STAGED\n');
+      });
+    });
+
+    describe('When merge squashes', () => {
+      it('Then the snapshot is taken and the merge refuses the staged path', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { squash: true });
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['dirty'],
+          untracked: [],
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and the ours strategy', () => {
+    describe('When merge runs', () => {
+      it('Then the strategy fails after the snapshot', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { strategy: 'ours' });
+
+        // Assert
+        expect(data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'ours' });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and two heads', () => {
+    describe('When merge runs', () => {
+      it('Then the octopus strategy fails after the snapshot', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { rev: ['t', 't2'] });
+
+        // Assert
+        expect(data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'octopus' });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and resolve under --no-commit', () => {
+    describe('When merge runs', () => {
+      it('Then the strategy fails after the snapshot', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { strategy: 'resolve', commit: false });
+
+        // Assert
+        expect(data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'resolve' });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and several strategies', () => {
+    describe('When merge runs', () => {
+      it('Then no strategy handled the merge', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { strategy: ['ort', 'ours'] });
+
+        // Assert
+        expect(data).toEqual({
+          code: 'NO_MERGE_STRATEGY_HANDLED',
+          strategies: ['ort', 'ours'],
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and the trivial branch', () => {
+    describe('When merge commits with resolve', () => {
+      it('Then it refuses the staged path before any snapshot', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { strategy: 'resolve' });
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['dirty'],
+          untracked: [],
+        });
+        expect(spy).not.toHaveBeenCalled();
       });
     });
   });
