@@ -8,6 +8,7 @@ import { init } from '../../../../../src/application/commands/init.js';
 import {
   hardResetWorktreeToCommit,
   mergeResetWorktreeToCommit,
+  protectedResetWorktreeToCommit,
 } from '../../../../../src/application/commands/internal/reset-worktree.js';
 import { mergeRun } from '../../../../../src/application/commands/merge.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
@@ -293,6 +294,203 @@ describe('mergeResetWorktreeToCommit', () => {
 
         // Assert
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('MAIN\n');
+      });
+    });
+  });
+});
+
+const dropFromHead = async (ctx: MemoryContext, rel: string) => {
+  await ctx.fs.rmRecursive(`${ctx.layout.workDir}/${rel.split('/')[0]}`);
+  await add(ctx, [rel]);
+  await commit(ctx, { message: `drop ${rel}`, author });
+};
+
+/** The target holds `files`; HEAD and the index have since dropped `dropped`. */
+const seedDropped = async (
+  files: Readonly<Record<string, string>>,
+  dropped: ReadonlyArray<string>,
+) => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const target = await commitFiles(ctx, { keep: 'keep\n', ...files });
+  for (const rel of dropped) await dropFromHead(ctx, rel);
+  return { ctx, target };
+};
+
+type Occupy = (ctx: MemoryContext) => Promise<void>;
+
+const asFile: Occupy = (ctx) => write(ctx, 'f', 'untracked\n');
+const asDanglingLink: Occupy = (ctx) => ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/f`);
+const asDirectory: Occupy = (ctx) => write(ctx, 'f/u', 'untracked\n');
+
+describe('protectedResetWorktreeToCommit', () => {
+  describe.each([
+    ['an untracked file', asFile],
+    ['a dangling symlink', asDanglingLink],
+    ['a directory holding an untracked file', asDirectory],
+  ] as const)('Given %s where the target adds f', (_shape, occupy) => {
+    describe('When the protected reset runs', () => {
+      it('Then it refuses naming f as untracked and leaves the occupant', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ f: 'v1\n' }, ['f']);
+        await occupy(ctx);
+        const indexBefore = await readIndex(ctx);
+
+        // Act
+        const data = await catchData(() => protectedResetWorktreeToCommit(ctx, target));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['f'] });
+        expect(await readIndex(ctx)).toEqual(indexBefore);
+      });
+    });
+  });
+
+  describe.each([
+    ['an untracked file', (ctx: MemoryContext) => write(ctx, 'd', 'untracked\n')],
+    [
+      'a dangling symlink',
+      (ctx: MemoryContext) => ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`),
+    ],
+  ] as const)('Given %s where the target adds d/x', (_shape, occupy) => {
+    describe('When the protected reset runs', () => {
+      it('Then it refuses naming d as untracked', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ 'd/x': 'v1\n' }, ['d/x']);
+        await occupy(ctx);
+
+        // Act
+        const data = await catchData(() => protectedResetWorktreeToCommit(ctx, target));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['d'] });
+      });
+    });
+  });
+
+  describe('Given a directory holding only an ignored file where the target adds f', () => {
+    describe('When the protected reset runs', () => {
+      it('Then the ignored occupant is overwritten', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ f: 'v1\n' }, ['f']);
+        await write(ctx, '.gitignore', 'f/u\n');
+        await asDirectory(ctx);
+
+        // Act
+        await protectedResetWorktreeToCommit(ctx, target);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('v1\n');
+      });
+    });
+  });
+
+  describe('Given an ignored file where the target adds f', () => {
+    describe('When the protected reset runs', () => {
+      it('Then the ignored occupant is overwritten', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ f: 'v1\n' }, ['f']);
+        await write(ctx, '.gitignore', 'f\n');
+        await asFile(ctx);
+
+        // Act
+        await protectedResetWorktreeToCommit(ctx, target);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('v1\n');
+      });
+    });
+  });
+
+  describe('Given a directory holding an untracked file where the target deletes f', () => {
+    describe('When the protected reset runs', () => {
+      it('Then it refuses naming f as untracked', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const target = await commitFiles(ctx, { keep: 'keep\n' });
+        await commitFiles(ctx, { f: 'v1\n' });
+        await replaceFileWithDirectory(ctx, 'f', 'u');
+
+        // Act
+        const data = await catchData(() => protectedResetWorktreeToCommit(ctx, target));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['f'] });
+      });
+    });
+  });
+
+  describe('Given a locally modified tracked file', () => {
+    describe('When the protected reset runs', () => {
+      it('Then the file is rewritten to the target', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const target = await commitFiles(ctx, { f: 'v1\n' });
+        await write(ctx, 'f', 'modified\n');
+
+        // Act
+        await protectedResetWorktreeToCommit(ctx, target);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('v1\n');
+      });
+    });
+  });
+
+  describe('Given an unmerged path holding a directory with an untracked file', () => {
+    describe('When the protected reset runs', () => {
+      it('Then it refuses naming the path as untracked', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedConflictedMerge();
+        await replaceFileWithDirectory(ctx, 'file.txt', 'u');
+
+        // Act
+        const data = await catchData(() => protectedResetWorktreeToCommit(ctx, mainTip));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['file.txt'],
+        });
+      });
+    });
+  });
+
+  describe('Given an unmerged path holding a file', () => {
+    describe('When the protected reset runs', () => {
+      it('Then the path is rewritten to the target', async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedConflictedMerge();
+
+        // Act
+        await protectedResetWorktreeToCommit(ctx, mainTip);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('MAIN\n');
+      });
+    });
+  });
+
+  describe('Given two untracked occupants where the target adds f and g', () => {
+    describe('When the protected reset runs', () => {
+      it('Then every offending path is listed', async () => {
+        // Arrange
+        const { ctx, target } = await seedDropped({ f: 'v1\n', g: 'v1\n' }, ['f', 'g']);
+        await write(ctx, 'f', 'untracked\n');
+        await write(ctx, 'g', 'untracked\n');
+
+        // Act
+        const data = await catchData(() => protectedResetWorktreeToCommit(ctx, target));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['f', 'g'],
+        });
       });
     });
   });

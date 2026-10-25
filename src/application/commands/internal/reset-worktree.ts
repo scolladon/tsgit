@@ -20,9 +20,13 @@ import { type MaterializeTreeOpts, materializeTree } from '../../primitives/mate
 import { readIndex } from '../../primitives/read-index.js';
 import { readObject } from '../../primitives/read-object.js';
 import { loadSparseMatcher } from '../../primitives/read-sparse-checkout.js';
+import { asMergeDirtyError } from '../merge.js';
 import { acquireIndexLock } from './index-update.js';
 
-type ResetMode = Pick<MaterializeTreeOpts, 'force' | 'forceRewriteAll' | 'unmergedPaths'>;
+type ResetMode = Pick<
+  MaterializeTreeOpts,
+  'force' | 'forceRewriteAll' | 'unmergedPaths' | 'untrackedOccupants'
+>;
 
 const resetWorktreeToCommit = async (
   ctx: Context,
@@ -49,6 +53,26 @@ const resetWorktreeToCommit = async (
 
 export const hardResetWorktreeToCommit = (ctx: Context, commitId: ObjectId): Promise<void> =>
   resetWorktreeToCommit(ctx, commitId, { force: true, forceRewriteAll: true });
+
+/**
+ * `reset --hard` as `rebase --abort` / `--skip` run it: tracked changes are discarded, but an
+ * untracked occupant is never overwritten (ignored ones are) and every offending path is listed.
+ */
+export const protectedResetWorktreeToCommit = async (
+  ctx: Context,
+  commitId: ObjectId,
+): Promise<void> => {
+  try {
+    await resetWorktreeToCommit(ctx, commitId, {
+      force: true,
+      forceRewriteAll: true,
+      untrackedOccupants: 'protect',
+      unmergedPaths: 'reset',
+    });
+  } catch (err) {
+    throw asMergeDirtyError(err);
+  }
+};
 
 /**
  * `reset --merge` as `merge --abort` runs it: a path the index and the target agree on keeps its

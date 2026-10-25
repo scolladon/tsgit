@@ -109,7 +109,10 @@ import {
   writeRescheduledPick,
 } from './internal/rebase-state.js';
 import { toConflictList } from './internal/replay-sequence.js';
-import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import {
+  hardResetWorktreeToCommit,
+  protectedResetWorktreeToCommit,
+} from './internal/reset-worktree.js';
 import { writeContinuedIndex } from './internal/write-index-cache-tree.js';
 import { applyAutostash, createAutostash } from './stash.js';
 
@@ -872,7 +875,7 @@ const retryRescheduledPick = (
 /** git's `--skip` hard-resets to HEAD (dropping the staged change) and retries the rescheduled pick. */
 const skipRescheduled = async (ctx: Context, progress: RebaseProgress): Promise<RebaseResult> => {
   const head = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, head);
+  await protectedResetWorktreeToCommit(ctx, head);
   return retryRescheduledPick(ctx, progress, head);
 };
 
@@ -975,7 +978,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   const state = (await readRebaseState(ctx)) as RebaseState;
   if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
   const currentHead = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, currentHead);
+  await protectedResetWorktreeToCommit(ctx, currentHead);
   await removeBranchState(ctx, 'silent');
   // git's continue records the skipped commit as rewritten to HEAD.
   const skipped = [stoppedCommit(state), currentHead] as const;
@@ -997,7 +1000,7 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   if (state === undefined) throw noOperationInProgress('rebase');
   const branch = branchOf(state.headName);
   const currentHead = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, state.origHead);
+  await protectedResetWorktreeToCommit(ctx, state.origHead);
   await returnHeadFromRebase(ctx, { branch, origHead: state.origHead, currentHead });
   await removeBranchState(ctx, 'silent');
   await deleteRewrittenRefs(ctx, state.done);
@@ -1839,7 +1842,7 @@ const isEditStop = (state: RebaseState): state is RebaseState & { readonly amend
  *  conflict stop never committed, so HEAD already sits at the last good pick. */
 const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
   const target = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, target);
+  await protectedResetWorktreeToCommit(ctx, target);
   if (isEditStop(state)) return rebaseContinueInteractive(ctx, state);
   const ic: InteractiveContext = {
     branch: branchOf(state.headName),
