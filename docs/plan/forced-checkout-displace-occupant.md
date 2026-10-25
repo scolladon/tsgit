@@ -405,7 +405,7 @@ Pinned rows (this part; `checkout t` = unforced switch):
 
 ### Commit
 
-`fix(checkout): refuse an update or delete beneath a file or at a directory as a local change, as git does`
+`fix(checkout): refuse an update or delete beneath a file or at a directory as a local change`
 
 ## Part 3 — Forced delete wave keeps what git keeps
 
@@ -470,7 +470,7 @@ Pinned rows (this part; forced = `checkout -f t` / `reset --hard t`; `checkout t
 
 ### Commit
 
-`fix(checkout): keep a directory or a leading file where a forced checkout deletes an entry, as git does`
+`fix(checkout): keep a directory or leading file where a forced checkout deletes an entry`
 
 ## Part 4 — Merge-family pre-flight through the classifier
 
@@ -560,7 +560,7 @@ cherry-pick needs the displacement and lands in Part 12:
 
 ### Commit
 
-`fix(merge): refuse an untracked file or link in a leading path before a cherry-pick or stash apply writes`
+`fix(merge): refuse an untracked file or link in a leading path before a cherry-pick writes`
 
 ## Part 5 — `pull` into an unborn branch protects ignored occupants
 
@@ -779,7 +779,7 @@ New behaviour (design P8a/P8b; DC-B):
 
 ### Commit
 
-`fix(checkout): add untracked-protecting and unmerged-reset modes to the tree apply, as git's resets use`
+`fix(checkout): add untracked-protecting and unmerged-reset modes to the tree apply`
 
 ## Part 8 — `merge --abort` resets as `reset --merge`
 
@@ -1167,7 +1167,7 @@ skip of a rescheduled pick, A.5 U1):
 
 ### Commit
 
-`fix(rebase): refuse an untracked occupant on rebase --abort and --skip, as git's protecting reset does`
+`fix(rebase): refuse an untracked occupant on rebase --abort and --skip, as git does`
 
 ## Part 11 — The rebase-merges `reset` step protects untracked occupants and reschedules
 
@@ -1425,7 +1425,7 @@ Pinned rows (Part 14 rows land there):
 
 ### Commit
 
-`fix(rebase): check out the onto commit before moving HEAD, refusing an untracked occupant as git does`
+`fix(rebase): check out the onto commit before moving HEAD, refusing an untracked occupant`
 
 ## Part 13 — Displace a leading regular file before the write wave
 
@@ -1507,7 +1507,7 @@ Pinned rows (A.1 forced leading-file rows + I1/I4 /add unforced; plus every A.2 
 
 ### Commit
 
-`fix(checkout): replace a regular file in a leading path by a directory on a forced write, as git does`
+`fix(checkout): replace a file in a leading path by a directory on a forced write, as git does`
 
 ## Part 14 — Clear a directory at an updated path before the write wave
 
@@ -2187,7 +2187,7 @@ Pinned rows (A.5 E; E14/E15 are reschedules and land in Parts 22/23):
 
 ### Commit
 
-`fix(rebase): write the empty-commit policy file only on a flat start and rewritten-list once non-empty`
+`fix(rebase): write the empty-commit policy only on a flat start, rewritten-list once non-empty`
 
 ## Part 21 — A replay refusal is a typed outcome
 
@@ -2249,7 +2249,7 @@ The design's union table (P11), verbatim:
 
 ### Commit
 
-`fix(rebase): return an occupant refusal as a typed replay outcome and fast-forward without overwriting`
+`fix(rebase): return an occupant refusal as a typed replay outcome, fast-forward without overwrite`
 
 ## Part 22 — A refused flat-rebase line is rescheduled
 
