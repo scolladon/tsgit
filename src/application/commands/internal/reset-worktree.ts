@@ -116,6 +116,7 @@ export const mergeResetWorktreeToCommit = async (
   }
 };
 
+// Both arrays arrive already sorted by `comparePaths` from every CHECKOUT_OVERWRITE_DIRTY throw site.
 const firstBlockingPathOnly = ({
   localChanges,
   untracked,
@@ -123,12 +124,13 @@ const firstBlockingPathOnly = ({
   readonly localChanges: ReadonlyArray<FilePath>;
   readonly untracked: ReadonlyArray<FilePath>;
 }): TsgitError => {
-  const earliestLocal = [...localChanges].sort(comparePaths).slice(0, 1);
-  const earliestUntracked = [...untracked].sort(comparePaths).slice(0, 1);
+  const earliestLocal = localChanges.slice(0, 1);
+  const earliestUntracked = untracked.slice(0, 1);
   const [firstLocal] = earliestLocal;
   const [firstUntracked] = earliestUntracked;
   const localLeads =
     firstLocal !== undefined &&
+    // Stryker disable next-line EqualityOperator: equivalent — a path is probed once and lands in one class, so a path is never both first local and first untracked and the tie `<=` adds is unreachable.
     (firstUntracked === undefined || comparePaths(firstLocal, firstUntracked) < 0);
   return localLeads
     ? workingTreeDirty({ localChanges: earliestLocal, untracked: [] })
