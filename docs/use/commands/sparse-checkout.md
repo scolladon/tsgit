@@ -50,6 +50,8 @@ The four mutating methods share `SparseCheckoutAppliedResult`; `list` returns th
 - **`core.sparseCheckout` / `core.sparseCheckoutCone`** are written to `.git/config`.
 - **Dirty out-of-cone files are retained**, not discarded, unless `force: true`.
 - **The dirty check converts first.** The narrowing pre-scan compares the on-disk file with its index blob through the check-in conversion (`core.autocrlf`, `core.eol`, `text`/`eol`/`ident`, clean filter), so a CRLF-checked-out file that converts back to its blob is not dirty and is removed without `force`.
+- **Re-inclusion keeps an occupant.** A re-included entry with anything at its path (a dangling symlink counts), or a regular file or symlink in a leading path, is not written and the occupant stays; its skip-worktree bit is cleared. For the leading-path case one warning is logged through the logger, listing the obstructing components, as git's "already present and thus not updated despite sparse patterns" does.
+- **Narrowing removes a tracked dangling symlink.** The presence probe does not follow symlinks, so an excluded tracked entry whose link dangles is removed.
 - **Materialised files are converted.** Files written back into the cone go through the checkout conversion (LF to CRLF, `ident`, smudge), reading attributes from the stage-0 index entries first, then the worktree.
 - **`checkout` honours the cone on branch switch.** `reset --hard` / `--mixed` and the conflicting-`merge` path also respect the cone.
 

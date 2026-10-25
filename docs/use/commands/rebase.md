@@ -110,6 +110,10 @@ type RebaseResult =
   rest; `abort` restores the branch and hard-resets the index. A todo opening
   with a `label` or a `reset` (`--rebase-merges`) never refuses: the reset sets
   the index to `onto`'s tree, carried change included, before any pick runs.
+- **Start checks out before HEAD moves.** `run` (flat or interactive, and the fast-forward onto `onto`) checks out `onto`'s tree as an unforced two-way checkout, before HEAD moves and before any rebase state is written. An untracked file or symlink in the way refuses (`untracked`; ignored ones are overwritten), leaving HEAD on the branch, the work tree and the absence of `rebase-merge/` as they were.
+- **`abort`, `skip` and the `reset` step protect untracked files.** These reset like git's untracked-protecting hard reset: tracked paths are rewritten, an occupant is displaced as in [`reset`](reset.md#behaviour), and an untracked file or symlink where the reset adds a path (at the path or in a leading component), a directory holding an untracked file where it adds or deletes one, refuse with `WORKING_TREE_DIRTY`, every offending path listed in `untracked`. Ignored occupants are overwritten. A refused `abort` or `skip` keeps `rebase-merge/` and HEAD; a refused `reset <label>` step stays at the head of `git-rebase-todo` and at the end of `done`. The `skip` of an `edit` stop and of a rescheduled pick resets the same way. An unmerged path holding a directory with an untracked file refuses; a file there is overwritten.
+- **A refused line is rescheduled.** A `pick`, `edit`, `reword`, `squash` or `fixup` line whose merge or checkout an untracked occupant refuses (fast-forwards included; on `run`, `continue` and `skip`, flat or interactive) throws `WORKING_TREE_DIRTY` and leaves git's rescheduled state: HEAD stays on the last replayed commit, the line heads `git-rebase-todo` and is appended to `done` (`msgnum` counts `done`; `end` counts `done` plus the todo minus one), `REBASE_HEAD` names the line's commit and `author-script` holds its author, and `amend`, `message`, `patch` and `stopped-sha` are removed. Inside a squash/fixup group the group files (`current-fixups` with the refused member, `rewritten-pending`, `message-squash`, and `message-fixup` for a fixup-only group) take their place. `continue` refuses a staged change (`localChanges`) and otherwise retries the line, which a second refusal appends to `done` once more; `skip` resets as above and retries it. A `merge -C` line keeps throwing without rescheduling.
+- **State files for the empty-commit policy and the rewrite list.** `drop_redundant_commits` is written on a flat start only (git's `--empty=drop` default) and is absent from an interactive start, whose policy is to stop; a resume leaves the file as the start wrote it. `rewritten-list` is written only once it holds a rewrite.
 - **Refusals.** A dirty index/working tree (`WORKING_TREE_DIRTY`), an operation
   already in progress (`OPERATION_IN_PROGRESS`), an unborn branch
   (`NO_INITIAL_COMMIT`), no work tree (`WORK_TREE_REQUIRED`).
@@ -194,6 +198,7 @@ await repo.rebase.run({
   (nothing to meld into), an empty/all-`drop` list, a `reword` without a
   `message`, or a `reword`/`squash` whose `message` cleans to empty all throw
   `INVALID_OPTION` — **before any state change** (HEAD never moves).
+- **`post-rewrite amend`.** Each `squash` or `fixup` amends the group commit, so the `post-rewrite` hook also runs with `amend`, fed `<previous> <created>` for that commit, once per meld commit, besides the `rebase` call at the end.
 - **Cross-stop messages (limitation).** Inline `reword`/`squash` messages are
   consumed during the single `run()` pass and are **not** carried across a stop.
   A `reword`/`squash` scheduled *after* a conflict or `edit` stop replays with
@@ -203,6 +208,7 @@ await repo.rebase.run({
 
 - `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree; `continue` while a refused first pick's staged change is still in the index.
 - `CHECKOUT_OVERWRITE_DIRTY` — the checkout of `onto` would overwrite a staged path HEAD and `onto` disagree on and the index does not hold as `onto` does (`localChanges`); nothing is written.
+  An untracked occupant of a path the checkout adds refuses the same way (`untracked`).
 - `INVALID_INDEX_ENTRY` — a conflicting replay's outcome or conflict path fails
   git's own index-entry name rules. Every path the conflict write is about to
   touch is checked in one pass before any of them is written, so a hostile
