@@ -48,6 +48,7 @@ import {
   createIgnoredProbe,
   type IgnoredProbe,
   type OccupantClash,
+  type OccupantVerdict,
   repoRelativePath,
 } from './internal/occupant-clash.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
@@ -207,27 +208,45 @@ export const isWorkingTreeDirty = async (
   expectedId: string,
 ): Promise<boolean> => createWorkingTreeDirtyCheck(ctx)(absPath, expectedId);
 
+const verdictClash = (verdict: OccupantVerdict): OccupantClash | undefined =>
+  verdict.kind === 'clash' ? verdict.clash : undefined;
+
+const evaluateChangedPath = async (
+  ctx: Context,
+  probe: () => Promise<DirtyProbe>,
+  entry: ChangesetEntry,
+  kind: 'update' | 'delete',
+  scope: ClashScope,
+): Promise<OccupantClash | undefined> => {
+  const { previousId } = entry;
+  if (previousId === undefined) return undefined;
+  // git's verify_uptodate returns early for a gitlink: the submodule's worktree is never compared.
+  if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
+  const verdict = await classifyOccupant(ctx, { kind, path: entry.path }, scope);
+  if (verdict.kind !== 'compare-content') return verdictClash(verdict);
+  const dirty = await isDirtyUnder(
+    ctx,
+    await probe(),
+    entry.path,
+    joinPath(scope.workdir, entry.path),
+    previousId,
+  );
+  return dirty ? { class: 'local-changes', path: entry.path } : undefined;
+};
+
 const evaluateDirtyPath = async (
   ctx: Context,
   probe: () => Promise<DirtyProbe>,
-  workdir: string,
   entry: ChangesetEntry,
   scope: ClashScope,
 ): Promise<OccupantClash | undefined> => {
   if (isLossy(entry)) return undefined;
-  const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'update' || entry.kind === 'delete') {
-    if (entry.previousId === undefined) return undefined;
-    // git's verify_uptodate returns early for a gitlink: the submodule's worktree is never compared.
-    if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
-    return (await isDirtyUnder(ctx, await probe(), entry.path, absPath, entry.previousId))
-      ? { class: 'local-changes', path: entry.path }
-      : undefined;
+    return evaluateChangedPath(ctx, probe, entry, entry.kind, scope);
   }
   // Stryker disable next-line ConditionalExpression: equivalent — checkDirty only receives splitWaves' deletes and writes, which hold no noop, so an entry past the update/delete branch is always an add.
   if (entry.kind !== 'add') return undefined;
-  const verdict = await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope);
-  return verdict.kind === 'clash' ? verdict.clash : undefined;
+  return verdictClash(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
 };
 
 // The checkout path's tree->index boundary. Every `add`/`update` entry
@@ -273,7 +292,7 @@ const checkDirty = async (
     scanner: createLeadingPathScanner(ctx),
   };
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
-    evaluateDirtyPath(ctx, probe, workdir, entry, scope),
+    evaluateDirtyPath(ctx, probe, entry, scope),
   );
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];

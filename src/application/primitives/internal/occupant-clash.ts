@@ -32,14 +32,16 @@ export interface OccupantClash {
 
 export type OccupantVerdict =
   | { readonly kind: 'clash'; readonly clash: OccupantClash }
-  | { readonly kind: 'clear' };
+  | { readonly kind: 'clear' }
+  // A plain file or symlink stands at the path: the caller hashes it against the index.
+  | { readonly kind: 'compare-content' };
 
-export interface OccupantShape {
-  readonly kind: 'add';
-  readonly path: FilePath;
-}
+export type OccupantShape =
+  | { readonly kind: 'add'; readonly path: FilePath }
+  | { readonly kind: 'update' | 'delete'; readonly path: FilePath };
 
 const CLEAR: OccupantVerdict = { kind: 'clear' };
+const COMPARE_CONTENT: OccupantVerdict = { kind: 'compare-content' };
 
 export const repoRelativePath = (ctx: Context, absPath: string): FilePath =>
   absPath.slice(requireWorkTree(ctx, 'isWorkingTreeDirty').length + 1) as FilePath;
@@ -112,10 +114,46 @@ const classifyAddedPath = async (
   return (await scope.isIgnoredPath(absPath, false)) ? CLEAR : untracked(path);
 };
 
+const localChange = (path: FilePath): OccupantVerdict => ({
+  kind: 'clash',
+  clash: { class: 'local-changes', path },
+});
+
+// git's verify_uptodate lstat()s the entry and only ENOENT reads as absent: a
+// directory standing at the path is a change (an emptied or ignored-only one when
+// the entry is deleted), and so is a regular file standing in a leading directory's
+// place. A symlink there reads as the entry deleted, which is no change.
+const classifyChangedPath = async (
+  ctx: Context,
+  shape: Extract<OccupantShape, { readonly kind: 'update' | 'delete' }>,
+  scope: ClashScope,
+): Promise<OccupantVerdict> => {
+  const obstruction = await scope.scanner.obstructingLeadingComponent(shape.path);
+  if (obstruction !== undefined) {
+    return obstruction.kind === 'file' ? localChange(shape.path) : CLEAR;
+  }
+  const absPath = joinPath(scope.workdir, shape.path);
+  const stat = await lstatIfReachable(ctx.fs, absPath);
+  if (stat === undefined || !stat.isDirectory) return COMPARE_CONTENT;
+  if (shape.kind === 'update') return localChange(shape.path);
+  return (await holdsSurvivor(ctx, absPath, scope))
+    ? untracked(shape.path)
+    : localChange(shape.path);
+};
+
 export const classifyOccupant = async (
   ctx: Context,
   shape: OccupantShape,
   scope: ClashScope,
-): Promise<OccupantVerdict> =>
-  (await classifyLeadingObstruction(shape.path, scope)) ??
-  classifyAddedPath(ctx, shape.path, scope);
+): Promise<OccupantVerdict> => {
+  switch (shape.kind) {
+    case 'add':
+      return (
+        (await classifyLeadingObstruction(shape.path, scope)) ??
+        classifyAddedPath(ctx, shape.path, scope)
+      );
+    case 'update':
+    case 'delete':
+      return classifyChangedPath(ctx, shape, scope);
+  }
+};

@@ -17,6 +17,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -109,9 +110,13 @@ const commitOn = (dir: string, entries: ReadonlyArray<TreeEntry>, parent?: strin
 
 const KEEP = regular('keep', 'keep\n');
 
-/** `main` holds only `keep`; `t` is its child and adds the due entries. */
-const buildHistory = (dir: string, due: ReadonlyArray<TreeEntry>): void => {
-  const main = commitOn(dir, [KEEP]);
+/** `main` holds `keep` and the tracked entries; `t` is its child and holds `keep` and the due entries. */
+const buildHistory = (
+  dir: string,
+  due: ReadonlyArray<TreeEntry>,
+  tracked: ReadonlyArray<TreeEntry> = [],
+): void => {
+  const main = commitOn(dir, [KEEP, ...tracked]);
   const target = commitOn(dir, [KEEP, ...due], main);
   runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
   runGit(['-C', dir, 'update-ref', 'refs/heads/t', target]);
@@ -119,6 +124,21 @@ const buildHistory = (dir: string, due: ReadonlyArray<TreeEntry>): void => {
 };
 
 type Occupant = (dir: string) => void;
+
+/** The work tree gives up the tracked path (and its leading directory) before the occupant takes its place. */
+const replacing =
+  (trackedPath: string, occupant: Occupant): Occupant =>
+  (dir) => {
+    rmSync(path.join(dir, trackedPath.split('/')[0] ?? trackedPath), {
+      recursive: true,
+      force: true,
+    });
+    occupant(dir);
+  };
+const emptyDirectoryAt =
+  (rel: string): Occupant =>
+  (dir) =>
+    mkdirSync(path.join(dir, rel), { recursive: true });
 
 const fileAt =
   (rel: string): Occupant =>
@@ -155,6 +175,12 @@ const refusedUntracked = (...paths: ReadonlyArray<string>): Outcome => ({
   refused: true,
   localChanges: [],
   untracked: paths,
+});
+
+const refusedLocal = (...paths: ReadonlyArray<string>): Outcome => ({
+  refused: true,
+  localChanges: paths,
+  untracked: [],
 });
 
 const LOCAL_CHANGES_HEADER = /local changes/;
@@ -278,6 +304,163 @@ const ADD_ROWS: ReadonlyArray<AddRow> = [
   },
 ];
 
+interface ChangeRow {
+  readonly shape: string;
+  readonly tracked: ReadonlyArray<TreeEntry>;
+  readonly due: ReadonlyArray<TreeEntry>;
+  readonly occupant: Occupant;
+  readonly git: Outcome;
+}
+
+const v1 = (entryPath: string): TreeEntry => regular(entryPath, 'v1\n');
+const link1 = (entryPath: string): TreeEntry => symlink(entryPath, 't-v1');
+
+const UPDATE_ROWS: ReadonlyArray<ChangeRow> = [
+  {
+    shape: 'S1',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', fileAt('d')),
+    git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'S2',
+    tracked: [v1('f')],
+    due: [regular('f')],
+    occupant: replacing('f', directoryHolding('f', 'u')),
+    git: refusedLocal('f'),
+  },
+  {
+    shape: 'S3a',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', danglingLinkAt('d')),
+    git: OK,
+  },
+  {
+    shape: 'S3b',
+    tracked: [v1('f')],
+    due: [regular('f')],
+    occupant: replacing('f', danglingLinkAt('f')),
+    git: refusedLocal('f'),
+  },
+  {
+    shape: 'S3c',
+    tracked: [link1('l')],
+    due: [symlink('l')],
+    occupant: replacing('l', directoryHolding('l', 'u')),
+    git: refusedLocal('l'),
+  },
+  {
+    shape: 'S3d',
+    tracked: [link1('d/l')],
+    due: [symlink('d/l')],
+    occupant: replacing('d/l', fileAt('d')),
+    git: refusedLocal('d/l'),
+  },
+  {
+    shape: 'S3e',
+    tracked: [link1('d/l')],
+    due: [symlink('d/l')],
+    occupant: replacing('d/l', danglingLinkAt('d')),
+    git: OK,
+  },
+  {
+    shape: 'S3f',
+    tracked: [link1('f')],
+    due: [symlink('f')],
+    occupant: replacing('f', fileAt('f')),
+    git: refusedLocal('f'),
+  },
+  {
+    shape: 'I1',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', ignoring('d', fileAt('d'))),
+    git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'I2',
+    tracked: [v1('f')],
+    due: [regular('f')],
+    occupant: replacing('f', ignoring('f/u', directoryHolding('f', 'u'))),
+    git: refusedLocal('f'),
+  },
+  {
+    shape: 'I3',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', ignoring('d', danglingLinkAt('d'))),
+    git: OK,
+  },
+  {
+    shape: 'I4',
+    tracked: [link1('d/l')],
+    due: [symlink('d/l')],
+    occupant: replacing('d/l', ignoring('d', fileAt('d'))),
+    git: refusedLocal('d/l'),
+  },
+  {
+    shape: 'I5',
+    tracked: [link1('l')],
+    due: [symlink('l')],
+    occupant: replacing('l', ignoring('l/u', directoryHolding('l', 'u'))),
+    git: refusedLocal('l'),
+  },
+  {
+    shape: 'X3',
+    tracked: [v1('f')],
+    due: [regular('f')],
+    occupant: replacing('f', emptyDirectoryAt('f')),
+    git: refusedLocal('f'),
+  },
+];
+
+const DELETE_ROWS: ReadonlyArray<ChangeRow> = [
+  {
+    shape: 'D1',
+    tracked: [v1('d/x')],
+    due: [],
+    occupant: replacing('d/x', fileAt('d')),
+    git: refusedLocal('d/x'),
+  },
+  {
+    shape: 'D2',
+    tracked: [v1('f')],
+    due: [],
+    occupant: replacing('f', directoryHolding('f', 'u')),
+    git: refusedUntracked('f'),
+  },
+  {
+    shape: 'D3',
+    tracked: [link1('l')],
+    due: [],
+    occupant: replacing('l', directoryHolding('l', 'u')),
+    git: refusedUntracked('l'),
+  },
+  {
+    shape: 'D4',
+    tracked: [link1('d/l')],
+    due: [],
+    occupant: replacing('d/l', fileAt('d')),
+    git: refusedLocal('d/l'),
+  },
+  {
+    shape: 'X1',
+    tracked: [v1('f')],
+    due: [],
+    occupant: replacing('f', emptyDirectoryAt('f')),
+    git: refusedLocal('f'),
+  },
+  {
+    shape: 'X2',
+    tracked: [v1('f')],
+    due: [],
+    occupant: replacing('f', ignoring('f/u', directoryHolding('f', 'u'))),
+    git: refusedLocal('f'),
+  },
+];
+
 describe.skipIf(!GIT_AVAILABLE)(
   'checkout interop — occupant where the target adds an entry',
   { timeout: 60_000 },
@@ -296,29 +479,37 @@ describe.skipIf(!GIT_AVAILABLE)(
       await pair.dispose();
     });
 
+    const VARIANT_ROWS = [
+      ['add', ADD_ROWS.map((row) => ({ ...row, tracked: [] as ReadonlyArray<TreeEntry> }))],
+      ['update', UPDATE_ROWS],
+      ['delete', DELETE_ROWS],
+    ] as const;
+
     describe.each(VARIANTS)('Given the %s write path', (variant) => {
-      describe.each(ADD_ROWS)('and the $shape occupant, HEAD lacking the entry', (row) => {
-        describe('When both tools run checkout t', () => {
-          it('Then the outcome, work tree and index match git', async () => {
-            // Arrange
-            for (const dir of [pair.peer, pair.ours]) {
-              for (const [key, value] of VARIANT_CONFIG[variant]) {
-                runGit(['-C', dir, 'config', key, value]);
+      describe.each(VARIANT_ROWS)('and the %s variant', (_label, rows) => {
+        describe.each(rows)('and the $shape occupant', (row) => {
+          describe('When both tools run checkout t', () => {
+            it('Then the outcome, work tree and index match git', async () => {
+              // Arrange
+              for (const dir of [pair.peer, pair.ours]) {
+                for (const [key, value] of VARIANT_CONFIG[variant]) {
+                  runGit(['-C', dir, 'config', key, value]);
+                }
+                buildHistory(dir, row.due, row.tracked);
+                row.occupant(dir);
               }
-              buildHistory(dir, row.due);
-              row.occupant(dir);
-            }
-            repo = await openRepository({ cwd: pair.ours });
+              repo = await openRepository({ cwd: pair.ours });
 
-            // Act
-            const expected = runGitCheckout(pair.peer, ['checkout', '-q', 't']);
-            const result = await runTsgitCheckout(repo);
+              // Act
+              const expected = runGitCheckout(pair.peer, ['checkout', '-q', 't']);
+              const result = await runTsgitCheckout(repo);
 
-            // Assert
-            expect(expected).toEqual(row.git);
-            expect(result).toEqual(expected);
-            expect(listing(pair.ours)).toEqual(listing(pair.peer));
-            expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+              // Assert
+              expect(expected).toEqual(row.git);
+              expect(result).toEqual(expected);
+              expect(listing(pair.ours)).toEqual(listing(pair.peer));
+              expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+            });
           });
         });
       });

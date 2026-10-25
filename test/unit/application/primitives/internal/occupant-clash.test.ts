@@ -32,6 +32,18 @@ const scopeOf = (ctx: Context, options: ScopeOptions = {}): ClashScope => {
 const classify = (ctx: Context, target: string, scope: ClashScope) =>
   classifyOccupant(ctx, { kind: 'add', path: path(target) }, scope);
 
+const classifyChange = (
+  ctx: Context,
+  kind: 'update' | 'delete',
+  target: string,
+  scope: ClashScope,
+) => classifyOccupant(ctx, { kind, path: path(target) }, scope);
+
+const LOCAL_AT = (target: string) => ({
+  kind: 'clash',
+  clash: { class: 'local-changes', path: target },
+});
+
 describe('classifyOccupant', () => {
   describe('Given a regular file where the added path leading directory is due', () => {
     describe('When the file is neither removed nor ignored', () => {
@@ -196,6 +208,168 @@ describe('classifyOccupant', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given a regular file where the updated path leading directory is due', () => {
+    describe('When the entry is updated', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/d`, BYTES);
+
+        // Act
+        const result = await classifyChange(ctx, 'update', 'd/x', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT('d/x'));
+      });
+    });
+  });
+
+  describe('Given a regular file where the deleted path leading directory is due', () => {
+    describe('When the entry is deleted', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/d`, BYTES);
+
+        // Act
+        const result = await classifyChange(ctx, 'delete', 'd/x', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT('d/x'));
+      });
+    });
+  });
+
+  describe('Given a symlink where the updated path leading directory is due', () => {
+    describe('When the entry is updated', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`);
+
+        // Act
+        const result = await classifyChange(ctx, 'update', 'd/x', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given a directory at an updated path', () => {
+    describe('When the entry is updated', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.write(`${ctx.layout.workDir}/f/u`, BYTES);
+
+        // Act
+        const result = await classifyChange(ctx, 'update', 'f', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT('f'));
+      });
+    });
+  });
+
+  describe('Given an empty directory at a deleted path', () => {
+    describe('When the entry is deleted', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+
+        // Act
+        const result = await classifyChange(ctx, 'delete', 'f', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT('f'));
+      });
+    });
+  });
+
+  describe('Given a directory of ignored files at a deleted path', () => {
+    describe('When the entry is deleted', () => {
+      it('Then it is a local change at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.write(`${ctx.layout.workDir}/f/u`, BYTES);
+
+        // Act
+        const result = await classifyChange(ctx, 'delete', 'f', scopeOf(ctx, { ignored: ['f/u'] }));
+
+        // Assert
+        expect(result).toEqual(LOCAL_AT('f'));
+      });
+    });
+  });
+
+  describe('Given a directory holding an untracked file at a deleted path', () => {
+    describe('When the entry is deleted', () => {
+      it('Then it is untracked at the entry path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.write(`${ctx.layout.workDir}/f/u`, BYTES);
+
+        // Act
+        const result = await classifyChange(ctx, 'delete', 'f', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clash', clash: { class: 'untracked', path: 'f' } });
+      });
+    });
+  });
+
+  describe('Given a regular file at an updated path', () => {
+    describe('When the entry is updated', () => {
+      it('Then its content is left to the caller', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, BYTES);
+
+        // Act
+        const result = await classifyChange(ctx, 'update', 'f', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'compare-content' });
+      });
+    });
+  });
+
+  describe('Given a regular file at a deleted path', () => {
+    describe('When the entry is deleted', () => {
+      it('Then its content is left to the caller', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, BYTES);
+
+        // Act
+        const result = await classifyChange(ctx, 'delete', 'f', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'compare-content' });
+      });
+    });
+  });
+
+  describe('Given nothing at an updated path', () => {
+    describe('When the entry is updated', () => {
+      it('Then its content is left to the caller', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const result = await classifyChange(ctx, 'update', 'd/x', scopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'compare-content' });
       });
     });
   });
