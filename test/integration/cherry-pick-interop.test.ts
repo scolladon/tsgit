@@ -31,7 +31,6 @@ import { writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -51,9 +50,9 @@ import {
   indexState,
   listing,
   MERGE_FAMILY_ROWS,
-  OK,
   type Outcome,
   runGitOutcome,
+  tsgitOutcomeOf,
 } from './occupant-displacement-fixtures.js';
 
 const AUTHOR = {
@@ -403,19 +402,8 @@ describe.skipIf(!GIT_AVAILABLE)(
       await pair.dispose();
     });
 
-    const runTsgitPick = async (target: Repository): Promise<Outcome> => {
-      try {
-        await target.cherryPick.run({ commits: ['t'] });
-        return OK;
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        const { data } = err;
-        if (data.code !== 'WORKING_TREE_DIRTY') {
-          return { refused: true, crash: data.code, localChanges: [], untracked: [] };
-        }
-        return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
-      }
-    };
+    const runTsgitPick = (target: Repository): Promise<Outcome> =>
+      tsgitOutcomeOf(() => target.cherryPick.run({ commits: ['t'] }), 'WORKING_TREE_DIRTY');
 
     describe.each(MERGE_FAMILY_ROWS.filter((row) => row.commands.includes('cherry-pick')))(
       'Given the $id occupant',

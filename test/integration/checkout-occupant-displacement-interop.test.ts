@@ -14,7 +14,6 @@
 import { writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -50,6 +49,7 @@ import {
   replacing,
   symlink,
   type TreeEntry,
+  tsgitOutcomeOf,
   v1,
 } from './occupant-displacement-fixtures.js';
 
@@ -74,23 +74,8 @@ const runGitCheckout = (dir: string, args: ReadonlyArray<string>): Outcome => {
   }
 };
 
-const outcomeOfTsgitError = (err: unknown): Outcome => {
-  if (!(err instanceof TsgitError)) throw err;
-  const data = err.data;
-  if (data.code !== 'CHECKOUT_OVERWRITE_DIRTY') {
-    return { refused: true, crash: data.code, localChanges: [], untracked: [] };
-  }
-  return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
-};
-
-const runTsgitCheckout = async (repo: Repository): Promise<Outcome> => {
-  try {
-    await repo.checkout({ rev: 't' });
-    return OK;
-  } catch (err) {
-    return outcomeOfTsgitError(err);
-  }
-};
+const runTsgitCheckout = (repo: Repository): Promise<Outcome> =>
+  tsgitOutcomeOf(() => repo.checkout({ rev: 't' }), 'CHECKOUT_OVERWRITE_DIRTY');
 
 interface AddRow {
   readonly shape: string;

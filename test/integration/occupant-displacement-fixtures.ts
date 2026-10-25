@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import * as path from 'node:path';
+import { TsgitError } from '../../src/domain/error.js';
 import { runGit, runGitEnv } from './interop-helpers.js';
 
 export const SYMLINK_MODE = '120000';
@@ -208,6 +209,42 @@ export const outcomeOfGitStderr = (stderr: string): Outcome => {
     else if (UNTRACKED_HEADER.test(line)) bucket = untracked;
   }
   return { refused: true, localChanges, untracked };
+};
+
+export type DirtyRefusalCode = 'WORKING_TREE_DIRTY' | 'CHECKOUT_OVERWRITE_DIRTY';
+
+/** A refusal other than the dirty one is a crash: it carries its code and no paths. */
+export const outcomeOfTsgitRefusal = (err: unknown, dirtyCode: DirtyRefusalCode): Outcome => {
+  if (!(err instanceof TsgitError)) throw err;
+  const data = err.data;
+  if (data.code !== dirtyCode) {
+    return { refused: true, crash: data.code, localChanges: [], untracked: [] };
+  }
+  return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
+};
+
+export const tsgitOutcomeOf = async (
+  run: () => Promise<unknown>,
+  dirtyCode: DirtyRefusalCode,
+): Promise<Outcome> => {
+  try {
+    await run();
+    return OK;
+  } catch (err) {
+    return outcomeOfTsgitRefusal(err, dirtyCode);
+  }
+};
+
+export const gitOutcomeOfExit = (
+  result: { exitCode: number; stderr: string },
+  refusedExit: number,
+  classify: (stderr: string) => Outcome,
+): Outcome => {
+  if (result.exitCode === 0) return OK;
+  if (result.exitCode !== refusedExit) {
+    throw new Error(`unexpected exit ${result.exitCode}: ${result.stderr}`);
+  }
+  return classify(result.stderr);
 };
 
 export const listing = (dir: string): string[] =>

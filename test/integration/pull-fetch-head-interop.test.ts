@@ -25,7 +25,6 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { pull } from '../../src/application/commands/pull.js';
-import { TsgitError } from '../../src/domain/error.js';
 import { errorDataCode } from '../../src/domain/error-data-code.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { backendTransport } from './http-backend-transport.js';
@@ -42,6 +41,7 @@ import {
   type Occupant,
   OK,
   type Outcome,
+  outcomeOfTsgitRefusal,
   refusedUntracked,
   regular,
   replacing,
@@ -824,14 +824,8 @@ const UNBORN_DELETE_ROWS: ReadonlyArray<UnbornPullRow> = [
 
 const UNBORN_PULL_ROWS = [...UNBORN_ADD_ROWS, ...UNBORN_UPDATE_ROWS, ...UNBORN_DELETE_ROWS];
 
-const outcomeOfTsgitPull = (err: unknown): Outcome => {
-  if (!(err instanceof TsgitError)) throw err;
-  const data = err.data;
-  if (data.code !== 'WORKING_TREE_DIRTY') {
-    return { refused: true, crash: data.code, localChanges: [], untracked: [] };
-  }
-  return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
-};
+const outcomeOfTsgitPull = (err: unknown): Outcome =>
+  outcomeOfTsgitRefusal(err, 'WORKING_TREE_DIRTY');
 
 describe.skipIf(!GIT_AVAILABLE)('pull into an unborn branch over an occupant interop', () => {
   describe.each(UNBORN_PULL_ROWS)('Given the $id occupant', (row) => {

@@ -33,7 +33,6 @@ import {
   rebaseRun,
   rebaseSkip,
 } from '../../src/application/commands/rebase.js';
-import { TsgitError } from '../../src/domain/error.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 import {
   indexState,
@@ -41,6 +40,7 @@ import {
   OK,
   type Outcome,
   outcomeOfGitStderr,
+  outcomeOfTsgitRefusal,
 } from './occupant-displacement-fixtures.js';
 import {
   ABORT_ROWS,
@@ -255,14 +255,7 @@ const resetStepState = (dir: string) => ({
 const comparable = (outcome: Outcome): Outcome =>
   outcome.untracked.length === 0 ? { ...outcome, localChanges: [] } : outcome;
 
-const tsgitRefusal = (err: unknown): Outcome => {
-  if (!(err instanceof TsgitError)) throw err;
-  const data = err.data;
-  if (data.code !== 'WORKING_TREE_DIRTY') {
-    return { refused: true, crash: data.code, localChanges: [], untracked: [] };
-  }
-  return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
-};
+const tsgitRefusal = (err: unknown): Outcome => outcomeOfTsgitRefusal(err, 'WORKING_TREE_DIRTY');
 
 const refusedResetState = (dir: string) => ({
   head: git(dir, 'rev-parse', 'HEAD'),

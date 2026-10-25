@@ -13,7 +13,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -29,14 +28,15 @@ import {
   COMMIT_ENV,
   commitOn,
   directoryHolding,
+  gitOutcomeOfExit,
   indexState,
   KEEP,
   listing,
-  OK,
   type Outcome,
   regular,
   replacing,
   type TreeEntry,
+  tsgitOutcomeOf,
   v1,
 } from './occupant-displacement-fixtures.js';
 import {
@@ -99,27 +99,20 @@ const tsgitStop = async (tool: Tool, repo: Repository, revs: ReadonlyArray<strin
   expect(result.kind).toBe('conflict');
 };
 
-const gitOutcome = (tool: Tool, action: Action, dir: string): Outcome => {
-  const result = tryRunGitWithExit(['-C', dir, tool, `--${action}`], { env: COMMIT_ENV });
-  if (result.exitCode === 0) return OK;
-  if (result.exitCode !== 128)
-    throw new Error(`unexpected exit ${result.exitCode}: ${result.stderr}`);
-  return firstClassified(result.stderr);
-};
+const REFUSED_EXIT = 128;
 
-const tsgitOutcome = async (tool: Tool, action: Action, repo: Repository): Promise<Outcome> => {
-  try {
-    await (tool === 'revert' ? repo.revert[action]() : repo.cherryPick[action]());
-    return OK;
-  } catch (err) {
-    if (!(err instanceof TsgitError)) throw err;
-    const data = err.data;
-    if (data.code !== 'WORKING_TREE_DIRTY') {
-      return { refused: true, crash: data.code, localChanges: [], untracked: [] };
-    }
-    return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
-  }
-};
+const gitOutcome = (tool: Tool, action: Action, dir: string): Outcome =>
+  gitOutcomeOfExit(
+    tryRunGitWithExit(['-C', dir, tool, `--${action}`], { env: COMMIT_ENV }),
+    REFUSED_EXIT,
+    firstClassified,
+  );
+
+const tsgitOutcome = (tool: Tool, action: Action, repo: Repository): Promise<Outcome> =>
+  tsgitOutcomeOf(
+    () => (tool === 'revert' ? repo.revert[action]() : repo.cherryPick[action]()),
+    'WORKING_TREE_DIRTY',
+  );
 
 const readIfPresent = (file: string): string | undefined =>
   existsSync(file) ? readFileSync(file, 'utf8') : undefined;

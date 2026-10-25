@@ -15,7 +15,6 @@
 import { existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -35,6 +34,7 @@ import {
   directoryHolding,
   fileAt,
   gitlink,
+  gitOutcomeOfExit,
   ignoring,
   indexState,
   listing,
@@ -43,6 +43,7 @@ import {
   type Outcome,
   regular,
   replacing,
+  tsgitOutcomeOf,
   v1,
 } from './occupant-displacement-fixtures.js';
 import {
@@ -135,27 +136,17 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort reflog interop', () => {
   });
 });
 
-const gitOutcomeOfAbort = (dir: string): Outcome => {
-  const result = tryRunGitWithExit(['-C', dir, 'merge', '--abort']);
-  if (result.exitCode === 0) return OK;
-  if (result.exitCode !== 128)
-    throw new Error(`unexpected exit ${result.exitCode}: ${result.stderr}`);
-  return firstClassified(result.stderr);
-};
+const REFUSED_EXIT = 128;
 
-const tsgitOutcomeOfAbort = async (repo: Repository): Promise<Outcome> => {
-  try {
-    await repo.merge.abort();
-    return OK;
-  } catch (err) {
-    if (!(err instanceof TsgitError)) throw err;
-    const data = err.data;
-    if (data.code !== 'WORKING_TREE_DIRTY') {
-      return { refused: true, crash: data.code, localChanges: [], untracked: [] };
-    }
-    return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
-  }
-};
+const gitOutcomeOfAbort = (dir: string): Outcome =>
+  gitOutcomeOfExit(
+    tryRunGitWithExit(['-C', dir, 'merge', '--abort']),
+    REFUSED_EXIT,
+    firstClassified,
+  );
+
+const tsgitOutcomeOfAbort = (repo: Repository): Promise<Outcome> =>
+  tsgitOutcomeOf(() => repo.merge.abort(), 'WORKING_TREE_DIRTY');
 
 const stopTsgitMerge = async (
   repo: Repository,

@@ -13,7 +13,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -30,6 +29,7 @@ import {
   commitOn,
   directoryHolding,
   fileAt,
+  gitOutcomeOfExit,
   indexState,
   KEEP,
   listing,
@@ -39,6 +39,7 @@ import {
   outcomeOfGitStderr,
   regular,
   replacing,
+  tsgitOutcomeOf,
   v1,
 } from './occupant-displacement-fixtures.js';
 import {
@@ -72,28 +73,15 @@ const rebaseState = (dir: string): ReadonlyArray<unknown> => [
   readIfPresent(rebaseMerge(dir, 'done')),
 ];
 
-const gitOutcome = (action: Action, dir: string): Outcome => {
-  const result = tryRunGitWithExit(['-C', dir, 'rebase', `--${action}`], { env: COMMIT_ENV });
-  if (result.exitCode === 0) return OK;
-  if (result.exitCode !== REFUSAL_STATUS) {
-    throw new Error(`unexpected exit ${result.exitCode}: ${result.stderr}`);
-  }
-  return outcomeOfGitStderr(result.stderr);
-};
+const gitOutcome = (action: Action, dir: string): Outcome =>
+  gitOutcomeOfExit(
+    tryRunGitWithExit(['-C', dir, 'rebase', `--${action}`], { env: COMMIT_ENV }),
+    REFUSAL_STATUS,
+    outcomeOfGitStderr,
+  );
 
-const tsgitOutcome = async (action: Action, repo: Repository): Promise<Outcome> => {
-  try {
-    await repo.rebase[action]();
-    return OK;
-  } catch (err) {
-    if (!(err instanceof TsgitError)) throw err;
-    const data = err.data;
-    if (data.code !== 'WORKING_TREE_DIRTY') {
-      return { refused: true, crash: data.code, localChanges: [], untracked: [] };
-    }
-    return { refused: true, localChanges: data.localChanges, untracked: data.untracked };
-  }
-};
+const tsgitOutcome = (action: Action, repo: Repository): Promise<Outcome> =>
+  tsgitOutcomeOf(() => repo.rebase[action](), 'WORKING_TREE_DIRTY');
 
 /** The picked commit rewrites what `onto` holds, so `skip` resets the index to `onto` and `abort` to the pick. */
 const pickChangesEntry = (variant: Variant, row: AbortRow): ReturnType<typeof entriesOf> => {
