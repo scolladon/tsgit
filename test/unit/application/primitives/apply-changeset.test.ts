@@ -4557,3 +4557,198 @@ describe('applyChangeset over a gitlink directory', () => {
     });
   });
 });
+
+describe('applyChangeset displacing a leading regular file', () => {
+  const WRITE_PATHS = [
+    {
+      name: 'the pooled default write path',
+      config: '',
+      spawns: false,
+    },
+    {
+      name: 'the one-at-a-time write path',
+      config: '[filter "a"]\n\tprocess = proc\n',
+      spawns: true,
+    },
+  ];
+
+  const contextFor = (config: string, spawns: boolean): Context => {
+    const base = createMemoryContext({ files: { '/repo/.git/config': enc(config) } });
+    return spawns ? { ...base, command: scriptedCommandRunner(new Uint8Array(0)).runner } : base;
+  };
+
+  const traceOps = (ctx: Context): string[] => {
+    const ops: string[] = [];
+    const realRm = ctx.fs.rm.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path) => {
+      ops.push(`rm ${path}`);
+      return realRm(path);
+    });
+    const realWrite = ctx.fs.write.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'write').mockImplementation(async (path, data, options) => {
+      ops.push(`write ${path}`);
+      return realWrite(path, data, options);
+    });
+    return ops;
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe.each(WRITE_PATHS)('Given $name', ({ config, spawns }) => {
+    describe('Given a regular file d where a file d/x is added', () => {
+      describe('When applyChangeset runs forced', () => {
+        it('Then d is removed before the first write and d/x is written', async () => {
+          // Arrange
+          const ctx = contextFor(config, spawns);
+          const id = await writeBlob(ctx, enc('v2'));
+          await ctx.fs.write(`${WORKDIR}/d`, enc('occupant'));
+          const ops = traceOps(ctx);
+          const changeset = makeChangeset([makeAdd('d/x', id)]);
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+          // Assert
+          expect(ops.indexOf(`rm ${WORKDIR}/d`)).toBeGreaterThanOrEqual(0);
+          expect(ops.indexOf(`rm ${WORKDIR}/d`)).toBeLessThan(ops.indexOf(`write ${WORKDIR}/d/x`));
+          expect(dec(await ctx.fs.read(`${WORKDIR}/d/x`))).toBe('v2');
+        });
+      });
+    });
+
+    describe('Given a regular file d where a file d/x is updated', () => {
+      describe('When applyChangeset runs forced', () => {
+        it('Then d/x is written under a directory d', async () => {
+          // Arrange
+          const ctx = contextFor(config, spawns);
+          const oldId = await writeBlob(ctx, enc('v1'));
+          const newId = await writeBlob(ctx, enc('v2'));
+          await ctx.fs.write(`${WORKDIR}/d`, enc('occupant'));
+          const changeset = makeChangeset([makeUpdate('d/x', oldId, newId)]);
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+          // Assert
+          expect(dec(await ctx.fs.read(`${WORKDIR}/d/x`))).toBe('v2');
+        });
+      });
+    });
+
+    describe('Given a regular file d where a symlink d/l is added', () => {
+      describe('When applyChangeset runs forced', () => {
+        it('Then d/l is a symlink under a directory d', async () => {
+          // Arrange
+          const ctx = contextFor(config, spawns);
+          const id = await writeBlob(ctx, enc('t-v2'));
+          await ctx.fs.write(`${WORKDIR}/d`, enc('occupant'));
+          const changeset = makeChangeset([makeAdd('d/l', id, FILE_MODE.SYMLINK)]);
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+          // Assert
+          expect((await ctx.fs.lstat(`${WORKDIR}/d`)).isDirectory).toBe(true);
+          expect(await ctx.fs.readlink(`${WORKDIR}/d/l`)).toBe('t-v2');
+        });
+      });
+    });
+
+    describe('Given a regular file d where a gitlink d/s is added', () => {
+      describe('When applyChangeset runs forced', () => {
+        it('Then d and d/s are directories', async () => {
+          // Arrange
+          const ctx = contextFor(config, spawns);
+          const changeset = makeChangeset([
+            makeAdd('d/s', 'd'.repeat(40) as ObjectId, FILE_MODE.GITLINK),
+          ]);
+          await ctx.fs.write(`${WORKDIR}/d`, enc('occupant'));
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+          // Assert
+          expect((await ctx.fs.lstat(`${WORKDIR}/d`)).isDirectory).toBe(true);
+          expect((await ctx.fs.lstat(`${WORKDIR}/d/s`)).isDirectory).toBe(true);
+        });
+      });
+    });
+
+    describe('Given an ignored regular file d where a file d/x is added', () => {
+      describe('When applyChangeset runs without force', () => {
+        it('Then d gives way and d/x is written', async () => {
+          // Arrange
+          const ctx = contextFor(config, spawns);
+          const id = await writeBlob(ctx, enc('v2'));
+          await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('d\n'));
+          await ctx.fs.write(`${WORKDIR}/d`, enc('occupant'));
+          const changeset = makeChangeset([makeAdd('d/x', id)]);
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+          // Assert
+          expect(dec(await ctx.fs.read(`${WORKDIR}/d/x`))).toBe('v2');
+        });
+      });
+    });
+
+    describe('Given a regular file d under which d/x and d/y are added', () => {
+      describe('When applyChangeset runs forced', () => {
+        it('Then d is removed once', async () => {
+          // Arrange
+          const ctx = contextFor(config, spawns);
+          const id = await writeBlob(ctx, enc('v2'));
+          await ctx.fs.write(`${WORKDIR}/d`, enc('occupant'));
+          const ops = traceOps(ctx);
+          const changeset = makeChangeset([makeAdd('d/x', id), makeAdd('d/y', id)]);
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+          // Assert
+          expect(ops.filter((op) => op === `rm ${WORKDIR}/d`)).toHaveLength(1);
+          expect(dec(await ctx.fs.read(`${WORKDIR}/d/y`))).toBe('v2');
+        });
+      });
+    });
+
+    describe('Given nothing on disk and files added under two directories', () => {
+      describe('When applyChangeset runs forced', () => {
+        it('Then the displacement scan and the writer lstat a prefix once each, not once per entry', async () => {
+          // Arrange
+          const ctx = contextFor(config, spawns);
+          const id = await writeBlob(ctx, enc('v2'));
+          const realLstat = ctx.fs.lstat.bind(ctx.fs);
+          const lstatted: string[] = [];
+          vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path) => {
+            lstatted.push(path);
+            return realLstat(path);
+          });
+          const changeset = makeChangeset([
+            makeAdd('a/x', id),
+            makeAdd('a/y', id),
+            makeAdd('a/w', id),
+            makeAdd('b/z', id),
+          ]);
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+          // Assert
+          expect(lstatted.filter((path) => path === `${WORKDIR}/a`).length).toBeLessThanOrEqual(2);
+          expect(lstatted.filter((path) => path === `${WORKDIR}/b`).length).toBeLessThanOrEqual(2);
+        });
+      });
+    });
+  });
+});

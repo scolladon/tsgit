@@ -229,6 +229,9 @@ const sideConflictingOnKeep =
     dated(dir, 'merge', '-q', '--no-ff', 't', '-m', "Merge branch 't' into topic");
   };
 
+// git checks an ignored occupant out of the way, so the reset step does not stop on these shapes.
+const GIT_DISPLACES_IGNORED_ADDS: ReadonlySet<string> = new Set(['I1', 'I2', 'I4']);
+
 const RESET_ROWS = ABORT_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant })));
 
 const resetStepState = (dir: string) => ({
@@ -450,7 +453,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase --rebase-merges interop', () => {
           expect(failure !== undefined).toBe(gitExit !== 0);
           expect(listing(dirs.ours)).toEqual(listing(dirs.theirs));
           expect(indexState(dirs.ours)).toEqual(indexState(dirs.theirs));
-          if (variant === 'reset-adds' && row.shape !== 'I2') {
+          if (variant === 'reset-adds' && !GIT_DISPLACES_IGNORED_ADDS.has(row.shape)) {
             expect(gitExit).toBe(1);
             expect(readGit(dirs.theirs, 'rebase-merge/git-rebase-todo')).toMatch(/^reset /);
           }

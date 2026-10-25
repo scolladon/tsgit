@@ -119,7 +119,8 @@ export const ABORT_ROWS: ReadonlyArray<AbortRow> = [
     tracked: [v1('d/x')],
     due: [regular('d/x')],
     occupant: replacing('d/x', ignoring('d', fileAt('d'))),
-    variants: WITHOUT_ADDS,
+    addOccupant: ignoring('d', fileAt('d')),
+    variants: EVERY_VARIANT,
   },
   {
     shape: 'I2',
@@ -134,7 +135,8 @@ export const ABORT_ROWS: ReadonlyArray<AbortRow> = [
     tracked: [link1('d/l')],
     due: [symlink('d/l')],
     occupant: replacing('d/l', ignoring('d', fileAt('d'))),
-    variants: WITHOUT_ADDS,
+    addOccupant: ignoring('d', fileAt('d')),
+    variants: EVERY_VARIANT,
   },
   {
     shape: 'M1',

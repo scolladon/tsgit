@@ -138,6 +138,8 @@ const ADD_ROWS: ReadonlyArray<AddRow> = [
   },
   { shape: 'I6', due: [regular('f')], occupant: ignoring('f', fileAt('f')), git: OK },
   { shape: 'I7', due: [regular('f')], occupant: ignoring('f', danglingLinkAt('f')), git: OK },
+  { shape: 'I1', due: [regular('d/x')], occupant: ignoring('d', fileAt('d')), git: OK },
+  { shape: 'I4', due: [symlink('d/l')], occupant: ignoring('d', fileAt('d')), git: OK },
   { shape: 'X4', due: [gitlink('d/s')], occupant: fileAt('d'), git: refusedUntracked('d') },
   {
     shape: 'Y1',
@@ -301,6 +303,120 @@ const DELETE_ROWS: ReadonlyArray<ChangeRow> = [
   },
 ];
 
+interface ForcedWriteRow {
+  readonly id: string;
+  readonly tracked: ReadonlyArray<TreeEntry>;
+  readonly due: ReadonlyArray<TreeEntry>;
+  readonly occupant: Occupant;
+  readonly path: string;
+  readonly rewrites: 'target' | 'head';
+}
+
+const FORCED_WRITE_ROWS: ReadonlyArray<ForcedWriteRow> = [
+  {
+    id: 'S1/add',
+    tracked: [],
+    due: [regular('d/x')],
+    occupant: fileAt('d'),
+    path: 'd/x',
+    rewrites: 'target',
+  },
+  {
+    id: 'S1/update',
+    tracked: [v1('d/x')],
+    due: [regular('d/x')],
+    occupant: replacing('d/x', fileAt('d')),
+    path: 'd/x',
+    rewrites: 'target',
+  },
+  {
+    id: 'S1/same',
+    tracked: [v1('d/x')],
+    due: [v1('d/x')],
+    occupant: replacing('d/x', fileAt('d')),
+    path: 'd/x',
+    rewrites: 'head',
+  },
+  {
+    id: 'S3d/add',
+    tracked: [],
+    due: [symlink('d/l')],
+    occupant: fileAt('d'),
+    path: 'd/l',
+    rewrites: 'target',
+  },
+  {
+    id: 'S3d/update',
+    tracked: [link1('d/l')],
+    due: [symlink('d/l')],
+    occupant: replacing('d/l', fileAt('d')),
+    path: 'd/l',
+    rewrites: 'target',
+  },
+  {
+    id: 'S3d/same',
+    tracked: [link1('d/l')],
+    due: [link1('d/l')],
+    occupant: replacing('d/l', fileAt('d')),
+    path: 'd/l',
+    rewrites: 'head',
+  },
+  {
+    id: 'X4/add',
+    tracked: [],
+    due: [gitlink('d/s')],
+    occupant: fileAt('d'),
+    path: 'd/s',
+    rewrites: 'target',
+  },
+];
+
+interface ForcedWriteCommand {
+  readonly label: string;
+  readonly rewrites: ForcedWriteRow['rewrites'];
+  readonly git: (rowPath: string) => ReadonlyArray<string>;
+  readonly tsgit: (repo: Repository, rowPath: string) => Promise<unknown>;
+}
+
+const FORCED_WRITE_COMMANDS: ReadonlyArray<ForcedWriteCommand> = [
+  {
+    label: 'checkout -f t',
+    rewrites: 'target',
+    git: () => ['checkout', '-q', '-f', 't'],
+    tsgit: (r) => r.checkout({ rev: 't', force: true }),
+  },
+  {
+    label: 'reset --hard t',
+    rewrites: 'target',
+    git: () => ['reset', '-q', '--hard', 't'],
+    tsgit: (r) => r.reset({ mode: 'hard', rev: 't' }),
+  },
+  {
+    label: 'checkout t -- path',
+    rewrites: 'target',
+    git: (p) => ['checkout', '-q', 't', '--', p],
+    tsgit: (r, p) => r.checkout({ source: 't', paths: [p] }),
+  },
+  {
+    label: 'reset --hard HEAD',
+    rewrites: 'head',
+    git: () => ['reset', '-q', '--hard', 'HEAD'],
+    tsgit: (r) => r.reset({ mode: 'hard', rev: 'HEAD' }),
+  },
+  {
+    label: 'checkout -- path',
+    rewrites: 'head',
+    git: (p) => ['checkout', '-q', '--', p],
+    tsgit: (r, p) => r.checkout({ paths: [p] }),
+  },
+  {
+    label: 'checkout HEAD -- path',
+    rewrites: 'head',
+    git: (p) => ['checkout', '-q', 'HEAD', '--', p],
+    tsgit: (r, p) => r.checkout({ source: 'HEAD', paths: [p] }),
+  },
+];
+
 describe.skipIf(!GIT_AVAILABLE)(
   'checkout interop — occupant where the target adds an entry',
   { timeout: 60_000 },
@@ -372,6 +488,33 @@ describe.skipIf(!GIT_AVAILABLE)(
           });
         });
       });
+    });
+
+    describe.each(FORCED_WRITE_ROWS)('Given the forced write row $id', (row) => {
+      describe.each(FORCED_WRITE_COMMANDS.filter((c) => c.rewrites === row.rewrites))(
+        'and the command $label',
+        (command) => {
+          describe('When both tools run it', () => {
+            it('Then the work tree and index match git', async () => {
+              // Arrange
+              for (const dir of [pair.peer, pair.ours]) {
+                buildHistory(dir, row.due, row.tracked);
+                row.occupant(dir);
+              }
+              repo = await openRepository({ cwd: pair.ours });
+
+              // Act
+              const expected = runGitCheckout(pair.peer, command.git(row.path));
+              await command.tsgit(repo, row.path);
+
+              // Assert
+              expect(expected).toEqual(OK);
+              expect(listing(pair.ours)).toEqual(listing(pair.peer));
+              expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+            });
+          });
+        },
+      );
     });
 
     describe.each(VARIANTS)('Given the %s write path', (variant) => {

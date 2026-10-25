@@ -67,6 +67,7 @@ import {
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
   createLeadingPathScanner,
+  type LeadingObstruction,
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { stage0Entry } from './internal/synthetic-index-entry.js';
@@ -656,7 +657,11 @@ const writeOneByOne = async (
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const written: IndexEntry[] = [];
   for (const entry of sorted) {
-    if (!isLinkWrite(entry)) await prepareLeadingDirectories(entry, scanner);
+    if (isLinkWrite(entry)) {
+      written.push(...(await writeLinkAndForget(group, entry, scanner)));
+      continue;
+    }
+    await prepareLeadingDirectories(entry, scanner);
     written.push(...(await group([entry])));
   }
   return written;
@@ -731,22 +736,53 @@ const occupantPolicyOf = (force: boolean, ignoredOccupants: IgnoredOccupants): O
   return ignoredOccupants === 'protect' ? 'protected' : 'ignored';
 };
 
+const clearDirectoryAt = async (
+  ctx: Context,
+  absPath: string,
+  policy: OccupantPolicy,
+  isIgnoredPath: IgnoredProbe,
+): Promise<void> => {
+  const stat = await lstatIfReachable(ctx.fs, absPath);
+  if (stat?.isDirectory !== true) return;
+  if (policy === 'every') await ctx.fs.rmRecursive(absPath);
+  else if (policy === 'ignored') await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
+};
+
+// A regular file standing where a directory is due: forced it goes; otherwise only when
+// ignored, as the clash check already refused any other one.
+const displaceFile = async (
+  ctx: Context,
+  workdir: string,
+  obstruction: LeadingObstruction,
+  policy: OccupantPolicy,
+  isIgnoredPath: IgnoredProbe,
+  scanner: LeadingPathScanner,
+): Promise<void> => {
+  const absPath = joinPath(workdir, obstruction.path);
+  if (policy === 'every' || (policy === 'ignored' && (await isIgnoredPath(absPath, false)))) {
+    await ctx.fs.rm(absPath);
+  }
+  scanner.invalidate(obstruction.path);
+};
+
 const clearOccupants = async (
   ctx: Context,
   workdir: string,
   writes: ReadonlyArray<ChangesetEntry>,
   policy: OccupantPolicy,
+  scanner: LeadingPathScanner,
 ): Promise<void> => {
-  const scanner = createLeadingPathScanner(ctx);
   const isIgnoredPath = createIgnoredProbe(ctx);
   for (const entry of writes) {
-    if (entry.kind !== 'add' || entry.mode === FILE_MODE.GITLINK || isLossy(entry)) continue;
-    if (await scanner.hasSymlinkedLeadingPath(entry.path)) continue;
-    const absPath = joinPath(workdir, entry.path);
-    const stat = await lstatIfReachable(ctx.fs, absPath);
-    if (stat?.isDirectory !== true) continue;
-    if (policy === 'every') await ctx.fs.rmRecursive(absPath);
-    else if (policy === 'ignored') await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
+    if (isLossy(entry)) continue;
+    const obstruction = await scanner.obstructingLeadingComponent(entry.path);
+    if (obstruction?.kind === 'file') {
+      await displaceFile(ctx, workdir, obstruction, policy, isIgnoredPath, scanner);
+      continue;
+    }
+    if (obstruction !== undefined) continue;
+    if (entry.kind !== 'add' || entry.mode === FILE_MODE.GITLINK) continue;
+    await clearDirectoryAt(ctx, joinPath(workdir, entry.path), policy, isIgnoredPath);
   }
 };
 
@@ -764,7 +800,7 @@ const applyAllEntries = async (
   const counter: ProgressCounter = { current: 0 };
 
   const deleted = await applyDeleteWave(ctx, workdir, deletes, surviving, scanner, total, counter);
-  await clearOccupants(ctx, workdir, writes, policy);
+  await clearOccupants(ctx, workdir, writes, policy, scanner);
   const writtenEntries = await applyWriteWave(
     ctx,
     workdir,

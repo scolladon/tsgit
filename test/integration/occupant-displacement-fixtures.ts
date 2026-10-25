@@ -259,6 +259,22 @@ export const MERGE_FAMILY_ROWS: ReadonlyArray<MergeFamilyRow> = [
     commands: EVERY_COMMAND,
   },
   {
+    id: 'I1/add',
+    tracked: [],
+    due: [regular('d/x')],
+    occupant: ignoring('d', fileAt('d')),
+    git: OK,
+    commands: ['cherry-pick'],
+  },
+  {
+    id: 'I4/add',
+    tracked: [],
+    due: [symlink('d/l')],
+    occupant: ignoring('d', fileAt('d')),
+    git: OK,
+    commands: ['cherry-pick'],
+  },
+  {
     id: 'I2/add',
     tracked: [],
     due: [regular('f')],
