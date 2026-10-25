@@ -32,25 +32,24 @@ import {
 } from './interop-helpers.js';
 import {
   COMMIT_ENV,
-  commitOn,
-  danglingLinkAt,
   directoryHolding,
   fileAt,
   ignoring,
   indexState,
-  KEEP,
-  link1,
   listing,
   type Occupant,
   OK,
   type Outcome,
-  outcomeOfGitStderr,
   regular,
   replacing,
-  symlink,
-  type TreeEntry,
   v1,
 } from './occupant-displacement-fixtures.js';
+import {
+  ABORT_ROWS,
+  buildStoppedMerge,
+  entriesOf,
+  firstClassified,
+} from './stopped-state-fixtures.js';
 
 const AUTHOR = {
   name: 'Ada',
@@ -134,187 +133,12 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort reflog interop', () => {
   });
 });
 
-type Variant = 'same' | 'reset-updates' | 'reset-adds' | 'reset-deletes';
-
-interface AbortRow {
-  readonly shape: string;
-  readonly tracked: ReadonlyArray<TreeEntry>;
-  readonly due: ReadonlyArray<TreeEntry>;
-  readonly occupant: Occupant;
-  readonly addOccupant?: Occupant;
-  readonly variants: ReadonlyArray<Variant>;
-}
-
-const EVERY_VARIANT: ReadonlyArray<Variant> = [
-  'same',
-  'reset-updates',
-  'reset-adds',
-  'reset-deletes',
-];
-const WITHOUT_ADDS: ReadonlyArray<Variant> = ['same', 'reset-updates', 'reset-deletes'];
-
-const modifiedInPlace =
-  (rel: string): Occupant =>
-  (dir) =>
-    writeFileSync(path.join(dir, rel), 'modified\n');
-
-const both =
-  (...occupants: ReadonlyArray<Occupant>): Occupant =>
-  (dir) => {
-    for (const occupant of occupants) occupant(dir);
-  };
-
-const ABORT_ROWS: ReadonlyArray<AbortRow> = [
-  {
-    shape: 'S1',
-    tracked: [v1('d/x')],
-    due: [regular('d/x')],
-    occupant: replacing('d/x', fileAt('d')),
-    addOccupant: fileAt('d'),
-    variants: ['same', 'reset-updates', 'reset-adds', 'reset-deletes'],
-  },
-  {
-    shape: 'S2',
-    tracked: [v1('f')],
-    due: [regular('f')],
-    occupant: replacing('f', directoryHolding('f', 'u')),
-    addOccupant: directoryHolding('f', 'u'),
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'S3a',
-    tracked: [v1('d/x')],
-    due: [regular('d/x')],
-    occupant: replacing('d/x', danglingLinkAt('d')),
-    addOccupant: danglingLinkAt('d'),
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'S3b',
-    tracked: [v1('f')],
-    due: [regular('f')],
-    occupant: replacing('f', danglingLinkAt('f')),
-    addOccupant: danglingLinkAt('f'),
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'S3c',
-    tracked: [link1('l')],
-    due: [symlink('l')],
-    occupant: replacing('l', directoryHolding('l', 'u')),
-    addOccupant: directoryHolding('l', 'u'),
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'S3d',
-    tracked: [link1('d/l')],
-    due: [symlink('d/l')],
-    occupant: replacing('d/l', fileAt('d')),
-    addOccupant: fileAt('d'),
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'S3e',
-    tracked: [link1('d/l')],
-    due: [symlink('d/l')],
-    occupant: replacing('d/l', danglingLinkAt('d')),
-    addOccupant: danglingLinkAt('d'),
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'S3f',
-    tracked: [link1('f')],
-    due: [symlink('f')],
-    occupant: replacing('f', fileAt('f')),
-    addOccupant: fileAt('f'),
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'I1',
-    tracked: [v1('d/x')],
-    due: [regular('d/x')],
-    occupant: replacing('d/x', ignoring('d', fileAt('d'))),
-    variants: WITHOUT_ADDS,
-  },
-  {
-    shape: 'I2',
-    tracked: [v1('f')],
-    due: [regular('f')],
-    occupant: replacing('f', ignoring('f/u', directoryHolding('f', 'u'))),
-    addOccupant: ignoring('f/u', directoryHolding('f', 'u')),
-    variants: EVERY_VARIANT,
-  },
-  {
-    shape: 'I4',
-    tracked: [link1('d/l')],
-    due: [symlink('d/l')],
-    occupant: replacing('d/l', ignoring('d', fileAt('d'))),
-    variants: WITHOUT_ADDS,
-  },
-  {
-    shape: 'M1',
-    tracked: [v1('f')],
-    due: [regular('f')],
-    occupant: modifiedInPlace('f'),
-    variants: ['same', 'reset-updates'],
-  },
-  {
-    shape: 'Y3',
-    tracked: [v1('f'), v1('g')],
-    due: [regular('f'), regular('g')],
-    occupant: both(replacing('f', directoryHolding('f', 'u')), replacing('g', fileAt('g'))),
-    variants: EVERY_VARIANT,
-  },
-];
-
-const entriesOf = (
-  variant: Variant,
-  row: Pick<AbortRow, 'tracked' | 'due'>,
-): {
-  base: ReadonlyArray<TreeEntry>;
-  main: ReadonlyArray<TreeEntry>;
-  theirs: ReadonlyArray<TreeEntry>;
-} => {
-  if (variant === 'reset-deletes') return { base: [], main: [], theirs: row.due };
-  const theirs = { same: row.tracked, 'reset-updates': row.due, 'reset-adds': [] }[variant];
-  return { base: row.tracked, main: row.tracked, theirs };
-};
-
-/** `main` and `t` both rewrite `keep` off a shared base, so `merge t` stops with `keep` conflicted. */
-const buildStoppedMerge = (
-  dir: string,
-  entries: ReturnType<typeof entriesOf>,
-  stopped: { readonly keepMain?: string; readonly keepTheirs?: string } = {},
-): void => {
-  const base = commitOn(dir, [KEEP, ...entries.base]);
-  const main = commitOn(dir, [regular('keep', stopped.keepMain ?? 'm\n'), ...entries.main], base);
-  const theirs = commitOn(
-    dir,
-    [regular('keep', stopped.keepTheirs ?? 't\n'), ...entries.theirs],
-    base,
-  );
-  runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
-  runGit(['-C', dir, 'update-ref', 'refs/heads/t', theirs]);
-  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
-};
-
 const gitOutcomeOfAbort = (dir: string): Outcome => {
   const result = tryRunGitWithExit(['-C', dir, 'merge', '--abort']);
   if (result.exitCode === 0) return OK;
   if (result.exitCode !== 128)
     throw new Error(`unexpected exit ${result.exitCode}: ${result.stderr}`);
   return firstClassified(result.stderr);
-};
-
-const NOT_UPTODATE = /Entry '(.*)' not uptodate/;
-const UNTRACKED_PATH = /(?:Untracked working tree file|Updating) '(.*?)'/;
-
-const firstClassified = (stderr: string): Outcome => {
-  const local = NOT_UPTODATE.exec(stderr)?.[1];
-  if (local !== undefined) return { refused: true, localChanges: [local], untracked: [] };
-  const untracked = UNTRACKED_PATH.exec(stderr)?.[1];
-  if (untracked !== undefined) return { refused: true, localChanges: [], untracked: [untracked] };
-  return outcomeOfGitStderr(stderr);
 };
 
 const tsgitOutcomeOfAbort = async (repo: Repository): Promise<Outcome> => {
