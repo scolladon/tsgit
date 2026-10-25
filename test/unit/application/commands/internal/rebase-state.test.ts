@@ -406,6 +406,18 @@ describe('rebase-state', () => {
         ]);
       });
 
+      it('Then an author-script from an earlier stop is removed when no author is given', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, STOP);
+
+        // Act
+        await writeRescheduledPick(ctx, RESCHEDULED);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/author-script`)).toBe(false);
+      });
+
       it('Then the pick sits in both done and the live todo', async () => {
         // Arrange
         const ctx = createMemoryContext();

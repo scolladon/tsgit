@@ -129,7 +129,7 @@ export interface RescheduledPick {
   readonly backupHeader: RebaseBackupHeader | undefined;
   /** As on `RebaseStop`: set by a start only. */
   readonly redundantCommits?: RedundantCommitPolicy;
-  /** The refused commit's author (`author-script`); unset leaves the file as it is. */
+  /** The refused commit's author (`author-script`); unset removes the file. */
   readonly stoppedAuthor?: AuthorIdentity;
   /** `old new` pairs for the lines that committed before the refusal (`rewritten-list`). */
   readonly rewritten?: ReadonlyArray<readonly [ObjectId, ObjectId]>;
@@ -263,9 +263,11 @@ export const writeRescheduledPick = async (ctx: Context, stop: RescheduledPick):
 
 /** The files only a refused commit line leaves, and the ones a previous stop must not leave behind. */
 const writeRefusedLineFiles = async (ctx: Context, stop: RescheduledPick): Promise<void> => {
-  if (stop.stoppedAuthor !== undefined) {
-    await ctx.fs.writeUtf8(file(ctx, 'author-script'), serializeAuthorScript(stop.stoppedAuthor));
-  }
+  await writeOrRemove(
+    ctx,
+    'author-script',
+    stop.stoppedAuthor === undefined ? undefined : serializeAuthorScript(stop.stoppedAuthor),
+  );
   if (stop.rewritten !== undefined && stop.rewritten.length > 0) {
     await ctx.fs.writeUtf8(file(ctx, 'rewritten-list'), serializeRewritten(stop.rewritten));
   }

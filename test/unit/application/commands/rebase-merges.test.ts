@@ -525,6 +525,24 @@ describe('rebaseContinue into a merge line an untracked occupant refuses', () =>
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${stale}`)).toBe(false);
         }
       });
+
+      it("Then author-script holds the merge's author, not the earlier stop's", async () => {
+        // Arrange
+        const { ctx } = await seedStoppedBeforeMerge();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/rebase-merge/author-script`,
+          "GIT_AUTHOR_NAME='Earlier'\nGIT_AUTHOR_EMAIL='earlier@y'\nGIT_AUTHOR_DATE='@1 +0000'\n",
+        );
+        const sut = refusal;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await state(ctx, 'author-script')).toBe(
+          "GIT_AUTHOR_NAME='Feat'\nGIT_AUTHOR_EMAIL='feat@y'\nGIT_AUTHOR_DATE='@100 +0000'\n",
+        );
+      });
     });
 
     describe('When the occupant is removed and the rebase continues again', () => {

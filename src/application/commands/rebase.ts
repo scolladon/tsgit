@@ -693,8 +693,8 @@ interface RefusedLine {
   readonly remaining: ReadonlyArray<RebaseTodoLine>;
   /** The commit `REBASE_HEAD` names. */
   readonly commit: ObjectId;
-  /** Its author, for `author-script`; a `merge -C` line writes none. */
-  readonly author?: AuthorIdentity;
+  /** Its author, for `author-script`. */
+  readonly author: AuthorIdentity;
   readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
   readonly meld?: MeldMarkers;
 }
@@ -715,7 +715,7 @@ const refuseRescheduled = async (
     ...policyOf(run),
     ...rest,
     pickSha,
-    ...(stoppedAuthor === undefined ? {} : { stoppedAuthor }),
+    stoppedAuthor,
   });
   throw workingTreeDirty(refusal);
 };
@@ -729,12 +729,12 @@ const refuseFlatLine = async (
   refusal: WorktreeRefusal,
 ): Promise<never> => {
   const line = rc.todo[index] as PlannedPick | PlannedMerge;
-  const author = line.action === 'merge' ? undefined : (await readCommitData(ctx, line.oid)).author;
+  const { author } = await readCommitData(ctx, line.oid);
   const refused: RefusedLine = {
     done: [...rc.doneBefore, ...rc.todo.slice(0, index + 1)],
     remaining: rc.todo.slice(index),
     commit: line.oid,
-    ...(author === undefined ? {} : { author }),
+    author,
     rewritten,
   };
   return refuseRescheduled(ctx, rc, refused, refusal);
