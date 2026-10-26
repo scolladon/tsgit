@@ -3,11 +3,14 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { refreshAndWriteIndex } from '../../../../../src/application/commands/internal/refresh-index.js';
+import {
+  refreshAndWriteIndex,
+  refreshedIndex,
+} from '../../../../../src/application/commands/internal/refresh-index.js';
 import { acquireIndexLock } from '../../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import type { IndexEntry, IndexEntryFlags } from '../../../../../src/domain/git-index/index.js';
-import type { AuthorIdentity } from '../../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, FilePath } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -121,6 +124,55 @@ describe('Given a tracked file whose index stat stays stale', () => {
 
       // Assert
       expect(await entryF(ctx)).toEqual(before);
+    });
+  });
+});
+
+const entryFIn = (index: { readonly entries: ReadonlyArray<IndexEntry> }): IndexEntry => {
+  const found = index.entries.find((e) => e.path === 'f');
+  if (found === undefined) throw new Error('f is not tracked');
+  return found;
+};
+
+describe('Given a touched clean tracked file', () => {
+  describe('When the refreshed index is computed', () => {
+    it('Then the returned index carries the new stat, the file is verified and the disk index is untouched', async () => {
+      // Arrange
+      const ctx = await committedRepo();
+      const read = await readIndex(ctx);
+      await touchF(ctx);
+
+      // Act
+      const sut = await refreshedIndex(ctx, read);
+
+      // Assert
+      expect(entryFIn(sut.currentIndex).mtimeSeconds).toBeGreaterThan(entryFIn(read).mtimeSeconds);
+      expect(sut.refreshed.map((e) => e.path)).toEqual(['f']);
+      expect(sut.verified('f' as FilePath)).toBe(true);
+      expect(await entryF(ctx)).toEqual(entryFIn(read));
+    });
+  });
+});
+
+describe('Given a tracked file whose stat stays stale in the refreshed index', () => {
+  describe.each([
+    ['a content-dirty file', async (ctx: Context) => touchF(ctx, 'edited\n'), {}],
+    ['an assume-unchanged file', async (ctx: Context) => touchF(ctx), { assumeValid: true }],
+    ['a skip-worktree file', async (ctx: Context) => touchF(ctx), { skipWorktree: true }],
+  ])('When the refreshed index is computed over %s', (_name, drift, flags) => {
+    it('Then the entry keeps its recorded stat and nothing is refreshed', async () => {
+      // Arrange
+      const ctx = await committedRepo();
+      await flagF(ctx, flags);
+      const read = await readIndex(ctx);
+      await drift(ctx);
+
+      // Act
+      const sut = await refreshedIndex(ctx, read);
+
+      // Assert
+      expect(entryFIn(sut.currentIndex)).toEqual(entryFIn(read));
+      expect(sut.refreshed).toEqual([]);
     });
   });
 });

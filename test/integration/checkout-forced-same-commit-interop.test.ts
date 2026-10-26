@@ -11,7 +11,7 @@
  *   unique:         forced checkout rewrites every stale entry and resets conflicts as git does
  *   interopSurface: checkout
  */
-import { existsSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -25,14 +25,20 @@ import {
   makePeerPair,
   type PeerPair,
   topReflogSubject,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 import {
+  assumingUnchanged,
   buildHistory,
   fileWith,
+  flagListing,
   observe,
   regular,
   settleIndex,
+  skipWorktreeAt,
+  staleEntries,
   statSnapshot,
+  touchedAt,
   v1,
   WORK_TREE_SHAPES,
 } from './occupant-displacement-fixtures.js';
@@ -235,6 +241,129 @@ describe.skipIf(!GIT_AVAILABLE)('checkout forced same-commit interop', () => {
           await rm(outsides.peer, { recursive: true, force: true });
           await rm(outsides.ours, { recursive: true, force: true });
         }
+      });
+    });
+  });
+});
+
+/** `t` changes `g` and adds `other`; every other tracked path is the same on both branches. */
+const SWITCH_DUE = [v1('f'), v1('a'), v1('s'), regular('g', 'g2\n'), regular('other')];
+const SWITCH_TRACKED = [v1('f'), v1('a'), v1('s'), v1('g')];
+
+interface UnforcedSwitch {
+  readonly name: string;
+  readonly gitArgs: ReadonlyArray<string>;
+  readonly tsgit: Parameters<Repository['checkout']>[0];
+}
+
+const UNFORCED_SWITCHES: ReadonlyArray<UnforcedSwitch> = [
+  { name: 'checkout HEAD', gitArgs: ['HEAD'], tsgit: { rev: 'HEAD' } },
+  { name: 'checkout main', gitArgs: ['main'], tsgit: { rev: 'main' } },
+  { name: 'checkout t', gitArgs: ['t'], tsgit: { rev: 't' } },
+  {
+    name: 'checkout --detach main',
+    gitArgs: ['--detach', 'main'],
+    tsgit: { rev: 'main', detach: true },
+  },
+];
+
+const indexBytes = (dir: string): Buffer => readFileSync(path.join(dir, '.git', 'index'));
+
+describe.skipIf(!GIT_AVAILABLE)('unforced checkout refreshes drifted index stats', () => {
+  let pair: PeerPair;
+  let repo: Repository | undefined;
+
+  beforeEach(async () => {
+    pair = await makePeerPair('unforced-checkout-refresh');
+    initBothRepos(pair.peer, pair.ours);
+    repo = undefined;
+  });
+
+  afterEach(async () => {
+    await repo?.dispose();
+    await pair.dispose();
+  });
+
+  const seed = (plant: (dir: string) => void): void => {
+    for (const dir of [pair.peer, pair.ours]) {
+      buildHistory(dir, SWITCH_DUE, SWITCH_TRACKED);
+      settleIndex(dir);
+      plant(dir);
+    }
+  };
+
+  const observedStaleAndFlags = (dir: string): { stale: string[]; flags: string } => ({
+    stale: staleEntries(dir),
+    flags: flagListing(dir),
+  });
+
+  describe.each(UNFORCED_SWITCHES)(
+    'Given a touched clean file and the command $name',
+    (command) => {
+      describe('When git and tsgit run it', () => {
+        it('Then the stale entries and the flags match git', async () => {
+          // Arrange
+          seed(touchedAt('f'));
+          repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          git(pair.peer, 'checkout', '-q', ...command.gitArgs);
+          await repo.checkout(command.tsgit);
+
+          // Assert
+          expect(observedStaleAndFlags(pair.ours)).toEqual(observedStaleAndFlags(pair.peer));
+        });
+      });
+    },
+  );
+
+  describe('Given touched, assume-unchanged, skip-worktree and edited files and the command checkout t', () => {
+    describe('When git and tsgit run it', () => {
+      it('Then the stale entries and the flags match git', async () => {
+        // Arrange
+        seed((dir) => {
+          touchedAt('f')(dir);
+          assumingUnchanged('a', touchedAt('a'))(dir);
+          skipWorktreeAt('s', touchedAt('s'))(dir);
+          fileWith('keep', 'edited\n')(dir);
+          touchedAt('g')(dir);
+        });
+        repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        git(pair.peer, 'checkout', '-q', 't');
+        await repo.checkout({ rev: 't' });
+
+        // Assert
+        expect(observedStaleAndFlags(pair.ours)).toEqual(observedStaleAndFlags(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a touched file and an edited file that the target changes', () => {
+    describe('When git and tsgit run checkout t', () => {
+      it('Then both refuse on the edited file and leave the index bytes', async () => {
+        // Arrange
+        seed((dir) => {
+          touchedAt('f')(dir);
+          fileWith('g', 'edited\n')(dir);
+        });
+        repo = await openRepository({ cwd: pair.ours });
+        const peerBefore = indexBytes(pair.peer);
+        const oursBefore = indexBytes(pair.ours);
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', 't']);
+        const sut = await repo.checkout({ rev: 't' }).catch((err: unknown) => err);
+
+        // Assert
+        expect(gitRun.exitCode).toBe(1);
+        expect(sut).toMatchObject({
+          data: { code: 'CHECKOUT_OVERWRITE_DIRTY', localChanges: ['g'] },
+        });
+        expect(indexBytes(pair.peer)).toEqual(peerBefore);
+        expect(indexBytes(pair.ours)).toEqual(oursBefore);
+        expect(observedStaleAndFlags(pair.ours)).toEqual(observedStaleAndFlags(pair.peer));
       });
     });
   });

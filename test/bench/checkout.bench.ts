@@ -118,6 +118,22 @@ await tieredScenario(
 
 await tieredScenario(
   MULTI_TIERS,
+  'When checkout() switches to the current branch without force on a clean tree, Then measure tsgit',
+  async (fixture) => {
+    const { repo, scratch } = await openFixtureCopy(fixture);
+    const teardown = async (): Promise<void> => {
+      scratch.disposeSync();
+      await repo.dispose();
+    };
+    const sut = async (): Promise<void> => {
+      await repo.checkout({ rev: 'main' });
+    };
+    return { sut, teardown };
+  },
+);
+
+await tieredScenario(
+  MULTI_TIERS,
   'When reset() hard-resets HEAD on a clean tree, Then measure tsgit',
   async (fixture) => {
     const { repo, scratch } = await openFixtureCopy(fixture);

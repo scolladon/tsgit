@@ -30,6 +30,7 @@ import { withFilterProcessPool } from '../primitives/internal/filter-process-poo
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import type { HeadState } from '../primitives/internal/repo-state.js';
+import type { IsVerified } from '../primitives/internal/smudge-racily-clean.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { indexPath } from '../primitives/path-layout.js';
@@ -59,6 +60,7 @@ import {
   unmatchedPositives,
 } from './internal/pathspec-intake.js';
 import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
+import { refreshedIndex } from './internal/refresh-index.js';
 import {
   assertOperationalRepository,
   readHeadRaw,
@@ -257,6 +259,22 @@ interface SwitchRequest {
   readonly matcher: Awaited<ReturnType<typeof loadSparseMatcher>>;
 }
 
+interface SwitchIndex {
+  readonly currentIndex: GitIndex;
+  readonly verified?: IsVerified;
+}
+
+/** An unforced switch starts from git's refreshed index; a forced one rewrites stale entries itself. */
+const indexForSwitch = async (
+  ctx: Context,
+  opts: CheckoutSwitchOptions,
+  read: GitIndex,
+): Promise<SwitchIndex> => {
+  if (opts.force === true) return { currentIndex: read };
+  const { currentIndex, verified } = await refreshedIndex(ctx, read);
+  return { currentIndex, verified };
+};
+
 /**
  * Acquire the index lock BEFORE reading the index. Wrapping the entire
  * read-materialise-commit sequence in the lock closes the TOCTOU window
@@ -270,9 +288,10 @@ const materializeSwitch = async (
   const { opts, matcher } = request;
   const lock = await acquireIndexLock(ctx);
   try {
-    const currentIndex = await readIndex(ctx);
+    const read = await readIndex(ctx);
     // git's `merge_working_tree`: only a forced switch may discard a conflict.
-    if (opts.force !== true) rejectUnmergedIndex(currentIndex.entries);
+    if (opts.force !== true) rejectUnmergedIndex(read.entries);
+    const { currentIndex, verified } = await indexForSwitch(ctx, opts, read);
     const result = await materializeTree(ctx, {
       targetTree: request.targetTree,
       currentIndex,
@@ -288,7 +307,11 @@ const materializeSwitch = async (
     // entries' ids — a skip-worktree file that differs between branches —
     // while `written`/`deleted` are both 0; guarding the commit on those
     // counts would leave a stale index that the next commit serialises wrong.
-    await lock.commit(result.newIndexEntries, 'replace');
+    await lock.commit(
+      result.newIndexEntries,
+      'replace',
+      verified === undefined ? {} : { verified },
+    );
     return result;
   } finally {
     await lock.release();
