@@ -393,11 +393,11 @@ describe.skipIf(!GIT_AVAILABLE)('unforced checkout refreshes drifted index stats
 
         // Act
         const gitRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', 't']);
-        const sut = await repo.checkout({ rev: 't' }).catch((err: unknown) => err);
+        const refusal = await repo.checkout({ rev: 't' }).catch((err: unknown) => err);
 
         // Assert
         expect(gitRun.exitCode).toBe(1);
-        expect(sut).toMatchObject({
+        expect(refusal).toMatchObject({
           data: { code: 'CHECKOUT_OVERWRITE_DIRTY', localChanges: ['g'] },
         });
         expect(indexBytes(pair.peer)).toEqual(peerBefore);
@@ -493,12 +493,12 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
           // Act
           const gitRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', '--', ...row.paths]);
-          const sut = await repo?.checkout({ paths: row.paths }).catch((err: unknown) => err);
+          const refusal = await repo?.checkout({ paths: row.paths }).catch((err: unknown) => err);
 
           // Assert
           expect(gitRun.exitCode).toBe(1);
           expect(gitRun.stderr).toBe(unmergedLines(row.unmerged));
-          expect(sut).toMatchObject({
+          expect(refusal).toMatchObject({
             data: { code: 'MERGE_HAS_CONFLICTS', count: row.unmerged.length, paths: row.unmerged },
           });
           expect(readFileSync(path.join(pair.peer, '.git', 'index'))).toEqual(peerBytes);
@@ -518,14 +518,16 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
           // Act
           const gitRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', '--', 'nosuch', 'f']);
-          const sut = await repo?.checkout({ paths: ['nosuch', 'f'] }).catch((err: unknown) => err);
+          const refusal = await repo
+            ?.checkout({ paths: ['nosuch', 'f'] })
+            .catch((err: unknown) => err);
 
           // Assert
           expect(gitRun.exitCode).toBe(1);
           expect(gitRun.stderr).toBe(
             "error: pathspec 'nosuch' did not match any file(s) known to git\n",
           );
-          expect(sut).toMatchObject({ data: { code: 'PATHSPEC_NO_MATCH', pattern: 'nosuch' } });
+          expect(refusal).toMatchObject({ data: { code: 'PATHSPEC_NO_MATCH', pattern: 'nosuch' } });
         });
       });
     });
@@ -590,13 +592,13 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
           // Act
           const gitRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', 'HEAD', '--', 'n']);
-          const sut = await repo
+          const refusal = await repo
             ?.checkout({ source: 'HEAD', paths: ['n'] })
             .catch((err: unknown) => err);
 
           // Assert
           expect(gitRun.exitCode).toBe(1);
-          expect(sut).toMatchObject({ data: { code: 'PATHSPEC_NO_MATCH', pattern: 'n' } });
+          expect(refusal).toMatchObject({ data: { code: 'PATHSPEC_NO_MATCH', pattern: 'n' } });
         });
       });
     });

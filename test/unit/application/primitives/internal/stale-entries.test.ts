@@ -72,13 +72,14 @@ const judge = async (
   entries: ReadonlyArray<IndexEntry>,
   indexMtime?: IndexMtime,
 ): Promise<ReadonlyArray<ChangesetEntry['kind']>> => {
-  const sut = await upgradeStaleNoops(
+  const sut = upgradeStaleNoops;
+  const result = await sut(
     ctx,
     entries.map(noopOf),
     indexOf(entries, indexMtime),
     ctx.layout.workDir ?? '',
   );
-  return sut.entries.map((e) => e.kind);
+  return result.entries.map((e) => e.kind);
 };
 
 describe('upgradeStaleNoops', () => {
@@ -116,8 +117,10 @@ describe('upgradeStaleNoops', () => {
           previousMode: undefined,
         };
 
+        const sut = upgradeStaleNoops;
+
         // Act
-        const result = await upgradeStaleNoops(ctx, [added], indexOf([]), ctx.layout.workDir ?? '');
+        const result = await sut(ctx, [added], indexOf([]), ctx.layout.workDir ?? '');
 
         // Assert
         expect(result.entries).toEqual([added]);
@@ -132,22 +135,65 @@ describe('upgradeStaleNoops', () => {
         const ctx = createMemoryContext();
         const entry = bareEntry('gone.txt', FILE_MODE.REGULAR);
 
+        const sut = upgradeStaleNoops;
+
         // Act
         const {
-          entries: [sut],
-        } = await upgradeStaleNoops(
-          ctx,
-          [noopOf(entry)],
-          indexOf([entry], NON_RACY),
-          ctx.layout.workDir ?? '',
-        );
+          entries: [result],
+        } = await sut(ctx, [noopOf(entry)], indexOf([entry], NON_RACY), ctx.layout.workDir ?? '');
 
         // Assert
-        expect(sut).toMatchObject({
+        expect(result).toMatchObject({
           kind: 'update',
           previousId: entry.id,
           previousMode: entry.mode,
         });
+      });
+    });
+  });
+
+  describe('Given a noop whose path is absent from the index', () => {
+    describe('When it is judged', () => {
+      it('Then it becomes an update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entry = await seed(ctx, 'a.txt', 'one\n');
+        const sut = upgradeStaleNoops;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [noopOf(entry)],
+          indexOf([], NON_RACY),
+          ctx.layout.workDir ?? '',
+        );
+
+        // Assert
+        expect(result.entries.map((e) => e.kind)).toEqual(['update']);
+        expect(result.upToDate.size).toBe(0);
+      });
+    });
+  });
+
+  describe('Given one up-to-date entry and one whose file is absent', () => {
+    describe('When they are judged', () => {
+      it('Then only the up-to-date path is reported verified', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const fresh = await seed(ctx, 'a.txt', 'one\n');
+        const gone = bareEntry('gone.txt', FILE_MODE.REGULAR);
+        const sut = upgradeStaleNoops;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [noopOf(fresh), noopOf(gone)],
+          indexOf([fresh, gone], NON_RACY),
+          ctx.layout.workDir ?? '',
+        );
+
+        // Assert
+        expect([...result.upToDate]).toEqual(['a.txt']);
       });
     });
   });
@@ -310,8 +356,10 @@ describe('upgradeStaleNoops', () => {
         await ctx.fs.symlink('held', workOf(ctx, 'd'));
         const entry = { ...seeded, path: 'd/x' as FilePath };
 
+        const sut = upgradeStaleNoops;
+
         // Act
-        const sut = await upgradeStaleNoops(
+        const result = await sut(
           ctx,
           [noopOf(entry)],
           indexOf([entry], NON_RACY),
@@ -320,7 +368,7 @@ describe('upgradeStaleNoops', () => {
         );
 
         // Assert
-        expect(sut.entries.map((e) => e.kind)).toEqual(['update']);
+        expect(result.entries.map((e) => e.kind)).toEqual(['update']);
       });
     });
   });
