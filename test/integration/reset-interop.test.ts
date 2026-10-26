@@ -11,7 +11,7 @@
  *   unique:         reset porcelain HEAD+index+worktree matches canonical git reset
  *   interopSurface: reset
  */
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -28,6 +28,14 @@ import {
   topReflogSubject,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import {
+  buildHistory,
+  observe,
+  regular,
+  settleIndex,
+  statSnapshot,
+  WORK_TREE_SHAPES,
+} from './occupant-displacement-fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -227,6 +235,33 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
     });
   });
 
+  describe('Given an empty-tree commit and no index file', () => {
+    describe('When git and tsgit reset --hard HEAD', () => {
+      it('Then both write the same index bytes', async () => {
+        // Arrange
+        const indexBytes = async (dir: string): Promise<Buffer> =>
+          readFile(path.join(dir, '.git', 'index'));
+        for (const dir of [pair.peer, pair.ours]) {
+          const emptyTree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+          const id = runGit(['-C', dir, 'commit-tree', '-m', 'empty', emptyTree], {
+            env: COMMIT_ENV,
+          }).trim();
+          runGit(['-C', dir, 'update-ref', 'refs/heads/main', id]);
+          await rm(path.join(dir, '.git', 'index'), { force: true });
+        }
+
+        // Act
+        runGit(['-C', pair.peer, 'reset', '-q', '--hard', 'HEAD']);
+        await repo.reset({ mode: 'hard', rev: 'HEAD' });
+
+        // Assert
+        const expected = await indexBytes(pair.peer);
+        expect(expected.length).toBe(65);
+        expect((await indexBytes(pair.ours)).equals(expected)).toBe(true);
+      });
+    });
+  });
+
   describe.each([
     {
       rev: ABSENT_OID,
@@ -269,4 +304,29 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
       });
     });
   });
+
+  describe.each(Object.entries(WORK_TREE_SHAPES))(
+    'Given the work tree shape %s over a settled index',
+    (_name, shape) => {
+      describe('When git and tsgit reset --hard HEAD', () => {
+        it('Then the work tree, the index, its flags and the stale and rewritten sets match git', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildHistory(dir, [...shape.tracked, regular('other')], shape.tracked);
+            settleIndex(dir);
+            shape.plant(dir);
+          }
+          const peerBefore = statSnapshot(pair.peer);
+          const oursBefore = statSnapshot(pair.ours);
+
+          // Act
+          runGit(['-C', pair.peer, 'reset', '-q', '--hard', 'HEAD']);
+          await repo.reset({ mode: 'hard', rev: 'HEAD' });
+
+          // Assert
+          expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+        });
+      });
+    },
+  );
 });

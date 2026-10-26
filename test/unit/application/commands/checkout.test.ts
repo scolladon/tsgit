@@ -1875,7 +1875,7 @@ describe('Given a path restore whose source is a revision', () => {
     it('Then the smudge metadata names the ref and the treeish git sends', async () => {
       // Arrange
       const { ctx, older, newer, olderTree, treeTag } = await seedWithOlderBranch();
-      const materialize = vi.spyOn(materializeTreeMod, 'materializeTree');
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTreeJudging');
       const sut = checkout;
 
       // Act
@@ -1893,7 +1893,7 @@ describe('Given a path restore whose source is a revision', () => {
       // Arrange
       const { ctx } = await seedWithOlderBranch();
       const failure = new Error('materialize failed');
-      vi.spyOn(materializeTreeMod, 'materializeTree').mockRejectedValueOnce(failure);
+      vi.spyOn(materializeTreeMod, 'materializeTreeJudging').mockRejectedValueOnce(failure);
       const sut = checkout;
 
       // Act
@@ -1909,7 +1909,7 @@ describe('Given a path restore whose source is a revision', () => {
     it('Then no smudge metadata is sent', async () => {
       // Arrange
       const { ctx } = await seedWithOlderBranch();
-      const materialize = vi.spyOn(materializeTreeMod, 'materializeTree');
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTreeJudging');
       const sut = checkout;
 
       // Act

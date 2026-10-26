@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -25,13 +26,20 @@ import { indexEntryFromStat } from '../../../../src/application/primitives/inter
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type {
   CommandRequest,
@@ -183,7 +191,7 @@ const setupRepoWithSubmodule = async (checkedOut: ObjectId): Promise<Context> =>
 describe('stash push', () => {
   describe('Given three committed files sharing a directory', () => {
     describe('When push runs', () => {
-      it('Then the directory is lstat-ed once per pass: the classification, the restore, the index refresh', async () => {
+      it('Then the directory is lstat-ed once per pass: the opening refresh, the classification, the restore, the index refresh', async () => {
         // Arrange — the clock stands still, so the index and the files share one second and
         // every entry is racily clean: the refresh pass always runs.
         vi.useFakeTimers({ toFake: ['Date'] });
@@ -202,12 +210,12 @@ describe('stash push', () => {
         }
 
         // Assert
-        // Three passes walk the tree, each with its own leading-path memo: the classification of
-        // the tracked entries, the restore that writes HEAD back, and the racy-clean comparison
-        // that refreshes the index; none lstat-s the directory more than once.
+        // Four passes walk the tree, each with its own leading-path memo: the opening refresh,
+        // the classification of the tracked entries, the restore that writes HEAD back, and the
+        // racy-clean comparison that refreshes the index; none lstat-s the directory more than once.
         expect(
           lstat.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/d`),
-        ).toHaveLength(3);
+        ).toHaveLength(4);
       });
     });
   });
@@ -477,6 +485,29 @@ describe('stash push', () => {
     });
   });
 
+  describe.each([
+    ['MERGE_HEAD', false],
+    ['REBASE_HEAD', true],
+  ])('Given %s naming HEAD and an edited file', (marker, kept) => {
+    describe('When stash push runs', () => {
+      it(`Then the stash is saved and ${marker} ${kept ? 'stays' : 'is removed'}`, async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, `${head}\n`);
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/${marker}`)).toBe(kept);
+      });
+    });
+  });
+
   describe('Given the default stash message format', () => {
     describe('When push runs on branch main', () => {
       it('Then the reflog message reads "WIP on main: <abbrev> <subject>"', async () => {
@@ -554,6 +585,75 @@ describe('stash push', () => {
         const entry = idx.entries.find((e) => e.path === 'a.txt');
         const blob = await readObject(ctx, entry?.id as ObjectId);
         expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('staged\n');
+      });
+    });
+  });
+
+  describe('Given a staged and an unstaged change', () => {
+    const arrangeStaged = async (runner: MemoryHookRunner): Promise<Context> => {
+      const ctx = createMemoryContext({ hooks: runner });
+      await init(ctx);
+      await commitFile(ctx, 'a.txt', 'committed\n', 'initial commit');
+      await write(ctx, 'a.txt', 'staged\n');
+      await add(ctx, ['a.txt']);
+      await write(ctx, 'a.txt', 'unstaged\n');
+      return ctx;
+    };
+    const postCheckoutSince = (runner: MemoryHookRunner, since: number) =>
+      runner.calls.slice(since).filter((call) => call.name === 'post-checkout');
+
+    describe('When stash push keeps the index', () => {
+      it('Then post-checkout fires once with [head, head, 0]', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = await arrangeStaged(runner);
+        const head = await headId(ctx);
+        const before = runner.calls.length;
+
+        // Act
+        await stashPush(ctx, { keepIndex: true });
+
+        // Assert
+        const post = postCheckoutSince(runner, before);
+        expect(post).toHaveLength(1);
+        expect(post[0]?.args).toEqual([head, head, '0']);
+      });
+    });
+
+    describe('When stash push does not keep the index', () => {
+      it('Then post-checkout does not fire', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = await arrangeStaged(runner);
+        const before = runner.calls.length;
+
+        // Act
+        await stashPush(ctx, {});
+
+        // Assert
+        expect(postCheckoutSince(runner, before)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given nothing to stash', () => {
+    describe('When stash push keeps the index', () => {
+      it('Then post-checkout does not fire', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'committed\n', 'initial commit');
+        const before = runner.calls.length;
+
+        // Act
+        const result = await stashPush(ctx, { keepIndex: true });
+
+        // Assert
+        expect(result.kind).not.toBe('saved');
+        expect(runner.calls.slice(before).filter((c) => c.name === 'post-checkout')).toHaveLength(
+          0,
+        );
       });
     });
   });
@@ -2642,6 +2742,104 @@ describe('stash push beyond a symbolic link, object order', () => {
           path: 'd/x',
         });
         expect(written.map((c) => c.message)).toEqual([expect.stringMatching(/^index on main: /)]);
+      });
+    });
+  });
+});
+
+describe('stash push ref tail', () => {
+  describe('Given HEAD on main and an edited file', () => {
+    describe('When stash push saves', () => {
+      it('Then HEAD reflog gains a reset entry with old = new = HEAD and main reflog is unchanged', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const head = await headId(ctx);
+        const headBefore = await readReflog(ctx, 'HEAD' as RefName);
+        const mainBefore = await readReflog(ctx, 'refs/heads/main' as RefName);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        const added = (await readReflog(ctx, 'HEAD' as RefName)).slice(headBefore.length);
+        expect(added.map((e) => [e.oldId, e.newId, e.message])).toEqual([
+          [head, head, 'reset: moving to HEAD'],
+        ]);
+        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual(mainBefore);
+      });
+
+      it('Then ORIG_HEAD names HEAD', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const head = await headId(ctx);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(`${head}\n`);
+      });
+    });
+  });
+
+  describe('Given a detached HEAD and an edited file', () => {
+    describe('When stash push saves', () => {
+      it('Then ORIG_HEAD names HEAD and HEAD reflog gains no entry', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const head = await headId(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${head}\n`);
+        await write(ctx, 'a.txt', 'edited\n');
+        const headBefore = await readReflog(ctx, 'HEAD' as RefName);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual(headBefore);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(`${head}\n`);
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When stash push finds nothing to save', () => {
+      it('Then neither ORIG_HEAD nor a HEAD reflog entry is written', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const headBefore = await readReflog(ctx, 'HEAD' as RefName);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual(headBefore);
+      });
+    });
+  });
+
+  describe('Given HEAD on main and an edited file', () => {
+    describe('When createAutostash saves', () => {
+      it('Then neither ORIG_HEAD nor a HEAD reflog entry is written', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const headBefore = await readReflog(ctx, 'HEAD' as RefName);
+        const sut = createAutostash;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual(headBefore);
       });
     });
   });

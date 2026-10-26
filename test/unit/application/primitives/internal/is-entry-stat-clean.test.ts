@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   hasRacyTimestamp,
   type IndexMtime,
   isEntryStatClean,
+  lstatBeyondLink,
+  matchesCachedStat,
+  UNREACHABLE,
 } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
+import { TsgitError } from '../../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../../src/domain/git-index/index-entry.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
@@ -377,6 +382,187 @@ describe('hasRacyTimestamp', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('matchesCachedStat', () => {
+  const ABS_PATH = '/work/f.txt';
+  const RACY_INDEX_MTIME: IndexMtime = { seconds: 1_700_000_100, nanoseconds: 0 };
+
+  describe('Given a stat whose derived mode differs from the entry mode', () => {
+    describe('When judged', () => {
+      it('Then it is a mismatch without consulting the content', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(true);
+        const stat: FileStat = { ...BASE_STAT, mode: 0o100755 };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a stat whose size differs from the entry', () => {
+    describe('When judged', () => {
+      it('Then it is a mismatch without consulting the content', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(true);
+        const stat: FileStat = { ...BASE_STAT, size: 8 };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a matching stat on an entry older than the index', () => {
+    describe('When judged', () => {
+      it('Then it matches without consulting the content', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          ABS_PATH,
+          BASE_STAT,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(true);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe.each([
+    { verdict: true, title: 'the content agrees' },
+    { verdict: false, title: 'the content differs' },
+  ])('Given a matching stat on a racy entry where $title', ({ verdict }) => {
+    describe('When judged', () => {
+      it('Then the content verdict is returned', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(verdict);
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: RACY_INDEX_MTIME },
+          ABS_PATH,
+          BASE_STAT,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(verdict);
+        expect(contentMatches).toHaveBeenCalledWith(BASE_ENTRY, ABS_PATH, BASE_STAT);
+      });
+    });
+  });
+
+  describe('Given a matching stat with no index mtime known', () => {
+    describe('When judged', () => {
+      it('Then the content decides', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: undefined },
+          ABS_PATH,
+          BASE_STAT,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+});
+
+describe('lstatBeyondLink', () => {
+  describe('Given an absent path', () => {
+    describe('When lstatted', () => {
+      it('Then it reads as absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const result = await lstatBeyondLink(ctx, `${ctx.layout.workDir}/nope`);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a regular file standing as a leading directory', () => {
+    describe('When lstatted', () => {
+      it('Then it reads as unreachable', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file`, 'x');
+
+        // Act
+        const result = await lstatBeyondLink(ctx, `${ctx.layout.workDir}/file/child`);
+
+        // Assert
+        expect(result).toBe(UNREACHABLE);
+      });
+    });
+  });
+
+  describe('Given a present path', () => {
+    describe('When lstatted', () => {
+      it('Then its stat is returned', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file`, 'abc');
+
+        // Act
+        const result = await lstatBeyondLink(ctx, `${ctx.layout.workDir}/file`);
+
+        // Assert
+        expect(result).toMatchObject({ isFile: true, size: 3 });
+      });
+    });
+  });
+
+  describe('Given an lstat failing for another reason', () => {
+    describe('When lstatted', () => {
+      it('Then the failure is rethrown', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const failure = new TsgitError({ code: 'PERMISSION_DENIED', path: 'boom' });
+        vi.spyOn(ctx.fs, 'tryLstat').mockRejectedValue(failure);
+
+        // Act
+        const attempt = lstatBeyondLink(ctx, `${ctx.layout.workDir}/file`);
+
+        // Assert
+        await expect(attempt).rejects.toBe(failure);
       });
     });
   });

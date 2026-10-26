@@ -11,7 +11,7 @@
  *   unique:         checkout leading-symlink safety runs against git
  *   interopSurface: checkout
  */
-import { existsSync, lstatSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -199,6 +199,111 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
     });
+
+    describe('Given a worktree symlink a to an outside directory, a populated index and a tree holding only a/payload', () => {
+      describe('When both tools force-checkout HEAD', () => {
+        it('Then a is a real directory holding payload and the outside directory stays empty, matching git', async () => {
+          // Arrange
+          const sides = [
+            { dir: pair.peer, outside: outsides.peer },
+            { dir: pair.ours, outside: outsides.ours },
+          ];
+          for (const { dir, outside } of sides) {
+            commitTree(dir, [payload('a/payload')]);
+            symlinkSync(outside, path.join(dir, 'a'));
+          }
+          repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          runGit(['-C', pair.peer, 'checkout', '-q', '-f', 'HEAD']);
+          await repo.checkout({ rev: 'HEAD', force: true });
+
+          // Assert
+          for (const { dir, outside } of sides) {
+            expect(lstatSync(path.join(dir, 'a')).isDirectory()).toBe(true);
+            expect(readFileSync(path.join(dir, 'a', 'payload'), 'utf8')).toBe(PAYLOAD);
+            expect(readdirSync(outside)).toEqual([]);
+          }
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        });
+      });
+    });
+
+    const movedBehindLink = (): ReadonlyArray<{
+      readonly dir: string;
+      readonly outside: string;
+    }> => {
+      const sides = [
+        { dir: pair.peer, outside: outsides.peer },
+        { dir: pair.ours, outside: outsides.ours },
+      ];
+      for (const { dir, outside } of sides) {
+        commitTree(dir, [payload('a/payload')]);
+        runGit(['-C', dir, 'reset', '-q', '--hard', 'HEAD']);
+        renameSync(path.join(dir, 'a'), path.join(outside, 'a'));
+        symlinkSync(path.join(outside, 'a'), path.join(dir, 'a'));
+      }
+      return sides;
+    };
+
+    describe.each([
+      ['checkout -- .', ['checkout', '-q', '--', '.'], { paths: ['.'] }],
+      [
+        'checkout HEAD -- .',
+        ['checkout', '-q', 'HEAD', '--', '.'],
+        { paths: ['.'], source: 'HEAD' },
+      ],
+    ] as const)(
+      'Given a tracked a/payload whose directory a moved outside and left a link, with the command %s',
+      (_name, gitArgs, tsgit) => {
+        describe('When both tools run it', () => {
+          it('Then a is a real directory holding payload, as git rewrites an entry beyond a link', async () => {
+            // Arrange
+            const sides = movedBehindLink();
+            repo = await openRepository({ cwd: pair.ours });
+
+            // Act
+            runGit(['-C', pair.peer, ...gitArgs]);
+            await repo.checkout(tsgit);
+
+            // Assert
+            for (const { dir } of sides) {
+              expect(lstatSync(path.join(dir, 'a')).isDirectory()).toBe(true);
+              expect(readFileSync(path.join(dir, 'a', 'payload'), 'utf8')).toBe(PAYLOAD);
+            }
+            expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          });
+        });
+      },
+    );
+
+    describe.each([
+      ['checkout -f HEAD', ['checkout', '-q', '-f', 'HEAD']],
+      ['reset --hard HEAD', ['reset', '-q', '--hard', 'HEAD']],
+    ] as const)(
+      'Given a tracked a/payload whose directory a moved outside and left a link, with the command %s (guard: the one-way merge keeps an up-to-date link)',
+      (name, gitArgs) => {
+        describe('When both tools run it', () => {
+          it('Then a stays a link to the moved directory in both', async () => {
+            // Arrange
+            const sides = movedBehindLink();
+            repo = await openRepository({ cwd: pair.ours });
+
+            // Act
+            runGit(['-C', pair.peer, ...gitArgs]);
+            await (name === 'reset --hard HEAD'
+              ? repo.reset({ mode: 'hard', rev: 'HEAD' })
+              : repo.checkout({ rev: 'HEAD', force: true }));
+
+            // Assert
+            for (const { dir } of sides) {
+              expect(lstatSync(path.join(dir, 'a')).isSymbolicLink()).toBe(true);
+            }
+            expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          });
+        });
+      },
+    );
 
     describe.skipIf(!CASE_INSENSITIVE)(
       'Given a tree holding a symlink A to an outside directory and a/payload, on a case-insensitive filesystem',

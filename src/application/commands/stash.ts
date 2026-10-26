@@ -95,12 +95,13 @@ import {
   type WorkingTreeWriter,
 } from '../primitives/internal/write-converted-entry.js';
 import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
-import { materializeTree } from '../primitives/materialize-tree.js';
+import { materializeTreeJudging } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
 import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { runInformationalHook } from '../primitives/run-hook.js';
 import {
   dropStashEntry,
   pushStashRef,
@@ -115,7 +116,10 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
+import { FILE_FLAG } from './internal/post-checkout.js';
+import { refreshAndWriteIndex } from './internal/refresh-index.js';
 import { toConflictList } from './internal/replay-sequence.js';
+import { recordResetRefs } from './internal/reset-refs.js';
 import {
   indexMessage,
   onMessage,
@@ -457,7 +461,8 @@ const projectWorkingTree = async (
     projectEntry(ctx, workDir, scope, t),
   );
   // git's add_to_index dies at the path beyond a symlink: later paths are never hashed.
-  if (beyond !== -1) throw pathspecBeyondSymlink(tracked[beyond]!.entry.path);
+  const blocked = tracked[beyond];
+  if (blocked !== undefined) throw pathspecBeyondSymlink(blocked.entry.path);
   return assembled(projected);
 };
 
@@ -572,8 +577,23 @@ export const stashPush = async (
   opts: StashPushInput = {},
 ): Promise<StashPushResult> => {
   const workDir = await gateStash(ctx, 'stash');
-  await assertNoPendingOperation(ctx);
-  return stashAndReset(ctx, workDir, opts, (w) => pushStashRef(ctx, w.stash, w.message));
+  await refreshAndWriteIndex(ctx);
+  const saved = await stashAndReset(ctx, workDir, opts, (w) =>
+    pushStashRef(ctx, w.stash, w.message),
+  );
+  if (saved.kind === 'saved') await finishStashReset(ctx, opts);
+  return saved;
+};
+
+/**
+ * git's child `reset --hard` of a push leaves the same ref tail as `reset --hard HEAD`; only
+ * `--keep-index` re-checks the kept index out afterwards, which is what fires `post-checkout`.
+ */
+const finishStashReset = async (ctx: Context, opts: StashPushInput): Promise<void> => {
+  const head = await resolveRef(ctx, 'HEAD');
+  await recordResetRefs(ctx, head, 'HEAD');
+  if (opts.keepIndex !== true) return;
+  await runInformationalHook(ctx, 'post-checkout', { args: [head, head, FILE_FLAG] });
 };
 
 /** git's `stash create` then `reset --hard`: the local changes as an unrecorded stash. */
@@ -808,13 +828,13 @@ const resetAfterPush = async (
   const { base, iTree, untracked, opts } = inputs;
   const currentIndex = await readIndex(ctx);
   const target = opts.keepIndex === true ? iTree : base.bTree;
-  const result = await materializeTree(ctx, {
-    targetTree: target,
-    currentIndex,
-    force: true,
-    forceRewriteAll: true,
-  });
+  const result = await materializeTreeJudging(
+    ctx,
+    { targetTree: target, currentIndex, force: true, forceRewriteAll: true },
+    'oneway',
+  );
   await lock.commit(result.newIndexEntries, 'replace', {
+    verified: result.verified,
     restagedPaths: await keptIndexPaths(ctx, inputs),
   });
   // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.

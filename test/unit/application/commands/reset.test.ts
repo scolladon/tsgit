@@ -5,11 +5,18 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
-import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
 import { asBareContext } from './fixtures.js';
 
 const HEAD = 'HEAD' as RefName;
@@ -713,14 +720,39 @@ describe('reset', () => {
     });
   });
 
-  describe('Given a hard reset to an empty-tree commit on an empty repo (written=0, deleted=0)', () => {
+  describe('Given stages 2-3 of a path absent from the target and a work file at that path', () => {
+    describe('When reset --hard HEAD', () => {
+      it('Then the path leaves the work tree and the index', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedTwoCommits();
+        const index = await readIndex(ctx);
+        const staged = index.entries.find((e) => e.path === 'b.txt');
+        if (staged === undefined) throw new Error('b.txt is not staged');
+        const conflict = (stage: 2 | 3): IndexEntry => ({
+          ...staged,
+          path: 'n' as FilePath,
+          flags: { ...staged.flags, stage },
+        });
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([...index.entries, conflict(2), conflict(3)], 'replace');
+        await lock.release();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/n`, 'conflicted\n');
+
+        // Act
+        await reset(ctx, { mode: 'hard', rev: c2 });
+
+        // Assert
+        const after = await readIndex(ctx);
+        expect(after.entries.map((e) => e.path)).toEqual(['a.txt', 'b.txt']);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/n`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a hard reset to an empty-tree commit on an empty repo with no index file', () => {
     describe('When reset', () => {
-      it('Then the index commit is skipped and no index file is written', async () => {
-        // Arrange — a repo with a single empty-tree commit and no index file. The hard reset
-        // computes written=0 and deleted=0, so the genuine code skips lock.commit
-        // and the index file is never created. Kills `ConditionalExpression ->
-        // true`, `result.written >= 0` and `result.deleted >= 0`: each turns the
-        // guard always-true → lock.commit([]) runs → an (empty) index file appears.
+      it('Then the empty index is written, as git writes it', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
         const empty = await commit(ctx, { message: 'empty', author });
@@ -732,7 +764,7 @@ describe('reset', () => {
         await reset(ctx, { mode: 'hard', rev: empty.id });
 
         // Assert
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index`)).toBe(true);
       });
     });
   });

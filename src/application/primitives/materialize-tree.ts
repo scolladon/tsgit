@@ -20,11 +20,9 @@
  * - **Paths whose changeset classification was `noop`** (skipped — index
  *  already matched target by `id + mode`): the IndexEntry is the caller's
  *  `currentIndex` entry verbatim. Donor stats survive across the call.
- * - `reset --hard` therefore MUST set `forceRewriteAll: true` so every noop
- *  upgrades to update and the post-write stats land in the output. Without
- *  that, a locally-modified working-tree file that the index still records
- *  as clean would survive the reset, AND the donor stats would be stale
- *  relative to the actual disk state.
+ * - An up-to-date noop under `forceRewriteAll` keeps its donor entry too; only a noop whose
+ *  work-tree path is not up to date (absent, changed, or unreachable) is rewritten, so its
+ *  entry carries the post-write stats.
  */
 
 import { checkoutOverwriteDirty } from '../../domain/commands/error.js';
@@ -47,6 +45,8 @@ import {
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import {
+  type ApplyChangesetOpts,
+  type ApplyChangesetResult,
   applyChangesetWithAttributes,
   type IgnoredOccupants,
   type UnmergedPaths,
@@ -69,6 +69,8 @@ import {
   isAttributesPath,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { type IsVerified, NOTHING_VERIFIED } from './internal/smudge-racily-clean.js';
+import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
 
@@ -82,13 +84,10 @@ export interface MaterializeTreeOpts {
    */
   readonly paths?: ReadonlySet<FilePath>;
   /**
-   * When true, every target-tree path is written to the working tree
-   * unconditionally — even paths the index→target diff classified as `noop`
-   * (same `id` AND `mode`). Required by `reset --hard`, where the working
-   * tree may diverge from the index (uncommitted local modifications); the
-   * standard index→target diff cannot see that drift, so noops would skip
-   * paths the caller wants overwritten. Default `false` keeps the Phase
-   * 13.1 checkout behaviour: clean files are never spuriously rewritten.
+   * git's one-way-merge reset: a no-op entry (the index already records the target) whose
+   * work-tree path is not up to date, whether absent, changed or unreachable, is rewritten.
+   * An up-to-date entry is left alone and a skip-worktree entry is never judged.
+   * Default `false`: a no-op entry is never rewritten.
    */
   readonly forceRewriteAll?: boolean;
   /** The ref and commit the checkout moves to, told to a smudging process filter. */
@@ -129,6 +128,7 @@ export interface MaterializeTreeOpts {
 
 export interface MaterializeTreeResult {
   readonly newIndexEntries: ReadonlyArray<IndexEntry>;
+  /** Count of work-tree rewrites; an up-to-date entry left alone is not counted. */
   readonly written: number;
   readonly deleted: number;
 }
@@ -206,13 +206,25 @@ const preserveOutOfScope = (
   });
 };
 
+// git's copy_cache_entry keeps CE_VALID when a rewrite lands on the same blob and mode.
+const keepsAssumeValid = (old: IndexEntry | undefined, written: IndexEntry): boolean =>
+  old?.flags.assumeValid === true && old.id === written.id && old.mode === written.mode;
+
+const withAssumeValid = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  flags: { ...entry.flags, assumeValid: true },
+});
+
 const pickEntry = (
   entry: TargetEntry,
   writtenByPath: ReadonlyMap<IndexPathKey, IndexEntry>,
   oldByPath: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): IndexEntry | undefined => {
   const key = indexPathKey(entry);
-  return writtenByPath.get(key) ?? oldByPath.get(key);
+  const written = writtenByPath.get(key);
+  const old = oldByPath.get(key);
+  if (written === undefined) return old;
+  return keepsAssumeValid(old, written) ? withAssumeValid(written) : written;
 };
 
 const mergeNewIndexEntries = (
@@ -287,15 +299,29 @@ const projectUnmergedPaths = (
   return { entries: entries.sort(pathComparatorFor(entries)), stats: tallyStats(entries) };
 };
 
-const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
-  const entries = changeset.entries.map((entry) =>
-    entry.kind === 'noop' ? { ...entry, kind: 'update' as const } : entry,
+interface JudgedChangeset {
+  readonly changeset: Changeset;
+  readonly verified: IsVerified;
+}
+
+const rewriteStaleNoops = async (
+  ctx: Context,
+  changeset: Changeset,
+  index: GitIndex,
+  workdir: string,
+  rule: StaleRule,
+): Promise<JudgedChangeset> => {
+  const { entries, upToDate } = await upgradeStaleNoops(
+    ctx,
+    changeset.entries,
+    index,
+    workdir,
+    rule,
   );
-  // Re-tally stats from the mutated entry list rather than doing per-entry
-  // arithmetic on the prior stats. Equivalent result, simpler mutation surface,
-  // and `applyChangeset`'s progress denominator (`stats.add + update + delete`)
-  // now stays consistent with the entry list it iterates.
-  return { entries, stats: tallyStats(entries) };
+  return {
+    changeset: { entries, stats: tallyStats(entries) },
+    verified: (path) => upToDate.has(path),
+  };
 };
 
 /** Path-sort the merged entry list (in-pattern + synthesised excluded). */
@@ -476,37 +502,65 @@ export const materializeTree = async (
   ctx: Context,
   options: MaterializeTreeOpts,
 ): Promise<MaterializeTreeResult> => {
-  const fullTarget = await collectTargetEntries(ctx, options.targetTree);
-  const { opts, allTarget, carried } = await carryHeadAgreement(ctx, options, fullTarget);
-  const plan = planMaterialize(allTarget, opts);
+  const { newIndexEntries, written, deleted } = await materializeTreeJudging(
+    ctx,
+    options,
+    'oneway',
+  );
+  return { newIndexEntries, written, deleted };
+};
+
+/** What the stale pass found up to date, for the index commit; not part of the public surface. */
+export interface JudgedMaterialization extends MaterializeTreeResult {
+  readonly verified: IsVerified;
+}
+
+const validateExcludedPaths = (ctx: Context, excluded: ReadonlyArray<TargetEntry>): void => {
   // Excluded entries skip the changeset, yet git verifies every path it adds to the index.
   const pathRules = indexPathRulesOf(ctx);
-  for (const entry of plan.excluded) {
+  for (const entry of excluded) {
     pathRules.validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
   }
+};
 
+const classifyChangeset = async (
+  ctx: Context,
+  plan: MaterializePlan,
+  opts: MaterializeTreeOpts,
+  workdir: string,
+  staleRule: StaleRule,
+): Promise<JudgedChangeset> => {
   const computed = computeChangeset(plan.indexForDiff, plan.target);
   const rawChangeset =
     opts.unmergedPaths === 'reset'
       ? projectUnmergedPaths(computed, plan.indexForDiff, plan.target)
       : computed;
-  const changeset =
-    opts.forceRewriteAll === true ? upgradeNoopsToUpdates(rawChangeset) : rawChangeset;
+  if (opts.forceRewriteAll !== true) {
+    return { changeset: rawChangeset, verified: NOTHING_VERIFIED };
+  }
+  return rewriteStaleNoops(ctx, rawChangeset, plan.indexForDiff, workdir, staleRule);
+};
 
-  const result = await applyChangesetWithAttributes(
-    ctx,
-    {
-      changeset,
-      force: opts.force ?? false,
-      ...(opts.ignoredOccupants && { ignoredOccupants: opts.ignoredOccupants }),
-      ...(opts.untrackedOccupants && { untrackedOccupants: opts.untrackedOccupants }),
-      ...(opts.unmergedPaths && { unmergedPaths: opts.unmergedPaths }),
-      workdir: requireWorkTree(ctx, 'materializeTree'),
-      ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
-    },
-    checkoutDirection(opts, plan),
-  );
+const applyOptionsOf = (
+  opts: MaterializeTreeOpts,
+  changeset: Changeset,
+  workdir: string,
+): ApplyChangesetOpts => ({
+  changeset,
+  force: opts.force ?? false,
+  ...(opts.ignoredOccupants && { ignoredOccupants: opts.ignoredOccupants }),
+  ...(opts.untrackedOccupants && { untrackedOccupants: opts.untrackedOccupants }),
+  ...(opts.unmergedPaths && { unmergedPaths: opts.unmergedPaths }),
+  workdir,
+  ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
+});
 
+const assembleIndexEntries = (
+  result: ApplyChangesetResult,
+  opts: MaterializeTreeOpts,
+  plan: MaterializePlan,
+  carried: ReadonlyArray<IndexEntry>,
+): ReadonlyArray<IndexEntry> => {
   const inScope = mergeNewIndexEntries(
     result.writtenEntries,
     opts.currentIndex,
@@ -515,15 +569,28 @@ export const materializeTree = async (
   );
   // Sparse branch-switch: append one synthesised skip-worktree entry per
   // excluded target path so the index keeps every tracked path (git-faithful).
-  const newIndexEntries =
-    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already path-sorted `inScope` (from `mergeNewIndexEntries`, same comparator) into a content-identical list; the guard only skips that redundant work.
-    plan.excluded.length === 0 && carried.length === 0
-      ? inScope
-      : sortIndexEntries([...inScope, ...carried, ...plan.excluded.map(skipWorktreeEntry)]);
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already path-sorted `inScope` (from `mergeNewIndexEntries`, same comparator) into a content-identical list; the guard only skips that redundant work.
+  if (plan.excluded.length === 0 && carried.length === 0) return inScope;
+  return sortIndexEntries([...inScope, ...carried, ...plan.excluded.map(skipWorktreeEntry)]);
+};
 
-  return {
-    newIndexEntries,
-    written: result.written,
-    deleted: result.deleted,
-  };
+/** `materializeTree` with the routine that judges a stale entry named; not part of the public surface. */
+export const materializeTreeJudging = async (
+  ctx: Context,
+  options: MaterializeTreeOpts,
+  staleRule: StaleRule,
+): Promise<JudgedMaterialization> => {
+  const fullTarget = await collectTargetEntries(ctx, options.targetTree);
+  const { opts, allTarget, carried } = await carryHeadAgreement(ctx, options, fullTarget);
+  const plan = planMaterialize(allTarget, opts);
+  validateExcludedPaths(ctx, plan.excluded);
+  const workdir = requireWorkTree(ctx, 'materializeTree');
+  const { changeset, verified } = await classifyChangeset(ctx, plan, opts, workdir, staleRule);
+  const result = await applyChangesetWithAttributes(
+    ctx,
+    applyOptionsOf(opts, changeset, workdir),
+    checkoutDirection(opts, plan),
+  );
+  const newIndexEntries = assembleIndexEntries(result, opts, plan, carried);
+  return { newIndexEntries, written: result.written, deleted: result.deleted, verified };
 };

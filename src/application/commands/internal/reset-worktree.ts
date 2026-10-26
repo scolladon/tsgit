@@ -1,7 +1,7 @@
 /**
  * Hard-reset the working tree + index to `commitId`'s tree — `reset --hard`
- * semantics with `forceRewriteAll` so dirty / no-op'd paths don't survive the
- * reset. Sparse-aware.
+ * semantics with `forceRewriteAll`: like git's one-way merge, a path whose work-tree
+ * stat is not up to date is rewritten, an up-to-date one is left alone. Sparse-aware.
  *
  * Inlined here (rather than delegated to the `reset` command) so it can run
  * while an operation marker (`MERGE_HEAD` / `CHERRY_PICK_HEAD`) is still on disk:
@@ -16,7 +16,10 @@ import { TsgitError } from '../../../domain/error.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { type MaterializeTreeOpts, materializeTree } from '../../primitives/materialize-tree.js';
+import {
+  type MaterializeTreeOpts,
+  materializeTreeJudging,
+} from '../../primitives/materialize-tree.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { readObject } from '../../primitives/read-object.js';
 import { loadSparseMatcher } from '../../primitives/read-sparse-checkout.js';
@@ -39,13 +42,17 @@ const resetWorktreeToCommit = async (
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
-    const result = await materializeTree(ctx, {
-      targetTree: commit.data.tree,
-      currentIndex,
-      ...mode,
-      ...(matcher !== undefined ? { sparse: matcher } : {}),
-    });
-    await lock.commit(result.newIndexEntries, 'replace');
+    const result = await materializeTreeJudging(
+      ctx,
+      {
+        targetTree: commit.data.tree,
+        currentIndex,
+        ...mode,
+        ...(matcher !== undefined ? { sparse: matcher } : {}),
+      },
+      'oneway',
+    );
+    await lock.commit(result.newIndexEntries, 'replace', { verified: result.verified });
   } finally {
     await lock.release();
   }

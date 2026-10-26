@@ -110826,39 +110826,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "When true, every target-tree path is written to the working tree\nunconditionally — even paths the index→target diff classified as "
-									},
-									{
-										"kind": "code",
-										"text": "`noop`"
-									},
-									{
-										"kind": "text",
-										"text": "\n(same "
-									},
-									{
-										"kind": "code",
-										"text": "`id`"
-									},
-									{
-										"kind": "text",
-										"text": " AND "
-									},
-									{
-										"kind": "code",
-										"text": "`mode`"
-									},
-									{
-										"kind": "text",
-										"text": "). Required by "
-									},
-									{
-										"kind": "code",
-										"text": "`reset --hard`"
-									},
-									{
-										"kind": "text",
-										"text": ", where the working\ntree may diverge from the index (uncommitted local modifications); the\nstandard index→target diff cannot see that drift, so noops would skip\npaths the caller wants overwritten. Default "
+										"text": "git's one-way-merge reset: a no-op entry (the index already records the target) whose\nwork-tree path is not up to date, whether absent, changed or unreachable, is rewritten.\nAn up-to-date entry is left alone and a skip-worktree entry is never judged.\nDefault "
 									},
 									{
 										"kind": "code",
@@ -110866,7 +110834,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " keeps the Phase\n13.1 checkout behaviour: clean files are never spuriously rewritten."
+										"text": ": a no-op entry is never rewritten."
 									}
 								]
 							},
@@ -111235,6 +111203,14 @@
 							"kind": 1024,
 							"flags": {
 								"isReadonly": true
+							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Count of work-tree rewrites; an up-to-date entry left alone is not counted."
+									}
+								]
 							},
 							"type": {
 								"type": "intrinsic",

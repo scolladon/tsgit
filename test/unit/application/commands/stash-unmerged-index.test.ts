@@ -177,3 +177,41 @@ describe('Given an autostash whose apply is refused', () => {
     });
   });
 });
+
+const hasStashRef = (ctx: Context): Promise<boolean> =>
+  ctx.fs.exists(`${ctx.layout.gitDir}/refs/stash`);
+
+describe('Given an index holding conflict stages', () => {
+  describe('When stash push runs', () => {
+    it('Then it refuses naming the unmerged path and writes no stash ref', async () => {
+      // Arrange
+      const ctx = await conflictedRepoWithStash();
+      await stashDrop(ctx, {});
+      const before = await stagesOf(ctx);
+
+      // Act
+      const sut = stashPush;
+      const data = await refusalOf(() => sut(ctx, {}));
+
+      // Assert
+      expect(data).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['c'] });
+      expect(await hasStashRef(ctx)).toBe(false);
+      expect(await stagesOf(ctx)).toEqual(before);
+    });
+  });
+
+  describe('When stash push runs during a conflicted merge', () => {
+    it('Then it refuses with the conflicts, not the pending operation', async () => {
+      // Arrange
+      const ctx = await conflictedRepoWithStash();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'a'.repeat(40)}\n`);
+
+      // Act
+      const sut = stashPush;
+      const data = await refusalOf(() => sut(ctx, {}));
+
+      // Assert
+      expect(data).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['c'] });
+    });
+  });
+});
