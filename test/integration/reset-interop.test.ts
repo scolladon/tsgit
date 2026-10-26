@@ -11,7 +11,8 @@
  *   unique:         reset porcelain HEAD+index+worktree matches canonical git reset
  *   interopSurface: reset
  */
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -28,6 +29,38 @@ import {
   topReflogSubject,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import {
+  assumingUnchanged,
+  buildHistory,
+  chmodAt,
+  copiedBehindLink,
+  danglingLinkAt,
+  directoryHolding,
+  emptyDirectoryAt,
+  type FileIdentity,
+  fileAt,
+  fileWith,
+  flagListing,
+  gitlink,
+  indexState,
+  link1,
+  linkAt,
+  modeListing,
+  movedBehindLink,
+  type Occupant,
+  regular,
+  replacing,
+  rewrittenPaths,
+  settleIndex,
+  skipWorktreeAt,
+  staleEntries,
+  statSnapshot,
+  type TreeEntry,
+  touchedAt,
+  unmergedAbsentAt,
+  unmergedAt,
+  v1,
+} from './occupant-displacement-fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -227,6 +260,33 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
     });
   });
 
+  describe('Given an empty-tree commit and no index file', () => {
+    describe('When git and tsgit reset --hard HEAD', () => {
+      it('Then both write the same index bytes', async () => {
+        // Arrange
+        const indexBytes = async (dir: string): Promise<Buffer> =>
+          readFile(path.join(dir, '.git', 'index'));
+        for (const dir of [pair.peer, pair.ours]) {
+          const emptyTree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+          const id = runGit(['-C', dir, 'commit-tree', '-m', 'empty', emptyTree], {
+            env: COMMIT_ENV,
+          }).trim();
+          runGit(['-C', dir, 'update-ref', 'refs/heads/main', id]);
+          await rm(path.join(dir, '.git', 'index'), { force: true });
+        }
+
+        // Act
+        runGit(['-C', pair.peer, 'reset', '-q', '--hard', 'HEAD']);
+        await repo.reset({ mode: 'hard', rev: 'HEAD' });
+
+        // Assert
+        const expected = await indexBytes(pair.peer);
+        expect(expected.length).toBe(65);
+        expect((await indexBytes(pair.ours)).equals(expected)).toBe(true);
+      });
+    });
+  });
+
   describe.each([
     {
       rev: ABSENT_OID,
@@ -269,4 +329,91 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
       });
     });
   });
+
+  const stagedAt =
+    (rel: string, content: string): Occupant =>
+    (dir) => {
+      fileWith(rel, content)(dir);
+      runGit(['-C', dir, 'add', rel]);
+    };
+
+  interface WorkTreeShape {
+    readonly tracked: ReadonlyArray<TreeEntry>;
+    readonly plant: Occupant;
+  }
+
+  const shapes: Readonly<Record<string, WorkTreeShape>> = {
+    C: { tracked: [v1('f')], plant: () => undefined },
+    E: { tracked: [v1('f')], plant: fileWith('f', 'edited\n') },
+    T: { tracked: [v1('f')], plant: touchedAt('f') },
+    M: { tracked: [v1('f')], plant: chmodAt('f') },
+    Dw: { tracked: [v1('f')], plant: (dir) => rmSync(path.join(dir, 'f')) },
+    AU: { tracked: [v1('f')], plant: assumingUnchanged('f', fileWith('f', 'edited\n')) },
+    SW: { tracked: [v1('f')], plant: skipWorktreeAt('f', fileWith('f', 'edited\n')) },
+    S3a: { tracked: [v1('a/payload')], plant: replacing('a/payload', danglingLinkAt('a')) },
+    S3g: { tracked: [v1('a/payload')], plant: copiedBehindLink('a', 'held') },
+    S3i: { tracked: [v1('a/payload')], plant: movedBehindLink('a', 'held') },
+    S1: { tracked: [v1('d/x')], plant: replacing('d/x', fileAt('d')) },
+    S2: { tracked: [v1('f')], plant: replacing('f', directoryHolding('f', 'u')) },
+    S2e: { tracked: [v1('f')], plant: replacing('f', emptyDirectoryAt('f')) },
+    S3b: { tracked: [v1('f')], plant: replacing('f', danglingLinkAt('f')) },
+    LF: { tracked: [v1('f'), v1('g')], plant: linkAt('f', 'g') },
+    S3f: { tracked: [link1('l')], plant: replacing('l', fileWith('l', 't-v1')) },
+    S3c: { tracked: [link1('l')], plant: replacing('l', directoryHolding('l', 'u')) },
+    S3d: { tracked: [link1('d/l')], plant: replacing('d/l', fileAt('d')) },
+    LR: { tracked: [link1('l')], plant: linkAt('l', 'elsewhere') },
+    GL: { tracked: [gitlink('s')], plant: () => undefined },
+    GLf: { tracked: [gitlink('s')], plant: replacing('s', fileAt('s')) },
+    ST: { tracked: [v1('f')], plant: stagedAt('f', 'staged\n') },
+    SA: { tracked: [v1('f')], plant: stagedAt('n', 'new\n') },
+    SD: { tracked: [v1('f')], plant: (dir) => void runGit(['-C', dir, 'rm', '-q', 'f']) },
+    SDk: {
+      tracked: [v1('f')],
+      plant: (dir) => void runGit(['-C', dir, 'rm', '-q', '--cached', 'f']),
+    },
+    U: { tracked: [v1('f')], plant: fileWith('u', 'untracked\n') },
+    UM: { tracked: [v1('f')], plant: unmergedAt('f') },
+    UMn: { tracked: [v1('f')], plant: unmergedAbsentAt('n') },
+  };
+
+  interface Observed {
+    readonly work: string[];
+    readonly index: string[];
+    readonly flags: string;
+    readonly stale: string[];
+    readonly rewritten: string[];
+  }
+
+  const observe = (dir: string, before: ReadonlyMap<string, FileIdentity>): Observed => ({
+    work: modeListing(dir),
+    index: indexState(dir),
+    flags: flagListing(dir),
+    stale: staleEntries(dir),
+    rewritten: rewrittenPaths(before, statSnapshot(dir)),
+  });
+
+  describe.each(Object.entries(shapes))(
+    'Given the work tree shape %s over a settled index',
+    (_name, shape) => {
+      describe('When git and tsgit reset --hard HEAD', () => {
+        it('Then the work tree, the index, its flags and the stale and rewritten sets match git', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildHistory(dir, [...shape.tracked, regular('other')], shape.tracked);
+            settleIndex(dir);
+            shape.plant(dir);
+          }
+          const peerBefore = statSnapshot(pair.peer);
+          const oursBefore = statSnapshot(pair.ours);
+
+          // Act
+          runGit(['-C', pair.peer, 'reset', '-q', '--hard', 'HEAD']);
+          await repo.reset({ mode: 'hard', rev: 'HEAD' });
+
+          // Assert
+          expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+        });
+      });
+    },
+  );
 });

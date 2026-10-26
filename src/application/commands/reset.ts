@@ -180,23 +180,20 @@ const hardResetFromCommit = async (
       targetTree: commit.data.tree,
       currentIndex,
       force: true,
-      // Hard reset must overwrite working-tree files even when the index
-      // says they match the target — the user may have uncommitted local
-      // modifications that the index→target diff can't see. Without this
-      // flag, dirty noop'd paths would survive the reset.
+      // git rewrites only the entries whose stat is stale; a dirty file whose index entry
+      // matches the target is stale, so it is rewritten and a clean one is left alone.
       forceRewriteAll: true,
+      // A conflicted path is reset to the target; one the target lacks is removed.
+      unmergedPaths: 'reset',
       checkoutMetadata: await checkoutMetadataFor(ctx, rev, commitId),
       // A defined matcher restricts materialisation to in-pattern files;
       // excluded target paths become synthesised skip-worktree index entries.
       // `exactOptionalPropertyTypes`: spread `sparse` only when defined.
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
-    // git writes the index on every hard reset, even when no path was rewritten: the write
-    // drops the extensions a fresh index does not carry and primes the cache tree. Only the
-    // degenerate empty result (nothing tracked, nothing changed, no sparse synthesis) skips it.
-    if (result.newIndexEntries.length > 0 || result.deleted > 0 || matcher !== undefined) {
-      await lock.commit(result.newIndexEntries, 'replace');
-    }
+    // git writes the index on every hard reset, even when nothing was rewritten: the write
+    // drops the extensions a fresh index does not carry and primes the cache tree.
+    await lock.commit(result.newIndexEntries, 'replace');
   } finally {
     await lock.release();
   }

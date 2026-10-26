@@ -216,6 +216,98 @@ describe('materializeTree', () => {
     });
   });
 
+  describe('Given an assume-unchanged entry matching the target whose file was edited AND forceRewriteAll', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the rewritten entry keeps assumeValid', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'committed');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
+        ]);
+        const assumed = makeIndexEntry('a.txt', blobId);
+        const index: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [{ ...assumed, flags: { ...assumed.flags, assumeValid: true } }],
+        };
+        await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('edited'));
+
+        // Act
+        const sut = await materializeTree(ctx, {
+          targetTree: treeId,
+          currentIndex: index,
+          force: true,
+          forceRewriteAll: true,
+        });
+
+        // Assert
+        expect(sut.written).toBe(1);
+        expect(sut.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([true]);
+      });
+    });
+  });
+
+  describe('Given an assume-unchanged entry whose id differs from the target AND forceRewriteAll', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the rewritten entry carries fresh flags', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'old');
+        const blobId = await writeBlob(ctx, 'committed');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
+        ]);
+        const assumed = makeIndexEntry('a.txt', oldId);
+        const index: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [{ ...assumed, flags: { ...assumed.flags, assumeValid: true } }],
+        };
+        await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('old'));
+
+        // Act
+        const sut = await materializeTree(ctx, {
+          targetTree: treeId,
+          currentIndex: index,
+          force: true,
+          forceRewriteAll: true,
+        });
+
+        // Assert
+        expect(sut.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([false]);
+      });
+    });
+  });
+
+  describe('Given an assume-unchanged entry whose mode differs from the target AND forceRewriteAll', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the rewritten entry carries fresh flags', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'committed');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.EXECUTABLE, 'a.txt' as FilePath, blobId),
+        ]);
+        const assumed = makeIndexEntry('a.txt', blobId);
+        const index: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [{ ...assumed, flags: { ...assumed.flags, assumeValid: true } }],
+        };
+        await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('committed'));
+
+        // Act
+        const sut = await materializeTree(ctx, {
+          targetTree: treeId,
+          currentIndex: index,
+          force: true,
+          forceRewriteAll: true,
+        });
+
+        // Assert
+        expect(sut.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([false]);
+      });
+    });
+  });
+
   describe('Given a stale noop entry with a clean-content working-tree file AND forceRewriteAll: true, force: false', () => {
     describe('When materializeTree runs', () => {
       it('Then the upgraded entry goes through the tracked-dirty guard (kind is update, not add)', async () => {

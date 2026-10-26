@@ -1,7 +1,9 @@
 /** History, occupant and outcome builders shared by the occupant-displacement interop suites. */
 import {
+  chmodSync,
   cpSync,
   lstatSync,
+  lutimesSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -174,6 +176,184 @@ export const ignoring =
     writeFileSync(path.join(dir, '.git', 'info', 'exclude'), `${pattern}\n`);
     occupant(dir);
   };
+
+/** `rel` rewritten with `content`, leaving whatever stat the write gives it. */
+export const fileWith =
+  (rel: string, content: string): Occupant =>
+  (dir) => {
+    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    writeFileSync(path.join(dir, rel), content);
+  };
+const FIVE_SECONDS_MS = 5_000;
+const TEN_SECONDS_MS = 10_000;
+const EXECUTABLE_PERMISSIONS = 0o755;
+/** `rel` keeps its content but its mtime moves forward, so the index no longer matches its stat. */
+export const touchedAt =
+  (rel: string): Occupant =>
+  (dir) => {
+    const later = new Date(Date.now() + FIVE_SECONDS_MS);
+    lutimesSync(path.join(dir, rel), later, later);
+  };
+export const chmodAt =
+  (rel: string): Occupant =>
+  (dir) =>
+    chmodSync(path.join(dir, rel), EXECUTABLE_PERMISSIONS);
+export const linkAt =
+  (rel: string, target: string): Occupant =>
+  (dir) => {
+    rmSync(path.join(dir, rel), { recursive: true, force: true });
+    symlinkSync(target, path.join(dir, rel));
+  };
+/** The index marks `rel` skip-worktree before the occupant takes its place. */
+export const skipWorktreeAt =
+  (rel: string, occupant: Occupant): Occupant =>
+  (dir) => {
+    runGit(['-C', dir, 'update-index', '--skip-worktree', rel]);
+    occupant(dir);
+  };
+
+const blobOf = (dir: string, content: string): string =>
+  runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
+
+const stagedLines = (dir: string, rel: string, stages: ReadonlyArray<1 | 2 | 3>): string =>
+  stages
+    .map((stage) => `${REGULAR_MODE} ${blobOf(dir, `stage ${stage}\n`)} ${stage}\t${rel}\n`)
+    .join('');
+
+const CONFLICTED = 'conflicted\n';
+/** `rel` is conflicted in the index (stages 1-3) with a conflicted work file. */
+export const unmergedAt =
+  (rel: string): Occupant =>
+  (dir) => {
+    runGit(['-C', dir, 'update-index', '--index-info'], {
+      input: `0 ${'0'.repeat(40)}\t${rel}\n${stagedLines(dir, rel, [1, 2, 3])}`,
+    });
+    fileWith(rel, CONFLICTED)(dir);
+  };
+/** `rel` is conflicted in the index (stages 2-3 only, as an add/add) with a conflicted work file. */
+export const unmergedAbsentAt =
+  (rel: string): Occupant =>
+  (dir) => {
+    runGit(['-C', dir, 'update-index', '--index-info'], {
+      input: stagedLines(dir, rel, [2, 3]),
+    });
+    fileWith(rel, CONFLICTED)(dir);
+  };
+
+const trackedPaths = (dir: string): string[] =>
+  runGit(['-C', dir, 'ls-files', '-z'])
+    .split('\0')
+    .filter((rel) => rel !== '');
+
+const isPresent = (full: string): boolean => {
+  try {
+    return !lstatSync(full).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** Back-dates every tracked work file and refreshes the index, so no entry is racily clean. */
+export const settleIndex = (dir: string): void => {
+  const past = new Date(Date.now() - TEN_SECONDS_MS);
+  for (const rel of trackedPaths(dir)) {
+    const full = path.join(dir, rel);
+    if (isPresent(full)) lutimesSync(full, past, past);
+  }
+  runGit(['-C', dir, 'update-index', '-q', '--refresh']);
+};
+
+export interface FileIdentity {
+  readonly ino: number;
+  readonly mtimeMs: number;
+}
+
+export const statSnapshot = (dir: string): Map<string, FileIdentity> => {
+  const snapshot = new Map<string, FileIdentity>();
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    const full = path.join(entry.parentPath, entry.name);
+    const rel = path.relative(dir, full);
+    if (rel === '.git' || rel.startsWith(`.git${path.sep}`)) continue;
+    const { ino, mtimeMs } = lstatSync(full);
+    snapshot.set(rel, { ino, mtimeMs });
+  }
+  return snapshot;
+};
+
+/** Paths present both before and after whose inode or mtime moved: the work file was rewritten. */
+export const rewrittenPaths = (
+  before: ReadonlyMap<string, FileIdentity>,
+  after: ReadonlyMap<string, FileIdentity>,
+): string[] =>
+  [...before.keys()]
+    .filter((rel) => {
+      const now = after.get(rel);
+      const then = before.get(rel);
+      return now !== undefined && (now.ino !== then?.ino || now.mtimeMs !== then?.mtimeMs);
+    })
+    .sort();
+
+const DEBUG_FIELD = /(ino|size): (\d+)|mtime: (\d+):/g;
+
+interface CachedStat {
+  ino: number;
+  size: number;
+  mtimeSeconds: number;
+}
+
+const cachedStatsOf = (dir: string): Map<string, CachedStat> => {
+  const stats = new Map<string, CachedStat>();
+  let current: string | undefined;
+  let cached: CachedStat | undefined;
+  for (const line of runGit(['-C', dir, 'ls-files', '--debug']).split('\n')) {
+    if (line !== '' && !line.startsWith(' ')) {
+      current = line;
+      cached = { ino: 0, size: 0, mtimeSeconds: 0 };
+      stats.set(current, cached);
+      continue;
+    }
+    for (const [, key, value, mtime] of line.matchAll(DEBUG_FIELD)) {
+      if (cached === undefined) continue;
+      if (key === 'ino') cached.ino = Number(value);
+      else if (key === 'size') cached.size = Number(value);
+      else cached.mtimeSeconds = Number(mtime);
+    }
+  }
+  return stats;
+};
+
+/** Tracked paths whose cached ino, size or mtime second no longer match the work file (git would rehash them). */
+export const staleEntries = (dir: string): string[] => {
+  const stale: string[] = [];
+  for (const [rel, cached] of cachedStatsOf(dir)) {
+    const full = path.join(dir, rel);
+    if (!isPresent(full)) {
+      stale.push(rel);
+      continue;
+    }
+    const now = lstatSync(full);
+    if (
+      now.ino !== cached.ino ||
+      now.size !== cached.size ||
+      Math.floor(now.mtimeMs / 1000) !== cached.mtimeSeconds
+    ) {
+      stale.push(rel);
+    }
+  }
+  return stale.sort();
+};
+
+const OWNER_EXECUTE = 0o100;
+/** listing(dir) with an `(+x)` suffix on executable regular files. */
+export const modeListing = (dir: string): string[] =>
+  listing(dir).map((line) => {
+    const rel = line.split('=')[0] ?? line;
+    const full = path.join(dir, rel);
+    const executable = line.includes('=') && (lstatSync(full).mode & OWNER_EXECUTE) !== 0;
+    return executable ? `${line}(+x)` : line;
+  });
+
+export const flagListing = (dir: string): string => runGit(['-C', dir, 'ls-files', '-v']);
 
 export interface Outcome {
   readonly refused: boolean;

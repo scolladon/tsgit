@@ -204,13 +204,25 @@ const preserveOutOfScope = (
   });
 };
 
+// git's copy_cache_entry keeps CE_VALID when a rewrite lands on the same blob and mode.
+const keepsAssumeValid = (old: IndexEntry | undefined, written: IndexEntry): boolean =>
+  old?.flags.assumeValid === true && old.id === written.id && old.mode === written.mode;
+
+const withAssumeValid = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  flags: { ...entry.flags, assumeValid: true },
+});
+
 const pickEntry = (
   entry: TargetEntry,
   writtenByPath: ReadonlyMap<IndexPathKey, IndexEntry>,
   oldByPath: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): IndexEntry | undefined => {
   const key = indexPathKey(entry);
-  return writtenByPath.get(key) ?? oldByPath.get(key);
+  const written = writtenByPath.get(key);
+  const old = oldByPath.get(key);
+  if (written === undefined) return old;
+  return keepsAssumeValid(old, written) ? withAssumeValid(written) : written;
 };
 
 const mergeNewIndexEntries = (
