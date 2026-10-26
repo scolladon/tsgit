@@ -463,7 +463,7 @@ carry (AU), the bare-`HEAD` stay and its spellings (sets 3, 4), the UMn reset fo
 (F7), folding R4 into every `forceRewriteAll` caller (F3–F6), the refresh set of P5 (A.4), the refusal codes
 (`MERGE_HAS_CONFLICTS` is the house code for every unmerged-index refusal, and the refusal order is pinned).
 
-New, raised by the ADR-1090/1091 folds:
+New, raised by the ADR-1090/1091 folds — settled: DC5 → ADR-1092, DC6 → ADR-1093, DC7 → ADR-1094, DC8 → ADR-1095 (each option (a); DC8 conditional on the real cherry-pick and stopped-rebase pins):
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
