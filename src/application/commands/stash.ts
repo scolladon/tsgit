@@ -461,7 +461,8 @@ const projectWorkingTree = async (
     projectEntry(ctx, workDir, scope, t),
   );
   // git's add_to_index dies at the path beyond a symlink: later paths are never hashed.
-  if (beyond !== -1) throw pathspecBeyondSymlink(tracked[beyond]!.entry.path);
+  const blocked = tracked[beyond];
+  if (blocked !== undefined) throw pathspecBeyondSymlink(blocked.entry.path);
   return assembled(projected);
 };
 
