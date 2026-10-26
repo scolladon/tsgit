@@ -45,6 +45,8 @@ import {
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import {
+  type ApplyChangesetOpts,
+  type ApplyChangesetResult,
   applyChangesetWithAttributes,
   type IgnoredOccupants,
   type UnmergedPaths,
@@ -515,6 +517,65 @@ export interface JudgedMaterialization extends MaterializeTreeResult {
   readonly verified: IsVerified;
 }
 
+const validateExcludedPaths = (ctx: Context, excluded: ReadonlyArray<TargetEntry>): void => {
+  // Excluded entries skip the changeset, yet git verifies every path it adds to the index.
+  const pathRules = indexPathRulesOf(ctx);
+  for (const entry of excluded) {
+    pathRules.validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
+  }
+};
+
+const classifyChangeset = async (
+  ctx: Context,
+  plan: MaterializePlan,
+  opts: MaterializeTreeOpts,
+  workdir: string,
+  staleRule: StaleRule,
+): Promise<JudgedChangeset> => {
+  const computed = computeChangeset(plan.indexForDiff, plan.target);
+  const rawChangeset =
+    opts.unmergedPaths === 'reset'
+      ? projectUnmergedPaths(computed, plan.indexForDiff, plan.target)
+      : computed;
+  if (opts.forceRewriteAll !== true) {
+    return { changeset: rawChangeset, verified: NOTHING_VERIFIED };
+  }
+  return rewriteStaleNoops(ctx, rawChangeset, plan.indexForDiff, workdir, staleRule);
+};
+
+const applyOptionsOf = (
+  opts: MaterializeTreeOpts,
+  changeset: Changeset,
+  workdir: string,
+): ApplyChangesetOpts => ({
+  changeset,
+  force: opts.force ?? false,
+  ...(opts.ignoredOccupants && { ignoredOccupants: opts.ignoredOccupants }),
+  ...(opts.untrackedOccupants && { untrackedOccupants: opts.untrackedOccupants }),
+  ...(opts.unmergedPaths && { unmergedPaths: opts.unmergedPaths }),
+  workdir,
+  ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
+});
+
+const assembleIndexEntries = (
+  result: ApplyChangesetResult,
+  opts: MaterializeTreeOpts,
+  plan: MaterializePlan,
+  carried: ReadonlyArray<IndexEntry>,
+): ReadonlyArray<IndexEntry> => {
+  const inScope = mergeNewIndexEntries(
+    result.writtenEntries,
+    opts.currentIndex,
+    plan.target,
+    opts.paths,
+  );
+  // Sparse branch-switch: append one synthesised skip-worktree entry per
+  // excluded target path so the index keeps every tracked path (git-faithful).
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already path-sorted `inScope` (from `mergeNewIndexEntries`, same comparator) into a content-identical list; the guard only skips that redundant work.
+  if (plan.excluded.length === 0 && carried.length === 0) return inScope;
+  return sortIndexEntries([...inScope, ...carried, ...plan.excluded.map(skipWorktreeEntry)]);
+};
+
 /** `materializeTree` with the routine that judges a stale entry named; not part of the public surface. */
 export const materializeTreeJudging = async (
   ctx: Context,
@@ -524,55 +585,14 @@ export const materializeTreeJudging = async (
   const fullTarget = await collectTargetEntries(ctx, options.targetTree);
   const { opts, allTarget, carried } = await carryHeadAgreement(ctx, options, fullTarget);
   const plan = planMaterialize(allTarget, opts);
-  // Excluded entries skip the changeset, yet git verifies every path it adds to the index.
-  const pathRules = indexPathRulesOf(ctx);
-  for (const entry of plan.excluded) {
-    pathRules.validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
-  }
-
-  const computed = computeChangeset(plan.indexForDiff, plan.target);
-  const rawChangeset =
-    opts.unmergedPaths === 'reset'
-      ? projectUnmergedPaths(computed, plan.indexForDiff, plan.target)
-      : computed;
+  validateExcludedPaths(ctx, plan.excluded);
   const workdir = requireWorkTree(ctx, 'materializeTree');
-  const { changeset, verified } =
-    opts.forceRewriteAll === true
-      ? await rewriteStaleNoops(ctx, rawChangeset, plan.indexForDiff, workdir, staleRule)
-      : { changeset: rawChangeset, verified: NOTHING_VERIFIED };
-
+  const { changeset, verified } = await classifyChangeset(ctx, plan, opts, workdir, staleRule);
   const result = await applyChangesetWithAttributes(
     ctx,
-    {
-      changeset,
-      force: opts.force ?? false,
-      ...(opts.ignoredOccupants && { ignoredOccupants: opts.ignoredOccupants }),
-      ...(opts.untrackedOccupants && { untrackedOccupants: opts.untrackedOccupants }),
-      ...(opts.unmergedPaths && { unmergedPaths: opts.unmergedPaths }),
-      workdir,
-      ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
-    },
+    applyOptionsOf(opts, changeset, workdir),
     checkoutDirection(opts, plan),
   );
-
-  const inScope = mergeNewIndexEntries(
-    result.writtenEntries,
-    opts.currentIndex,
-    plan.target,
-    opts.paths,
-  );
-  // Sparse branch-switch: append one synthesised skip-worktree entry per
-  // excluded target path so the index keeps every tracked path (git-faithful).
-  const newIndexEntries =
-    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard false re-sorts the already path-sorted `inScope` (from `mergeNewIndexEntries`, same comparator) into a content-identical list; the guard only skips that redundant work.
-    plan.excluded.length === 0 && carried.length === 0
-      ? inScope
-      : sortIndexEntries([...inScope, ...carried, ...plan.excluded.map(skipWorktreeEntry)]);
-
-  return {
-    newIndexEntries,
-    written: result.written,
-    deleted: result.deleted,
-    verified,
-  };
+  const newIndexEntries = assembleIndexEntries(result, opts, plan, carried);
+  return { newIndexEntries, written: result.written, deleted: result.deleted, verified };
 };
