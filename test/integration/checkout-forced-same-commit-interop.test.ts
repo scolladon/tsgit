@@ -11,7 +11,15 @@
  *   unique:         forced checkout rewrites every stale entry and resets conflicts as git does
  *   interopSurface: checkout
  */
-import { existsSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -32,6 +40,7 @@ import {
   buildHistory,
   fileWith,
   flagListing,
+  listing,
   observe,
   regular,
   settleIndex,
@@ -39,6 +48,8 @@ import {
   staleEntries,
   statSnapshot,
   touchedAt,
+  unmergedAbsentAt,
+  unmergedAt,
   v1,
   WORK_TREE_SHAPES,
 } from './occupant-displacement-fixtures.js';
@@ -368,3 +379,231 @@ describe.skipIf(!GIT_AVAILABLE)('unforced checkout refreshes drifted index stats
     });
   });
 });
+
+const G1 = regular('g', 'g1\n');
+const HOOK_LOG = 'hook-log';
+const APPEND_ARGS_HOOK = `#!/bin/sh\nprintf '%s\\n' "$*" >> "$(git rev-parse --git-dir)/${HOOK_LOG}"\n`;
+
+const installLoggingHook = (dir: string): void => {
+  const hook = path.join(dir, '.git', 'hooks', 'post-checkout');
+  writeFileSync(hook, APPEND_ARGS_HOOK);
+  chmodSync(hook, 0o755);
+};
+
+const hookLog = (dir: string): string => {
+  const file = path.join(dir, '.git', HOOK_LOG);
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+};
+
+const unmergedLines = (paths: ReadonlyArray<string>): string =>
+  paths.map((p) => `error: path '${p}' is unmerged\n`).join('');
+
+interface PathRestoreRow {
+  readonly name: string;
+  readonly plant: (dir: string) => void;
+  readonly paths: ReadonlyArray<string>;
+  readonly unmerged: ReadonlyArray<string>;
+}
+
+const plantAll =
+  (...plants: ReadonlyArray<(dir: string) => void>) =>
+  (dir: string): void => {
+    for (const plant of plants) plant(dir);
+  };
+
+const REFUSED_RESTORES: ReadonlyArray<PathRestoreRow> = [
+  { name: 'f', plant: unmergedAt('f'), paths: ['f'], unmerged: ['f'] },
+  { name: 'f keep', plant: unmergedAt('f'), paths: ['f', 'keep'], unmerged: ['f'] },
+  { name: '.', plant: unmergedAt('f'), paths: ['.'], unmerged: ['f'] },
+  {
+    name: '. with f and g unmerged',
+    plant: plantAll(unmergedAt('f'), unmergedAt('g')),
+    paths: ['.'],
+    unmerged: ['f', 'g'],
+  },
+  { name: 'n keep', plant: unmergedAbsentAt('n'), paths: ['n', 'keep'], unmerged: ['n'] },
+  { name: "'k*' f", plant: unmergedAt('f'), paths: ['k*', 'f'], unmerged: ['f'] },
+];
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'checkout path restore over an unmerged path',
+  () => {
+    let pair: PeerPair;
+    let repo: Repository | undefined;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('path-restore-unmerged');
+      initBothRepos(pair.peer, pair.ours);
+      repo = undefined;
+    });
+
+    afterEach(async () => {
+      await repo?.dispose();
+      await pair.dispose();
+    });
+
+    const seed = async (plant: (dir: string) => void): Promise<void> => {
+      for (const dir of [pair.peer, pair.ours]) {
+        buildHistory(dir, [v1('f'), G1], [v1('f'), G1]);
+        settleIndex(dir);
+        fileWith('keep', 'edited\n')(dir);
+        installLoggingHook(dir);
+        plant(dir);
+      }
+      repo = await openRepository({ cwd: pair.ours });
+    };
+
+    describe.each(REFUSED_RESTORES)('Given the paths $name from the index', (row) => {
+      describe('When git and tsgit restore them', () => {
+        it('Then both refuse naming the unmerged paths and leave everything untouched', async () => {
+          // Arrange
+          await seed(row.plant);
+          const peerBytes = readFileSync(path.join(pair.peer, '.git', 'index'));
+          const oursBytes = readFileSync(path.join(pair.ours, '.git', 'index'));
+          const peerListing = listing(pair.peer);
+          const oursListing = listing(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', '--', ...row.paths]);
+          const sut = await repo?.checkout({ paths: row.paths }).catch((err: unknown) => err);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(1);
+          expect(gitRun.stderr).toBe(unmergedLines(row.unmerged));
+          expect(sut).toMatchObject({
+            data: { code: 'MERGE_HAS_CONFLICTS', count: row.unmerged.length, paths: row.unmerged },
+          });
+          expect(readFileSync(path.join(pair.peer, '.git', 'index'))).toEqual(peerBytes);
+          expect(readFileSync(path.join(pair.ours, '.git', 'index'))).toEqual(oursBytes);
+          expect(listing(pair.peer)).toEqual(peerListing);
+          expect(listing(pair.ours)).toEqual(oursListing);
+          expect([hookLog(pair.peer), hookLog(pair.ours)]).toEqual(['', '']);
+        });
+      });
+    });
+
+    describe('Given the paths nosuch and f from the index with f unmerged', () => {
+      describe('When git and tsgit restore them', () => {
+        it('Then both refuse the unmatched pathspec first', async () => {
+          // Arrange
+          await seed(unmergedAt('f'));
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', '--', 'nosuch', 'f']);
+          const sut = await repo?.checkout({ paths: ['nosuch', 'f'] }).catch((err: unknown) => err);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(1);
+          expect(gitRun.stderr).toBe(
+            "error: pathspec 'nosuch' did not match any file(s) known to git\n",
+          );
+          expect(sut).toMatchObject({ data: { code: 'PATHSPEC_NO_MATCH', pattern: 'nosuch' } });
+        });
+      });
+    });
+
+    describe.each([
+      { name: 'keep from the index', gitArgs: ['--', 'keep'], opts: { paths: ['keep'] } },
+      {
+        name: 'f keep from HEAD',
+        gitArgs: ['HEAD', '--', 'f', 'keep'],
+        opts: { source: 'HEAD', paths: ['f', 'keep'] },
+      },
+      {
+        name: '. from HEAD',
+        gitArgs: ['HEAD', '--', '.'],
+        opts: { source: 'HEAD', paths: ['.'] },
+      },
+    ])('Given f unmerged and the paths $name', (command) => {
+      describe('When git and tsgit restore them', () => {
+        it('Then the work tree, the index and the hook log match git', async () => {
+          // Arrange
+          await seed(unmergedAt('f'));
+          const peerBefore = statSnapshot(pair.peer);
+          const oursBefore = statSnapshot(pair.ours);
+
+          // Act
+          git(pair.peer, 'checkout', ...command.gitArgs);
+          await repo?.checkout(command.opts);
+
+          // Assert
+          expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+          expect(hookLog(pair.ours)).toEqual(hookLog(pair.peer));
+        });
+      });
+    });
+
+    describe.each([
+      { name: '. from HEAD', gitArgs: ['HEAD', '--', '.'], opts: { source: 'HEAD', paths: ['.'] } },
+    ])('Given n unmerged and absent from HEAD and the paths $name', (command) => {
+      describe('When git and tsgit restore them', () => {
+        it('Then n keeps its stages as in git', async () => {
+          // Arrange
+          await seed(unmergedAbsentAt('n'));
+          const peerBefore = statSnapshot(pair.peer);
+          const oursBefore = statSnapshot(pair.ours);
+
+          // Act
+          git(pair.peer, 'checkout', ...command.gitArgs);
+          await repo?.checkout(command.opts);
+
+          // Assert
+          expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+          expect(hookLog(pair.ours)).toEqual(hookLog(pair.peer));
+        });
+      });
+    });
+
+    describe('Given n unmerged and absent from HEAD and the paths n from HEAD', () => {
+      describe('When git and tsgit restore them', () => {
+        it('Then both refuse n as an unknown pathspec', async () => {
+          // Arrange
+          await seed(unmergedAbsentAt('n'));
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', 'HEAD', '--', 'n']);
+          const sut = await repo
+            ?.checkout({ source: 'HEAD', paths: ['n'] })
+            .catch((err: unknown) => err);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(1);
+          expect(sut).toMatchObject({ data: { code: 'PATHSPEC_NO_MATCH', pattern: 'n' } });
+        });
+      });
+    });
+
+    describe.each(['C', 'T', 'AU', 'S2', 'ST'])('Given the work tree shape %s', (shapeName) => {
+      describe.each([
+        { name: '-- f keep', gitArgs: ['--', 'f', 'keep'], source: undefined },
+        { name: 'HEAD -- f keep', gitArgs: ['HEAD', '--', 'f', 'keep'], source: 'HEAD' },
+      ])('And the command $name', (command) => {
+        describe('When git and tsgit restore the paths', () => {
+          it('Then the work tree, the index, its flags and the rewritten set match git', async () => {
+            // Arrange
+            const shape = WORK_TREE_SHAPES[shapeName];
+            if (shape === undefined) throw new Error(`unknown shape ${shapeName}`);
+            for (const dir of [pair.peer, pair.ours]) {
+              buildHistory(dir, [...shape.tracked, regular('other')], shape.tracked);
+              settleIndex(dir);
+              shape.plant(dir);
+            }
+            repo = await openRepository({ cwd: pair.ours });
+            const peerBefore = statSnapshot(pair.peer);
+            const oursBefore = statSnapshot(pair.ours);
+
+            // Act
+            git(pair.peer, 'checkout', ...command.gitArgs);
+            await repo.checkout({
+              paths: ['f', 'keep'],
+              ...(command.source && { source: command.source }),
+            });
+
+            // Assert
+            expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+          });
+        });
+      });
+    });
+  },
+);

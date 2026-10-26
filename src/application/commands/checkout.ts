@@ -482,6 +482,7 @@ const restoreUnderIndexLock = async (
     const { matched, unmatched } = selectFromUniverse(pathspec, universe);
     refuseUnmatched(unmatched);
     const pathSet = new Set<FilePath>(matched.map(escapedPathOf));
+    if (source === undefined) refuseMatchedUnmerged(currentIndex, pathSet);
     return source === undefined
       ? await materializePathRestoreFromIndex(ctx, lock, currentIndex, pathSet)
       : await materializePathRestoreLocked(ctx, lock, currentIndex, source, pathSet);
@@ -489,6 +490,11 @@ const restoreUnderIndexLock = async (
     await lock.release();
   }
 };
+
+// git's checkout_paths: a matched unmerged entry refuses the whole restore
+// before anything is written; a tree source replaces the stages instead.
+const refuseMatchedUnmerged = (currentIndex: GitIndex, pathSet: ReadonlySet<FilePath>): void =>
+  rejectUnmergedIndex(currentIndex.entries.filter((entry) => pathSet.has(escapedPathOf(entry))));
 
 // Git's checkout_paths skips a skip-worktree entry before it matches the
 // pathspec, so a path only they name is refused like any unknown one. A tree
@@ -539,7 +545,8 @@ const refuseUnmatched = (unmatched: ReadonlyArray<PositivePathspec>): void => {
 };
 
 // Both restores commit the index under the lock the caller holds (stat
-// refreshed for restored entries). They differ in the target tree:
+// refreshed for restored entries) and rewrite only the matched entries that
+// are stale or differ from the source. They differ in the target tree:
 // - 'index' (default): the tree is synthesised from the index snapshot the
 //  caller read, so the target tree and the current-index base agree.
 // - 'HEAD' | ObjectId: the source's own tree.
@@ -554,11 +561,9 @@ const materializePathRestoreFromIndex = async (
     targetTree,
     currentIndex,
     force: true,
-    // Path-restore is the explicit "give me this version" operation —
-    // canonical git always writes the source content even when the index
-    // already matches it. For `source: 'index'` the target tree is
-    // synthesised FROM the index, so without this flag every entry would
-    // be classified `noop` and nothing would be written.
+    // The target tree is synthesised FROM the index, so every entry would
+    // classify `noop`; the flag lets the stale pass rewrite the matched
+    // entries whose work file no longer agrees with the index.
     forceRewriteAll: true,
     paths: pathSet,
   });
@@ -578,19 +583,13 @@ const materializePathRestoreLocked = async (
     currentIndex,
     force: true,
     checkoutMetadata: source.metadata,
-    // Path-restore from `HEAD` / ObjectId is the explicit
-    // "give me this version" operation — canonical git always writes
-    // the source content even when the index already records it (so
-    // a locally-modified file gets reverted reliably).
+    // A matched entry whose work file is stale or differs from the source
+    // is rewritten even when the index already records the source content.
     forceRewriteAll: true,
     paths: pathSet,
   });
-  // The commit is unconditional here: the caller returns early on an empty
-  // `pathSet`, the pathspec universe is the source tree itself, and
-  // `forceRewriteAll` upgrades every matched entry to a write — so
-  // `result.written` is always `pathSet.size` (>= 1) and `result.deleted`
-  // is always 0. A `written > 0 || deleted > 0` guard would therefore be
-  // dead code (always true), so it is omitted.
+  // The commit stays unconditional: git writes the index after a restore
+  // whether or not an entry was rewritten, and `result.deleted` is always 0.
   await lock.commit(result.newIndexEntries, 'update');
   return result;
 };
