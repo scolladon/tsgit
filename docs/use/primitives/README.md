@@ -34,6 +34,8 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`writeObject`](write-object.md) | Write any git object; returns the resulting id. |
 | [`writeTree`](write-tree.md) | Write a tree object from entries; returns the id. |
 
+`materializeTree` and `applyChangeset` take the optional `ignoredOccupants`, `untrackedOccupants` and `unmergedPaths` modes that the checkout-family commands use to displace or protect what stands in a write's way; their entries in [`internals.md`](internals.md) list each mode and its default.
+
 For internal building blocks referenced from command pages (`materializeTree`, `computeChangeset`, `readHeadTree`, `detectMergeRenames`, `shiftMergeSide`, `readConfig`, `findWouldOverwrite`, `resolveConversion`, `fetchPack`, `buildPack`, `hasObject`, etc.) see [`internals.md`](internals.md).
 
 ### Re-exported types

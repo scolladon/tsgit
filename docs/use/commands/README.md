@@ -31,7 +31,7 @@ a bound `this`.
 | [`init`](init.md) | Initialize a fresh repository. |
 | [`log`](log.md) | Walk first-parent commit history. |
 | [`maintenance`](maintenance.md) | Explicit-only repository upkeep — currently the commit-graph task. |
-| [`merge`](merge.md) | Three-way merge with conflict materialisation. Nested-namespace surface (`repo.merge.run/continue/abort`). |
+| [`merge`](merge.md) | Three-way merge with conflict materialisation. Nested-namespace surface (`repo.merge.run/continue/abort`); `abort` resets as git's `reset --merge`, keeping occupants of paths the merge never touched. |
 | [`mv`](mv.md) | Rename/move tracked paths in the index and working tree. |
 | [`nameRev`](name-rev.md) | Name a commit by the nearest ref that contains it (`~`/`^` path); `describe --contains` delegates here. Structured data (no rendered line). |
 | [`notes`](notes.md) | Attach, read, list, or remove notes on git objects. Nested-namespace surface (`repo.notes.add/read/list/remove`). |
