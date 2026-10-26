@@ -418,7 +418,12 @@ done
 # the merge snapshot and rewind, the stash work-tree path set and the rebase
 # reschedule state writers — runtime code shipped in every distribution form, none
 # removable without dropping the behaviour.
-SIZE_CAP=$((1486 * 1024))
+# Raised 1486 -> 1488 KiB by the forced-checkout same-commit work: the measured pack
+# landed at 1 523 012 B, 1 348 B over the old cap, attributable to the stale-entry
+# pass and its shared index-stat judge, the stash push opening refresh and reset ref
+# tail, the bare-HEAD stay and the path-restore unmerged refusal — runtime code
+# shipped in every distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1488 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
