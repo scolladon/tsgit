@@ -16,10 +16,9 @@ import { lstatBeyondLink, matchesCachedStat, UNREACHABLE } from './is-entry-stat
 import { joinPath } from './join-working-tree-path.js';
 import { createLeadingPathScanner } from './symlinked-leading-path.js';
 
-const stageZeroByKey = (index: GitIndex): Map<IndexPathKey, IndexEntry> =>
-  new Map(
-    index.entries.filter((e) => e.flags.stage === 0).map((e) => [indexPathKey(e), e] as const),
-  );
+// Only a stage-0 entry yields a noop to look up, and git refuses an index mixing stage 0 with a higher stage for one path.
+const entryByKey = (index: GitIndex): Map<IndexPathKey, IndexEntry> =>
+  new Map(index.entries.map((e) => [indexPathKey(e), e] as const));
 
 const isUpToDate = async (
   ctx: Context,
@@ -56,7 +55,7 @@ export const upgradeStaleNoops = async (
   workdir: string,
   rule: StaleRule = 'oneway',
 ): Promise<StaleJudgment> => {
-  const cachedByKey = stageZeroByKey(index);
+  const cachedByKey = entryByKey(index);
   const contentMatches = racyContentMatcher(ctx);
   const scanner = createLeadingPathScanner(ctx);
   const upToDate = new Set<FilePath>();

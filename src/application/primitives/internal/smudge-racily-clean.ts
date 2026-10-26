@@ -17,7 +17,7 @@ const CORRUPT_INDEX_CODE_PREFIX = 'INVALID_INDEX_';
 /** Whether the caller already found `path` unchanged (git's `CE_UPTODATE`). */
 export type IsVerified = (path: FilePath) => boolean;
 
-const NOTHING_VERIFIED: IsVerified = () => false;
+export const NOTHING_VERIFIED: IsVerified = () => false;
 
 /** `is_racy_timestamp`: a gitlink is never racy. */
 const isRacyTimestamp = (entry: IndexEntry, indexMtime: IndexMtime): boolean =>

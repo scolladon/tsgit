@@ -69,7 +69,7 @@ import {
   isAttributesPath,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
-import type { IsVerified } from './internal/smudge-racily-clean.js';
+import { type IsVerified, NOTHING_VERIFIED } from './internal/smudge-racily-clean.js';
 import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
@@ -298,8 +298,6 @@ const projectUnmergedPaths = (
   ];
   return { entries: entries.sort(pathComparatorFor(entries)), stats: tallyStats(entries) };
 };
-
-const NOTHING_VERIFIED: IsVerified = () => false;
 
 interface JudgedChangeset {
   readonly changeset: Changeset;
