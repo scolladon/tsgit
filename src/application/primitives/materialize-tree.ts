@@ -67,6 +67,7 @@ import {
   isAttributesPath,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import type { IsVerified } from './internal/smudge-racily-clean.js';
 import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
@@ -297,15 +298,31 @@ const projectUnmergedPaths = (
   return { entries: entries.sort(pathComparatorFor(entries)), stats: tallyStats(entries) };
 };
 
+const NOTHING_VERIFIED: IsVerified = () => false;
+
+interface JudgedChangeset {
+  readonly changeset: Changeset;
+  readonly verified: IsVerified;
+}
+
 const rewriteStaleNoops = async (
   ctx: Context,
   changeset: Changeset,
   index: GitIndex,
   workdir: string,
   rule: StaleRule,
-): Promise<Changeset> => {
-  const entries = await upgradeStaleNoops(ctx, changeset.entries, index, workdir, rule);
-  return { entries, stats: tallyStats(entries) };
+): Promise<JudgedChangeset> => {
+  const { entries, upToDate } = await upgradeStaleNoops(
+    ctx,
+    changeset.entries,
+    index,
+    workdir,
+    rule,
+  );
+  return {
+    changeset: { entries, stats: tallyStats(entries) },
+    verified: (path) => upToDate.has(path),
+  };
 };
 
 /** Path-sort the merged entry list (in-pattern + synthesised excluded). */
@@ -482,17 +499,29 @@ const stagedOutsideTarget = (
   });
 };
 
-export const materializeTree = (
+export const materializeTree = async (
   ctx: Context,
   options: MaterializeTreeOpts,
-): Promise<MaterializeTreeResult> => materializeTreeJudging(ctx, options, 'oneway');
+): Promise<MaterializeTreeResult> => {
+  const { newIndexEntries, written, deleted } = await materializeTreeJudging(
+    ctx,
+    options,
+    'oneway',
+  );
+  return { newIndexEntries, written, deleted };
+};
+
+/** What the stale pass found up to date, for the index commit; not part of the public surface. */
+export interface JudgedMaterialization extends MaterializeTreeResult {
+  readonly verified: IsVerified;
+}
 
 /** `materializeTree` with the routine that judges a stale entry named; not part of the public surface. */
 export const materializeTreeJudging = async (
   ctx: Context,
   options: MaterializeTreeOpts,
   staleRule: StaleRule,
-): Promise<MaterializeTreeResult> => {
+): Promise<JudgedMaterialization> => {
   const fullTarget = await collectTargetEntries(ctx, options.targetTree);
   const { opts, allTarget, carried } = await carryHeadAgreement(ctx, options, fullTarget);
   const plan = planMaterialize(allTarget, opts);
@@ -508,10 +537,10 @@ export const materializeTreeJudging = async (
       ? projectUnmergedPaths(computed, plan.indexForDiff, plan.target)
       : computed;
   const workdir = requireWorkTree(ctx, 'materializeTree');
-  const changeset =
+  const { changeset, verified } =
     opts.forceRewriteAll === true
       ? await rewriteStaleNoops(ctx, rawChangeset, plan.indexForDiff, workdir, staleRule)
-      : rawChangeset;
+      : { changeset: rawChangeset, verified: NOTHING_VERIFIED };
 
   const result = await applyChangesetWithAttributes(
     ctx,
@@ -545,5 +574,6 @@ export const materializeTreeJudging = async (
     newIndexEntries,
     written: result.written,
     deleted: result.deleted,
+    verified,
   };
 };

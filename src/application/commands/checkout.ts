@@ -31,7 +31,7 @@ import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import type { HeadState } from '../primitives/internal/repo-state.js';
 import type { IsVerified } from '../primitives/internal/smudge-racily-clean.js';
-import { materializeTree, materializeTreeJudging } from '../primitives/materialize-tree.js';
+import { type materializeTree, materializeTreeJudging } from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { indexPath } from '../primitives/path-layout.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -293,26 +293,28 @@ const materializeSwitch = async (
     // git's `merge_working_tree`: only a forced switch may discard a conflict.
     if (opts.force !== true) rejectUnmergedIndex(read.entries);
     const { currentIndex, verified } = await indexForSwitch(ctx, opts, read);
-    const result = await materializeTree(ctx, {
-      targetTree: request.targetTree,
-      currentIndex,
-      force: opts.force ?? false,
-      ...(opts.force === true ? FORCED_RESET : {}),
-      checkoutMetadata: await checkoutMetadataFor(ctx, request.branchName, request.oid),
-      ...(await headTreeOption(ctx, opts, currentIndex, request.oldOid)),
-      // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
-      ...(matcher !== undefined ? { sparse: matcher } : {}),
-    });
+    const result = await materializeTreeJudging(
+      ctx,
+      {
+        targetTree: request.targetTree,
+        currentIndex,
+        force: opts.force ?? false,
+        ...(opts.force === true ? FORCED_RESET : {}),
+        checkoutMetadata: await checkoutMetadataFor(ctx, request.branchName, request.oid),
+        ...(await headTreeOption(ctx, opts, currentIndex, request.oldOid)),
+        // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
+        ...(matcher !== undefined ? { sparse: matcher } : {}),
+      },
+      'oneway',
+    );
     // Commit the index unconditionally. A no-op switch re-writes byte-identical
     // bytes (harmless). Critically, a *sparse* switch can change excluded
     // entries' ids — a skip-worktree file that differs between branches —
     // while `written`/`deleted` are both 0; guarding the commit on those
     // counts would leave a stale index that the next commit serialises wrong.
-    await lock.commit(
-      result.newIndexEntries,
-      'replace',
-      verified === undefined ? {} : { verified },
-    );
+    await lock.commit(result.newIndexEntries, 'replace', {
+      verified: verified ?? result.verified,
+    });
     return result;
   } finally {
     await lock.release();
@@ -575,7 +577,7 @@ const materializePathRestoreFromIndex = async (
     },
     'checkoutEntry',
   );
-  await lock.commit(result.newIndexEntries, 'update');
+  await lock.commit(result.newIndexEntries, 'update', { verified: result.verified });
   return result;
 };
 
@@ -602,7 +604,7 @@ const materializePathRestoreLocked = async (
   );
   // The commit stays unconditional: git writes the index after a restore
   // whether or not an entry was rewritten, and `result.deleted` is always 0.
-  await lock.commit(result.newIndexEntries, 'update');
+  await lock.commit(result.newIndexEntries, 'update', { verified: result.verified });
   return result;
 };
 

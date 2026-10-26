@@ -95,7 +95,7 @@ import {
   type WorkingTreeWriter,
 } from '../primitives/internal/write-converted-entry.js';
 import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
-import { materializeTree } from '../primitives/materialize-tree.js';
+import { materializeTreeJudging } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
@@ -827,13 +827,13 @@ const resetAfterPush = async (
   const { base, iTree, untracked, opts } = inputs;
   const currentIndex = await readIndex(ctx);
   const target = opts.keepIndex === true ? iTree : base.bTree;
-  const result = await materializeTree(ctx, {
-    targetTree: target,
-    currentIndex,
-    force: true,
-    forceRewriteAll: true,
-  });
+  const result = await materializeTreeJudging(
+    ctx,
+    { targetTree: target, currentIndex, force: true, forceRewriteAll: true },
+    'oneway',
+  );
   await lock.commit(result.newIndexEntries, 'replace', {
+    verified: result.verified,
     restagedPaths: await keptIndexPaths(ctx, inputs),
   });
   // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.

@@ -20,7 +20,7 @@ import { MERGE } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
-import { materializeTree } from '../primitives/materialize-tree.js';
+import { materializeTreeJudging } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
@@ -156,24 +156,28 @@ const hardResetFromCommit = async (
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
-    const result = await materializeTree(ctx, {
-      targetTree: commit.data.tree,
-      currentIndex,
-      force: true,
-      // git rewrites only the entries whose stat is stale; a dirty file whose index entry
-      // matches the target is stale, so it is rewritten and a clean one is left alone.
-      forceRewriteAll: true,
-      // A conflicted path is reset to the target; one the target lacks is removed.
-      unmergedPaths: 'reset',
-      checkoutMetadata: await checkoutMetadataFor(ctx, rev, commitId),
-      // A defined matcher restricts materialisation to in-pattern files;
-      // excluded target paths become synthesised skip-worktree index entries.
-      // `exactOptionalPropertyTypes`: spread `sparse` only when defined.
-      ...(matcher !== undefined ? { sparse: matcher } : {}),
-    });
+    const result = await materializeTreeJudging(
+      ctx,
+      {
+        targetTree: commit.data.tree,
+        currentIndex,
+        force: true,
+        // git rewrites only the entries whose stat is stale; a dirty file whose index entry
+        // matches the target is stale, so it is rewritten and a clean one is left alone.
+        forceRewriteAll: true,
+        // A conflicted path is reset to the target; one the target lacks is removed.
+        unmergedPaths: 'reset',
+        checkoutMetadata: await checkoutMetadataFor(ctx, rev, commitId),
+        // A defined matcher restricts materialisation to in-pattern files;
+        // excluded target paths become synthesised skip-worktree index entries.
+        // `exactOptionalPropertyTypes`: spread `sparse` only when defined.
+        ...(matcher !== undefined ? { sparse: matcher } : {}),
+      },
+      'oneway',
+    );
     // git writes the index on every hard reset, even when nothing was rewritten: the write
     // drops the extensions a fresh index does not carry and primes the cache tree.
-    await lock.commit(result.newIndexEntries, 'replace');
+    await lock.commit(result.newIndexEntries, 'replace', { verified: result.verified });
   } finally {
     await lock.release();
   }

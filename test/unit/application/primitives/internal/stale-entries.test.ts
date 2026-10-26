@@ -78,7 +78,7 @@ const judge = async (
     indexOf(entries, indexMtime),
     ctx.layout.workDir ?? '',
   );
-  return sut.map((e) => e.kind);
+  return sut.entries.map((e) => e.kind);
 };
 
 describe('upgradeStaleNoops', () => {
@@ -120,7 +120,7 @@ describe('upgradeStaleNoops', () => {
         const result = await upgradeStaleNoops(ctx, [added], indexOf([]), ctx.layout.workDir ?? '');
 
         // Assert
-        expect(result).toEqual([added]);
+        expect(result.entries).toEqual([added]);
       });
     });
   });
@@ -133,7 +133,9 @@ describe('upgradeStaleNoops', () => {
         const entry = bareEntry('gone.txt', FILE_MODE.REGULAR);
 
         // Act
-        const [sut] = await upgradeStaleNoops(
+        const {
+          entries: [sut],
+        } = await upgradeStaleNoops(
           ctx,
           [noopOf(entry)],
           indexOf([entry], NON_RACY),
@@ -318,7 +320,7 @@ describe('upgradeStaleNoops', () => {
         );
 
         // Assert
-        expect(sut.map((e) => e.kind)).toEqual(['update']);
+        expect(sut.entries.map((e) => e.kind)).toEqual(['update']);
       });
     });
   });

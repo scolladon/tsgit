@@ -6,6 +6,7 @@ import {
   isLossy,
 } from '../../../domain/git-index/index-path-key.js';
 import { FILE_MODE } from '../../../domain/objects/file-mode.js';
+import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { racyContentMatcher } from '../compare-working-tree-entry.js';
 import type { ChangesetEntry } from '../compute-changeset.js';
@@ -40,6 +41,13 @@ const isUpToDate = async (
  */
 export type StaleRule = 'oneway' | 'checkoutEntry';
 
+/** The entries after the one-way merge's stale pass, and the noops it found up to date. */
+export interface StaleJudgment {
+  readonly entries: ReadonlyArray<ChangesetEntry>;
+  /** git's `CE_UPTODATE`: the work-tree path was verified unchanged, by stat or by content. */
+  readonly upToDate: ReadonlySet<FilePath>;
+}
+
 /** git's one-way merge: a noop whose work-tree path is not up to date becomes an update. */
 export const upgradeStaleNoops = async (
   ctx: Context,
@@ -47,10 +55,11 @@ export const upgradeStaleNoops = async (
   index: GitIndex,
   workdir: string,
   rule: StaleRule = 'oneway',
-): Promise<ReadonlyArray<ChangesetEntry>> => {
+): Promise<StaleJudgment> => {
   const cachedByKey = stageZeroByKey(index);
   const contentMatches = racyContentMatcher(ctx);
   const scanner = createLeadingPathScanner(ctx);
+  const upToDate = new Set<FilePath>();
   const judged = await boundedMapFor(ctx, 'ioBound', entries, async (entry) => {
     if (entry.kind !== 'noop' || isLossy(entry)) return entry;
     const cached = cachedByKey.get(indexPathKey(entry));
@@ -59,10 +68,12 @@ export const upgradeStaleNoops = async (
       return { ...entry, kind: 'update' as const };
     }
     const absPath = joinPath(workdir, entry.path);
-    const upToDate =
+    const fresh =
       cached !== undefined &&
       (await isUpToDate(ctx, cached, index.indexMtime, absPath, contentMatches));
-    return upToDate ? entry : { ...entry, kind: 'update' as const };
+    if (!fresh) return { ...entry, kind: 'update' as const };
+    upToDate.add(entry.path);
+    return entry;
   });
-  return judged;
+  return { entries: judged, upToDate };
 };

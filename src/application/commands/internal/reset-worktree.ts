@@ -16,7 +16,10 @@ import { TsgitError } from '../../../domain/error.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { type MaterializeTreeOpts, materializeTree } from '../../primitives/materialize-tree.js';
+import {
+  type MaterializeTreeOpts,
+  materializeTreeJudging,
+} from '../../primitives/materialize-tree.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { readObject } from '../../primitives/read-object.js';
 import { loadSparseMatcher } from '../../primitives/read-sparse-checkout.js';
@@ -39,13 +42,17 @@ const resetWorktreeToCommit = async (
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
-    const result = await materializeTree(ctx, {
-      targetTree: commit.data.tree,
-      currentIndex,
-      ...mode,
-      ...(matcher !== undefined ? { sparse: matcher } : {}),
-    });
-    await lock.commit(result.newIndexEntries, 'replace');
+    const result = await materializeTreeJudging(
+      ctx,
+      {
+        targetTree: commit.data.tree,
+        currentIndex,
+        ...mode,
+        ...(matcher !== undefined ? { sparse: matcher } : {}),
+      },
+      'oneway',
+    );
+    await lock.commit(result.newIndexEntries, 'replace', { verified: result.verified });
   } finally {
     await lock.release();
   }
