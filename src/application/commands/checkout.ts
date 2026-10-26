@@ -295,6 +295,51 @@ const materializeSwitch = async (
   }
 };
 
+/** git's update_refs_for_switch: a bare HEAD name moves nothing. */
+const HEAD_SPELLINGS: ReadonlySet<string> = new Set(['HEAD', '@']);
+const staysOnHead = (opts: CheckoutSwitchOptions): boolean =>
+  HEAD_SPELLINGS.has(opts.rev) && opts.detach !== true && opts.createBranch === undefined;
+
+interface SwitchFinish {
+  readonly opts: CheckoutSwitchOptions;
+  readonly priorHead: HeadState;
+  readonly branchName: string;
+  readonly arg: string;
+  readonly branchRef: RefName | undefined;
+  readonly oid: ObjectId;
+  readonly oldOid: ObjectId;
+  readonly changedPaths: number;
+}
+
+/** The branch HEAD already names: where a bare `HEAD` stays. */
+const attachedBranch = (head: HeadState): RefName | undefined =>
+  head.kind === 'symbolic' && head.target.startsWith(HEADS_PREFIX) ? head.target : undefined;
+
+/** Moves HEAD, clears branch state and announces the switch; a bare `HEAD` moves nothing. */
+const finishSwitch = async (ctx: Context, finish: SwitchFinish): Promise<CheckoutResult> => {
+  const { opts, priorHead, branchName, oid, oldOid } = finish;
+  // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
+  const created = await createRequestedBranch(ctx, opts, finish.arg);
+  const stays = staysOnHead(opts);
+  const attached = stays ? attachedBranch(priorHead) : (created ?? finish.branchRef);
+  if (!stays) {
+    // git echoes the argument it was handed, abbreviated or not.
+    const label = opts.createBranch?.name ?? branchName;
+    const message = `checkout: moving from ${headCheckoutLabel(priorHead, oldOid)} to ${label}`;
+    await moveHead(ctx, { attached, oid, oldOid, message });
+  }
+  await removeBranchState(ctx, 'announce');
+  // post-checkout (informational) fires after the worktree + HEAD are updated;
+  // a branch checkout (changing branches / detaching) flags `1`.
+  await runInformationalHook(ctx, 'post-checkout', { args: [oldOid, oid, BRANCH_FLAG] });
+  return {
+    branch: attached,
+    id: oid,
+    detached: attached === undefined,
+    changedPaths: finish.changedPaths,
+  };
+};
+
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const priorHead = await readHeadRaw(ctx);
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
@@ -331,24 +376,16 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     matcher,
   });
 
-  // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
-  const created = await createRequestedBranch(ctx, opts, arg);
-  const attached = created ?? branchRef;
-  // Move HEAD — outside the index lock (HEAD writes are atomic on their own).
-  // git echoes the argument it was handed, abbreviated or not.
-  const label = opts.createBranch?.name ?? branchName;
-  const message = `checkout: moving from ${headCheckoutLabel(priorHead, oldOid)} to ${label}`;
-  await moveHead(ctx, { attached, oid, oldOid, message });
-  await removeBranchState(ctx, 'announce');
-  // post-checkout (informational) fires after the worktree + HEAD are updated;
-  // a branch checkout (changing branches / detaching) flags `1`.
-  await runInformationalHook(ctx, 'post-checkout', { args: [oldOid, oid, BRANCH_FLAG] });
-  return {
-    branch: attached,
-    id: oid,
-    detached: attached === undefined,
+  return finishSwitch(ctx, {
+    opts,
+    priorHead,
+    branchName,
+    arg,
+    branchRef,
+    oid,
+    oldOid,
     changedPaths: materializeResult.written + materializeResult.deleted,
-  };
+  });
 };
 
 /** A path of the restore universe with the content the restore would write. */

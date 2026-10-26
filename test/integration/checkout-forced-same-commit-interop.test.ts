@@ -11,7 +11,7 @@
  *   unique:         forced checkout rewrites every stale entry and resets conflicts as git does
  *   interopSurface: checkout
  */
-import { readdirSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -28,10 +28,12 @@ import {
 } from './interop-helpers.js';
 import {
   buildHistory,
+  fileWith,
   observe,
   regular,
   settleIndex,
   statSnapshot,
+  v1,
   WORK_TREE_SHAPES,
 } from './occupant-displacement-fixtures.js';
 
@@ -41,22 +43,62 @@ interface Spelling {
   readonly name: string;
   readonly detachFirst: boolean;
   readonly resolve: (dir: string) => string;
-  readonly comparesHead: boolean;
 }
 
-/** A bare `HEAD` keeps the attachment decision out of this suite's comparison. */
 const SPELLINGS: ReadonlyArray<Spelling> = [
-  { name: '-f HEAD', detachFirst: false, resolve: () => 'HEAD', comparesHead: false },
-  { name: '-f main', detachFirst: false, resolve: () => 'main', comparesHead: true },
+  { name: '-f HEAD', detachFirst: false, resolve: () => 'HEAD' },
+  { name: '-f main', detachFirst: false, resolve: () => 'main' },
   {
     name: '-f <oid>',
     detachFirst: false,
     resolve: (dir) => git(dir, 'rev-parse', 'main').trim(),
-    comparesHead: true,
   },
-  { name: '-f tag', detachFirst: false, resolve: () => TAG, comparesHead: true },
-  { name: 'detached -f HEAD', detachFirst: true, resolve: () => 'HEAD', comparesHead: false },
+  { name: '-f tag', detachFirst: false, resolve: () => TAG },
+  { name: '-f @', detachFirst: false, resolve: () => '@' },
+  { name: 'detached -f HEAD', detachFirst: true, resolve: () => 'HEAD' },
 ];
+
+interface HeadCheckout {
+  readonly name: string;
+  readonly detachFirst: boolean;
+  readonly gitArgs: ReadonlyArray<string>;
+  readonly tsgit: Parameters<Repository['checkout']>[0];
+}
+
+const HEAD_CHECKOUTS: ReadonlyArray<HeadCheckout> = [
+  { name: 'checkout HEAD', detachFirst: false, gitArgs: ['HEAD'], tsgit: { rev: 'HEAD' } },
+  { name: 'checkout @', detachFirst: false, gitArgs: ['@'], tsgit: { rev: '@' } },
+  { name: 'checkout HEAD~0', detachFirst: false, gitArgs: ['HEAD~0'], tsgit: { rev: 'HEAD~0' } },
+  {
+    name: 'checkout --detach HEAD',
+    detachFirst: false,
+    gitArgs: ['--detach', 'HEAD'],
+    tsgit: { rev: 'HEAD', detach: true },
+  },
+  {
+    name: 'checkout -f --detach HEAD',
+    detachFirst: false,
+    gitArgs: ['-f', '--detach', 'HEAD'],
+    tsgit: { rev: 'HEAD', detach: true, force: true },
+  },
+  {
+    name: 'checkout -b nb HEAD',
+    detachFirst: false,
+    gitArgs: ['-b', 'nb', 'HEAD'],
+    tsgit: { rev: 'HEAD', createBranch: { name: 'nb' } },
+  },
+  { name: 'detached checkout HEAD', detachFirst: true, gitArgs: ['HEAD'], tsgit: { rev: 'HEAD' } },
+];
+
+const STATE_FILES = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'MERGE_MSG', 'MERGE_MODE', 'ORIG_HEAD'];
+
+const plantStateFiles = (dir: string): void => {
+  const head = git(dir, 'rev-parse', 'HEAD').trim();
+  for (const name of STATE_FILES) writeFileSync(path.join(dir, '.git', name), `${head}\n`);
+};
+
+const remainingStateFiles = (dir: string): readonly string[] =>
+  STATE_FILES.filter((name) => existsSync(path.join(dir, '.git', name)));
 
 const headState = (dir: string): readonly string[] => [
   git(dir, 'rev-parse', '--symbolic-full-name', 'HEAD').trim(),
@@ -104,11 +146,60 @@ describe.skipIf(!GIT_AVAILABLE)('checkout forced same-commit interop', () => {
 
             // Assert
             expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
-            if (spelling.comparesHead) expect(headState(pair.ours)).toEqual(headState(pair.peer));
+            expect(headState(pair.ours)).toEqual(headState(pair.peer));
           });
         });
       },
     );
+  });
+
+  describe.each(HEAD_CHECKOUTS)('Given the command $name', (command) => {
+    describe('When git and tsgit run it over an edited tracked file', () => {
+      it('Then the work tree, the index, HEAD and its reflog match git', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildHistory(dir, [v1('f')], [v1('f')]);
+          if (command.detachFirst) git(dir, 'checkout', '-q', '--detach');
+          settleIndex(dir);
+          fileWith('f', 'edited\n')(dir);
+        }
+        repo = await openRepository({ cwd: pair.ours });
+        const peerBefore = statSnapshot(pair.peer);
+        const oursBefore = statSnapshot(pair.ours);
+
+        // Act
+        git(pair.peer, 'checkout', '-q', ...command.gitArgs);
+        await repo.checkout(command.tsgit);
+
+        // Assert
+        expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+        expect(headState(pair.ours)).toEqual(headState(pair.peer));
+      });
+    });
+  });
+
+  describe.each([
+    ['-f HEAD', 'HEAD'],
+    ['-f main', 'main'],
+  ])('Given pending operation state files and checkout %s', (_name, rev) => {
+    describe('When git and tsgit run it', () => {
+      it('Then the same state files remain', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildHistory(dir, [v1('f')], [v1('f')]);
+          settleIndex(dir);
+          plantStateFiles(dir);
+        }
+        repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        git(pair.peer, 'checkout', '-q', '-f', rev);
+        await repo.checkout({ rev, force: true });
+
+        // Assert
+        expect(remainingStateFiles(pair.ours)).toEqual(remainingStateFiles(pair.peer));
+      });
+    });
   });
 
   describe('Given a tracked a/payload and a work tree holding a symlink a to an outside directory', () => {
