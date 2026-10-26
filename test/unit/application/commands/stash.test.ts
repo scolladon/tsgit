@@ -27,6 +27,7 @@ import * as writeFileMod from '../../../../src/application/primitives/internal/w
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -480,6 +481,29 @@ describe('stash push', () => {
         const w = await commitOf(ctx, result.stash);
         expect(w.parents).toHaveLength(2);
         expect(await treeContent(ctx, w.tree, 'a.txt')).toBe('modified\n');
+      });
+    });
+  });
+
+  describe.each([
+    ['MERGE_HEAD', false],
+    ['REBASE_HEAD', true],
+  ])('Given %s naming HEAD and an edited file', (marker, kept) => {
+    describe('When stash push runs', () => {
+      it(`Then the stash is saved and ${marker} ${kept ? 'stays' : 'is removed'}`, async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, `${head}\n`);
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/${marker}`)).toBe(kept);
       });
     });
   });

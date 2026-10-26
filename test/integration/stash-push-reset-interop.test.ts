@@ -424,3 +424,117 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     );
   },
 );
+
+const MARKER_FILES = [
+  'MERGE_HEAD',
+  'MERGE_MODE',
+  'MERGE_MSG',
+  'CHERRY_PICK_HEAD',
+  'REVERT_HEAD',
+  'REBASE_HEAD',
+  'sequencer',
+  'rebase-merge',
+];
+const PLANTED_MARKERS = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD'];
+const EDIT_FIRST_PICK = "sed -i.bak '1s/^pick/edit/'";
+
+const gitIn = (dir: string, args: string[], env: NodeJS.ProcessEnv = COMMIT_ENV): void => {
+  tryRunGitWithExit(['-C', dir, ...args], { env });
+};
+
+const seedBranches = (dir: string): void => {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  const base = commitOn(dir, [KEEP, regular('f', 'base\n')]);
+  const side = commitOn(dir, [KEEP, regular('f', 'side\n')], base);
+  const main = commitOn(dir, [KEEP, regular('f', 'main\n')], base);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+};
+
+const resolveAndEdit = (dir: string): void => {
+  fileWith('f', 'resolved\n')(dir);
+  runGit(['-C', dir, 'add', 'f']);
+  fileWith('keep', 'edited\n')(dir);
+};
+
+const plantMarker = (marker: string) => (dir: string) => {
+  seedBranches(dir);
+  const head = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+  writeFileSync(path.join(dir, '.git', marker), `${head}\n`);
+  fileWith('f', 'edited\n')(dir);
+};
+
+const PENDING_SHAPES: Record<string, (dir: string) => void> = {
+  'a resolved merge': (dir) => {
+    seedBranches(dir);
+    gitIn(dir, ['merge', '-q', 'side']);
+    resolveAndEdit(dir);
+  },
+  'a resolved cherry-pick': (dir) => {
+    seedBranches(dir);
+    gitIn(dir, ['cherry-pick', 'side']);
+    resolveAndEdit(dir);
+  },
+  'a rebase stopped at an edit': (dir) => {
+    runGit(['init', '-q', '-b', 'main', dir]);
+    for (const name of ['a', 'b', 'c']) {
+      fileWith(name, `${name}\n`)(dir);
+      runGit(['-C', dir, 'add', name]);
+      runGit(['-C', dir, 'commit', '-q', '-m', name], { env: COMMIT_ENV });
+    }
+    gitIn(dir, ['rebase', '-i', '--root'], { ...COMMIT_ENV, GIT_SEQUENCE_EDITOR: EDIT_FIRST_PICK });
+    fileWith('a', 'edited\n')(dir);
+  },
+  ...Object.fromEntries(
+    PLANTED_MARKERS.map((marker) => [`a planted ${marker}`, plantMarker(marker)]),
+  ),
+};
+
+const pendingObservation = (dir: string): unknown => ({
+  stash: existsSync(path.join(dir, '.git', 'refs', 'stash')),
+  markers: MARKER_FILES.filter((name) => existsSync(path.join(dir, '.git', name))),
+  headTop: logEntries(dir, 'HEAD').at(-1)?.split(' ').slice(2).join(' '),
+  origHead: origHeadOf(dir),
+});
+
+describe.skipIf(!GIT_AVAILABLE)('stash push pending operation interop', () => {
+  let pair: PeerPair;
+  let repo: Repository;
+
+  beforeEach(async () => {
+    pair = await makePeerPair('stash-push-pending');
+  });
+
+  afterEach(async () => {
+    await repo?.dispose();
+    await pair.dispose();
+  });
+
+  describe.each(Object.entries(PENDING_SHAPES))('Given %s and an edited file', (_name, plant) => {
+    describe('When git and tsgit stash push', () => {
+      it('Then both save the stash and leave the same markers, HEAD log and ORIG_HEAD', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          plant(dir);
+          runGit(['-C', dir, 'config', 'user.name', 'Ada']);
+          runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
+          rmSync(path.join(dir, '.git', 'ORIG_HEAD'), { force: true });
+        }
+        repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.stash.push;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q'], {
+          env: COMMIT_ENV,
+        });
+        await sut({});
+
+        // Assert
+        expect(git.exitCode).toBe(0);
+        expect(pendingObservation(pair.ours)).toEqual(pendingObservation(pair.peer));
+        expect((pendingObservation(pair.peer) as { stash: boolean }).stash).toBe(true);
+      });
+    });
+  });
+});

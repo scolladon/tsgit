@@ -577,7 +577,6 @@ export const stashPush = async (
 ): Promise<StashPushResult> => {
   const workDir = await gateStash(ctx, 'stash');
   await refreshAndWriteIndex(ctx);
-  await assertNoPendingOperation(ctx);
   const saved = await stashAndReset(ctx, workDir, opts, (w) =>
     pushStashRef(ctx, w.stash, w.message),
   );
