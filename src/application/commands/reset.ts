@@ -191,13 +191,10 @@ const hardResetFromCommit = async (
       // `exactOptionalPropertyTypes`: spread `sparse` only when defined.
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
-    // Skip the commit only when there is genuinely nothing to record. Without
-    // sparse, `written`/`deleted` both 0 is the degenerate empty-tree case.
-    // WITH sparse the index can change while both counts are 0 — every target
-    // path excluded, nothing written, yet the synthesised skip-worktree
-    // entries differ from the pre-reset index — so a defined matcher forces
-    // the commit (checkout commits unconditionally for the same reason).
-    if (result.written > 0 || result.deleted > 0 || matcher !== undefined) {
+    // git writes the index on every hard reset, even when no path was rewritten: the write
+    // drops the extensions a fresh index does not carry and primes the cache tree. Only the
+    // degenerate empty result (nothing tracked, nothing changed, no sparse synthesis) skips it.
+    if (result.newIndexEntries.length > 0 || result.deleted > 0 || matcher !== undefined) {
       await lock.commit(result.newIndexEntries, 'replace');
     }
   } finally {

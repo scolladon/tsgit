@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { materializeTree } from '../../../../src/application/primitives/materialize-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -141,14 +141,52 @@ describe('materializeTree', () => {
     });
   });
 
-  describe('Given a noop entry (index matches target) AND forceRewriteAll', () => {
+  describe('Given an up-to-date noop entry AND forceRewriteAll', () => {
     describe('When materializeTree runs', () => {
-      it('Then the path is rewritten anyway', async () => {
+      it('Then nothing is written and the donor entry is kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'committed');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
+        ]);
+        const absPath = `${ctx.layout.workDir}/a.txt`;
+        await ctx.fs.write(absPath, new TextEncoder().encode('committed'));
+        const donor = indexEntryFromStat(
+          await ctx.fs.lstat(absPath),
+          FILE_MODE.REGULAR,
+          blobId,
+          'a.txt' as FilePath,
+        );
+        const currentIndex: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [donor],
+          indexMtime: { seconds: 4_000_000_000, nanoseconds: 0 },
+        };
+
+        // Act
+        const result = await materializeTree(ctx, {
+          targetTree: treeId,
+          currentIndex,
+          force: true,
+          forceRewriteAll: true,
+        });
+
+        // Assert
+        expect(result.written).toBe(0);
+        expect(result.newIndexEntries).toEqual([donor]);
+      });
+    });
+  });
+
+  describe('Given a stale noop entry (index matches target) AND forceRewriteAll', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the stale path is rewritten', async () => {
         // Arrange — seed index with the same id+mode the target tree has. The
         // index→target diff would normally classify this as `noop` and skip the
-        // write. With `forceRewriteAll: true`, the path must be rewritten
-        // unconditionally — the hard-reset use case where the working tree may
-        // have diverged from the index.
+        // write. With `forceRewriteAll: true`, a path whose stat is not up to date
+        // (the entry's zero stat never matches the file) must be rewritten — the
+        // hard-reset use case where the working tree may have diverged.
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'committed');
         const treeId = await writeTree(ctx, [
@@ -178,7 +216,7 @@ describe('materializeTree', () => {
     });
   });
 
-  describe('Given a noop entry with a clean working-tree file AND forceRewriteAll: true, force: false', () => {
+  describe('Given a stale noop entry with a clean-content working-tree file AND forceRewriteAll: true, force: false', () => {
     describe('When materializeTree runs', () => {
       it('Then the upgraded entry goes through the tracked-dirty guard (kind is update, not add)', async () => {
         // Arrange — index has 'committed', working tree has 'committed' (clean per

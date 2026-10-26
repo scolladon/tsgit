@@ -1,7 +1,7 @@
 /**
  * Hard-reset the working tree + index to `commitId`'s tree — `reset --hard`
- * semantics with `forceRewriteAll` so dirty / no-op'd paths don't survive the
- * reset. Sparse-aware.
+ * semantics with `forceRewriteAll`: like git's one-way merge, a path whose work-tree
+ * stat is not up to date is rewritten, an up-to-date one is left alone. Sparse-aware.
  *
  * Inlined here (rather than delegated to the `reset` command) so it can run
  * while an operation marker (`MERGE_HEAD` / `CHERRY_PICK_HEAD`) is still on disk:

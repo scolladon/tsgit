@@ -20,11 +20,9 @@
  * - **Paths whose changeset classification was `noop`** (skipped — index
  *  already matched target by `id + mode`): the IndexEntry is the caller's
  *  `currentIndex` entry verbatim. Donor stats survive across the call.
- * - `reset --hard` therefore MUST set `forceRewriteAll: true` so every noop
- *  upgrades to update and the post-write stats land in the output. Without
- *  that, a locally-modified working-tree file that the index still records
- *  as clean would survive the reset, AND the donor stats would be stale
- *  relative to the actual disk state.
+ * - An up-to-date noop under `forceRewriteAll` keeps its donor entry too; only a noop whose
+ *  work-tree path is not up to date (absent, changed, or unreachable) is rewritten, so its
+ *  entry carries the post-write stats.
  */
 
 import { checkoutOverwriteDirty } from '../../domain/commands/error.js';
@@ -69,6 +67,7 @@ import {
   isAttributesPath,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
 
@@ -82,13 +81,11 @@ export interface MaterializeTreeOpts {
    */
   readonly paths?: ReadonlySet<FilePath>;
   /**
-   * When true, every target-tree path is written to the working tree
-   * unconditionally — even paths the index→target diff classified as `noop`
-   * (same `id` AND `mode`). Required by `reset --hard`, where the working
-   * tree may diverge from the index (uncommitted local modifications); the
-   * standard index→target diff cannot see that drift, so noops would skip
-   * paths the caller wants overwritten. Default `false` keeps the Phase
-   * 13.1 checkout behaviour: clean files are never spuriously rewritten.
+   * When true, every entry whose work-tree stat is not up to date is rewritten
+   * even when the index already records the target; an up-to-date one is left
+   * alone, and a skip-worktree entry is never judged. Used by `reset --hard`
+   * and path restores, where the working tree may diverge from the index.
+   * Default `false`: a noop entry is never rewritten.
    */
   readonly forceRewriteAll?: boolean;
   /** The ref and commit the checkout moves to, told to a smudging process filter. */
@@ -129,6 +126,7 @@ export interface MaterializeTreeOpts {
 
 export interface MaterializeTreeResult {
   readonly newIndexEntries: ReadonlyArray<IndexEntry>;
+  /** Count of work-tree rewrites; an up-to-date entry left alone is not counted. */
   readonly written: number;
   readonly deleted: number;
 }
@@ -287,14 +285,13 @@ const projectUnmergedPaths = (
   return { entries: entries.sort(pathComparatorFor(entries)), stats: tallyStats(entries) };
 };
 
-const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
-  const entries = changeset.entries.map((entry) =>
-    entry.kind === 'noop' ? { ...entry, kind: 'update' as const } : entry,
-  );
-  // Re-tally stats from the mutated entry list rather than doing per-entry
-  // arithmetic on the prior stats. Equivalent result, simpler mutation surface,
-  // and `applyChangeset`'s progress denominator (`stats.add + update + delete`)
-  // now stays consistent with the entry list it iterates.
+const rewriteStaleNoops = async (
+  ctx: Context,
+  changeset: Changeset,
+  index: GitIndex,
+  workdir: string,
+): Promise<Changeset> => {
+  const entries = await upgradeStaleNoops(ctx, changeset.entries, index, workdir);
   return { entries, stats: tallyStats(entries) };
 };
 
@@ -490,8 +487,11 @@ export const materializeTree = async (
     opts.unmergedPaths === 'reset'
       ? projectUnmergedPaths(computed, plan.indexForDiff, plan.target)
       : computed;
+  const workdir = requireWorkTree(ctx, 'materializeTree');
   const changeset =
-    opts.forceRewriteAll === true ? upgradeNoopsToUpdates(rawChangeset) : rawChangeset;
+    opts.forceRewriteAll === true
+      ? await rewriteStaleNoops(ctx, rawChangeset, plan.indexForDiff, workdir)
+      : rawChangeset;
 
   const result = await applyChangesetWithAttributes(
     ctx,
@@ -501,7 +501,7 @@ export const materializeTree = async (
       ...(opts.ignoredOccupants && { ignoredOccupants: opts.ignoredOccupants }),
       ...(opts.untrackedOccupants && { untrackedOccupants: opts.untrackedOccupants }),
       ...(opts.unmergedPaths && { unmergedPaths: opts.unmergedPaths }),
-      workdir: requireWorkTree(ctx, 'materializeTree'),
+      workdir,
       ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
     },
     checkoutDirection(opts, plan),

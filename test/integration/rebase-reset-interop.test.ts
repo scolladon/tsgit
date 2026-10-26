@@ -10,7 +10,7 @@
  *   unique:         rebase abort/skip refuse untracked occupants and keep the stop state as canonical git
  *   interopSurface: working-tree
  */
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.node.js';
@@ -273,6 +273,53 @@ describe.skipIf(!GIT_AVAILABLE)(
           refusal: undefined,
         },
       ];
+
+      const BACKDATE_SECONDS = 10;
+      const TOUCH_SECONDS = 5;
+      const BYSTANDERS = ['keep', 'x', 'f'] as const;
+
+      const stampOf = (dir: string, file: string): string => {
+        const stat = statSync(path.join(dir, file));
+        return `${stat.ino}:${stat.mtimeMs}`;
+      };
+
+      const settleBystanders = (dir: string): void => {
+        const settled = new Date(Date.now() - BACKDATE_SECONDS * 1000);
+        for (const file of BYSTANDERS) utimesSync(path.join(dir, file), settled, settled);
+        runGit(['-C', dir, 'update-index', '--refresh']);
+      };
+
+      const touch = (dir: string, file: string): void => {
+        const touched = new Date(Date.now() + TOUCH_SECONDS * 1000);
+        utimesSync(path.join(dir, file), touched, touched);
+      };
+
+      const rewrittenBystanders = (dir: string, before: Record<string, string>): string[] =>
+        BYSTANDERS.filter((file) => stampOf(dir, file) !== before[file]);
+
+      describe('When --abort runs with one clean and one touched tracked bystander', () => {
+        it('Then each tool rewrites the touched one only, as git does', async () => {
+          // Arrange
+          await stopOnEdit();
+          for (const dir of [pair.peer, pair.ours]) {
+            settleBystanders(dir);
+            touch(dir, 'f');
+          }
+          const stamp = (dir: string) =>
+            Object.fromEntries(BYSTANDERS.map((file) => [file, stampOf(dir, file)]));
+          const before = { peer: stamp(pair.peer), ours: stamp(pair.ours) };
+
+          // Act
+          const { expected, result } = await finishOnBoth('abort');
+
+          // Assert
+          expect(expected).toEqual(OK);
+          expect(result).toEqual(expected);
+          expect(rewrittenBystanders(pair.peer, before.peer)).toEqual(['f']);
+          expect(rewrittenBystanders(pair.ours, before.ours)).toEqual(['f']);
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        });
+      });
 
       describe.each(ROWS)('When --skip runs after $title', ({ prepare, occupant, refusal }) => {
         it('Then the outcome, work tree, index and stop state match git', async () => {
