@@ -31,7 +31,11 @@ import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import type { HeadState } from '../primitives/internal/repo-state.js';
 import type { IsVerified } from '../primitives/internal/smudge-racily-clean.js';
-import { type materializeTree, materializeTreeJudging } from '../primitives/materialize-tree.js';
+import {
+  type JudgedMaterialization,
+  type MaterializeTreeOpts,
+  materializeTreeJudging,
+} from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { indexPath } from '../primitives/path-layout.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -265,15 +269,35 @@ interface SwitchIndex {
   readonly verified?: IsVerified;
 }
 
-/** An unforced switch starts from git's refreshed index; a forced one rewrites stale entries itself. */
-const indexForSwitch = async (
-  ctx: Context,
-  opts: CheckoutSwitchOptions,
-  read: GitIndex,
-): Promise<SwitchIndex> => {
+/**
+ * The index a switch materialises from. git's `merge_working_tree` lets only a forced switch
+ * discard a conflict; an unforced one starts from the refreshed index, a forced one rewrites
+ * stale entries itself.
+ */
+const switchIndex = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<SwitchIndex> => {
+  const read = await readIndex(ctx);
   if (opts.force === true) return { currentIndex: read };
+  rejectUnmergedIndex(read.entries);
   const { currentIndex, verified } = await refreshedIndex(ctx, read);
   return { currentIndex, verified };
+};
+
+const switchMaterializeOpts = async (
+  ctx: Context,
+  request: SwitchRequest,
+  currentIndex: GitIndex,
+): Promise<MaterializeTreeOpts> => {
+  const { opts, matcher } = request;
+  return {
+    targetTree: request.targetTree,
+    currentIndex,
+    force: opts.force ?? false,
+    ...(opts.force === true ? FORCED_RESET : {}),
+    checkoutMetadata: await checkoutMetadataFor(ctx, request.branchName, request.oid),
+    ...(await headTreeOption(ctx, opts, currentIndex, request.oldOid)),
+    // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
+    ...(matcher !== undefined ? { sparse: matcher } : {}),
+  };
 };
 
 /**
@@ -281,37 +305,22 @@ const indexForSwitch = async (
  * read-materialise-commit sequence in the lock closes the TOCTOU window
  * where a concurrent index writer could otherwise stale the donor map
  * between readIndex and lock.commit.
+ *
+ * The index is committed unconditionally. A no-op switch re-writes byte-identical
+ * bytes (harmless). Critically, a *sparse* switch can change excluded
+ * entries' ids — a skip-worktree file that differs between branches —
+ * while `written`/`deleted` are both 0; guarding the commit on those
+ * counts would leave a stale index that the next commit serialises wrong.
  */
 const materializeSwitch = async (
   ctx: Context,
   request: SwitchRequest,
-): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
-  const { opts, matcher } = request;
+): Promise<JudgedMaterialization> => {
   const lock = await acquireIndexLock(ctx);
   try {
-    const read = await readIndex(ctx);
-    // git's `merge_working_tree`: only a forced switch may discard a conflict.
-    if (opts.force !== true) rejectUnmergedIndex(read.entries);
-    const { currentIndex, verified } = await indexForSwitch(ctx, opts, read);
-    const result = await materializeTreeJudging(
-      ctx,
-      {
-        targetTree: request.targetTree,
-        currentIndex,
-        force: opts.force ?? false,
-        ...(opts.force === true ? FORCED_RESET : {}),
-        checkoutMetadata: await checkoutMetadataFor(ctx, request.branchName, request.oid),
-        ...(await headTreeOption(ctx, opts, currentIndex, request.oldOid)),
-        // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
-        ...(matcher !== undefined ? { sparse: matcher } : {}),
-      },
-      'oneway',
-    );
-    // Commit the index unconditionally. A no-op switch re-writes byte-identical
-    // bytes (harmless). Critically, a *sparse* switch can change excluded
-    // entries' ids — a skip-worktree file that differs between branches —
-    // while `written`/`deleted` are both 0; guarding the commit on those
-    // counts would leave a stale index that the next commit serialises wrong.
+    const { currentIndex, verified } = await switchIndex(ctx, request.opts);
+    const materializeOpts = await switchMaterializeOpts(ctx, request, currentIndex);
+    const result = await materializeTreeJudging(ctx, materializeOpts, 'oneway');
     await lock.commit(result.newIndexEntries, 'replace', {
       verified: verified ?? result.verified,
     });
@@ -344,22 +353,28 @@ interface SwitchFinish {
 const attachedBranch = (head: HeadState): RefName | undefined =>
   head.kind === 'symbolic' && head.target.startsWith(HEADS_PREFIX) ? head.target : undefined;
 
+/** git echoes the argument it was handed, abbreviated or not, in the reflog message. */
+const moveHeadForSwitch = (
+  ctx: Context,
+  finish: SwitchFinish,
+  attached: RefName | undefined,
+): Promise<void> => {
+  const { opts, priorHead, branchName, oid, oldOid } = finish;
+  const label = opts.createBranch?.name ?? branchName;
+  const message = `checkout: moving from ${headCheckoutLabel(priorHead, oldOid)} to ${label}`;
+  return moveHead(ctx, { attached, oid, oldOid, message });
+};
+
 /** Moves HEAD, clears branch state and announces the switch; a bare `HEAD` moves nothing. */
 const finishSwitch = async (ctx: Context, finish: SwitchFinish): Promise<CheckoutResult> => {
-  const { opts, priorHead, branchName, oid, oldOid } = finish;
+  const { opts, priorHead, oid, oldOid } = finish;
   // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
   const created = await createRequestedBranch(ctx, opts, finish.arg);
   const stays = staysOnHead(opts, finish.branchRef);
   const attached = stays ? attachedBranch(priorHead) : (created ?? finish.branchRef);
-  if (!stays) {
-    // git echoes the argument it was handed, abbreviated or not.
-    const label = opts.createBranch?.name ?? branchName;
-    const message = `checkout: moving from ${headCheckoutLabel(priorHead, oldOid)} to ${label}`;
-    await moveHead(ctx, { attached, oid, oldOid, message });
-  }
+  if (!stays) await moveHeadForSwitch(ctx, finish, attached);
   await removeBranchState(ctx, 'announce');
-  // post-checkout (informational) fires after the worktree + HEAD are updated;
-  // a branch checkout (changing branches / detaching) flags `1`.
+  // post-checkout fires after the worktree + HEAD are updated; a branch checkout flags `1`.
   await runInformationalHook(ctx, 'post-checkout', { args: [oldOid, oid, BRANCH_FLAG] });
   return {
     branch: attached,
@@ -369,52 +384,45 @@ const finishSwitch = async (ctx: Context, finish: SwitchFinish): Promise<Checkou
   };
 };
 
+interface ResolvedSwitch {
+  readonly arg: string;
+  readonly branchName: string;
+  readonly branchRef: RefName | undefined;
+  readonly oid: ObjectId;
+}
+
+/**
+ * The branch lookup runs whatever `detach` says — git reads `refs/heads/<arg>` before its
+ * revision ladder either way, and only the ATTACH decision consults the flag. A name no branch
+ * carries detaches, as git's own fallback does: a tag, a remote-tracking path or an object id.
+ * git names the argument through `get_oid_mb` first, branch or not — its warnings and its read
+ * of core.warnAmbiguousRefs happen either way.
+ */
+const resolveCommitSwitch = async (
+  ctx: Context,
+  opts: CheckoutSwitchOptions,
+): Promise<ResolvedSwitch> => {
+  const { arg, branchName, onBranch, object } = await resolveSwitch(ctx, opts);
+  const oid = await switchCommit(ctx, object);
+  await assertBranchCreatable(ctx, opts);
+  if (oid === undefined) throw checkoutNonCommit(arg);
+  const detached = opts.detach === true || onBranch === undefined;
+  return { arg, branchName, branchRef: detached ? undefined : onBranch, oid };
+};
+
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const priorHead = await readHeadRaw(ctx);
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
   const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
-  // The branch lookup runs whatever `detach` says — git reads
-  // `refs/heads/<arg>` before its revision ladder either way, and only the
-  // ATTACH decision consults the flag. A name no branch carries detaches, as
-  // git's own fallback does: a tag, a remote-tracking path or an object id.
-  // git names the argument through `get_oid_mb` first, branch or not — its
-  // warnings and its read of core.warnAmbiguousRefs happen either way.
-  const { arg, branchName, onBranch, object } = await resolveSwitch(ctx, opts);
-  const commitId = await switchCommit(ctx, object);
-  await assertBranchCreatable(ctx, opts);
-  if (commitId === undefined) throw checkoutNonCommit(arg);
-  const oid = commitId;
-  const detached = opts.detach === true || onBranch === undefined;
-  const branchRef = detached ? undefined : onBranch;
-
-  // Read target tree — git objects are content-addressed and immutable, so
-  // this can happen outside the index lock without risk.
-  const target = await readTree(ctx, oid);
-
-  // A defined matcher (`core.sparseCheckout` on) restricts the branch switch
-  // to in-pattern files; out-of-pattern entries get the skip-worktree bit.
-  // `undefined` ⇒ sparse inactive — the materialize call stays as-is.
+  const resolved = await resolveCommitSwitch(ctx, opts);
+  // Git objects are content-addressed and immutable: the target tree is read outside the lock.
+  const target = await readTree(ctx, resolved.oid);
+  // A defined matcher (`core.sparseCheckout` on) restricts the switch to in-pattern files.
   const matcher = await loadSparseMatcher(ctx);
-
-  const materializeResult = await materializeSwitch(ctx, {
-    opts,
-    targetTree: target.id,
-    branchName,
-    oid,
-    oldOid,
-    matcher,
-  });
-
-  return finishSwitch(ctx, {
-    opts,
-    priorHead,
-    branchName,
-    arg,
-    branchRef,
-    oid,
-    oldOid,
-    changedPaths: materializeResult.written + materializeResult.deleted,
-  });
+  const request = { opts, targetTree: target.id, oldOid, matcher, ...resolved };
+  const { written, deleted } = await materializeSwitch(ctx, request);
+  const changedPaths = written + deleted;
+  return finishSwitch(ctx, { opts, priorHead, oldOid, changedPaths, ...resolved });
 };
 
 /** A path of the restore universe with the content the restore would write. */
@@ -472,7 +480,7 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   };
 };
 
-type MaterializeResult = Awaited<ReturnType<typeof materializeTree>>;
+type MaterializeResult = JudgedMaterialization;
 
 // Takes the index lock and reads the index before the pathspec is judged, as
 // git's `checkout_paths` does: a held lock or a corrupt index refuses first.
