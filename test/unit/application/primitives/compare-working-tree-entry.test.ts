@@ -7,6 +7,7 @@ import {
   compareWorkingTreeDelta,
   compareWorkingTreeEntry,
   isWorkingTreeModified,
+  racyContentMatcher,
   type WorkingTreeComparison,
 } from '../../../../src/application/primitives/compare-working-tree-entry.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
@@ -1777,6 +1778,67 @@ describe('compareAndRefresh below a leading directory', () => {
 
         // Assert
         expect(spy.mock.calls.map(([p]) => p)).toEqual([work(ctx, 'a.txt')]);
+      });
+    });
+  });
+});
+
+describe('racyContentMatcher', () => {
+  describe('Given a staged file whose content is unchanged', () => {
+    describe('When the matcher judges it', () => {
+      it('Then the content matches', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'one\n');
+        const sut = racyContentMatcher(ctx);
+        const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
+
+        // Act
+        const result = await sut(entry, work(ctx, 'a.txt'), stat);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a staged file rewritten with other content of the same size', () => {
+    describe('When the matcher judges it', () => {
+      it('Then the content differs', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'one\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'two\n');
+        const sut = racyContentMatcher(ctx);
+        const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
+
+        // Act
+        const result = await sut(entry, work(ctx, 'a.txt'), stat);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given one matcher judging two files', () => {
+    describe('When both are judged', () => {
+      it('Then the attribute sources are read once', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'one\n');
+        const sut = racyContentMatcher(ctx);
+        const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
+        const readSpy = vi.spyOn(ctx.fs, 'lstatIfReachable');
+        await sut(entry, work(ctx, 'a.txt'), stat);
+        const afterFirst = readSpy.mock.calls.filter(([p]) => p.endsWith('info/attributes')).length;
+
+        // Act
+        await sut(entry, work(ctx, 'a.txt'), stat);
+
+        // Assert
+        const afterSecond = readSpy.mock.calls.filter(([p]) =>
+          p.endsWith('info/attributes'),
+        ).length;
+        expect(afterFirst).toBe(1);
+        expect(afterSecond).toBe(afterFirst);
       });
     });
   });

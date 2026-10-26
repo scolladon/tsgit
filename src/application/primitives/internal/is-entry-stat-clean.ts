@@ -1,6 +1,9 @@
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
-import { FILE_MODE } from '../../../domain/objects/file-mode.js';
+import { deriveWorkingMode, FILE_MODE } from '../../../domain/objects/file-mode.js';
+import type { Context } from '../../../ports/context.js';
 import type { FileStat } from '../../../ports/file-system.js';
+import { lstatIfPresent } from './fs-probes.js';
 
 /**
  * The `.git/index` file's own mtime (sec + ns), as observed by `readIndex`.
@@ -88,4 +91,45 @@ export const isEntryStatClean = (
   if (entry.flags.assumeValid) return true;
   if (isRacy(entry, indexMtime)) return false;
   return matchesContentStat(entry, stat);
+};
+
+// A tracked path's index entry with the mtime of the index it came from (the racy-guard reference).
+export interface CachedStat {
+  readonly entry: IndexEntry;
+  readonly indexMtime: IndexMtime | undefined;
+}
+
+/** Decides a racy, stat-matching entry by its content. */
+export type RacyContentCheck = (
+  entry: IndexEntry,
+  absPath: string,
+  stat: FileStat,
+) => Promise<boolean>;
+
+export const UNREACHABLE = Symbol('unreachable');
+
+// git's lstat of the whole path: ENOENT reads as absent, ENOTDIR as unreachable.
+export const lstatBeyondLink = async (
+  ctx: Context,
+  absPath: string,
+): Promise<FileStat | undefined | typeof UNREACHABLE> => {
+  try {
+    return await lstatIfPresent(ctx.fs, absPath);
+  } catch (err) {
+    if (errorDataCode(err) === 'NOT_A_DIRECTORY') return UNREACHABLE;
+    throw err;
+  }
+};
+
+// git's `ie_match_stat`: the cached stat fields settle it, and a racy entry (its mtime not
+// older than the index file's) is settled by the content instead.
+export const matchesCachedStat = async (
+  { entry, indexMtime }: CachedStat,
+  absPath: string,
+  stat: FileStat,
+  contentMatches: RacyContentCheck,
+): Promise<boolean> => {
+  if (deriveWorkingMode(stat) !== entry.mode || !matchesContentStat(entry, stat)) return false;
+  if (indexMtime !== undefined && !isRacy(entry, indexMtime)) return true;
+  return contentMatches(entry, absPath, stat);
 };

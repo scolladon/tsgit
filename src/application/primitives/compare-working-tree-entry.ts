@@ -37,9 +37,14 @@ import {
   type IndexMtime,
   isEntryStatClean,
   matchesContentStat,
+  type RacyContentCheck,
 } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
-import type { AttributeProvider } from './internal/read-gitattributes.js';
+import { lazily } from './internal/lazily.js';
+import {
+  type AttributeProvider,
+  buildCheckinAttributeProvider,
+} from './internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
@@ -385,3 +390,12 @@ export const compareWorkingTreeEntry = async (
   indexMtime?: IndexMtime,
 ): Promise<WorkingTreeComparison> =>
   (await compareWorkingTreeDelta(ctx, entry, provider, indexMtime)).status;
+
+/** git's racy branch of ie_match_stat: content decides, checkin attributes built once per checker. */
+export const racyContentMatcher = (ctx: Context): RacyContentCheck => {
+  const provider = lazily(() => buildCheckinAttributeProvider(ctx));
+  return async (entry, absPath, stat) => {
+    const { status } = await compareFile(ctx, entry, absPath, stat, scopeOf(await provider()));
+    return !isWorkingTreeModified(status);
+  };
+};

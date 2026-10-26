@@ -3,30 +3,26 @@
  * the way git's `verify_absent` / `check_leading_path` weigh it: one classifier
  * shared by every pre-flight, so a clash is named identically wherever it is found.
  */
-import { errorDataCode } from '../../../domain/error-data-code.js';
-import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
-import { deriveWorkingMode } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
-import type { FileStat } from '../../../ports/file-system.js';
-import { compareFile, isWorkingTreeModified, scopeOf } from '../compare-working-tree-entry.js';
+import { racyContentMatcher } from '../compare-working-tree-entry.js';
 import { createConcurrencyLimiter } from './concurrency-limiter.js';
-import { lstatIfPresent, lstatIfReachable } from './fs-probes.js';
+import { lstatIfReachable } from './fs-probes.js';
 import { buildRepoIgnorePredicate } from './ignore-evaluator.js';
-import { type IndexMtime, isRacy, matchesContentStat } from './is-entry-stat-clean.js';
+import {
+  type CachedStat,
+  lstatBeyondLink,
+  matchesCachedStat,
+  UNREACHABLE,
+} from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
 import { lazily } from './lazily.js';
-import { buildCheckinAttributeProvider } from './read-gitattributes.js';
 import { requireWorkTree } from './repo-state.js';
 import type { LeadingPathScanner } from './symlinked-leading-path.js';
 
 export type IgnoredProbe = (absPath: string, isDirectory: boolean) => Promise<boolean>;
 
-// A tracked path's index entry with the mtime of the index it came from (the racy-guard reference).
-export interface TrackedStat {
-  readonly entry: IndexEntry;
-  readonly indexMtime: IndexMtime | undefined;
-}
+export type TrackedStat = CachedStat;
 
 export type TrackedLookup = (path: FilePath) => Promise<TrackedStat | undefined>;
 
@@ -136,36 +132,6 @@ const localChange = (path: FilePath): OccupantVerdict => ({
   clash: { class: 'local-changes', path },
 });
 
-const UNREACHABLE = Symbol('unreachable');
-
-// git's lstat of the whole path: ENOENT reads as absent, ENOTDIR as unreachable.
-const lstatBeyondLink = async (
-  ctx: Context,
-  absPath: string,
-): Promise<FileStat | undefined | typeof UNREACHABLE> => {
-  try {
-    return await lstatIfPresent(ctx.fs, absPath);
-  } catch (err) {
-    if (errorDataCode(err) === 'NOT_A_DIRECTORY') return UNREACHABLE;
-    throw err;
-  }
-};
-
-// git's `ie_match_stat`: the cached stat fields settle it, and a racy entry (its mtime not
-// older than the index file's) is settled by the content instead.
-const matchesCachedStat = async (
-  ctx: Context,
-  { entry, indexMtime }: TrackedStat,
-  absPath: string,
-  stat: FileStat,
-): Promise<boolean> => {
-  if (deriveWorkingMode(stat) !== entry.mode || !matchesContentStat(entry, stat)) return false;
-  if (indexMtime !== undefined && !isRacy(entry, indexMtime)) return true;
-  const provider = await buildCheckinAttributeProvider(ctx);
-  const { status } = await compareFile(ctx, entry, absPath, stat, scopeOf(provider));
-  return !isWorkingTreeModified(status);
-};
-
 // The leading symlink is followed, as git's verify_uptodate lstat()s the whole path: nothing
 // beyond it reads as the entry deleted, a file in the way as a change, and what is reached
 // is a change only when it no longer matches the index entry's cached stat.
@@ -180,7 +146,8 @@ const classifyThroughLink = async (
   if (reached === UNREACHABLE) return localChange(path);
   const tracked = await scope.tracked(path);
   if (tracked === undefined) return localChange(path);
-  return (await matchesCachedStat(ctx, tracked, absPath, reached)) ? CLEAR : localChange(path);
+  const unchanged = await matchesCachedStat(tracked, absPath, reached, racyContentMatcher(ctx));
+  return unchanged ? CLEAR : localChange(path);
 };
 
 // A file or symlink standing where a leading directory of a changed path must be: a regular
