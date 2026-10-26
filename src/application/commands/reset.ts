@@ -31,7 +31,7 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
-import { recordHardReset } from './internal/reset-refs.js';
+import { recordResetRefs } from './internal/reset-refs.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 
 export type ResetMode = 'soft' | 'mixed' | 'hard';
@@ -83,7 +83,7 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
 
   const head = await readHeadRaw(ctx);
   const branch = head.kind === 'symbolic' ? head.target : undefined;
-  await recordHardReset(ctx, id, opts.rev);
+  await recordResetRefs(ctx, id, opts.rev);
   return { mode: opts.mode, id, branch };
 };
 

@@ -19,7 +19,7 @@ const recordOrigHead = async (ctx: Context): Promise<void> => {
  * coupled split, a detached HEAD is written directly, and either way a no-move skips the reflog,
  * as git's needs-commit semantics do — then the in-progress branch state is dropped.
  */
-export const recordHardReset = async (ctx: Context, id: ObjectId, rev: string): Promise<void> => {
+export const recordResetRefs = async (ctx: Context, id: ObjectId, rev: string): Promise<void> => {
   await recordOrigHead(ctx);
   await updateRef(ctx, 'HEAD' as RefName, id, { reflogMessage: resetMovingTo(rev) });
   await removeBranchState(ctx, 'silent');

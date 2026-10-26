@@ -82,11 +82,10 @@ export interface MaterializeTreeOpts {
    */
   readonly paths?: ReadonlySet<FilePath>;
   /**
-   * When true, every entry whose work-tree stat is not up to date is rewritten
-   * even when the index already records the target; an up-to-date one is left
-   * alone, and a skip-worktree entry is never judged. Used by `reset --hard`
-   * and path restores, where the working tree may diverge from the index.
-   * Default `false`: a noop entry is never rewritten.
+   * git's one-way-merge reset: a no-op entry (the index already records the target) whose
+   * work-tree path is not up to date, whether absent, changed or unreachable, is rewritten.
+   * An up-to-date entry is left alone and a skip-worktree entry is never judged.
+   * Default `false`: a no-op entry is never rewritten.
    */
   readonly forceRewriteAll?: boolean;
   /** The ref and commit the checkout moves to, told to a smudging process filter. */

@@ -22,9 +22,7 @@ import type { LeadingPathScanner } from './symlinked-leading-path.js';
 
 export type IgnoredProbe = (absPath: string, isDirectory: boolean) => Promise<boolean>;
 
-export type TrackedStat = CachedStat;
-
-export type TrackedLookup = (path: FilePath) => Promise<TrackedStat | undefined>;
+export type TrackedLookup = (path: FilePath) => Promise<CachedStat | undefined>;
 
 // What the clash check weighs an occupant against: the paths the changeset deletes,
 // the repo's ignore rules (git removes ignored files along with a directory that

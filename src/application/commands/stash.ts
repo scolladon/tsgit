@@ -119,7 +119,7 @@ import { takeMergeAutostash } from './internal/merge-autostash.js';
 import { FILE_FLAG } from './internal/post-checkout.js';
 import { refreshAndWriteIndex } from './internal/refresh-index.js';
 import { toConflictList } from './internal/replay-sequence.js';
-import { recordHardReset } from './internal/reset-refs.js';
+import { recordResetRefs } from './internal/reset-refs.js';
 import {
   indexMessage,
   onMessage,
@@ -590,7 +590,7 @@ export const stashPush = async (
  */
 const finishStashReset = async (ctx: Context, opts: StashPushInput): Promise<void> => {
   const head = await resolveRef(ctx, 'HEAD');
-  await recordHardReset(ctx, head, 'HEAD');
+  await recordResetRefs(ctx, head, 'HEAD');
   if (opts.keepIndex !== true) return;
   await runInformationalHook(ctx, 'post-checkout', { args: [head, head, FILE_FLAG] });
 };

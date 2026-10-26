@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { recordHardReset } from '../../../../../src/application/commands/internal/reset-refs.js';
+import { recordResetRefs } from '../../../../../src/application/commands/internal/reset-refs.js';
 import { getRefStore } from '../../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../../src/application/primitives/reflog-store.js';
 import { writeSymbolicRef } from '../../../../../src/application/primitives/write-symbolic-ref.js';
@@ -28,14 +28,14 @@ const seed = async (): Promise<{ ctx: Context; head: ObjectId }> => {
   return { ctx, head };
 };
 
-describe('recordHardReset', () => {
+describe('recordResetRefs', () => {
   describe('Given an attached HEAD', () => {
     describe('When the reset records HEAD', () => {
       it('Then ORIG_HEAD names HEAD and the HEAD reflog gains one no-move entry', async () => {
         // Arrange
         const { ctx, head } = await seed();
         const before = (await readReflog(ctx, HEAD)).length;
-        const sut = recordHardReset;
+        const sut = recordResetRefs;
 
         // Act
         await sut(ctx, head, 'HEAD');
@@ -57,7 +57,7 @@ describe('recordHardReset', () => {
         const { ctx, head } = await seed();
         await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name: HEAD, id: head }]);
         const before = await readReflog(ctx, HEAD);
-        const sut = recordHardReset;
+        const sut = recordResetRefs;
 
         // Act
         await sut(ctx, head, 'HEAD');
@@ -76,7 +76,7 @@ describe('recordHardReset', () => {
         const { ctx, head } = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, `${head}\n`);
         await writeSymbolicRef(ctx, HEAD, 'refs/heads/orphan' as RefName);
-        const sut = recordHardReset;
+        const sut = recordResetRefs;
 
         // Act
         await sut(ctx, head, 'HEAD');
@@ -93,7 +93,7 @@ describe('recordHardReset', () => {
         // Arrange
         const { ctx, head } = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${head}\n`);
-        const sut = recordHardReset;
+        const sut = recordResetRefs;
 
         // Act
         await sut(ctx, head, 'HEAD');

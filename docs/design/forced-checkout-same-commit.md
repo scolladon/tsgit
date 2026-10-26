@@ -379,7 +379,7 @@ into `commands/internal/reset-refs.ts`:
 
 ```ts
 /** git's reset_refs + remove_branch_state after `reset --hard <rev>`. */
-export const recordHardReset = async (ctx: Context, id: ObjectId, rev: string): Promise<void> => {
+export const recordResetRefs = async (ctx: Context, id: ObjectId, rev: string): Promise<void> => {
   await recordOrigHead(ctx);                                              // moved from reset.ts:104-108
   await updateRef(ctx, 'HEAD' as RefName, id, { reflogMessage: resetMovingTo(rev) });
   await removeBranchState(ctx, 'silent');
@@ -468,7 +468,7 @@ New, raised by the ADR-1090/1091 folds — settled: DC5 → ADR-1092, DC6 → AD
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
 | DC5 | F13: does P7 implement git's whole opening `refresh_and_write_cache` (refusal + stat refresh + write) or only the unmerged refusal? | (a) whole step (b) refusal only | (a) | F12's refusal IS that step's failure mode; (b) keeps the T × `stash push` row stale, and on a touched-plus-edited tree the stale-only reset (P1) would rewrite the touched file git refreshed first. Against (a): one extra N-`lstat` scan and an index write per push. |
-| DC6 | F16: does P8 run git's whole `reset --hard` ref tail (ORIG_HEAD, HEAD reflog, branch-state removal) or only the reflog line ADR-1091 names? | (a) whole tail via the extracted `recordHardReset` (b) reflog only | (a) | git writes ORIG_HEAD = HEAD on every push (O1, O4); same child `reset`, same three lines tsgit's `reset` already runs. (b) leaves a proven ORIG_HEAD gap on the call site P8 edits. Against (a): ORIG_HEAD is not named in ADR-1091. |
+| DC6 | F16: does P8 run git's whole `reset --hard` ref tail (ORIG_HEAD, HEAD reflog, branch-state removal) or only the reflog line ADR-1091 names? | (a) whole tail via the extracted `recordResetRefs` (b) reflog only | (a) | git writes ORIG_HEAD = HEAD on every push (O1, O4); same child `reset`, same three lines tsgit's `reset` already runs. (b) leaves a proven ORIG_HEAD gap on the call site P8 edits. Against (a): ORIG_HEAD is not named in ADR-1091. |
 | DC7 | F14: `stash push --keep-index` fires `post-checkout <head> <head> 0` | (a) fold into P8 (b) keep out, warn-and-ask with F11c/T11c | (a) | Same function (`stashPush` tail), proven both sides, one call. Against (a): a hook is a new side effect for a caller that never saw one from `stash.push`. |
 | DC8 | F15: drop `stash push`'s pending-operation gate (`stash.ts:575`) | (a) drop it: git stashes, resets and clears `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD` (keeps `REBASE_HEAD`) (b) keep it, warn-and-ask with M2 and the K rows | (a) | Proven (M2 is a real resolved merge; K rows), same function, so the fold rule applies; P8's `removeBranchState` already gives the clearing. Before folding, the implementer pins one real resolved cherry-pick and one real stopped rebase (`rebase-merge/` present) against git 2.55 (lesson 017). Against (a): it removes a refusal shipped since #98 and widens `stash push` to every pending operation; P7 already makes the common case (a conflicted merge) faithful. |
 
@@ -497,7 +497,7 @@ switch rows, HEAD's symref and HEAD reflog (count and top subject). Racy entries
   empty in both.
 - `test/integration/reset-interop.test.ts`: `reset --hard HEAD` × A.1 shapes, with the AU, SW, S3i, UMn rows and the
   clean-tree "nothing rewritten" row; R1/R2 (HEAD log `reset: moving to HEAD`, branch log untouched, ORIG_HEAD) and
-  T11i (detached: no entry) guard the extracted `recordHardReset`.
+  T11i (detached: no entry) guard the extracted `recordResetRefs`.
 - `test/integration/checkout-leading-symlink-interop.test.ts`: the existing `checkout -f HEAD` row
   (`:173-200`) gains a populated-index variant (the literal 32.27 shape).
 - `test/integration/stash-interop.test.ts`: C, T, E rows asserting `keep` is not rewritten; T row asserting the stat
@@ -535,7 +535,7 @@ Unit (memory adapter, Given/When/Then split, AAA, `sut`):
 - `test/unit/application/commands/stash.test.ts`: HEAD reflog entry on attached push, none on detached; ORIG_HEAD
   (DC6); keep-index hook (DC7); `createAutostash` writes none of them.
 - `test/unit/application/commands/reset.test.ts`, `internal/reset-worktree.test.ts`: the option and `unmergedPaths`
-  reach `materializeTree`; `recordHardReset` keeps `reset`'s ref tail.
+  reach `materializeTree`; `recordResetRefs` keeps `reset`'s ref tail.
 
 Lesson 017: a kill test whose expectation keeps an occupant, refuses or crashes is first reproduced through the
 public command against git 2.55. S3i (link kept), SW (edited file kept), F10 and F12 (refusals), A.4 `refuse` are

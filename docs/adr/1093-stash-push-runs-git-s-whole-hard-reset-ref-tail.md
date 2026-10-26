@@ -17,7 +17,7 @@ tsgit does none of this.
 
 ## Options considered
 
-1. **Run the whole tail through a `recordHardReset` helper extracted from `reset.ts`.**
+1. **Run the whole tail through a `recordResetRefs` helper extracted from `reset.ts`.**
 2. **Write only the reflog line.**
 
 ## Decision

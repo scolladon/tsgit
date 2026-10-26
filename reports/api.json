@@ -110826,15 +110826,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "When true, every entry whose work-tree stat is not up to date is rewritten\neven when the index already records the target; an up-to-date one is left\nalone, and a skip-worktree entry is never judged. Used by "
-									},
-									{
-										"kind": "code",
-										"text": "`reset --hard`"
-									},
-									{
-										"kind": "text",
-										"text": "\nand path restores, where the working tree may diverge from the index.\nDefault "
+										"text": "git's one-way-merge reset: a no-op entry (the index already records the target) whose\nwork-tree path is not up to date, whether absent, changed or unreachable, is rewritten.\nAn up-to-date entry is left alone and a skip-worktree entry is never judged.\nDefault "
 									},
 									{
 										"kind": "code",
@@ -110842,7 +110834,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ": a noop entry is never rewritten."
+										"text": ": a no-op entry is never rewritten."
 									}
 								]
 							},
