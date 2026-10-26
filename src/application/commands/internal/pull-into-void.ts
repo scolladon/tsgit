@@ -15,9 +15,10 @@ import { materializeTree } from '../../primitives/materialize-tree.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 import { updateRef } from '../../primitives/update-ref.js';
-import { asMergeDirtyError, type MergeResult } from '../merge.js';
+import type { MergeResult } from '../merge.js';
 import { treeOf } from './history-rewrite.js';
 import { acquireIndexLock } from './index-update.js';
+import { asMergeDirtyError } from './merge-dirty-error.js';
 
 const INITIAL_PULL = 'initial pull';
 
@@ -45,6 +46,7 @@ const checkoutFromEmptyTree = async (ctx: Context, tree: ObjectId): Promise<void
       targetTree: tree,
       currentIndex,
       force: false,
+      ignoredOccupants: 'protect',
       paths: new Set(target.entries.keys()),
     }).catch((err: unknown) => {
       throw asMergeDirtyError(err);

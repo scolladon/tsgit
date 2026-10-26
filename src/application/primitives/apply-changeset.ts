@@ -34,16 +34,25 @@ import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
-import { createConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { convertToGit } from './internal/convert-blob.js';
 import { removeEmptyDirectory } from './internal/empty-directories.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { lstatIfReachable } from './internal/fs-probes.js';
-import { buildRepoIgnorePredicate } from './internal/ignore-evaluator.js';
 import { indexEntryFromStat } from './internal/index-entry-from-stat.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { lazily } from './internal/lazily.js';
+import {
+  type ClashScope,
+  classifyOccupant,
+  createIgnoredProbe,
+  holdsSurvivor,
+  type IgnoredProbe,
+  type OccupantClash,
+  type OccupantVerdict,
+  repoRelativePath,
+  type TrackedLookup,
+} from './internal/occupant-clash.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
 import {
   pruneEmptiedDirectories,
@@ -56,10 +65,10 @@ import {
   buildAttributeProvider,
   buildCheckinAttributeProvider,
 } from './internal/read-gitattributes.js';
-import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
   createLeadingPathScanner,
+  type LeadingObstruction,
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { stage0Entry } from './internal/synthetic-index-entry.js';
@@ -67,9 +76,13 @@ import {
   createWorkingTreeWriter,
   type WorkingTreeWriter,
 } from './internal/write-converted-entry.js';
-import { rmIfExists } from './internal/write-working-tree-file.js';
 import { everySourceLoadable } from './object-store.js';
+import { readIndex } from './read-index.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
+
+export type IgnoredOccupants = 'overwrite' | 'protect';
+export type UntrackedOccupants = 'overwrite' | 'protect';
+export type UnmergedPaths = 'hidden' | 'reset';
 
 export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
@@ -77,6 +90,21 @@ export interface ApplyChangesetOpts {
   readonly workdir: string;
   /** The ref and commit the checkout moves to, told to a smudging process filter. */
   readonly checkoutMetadata?: CheckoutMetadata;
+  /**
+   * `protect` refuses an ignored occupant like an untracked one (git's `overwrite_ignore = 0`);
+   * default `overwrite`.
+   */
+  readonly ignoredOccupants?: IgnoredOccupants;
+  /**
+   * `protect` refuses an untracked occupant even when forced (git's `reset_head` with
+   * `UNPACK_RESET_PROTECT_UNTRACKED`); default `overwrite`.
+   */
+  readonly untrackedOccupants?: UntrackedOccupants;
+  /**
+   * `reset` treats an entry without a previous version (a conflicted path) as reset to the target,
+   * with no up-to-date check; default `hidden`.
+   */
+  readonly unmergedPaths?: UnmergedPaths;
 }
 
 export interface ApplyChangesetResult {
@@ -177,9 +205,6 @@ const isDirtyUnder = async (
   return !(await blobMatches(ctx, probe, path, absPath, expectedId));
 };
 
-const repoRelativePath = (ctx: Context, absPath: string): FilePath =>
-  absPath.slice(requireWorkTree(ctx, 'isWorkingTreeDirty').length + 1) as FilePath;
-
 export type WorkingTreeDirtyCheck = (absPath: string, expectedId: string) => Promise<boolean>;
 
 /**
@@ -205,105 +230,105 @@ export const isWorkingTreeDirty = async (
   expectedId: string,
 ): Promise<boolean> => createWorkingTreeDirtyCheck(ctx)(absPath, expectedId);
 
-type IgnoredProbe = (absPath: string, isDirectory: boolean) => Promise<boolean>;
+const verdictClash = (verdict: OccupantVerdict): OccupantClash | undefined =>
+  verdict.kind === 'clash' ? verdict.clash : undefined;
 
-// What the untracked-clash check weighs a directory's occupants against: the paths
-// the changeset deletes, the repo's ignore rules (git removes ignored files along
-// with a directory that becomes a file), and the symlinks standing in the way.
-interface ClashScope {
-  readonly removed: ReadonlySet<string>;
-  readonly isIgnoredPath: IgnoredProbe;
-  readonly scanner: LeadingPathScanner;
-}
-
-// One ignore predicate per probe, built on first use. It grows a shared stack as it
-// meets directories, so concurrent questions are answered one at a time.
-const createIgnoredProbe = (ctx: Context): IgnoredProbe => {
-  const predicate = lazily(() => buildRepoIgnorePredicate(ctx));
-  const oneAtATime = createConcurrencyLimiter(1);
-  return (absPath, isDirectory) =>
-    oneAtATime.run(async () => (await predicate())(repoRelativePath(ctx, absPath), isDirectory));
-};
-
-// Whether a child of a directory that becomes a file outlives the changeset: a file
-// the changeset does not delete and the ignore rules do not match is an untracked
-// occupant, while emptied directories go away with it.
-const childSurvives = async (
+// An unmerged path has no version to compare; only a directory still holding a file the
+// changeset leaves behind stands in the way of the reset.
+// A gitlink's directory is the submodule's own checkout, which git never reads: the
+// removal leaves it standing, so it is no survivor.
+const survivorClash = async (
   ctx: Context,
-  absDir: string,
-  child: { readonly name: string; readonly isDirectory: boolean },
+  { path, previousMode }: ChangesetEntry,
   scope: ClashScope,
-): Promise<boolean> => {
-  const absChild = joinPath(absDir, child.name);
-  if (!child.isDirectory && scope.removed.has(absChild)) return false;
-  if (await scope.isIgnoredPath(absChild, child.isDirectory)) return false;
-  return child.isDirectory ? holdsSurvivor(ctx, absChild, scope) : true;
+): Promise<OccupantClash | undefined> => {
+  if (previousMode === FILE_MODE.GITLINK) return undefined;
+  const absPath = joinPath(scope.workdir, path);
+  const stat = await lstatIfReachable(ctx.fs, absPath);
+  if (stat?.isDirectory !== true) return undefined;
+  return (await holdsSurvivor(ctx, absPath, scope)) ? { class: 'untracked', path } : undefined;
 };
 
-const holdsSurvivor = async (ctx: Context, absDir: string, scope: ClashScope): Promise<boolean> => {
-  for (const child of await ctx.fs.readdir(absDir)) {
-    if (await childSurvives(ctx, absDir, child, scope)) return true;
-  }
-  return false;
-};
-
-// A directory at an added path is the tracked tree being swapped for a file: its
-// tracked children arrive as `delete` entries and are dirty-checked on their own.
-const isUntrackedClash = async (
+const evaluateChangedPath = async (
   ctx: Context,
-  absPath: string,
-  scope: ClashScope,
-): Promise<boolean> => {
-  if (!(await pathIsOccupied(ctx, absPath))) return false;
-  const stat = await ctx.fs.lstat(absPath);
-  return !stat.isDirectory || holdsSurvivor(ctx, absPath, scope);
-};
-
-// git's check_leading_path: a symlink standing where a leading directory must be is
-// the clash, named in place of the added path — unless the changeset deletes it or
-// the ignore rules cover it. Nothing beyond the link is looked at.
-const untrackedClashOf = async (
-  ctx: Context,
-  workdir: string,
+  probe: () => Promise<DirtyProbe>,
   entry: ChangesetEntry,
+  kind: 'update' | 'delete',
   scope: ClashScope,
-): Promise<FilePath | undefined> => {
-  const link = await scope.scanner.symlinkedLeadingComponent(entry.path);
-  if (link === undefined) {
-    const clashes = await isUntrackedClash(ctx, joinPath(workdir, entry.path), scope);
-    return clashes ? entry.path : undefined;
+  unmergedPaths: UnmergedPaths,
+): Promise<OccupantClash | undefined> => {
+  const { previousId } = entry;
+  if (previousId === undefined) {
+    return unmergedPaths === 'reset' ? survivorClash(ctx, entry, scope) : undefined;
   }
-  const absLink = joinPath(workdir, link);
-  if (scope.removed.has(absLink)) return undefined;
-  return (await scope.isIgnoredPath(absLink, false)) ? undefined : link;
+  // git's verify_uptodate returns early for a gitlink: the submodule's worktree is never compared.
+  if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
+  const verdict = await classifyOccupant(ctx, { kind, path: entry.path }, scope);
+  if (verdict.kind !== 'compare-content') return verdictClash(verdict);
+  const matches = await blobMatches(
+    ctx,
+    await probe(),
+    entry.path,
+    joinPath(scope.workdir, entry.path),
+    previousId,
+  );
+  return matches ? undefined : { class: 'local-changes', path: entry.path };
 };
-
-interface DirtyClass {
-  readonly class: 'local-changes' | 'untracked';
-  readonly path: FilePath;
-}
 
 const evaluateDirtyPath = async (
   ctx: Context,
   probe: () => Promise<DirtyProbe>,
-  workdir: string,
   entry: ChangesetEntry,
   scope: ClashScope,
-): Promise<DirtyClass | undefined> => {
+  unmergedPaths: UnmergedPaths,
+): Promise<OccupantClash | undefined> => {
   if (isLossy(entry)) return undefined;
-  const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'update' || entry.kind === 'delete') {
-    if (entry.previousId === undefined) return undefined;
-    // git's verify_uptodate returns early for a gitlink: the submodule's worktree is never compared.
-    if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
-    return (await isDirtyUnder(ctx, await probe(), entry.path, absPath, entry.previousId))
-      ? { class: 'local-changes', path: entry.path }
-      : undefined;
+    return evaluateChangedPath(ctx, probe, entry, entry.kind, scope, unmergedPaths);
   }
   // Stryker disable next-line ConditionalExpression: equivalent — checkDirty only receives splitWaves' deletes and writes, which hold no noop, so an entry past the update/delete branch is always an add.
   if (entry.kind !== 'add') return undefined;
-  const clash = await untrackedClashOf(ctx, workdir, entry, scope);
-  return clash === undefined ? undefined : { class: 'untracked', path: clash };
+  return verdictClash(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
+};
+
+type PathEvaluator = (
+  ctx: Context,
+  probe: () => Promise<DirtyProbe>,
+  entry: ChangesetEntry,
+  scope: ClashScope,
+) => Promise<OccupantClash | undefined>;
+
+const untrackedClashOf = (verdict: OccupantVerdict): OccupantClash | undefined => {
+  const clash = verdictClash(verdict);
+  return clash?.class === 'untracked' ? clash : undefined;
+};
+
+// The untracked-protecting pre-flight of a forced apply: what the writer would clobber
+// without being told it may, and nothing about content.
+const evaluateProtectedPath: PathEvaluator = async (ctx, _probe, entry, scope) => {
+  if (isLossy(entry)) return undefined;
+  if (entry.kind === 'add') {
+    return untrackedClashOf(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
+  }
+  if (entry.previousId === undefined) return survivorClash(ctx, entry, scope);
+  if (entry.kind === 'update') return undefined;
+  return untrackedClashOf(await classifyOccupant(ctx, { kind: 'delete', path: entry.path }, scope));
+};
+
+const fullEvaluatorFor =
+  (unmergedPaths: UnmergedPaths): PathEvaluator =>
+  (ctx, probe, entry, scope) =>
+    evaluateDirtyPath(ctx, probe, entry, scope, unmergedPaths);
+
+// Which pre-flight the apply runs: the full one unforced, the untracked-only one when a
+// forced apply protects untracked occupants, none when forced and free to overwrite.
+const preflightOf = (
+  force: boolean,
+  untrackedOccupants: UntrackedOccupants,
+  unmergedPaths: UnmergedPaths,
+): PathEvaluator | undefined => {
+  if (!force) return fullEvaluatorFor(unmergedPaths);
+  return untrackedOccupants === 'protect' ? evaluateProtectedPath : undefined;
 };
 
 // The checkout path's tree->index boundary. Every `add`/`update` entry
@@ -330,10 +355,29 @@ const deletedPaths = (
     entries.filter((e) => e.kind === 'delete' && !isLossy(e)).map((e) => joinPath(workdir, e.path)),
   );
 
+// The index is read only when a path is reached through a symlinked directory.
+const trackedLookupOf = (ctx: Context): TrackedLookup => {
+  const byPath = lazily(async () => {
+    const index = await readIndex(ctx);
+    const entries = new Map<FilePath, IndexEntry>();
+    for (const entry of index.entries) if (entry.flags.stage === 0) entries.set(entry.path, entry);
+    return { entries, indexMtime: index.indexMtime };
+  });
+  return async (path) => {
+    const { entries, indexMtime } = await byPath();
+    const entry = entries.get(path);
+    return entry === undefined ? undefined : { entry, indexMtime };
+  };
+};
+
+const NEVER_IGNORED: IgnoredProbe = async () => false;
+
 const checkDirty = async (
   ctx: Context,
   workdir: string,
   entries: ReadonlyArray<ChangesetEntry>,
+  ignoredOccupants: IgnoredOccupants,
+  evaluate: PathEvaluator,
 ): Promise<WouldOverwriteClasses> => {
   // Fanned out through the ioBound pool — pure reads, so collection order
   // is free: refusal arrays are sorted with `comparePaths` below regardless
@@ -344,11 +388,13 @@ const checkDirty = async (
   const probe = lazily(() => buildDirtyProbe(ctx));
   const scope: ClashScope = {
     removed: deletedPaths(workdir, entries),
-    isIgnoredPath: createIgnoredProbe(ctx),
+    workdir,
+    isIgnoredPath: ignoredOccupants === 'protect' ? NEVER_IGNORED : createIgnoredProbe(ctx),
     scanner: createLeadingPathScanner(ctx),
+    tracked: trackedLookupOf(ctx),
   };
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
-    evaluateDirtyPath(ctx, probe, workdir, entry, scope),
+    evaluate(ctx, probe, entry, scope),
   );
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
@@ -375,11 +421,35 @@ const applyDeleteEntry = async (
   if (await scanner.hasSymlinkedLeadingPath(entry.path)) return undefined;
   const abs = joinPath(workdir, entry.path);
   // git's unlink_entry removes a gitlink with rmdir, leaving a populated directory in place.
-  if (entry.previousMode === FILE_MODE.GITLINK) {
-    return (await removeEmptyDirectory(ctx, abs)) ? entry.path : undefined;
+  if (entry.previousMode === FILE_MODE.GITLINK) return removeGitlinkDirectory(ctx, abs, entry.path);
+  return (await removeDeletedFile(ctx, abs, entry.path)) ? entry.path : undefined;
+};
+
+// git's remove_or_warn: rmdir on a gitlink, warning when a directory refuses to go.
+const removeGitlinkDirectory = async (
+  ctx: Context,
+  abs: string,
+  path: FilePath,
+): Promise<FilePath | undefined> => {
+  if (await removeEmptyDirectory(ctx, abs)) return path;
+  if ((await lstatIfReachable(ctx.fs, abs))?.isDirectory === true) {
+    ctx.logger?.warn?.(`unable to rmdir '${path}': Directory not empty`);
   }
-  await rmIfExists(ctx, abs);
-  return entry.path;
+  return undefined;
+};
+
+// git's unlink_entry leaves a directory standing where the entry was (warning); a file
+// already gone is no failure, so its directory is still scheduled for removal.
+const removeDeletedFile = async (ctx: Context, abs: string, path: FilePath): Promise<boolean> => {
+  const stat = await lstatIfReachable(ctx.fs, abs);
+  if (stat === undefined) return true;
+  if (stat.isDirectory) {
+    ctx.logger?.warn?.(`unable to unlink '${path}'`);
+    // Stryker disable next-line BooleanLiteral: equivalent — the directory standing at the path keeps its parent non-empty, so the prune it would schedule always refuses.
+    return false;
+  }
+  await ctx.fs.rm(abs);
+  return true;
 };
 
 // The decoded name would alias a different file, so nothing is written for
@@ -620,7 +690,11 @@ const writeOneByOne = async (
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const written: IndexEntry[] = [];
   for (const entry of sorted) {
-    if (!isLinkWrite(entry)) await prepareLeadingDirectories(entry, scanner);
+    if (isLinkWrite(entry)) {
+      written.push(...(await writeLinkAndForget(group, entry, scanner)));
+      continue;
+    }
+    await prepareLeadingDirectories(entry, scanner);
     written.push(...(await group([entry])));
   }
   return written;
@@ -687,25 +761,57 @@ const removeIgnoredBelow = async (
 // Forced, that is everything; otherwise only the ignored files, as the clash check
 // already refused anything else. A gitlink leaves its directory alone, and a symlink
 // in the leading path is replaced by the write, never followed.
-// Forced, every occupant goes; otherwise only the ignored ones.
-type OccupantPolicy = 'every' | 'ignored';
+// Forced, every occupant goes; otherwise only the ignored ones, or none when ignored occupants are protected.
+type OccupantPolicy = 'every' | 'ignored' | 'protected';
+
+const occupantPolicyOf = (force: boolean, ignoredOccupants: IgnoredOccupants): OccupantPolicy => {
+  if (force) return 'every';
+  return ignoredOccupants === 'protect' ? 'protected' : 'ignored';
+};
+
+const clearDirectoryAt = async (
+  ctx: Context,
+  absPath: string,
+  policy: OccupantPolicy,
+  isIgnoredPath: IgnoredProbe,
+): Promise<void> => {
+  const stat = await lstatIfReachable(ctx.fs, absPath);
+  if (stat?.isDirectory !== true) return;
+  if (policy === 'every') await ctx.fs.rmRecursive(absPath);
+  else if (policy === 'ignored') await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
+};
+
+// A regular file standing where a directory is due goes, as git's create_directories unlinks it:
+// the clash check has already refused every one it was meant to protect, and what it did not
+// judge (an unmerged path being reset) is replaced.
+const displaceFile = async (
+  ctx: Context,
+  workdir: string,
+  obstruction: LeadingObstruction,
+  scanner: LeadingPathScanner,
+): Promise<void> => {
+  await ctx.fs.rm(joinPath(workdir, obstruction.path));
+  scanner.invalidate(obstruction.path);
+};
 
 const clearOccupants = async (
   ctx: Context,
   workdir: string,
   writes: ReadonlyArray<ChangesetEntry>,
   policy: OccupantPolicy,
+  scanner: LeadingPathScanner,
 ): Promise<void> => {
-  const scanner = createLeadingPathScanner(ctx);
   const isIgnoredPath = createIgnoredProbe(ctx);
   for (const entry of writes) {
-    if (entry.kind !== 'add' || entry.mode === FILE_MODE.GITLINK || isLossy(entry)) continue;
-    if (await scanner.hasSymlinkedLeadingPath(entry.path)) continue;
-    const absPath = joinPath(workdir, entry.path);
-    const stat = await lstatIfReachable(ctx.fs, absPath);
-    if (stat?.isDirectory !== true) continue;
-    if (policy === 'every') await ctx.fs.rmRecursive(absPath);
-    else await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
+    if (isLossy(entry)) continue;
+    const obstruction = await scanner.obstructingLeadingComponent(entry.path);
+    if (obstruction?.kind === 'file') {
+      await displaceFile(ctx, workdir, obstruction, scanner);
+      continue;
+    }
+    if (obstruction !== undefined) continue;
+    if (entry.mode === FILE_MODE.GITLINK) continue;
+    await clearDirectoryAt(ctx, joinPath(workdir, entry.path), policy, isIgnoredPath);
   }
 };
 
@@ -717,13 +823,13 @@ const applyAllEntries = async (
   writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
   surviving: SurvivingDirectories,
-  force: boolean,
+  policy: OccupantPolicy,
 ): Promise<ApplyChangesetResult> => {
   const total = deletes.length + writes.length;
   const counter: ProgressCounter = { current: 0 };
 
   const deleted = await applyDeleteWave(ctx, workdir, deletes, surviving, scanner, total, counter);
-  await clearOccupants(ctx, workdir, writes, force ? 'every' : 'ignored');
+  await clearOccupants(ctx, workdir, writes, policy, scanner);
   const writtenEntries = await applyWriteWave(
     ctx,
     workdir,
@@ -756,8 +862,10 @@ const assertNoDirtyOverwrite = async (
   ctx: Context,
   workdir: string,
   entries: ReadonlyArray<ChangesetEntry>,
+  ignoredOccupants: IgnoredOccupants,
+  evaluate: PathEvaluator,
 ): Promise<void> => {
-  const dirty = await checkDirty(ctx, workdir, entries);
+  const dirty = await checkDirty(ctx, workdir, entries, ignoredOccupants, evaluate);
   if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
     throw checkoutOverwriteDirty(dirty);
   }
@@ -790,6 +898,7 @@ const applyChangesetInScope = async (
   direction: AttributeDirection | undefined,
 ): Promise<ApplyChangesetResult> => {
   const { changeset, force, workdir } = opts;
+  const ignoredOccupants = opts.ignoredOccupants ?? 'overwrite';
 
   validateChangesetPaths(indexPathRulesOf(ctx), changeset);
 
@@ -797,7 +906,14 @@ const applyChangesetInScope = async (
   // pays a dirty probe — or a pool slot — for entries that carry no I/O.
   const { deletes, writes } = splitWaves(changeset.entries);
 
-  if (!force) await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes]);
+  const evaluate = preflightOf(
+    force,
+    opts.untrackedOccupants ?? 'overwrite',
+    opts.unmergedPaths ?? 'hidden',
+  );
+  if (evaluate !== undefined) {
+    await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes], ignoredOccupants, evaluate);
+  }
 
   // One scanner per changeset application, shared by BOTH the delete-skip
   // check and the write-side unlink: its per-directory memo means a deep
@@ -810,5 +926,14 @@ const applyChangesetInScope = async (
     // Stryker disable next-line ArrayDeclaration: equivalent — without a deletion nothing is scheduled for pruning, so the surviving set is never consulted.
     deletes.length === 0 ? [] : writtenPaths(changeset.entries),
   );
-  return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner, surviving, force);
+  return applyAllEntries(
+    ctx,
+    deletes,
+    writes,
+    workdir,
+    writer,
+    scanner,
+    surviving,
+    occupantPolicyOf(force, ignoredOccupants),
+  );
 };

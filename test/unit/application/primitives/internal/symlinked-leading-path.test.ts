@@ -810,4 +810,108 @@ describe('createLeadingPathScanner', () => {
       });
     });
   });
+
+  describe('Given a regular file where a leading directory is due', () => {
+    describe('When obstructingLeadingComponent scans a path beneath it', () => {
+      it('Then it names the file component with kind file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/d`, new Uint8Array([1]));
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.obstructingLeadingComponent(path('d/x/y'));
+
+        // Assert
+        expect(result).toEqual({ path: 'd', kind: 'file' });
+      });
+    });
+  });
+
+  describe('Given a symlink standing where a leading directory is due', () => {
+    describe('When obstructingLeadingComponent scans a path beneath it', () => {
+      it('Then it names the symlink component with kind symlink', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/l`);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.obstructingLeadingComponent(path('l/x'));
+
+        // Assert
+        expect(result).toEqual({ path: 'l', kind: 'symlink' });
+      });
+    });
+  });
+
+  describe('Given a regular file beneath a real directory in the leading path', () => {
+    describe('When obstructingLeadingComponent scans a path beneath it', () => {
+      it('Then it names the nested file component', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/a`);
+        await ctx.fs.write(`${ctx.layout.workDir}/a/b`, new Uint8Array([1]));
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.obstructingLeadingComponent(path('a/b/c'));
+
+        // Assert
+        expect(result).toEqual({ path: 'a/b', kind: 'file' });
+      });
+    });
+  });
+
+  describe('Given a missing leading component', () => {
+    describe('When obstructingLeadingComponent scans a path beneath it', () => {
+      it('Then it names nothing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.obstructingLeadingComponent(path('gone/x'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a root-level path', () => {
+    describe('When obstructingLeadingComponent scans it', () => {
+      it('Then it names nothing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, new Uint8Array([1]));
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.obstructingLeadingComponent(path('f'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given two paths under the same file prefix', () => {
+    describe('When obstructingLeadingComponent scans both', () => {
+      it('Then the prefix is lstat-ed once', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.write(`${base.layout.workDir}/d`, new Uint8Array([1]));
+        const { ctx, calls } = withLstatCallCounter(base);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.obstructingLeadingComponent(path('d/x'));
+        await sut.obstructingLeadingComponent(path('d/y'));
+
+        // Assert
+        expect(calls).toEqual([`${ctx.layout.workDir}/d`]);
+      });
+    });
+  });
 });

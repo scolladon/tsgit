@@ -102,6 +102,34 @@ describe('commands/internal/apply-sparse-checkout', () => {
     });
   });
 
+  describe.each([
+    ['dangling', 'nowhere'],
+    ['live', 'src/a'],
+  ])('Given an excluded tracked %s symlink', (_shape, target) => {
+    describe('When applySparseCheckout narrows', () => {
+      it('Then the link is removed and skip-worktree is set', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const srcId = await writeBlob(ctx, 'aaa');
+        const linkId = await writeBlob(ctx, target);
+        const link: IndexEntry = { ...makeEntry('l', linkId), mode: FILE_MODE.SYMLINK };
+        await seedIndex(ctx, [makeEntry('src/a', srcId), link]);
+        await seedWorkFile(ctx, 'src/a', 'aaa');
+        await ctx.fs.symlink(target, `${ctx.layout.workDir}/l`);
+
+        // Act
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 1, retained: [] });
+        expect(
+          await ctx.fs.lstat(`${ctx.layout.workDir}/l`).catch(() => undefined),
+        ).toBeUndefined();
+        expect((await readBackIndex(ctx)).get('l' as FilePath)?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
   describe('Given several excluded clean files', () => {
     describe('When applySparseCheckout narrows', () => {
       it('Then the attribute provider is built as often as for a single excluded file', async () => {
@@ -211,7 +239,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
         const ctx = createMemoryContext();
         await seedTwins(ctx);
         await seedWorkFile(ctx, view, 'other');
-        const exists = vi.spyOn(ctx.fs, 'exists');
+        const exists = vi.spyOn(ctx.fs, 'lstatIfReachable');
         const sut = applySparseCheckout;
 
         // Act
@@ -239,7 +267,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
           const lossy: IndexEntry = { ...makeEntry(view, lossyId), pathBytes: lossyBytes };
           await seedIndex(ctx, [lossy]);
           if (present) await seedWorkFile(ctx, view, 'untracked');
-          const exists = vi.spyOn(ctx.fs, 'exists');
+          const exists = vi.spyOn(ctx.fs, 'lstatIfReachable');
           const sut = applySparseCheckout;
 
           // Act
@@ -676,6 +704,90 @@ describe('commands/internal/apply-sparse-checkout', () => {
         // Assert
         const written = await ctx.fs.read(`${ctx.layout.workDir}/src/a.txt`);
         expect(decoder.decode(written)).toBe('a\r\nb\r\n');
+      });
+    });
+  });
+
+  describe('Given a regular file where a re-included entry leading directory is due', () => {
+    describe('When applySparseCheckout includes the entry', () => {
+      it('Then nothing is written, the file is kept, skip-worktree is cleared and one warning names the file', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const warnings: string[] = [];
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        const id = await writeBlob(ctx, 'xxx');
+        const skipped: IndexEntry = {
+          ...makeEntry('d/x', id),
+          flags: { ...STAGE0_FLAGS, skipWorktree: true },
+        };
+        await seedIndex(ctx, [skipped]);
+        await seedWorkFile(ctx, 'd', 'occupant');
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: undefined });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: [] });
+        expect(decoder.decode(await ctx.fs.read(`${ctx.layout.workDir}/d`))).toBe('occupant');
+        expect((await readBackIndex(ctx)).get('d/x' as FilePath)?.flags.skipWorktree).toBe(false);
+        expect(warnings).toEqual([
+          'The following paths were already present and thus not updated despite sparse patterns:\n\td\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a dangling symlink at a re-included path', () => {
+    describe('When applySparseCheckout includes the entry', () => {
+      it('Then the link is kept and nothing is warned', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const warnings: string[] = [];
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        const id = await writeBlob(ctx, 'xxx');
+        const skipped: IndexEntry = {
+          ...makeEntry('f', id),
+          flags: { ...STAGE0_FLAGS, skipWorktree: true },
+        };
+        await seedIndex(ctx, [skipped]);
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/f`);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: undefined });
+
+        // Assert
+        expect(result.materialized).toBe(0);
+        expect(await ctx.fs.readlink(`${ctx.layout.workDir}/f`)).toBe('nowhere');
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two re-included entries under one file', () => {
+    describe('When applySparseCheckout includes them', () => {
+      it('Then one warning lists the file once per entry', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const warnings: string[] = [];
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        const id = await writeBlob(ctx, 'xxx');
+        const skip = (path: string): IndexEntry => ({
+          ...makeEntry(path, id),
+          flags: { ...STAGE0_FLAGS, skipWorktree: true },
+        });
+        await seedIndex(ctx, [skip('d/x'), skip('d/y')]);
+        await seedWorkFile(ctx, 'd', 'occupant');
+        const sut = applySparseCheckout;
+
+        // Act
+        await sut(ctx, { matcher: undefined });
+
+        // Assert
+        expect(warnings).toEqual([
+          'The following paths were already present and thus not updated despite sparse patterns:\n\td\n\td\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+        ]);
       });
     });
   });

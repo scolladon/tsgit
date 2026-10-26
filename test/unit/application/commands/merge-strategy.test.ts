@@ -367,8 +367,18 @@ describe('merge strategy', () => {
       ['a.txt'],
     ],
   ])('Given %s', (_label, stage, localChanges) => {
-    describe.each(['resolve', 'ours'])('When merged with strategy %s', (strategy) => {
-      it('Then the index must match HEAD, listing the paths that differ in order', async () => {
+    describe.each([
+      [
+        'resolve',
+        (localChanges: ReadonlyArray<string>) => ({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges,
+          untracked: [],
+        }),
+      ],
+      ['ours', () => ({ code: 'MERGE_STRATEGY_FAILED', strategy: 'ours' })],
+    ])('When merged with strategy %s', (strategy, failure) => {
+      it('Then the index must match HEAD: resolve refuses the differing paths in order, ours fails', async () => {
         // Arrange
         const { ctx, main } = await repo();
         await stage(ctx);
@@ -378,7 +388,7 @@ describe('merge strategy', () => {
         const result = await errorData(sut(ctx, { rev: 'feature', strategy, author }));
 
         // Assert
-        expect(result).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges, untracked: [] });
+        expect(result).toEqual(failure(localChanges));
         expect(await resolveRef(ctx, HEAD)).toBe(main);
       });
     });

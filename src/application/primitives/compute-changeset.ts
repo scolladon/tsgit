@@ -53,7 +53,7 @@ const stage0Ordered = (currentIndex: GitIndex): ReadonlyArray<IndexProjection> =
     compareEntryPath,
   );
 
-const pathFields = (source: {
+export const pathFields = (source: {
   readonly path: FilePath;
   readonly pathBytes?: Uint8Array;
 }): Pick<ChangesetEntry, 'path' | 'pathBytes'> => ({

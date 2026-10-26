@@ -19,14 +19,22 @@ import { type ConflictType, type MergeConflict, replayLabels } from '../../domai
 import { amendedExtraHeaders } from '../../domain/objects/amend-headers.js';
 import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import type { FileMode, FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FileMode,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../domain/objects/index.js';
 import {
   buildCombinedMessage,
   type CombinedMessageEntry,
+  firstCommitMessage,
   type RebaseBackupHeader,
   type RebaseLabelLine,
   type RebaseResetLine,
   type RebaseTodoAction,
+  type RebaseTodoLine,
 } from '../../domain/rebase/index.js';
 import {
   REBASE_FAST_FORWARD,
@@ -35,6 +43,7 @@ import {
   rebaseActionReflog,
   rebaseContinueReflog,
   rebaseEditReflog,
+  rebaseFastForwardReflog,
   rebaseFinishOnto,
   rebaseFinishReturningTo,
   rebasePickReflog,
@@ -84,7 +93,7 @@ import { previousCheckoutArg } from './internal/prior-checkout.js';
 import { canFastForward } from './internal/rebase-fast-forward.js';
 import {
   deleteRewrittenRefs,
-  fastForwardHead,
+  type FastForwardOutcome,
   labelHead,
   mergeTreesUnderLock,
   recreateMerge,
@@ -96,20 +105,31 @@ import { resolveRebaseSides } from './internal/rebase-revisions.js';
 import {
   clearRebaseState,
   dropFixupGroup,
+  type MeldMarkers,
   type RebaseProgress,
   type RebaseState,
   type RebaseStop,
+  type RedundantCommitPolicy,
   readAutostash,
+  readCurrentFixups,
+  readMessageSquash,
   readRebaseProgress,
   readRebaseState,
   readRewrittenList,
+  readRewrittenPending,
   serializeRewritten,
   writeAutostash,
   writeRebaseStop,
+  writeRescheduledLine,
   writeRescheduledPick,
 } from './internal/rebase-state.js';
 import { toConflictList } from './internal/replay-sequence.js';
-import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import {
+  attemptCheckoutWorktreeToCommit,
+  checkoutWorktreeToCommit,
+  protectedResetWorktreeToCommit,
+  type WorktreeRefusal,
+} from './internal/reset-worktree.js';
 import { writeContinuedIndex } from './internal/write-index-cache-tree.js';
 import { applyAutostash, createAutostash } from './stash.js';
 
@@ -118,6 +138,8 @@ export type { ConflictType } from '../../domain/merge/index.js';
 const HEAD = 'HEAD' as RefName;
 /** `post-rewrite`'s command-name argument when fired from a rebase. */
 const REBASE_REWRITE_LABEL = 'rebase';
+/** `post-rewrite`'s command-name argument for a commit amended in place, as a squash/fixup does. */
+const AMEND_REWRITE_LABEL = 'amend';
 
 /** The interactive instruction verbs (`git rebase -i`). */
 export type RebaseInteractiveAction = RebaseTodoAction;
@@ -191,7 +213,8 @@ export type RebaseResult =
 type ReplayOutcome =
   | { readonly kind: 'committed'; readonly id: ObjectId }
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-  | { readonly kind: 'empty' };
+  | { readonly kind: 'empty' }
+  | WorktreeRefusal;
 
 /** A resolved work-list entry (full oid + subject) threaded through the replay.
  *  The non-interactive path only ever plans `pick`. */
@@ -332,6 +355,7 @@ const detachHead = async (
   reflogAction: string,
   carried: ReadonlyArray<CarriedGitlink>,
 ): Promise<void> => {
+  await checkoutWorktreeToCommit(ctx, onto);
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
@@ -344,7 +368,6 @@ const detachHead = async (
       },
     },
   ]);
-  await hardResetWorktreeToCommit(ctx, onto);
   await restageCarried(ctx, carried);
 };
 
@@ -379,12 +402,9 @@ const replayOne = async (
   ourId: ObjectId,
   reflogAction: string,
 ): Promise<ReplayOutcome> => {
-  if (cData.parents[0] === ourId) {
-    await fastForwardHead(ctx, source, reflogAction);
-    return { kind: 'committed', id: source };
-  }
+  if (cData.parents[0] === ourId) return fastForwardReplayed(ctx, source, reflogAction);
   const outcome = await mergeUnderLock(ctx, source, cData, ourId);
-  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  if (outcome.kind !== 'clean') return outcome;
   // git keeps a commit that started empty and drops only one the replay made empty.
   if (outcome.mergedTree === outcome.oursTree && !(await isOriginallyEmpty(ctx, cData))) {
     return { kind: 'empty' };
@@ -393,6 +413,16 @@ const replayOne = async (
     kind: 'committed',
     id: await commitPick(ctx, outcome.mergedTree, cData, ourId, reflogAction),
   };
+};
+
+/** Keep `source` verbatim by fast-forwarding to it; an occupant refuses before HEAD moves. */
+const fastForwardReplayed = async (
+  ctx: Context,
+  source: ObjectId,
+  reflogAction: string,
+): Promise<ReplayOutcome> => {
+  const moved = await fastForwardOnto(ctx, source, rebaseFastForwardReflog(reflogAction));
+  return moved.kind === 'refused' ? moved : { kind: 'committed', id: source };
 };
 
 /** Commit a clean pick's tree onto `ourId` and advance HEAD with `rebase (pick)`. */
@@ -448,6 +478,8 @@ interface ReplayContext extends FinishSides {
   readonly todo: ReadonlyArray<PlannedLine>;
   /** Set on the initial (fresh-run) stop only — git writes the backup once. */
   readonly backupHeader?: RebaseBackupHeader;
+  /** Set by a flat start only: git writes its `--empty=drop` default once and reads it back on `continue`. */
+  readonly redundantCommits?: RedundantCommitPolicy;
   /** The submodule ignore modes the pre-flight read; a resumed run reads them afresh, as git's new process does. */
   readonly submoduleIgnores?: SubmoduleIgnoreModes;
 }
@@ -457,6 +489,12 @@ interface ReplaySeed {
   readonly applied: ReadonlyArray<RebasedCommit>;
   readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
 }
+
+/** The policy a start records; a resume leaves the file git already wrote. */
+const policyOf = (source: {
+  readonly redundantCommits?: RedundantCommitPolicy;
+}): { readonly redundantCommits?: RedundantCommitPolicy } =>
+  source.redundantCommits === undefined ? {} : { redundantCommits: source.redundantCommits };
 
 /** Persist the byte-faithful stop state when a replay conflicts. */
 const persistStop = async (
@@ -481,6 +519,7 @@ const persistStop = async (
     patch: cData.parents.length > 1 ? '' : await renderCommitPatch(ctx, cData),
     // Stryker disable next-line ConditionalExpression: equivalent — on a continue/skip re-stop `rc.backupHeader` is `undefined`, so forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(rc.backupHeader !== undefined ? { backupHeader: rc.backupHeader } : {}),
+    ...policyOf(rc),
     ...(cData.parents.length > 1 ? {} : { mergeMsg: message }),
   };
   await writeRebaseStop(ctx, stop);
@@ -541,24 +580,52 @@ const firePostRewrite = async (
   });
 };
 
+/** git amends the group commit for each squash/fixup, and so fires `post-rewrite amend` for it. */
+const fireAmendRewrite = (ctx: Context, previous: ObjectId, created: ObjectId): Promise<void> =>
+  runInformationalHook(ctx, 'post-rewrite', {
+    args: [AMEND_REWRITE_LABEL],
+    stdin: serializeRewritten([[previous, created]]),
+  });
+
 type LineOutcome =
   | ReplayOutcome
   | { readonly kind: 'moved'; readonly head: ObjectId }
   | { readonly kind: 'kept' };
 
+/** A refused `reset` step stays at the head of the todo and at the end of `done`, as git's does. */
+const refuseResetStep = async (
+  ctx: Context,
+  rc: ReplayContext,
+  index: number,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  await writeRescheduledLine(ctx, {
+    headName: rc.branch ?? 'detached HEAD',
+    onto: rc.onto,
+    origHead: rc.origHead,
+    done: [...rc.doneBefore, ...rc.todo.slice(0, index + 1)],
+    remaining: rc.todo.slice(index),
+    backupHeader: rc.backupHeader,
+    ...policyOf(rc),
+  });
+  throw workingTreeDirty(refusal);
+};
+
 /** Run one todo line on the detached HEAD `cur`. */
 const replayLine = async (
   ctx: Context,
   rc: ReplayContext,
-  line: PlannedLine,
+  index: number,
   cur: ObjectId,
 ): Promise<LineOutcome> => {
+  const line = rc.todo[index]!;
   if (line.action === 'label') {
     await labelHead(ctx, line.label);
     return { kind: 'moved', head: cur };
   }
   if (line.action === 'reset') {
-    return { kind: 'moved', head: await resetToLabel(ctx, line.label, rc.reflogAction) };
+    const outcome = await resetToLabel(ctx, line.label, rc.reflogAction);
+    return outcome.kind === 'refused' ? refuseResetStep(ctx, rc, index, outcome) : outcome;
   }
   const cData = await readCommitData(ctx, line.oid);
   if (line.action !== 'merge') return replayOne(ctx, line.oid, cData, cur, rc.reflogAction);
@@ -615,8 +682,111 @@ const refuseDirtyIndexBeforeFirstPick = async (
     remaining: rc.todo,
     pickSha: first.oid,
     backupHeader: rc.backupHeader,
+    ...policyOf(rc),
   });
   throw workingTreeDirty({ localChanges: staged, untracked: [] });
+};
+
+/** What a rebase run and its loops share when a line is rescheduled. */
+interface RescheduleSides {
+  readonly branch: RefName | undefined;
+  readonly onto: ObjectId;
+  readonly origHead: ObjectId;
+  readonly backupHeader?: RebaseBackupHeader;
+  readonly redundantCommits?: RedundantCommitPolicy;
+}
+
+/** A commit line refused by an untracked occupant, as git's reschedule records it. */
+interface RefusedLine {
+  /** `done` before the line plus the line itself, last. */
+  readonly done: ReadonlyArray<RebaseTodoLine>;
+  /** The live todo, starting with the line. */
+  readonly remaining: ReadonlyArray<RebaseTodoLine>;
+  /** The commit `REBASE_HEAD` names. */
+  readonly commit: ObjectId;
+  /** Its author, for `author-script`. */
+  readonly author: AuthorIdentity;
+  readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+  readonly meld?: MeldMarkers;
+}
+
+/** Leave git's rescheduled state for a refused line, then raise the refusal as the public error. */
+const refuseRescheduled = async (
+  ctx: Context,
+  run: RescheduleSides,
+  line: RefusedLine,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  const { commit: pickSha, author: stoppedAuthor, ...rest } = line;
+  await writeRescheduledPick(ctx, {
+    headName: run.branch ?? 'detached HEAD',
+    onto: run.onto,
+    origHead: run.origHead,
+    backupHeader: run.backupHeader,
+    ...policyOf(run),
+    ...rest,
+    pickSha,
+    stoppedAuthor,
+  });
+  throw workingTreeDirty(refusal);
+};
+
+/** A flat loop's refused line: reschedule it with the rewrites made so far. */
+const refuseFlatLine = async (
+  ctx: Context,
+  rc: ReplayContext,
+  index: number,
+  rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  const line = rc.todo[index] as PlannedPick | PlannedMerge;
+  const { author } = await readCommitData(ctx, line.oid);
+  const refused: RefusedLine = {
+    done: [...rc.doneBefore, ...rc.todo.slice(0, index + 1)],
+    remaining: rc.todo.slice(index),
+    commit: line.oid,
+    author,
+    rewritten,
+  };
+  return refuseRescheduled(ctx, rc, refused, refusal);
+};
+
+interface FlatProgress {
+  cur: ObjectId;
+  readonly applied: RebasedCommit[];
+  readonly rewritten: Array<readonly [ObjectId, ObjectId]>;
+}
+
+/** Fold one flat line's outcome into `flat`; a conflict is the stop to return. */
+const advanceFlat = async (
+  ctx: Context,
+  rc: ReplayContext,
+  index: number,
+  outcome: LineOutcome,
+  flat: FlatProgress,
+): Promise<RebaseResult | undefined> => {
+  switch (outcome.kind) {
+    case 'refused':
+      return refuseFlatLine(ctx, rc, index, flat.rewritten, outcome);
+    case 'moved':
+      flat.cur = outcome.head;
+      return undefined;
+    // git's dropped empty pick takes its AUTO_MERGE with it, and is recorded as rewritten to HEAD.
+    case 'empty':
+      await removeAutoMerge(ctx);
+      flat.rewritten.push([(rc.todo[index] as PlannedPick).oid, flat.cur]);
+      return undefined;
+    case 'conflict':
+      return stopOnConflict(ctx, rc, { index, cur: flat.cur }, outcome.conflicts, flat.rewritten);
+    default: {
+      const line = rc.todo[index] as PlannedPick | PlannedMerge;
+      const created = outcome.kind === 'committed' ? outcome.id : flat.cur;
+      if (outcome.kind === 'committed') flat.applied.push({ source: line.oid, created });
+      flat.rewritten.push([line.oid, created]);
+      flat.cur = created;
+      return undefined;
+    }
+  }
 };
 
 /** Replay `rc.todo` from the detached HEAD `ourId`; stop on conflict, else finish. */
@@ -626,26 +796,18 @@ const replayFrom = async (
   ourId: ObjectId,
   seed: ReplaySeed,
 ): Promise<RebaseResult> => {
-  let cur = ourId;
-  const applied: RebasedCommit[] = [...seed.applied];
-  const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
+  const flat: FlatProgress = {
+    cur: ourId,
+    applied: [...seed.applied],
+    rewritten: [...seed.rewritten],
+  };
   await refuseDirtyIndexBeforeFirstPick(ctx, rc, ourId);
   for (let i = 0; i < rc.todo.length; i += 1) {
-    const line = rc.todo[i]!;
     await removeAutoMerge(ctx);
-    const outcome = await replayLine(ctx, rc, line, cur);
-    if (outcome.kind === 'moved') cur = outcome.head;
-    // git's dropped empty pick takes its AUTO_MERGE with it.
-    else if (outcome.kind === 'empty') await removeAutoMerge(ctx);
-    else if (outcome.kind === 'conflict') {
-      return stopOnConflict(ctx, rc, { index: i, cur }, outcome.conflicts, rewritten);
-    } else if ('oid' in line) {
-      const created = outcome.kind === 'committed' ? outcome.id : cur;
-      if (outcome.kind === 'committed') applied.push({ source: line.oid, created });
-      rewritten.push([line.oid, created]);
-      cur = created;
-    }
+    const stop = await advanceFlat(ctx, rc, i, await replayLine(ctx, rc, i, flat.cur), flat);
+    if (stop !== undefined) return stop;
   }
+  const { cur, applied, rewritten } = flat;
   await finishRebase(ctx, rc, cur);
   await firePostRewrite(ctx, rewritten);
   await deleteRewrittenRefs(ctx, [...rc.doneBefore, ...rc.todo]);
@@ -802,6 +964,7 @@ const startReplay = async (
     doneBefore: [],
     todo,
     backupHeader: backupHeaderOf(upstream, headCommit, onto),
+    redundantCommits: 'drop',
     submoduleIgnores: preflight.modes,
   };
   return replayFrom(ctx, rc, onto, { applied: [], rewritten: [] });
@@ -860,19 +1023,62 @@ const continueRescheduled = async (
 };
 
 /** The rescheduled pick sits in `done` and in the live todo; the retry replays it from the todo, which lists it in `done` once more as git does. */
-const retryRescheduledPick = (
+const retryRescheduledPick = async (
   ctx: Context,
   progress: RebaseProgress,
   head: ObjectId,
 ): Promise<RebaseResult> => {
   const rc = { ...replayContextOf(progress), doneBefore: progress.done };
-  return replayFrom(ctx, rc, head, { applied: [], rewritten: [] });
+  if (isInteractiveState(progress)) return retryInteractive(ctx, rc, head);
+  return replayFrom(ctx, rc, head, { applied: [], rewritten: await readRewrittenList(ctx) });
+};
+
+/** An interactive reschedule retries through the interactive loop, which stops on `edit` lines. */
+const retryInteractive = async (
+  ctx: Context,
+  rc: ReplayContext,
+  head: ObjectId,
+): Promise<RebaseResult> => {
+  const ic: InteractiveContext = {
+    branch: rc.branch,
+    onto: rc.onto,
+    origHead: rc.origHead,
+    doneBefore: commitEntries(rc.doneBefore),
+    todo: commitEntries(rc.todo),
+  };
+  const group = await reopenedMeldGroup(ctx);
+  // The group's earlier members sit in `rewritten-pending`, not `rewritten-list`: they land on the group head.
+  const held = (group?.pending ?? []).map((source) => [source, head] as const);
+  return replayInteractive(ctx, ic, head, {
+    applied: [],
+    rewritten: [...(await readRewrittenList(ctx)), ...held],
+    ...(group === undefined ? {} : { group }),
+  });
+};
+
+/** The group a rescheduled squash/fixup member left open, the member included: git's retry
+ *  appends it to the template again, so a squash message carries it twice. A refused pick
+ *  leaves no group markers, so it reopens none. */
+const reopenedMeldGroup = async (ctx: Context): Promise<MeldGroup | undefined> => {
+  const current = await readCurrentFixups(ctx);
+  const pending = await readRewrittenPending(ctx);
+  const squash = await readMessageSquash(ctx);
+  const baseMessage = squash === undefined ? undefined : firstCommitMessage(squash);
+  if (current === undefined || pending === undefined || baseMessage === undefined) return undefined;
+  const fixups = [...current];
+  const members = await Promise.all(
+    fixups.map(async ({ action, oid }) => ({
+      message: (await readCommitData(ctx, oid)).message,
+      skip: action === 'fixup',
+    })),
+  );
+  return { baseMessage, members, fixups, pending: [...pending], inline: undefined };
 };
 
 /** git's `--skip` hard-resets to HEAD (dropping the staged change) and retries the rescheduled pick. */
 const skipRescheduled = async (ctx: Context, progress: RebaseProgress): Promise<RebaseResult> => {
   const head = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, head);
+  await protectedResetWorktreeToCommit(ctx, head);
   return retryRescheduledPick(ctx, progress, head);
 };
 
@@ -975,7 +1181,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   const state = (await readRebaseState(ctx)) as RebaseState;
   if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
   const currentHead = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, currentHead);
+  await protectedResetWorktreeToCommit(ctx, currentHead);
   await removeBranchState(ctx, 'silent');
   // git's continue records the skipped commit as rewritten to HEAD.
   const skipped = [stoppedCommit(state), currentHead] as const;
@@ -997,7 +1203,7 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   if (state === undefined) throw noOperationInProgress('rebase');
   const branch = branchOf(state.headName);
   const currentHead = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, state.origHead);
+  await protectedResetWorktreeToCommit(ctx, state.origHead);
   await returnHeadFromRebase(ctx, { branch, origHead: state.origHead, currentHead });
   await removeBranchState(ctx, 'silent');
   await deleteRewrittenRefs(ctx, state.done);
@@ -1126,6 +1332,7 @@ const detachInteractive = async (
   ontoName: string,
   foldedHead: ObjectId,
 ): Promise<void> => {
+  await checkoutWorktreeToCommit(ctx, foldedHead);
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
@@ -1134,22 +1341,27 @@ const detachInteractive = async (
       reflog: { oldId: fromHead, newId: foldedHead, message: rebaseStartCheckout(ontoName) },
     },
   ]);
-  await hardResetWorktreeToCommit(ctx, foldedHead);
 };
 
 /** Fast-forward the detached HEAD onto `target` (kept verbatim — its first parent
  *  is the current HEAD), recording git's `rebase: fast-forward`. */
-const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> => {
+const fastForwardOnto = async (
+  ctx: Context,
+  target: ObjectId,
+  reflog: string,
+): Promise<FastForwardOutcome> => {
   const from = await resolveRef(ctx, HEAD);
+  const checkout = await attemptCheckoutWorktreeToCommit(ctx, target);
+  if (checkout.kind === 'refused') return checkout;
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
       name: HEAD,
       id: target,
-      reflog: { oldId: from, newId: target, message: REBASE_FAST_FORWARD },
+      reflog: { oldId: from, newId: target, message: reflog },
     },
   ]);
-  await hardResetWorktreeToCommit(ctx, target);
+  return { kind: 'moved' };
 };
 
 /** Create a replayed commit and advance the detached HEAD to it. `parent` is the
@@ -1191,11 +1403,18 @@ const commitAndAdvance = async (
 type Step =
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
   | { readonly kind: 'advanced'; readonly created: ObjectId }
-  | { readonly kind: 'edit-stop'; readonly created: ObjectId };
+  | { readonly kind: 'edit-stop'; readonly created: ObjectId }
+  | WorktreeRefusal;
 
 type Produced =
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-  | { readonly kind: 'committed'; readonly created: ObjectId };
+  | { readonly kind: 'committed'; readonly created: ObjectId }
+  | WorktreeRefusal;
+
+const fastForwardProduced = async (ctx: Context, target: ObjectId): Promise<Produced> => {
+  const moved = await fastForwardOnto(ctx, target, REBASE_FAST_FORWARD);
+  return moved.kind === 'refused' ? moved : { kind: 'committed', created: target };
+};
 
 /** Produce a commit onto HEAD: fast-forward when its parent is HEAD (oid kept,
  *  `rebase: fast-forward`), else a 3-way cherry-pick committed with `reflog`. */
@@ -1206,12 +1425,9 @@ const produceOnto = async (
   head: ObjectId,
   reflog: string,
 ): Promise<Produced> => {
-  if (cData.parents[0] === head) {
-    await fastForwardOnto(ctx, inst.oid);
-    return { kind: 'committed', created: inst.oid };
-  }
+  if (cData.parents[0] === head) return fastForwardProduced(ctx, inst.oid);
   const outcome = await mergeUnderLock(ctx, inst.oid, cData, head);
-  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  if (outcome.kind !== 'clean') return outcome;
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
     parent: head,
@@ -1237,7 +1453,7 @@ const stepPick = async (
     head,
     rebasePickReflog(subjectLine(cData.message)),
   );
-  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  if (produced.kind !== 'committed') return produced;
   return { kind: 'advanced', created: produced.created };
 };
 
@@ -1255,7 +1471,7 @@ const stepEdit = async (
     head,
     rebaseEditReflog(subjectLine(cData.message)),
   );
-  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  if (produced.kind !== 'committed') return produced;
   return { kind: 'edit-stop', created: produced.created };
 };
 
@@ -1281,7 +1497,7 @@ const stepReword = async (
     head,
     rebaseRewordReflog(subjectLine(cData.message)),
   );
-  if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
+  if (produced.kind !== 'committed') return produced;
   return { kind: 'advanced', created: await amendMessage(ctx, produced.created, message) };
 };
 
@@ -1324,6 +1540,8 @@ interface InteractiveContext {
   readonly doneBefore: ReadonlyArray<PlannedInstruction>;
   readonly todo: ReadonlyArray<PlannedInstruction>;
   readonly backupHeader?: RebaseBackupHeader;
+  /** Set by an interactive start only: git's `rebase -i` default writes no policy file. */
+  readonly redundantCommits?: RedundantCommitPolicy;
 }
 
 interface StopFields {
@@ -1364,6 +1582,7 @@ const persistInteractiveStop = async (
     patch: fields.patch,
     // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop`'s `if (field !== undefined)` skips exactly like the `{}` branch (byte-identical on-disk state).
     ...(ic.backupHeader !== undefined ? { backupHeader: ic.backupHeader } : {}),
+    ...policyOf(ic),
     ...optionalStopFields(fields),
   });
 };
@@ -1423,11 +1642,18 @@ const conflictResult = (
 interface ReplaySeed {
   readonly applied: ReadonlyArray<RebasedCommit>;
   readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+  /** The meld group a rescheduled member reopens; absent, the replay opens one on HEAD. */
+  readonly group?: MeldGroup;
 }
 
 /** Meld a squash/fixup member into the group commit at HEAD: recommit HEAD's
  *  parent with HEAD's tree + the member's changes, under the running (or, at the
  *  group end, the cleaned) combined message. Returns the new group commit. */
+type MeldOutcome =
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
+  | { readonly kind: 'committed'; readonly created: ObjectId; readonly message: string }
+  | WorktreeRefusal;
+
 const meldGroupMember = async (
   ctx: Context,
   inst: PlannedInstruction,
@@ -1435,17 +1661,10 @@ const meldGroupMember = async (
   head: ObjectId,
   group: MeldGroup,
   isLast: boolean,
-): Promise<
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-  | {
-      readonly kind: 'committed';
-      readonly created: ObjectId;
-      readonly message: string;
-    }
-> => {
+): Promise<MeldOutcome> => {
   const headData = await readCommitData(ctx, head);
   const outcome = await mergeUnderLock(ctx, inst.oid, cData, head);
-  if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
+  if (outcome.kind !== 'clean') return outcome;
   const message = joinMeldGroup(group, inst, cData, isLast);
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
@@ -1492,7 +1711,7 @@ const replayInteractive = async (
     head: startHead,
     applied: [...seed.applied],
     rewritten: [...seed.rewritten],
-    group: await meldGroupFrom(ctx, startHead),
+    group: seed.group ?? (await meldGroupFrom(ctx, startHead)),
   };
   for (let i = 0; i < ic.todo.length; i += 1) {
     const outcome = await replayInstruction(ctx, ic, i, replay);
@@ -1575,11 +1794,23 @@ const replayMeld = async (
   const { ic, index, inst, cData } = line;
   const isLast = !meldContinues(ic.todo, index);
   const meld = await meldGroupMember(ctx, inst, cData, replay.head, replay.group, isLast);
+  if (meld.kind === 'refused') return refuseMeldMember(ctx, line, replay, meld);
   if (meld.kind === 'conflict') {
     await persistInteractiveStop(ctx, ic, index, meldStopFields(line, replay));
     return { stop: conflictResult(inst.oid, meld.conflicts, remainingAfter(line)) };
   }
-  return { next: recordCreated(replay, inst.oid, meld.created) };
+  await fireAmendRewrite(ctx, replay.head, meld.created);
+  const recorded = recordCreated(replay, inst.oid, meld.created);
+  return { next: meldContinues(ic.todo, index) ? recorded : flushMeldGroup(recorded) };
+};
+
+/** git flushes `rewritten-pending` when its group ends: every member answers to the group's final commit. */
+const flushMeldGroup = (replay: InteractiveReplay): InteractiveReplay => {
+  const held = heldGroupRewrites(replay);
+  return {
+    ...replay,
+    rewritten: [...held.rewritten, ...held.pending.map((source) => [source, replay.head] as const)],
+  };
 };
 
 /** The fields every interactive stop records: the stopped commit, its author, a message, the patch. */
@@ -1590,11 +1821,23 @@ const stoppedLineFields = (line: ReplayedLine, message: string) => ({
   patch: line.patch,
 });
 
-/** The stop a conflicted meld persists: the group's template so far, with the member. */
-const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFields => {
+/** git holds a group's rewrites in `rewritten-pending`, under the original oids, until the group ends:
+ *  the base answers to the commit it was picked from, and none of them sits in `rewritten-list`. */
+const heldGroupRewrites = (replay: InteractiveReplay) => {
+  const [base, ...members] = replay.group.pending;
+  const baseSource = replay.rewritten.find(([, created]) => created === base)?.[0] ?? base;
+  const pending = [baseSource as ObjectId, ...members];
+  return {
+    pending,
+    rewritten: replay.rewritten.filter(([source]) => !pending.includes(source)),
+  };
+};
+
+/** The group files a meld leaves: the template so far, with the member. */
+const meldGroupFiles = (line: ReplayedLine, replay: InteractiveReplay) => {
   const { inst, cData } = line;
   const { group } = replay;
-  const template = buildCombinedMessage([
+  const messageSquash = buildCombinedMessage([
     { message: group.baseMessage },
     ...group.members,
     { message: cData.message, skip: inst.action === 'fixup' },
@@ -1604,15 +1847,55 @@ const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFiel
     { action: inst.action as 'squash' | 'fixup', oid: inst.oid },
   ];
   return {
-    ...stoppedLineFields(line, template),
-    rewritten: replay.rewritten,
-    amend: replay.head,
     currentFixups,
-    rewrittenPending: [...group.pending],
-    messageSquash: template,
+    rewrittenPending: heldGroupRewrites(replay).pending,
+    messageSquash,
     ...fixupOnlyMessage(currentFixups, group.baseMessage),
-    mergeMsg: template,
   };
+};
+
+/** The stop a conflicted meld persists. */
+const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFields => {
+  const files = meldGroupFiles(line, replay);
+  return {
+    ...stoppedLineFields(line, files.messageSquash),
+    rewritten: heldGroupRewrites(replay).rewritten,
+    amend: replay.head,
+    ...files,
+    mergeMsg: files.messageSquash,
+  };
+};
+
+/** A refused squash/fixup member: reschedule it with the group's files, not `rewritten-list`. */
+const refuseMeldMember = (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+  refusal: WorktreeRefusal,
+): Promise<never> => {
+  const held = { ...replay, rewritten: heldGroupRewrites(replay).rewritten };
+  return refuseInteractiveLine(ctx, line, held, refusal, meldGroupFiles(line, replay));
+};
+
+/** An interactive loop's refused line: reschedule it with the rewrites made so far,
+ *  and the open meld group's files when the line is a squash/fixup member. */
+const refuseInteractiveLine = (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+  refusal: WorktreeRefusal,
+  meld?: MeldMarkers,
+): Promise<never> => {
+  const { ic, index } = line;
+  const refused: RefusedLine = {
+    done: [...ic.doneBefore, ...ic.todo.slice(0, index + 1)],
+    remaining: ic.todo.slice(index),
+    commit: line.inst.oid,
+    author: line.cData.author,
+    rewritten: replay.rewritten,
+    ...(meld === undefined ? {} : { meld }),
+  };
+  return refuseRescheduled(ctx, ic, refused, refusal);
 };
 
 /** Any other line: step it, stopping on a conflict or an `edit`; a commit it
@@ -1624,6 +1907,7 @@ const replayStep = async (
 ): Promise<InteractiveLineOutcome> => {
   const { inst, cData } = line;
   const step = await stepInstruction(ctx, inst, cData, replay.head);
+  if (step.kind === 'refused') return refuseInteractiveLine(ctx, line, replay, step);
   if (step.kind === 'conflict') {
     return { stop: await stopOnStepConflict(ctx, line, replay, step.conflicts) };
   }
@@ -1690,6 +1974,7 @@ const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promis
       shortOrigHead: shortOid(plan.headCommit),
       shortOnto: shortOid(plan.onto),
     },
+    redundantCommits: 'stop',
   };
   const seed: ReplaySeed = {
     applied: folded.map((t) => ({ source: t.oid, created: t.oid })),
@@ -1719,7 +2004,7 @@ const COMMIT_ACTIONS: ReadonlySet<string> = new Set([
  *  pure-pick stop resumes through the (identical) non-interactive path. An
  *  `amend` stop always carries a non-`pick` verb (`edit`/`squash`/`fixup`) in
  *  its todo, so the verb check subsumes an explicit `amend` test. */
-const isInteractiveState = (state: RebaseState): boolean =>
+const isInteractiveState = (state: Pick<RebaseState, 'done' | 'remaining'>): boolean =>
   [...state.done, ...state.remaining].some((e) => INTERACTIVE_VERBS.has(e.action));
 
 const INTERACTIVE_VERBS: ReadonlySet<string> = new Set([
@@ -1743,14 +2028,42 @@ const rebaseContinueInteractive = async (
     doneBefore: commitEntries(state.done),
     todo: commitEntries(state.remaining),
   };
-  const rewritten = [...(await readRewrittenList(ctx))];
   const tree = await writeContinuedIndex(ctx);
   const currentHead = await resolveRef(ctx, HEAD);
   const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
   // git's `commit_staged_changes` drops AUTO_MERGE once it commits the stop.
   if (resumeHead !== currentHead) await concludeStopCommit(ctx);
-  rewritten.push([stoppedCommit(state), resumeHead]);
-  return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
+  return replayInteractive(ctx, ic, resumeHead, await resumedSeed(ctx, ic, state, resumeHead));
+};
+
+/** The stopped commit and the group members `rewritten-pending` holds, each once. */
+const heldSources = async (ctx: Context, state: RebaseState): Promise<ReadonlyArray<ObjectId>> => [
+  ...new Set([...((await readRewrittenPending(ctx)) ?? []), stoppedCommit(state)]),
+];
+
+/** What a resumed stop hands the replay: its held commits land on `head`, unless the next line
+ *  continues their meld group, which then holds them until it ends — as git's `record_in_rewritten`. */
+const resumedSeed = async (
+  ctx: Context,
+  ic: InteractiveContext,
+  state: RebaseState,
+  head: ObjectId,
+): Promise<ReplaySeed> => {
+  const held = await heldSources(ctx, state);
+  const listed = await readRewrittenList(ctx);
+  const [next] = ic.todo;
+  if (next?.action !== 'squash' && next?.action !== 'fixup') {
+    return {
+      applied: [],
+      rewritten: [...listed, ...held.map((source) => [source, head] as const)],
+    };
+  }
+  const group: MeldGroup = {
+    ...(await meldGroupFrom(ctx, head)),
+    pending: [...held],
+    fixups: [...(state.currentFixups ?? [])],
+  };
+  return { applied: [], rewritten: listed, group };
 };
 
 /** The commit that concludes a stop takes its `AUTO_MERGE` and `MERGE_MSG` with it. */
@@ -1789,7 +2102,7 @@ const amendEditStop = async (
   editedHead: ObjectId,
 ): Promise<ObjectId> => {
   const amendCommit = await readCommitData(ctx, editedHead);
-  return commitAndAdvance(ctx, {
+  const created = await commitAndAdvance(ctx, {
     tree,
     parent: amendCommit.parents[0],
     expected: editedHead,
@@ -1798,6 +2111,8 @@ const amendEditStop = async (
     reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),
     carried: amendedExtraHeaders(amendCommit.extraHeaders),
   });
+  await fireAmendRewrite(ctx, editedHead, created);
+  return created;
 };
 
 /** Changes staged on top of a commit the caller made at an edit stop: git
@@ -1818,7 +2133,7 @@ const commitFixupResolution = async (
   const baseData = await readCommitData(ctx, currentHead);
   // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
   const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
-  return commitAndAdvance(ctx, {
+  const created = await commitAndAdvance(ctx, {
     tree,
     parent: baseData.parents[0],
     expected: currentHead,
@@ -1827,6 +2142,8 @@ const commitFixupResolution = async (
     reflog: rebaseContinueReflog(subjectLine(message)),
     carried: amendedExtraHeaders(baseData.extraHeaders),
   });
+  await fireAmendRewrite(ctx, currentHead, created);
+  return created;
 };
 
 /** A squash/fixup conflict stop also carries `amend` (the group commit), but
@@ -1839,7 +2156,7 @@ const isEditStop = (state: RebaseState): state is RebaseState & { readonly amend
  *  conflict stop never committed, so HEAD already sits at the last good pick. */
 const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
   const target = await resolveRef(ctx, HEAD);
-  await hardResetWorktreeToCommit(ctx, target);
+  await protectedResetWorktreeToCommit(ctx, target);
   if (isEditStop(state)) return rebaseContinueInteractive(ctx, state);
   const ic: InteractiveContext = {
     branch: branchOf(state.headName),
@@ -1848,8 +2165,5 @@ const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<
     doneBefore: commitEntries(state.done),
     todo: commitEntries(state.remaining),
   };
-  return replayInteractive(ctx, ic, target, {
-    applied: [],
-    rewritten: await readRewrittenList(ctx),
-  });
+  return replayInteractive(ctx, ic, target, await resumedSeed(ctx, ic, state, target));
 };

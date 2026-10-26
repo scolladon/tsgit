@@ -3,9 +3,12 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { hardResetWorktreeToCommit } from '../../../../src/application/commands/internal/reset-worktree.js';
 import {
   applyAutostash,
   createAutostash,
+  restoreSnapshot,
+  snapshotLocalChanges,
   stashApply,
   stashDrop,
   stashList,
@@ -14,7 +17,9 @@ import {
 } from '../../../../src/application/commands/stash.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import { hashBlob } from '../../../../src/application/primitives/hash-blob.js';
 import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
@@ -203,6 +208,26 @@ describe('stash push', () => {
         expect(
           lstat.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/d`),
         ).toHaveLength(3);
+      });
+    });
+  });
+
+  describe('Given only the work tree differs from an unchanged index', () => {
+    describe('When the stash is pushed', () => {
+      it('Then HEAD is not flattened to look for index-lost paths', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const headTree = (await commitOf(ctx, await headId(ctx))).tree;
+        const flatten = vi.spyOn(flattenTreeMod, 'flattenEscapedTree');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(flatten.mock.calls.filter(([, tree]) => tree === headTree)).toEqual([]);
+        flatten.mockRestore();
       });
     });
   });
@@ -2094,7 +2119,7 @@ describe('stash push beyond a symbolic link', () => {
       await commitFile(ctx, 'd/f', 'x\n', 'add d/f');
       await write(ctx, 'copy/f', 'x\n');
       await ctx.fs.rm(`${ctx.layout.workDir}/d/f`);
-      await ctx.fs.rm(`${ctx.layout.workDir}/d`);
+      await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
       await ctx.fs.symlink('copy', `${ctx.layout.workDir}/d`);
       return ctx;
     };
@@ -2150,6 +2175,37 @@ describe('stash push beyond a symbolic link', () => {
     });
   });
 
+  describe('Given a path beyond a symlink followed by a later edited file', () => {
+    describe('When push runs', () => {
+      it('Then the later file is never hashed into the object store', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/f', 'x\n', 'add d/f');
+        await commitFile(ctx, 'z', 'v1\n', 'add z');
+        await write(ctx, 'copy/f', 'x\n');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await ctx.fs.symlink('copy', `${ctx.layout.workDir}/d`);
+        await write(ctx, 'z', 'never hashed\n');
+        const laterBlob = await hashBlob(ctx, new TextEncoder().encode('never hashed\n'), {
+          write: false,
+        });
+        const sut = stashPush;
+
+        // Act
+        const outcome = await sut(ctx, {}).catch((error: unknown) => error);
+
+        // Assert
+        expect(outcome instanceof TsgitError && outcome.data).toEqual({
+          code: 'PATHSPEC_BEYOND_SYMLINK',
+          path: 'd/f',
+        });
+        await expect(readObject(ctx, laterBlob)).rejects.toMatchObject({
+          data: { code: 'OBJECT_NOT_FOUND' },
+        });
+      });
+    });
+  });
+
   describe('Given a tracked symlink that is a leaf, not a leading directory', () => {
     describe('When push runs after the link was retargeted', () => {
       it('Then it stashes normally', async () => {
@@ -2166,6 +2222,426 @@ describe('stash push beyond a symbolic link', () => {
 
         // Assert
         expect(result.kind).toBe('saved');
+      });
+    });
+  });
+});
+
+describe('stashPush — the work-tree tree follows git’s path set', () => {
+  const savedWorkTree = async (ctx: Context) => {
+    const result = await stashPush(ctx, {});
+    if (result.kind !== 'saved') throw new Error('expected saved');
+    return flattenTree(ctx, (await commitOf(ctx, result.stash)).tree);
+  };
+
+  const refusalOf = async (ctx: Context): Promise<unknown> => {
+    try {
+      await stashPush(ctx, {});
+    } catch (error) {
+      return error instanceof TsgitError ? error.data : error;
+    }
+    return undefined;
+  };
+
+  const idOfIndexed = async (ctx: Context, path: string): Promise<ObjectId | undefined> =>
+    (await readIndex(ctx)).entries.find((entry) => entry.path === path)?.id;
+
+  describe('Given a directory standing at a tracked path', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree keeps the index entry', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'v1\n', 'add f');
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await write(ctx, 'f/u', 'untracked\n');
+        await write(ctx, 'a.txt', 'edited\n');
+        const indexed = await idOfIndexed(ctx, 'f');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.get('f' as FilePath)?.id).toBe(indexed);
+      });
+    });
+  });
+
+  describe('Given a directory standing at a tracked path and nothing else changed', () => {
+    describe('When push runs', () => {
+      it('Then the directory counts as a local change and the file is restored', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'v1\n', 'add f');
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await write(ctx, 'f/u', 'untracked\n');
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(await read(ctx, 'f')).toBe('v1\n');
+      });
+    });
+  });
+
+  describe('Given a staged new file deleted from the work tree', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree keeps the index entry', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'n', 'new\n');
+        await add(ctx, ['n']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/n`);
+        const indexed = await idOfIndexed(ctx, 'n');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.get('n' as FilePath)?.id).toBe(indexed);
+      });
+    });
+  });
+
+  describe('Given a staged new file beneath a directory replaced by a symbolic link', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree keeps the index entry and nothing is refused', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'd/x', 'new\n');
+        await add(ctx, ['d/x']);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`);
+        const indexed = await idOfIndexed(ctx, 'd/x');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.get('d/x' as FilePath)?.id).toBe(indexed);
+      });
+    });
+  });
+
+  describe('Given a committed file removed from the index and still on disk', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree records the file with its on-disk content', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'v1\n', 'add f');
+        await unstagePath(ctx, 'f');
+        await write(ctx, 'f', 'on disk\n');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        const blob = await readObject(ctx, result.entries.get('f' as FilePath)?.id as ObjectId);
+        expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('on disk\n');
+      });
+    });
+  });
+
+  describe('Given a CRLF file removed from the index and still on disk under core.autocrlf true', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree blob is LF, as no index blob exists to keep its CRLF', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'a\r\nb\r\n', 'add crlf f');
+        await unstagePath(ctx, 'f');
+        await configure(ctx, '[core]\n\tautocrlf = true\n');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        const blob = await readObject(ctx, result.entries.get('f' as FilePath)?.id as ObjectId);
+        expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('a\nb\n');
+      });
+    });
+  });
+
+  describe('Given a gitlink with no checkout and a tracked file edited', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree keeps the gitlink at its index id', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+        await write(ctx, 'a.txt', 'edited\n');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.get('sub' as FilePath)).toMatchObject({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+      });
+    });
+  });
+
+  describe('Given a committed symbolic link removed from the index and still on disk', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree records it with the link mode', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.symlink('target', `${ctx.layout.workDir}/l`);
+        await add(ctx, ['l']);
+        await commit(ctx, { message: 'add link', author });
+        await unstagePath(ctx, 'l');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.get('l' as FilePath)?.mode).toBe(FILE_MODE.SYMLINK);
+      });
+    });
+  });
+
+  describe('Given a committed file removed from the index and replaced on disk by a directory', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree does not record the path', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'v1\n', 'add f');
+        await unstagePath(ctx, 'f');
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await write(ctx, 'f/u', 'untracked\n');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.has('f' as FilePath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a committed file removed from the index and absent on disk', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree does not record the path', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'v1\n', 'add f');
+        await unstagePath(ctx, 'f');
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.has('f' as FilePath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a committed file removed from the index beneath a directory replaced by a symbolic link', () => {
+    describe('When push runs', () => {
+      it('Then it refuses with the path beyond the symbolic link', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'v1\n', 'add d/x');
+        await unstagePath(ctx, 'd/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`);
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'd/x' });
+      });
+    });
+  });
+
+  describe('Given a committed file removed from the index beneath a regular file', () => {
+    describe('When push runs', () => {
+      it('Then the work-tree tree does not record the path', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'v1\n', 'add d/x');
+        await unstagePath(ctx, 'd/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'occupant\n');
+
+        // Act
+        const sut = savedWorkTree;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.entries.has('d/x' as FilePath)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('snapshotLocalChanges', () => {
+  const workDirOf = (ctx: Context): string => `${ctx.layout.workDir}`;
+  const committer: AuthorIdentity = {
+    name: 'Bob',
+    email: 'bob@example.com',
+    timestamp: 1_700_000_100,
+    timezoneOffset: '+0000',
+  };
+
+  describe('Given a modified tracked file', () => {
+    describe('When the snapshot is taken with a distinct author and committer', () => {
+      it('Then the WIP commit carries both identities and the index commit too', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+
+        // Act
+        const result = await snapshotLocalChanges(ctx, workDirOf(ctx), { author, committer });
+
+        // Assert
+        const wip = await commitOf(ctx, result as ObjectId);
+        const index = await commitOf(ctx, wip.parents[1] as ObjectId);
+        expect([wip.author, wip.committer]).toEqual([author, committer]);
+        expect([index.author, index.committer]).toEqual([author, committer]);
+        expect(wip.parents[0]).toBe(await headId(ctx));
+        expect(index.parents).toEqual([await headId(ctx)]);
+      });
+
+      it('Then it writes no stash ref, resets nothing and the tree stays edited', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+
+        // Act
+        await snapshotLocalChanges(ctx, workDirOf(ctx), { author, committer });
+
+        // Assert
+        expect(await readStashStack(ctx)).toEqual([]);
+        expect(await read(ctx, 'a.txt')).toBe('edited\n');
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When the snapshot is taken', () => {
+      it('Then it returns undefined and writes no object', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const before = await looseObjectIds(ctx);
+
+        // Act
+        const result = await snapshotLocalChanges(ctx, workDirOf(ctx), { author, committer });
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(await looseObjectIds(ctx)).toEqual(before);
+      });
+    });
+  });
+});
+
+describe('restoreSnapshot', () => {
+  const committer: AuthorIdentity = {
+    name: 'Bob',
+    email: 'bob@example.com',
+    timestamp: 1_700_000_100,
+    timezoneOffset: '+0000',
+  };
+
+  const blobIdOf = async (ctx: Context, content: string): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode(content),
+      id: '' as ObjectId,
+    });
+
+  const stagedIdOf = async (ctx: Context, path: string): Promise<ObjectId | undefined> =>
+    (await readIndex(ctx)).entries.find((entry) => entry.path === path)?.id;
+
+  const snapshotThenReset = async (ctx: Context): Promise<ObjectId> => {
+    const workDir = `${ctx.layout.workDir}`;
+    const snapshot = (await snapshotLocalChanges(ctx, workDir, { author, committer })) as ObjectId;
+    await hardResetWorktreeToCommit(ctx, await headId(ctx));
+    return snapshot;
+  };
+
+  describe('Given a snapshot of a staged change and of a staged change edited again', () => {
+    describe('When the tree was reset to HEAD and the snapshot is restored', () => {
+      it('Then the work tree and the index hold the changes the snapshot recorded', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'b.txt', 'b-committed\n', 'add b');
+        await write(ctx, 'a.txt', 'a-staged\n');
+        await add(ctx, ['a.txt']);
+        await write(ctx, 'b.txt', 'b-staged\n');
+        await add(ctx, ['b.txt']);
+        await write(ctx, 'b.txt', 'b-edited\n');
+        const snapshot = await snapshotThenReset(ctx);
+        expect(await read(ctx, 'b.txt')).toBe('b-committed\n');
+
+        // Act
+        await restoreSnapshot(ctx, `${ctx.layout.workDir}`, snapshot);
+
+        // Assert
+        expect(await read(ctx, 'a.txt')).toBe('a-staged\n');
+        expect(await read(ctx, 'b.txt')).toBe('b-edited\n');
+        expect(await stagedIdOf(ctx, 'a.txt')).toBe(await blobIdOf(ctx, 'a-staged\n'));
+        expect(await stagedIdOf(ctx, 'b.txt')).toBe(await blobIdOf(ctx, 'b-staged\n'));
+      });
+    });
+  });
+
+  describe('Given a snapshot of an unstaged edit', () => {
+    describe('When the snapshot is restored over the reset tree', () => {
+      it('Then the edit is back, unstaged, and no object was written', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const snapshot = await snapshotThenReset(ctx);
+        const before = await looseObjectIds(ctx);
+
+        // Act
+        await restoreSnapshot(ctx, `${ctx.layout.workDir}`, snapshot);
+
+        // Assert
+        expect(await read(ctx, 'a.txt')).toBe('edited\n');
+        expect(await stagedIdOf(ctx, 'a.txt')).toBe(await blobIdOf(ctx, 'committed\n'));
+        expect(await looseObjectIds(ctx)).toEqual(before);
+      });
+    });
+  });
+});
+
+describe('stash push beyond a symbolic link, object order', () => {
+  describe('Given a tracked path whose leading directory became a dangling symlink', () => {
+    describe('When push refuses', () => {
+      it('Then exactly the index commit was written first', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'v1\n', 'add d/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/d`);
+        const before = await looseObjectIds(ctx);
+
+        // Act
+        const refusal = await attemptStashPush(ctx, {});
+
+        // Assert
+        const written = await commitsWrittenSince(ctx, before);
+        expect((refusal as TsgitError).data).toEqual({
+          code: 'PATHSPEC_BEYOND_SYMLINK',
+          path: 'd/x',
+        });
+        expect(written.map((c) => c.message)).toEqual([expect.stringMatching(/^index on main: /)]);
       });
     });
   });

@@ -34,6 +34,21 @@ import {
   rebaseSkip,
 } from '../../src/application/commands/rebase.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  indexState,
+  listing,
+  OK,
+  type Outcome,
+  outcomeOfGitStderr,
+  outcomeOfTsgitRefusal,
+} from './occupant-displacement-fixtures.js';
+import {
+  ABORT_ROWS,
+  type AbortRow,
+  buildStoppedMerge,
+  entriesOf,
+} from './stopped-state-fixtures.js';
+import { REBASE_MERGES_RESET_PINS } from './stopped-state-pins.js';
 
 const EPOCH = 1_700_000_000;
 const DATED_ENV = {
@@ -192,6 +207,67 @@ const rebaseBoth = async (
   await rebaseRun(tsgitAt(dirs.ours), input);
 };
 
+/** base carries p; the side commit deletes p and conflicts on k with main's u1; topic merges side. */
+const sideDeletingP: Shape = (dir) => {
+  writeFileSync(path.join(dir, 'p'), 'p\n');
+  commitFile(dir, 'k', 'base\n');
+  dated(dir, 'add', 'p');
+  dated(dir, 'commit', '-q', '-m', 'p');
+  dated(dir, 'checkout', '-q', '-b', 'topic');
+  commitFile(dir, 'c1');
+  dated(dir, 'checkout', '-q', '-b', 'side', 'main');
+  dated(dir, 'rm', '-q', 'p');
+  writeFileSync(path.join(dir, 'k'), 'side\n');
+  dated(dir, 'add', 'k');
+  dated(dir, 'commit', '-q', '-m', 's1');
+  dated(dir, 'checkout', '-q', 'topic');
+  dated(dir, 'merge', '-q', '--no-ff', 'side', '-m', "Merge branch 'side' into topic");
+  dated(dir, 'checkout', '-q', 'main');
+  commitFile(dir, 'k', 'main\n');
+  dated(dir, 'checkout', '-q', 'topic');
+};
+
+/** The side commit `t` conflicts on keep with main and is followed by a `reset onto` once labelled. */
+const sideConflictingOnKeep =
+  (entries: ReturnType<typeof entriesOf>): Shape =>
+  (dir) => {
+    buildStoppedMerge(dir, entries);
+    dated(dir, 'checkout', '-q', '-b', 'topic', 't~1');
+    commitFile(dir, 'c1');
+    dated(dir, 'merge', '-q', '--no-ff', 't', '-m', "Merge branch 't' into topic");
+  };
+
+// git checks an ignored occupant out of the way, so the reset step does not stop on these shapes.
+const GIT_DISPLACES_IGNORED_ADDS: ReadonlySet<string> = new Set(['I1', 'I2', 'I4']);
+
+const RESET_ROWS = ABORT_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant })));
+
+const resetStepState = (dir: string) => ({
+  head: git(dir, 'rev-parse', 'HEAD'),
+  listing: listing(dir),
+  index: indexState(dir),
+  todo: readGit(dir, 'rebase-merge/git-rebase-todo'),
+  done: readGit(dir, 'rebase-merge/done'),
+  rebaseHead: readGit(dir, 'REBASE_HEAD'),
+});
+
+/** Git's precondition refusal names no path while tsgit lists the tracked change, so only untracked paths are comparable. */
+const comparable = (outcome: Outcome): Outcome =>
+  outcome.untracked.length === 0 ? { ...outcome, localChanges: [] } : outcome;
+
+const tsgitRefusal = (err: unknown): Outcome => outcomeOfTsgitRefusal(err, 'WORKING_TREE_DIRTY');
+
+const refusedResetState = (dir: string) => ({
+  head: git(dir, 'rev-parse', 'HEAD'),
+  occupant: readFileSync(path.join(dir, 'p'), 'utf8'),
+  index: git(dir, 'ls-files', '--stage'),
+  todo: readGit(dir, 'rebase-merge/git-rebase-todo'),
+  done: readGit(dir, 'rebase-merge/done'),
+  end: readGit(dir, 'rebase-merge/end'),
+  msgnum: readGit(dir, 'rebase-merge/msgnum'),
+  rebaseHead: readGit(dir, 'REBASE_HEAD'),
+});
+
 describe.skipIf(!GIT_AVAILABLE)('rebase --rebase-merges interop', () => {
   describe('Given a topic that merged a side branch, and an advanced main', () => {
     describe('When both tools rebase it with merges', () => {
@@ -323,4 +399,83 @@ describe.skipIf(!GIT_AVAILABLE)('rebase --rebase-merges interop', () => {
       });
     });
   });
+
+  describe('Given a resolved conflict followed by a reset step that would restore an untracked file', () => {
+    describe('When both tools continue', () => {
+      it('Then both refuse, keep the file and HEAD, and reschedule the reset step', async () => {
+        // Arrange
+        const dirs = setUp('reset-occupant', sideDeletingP);
+        await rebaseBoth(dirs, ['-r'], { upstream: 'main', rebaseMerges: true });
+        for (const dir of [dirs.ours, dirs.theirs]) {
+          writeFileSync(path.join(dir, 'k'), 'resolved\n');
+          dated(dir, 'add', 'k');
+          writeFileSync(path.join(dir, 'p'), 'occupant\n');
+        }
+        const sut = rebaseContinue;
+
+        // Act
+        const gitExit = tryRunGitWithExit(['-C', dirs.theirs, 'rebase', '--continue'], {
+          env: DATED_ENV,
+        }).exitCode;
+        const failure = await sut(tsgitAt(dirs.ours)).catch((err: unknown) => err);
+
+        // Assert
+        expect(gitExit).toBe(1);
+        expect(failure).toMatchObject({ data: { code: 'WORKING_TREE_DIRTY', untracked: ['p'] } });
+        expect(refusedResetState(dirs.ours)).toEqual(refusedResetState(dirs.theirs));
+        expect(readGit(dirs.theirs, 'rebase-merge/git-rebase-todo')).toMatch(/^reset onto\n/);
+      });
+    });
+  });
+
+  describe.each(RESET_ROWS)(
+    'Given $row.shape/$variant at a reset step over an occupant',
+    ({
+      row,
+      variant,
+    }: {
+      row: AbortRow;
+      variant: (typeof ABORT_ROWS)[number]['variants'][number];
+    }) => {
+      describe('When both tools continue the rebase', () => {
+        it('Then the refusal, work tree, index and stop state match', async () => {
+          // Arrange
+          const dirs = setUp(
+            `reset-${row.shape}-${variant}`,
+            sideConflictingOnKeep(entriesOf(variant, row)),
+          );
+          await rebaseBoth(dirs, ['-r'], { upstream: 'main', rebaseMerges: true });
+          const occupant =
+            variant === 'reset-adds' ? (row.addOccupant ?? row.occupant) : row.occupant;
+          for (const dir of [dirs.ours, dirs.theirs]) {
+            writeFileSync(path.join(dir, 'keep'), 'a\n');
+            dated(dir, 'add', 'keep');
+            occupant(dir);
+          }
+          const sut = rebaseContinue;
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', dirs.theirs, 'rebase', '--continue'], {
+            env: DATED_ENV,
+          });
+          const gitExit = gitRun.exitCode;
+          const expected = gitExit === 0 ? OK : comparable(outcomeOfGitStderr(gitRun.stderr));
+          const result = await sut(tsgitAt(dirs.ours)).then(() => OK, tsgitRefusal);
+
+          // Assert
+          expect(expected).toEqual(REBASE_MERGES_RESET_PINS[`${row.shape}/${variant}`] ?? expected);
+          expect(comparable(result)).toEqual(expected);
+          expect(listing(dirs.ours)).toEqual(listing(dirs.theirs));
+          expect(indexState(dirs.ours)).toEqual(indexState(dirs.theirs));
+          if (variant === 'reset-adds' && !GIT_DISPLACES_IGNORED_ADDS.has(row.shape)) {
+            expect(gitExit).toBe(1);
+            expect(readGit(dirs.theirs, 'rebase-merge/git-rebase-todo')).toMatch(/^reset /);
+          }
+          if (gitExit !== 0) {
+            expect(resetStepState(dirs.ours)).toEqual(resetStepState(dirs.theirs));
+          }
+        });
+      });
+    },
+  );
 });

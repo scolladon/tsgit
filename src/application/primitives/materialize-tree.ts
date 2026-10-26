@@ -46,12 +46,18 @@ import {
 } from '../../domain/objects/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
-import { applyChangesetWithAttributes } from './apply-changeset.js';
+import {
+  applyChangesetWithAttributes,
+  type IgnoredOccupants,
+  type UnmergedPaths,
+  type UntrackedOccupants,
+} from './apply-changeset.js';
 import {
   type Changeset,
   type ChangesetEntry,
   type ChangesetStats,
   computeChangeset,
+  pathFields,
 } from './compute-changeset.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
@@ -104,6 +110,21 @@ export interface MaterializeTreeOpts {
    * its index entry and work file, and a path the index changed to a third version refuses.
    */
   readonly headTree?: ObjectId;
+  /**
+   * `protect` refuses an ignored occupant like an untracked one (git's `overwrite_ignore = 0`);
+   * default `overwrite`.
+   */
+  readonly ignoredOccupants?: IgnoredOccupants;
+  /**
+   * `protect` refuses an untracked occupant even when forced (git's `reset_head` with
+   * `UNPACK_RESET_PROTECT_UNTRACKED`); default `overwrite`.
+   */
+  readonly untrackedOccupants?: UntrackedOccupants;
+  /**
+   * `reset` resets a conflicted path to the target without the up-to-date check; default
+   * `hidden`, where a conflicted path is invisible to the apply.
+   */
+  readonly unmergedPaths?: UnmergedPaths;
 }
 
 export interface MaterializeTreeResult {
@@ -149,14 +170,41 @@ const writtenEntriesByPath = (
   return out;
 };
 
-/** Every stage of every out-of-scope path survives, so another path's conflict is kept. */
+const PATH_SEPARATOR = '/';
+
+const leadingDirectoriesOf = (path: string): string[] => {
+  const dirs: string[] = [];
+  for (let i = path.indexOf(PATH_SEPARATOR); i !== -1; i = path.indexOf(PATH_SEPARATOR, i + 1)) {
+    dirs.push(path.slice(0, i));
+  }
+  return dirs;
+};
+
+/** A path a restored target entry would stand on, or lie beneath, as a file or directory. */
+const collidesWithTarget = (
+  path: string,
+  targetPaths: ReadonlySet<string>,
+  targetDirectories: ReadonlySet<string>,
+): boolean =>
+  targetDirectories.has(path) || leadingDirectoriesOf(path).some((d) => targetPaths.has(d));
+
+/**
+ * Every stage of every out-of-scope path survives, so another path's conflict is kept, except
+ * a path colliding with a restored one as file and directory — git's path restore drops it.
+ */
 const preserveOutOfScope = (
   currentIndex: GitIndex,
   scopedPaths: ReadonlySet<FilePath> | undefined,
-): IndexEntry[] =>
-  scopedPaths === undefined
-    ? []
-    : currentIndex.entries.filter((e) => !scopedPaths.has(escapedPathOf(e)));
+  target: ReadonlyArray<TargetEntry>,
+): IndexEntry[] => {
+  if (scopedPaths === undefined) return [];
+  const targetPaths = new Set<string>(target.map((t) => t.path));
+  const targetDirectories = new Set<string>(target.flatMap((t) => leadingDirectoriesOf(t.path)));
+  return currentIndex.entries.filter((e) => {
+    const path = escapedPathOf(e);
+    return !scopedPaths.has(path) && !collidesWithTarget(path, targetPaths, targetDirectories);
+  });
+};
 
 const pickEntry = (
   entry: TargetEntry,
@@ -176,7 +224,7 @@ const mergeNewIndexEntries = (
   const writtenByPath = writtenEntriesByPath(writtenEntries);
   const oldByPath = indexEntriesByPath(currentIndex);
 
-  const merged: IndexEntry[] = preserveOutOfScope(currentIndex, scopedPaths);
+  const merged: IndexEntry[] = preserveOutOfScope(currentIndex, scopedPaths, target);
   for (const entry of target) {
     const picked = pickEntry(entry, writtenByPath, oldByPath);
     if (picked !== undefined) merged.push(picked);
@@ -189,6 +237,54 @@ const tallyStats = (entries: ReadonlyArray<ChangesetEntry>): ChangesetStats => {
   const stats = { add: 0, update: 0, delete: 0, noop: 0 };
   for (const entry of entries) stats[entry.kind] += 1;
   return stats;
+};
+
+const lowestStageOfUnmerged = (index: GitIndex): Map<IndexPathKey, IndexEntry> => {
+  const staged = new Map<IndexPathKey, IndexEntry>();
+  const merged = new Set<IndexPathKey>();
+  for (const entry of index.entries) {
+    const key = indexPathKey(entry);
+    if (entry.flags.stage === 0) merged.add(key);
+    // Stryker disable next-line EqualityOperator: equivalent — a tie needs two entries with the same path and stage, which an index cannot hold, so `>=` only swaps an entry for its twin.
+    else if ((staged.get(key)?.flags.stage ?? Infinity) > entry.flags.stage) staged.set(key, entry);
+  }
+  for (const key of merged) staged.delete(key);
+  return staged;
+};
+
+// An unmerged path has no previous version to compare, so its entry carries none.
+const resetUnmergedEntry = (low: IndexEntry, target: TargetEntry | undefined): ChangesetEntry =>
+  target === undefined
+    ? {
+        kind: 'delete',
+        ...pathFields(low),
+        mode: low.mode,
+        id: undefined,
+        previousId: undefined,
+        previousMode: low.mode,
+      }
+    : {
+        kind: 'update',
+        ...pathFields(target),
+        mode: target.mode,
+        id: target.id,
+        previousId: undefined,
+        previousMode: undefined,
+      };
+
+/** Makes conflicted paths visible to the apply: each becomes an update or delete to the target. */
+const projectUnmergedPaths = (
+  changeset: Changeset,
+  currentIndex: GitIndex,
+  target: ReadonlyArray<TargetEntry>,
+): Changeset => {
+  const unmerged = lowestStageOfUnmerged(currentIndex);
+  const targetByKey = new Map(target.map((e) => [indexPathKey(e), e]));
+  const entries = [
+    ...changeset.entries.filter((e) => !unmerged.has(indexPathKey(e))),
+    ...[...unmerged].map(([key, low]) => resetUnmergedEntry(low, targetByKey.get(key))),
+  ];
+  return { entries: entries.sort(pathComparatorFor(entries)), stats: tallyStats(entries) };
 };
 
 const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
@@ -389,7 +485,11 @@ export const materializeTree = async (
     pathRules.validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
   }
 
-  const rawChangeset = computeChangeset(plan.indexForDiff, plan.target);
+  const computed = computeChangeset(plan.indexForDiff, plan.target);
+  const rawChangeset =
+    opts.unmergedPaths === 'reset'
+      ? projectUnmergedPaths(computed, plan.indexForDiff, plan.target)
+      : computed;
   const changeset =
     opts.forceRewriteAll === true ? upgradeNoopsToUpdates(rawChangeset) : rawChangeset;
 
@@ -398,6 +498,9 @@ export const materializeTree = async (
     {
       changeset,
       force: opts.force ?? false,
+      ...(opts.ignoredOccupants && { ignoredOccupants: opts.ignoredOccupants }),
+      ...(opts.untrackedOccupants && { untrackedOccupants: opts.untrackedOccupants }),
+      ...(opts.unmergedPaths && { unmergedPaths: opts.unmergedPaths }),
       workdir: requireWorkTree(ctx, 'materializeTree'),
       ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
     },

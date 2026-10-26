@@ -18,6 +18,7 @@ import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
+import { hashBlob } from '../../primitives/hash-blob.js';
 import { readConflictStyle } from '../../primitives/internal/merge-rename-config.js';
 import { stage0Entry } from '../../primitives/internal/synthetic-index-entry.js';
 import { mergeBasesOf } from '../../primitives/merge-base.js';
@@ -36,6 +37,8 @@ type FlatEntries = ReadonlyMap<FilePath, FlatTreeEntry>;
 
 export type OctopusResult =
   | { readonly kind: 'clean'; readonly tree: ObjectId }
+  /** The `admit` hook turned the clean result down before any merged object was written. */
+  | { readonly kind: 'refused' }
   | {
       readonly kind: 'conflict';
       /** The index's merged (stage-0) entries. */
@@ -49,7 +52,12 @@ interface StepResult {
   readonly merged: FlatEntries;
   readonly kept: FlatEntries;
   readonly conflicts: ReadonlyArray<MergeConflict>;
+  /** The merged blobs the step hashed but has not written: git writes them only once the work tree takes the result. */
+  readonly unwritten: ReadonlyArray<Uint8Array>;
 }
+
+/** Decides, over a clean result's entries, whether the work tree can take it. */
+export type Admit = (entries: FlatEntries) => Promise<boolean>;
 
 /** The running state: git's `MRC` (the commits merged so far) and `MRT` (their merged tree). */
 interface Running {
@@ -73,6 +81,10 @@ const blobBytes = async (ctx: Context, side: OctopusSide | undefined): Promise<U
 
 const writeBlob = (ctx: Context, content: Uint8Array): Promise<ObjectId> =>
   writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+
+const flushUnwritten = async (ctx: Context, step: StepResult): Promise<void> => {
+  for (const content of step.unwritten) await writeBlob(ctx, content);
+};
 
 /**
  * `git-merge-one-file`'s content case: `git merge-file` over the three blobs.
@@ -100,7 +112,11 @@ const mergeOneFile = async (
   const result = mergeContent(baseBytes, ours, theirs, { labels, conflictStyle: style ?? 'merge' });
   const bytes = result.status === 'clean' ? result.bytes : result.markedBytes;
   if (result.status === 'clean' && base !== undefined && head.mode === remote.mode) {
-    return { kind: 'merged', entry: { id: await writeBlob(ctx, bytes), mode: head.mode } };
+    return {
+      kind: 'merged',
+      entry: { id: await hashBlob(ctx, bytes), mode: head.mode },
+      unwritten: bytes,
+    };
   }
   return { kind: 'conflict', conflict: contentConflict(path, sides, bytes) };
 };
@@ -141,7 +157,7 @@ const unionPaths = (maps: ReadonlyArray<FlatEntries>): FilePath[] => {
 };
 
 type PathOutcome =
-  | { readonly kind: 'merged'; readonly entry: FlatTreeEntry }
+  | { readonly kind: 'merged'; readonly entry: FlatTreeEntry; readonly unwritten?: Uint8Array }
   | { readonly kind: 'dropped' }
   | { readonly kind: 'conflict'; readonly conflict: MergeConflict; readonly kept?: FlatTreeEntry };
 
@@ -173,14 +189,18 @@ const mergeStep = async (ctx: Context, input: StepInput): Promise<StepResult> =>
   const merged = new Map<FilePath, FlatTreeEntry>();
   const kept = new Map<FilePath, FlatTreeEntry>();
   const conflicts: MergeConflict[] = [];
+  const unwritten: Uint8Array[] = [];
   for (const path of unionPaths([...input.bases, input.current, input.remote])) {
     const outcome = await mergePath(ctx, input, path);
     if (outcome.kind === 'merged') merged.set(path, outcome.entry);
+    if (outcome.kind === 'merged' && outcome.unwritten !== undefined) {
+      unwritten.push(outcome.unwritten);
+    }
     if (outcome.kind !== 'conflict') continue;
     conflicts.push(outcome.conflict);
     if (outcome.kept !== undefined) kept.set(path, outcome.kept);
   }
-  return { merged, kept, conflicts };
+  return { merged, kept, conflicts, unwritten };
 };
 
 /** git's `write-tree` over flat entries. */
@@ -223,9 +243,15 @@ const stopAtUnrelated = (ctx: Context, running: Running, remote: OctopusRemote):
 };
 
 /** The strategy's outcome: the merged tree, or the last head's conflicts. */
-const settle = async (ctx: Context, running: Running): Promise<OctopusResult> => {
+const settle = async (
+  ctx: Context,
+  running: Running,
+  admit: Admit | undefined,
+): Promise<OctopusResult> => {
   const step = running.step;
   if (step === undefined || step.conflicts.length === 0) {
+    if (admit !== undefined && !(await admit(running.entries))) return { kind: 'refused' };
+    if (step !== undefined) await flushUnwritten(ctx, step);
     return { kind: 'clean', tree: await writeFlatTree(ctx, running.entries) };
   }
   const worktree = new Map([...step.merged, ...step.kept]);
@@ -245,6 +271,7 @@ export const octopusMerge = async (
   ctx: Context,
   headId: ObjectId,
   remotes: ReadonlyArray<OctopusRemote>,
+  admit?: Admit,
 ): Promise<OctopusResult> => {
   let running: Running = { commits: [headId], entries: await flatOfCommit(ctx, headId) };
   for (const [index, remote] of remotes.entries()) {
@@ -252,10 +279,15 @@ export const octopusMerge = async (
     if (next === undefined) return stopAtUnrelated(ctx, running, remote);
     running = next;
     const step = running.step;
-    if (step === undefined || isLast(index, remotes)) continue;
+    if (step === undefined) continue;
+    if (isLast(index, remotes)) {
+      if (step.conflicts.length > 0) await flushUnwritten(ctx, step);
+      continue;
+    }
+    await flushUnwritten(ctx, step);
     if (step.conflicts.length > 0)
       throw octopusMergeFailed(remote.name, 'conflict-before-last-head');
     await writeFlatTree(ctx, step.merged);
   }
-  return settle(ctx, running);
+  return settle(ctx, running, admit);
 };

@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { buildCombinedMessage } from '../../../../src/domain/rebase/index.js';
+import { buildCombinedMessage, firstCommitMessage } from '../../../../src/domain/rebase/index.js';
 import { arbSubject } from './arbitraries.js';
 
 describe('rebase squash combined-message properties', () => {
@@ -18,6 +18,26 @@ describe('rebase squash combined-message properties', () => {
           expect(numbered).toHaveLength(n - 1);
           expect(result).toContain('# This is the 1st commit message:\n');
         }),
+        { numRuns: 200 },
+      );
+    });
+  });
+
+  describe('Given an arbitrary list of messages, When the template is read back', () => {
+    it('Then the first commit message is the base, whatever follows it', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(
+          arbSubject(),
+          fc.array(fc.tuple(arbSubject(), fc.boolean()), { maxLength: 6 }),
+          (base, rest) => {
+            const template = buildCombinedMessage([
+              { message: base },
+              ...rest.map(([message, skip]) => ({ message, skip })),
+            ]);
+            expect(firstCommitMessage(template)).toBe(`${base.replace(/\n+$/, '')}\n`);
+          },
+        ),
         { numRuns: 200 },
       );
     });

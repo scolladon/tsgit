@@ -8,7 +8,11 @@ export {
   makeScriptWithMerges,
   type ScriptCommit,
 } from './merges-script.js';
-export { buildCombinedMessage, type CombinedMessageEntry } from './squash-message.js';
+export {
+  buildCombinedMessage,
+  type CombinedMessageEntry,
+  firstCommitMessage,
+} from './squash-message.js';
 export {
   parseRebaseTodo,
   type RebaseLabelLine,

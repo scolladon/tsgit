@@ -411,7 +411,14 @@ done
 # rescheduled-pick state files and the leading-path scanner — runtime code
 # shipped in every distribution form, none removable without dropping the
 # behaviour.
-SIZE_CAP=$((1473 * 1024))
+# Raised 1473 -> 1486 KiB by the forced-checkout occupant work: the measured pack
+# landed at 1 521 058 B, 12 706 B over the old cap, attributable to the occupant
+# classifier shared by the checkout and merge pre-flights, the displacement pass
+# before the write wave, the per-caller reset modes of the aborts and rebase start,
+# the merge snapshot and rewind, the stash work-tree path set and the rebase
+# reschedule state writers — runtime code shipped in every distribution form, none
+# removable without dropping the behaviour.
+SIZE_CAP=$((1486 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

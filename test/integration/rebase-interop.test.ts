@@ -23,7 +23,7 @@
  *   unique:         a rebase either tool starts is resumable by the other, and both drop the same already-upstream commit
  *   interopSurface: rebaseMerge, reflog
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +41,7 @@ import {
   tryRunGitWithExit,
   writeTreeOf,
 } from './interop-helpers.js';
+import { outcomeOfGitStderr } from './occupant-displacement-fixtures.js';
 
 const FIXED_DATE = '1700000000 +0000';
 
@@ -762,6 +763,180 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
     });
   });
 
+  describe('Given a topic whose conflicting commit is followed by a commit main already has', () => {
+    /** base f; main U sets f and adds g; topic W sets f, E adds g as main does, Y adds h. HEAD on topic. */
+    const buildEmptiedTopic = (dir: string): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'f.txt', 'base\n');
+      git(dir, 'add', 'f.txt');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'topic');
+      for (const [rel, body, title] of [
+        ['f.txt', 'TOPIC\n', 'W'],
+        ['g.txt', 'g\n', 'E'],
+        ['h.txt', 'h\n', 'Y'],
+      ] as const) {
+        writeWork(dir, rel, body);
+        git(dir, 'add', rel);
+        gitCommit(dir, title);
+      }
+      git(dir, 'checkout', '-q', 'main');
+      writeWork(dir, 'f.txt', 'MAIN\n');
+      writeWork(dir, 'g.txt', 'g\n');
+      git(dir, 'add', 'f.txt', 'g.txt');
+      gitCommit(dir, 'U');
+      git(dir, 'checkout', '-q', 'topic');
+    };
+    const listing = (dir: string): ReadonlyArray<string> =>
+      readdirSync(path.join(dir, '.git', 'rebase-merge')).sort();
+    const POLICY = 'drop_redundant_commits';
+    const resolveF = (dir: string): void => {
+      writeWork(dir, 'f.txt', 'RESOLVED\n');
+      git(dir, 'add', 'f.txt');
+    };
+    const gitContinue = (dir: string) =>
+      tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '--continue'], {
+        env: runGitEnv(),
+      });
+    const startGit = (dir: string, interactive: boolean, editW = false): void => {
+      tryRunGit(['-C', dir, 'rebase', ...(interactive ? ['-i'] : []), 'main'], {
+        env: {
+          ...runGitEnv(),
+          GIT_SEQUENCE_EDITOR: editW ? "perl -i -pe 's/^pick (.* W)$/edit $1/'" : 'true',
+          GIT_EDITOR: 'true',
+        },
+      });
+    };
+    const startTsgit = async (dir: string, interactive: boolean, editW = false): Promise<void> => {
+      const [w, e, y] = ['topic~2', 'topic~1', 'topic'].map((r) => oidAt(dir, r));
+      const repo = await openRepository({ cwd: dir });
+      await repo.rebase.run({
+        upstream: 'main',
+        ...(interactive
+          ? {
+              interactive: [
+                { action: editW ? 'edit' : 'pick', oid: w as string },
+                { action: 'pick', oid: e as string },
+                { action: 'pick', oid: y as string },
+              ] as const,
+            }
+          : {}),
+      });
+      await repo.dispose();
+    };
+    const subjectsOf = (dir: string): string => git(dir, 'log', '--format=%s', 'HEAD').trim();
+
+    describe('When a flat rebase stops on the conflict', () => {
+      it('Then tsgit writes the files git does, the policy file included and no rewritten-list', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, false);
+
+        // Act
+        await startTsgit(pair.ours, false);
+
+        // Assert
+        expect(listing(pair.peer)).toContain(POLICY);
+        expect(listing(pair.peer)).not.toContain('rewritten-list');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+      });
+
+      it('Then git continuing the tsgit stop drops the emptied commit, as it does its own', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, false);
+        await startTsgit(pair.ours, false);
+        resolveF(pair.peer);
+        resolveF(pair.ours);
+
+        // Act
+        const ours = gitContinue(pair.ours);
+        const peer = gitContinue(pair.peer);
+
+        // Assert
+        expect([ours.exitCode, subjectsOf(pair.ours)]).toEqual([0, 'Y\nW\nU\nbase']);
+        expect([peer.exitCode, subjectsOf(pair.peer)]).toEqual([0, 'Y\nW\nU\nbase']);
+      });
+    });
+
+    describe('When an interactive rebase stops on the conflict', () => {
+      it('Then tsgit writes the files git does, with neither policy file nor rewritten-list', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, true);
+
+        // Act
+        await startTsgit(pair.ours, true);
+
+        // Assert
+        expect(listing(pair.peer)).not.toContain(POLICY);
+        expect(listing(pair.peer)).not.toContain('rewritten-list');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+      });
+
+      it('Then git continuing the tsgit stop stops on the emptied commit, as it does its own', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, true);
+        await startTsgit(pair.ours, true);
+        resolveF(pair.peer);
+        resolveF(pair.ours);
+
+        // Act
+        const ours = gitContinue(pair.ours);
+        const peer = gitContinue(pair.peer);
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours.exitCode).toBe(1);
+        expect(
+          readFileSync(path.join(pair.ours, '.git', 'rebase-merge', 'stopped-sha'), 'utf8'),
+        ).toBe(readFileSync(path.join(pair.peer, '.git', 'rebase-merge', 'stopped-sha'), 'utf8'));
+      });
+
+      it('Then git reads the policy file back: with it the emptied commit is dropped', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.ours);
+        await startTsgit(pair.ours, true);
+        resolveF(pair.ours);
+        writeFileSync(path.join(pair.ours, '.git', 'rebase-merge', POLICY), '');
+
+        // Act
+        const result = gitContinue(pair.ours);
+
+        // Assert
+        expect([result.exitCode, subjectsOf(pair.ours)]).toEqual([0, 'Y\nW\nU\nbase']);
+      });
+    });
+
+    describe('When an interactive rebase stops at `edit` on the first commit and is continued', () => {
+      it('Then the stop has no policy file and the continue stops on the emptied commit, as git', async () => {
+        // Arrange
+        buildEmptiedTopic(pair.peer);
+        buildEmptiedTopic(pair.ours);
+        startGit(pair.peer, true, true);
+        await startTsgit(pair.ours, true, true);
+        for (const dir of [pair.peer, pair.ours]) {
+          resolveF(dir);
+          runGit(['-C', dir, 'commit', '-q', '-a', '--amend', '--no-edit']);
+        }
+
+        // Act
+        const ours = gitContinue(pair.ours);
+        const peer = gitContinue(pair.peer);
+
+        // Assert
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect([ours.exitCode, peer.exitCode]).toEqual([1, 1]);
+      });
+    });
+  });
+
   describe('Given a topic whose second commit conflicts with main', () => {
     /** base f; topic c1 adds a, c2 sets f, c3 adds c; main sets f. HEAD on topic. */
     const buildConflictingTopic = (dir: string): void => {
@@ -926,6 +1101,863 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       });
     },
   );
+
+  describe('Given a fixup group whose members two untracked occupants refuse in turn', () => {
+    const HOOK_OUT = 'post-rewrite.out';
+    const MEMBERS = ['b', 'c', 'd'] as const;
+
+    /** base(keep); u: U; main: A (with a body), then b, c, d each adding its file, then E deleting c and d. */
+    const buildGroup = (dir: string): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'keep', 'keep\n');
+      git(dir, 'add', 'keep');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'u');
+      writeWork(dir, 'uu', 'u\n');
+      git(dir, 'add', 'uu');
+      gitCommit(dir, 'U');
+      git(dir, 'checkout', '-q', 'main');
+      for (const name of ['a', ...MEMBERS]) {
+        writeWork(dir, name, `${name}\n`);
+        git(dir, 'add', name);
+        gitCommit(dir, `${name} subject\n\n${name} body`);
+      }
+      git(dir, 'rm', '-q', 'c', 'd');
+      gitCommit(dir, 'E');
+      const hook = path.join(dir, '.git', 'hooks', 'post-rewrite');
+      writeFileSync(
+        hook,
+        `#!/bin/sh\n[ "$1" = rebase ] && cat >> "$(git rev-parse --git-dir)/${HOOK_OUT}"\n`,
+        {
+          mode: 0o755,
+        },
+      );
+      for (const name of ['c', 'd']) writeWork(dir, name, 'occupant\n');
+    };
+
+    const gitRebaseIFixups = (dir: string) => {
+      const edit = MEMBERS.map((name) => `s/^pick (\\S+ # ${name} subject)$/fixup $1/`).join(';');
+      return tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '-i', 'u'], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+          GIT_SEQUENCE_EDITOR: `perl -i -pe '${edit}'`,
+          GIT_EDITOR: 'true',
+        },
+      });
+    };
+
+    const gitRebaseStep = (dir: string, step: '--continue' | '--skip') =>
+      tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', step], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+          GIT_EDITOR: 'true',
+        },
+      });
+
+    const tsgitStep = async (
+      dir: string,
+      step: (repo: Awaited<ReturnType<typeof openRepository>>) => Promise<unknown>,
+    ): Promise<void> => {
+      const repo = await openRepository({ cwd: dir });
+      try {
+        await step(repo);
+      } catch (err) {
+        if ((err as TsgitError).data?.code !== 'WORKING_TREE_DIRTY') throw err;
+      } finally {
+        await repo.dispose();
+      }
+    };
+
+    /** The post-rewrite mapping with each created commit named by the order it first appears in. */
+    const rewriteGroups = (dir: string): ReadonlyArray<string> => {
+      const lines = readFileSync(path.join(dir, '.git', HOOK_OUT), 'utf8')
+        .trim()
+        .split('\n');
+      const created = [...new Set(lines.map((line) => line.split(' ')[1]))];
+      return lines.map((line) => {
+        const [source, target] = line.split(' ');
+        return `${source} -> ${created.indexOf(target as string)}`;
+      });
+    };
+
+    const startBoth = async (): Promise<void> => {
+      for (const dir of [pair.peer, pair.ours]) buildGroup(dir);
+      gitRebaseIFixups(pair.peer);
+      await tsgitStep(pair.ours, (repo) =>
+        repo.rebase.run({
+          upstream: 'u',
+          interactive: ['a', ...MEMBERS, 'E'].map((_name, i) => ({
+            action: i >= 1 && i <= 3 ? ('fixup' as const) : ('pick' as const),
+            oid: oidAt(pair.ours, `main~${4 - i}`),
+          })),
+        }),
+      );
+      for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'c'));
+      gitRebaseStep(pair.peer, '--continue');
+      await tsgitStep(pair.ours, (repo) => repo.rebase.continue());
+      for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'd'));
+    };
+
+    describe('When the second refusal is left standing', () => {
+      it('Then the reopened group leaves the message-fixup bytes git leaves', async () => {
+        // Arrange / Act
+        await startBoth();
+
+        // Assert
+        const stateFile = (dir: string): string =>
+          readFileSync(path.join(dir, '.git', 'rebase-merge', 'message-fixup'), 'utf8');
+        expect(stateFile(pair.ours)).toBe(stateFile(pair.peer));
+      });
+    });
+
+    describe('When the rebase continues', () => {
+      it('Then continuing maps every member to the final group commit, as git does', async () => {
+        // Arrange
+        await startBoth();
+
+        // Act
+        const peer = gitRebaseStep(pair.peer, '--continue');
+        await tsgitStep(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(rewriteGroups(pair.ours)).toEqual(rewriteGroups(pair.peer));
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
+    });
+
+    describe('When the rebase skips', () => {
+      it('Then skipping maps every member to the kept group commit, as git does', async () => {
+        // Arrange
+        await startBoth();
+
+        // Act
+        const peer = gitRebaseStep(pair.peer, '--skip');
+        await tsgitStep(pair.ours, (repo) => repo.rebase.skip());
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(rewriteGroups(pair.ours)).toEqual(rewriteGroups(pair.peer));
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
+    });
+  });
+
+  describe('Given a squash and fixup group rebased with a post-rewrite hook', () => {
+    const HOOK_OUT = 'post-rewrite-calls.out';
+    const NAMES = ['a', 'b', 'c', 'd', 'e'] as const;
+    type Verb = 'pick' | 'squash' | 'fixup' | 'drop' | 'edit';
+    const MELD_VERBS: ReadonlyArray<Verb> = ['pick', 'squash', 'fixup', 'drop', 'pick'];
+    const EDIT_VERBS: ReadonlyArray<Verb> = ['edit', 'pick', 'pick', 'pick', 'pick'];
+    const OID_LENGTH = 40;
+
+    /** base; u adds `upstreamFile`; main: a, b, c, d, e, each adding its own file. */
+    const buildGroup = (dir: string, upstreamFile: 'uu' | 'b'): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'keep', 'keep\n');
+      git(dir, 'add', 'keep');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'u');
+      writeWork(dir, upstreamFile, 'UP\n');
+      git(dir, 'add', upstreamFile);
+      gitCommit(dir, 'U');
+      git(dir, 'checkout', '-q', 'main');
+      for (const name of NAMES) {
+        writeWork(dir, name, `${name}\n`);
+        git(dir, 'add', name);
+        gitCommit(dir, `${name} subject`);
+      }
+      const hook = path.join(dir, '.git', 'hooks', 'post-rewrite');
+      writeFileSync(
+        hook,
+        `#!/bin/sh\n{ echo "== $1"; cat; } >> "$(git rev-parse --git-dir)/${HOOK_OUT}"\n`,
+        { mode: 0o755 },
+      );
+    };
+
+    const gitRebaseGroup = (dir: string, verbs: ReadonlyArray<Verb>) => {
+      const edit = NAMES.map((name, i) => `s/^pick (\\S+ # ${name} subject)$/${verbs[i]} $1/`).join(
+        ';',
+      );
+      return tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '-i', 'u'], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+          GIT_SEQUENCE_EDITOR: `perl -i -pe '${edit}'`,
+          GIT_EDITOR: 'true',
+        },
+      });
+    };
+
+    const tsgitRebaseGroup = async (dir: string, verbs: ReadonlyArray<Verb>) => {
+      const repo = await openRepository({ cwd: dir });
+      try {
+        return await repo.rebase.run({
+          upstream: 'u',
+          interactive: NAMES.map((_name, i) => ({
+            action: verbs[i] as 'pick',
+            oid: oidAt(dir, `main~${NAMES.length - 1 - i}`),
+          })),
+        });
+      } finally {
+        await repo.dispose();
+      }
+    };
+
+    /** The hook's calls with each object id named by the order it first appears in. */
+    const hookCalls = (dir: string): string => {
+      const text = readFileSync(path.join(dir, '.git', HOOK_OUT), 'utf8');
+      const seen: string[] = [];
+      return text.replace(new RegExp(`[0-9a-f]{${OID_LENGTH}}`, 'g'), (oid) => {
+        if (!seen.includes(oid)) seen.push(oid);
+        return `<${seen.indexOf(oid)}>`;
+      });
+    };
+
+    const argvOf = (dir: string): ReadonlyArray<string> =>
+      hookCalls(dir)
+        .split('\n')
+        .filter((line) => line.startsWith('== '));
+
+    describe('When nothing stops the rebase', () => {
+      it('Then post-rewrite amend fires for each meld before the rebase call, as git does', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildGroup(dir, 'uu');
+        const peer = gitRebaseGroup(pair.peer, MELD_VERBS);
+
+        // Act
+        const result = await tsgitRebaseGroup(pair.ours, MELD_VERBS);
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(result.kind).toBe('rebased');
+        expect(argvOf(pair.peer)).toEqual(['== amend', '== amend', '== rebase']);
+        expect(hookCalls(pair.ours)).toBe(hookCalls(pair.peer));
+      });
+    });
+
+    describe('When the squash conflicts and the rebase continues', () => {
+      it('Then post-rewrite amend fires for the resolution and the fixup before the rebase call', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildGroup(dir, 'b');
+        gitRebaseGroup(pair.peer, MELD_VERBS);
+        const stop = await tsgitRebaseGroup(pair.ours, MELD_VERBS);
+        for (const dir of [pair.peer, pair.ours]) {
+          writeWork(dir, 'b', 'b\n');
+          git(dir, 'add', 'b');
+        }
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        const peer = tryRunGitWithExit(
+          ['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue'],
+          {
+            env: {
+              ...runGitEnv(),
+              GIT_AUTHOR_DATE: FIXED_DATE,
+              GIT_COMMITTER_DATE: FIXED_DATE,
+              GIT_EDITOR: 'true',
+            },
+          },
+        );
+        const result = await repo.rebase.continue();
+        await repo.dispose();
+
+        // Assert
+        expect(stop.kind).toBe('conflict');
+        expect(peer.exitCode).toBe(0);
+        expect(result.kind).toBe('rebased');
+        expect(argvOf(pair.peer)).toEqual(['== amend', '== amend', '== rebase']);
+        expect(hookCalls(pair.ours)).toBe(hookCalls(pair.peer));
+      });
+    });
+    describe('When an edit stop is amended with a staged change and continued', () => {
+      it('Then post-rewrite amend fires for the amended commit before the rebase call, as git does', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildGroup(dir, 'uu');
+        gitRebaseGroup(pair.peer, EDIT_VERBS);
+        const stop = await tsgitRebaseGroup(pair.ours, EDIT_VERBS);
+        for (const dir of [pair.peer, pair.ours]) {
+          writeWork(dir, 'extra', 'extra\n');
+          git(dir, 'add', 'extra');
+        }
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        const peer = tryRunGitWithExit(
+          ['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue'],
+          { env: { ...runGitEnv(), GIT_AUTHOR_DATE: FIXED_DATE, GIT_COMMITTER_DATE: FIXED_DATE } },
+        );
+        const result = await repo.rebase.continue();
+        await repo.dispose();
+
+        // Assert
+        expect(stop.kind).toBe('stopped');
+        expect(peer.exitCode).toBe(0);
+        expect(result.kind).toBe('rebased');
+        expect(argvOf(pair.peer)).toEqual(['== amend', '== rebase']);
+        expect(hookCalls(pair.ours)).toBe(hookCalls(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a flat rebase line refused by an untracked occupant', () => {
+    const REBASE_FILES = [
+      'done',
+      'git-rebase-todo',
+      'end',
+      'msgnum',
+      'author-script',
+      'rewritten-list',
+    ] as const;
+    const XAVIER_ENV = { GIT_AUTHOR_DATE: '1700000500 +0000' };
+    const commitAs = (dir: string, title: string, env: NodeJS.ProcessEnv = {}): void => {
+      runGit(['-C', dir, 'commit', '-q', '-m', title, '--author', 'Xavier <xavier@y>'], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+          ...env,
+        },
+      });
+    };
+
+    /** base(keep); u: U; main: W, X (adds n, by Xavier), Z (deletes n). `conflict` makes W and U both set keep. */
+    const buildOccupied = (dir: string, conflict: boolean): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'keep', 'keep\n');
+      git(dir, 'add', 'keep');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'u');
+      writeWork(dir, conflict ? 'keep' : 'uu', 'u\n');
+      git(dir, 'add', '.');
+      gitCommit(dir, 'U');
+      git(dir, 'checkout', '-q', 'main');
+      writeWork(dir, conflict ? 'keep' : 'w', 'w\n');
+      git(dir, 'add', '.');
+      gitCommit(dir, 'W');
+      writeWork(dir, 'n', 'n\n');
+      git(dir, 'add', 'n');
+      commitAs(dir, 'X', XAVIER_ENV);
+      git(dir, 'rm', '-q', 'n');
+      gitCommit(dir, 'Z');
+    };
+
+    const plantOccupant = (dir: string): void => writeWork(dir, 'n', 'occ\n');
+
+    const snapshot = (dir: string): ReadonlyArray<unknown> => {
+      const head = oidAt(dir, 'HEAD');
+      const state = path.join(dir, '.git', 'rebase-merge');
+      const read = (file: string): string | undefined =>
+        existsSync(file) ? readFileSync(file, 'utf8').replaceAll(head, '<HEAD>') : undefined;
+      return [
+        head === oidAt(dir, 'main') ? 'main' : 'moved',
+        existsSync(state) ? readdirSync(state).sort() : undefined,
+        ...REBASE_FILES.map((name) => read(path.join(state, name))),
+        read(path.join(dir, '.git', 'REBASE_HEAD')),
+        readFileSync(path.join(dir, 'n'), 'utf8'),
+        git(dir, 'ls-files', '--stage'),
+      ];
+    };
+
+    const gitRebase = (dir: string, ...args: ReadonlyArray<string>) =>
+      tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', ...args], {
+        env: {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: FIXED_DATE,
+          GIT_COMMITTER_DATE: FIXED_DATE,
+        },
+      });
+
+    const tsgitRebase = async (
+      dir: string,
+      step: (repo: Awaited<ReturnType<typeof openRepository>>) => Promise<unknown>,
+    ): Promise<unknown> => {
+      const repo = await openRepository({ cwd: dir });
+      try {
+        await step(repo);
+        return 'ok';
+      } catch (err) {
+        return (err as TsgitError).data;
+      } finally {
+        await repo.dispose();
+      }
+    };
+
+    const REFUSED = { code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['n'] };
+
+    describe('When the refused line is the second pick of a start', () => {
+      it('Then tsgit leaves the state git leaves', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+
+        // Act
+        const peer = gitRebase(pair.peer, 'u');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      it('Then the retry with the occupant kept leaves the state git leaves', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      it('Then continuing once the occupant is gone finishes on the same history', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+        for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(ours).toBe('ok');
+        const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main').trim();
+        expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
+
+      it('Then skipping once the occupant is gone finishes on the same history', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+        for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+        // Act
+        const peer = gitRebase(pair.peer, '--skip');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.skip());
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(ours).toBe('ok');
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
+    });
+
+    describe('When the refused line follows a resolved conflict', () => {
+      it('Then tsgit leaves the state git leaves and none of the conflict stop', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, true);
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+        for (const dir of [pair.peer, pair.ours]) {
+          writeWork(dir, 'keep', 'resolved\n');
+          git(dir, 'add', 'keep');
+          plantOccupant(dir);
+        }
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      it('Then skipping once the occupant is gone finishes on the same history', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, true);
+        gitRebase(pair.peer, 'u');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.run({ upstream: 'u' }));
+        for (const dir of [pair.peer, pair.ours]) {
+          writeWork(dir, 'keep', 'resolved\n');
+          git(dir, 'add', 'keep');
+          plantOccupant(dir);
+        }
+        gitRebase(pair.peer, '--continue');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+        for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+        // Act
+        const peer = gitRebase(pair.peer, '--skip');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.skip());
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(ours).toBe('ok');
+        const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main').trim();
+        expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+        expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+      });
+    });
+
+    describe('When a fast-forward pick is the refused line', () => {
+      it('Then HEAD stays and the dropped pick is recorded as git records it', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        const [base, w] = ['main~3', 'main~2'].map((rev) => oidAt(pair.ours, rev)) as [
+          string,
+          string,
+        ];
+
+        // Act
+        const peer = gitRebase(pair.peer, '--onto', w, base);
+        const ours = await tsgitRebase(pair.ours, (repo) =>
+          repo.rebase.run({ upstream: base, onto: w }),
+        );
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(oidAt(pair.ours, 'HEAD')).toBe(w);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+    });
+
+    describe('When the refused line is interactive', () => {
+      type Verb = 'pick' | 'edit' | 'reword' | 'squash' | 'fixup';
+      const TITLES = ['W', 'X', 'Z'] as const;
+
+      const gitRebaseI = (dir: string, upstream: string, verbs: ReadonlyArray<Verb>) => {
+        const edit = TITLES.map((title, i) => `s/^pick (\\S+ # ${title})$/${verbs[i]} $1/`).join(
+          ';',
+        );
+        return tryRunGitWithExit(['-C', dir, '-c', 'core.editor=true', 'rebase', '-i', upstream], {
+          env: {
+            ...runGitEnv(),
+            GIT_AUTHOR_DATE: FIXED_DATE,
+            GIT_COMMITTER_DATE: FIXED_DATE,
+            GIT_SEQUENCE_EDITOR: `perl -i -pe '${edit}'`,
+            GIT_EDITOR: 'true',
+          },
+        });
+      };
+
+      const tsgitRebaseI = (dir: string, upstream: string, verbs: ReadonlyArray<Verb>) =>
+        tsgitRebase(dir, (repo) =>
+          repo.rebase.run({
+            upstream,
+            interactive: verbs.map((action, i) => {
+              const oid = oidAt(dir, `main~${2 - i}`);
+              return action === 'reword' ? { action, oid, message: 'X' } : { action, oid };
+            }),
+          }),
+        );
+
+      /** Both tools stopped on `edit W`, the occupant planted, `--continue` refused. */
+      const refusedAfterEditStop = async (): Promise<void> => {
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, false);
+        gitRebaseI(pair.peer, 'u', ['edit', 'pick', 'pick']);
+        await tsgitRebaseI(pair.ours, 'u', ['edit', 'pick', 'pick']);
+        for (const dir of [pair.peer, pair.ours]) plantOccupant(dir);
+        gitRebase(pair.peer, '--continue');
+        await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+      };
+
+      it.each(['pick', 'edit', 'reword', 'squash', 'fixup'] as const)(
+        'Then a refused %s line at the start leaves the state git leaves',
+        async (verb) => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildOccupied(dir, false);
+            plantOccupant(dir);
+          }
+          const verbs = ['pick', verb, 'pick'] as const;
+
+          // Act
+          const peer = gitRebaseI(pair.peer, 'u', verbs);
+          const ours = await tsgitRebaseI(pair.ours, 'u', verbs);
+
+          // Assert
+          expect(peer.exitCode).toBe(1);
+          expect(ours).toEqual(REFUSED);
+          expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        },
+      );
+
+      it.each(['squash', 'fixup'] as const)(
+        'Then %s refused again by the kept occupant leaves the state git leaves',
+        async (verb) => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildOccupied(dir, false);
+            plantOccupant(dir);
+          }
+          const verbs = ['pick', verb, 'pick'] as const;
+          gitRebaseI(pair.peer, 'u', verbs);
+          await tsgitRebaseI(pair.ours, 'u', verbs);
+
+          // Act
+          const peer = gitRebase(pair.peer, '--continue');
+          const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+          // Assert
+          expect(peer.exitCode).toBe(1);
+          expect(ours).toEqual(REFUSED);
+          expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        },
+      );
+
+      it.each(['squash', 'fixup'] as const)(
+        'Then a refused %s member reopens its group once the occupant is gone',
+        async (verb) => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            buildOccupied(dir, false);
+            plantOccupant(dir);
+          }
+          const verbs = ['pick', verb, 'pick'] as const;
+          gitRebaseI(pair.peer, 'u', verbs);
+          await tsgitRebaseI(pair.ours, 'u', verbs);
+          for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+          // Act
+          const peer = gitRebase(pair.peer, '--continue');
+          const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+          // Assert
+          expect(peer.exitCode).toBe(0);
+          expect(ours).toBe('ok');
+          const history = (dir: string): string => git(dir, 'log', '--format=%an|%B', 'main');
+          expect(history(pair.ours)).toBe(history(pair.peer));
+          expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+        },
+      );
+
+      it('Then an edit stop continued into the occupant leaves the state git leaves', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, false);
+        gitRebaseI(pair.peer, 'u', ['edit', 'pick', 'pick']);
+        await tsgitRebaseI(pair.ours, 'u', ['edit', 'pick', 'pick']);
+        for (const dir of [pair.peer, pair.ours]) plantOccupant(dir);
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      it.each(['--continue', '--skip'] as const)(
+        'Then %s with the occupant kept leaves the state git leaves',
+        async (flag) => {
+          // Arrange
+          await refusedAfterEditStop();
+
+          // Act
+          const peer = gitRebase(pair.peer, flag);
+          const ours = await tsgitRebase(pair.ours, (repo) =>
+            flag === '--skip' ? repo.rebase.skip() : repo.rebase.continue(),
+          );
+
+          // Assert
+          expect(peer.exitCode).toBe(1);
+          expect(ours).toEqual(REFUSED);
+          expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        },
+      );
+
+      it.each(['--continue', '--skip'] as const)(
+        'Then %s once the occupant is gone finishes on the same history',
+        async (flag) => {
+          // Arrange
+          await refusedAfterEditStop();
+          for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+
+          // Act
+          const peer = gitRebase(pair.peer, flag);
+          const ours = await tsgitRebase(pair.ours, (repo) =>
+            flag === '--skip' ? repo.rebase.skip() : repo.rebase.continue(),
+          );
+
+          // Assert
+          expect(peer.exitCode).toBe(0);
+          expect(ours).toBe('ok');
+          const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main').trim();
+          expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+          expect(oidAt(pair.ours, 'main^{tree}')).toBe(oidAt(pair.peer, 'main^{tree}'));
+        },
+      );
+
+      it('Then a staged change still refuses the retry and end is re-counted', async () => {
+        // Arrange
+        await refusedAfterEditStop();
+        for (const dir of [pair.peer, pair.ours]) {
+          rmSync(path.join(dir, 'n'));
+          writeWork(dir, 'z', 'z\n');
+          git(dir, 'add', 'z');
+        }
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: ['z'], untracked: [] });
+        const end = (dir: string): string =>
+          readFileSync(path.join(dir, '.git', 'rebase-merge', 'end'), 'utf8');
+        expect(end(pair.ours)).toBe(end(pair.peer));
+      });
+
+      it('Then a fast-forwarded edit followed by an occupied pick leaves the state git leaves', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) buildOccupied(dir, false);
+        const base = oidAt(pair.ours, 'main~3');
+        gitRebaseI(pair.peer, base, ['edit', 'pick', 'pick']);
+        await tsgitRebaseI(pair.ours, base, ['edit', 'pick', 'pick']);
+        for (const dir of [pair.peer, pair.ours]) plantOccupant(dir);
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+
+      describe.each([
+        {
+          title: 'a directory would replace a removed tracked file',
+          gitClass: /would lose untracked files/,
+          prepare: (dir: string): void => {
+            git(dir, 'rm', '-q', 'keep');
+            mkdirSync(path.join(dir, 'keep'));
+            writeWork(dir, 'keep/u', 'u\n');
+          },
+        },
+        {
+          title: 'an untracked file stands where an unstaged tracked file was',
+          gitClass: /untracked working tree files would be overwritten/,
+          prepare: (dir: string): void => {
+            git(dir, 'rm', '-q', '--cached', 'keep');
+            writeWork(dir, 'keep', 'occ\n');
+          },
+        },
+      ])('the skip of a rescheduled pick meets $title', ({ gitClass, prepare }) => {
+        it('Then it refuses as git does and keeps the state', async () => {
+          // Arrange
+          await refusedAfterEditStop();
+          for (const dir of [pair.peer, pair.ours]) {
+            rmSync(path.join(dir, 'n'));
+            prepare(dir);
+          }
+          const stateOf = (dir: string): ReadonlyArray<unknown> => [
+            readdirSync(path.join(dir, '.git', 'rebase-merge')).sort(),
+            readFileSync(path.join(dir, '.git', 'rebase-merge', 'done'), 'utf8'),
+            git(dir, 'ls-files', '--stage'),
+          ];
+
+          // Act
+          const peer = gitRebase(pair.peer, '--skip');
+          const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.skip());
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(peer.stderr).toMatch(gitClass);
+          expect(outcomeOfGitStderr(peer.stderr)).toEqual({
+            refused: true,
+            localChanges: [],
+            untracked: ['keep'],
+          });
+          expect(ours).toEqual({
+            code: 'WORKING_TREE_DIRTY',
+            localChanges: [],
+            untracked: ['keep'],
+          });
+          expect(stateOf(pair.ours)).toEqual(stateOf(pair.peer));
+        });
+      });
+
+      it('Then a refusal at a later line after a successful retry leaves the state git leaves', async () => {
+        // Arrange
+        const buildLater = (dir: string): void => {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configGit(dir);
+          for (const [file, title] of [
+            ['keep', 'base'],
+            ['uu', 'U'],
+          ] as const) {
+            if (title === 'U') git(dir, 'checkout', '-q', '-b', 'u');
+            writeWork(dir, file, `${file}\n`);
+            git(dir, 'add', file);
+            gitCommit(dir, title);
+          }
+          git(dir, 'checkout', '-q', 'main');
+          for (const [file, title] of [
+            ['w', 'W'],
+            ['x', 'X'],
+            ['n', 'Z'],
+          ] as const) {
+            writeWork(dir, file, `${file}\n`);
+            git(dir, 'add', file);
+            gitCommit(dir, title);
+          }
+        };
+        for (const dir of [pair.peer, pair.ours]) buildLater(dir);
+        gitRebaseI(pair.peer, 'u', ['edit', 'pick', 'pick']);
+        await tsgitRebaseI(pair.ours, 'u', ['edit', 'pick', 'pick']);
+        for (const dir of [pair.peer, pair.ours]) plantOccupant(dir);
+
+        // Act
+        const peer = gitRebase(pair.peer, '--continue');
+        const ours = await tsgitRebase(pair.ours, (repo) => repo.rebase.continue());
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        // tsgit's committer date differs from git's pinned one, so rewritten commits differ in oid.
+        const unnamed = (dir: string): string =>
+          JSON.stringify(snapshot(dir)).replace(/([0-9a-f]{40}) [0-9a-f]{40}/g, '$1 <rewritten>');
+        expect(unnamed(pair.ours)).toEqual(unnamed(pair.peer));
+        for (const dir of [pair.peer, pair.ours]) rmSync(path.join(dir, 'n'));
+        expect(gitRebase(pair.peer, '--continue').exitCode).toBe(0);
+        expect(await tsgitRebase(pair.ours, (repo) => repo.rebase.continue())).toBe('ok');
+        const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main').trim();
+        expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+      });
+    });
+  });
 });
 
 /** main: a-b-c-d; `side` at b; `feat` off `side` adds f and tracks main. HEAD left on feat. */

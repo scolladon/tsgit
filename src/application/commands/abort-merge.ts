@@ -13,7 +13,7 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
-import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import { mergeResetWorktreeToCommit } from './internal/reset-worktree.js';
 import { applyAutostash } from './stash.js';
 
 export interface MergeAbortResult {
@@ -31,7 +31,7 @@ export interface MergeAbortResult {
  * Refuses when no merge is in progress (`MERGE_HEAD` absent) or when the
  * merge state is incomplete (`ORIG_HEAD` absent — corrupt half-state).
  *
- * The hard-reset machinery is inlined rather than delegated to `reset` so
+ * The merge-reset machinery is inlined rather than delegated to `reset` so
  * the call can bypass `assertNoPendingOperation` (which would itself
  * fire on the very `MERGE_HEAD` we're about to clear). See ADR-170.
  */
@@ -53,7 +53,7 @@ export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   }
   // git takes MERGE_AUTOSTASH before its reset, so the reset cannot file it away.
   const autostash = await takeMergeAutostash(ctx);
-  await hardResetWorktreeToCommit(ctx, origHead);
+  await mergeResetWorktreeToCommit(ctx, origHead);
   // git's `merge --abort` delegates to a `reset` whose rev argument is the
   // symbolic `HEAD`, so the coupled-HEAD reflog reads `reset: moving to HEAD`
   // (the literal `HEAD`, not the oid) — and the write itself goes through

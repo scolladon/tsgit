@@ -47,6 +47,10 @@ const FEAT_AUTHOR: AuthorIdentity = {
   timezoneOffset: '+0200',
 };
 
+const rebaseRewrites = (runner: MemoryHookRunner) =>
+  runner.calls.filter((call) => call.name === 'post-rewrite' && call.args[0] === 'rebase');
+const amendRewrites = (runner: MemoryHookRunner) =>
+  runner.calls.filter((call) => call.name === 'post-rewrite' && call.args[0] === 'amend');
 const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
 const setUser = (ctx: Context): Promise<void> =>
   ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[user]\n\tname = Ada\n\temail = rb@x\n');
@@ -1707,6 +1711,107 @@ describe('rebase edge cases', () => {
     });
   });
 
+  interface SeededConflicts {
+    readonly ctx: Context;
+    readonly picks: ReadonlyArray<string>;
+  }
+
+  describe('Given the empty-commit policy file', () => {
+    const POLICY = 'drop_redundant_commits';
+    const policyExists = (ctx: Context): Promise<boolean> =>
+      ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`);
+    const seedTwoConflicts = async (): Promise<SeededConflicts> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await setUser(ctx);
+      await writeAddCommit(ctx, 'f.txt', 'l1\nl2\nl3\n', 'base');
+      await branchCreate(ctx, { name: 'topic' });
+      await checkout(ctx, { rev: 'topic' });
+      const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1');
+      const t2 = await writeAddCommit(ctx, 'f.txt', 'l1\nT2\nl3\n', 't2');
+      const t3 = await writeAddCommit(ctx, 'f.txt', 'l1\nT2\nT3\n', 't3');
+      await checkout(ctx, { rev: 'main' });
+      await writeAddCommit(ctx, 'f.txt', 'l1\nM2\nM3\n', 'm1');
+      await checkout(ctx, { rev: 'topic' });
+      return { ctx, picks: [t1, t2, t3] };
+    };
+    const rebaseOptions = (picks: ReadonlyArray<string>, interactive: boolean) => ({
+      upstream: 'main',
+      ...(interactive
+        ? { interactive: picks.map((oid) => ({ action: 'pick', oid }) as const) }
+        : {}),
+    });
+    const stoppedOnFirstConflict = async (interactive: boolean): Promise<Context> => {
+      const { ctx, picks } = await seedTwoConflicts();
+      await rebaseRun(ctx, rebaseOptions(picks, interactive));
+      return ctx;
+    };
+    const resolveConflict = async (ctx: Context): Promise<void> => {
+      await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nR2\nM3\n');
+      await add(ctx, ['f.txt']);
+    };
+
+    describe('When a flat rebase stops on a conflict', () => {
+      it('Then drop_redundant_commits is written', async () => {
+        // Arrange
+        const { ctx, picks } = await seedTwoConflicts();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, rebaseOptions(picks, false));
+
+        // Assert
+        expect(await policyExists(ctx)).toBe(true);
+      });
+    });
+
+    describe('When an interactive rebase stops on a conflict', () => {
+      it('Then drop_redundant_commits is not written', async () => {
+        // Arrange
+        const { ctx, picks } = await seedTwoConflicts();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, rebaseOptions(picks, true));
+
+        // Assert
+        expect(await policyExists(ctx)).toBe(false);
+      });
+    });
+
+    describe('When a flat rebase is continued into a second conflict', () => {
+      it('Then the re-stop does not rewrite the policy file', async () => {
+        // Arrange
+        const ctx = await stoppedOnFirstConflict(false);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`);
+        await resolveConflict(ctx);
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await policyExists(ctx)).toBe(false);
+      });
+    });
+
+    describe('When an interactive rebase is continued into a second conflict', () => {
+      it('Then the re-stop leaves a seeded policy file in place', async () => {
+        // Arrange
+        const ctx = await stoppedOnFirstConflict(true);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/rebase-merge/${POLICY}`, '');
+        await resolveConflict(ctx);
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await policyExists(ctx)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a continue whose next commit also conflicts', () => {
     describe('When it re-stops', () => {
       it('Then the rewritten-list carries every commit replayed so far', async () => {
@@ -2166,13 +2271,15 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
 
 /** topic off base: t1 (a.txt clean), t2 (f.txt=TOPIC), t3 (c.txt clean); main
  *  advances with m1 (f.txt=MAIN) — replaying t2 onto main conflicts. */
-const seedTopicConflict = async (): Promise<{
+const seedTopicConflict = async (
+  hooks?: MemoryHookRunner,
+): Promise<{
   ctx: Context;
   t1: ObjectId;
   t2: ObjectId;
   t3: ObjectId;
 }> => {
-  const ctx = createMemoryContext();
+  const ctx = createMemoryContext(hooks === undefined ? undefined : { hooks });
   await init(ctx);
   await setUser(ctx);
   await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
@@ -2284,6 +2391,30 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
     });
   });
 
+  describe('Given an edit stop amended by a staged change and a post-rewrite hook', () => {
+    describe('When continue is called', () => {
+      it('Then post-rewrite amend maps the edited commit to the amended one', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        const base = await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        const c1 = await writeAddCommit(ctx, '1.txt', '1\n', 'c1 subject');
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(work(ctx, 'extra.txt'), 'extra\n');
+        await add(ctx, ['extra.txt']);
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(amendRewrites(runner).map((call) => call.stdin)).toEqual([`${c1} ${tip}\n`]);
+      });
+    });
+  });
+
   describe('Given an edit stop continued with no tree change and a post-rewrite hook', () => {
     describe('When continue is called', () => {
       it('Then post-rewrite still maps the edited commit to HEAD', async () => {
@@ -2307,7 +2438,7 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         await rebaseContinue(ctx);
 
         // Assert
-        const result = runner.calls.filter((call) => call.name === 'post-rewrite');
+        const result = rebaseRewrites(runner);
         expect(result.map((call) => call.stdin)).toEqual([`${c1} ${c1}\n${c2} ${c2}\n`]);
       });
     });
@@ -2753,6 +2884,91 @@ describe('rebaseRun (interactive squash / fixup)', () => {
       });
     });
 
+    describe('When the group base was rebased before the meld conflicted', () => {
+      const stopped = async (hooks?: MemoryHookRunner) => {
+        const seeded = await seedTopicConflict(hooks);
+        await rebaseRun(seeded.ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: seeded.t1 },
+            { action: 'squash', oid: seeded.t2 },
+          ],
+        });
+        return seeded;
+      };
+
+      it('Then rewritten-pending names the base by its original oid and rewritten-list omits it', async () => {
+        // Arrange
+        const { ctx, t1 } = await stopped();
+        const sut = readMerge;
+
+        // Act
+        const pending = await sut(ctx, 'rewritten-pending');
+
+        // Assert
+        expect(pending).toBe(`${t1}\n`);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/rewritten-list`)).toBe(false);
+      });
+
+      it('Then post-rewrite maps the base and the member to the combined commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, t1, t2 } = await stopped(runner);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const [call] = rebaseRewrites(runner);
+        expect(call?.stdin).toBe(`${t1} ${tip}\n${t2} ${tip}\n`);
+      });
+
+      it('Then post-rewrite amend maps the rebased base to the resolution commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx } = await stopped(runner);
+        const rebasedBase = await resolveRef(ctx, 'HEAD' as RefName);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const [call] = amendRewrites(runner);
+        expect(call?.stdin).toBe(`${rebasedBase} ${tip}\n`);
+        expect(amendRewrites(runner)).toHaveLength(1);
+      });
+    });
+
+    describe('When the group base was rebased and the meld is skipped', () => {
+      it('Then post-rewrite maps the base and the skipped member to the kept group commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, t1, t2 } = await seedTopicConflict(runner);
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+          ],
+        });
+        const sut = rebaseSkip;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const [call] = rebaseRewrites(runner);
+        expect(call?.stdin).toBe(`${t1} ${tip}\n${t2} ${tip}\n`);
+      });
+    });
+
     describe('When the meld is skipped', () => {
       it('Then the group commit at HEAD is kept, not dropped like an edit', async () => {
         // Arrange
@@ -2796,7 +3012,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
           expect(stop.commit).toBe(t2);
           expect(stop.remaining).toBe(1); // the trailing `drop t3`
         }
-        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${t2}\n`);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${t2}`);
         // The picked t1 (group base) is pending its rewrite to the final group oid.
         expect((await readMerge(ctx, 'rewritten-pending')).trim()).toMatch(/^[0-9a-f]{40}$/);
         expect(await readMerge(ctx, 'message-squash')).toContain(
@@ -2975,7 +3191,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
 
         // Assert — the fixup member is commented out under the skip header
         expect(stop.kind).toBe('conflict');
-        expect(await readMerge(ctx, 'current-fixups')).toBe(`fixup ${t2}\n`);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`fixup ${t2}`);
         expect(await readMerge(ctx, 'message-squash')).toContain(
           '# The commit message #2 will be skipped:',
         );
@@ -3057,6 +3273,38 @@ describe('rebaseRun (interactive squash / fixup)', () => {
       });
     });
   });
+
+  describe.each(['squash', 'fixup'] as const)(
+    'Given a conflicted %s followed by another group member',
+    (verb) => {
+      describe('When the conflict is resolved and the rebase continues', () => {
+        it('Then post-rewrite maps the whole group to the melded commit', async () => {
+          // Arrange
+          const runner = new MemoryHookRunner();
+          const { ctx, t1, t2, t3 } = await seedTopicConflict(runner);
+          await rebaseRun(ctx, {
+            upstream: 'main',
+            interactive: [
+              { action: 'pick', oid: t1 },
+              { action: verb, oid: t2 },
+              { action: verb, oid: t3 },
+            ],
+          });
+          await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'R\n');
+          await add(ctx, ['f.txt']);
+          const sut = rebaseContinue;
+
+          // Act
+          await sut(ctx);
+
+          // Assert
+          const tip = await resolveRef(ctx, 'HEAD' as RefName);
+          const [call] = rebaseRewrites(runner);
+          expect(call?.stdin).toBe(`${t1} ${tip}\n${t2} ${tip}\n${t3} ${tip}\n`);
+        });
+      });
+    },
+  );
 
   describe('Given a conflicted squash resolved and continued onto two edit stops', () => {
     describe('When the first edit stop is continued with a clean tree', () => {
@@ -3159,7 +3407,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         // Assert — the folded a (verbatim oid) is the lone pending rewrite
         expect(stop.kind).toBe('conflict');
         if (stop.kind === 'conflict') expect(stop.commit).toBe(z);
-        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${z}\n`);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`squash ${z}`);
         expect((await readMerge(ctx, 'rewritten-pending')).trim()).toBe(a);
       });
     });
@@ -3324,7 +3572,7 @@ describe('rebase — hooks', () => {
         const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        const postRewrite = runner.calls.filter((c) => c.name === 'post-rewrite');
+        const postRewrite = rebaseRewrites(runner);
         expect(postRewrite).toHaveLength(1);
         expect(postRewrite[0]?.args).toEqual(['rebase']);
         expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(result));
@@ -3357,7 +3605,7 @@ describe('rebase — hooks', () => {
         expect(result.kind).toBe('rebased');
         // An interactive rebase always does work, so pre-rebase fires too.
         expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
-        const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
+        const postRewrite = rebaseRewrites(runner);
         expect(postRewrite).toHaveLength(1);
         expect(postRewrite[0]?.args).toEqual(['rebase']);
         expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(result));
@@ -3455,7 +3703,7 @@ describe('rebase — hooks', () => {
 
         // Assert — the finishing post-rewrite leads with the pre-stop `t1` pair.
         expect(result.kind).toBe('rebased');
-        const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
+        const postRewrite = rebaseRewrites(runner);
         expect(postRewrite).toHaveLength(1);
         const stdin = postRewrite[0]?.stdin ?? '';
         expect(stdin.startsWith(`${t1} `)).toBe(true);
@@ -3929,6 +4177,1186 @@ describe('rebase restaging a carried gitlink', () => {
         // Assert
         expect((failure as Error).message).toBe('restage failed');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('rebase start over an untracked occupant', () => {
+  const REFUSED = { code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['m1.txt'] };
+
+  const topicCommits = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
+    const t2 = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+    const t1 = (await readCommit(ctx, t2)).parents[0] as ObjectId;
+    return [t1, t2];
+  };
+
+  const expectUntouchedStart = async (ctx: Context, topicTip: ObjectId): Promise<void> => {
+    expect(await ctx.fs.readUtf8(work(ctx, 'm1.txt'))).toBe('untracked\n');
+    expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(topicTip);
+    expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/topic\n');
+    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
+  };
+
+  describe('Given an untracked file where onto adds a path', () => {
+    describe('When the flat rebase starts', () => {
+      it('Then it refuses, HEAD stays on the branch and no rebase state is left', async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+        const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        await ctx.fs.writeUtf8(work(ctx, 'm1.txt'), 'untracked\n');
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, { upstream: 'main' }));
+
+        // Assert
+        expect(data).toEqual(REFUSED);
+        await expectUntouchedStart(ctx, topicTip);
+      });
+    });
+
+    describe('When the interactive rebase starts', () => {
+      it('Then it refuses, HEAD stays on the branch and no rebase state is left', async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+        const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        const [t1, t2] = await topicCommits(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'm1.txt'), 'untracked\n');
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() =>
+          sut(ctx, {
+            upstream: 'main',
+            interactive: [
+              { action: 'pick', oid: t1 as ObjectId },
+              { action: 'pick', oid: t2 as ObjectId },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(data).toEqual(REFUSED);
+        await expectUntouchedStart(ctx, topicTip);
+      });
+    });
+  });
+
+  describe('Given an untracked file where a fast-forward pick adds a path', () => {
+    describe('When the rebase continues from an edit stop', () => {
+      it('Then it refuses and HEAD stays on the edited commit', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+        await ctx.fs.writeUtf8(work(ctx, '2.txt'), 'untracked\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['2.txt'],
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c1);
+        expect(await ctx.fs.readUtf8(work(ctx, '2.txt'))).toBe('untracked\n');
+      });
+    });
+  });
+});
+
+describe('rebase over a line an untracked occupant refuses', () => {
+  const XAVIER: AuthorIdentity = {
+    name: 'Xavier',
+    email: 'xavier@y',
+    timestamp: 1_700_000_500,
+    timezoneOffset: '+0000',
+  };
+  const OCCUPIED = { code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['n'] };
+
+  /** base(keep); u: U; main: W(w), X(adds n), Z(deletes n); `n` is an untracked occupant. */
+  const seedOccupied = async (): Promise<{
+    ctx: Context;
+    w: ObjectId;
+    x: ObjectId;
+    z: ObjectId;
+  }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await setUser(ctx);
+    await writeAddCommit(ctx, 'keep', 'keep\n', 'base');
+    await branchCreate(ctx, { name: 'u' });
+    await checkout(ctx, { rev: 'u' });
+    await writeAddCommit(ctx, 'uu', 'uu\n', 'U');
+    await checkout(ctx, { rev: 'main' });
+    const w = await writeAddCommit(ctx, 'w', 'w\n', 'w');
+    const x = await writeAddCommit(ctx, 'n', 'n\n', 'x', XAVIER);
+    await rm(ctx, ['n']);
+    const z = (await commit(ctx, { message: 'z', author: FEAT_AUTHOR })).id;
+    await ctx.fs.writeUtf8(work(ctx, 'n'), 'occ\n');
+    return { ctx, w, x, z };
+  };
+
+  const entriesOf = async (ctx: Context): Promise<string[]> =>
+    (await ctx.fs.readdir(`${ctx.layout.gitDir}/rebase-merge`)).map((entry) => entry.name).sort();
+
+  describe('Given the occupant refuses the second pick of a flat start', () => {
+    describe('When the rebase runs', () => {
+      it('Then it throws the occupant refusal', async () => {
+        // Arrange
+        const { ctx } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+      });
+
+      it('Then HEAD is the rewritten first pick and the occupant is untouched', async () => {
+        // Arrange
+        const { ctx, w } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect((await readCommit(ctx, head)).message).toBe('w\n');
+        expect(head).not.toBe(w);
+        expect(await ctx.fs.readUtf8(work(ctx, 'n'))).toBe('occ\n');
+      });
+
+      it('Then done ends with the refused line and the todo heads with it', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${w} # w\npick ${x} # x\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${x} # x\npick ${z} # z\n`);
+      });
+
+      it('Then end counts the whole todo and msgnum the lines run', async () => {
+        // Arrange
+        const { ctx } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'end')).toBe('3\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('2\n');
+      });
+
+      it('Then author-script holds the refused commit author and REBASE_HEAD names it', async () => {
+        // Arrange
+        const { ctx, x } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'author-script')).toBe(
+          "GIT_AUTHOR_NAME='Xavier'\nGIT_AUTHOR_EMAIL='xavier@y'\nGIT_AUTHOR_DATE='@1700000500 +0000'\n",
+        );
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${x}\n`);
+      });
+
+      it('Then rewritten-list records the first pick', async () => {
+        // Arrange
+        const { ctx, w } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${head}\n`);
+      });
+
+      it('Then head-name records a detached rebase when HEAD was detached', async () => {
+        // Arrange
+        const { ctx, z } = await seedOccupied();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${z}\n`);
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await readMerge(ctx, 'head-name')).toBe('detached HEAD\n');
+      });
+
+      it('Then the state files are exactly the ones git leaves', async () => {
+        // Arrange
+        const { ctx } = await seedOccupied();
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() => sut(ctx, { upstream: 'u' }));
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual([
+          'author-script',
+          'done',
+          'drop_redundant_commits',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+          'rewritten-list',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a conflict stop whose resolution is continued into an occupant', () => {
+    const seedStopped = async (): Promise<{ ctx: Context; w: ObjectId; x: ObjectId }> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await setUser(ctx);
+      await writeAddCommit(ctx, 'keep', 'keep\n', 'base');
+      await branchCreate(ctx, { name: 'u' });
+      await checkout(ctx, { rev: 'u' });
+      await writeAddCommit(ctx, 'keep', 'u\n', 'U');
+      await checkout(ctx, { rev: 'main' });
+      const w = await writeAddCommit(ctx, 'keep', 'w\n', 'w');
+      const x = await writeAddCommit(ctx, 'n', 'n\n', 'x', XAVIER);
+      await rm(ctx, ['n']);
+      await commit(ctx, { message: 'z', author: FEAT_AUTHOR });
+      const stop = await rebaseRun(ctx, { upstream: 'u' });
+      expect(stop.kind).toBe('conflict');
+      await ctx.fs.writeUtf8(work(ctx, 'keep'), 'resolved\n');
+      await add(ctx, ['keep']);
+      await ctx.fs.writeUtf8(work(ctx, 'n'), 'occ\n');
+      return { ctx, w, x };
+    };
+
+    describe('When the rebase continues', () => {
+      it('Then the stop files of the conflict are gone and the refused line is rescheduled', async () => {
+        // Arrange
+        const { ctx, x } = await seedStopped();
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        for (const stale of ['message', 'patch', 'stopped-sha']) {
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${stale}`)).toBe(false);
+        }
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${x}\n`);
+        expect(await readMerge(ctx, 'msgnum')).toBe('2\n');
+      });
+
+      it('Then the rewrite of the resolved pick is recorded', async () => {
+        // Arrange
+        const { ctx, w } = await seedStopped();
+        const sut = rebaseContinue;
+
+        // Act
+        await dataOf(() => sut(ctx));
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${head}\n`);
+      });
+    });
+  });
+
+  describe('Given a refused line retried while the occupant stays', () => {
+    describe('When the rebase continues', () => {
+      it('Then it is refused again and done lists the line once more', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seedOccupied();
+        await dataOf(() => rebaseRun(ctx, { upstream: 'u' }));
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${w} # w\npick ${x} # x\npick ${x} # x\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${x} # x\npick ${z} # z\n`);
+        expect(await readMerge(ctx, 'end')).toBe('4\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('3\n');
+      });
+    });
+
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then the rebase finishes', async () => {
+        // Arrange
+        const { ctx } = await seedOccupied();
+        await dataOf(() => rebaseRun(ctx, { upstream: 'u' }));
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+      });
+    });
+  });
+
+  describe('Given a second occupant refusing a later line after the first retry succeeded', () => {
+    describe('When the rebase continues', () => {
+      it('Then the rewrite list carries every pick committed before and after the first refusal', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seedOccupied();
+        await writeAddCommit(ctx, 'q', 'q\n', 'q');
+        await dataOf(() => rebaseRun(ctx, { upstream: 'u' }));
+        await ctx.fs.rm(work(ctx, 'n'));
+        await ctx.fs.writeUtf8(work(ctx, 'q'), 'occ\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['q'] });
+        const pairs = (await readMerge(ctx, 'rewritten-list')).trim().split('\n');
+        expect(pairs.map((pair) => pair.split(' ')[0])).toEqual([w, x, z]);
+      });
+    });
+  });
+
+  describe('Given a fast-forward pick the occupant refuses', () => {
+    describe('When a flat rebase --onto runs', () => {
+      it('Then HEAD stays and the dropped pick is recorded as rewritten to itself', async () => {
+        // Arrange
+        const { ctx, w, x } = await seedOccupied();
+        const base = (await readCommit(ctx, w)).parents[0] as ObjectId;
+        const sut = rebaseRun;
+
+        // Act
+        const data = await dataOf(() => sut(ctx, { upstream: base, onto: w }));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(w);
+        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${w}\n`);
+        expect(await readMerge(ctx, 'done')).toBe(`pick ${w} # w\npick ${x} # x\n`);
+        expect(await ctx.fs.readUtf8(work(ctx, 'n'))).toBe('occ\n');
+      });
+    });
+  });
+});
+
+describe('rebase -i over a line an untracked occupant refuses', () => {
+  const XAVIER: AuthorIdentity = {
+    name: 'Xavier',
+    email: 'xavier@y',
+    timestamp: 1_700_000_500,
+    timezoneOffset: '+0000',
+  };
+  const OCCUPIED = { code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['n'] };
+
+  /** base(keep); u: U; main: W(w), X(adds n by Xavier), Z(deletes n). */
+  const seed = async (
+    hooks?: MemoryHookRunner,
+  ): Promise<{
+    ctx: Context;
+    base: ObjectId;
+    w: ObjectId;
+    x: ObjectId;
+    z: ObjectId;
+  }> => {
+    const ctx = createMemoryContext(hooks === undefined ? undefined : { hooks });
+    await init(ctx);
+    await setUser(ctx);
+    const base = await writeAddCommit(ctx, 'keep', 'keep\n', 'base');
+    await branchCreate(ctx, { name: 'u' });
+    await checkout(ctx, { rev: 'u' });
+    await writeAddCommit(ctx, 'uu', 'uu\n', 'U');
+    await checkout(ctx, { rev: 'main' });
+    const w = await writeAddCommit(ctx, 'w', 'w\n', 'w');
+    const x = await writeAddCommit(ctx, 'n', 'n\n', 'x', XAVIER);
+    await rm(ctx, ['n']);
+    const z = (await commit(ctx, { message: 'z', author: FEAT_AUTHOR })).id;
+    return { ctx, base, w, x, z };
+  };
+
+  const occupy = (ctx: Context): Promise<void> => ctx.fs.writeUtf8(work(ctx, 'n'), 'occ\n');
+
+  const entriesOf = async (ctx: Context): Promise<string[]> =>
+    (await ctx.fs.readdir(`${ctx.layout.gitDir}/rebase-merge`)).map((entry) => entry.name).sort();
+
+  /** `edit W; pick X; pick Z` stopped on W, with `n` occupied, then `--continue` refused. */
+  const refusedAfterEditStop = async () => {
+    const s = await seed();
+    const stop = await rebaseRun(s.ctx, {
+      upstream: 'u',
+      interactive: [
+        { action: 'edit', oid: s.w },
+        { action: 'pick', oid: s.x },
+        { action: 'pick', oid: s.z },
+      ],
+    });
+    expect(stop.kind).toBe('stopped');
+    await occupy(s.ctx);
+    const data = await dataOf(() => rebaseContinue(s.ctx));
+    return { ...s, data };
+  };
+
+  describe('Given an edit stop continued into an occupied pick', () => {
+    describe('When the rebase continues', () => {
+      it('Then it throws the occupant refusal', async () => {
+        // Arrange / Act
+        const { data } = await refusedAfterEditStop();
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+      });
+
+      it('Then done, todo, end and msgnum are those git leaves', async () => {
+        // Arrange / Act
+        const { ctx, w, x, z } = await refusedAfterEditStop();
+
+        // Assert
+        expect(await readMerge(ctx, 'done')).toBe(`edit ${w} # w\npick ${x} # x\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${x} # x\npick ${z} # z\n`);
+        expect(await readMerge(ctx, 'end')).toBe('3\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('2\n');
+      });
+
+      it('Then REBASE_HEAD, author-script and rewritten-list name the refused pick', async () => {
+        // Arrange / Act
+        const { ctx, w, x } = await refusedAfterEditStop();
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${x}\n`);
+        expect(await readMerge(ctx, 'author-script')).toBe(
+          "GIT_AUTHOR_NAME='Xavier'\nGIT_AUTHOR_EMAIL='xavier@y'\nGIT_AUTHOR_DATE='@1700000500 +0000'\n",
+        );
+        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${head}\n`);
+      });
+
+      it('Then no stop file of the edit remains and the policy file is absent', async () => {
+        // Arrange / Act
+        const { ctx } = await refusedAfterEditStop();
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual([
+          'author-script',
+          'done',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+          'rewritten-list',
+        ]);
+      });
+    });
+
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then the retried pick and the rest are replayed', async () => {
+        // Arrange
+        const { ctx } = await refusedAfterEditStop();
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+      });
+    });
+
+    describe('When the occupant stays and the rebase continues', () => {
+      it('Then it is refused again and done lists the line once more', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await refusedAfterEditStop();
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await readMerge(ctx, 'done')).toBe(`edit ${w} # w\npick ${x} # x\npick ${x} # x\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${x} # x\npick ${z} # z\n`);
+        expect(await readMerge(ctx, 'end')).toBe('4\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('3\n');
+      });
+    });
+
+    describe('When the rebase is skipped with the occupant kept', () => {
+      it('Then it is refused again and done lists the line once more', async () => {
+        // Arrange
+        const { ctx, w, x } = await refusedAfterEditStop();
+        const sut = rebaseSkip;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await readMerge(ctx, 'done')).toBe(`edit ${w} # w\npick ${x} # x\npick ${x} # x\n`);
+        expect(await readMerge(ctx, 'end')).toBe('4\n');
+      });
+    });
+  });
+
+  describe.each(['squash', 'fixup'] as const)(
+    'Given an edit stop followed by a %s line',
+    (verb) => {
+      describe('When the rebase continues', () => {
+        it('Then post-rewrite maps the edited commit and the member to the melded commit', async () => {
+          // Arrange
+          const runner = new MemoryHookRunner();
+          const { ctx, w, x, z } = await seed(runner);
+          const stop = await rebaseRun(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'edit', oid: w },
+              { action: verb, oid: x },
+              { action: 'pick', oid: z },
+            ],
+          });
+          expect(stop.kind).toBe('stopped');
+          const sut = rebaseContinue;
+
+          // Act
+          await sut(ctx);
+
+          // Assert
+          const tip = await resolveRef(ctx, 'HEAD' as RefName);
+          const melded = (await readCommit(ctx, tip)).parents[0];
+          const [call] = rebaseRewrites(runner);
+          expect(call?.stdin).toBe(`${w} ${melded}\n${x} ${melded}\n${z} ${tip}\n`);
+        });
+      });
+    },
+  );
+
+  describe('Given a rescheduled interactive pick followed by an edit line', () => {
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then the interactive loop stops for editing on that line', async () => {
+        // Arrange
+        const s = await seed();
+        await occupy(s.ctx);
+        await dataOf(() =>
+          rebaseRun(s.ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'pick', oid: s.w },
+              { action: 'pick', oid: s.x },
+              { action: 'edit', oid: s.z },
+            ],
+          }),
+        );
+        await s.ctx.fs.rm(work(s.ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(s.ctx);
+
+        // Assert
+        expect(result).toEqual({ kind: 'stopped', commit: s.z, remaining: 0 });
+      });
+    });
+
+    describe('When a change is staged and the rebase continues', () => {
+      it('Then it refuses with end re-counted and the state kept', async () => {
+        // Arrange
+        const { ctx, w, x } = await refusedAfterEditStop();
+        await ctx.fs.rm(work(ctx, 'n'));
+        await ctx.fs.writeUtf8(work(ctx, 'staged'), 's\n');
+        await add(ctx, ['staged']);
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['staged'],
+          untracked: [],
+        });
+        expect(await readMerge(ctx, 'end')).toBe('4\n');
+        expect(await readMerge(ctx, 'done')).toBe(`edit ${w} # w\npick ${x} # x\n`);
+      });
+    });
+  });
+
+  describe.each(['pick', 'edit', 'reword'] as const)(
+    'Given a %s line refused at the start',
+    (verb) => {
+      describe('When the interactive rebase runs', () => {
+        it('Then the line is rescheduled with the first pick rewritten', async () => {
+          // Arrange
+          const { ctx, w, x, z } = await seed();
+          await occupy(ctx);
+          const refused =
+            verb === 'reword'
+              ? ({ action: 'reword', oid: x, message: 'x reworded' } as const)
+              : ({ action: verb, oid: x } as const);
+          const sut = rebaseRun;
+
+          // Act
+          const data = await dataOf(() =>
+            sut(ctx, {
+              upstream: 'u',
+              interactive: [{ action: 'pick', oid: w }, refused, { action: 'pick', oid: z }],
+            }),
+          );
+
+          // Assert
+          expect(data).toEqual(OCCUPIED);
+          const head = await resolveRef(ctx, 'HEAD' as RefName);
+          expect(await readMerge(ctx, 'done')).toBe(`pick ${w} # w\n${verb} ${x} # x\n`);
+          expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`${verb} ${x} # x\npick ${z} # z\n`);
+          expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${head}\n`);
+          expect(await readMerge(ctx, 'end')).toBe('3\n');
+          expect(await readMerge(ctx, 'msgnum')).toBe('2\n');
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${x}\n`);
+          expect(await entriesOf(ctx)).not.toContain('drop_redundant_commits');
+        });
+      });
+    },
+  );
+
+  describe('Given every line of an interactive rebase is a pick and the second is refused', () => {
+    describe('When the interactive rebase runs', () => {
+      it('Then the state directory holds the flat reschedule files without the empty-commit policy', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seed();
+        await occupy(ctx);
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() =>
+          sut(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'pick', oid: w },
+              { action: 'pick', oid: x },
+              { action: 'pick', oid: z },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual([
+          'author-script',
+          'done',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+          'rewritten-list',
+        ]);
+      });
+    });
+  });
+
+  describe('Given earlier picks and a fixup group whose member the occupant refuses', () => {
+    /** `pick A; pick B; pick C; fixup X; pick Z` with `n` occupied: X adds `n`, Z removes it. */
+    const refusedAfterPicks = async (hooks?: MemoryHookRunner) => {
+      const ctx = createMemoryContext(hooks === undefined ? undefined : { hooks });
+      await init(ctx);
+      await setUser(ctx);
+      await writeAddCommit(ctx, 'keep', 'keep\n', 'base');
+      await branchCreate(ctx, { name: 'u' });
+      await checkout(ctx, { rev: 'u' });
+      await writeAddCommit(ctx, 'uu', 'uu\n', 'U');
+      await checkout(ctx, { rev: 'main' });
+      const a = await writeAddCommit(ctx, 'a', 'a\n', 'a');
+      const b = await writeAddCommit(ctx, 'b', 'b\n', 'b');
+      const c = await writeAddCommit(ctx, 'c', 'c\n', 'c');
+      const x = await writeAddCommit(ctx, 'n', 'n\n', 'x', XAVIER);
+      await rm(ctx, ['n']);
+      const z = (await commit(ctx, { message: 'z', author: FEAT_AUTHOR })).id;
+      await ctx.fs.writeUtf8(work(ctx, 'n'), 'occ\n');
+      const data = await dataOf(() =>
+        rebaseRun(ctx, {
+          upstream: 'u',
+          interactive: [
+            { action: 'pick', oid: a },
+            { action: 'pick', oid: b },
+            { action: 'pick', oid: c },
+            { action: 'fixup', oid: x },
+            { action: 'pick', oid: z },
+          ],
+        }),
+      );
+      return { ctx, a, b, c, x, z, data };
+    };
+
+    describe('When the interactive rebase runs', () => {
+      it('Then rewritten-list holds the earlier picks and rewritten-pending the group base under its original oid', async () => {
+        // Arrange / Act
+        const { ctx, a, b, c, data } = await refusedAfterPicks();
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        const listed = (await readMerge(ctx, 'rewritten-list')).trim().split('\n');
+        expect(listed.map((line) => line.split(' ')[0])).toEqual([a, b]);
+        expect(await readMerge(ctx, 'rewritten-pending')).toBe(`${c}\n`);
+      });
+    });
+
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then post-rewrite maps the earlier picks, the group and the last pick', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, a, b, c, x, z } = await refusedAfterPicks(runner);
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const [call] = rebaseRewrites(runner);
+        const sources = (call?.stdin ?? '')
+          .trim()
+          .split('\n')
+          .map((line) => line.split(' ')[0]);
+        expect(sources).toEqual([a, b, c, x, z]);
+      });
+    });
+  });
+
+  describe('Given a plain pick the occupant refuses after an earlier pick', () => {
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then post-rewrite maps the earlier pick along with the rest', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await seed(runner);
+        await occupy(ctx);
+        await dataOf(() =>
+          rebaseRun(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'pick', oid: w },
+              { action: 'pick', oid: x },
+              { action: 'pick', oid: z },
+            ],
+          }),
+        );
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const [call] = rebaseRewrites(runner);
+        const sources = (call?.stdin ?? '')
+          .trim()
+          .split('\n')
+          .map((line) => line.split(' ')[0]);
+        expect(sources).toEqual([w, x, z]);
+      });
+    });
+  });
+
+  describe.each(['squash', 'fixup'] as const)('Given a %s member the occupant refuses', (verb) => {
+    const refusedMeld = async (hooks?: MemoryHookRunner) => {
+      const s = await seed(hooks);
+      await occupy(s.ctx);
+      const data = await dataOf(() =>
+        rebaseRun(s.ctx, {
+          upstream: 'u',
+          interactive: [
+            { action: 'pick', oid: s.w },
+            { action: verb, oid: s.x },
+            { action: 'pick', oid: s.z },
+          ],
+        }),
+      );
+      return { ...s, data };
+    };
+
+    describe('When the rebase runs', () => {
+      it('Then the group files are rescheduled and no rewritten-list or amend is left', async () => {
+        // Arrange / Act
+        const { ctx, w, x, data } = await refusedMeld();
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        const entries = await entriesOf(ctx);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`${verb} ${x}`);
+        expect(await readMerge(ctx, 'rewritten-pending')).toBe(`${w}\n`);
+        expect(entries).not.toContain('rewritten-list');
+        expect(entries).not.toContain('amend');
+        expect(entries.includes('message-fixup')).toBe(verb === 'fixup');
+      });
+
+      it('Then message-squash holds the group template', async () => {
+        // Arrange / Act
+        const { ctx } = await refusedMeld();
+
+        // Assert
+        const template = await readMerge(ctx, 'message-squash');
+        expect(template.startsWith('# This is a combination of 2 commits.\n')).toBe(true);
+        const lines = template.split('\n');
+        expect(lines).toContain('w');
+        expect(lines.includes('x')).toBe(verb === 'squash');
+      });
+    });
+
+    describe('When the occupant stays and the rebase continues', () => {
+      it('Then it is refused again with the group files and no rewritten-list', async () => {
+        // Arrange
+        const { ctx, w, x } = await refusedMeld();
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await readMerge(ctx, 'current-fixups')).toBe(`${verb} ${x}\n${verb} ${x}`);
+        expect(await readMerge(ctx, 'rewritten-pending')).toBe(`${w}\n`);
+        expect(await entriesOf(ctx)).not.toContain('rewritten-list');
+      });
+    });
+
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then post-rewrite maps the group base and the member along with the rest', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await refusedMeld(runner);
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const [call] = rebaseRewrites(runner);
+        const sources = (call?.stdin ?? '')
+          .trim()
+          .split('\n')
+          .map((l) => l.split(' ')[0]);
+        expect(sources).toEqual([w, x, z]);
+      });
+
+      it('Then post-rewrite maps the group base and the member to the melded commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await refusedMeld(runner);
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const melded = (await readCommit(ctx, tip)).parents[0];
+        const [call] = rebaseRewrites(runner);
+        expect(call?.stdin).toBe(`${w} ${melded}\n${x} ${melded}\n${z} ${tip}\n`);
+      });
+
+      it('Then the group is melded and the history is the one without a refusal', async () => {
+        // Arrange
+        const { ctx, w } = await refusedMeld();
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'HEAD' as RefName));
+        const melded = await readCommit(ctx, tip.parents[0] as ObjectId);
+        expect(tip.message).toBe('z\n');
+        // git's retry appends the rescheduled squash to its message once more
+        expect(melded.message).toBe(verb === 'squash' ? 'w\n\nx\n\nx\n' : 'w\n');
+        expect(melded.parents).not.toContain(w);
+        expect((await readCommit(ctx, melded.parents[0] as ObjectId)).message).toBe('U\n');
+      });
+    });
+  });
+
+  describe('Given a fixup group that no occupant refuses', () => {
+    describe('When the rebase runs', () => {
+      it('Then post-rewrite maps the group base and the member to the melded commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await seed(runner);
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'u',
+          interactive: [
+            { action: 'pick', oid: w },
+            { action: 'fixup', oid: x },
+            { action: 'pick', oid: z },
+          ],
+        });
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const melded = (await readCommit(ctx, tip)).parents[0];
+        const [call] = rebaseRewrites(runner);
+        expect(call?.stdin).toBe(`${w} ${melded}\n${x} ${melded}\n${z} ${tip}\n`);
+      });
+
+      it('Then post-rewrite amend fires for the meld, before the rebase call', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await seed(runner);
+        const sut = rebaseRun;
+
+        // Act
+        const result = await sut(ctx, {
+          upstream: 'u',
+          interactive: [
+            { action: 'pick', oid: w },
+            { action: 'fixup', oid: x },
+            { action: 'pick', oid: z },
+          ],
+        });
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const melded = (await readCommit(ctx, tip)).parents[0];
+        const rebasedBase = result.kind === 'rebased' ? result.commits[0]?.created : undefined;
+        const labels = runner.calls.filter((c) => c.name === 'post-rewrite').map((c) => c.args);
+        expect(labels).toEqual([['amend'], ['rebase']]);
+        expect(amendRewrites(runner)[0]?.stdin).toBe(`${rebasedBase} ${melded}\n`);
+      });
+    });
+  });
+
+  describe('Given a three-member fixup group whose middle member the occupant refuses', () => {
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then post-rewrite maps every member to the final group commit', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const { ctx, w, x, z } = await seed(runner);
+        await occupy(ctx);
+        await dataOf(() =>
+          rebaseRun(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'pick', oid: w },
+              { action: 'fixup', oid: x },
+              { action: 'fixup', oid: z },
+            ],
+          }),
+        );
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'HEAD' as RefName);
+        const [call] = rebaseRewrites(runner);
+        expect(call?.stdin).toBe(`${w} ${tip}\n${x} ${tip}\n${z} ${tip}\n`);
+      });
+    });
+  });
+
+  describe('Given a reworded group base whose squash member the occupant refuses', () => {
+    describe('When the occupant is removed and the rebase continues', () => {
+      it('Then the retried group keeps the reworded base message', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seed();
+        await occupy(ctx);
+        await dataOf(() =>
+          rebaseRun(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'reword', oid: w, message: 'w reworded' },
+              { action: 'squash', oid: x },
+              { action: 'pick', oid: z },
+            ],
+          }),
+        );
+        await ctx.fs.rm(work(ctx, 'n'));
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'HEAD' as RefName));
+        const melded = await readCommit(ctx, tip.parents[0] as ObjectId);
+        expect(melded.message).toBe('w reworded\n\nx\n\nx\n');
+      });
+    });
+  });
+
+  describe('Given a fast-forwarded interactive pick the occupant refuses', () => {
+    describe('When the edit stop before it is continued', () => {
+      it('Then HEAD stays on the edited commit and rewritten-list maps it to itself', async () => {
+        // Arrange
+        const { ctx, base, w, x, z } = await seed();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: w },
+            { action: 'pick', oid: x },
+            { action: 'pick', oid: z },
+          ],
+        });
+        await occupy(ctx);
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(w);
+        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${w}\n`);
+        expect(await readMerge(ctx, 'done')).toBe(`edit ${w} # w\npick ${x} # x\n`);
+      });
+    });
+  });
+  describe('Given every line a pick and the occupant planted before the start', () => {
+    describe('When the interactive rebase runs', () => {
+      it('Then the state files are exactly the flat start without the policy file', async () => {
+        // Arrange
+        const { ctx, w, x, z } = await seed();
+        await occupy(ctx);
+        const sut = rebaseRun;
+
+        // Act
+        await dataOf(() =>
+          sut(ctx, {
+            upstream: 'u',
+            interactive: [
+              { action: 'pick', oid: w },
+              { action: 'pick', oid: x },
+              { action: 'pick', oid: z },
+            ],
+          }),
+        );
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual([
+          'author-script',
+          'done',
+          'end',
+          'git-rebase-todo',
+          'git-rebase-todo.backup',
+          'head-name',
+          'interactive',
+          'msgnum',
+          'no-reschedule-failed-exec',
+          'onto',
+          'orig-head',
+          'rewritten-list',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a later line the occupant refuses after an earlier pick replayed', () => {
+    const seedLater = async () => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await setUser(ctx);
+      await writeAddCommit(ctx, 'keep', 'keep\n', 'base');
+      await branchCreate(ctx, { name: 'u' });
+      await checkout(ctx, { rev: 'u' });
+      await writeAddCommit(ctx, 'uu', 'uu\n', 'U');
+      await checkout(ctx, { rev: 'main' });
+      const w = await writeAddCommit(ctx, 'w', 'w\n', 'w');
+      const x = await writeAddCommit(ctx, 'x', 'x\n', 'x');
+      const y = await writeAddCommit(ctx, 'n', 'n\n', 'y');
+      return { ctx, w, x, y };
+    };
+
+    describe('When the edit stop is continued', () => {
+      it('Then the replayed pick is rewritten and the refused line heads the todo', async () => {
+        // Arrange
+        const { ctx, w, x, y } = await seedLater();
+        await rebaseRun(ctx, {
+          upstream: 'u',
+          interactive: [
+            { action: 'edit', oid: w },
+            { action: 'pick', oid: x },
+            { action: 'pick', oid: y },
+          ],
+        });
+        await occupy(ctx);
+        const sut = rebaseContinue;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual(OCCUPIED);
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await readMerge(ctx, 'done')).toBe(`edit ${w} # w\npick ${x} # x\npick ${y} # y\n`);
+        expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${y} # y\n`);
+        expect(await readMerge(ctx, 'end')).toBe('3\n');
+        expect(await readMerge(ctx, 'msgnum')).toBe('3\n');
+        const pairs = (await readMerge(ctx, 'rewritten-list')).trim().split('\n');
+        expect(pairs.map((pair) => pair.split(' ')[0])).toEqual([w, x]);
+        expect(pairs[1]?.split(' ')[1]).toBe(head);
+      });
+    });
+  });
+
+  describe('Given a rescheduled interactive pick and a tracked file replaced by an untracked one', () => {
+    describe('When the rebase is skipped', () => {
+      it('Then the skip refuses and the state is kept', async () => {
+        // Arrange
+        const { ctx, w, x } = await refusedAfterEditStop();
+        await ctx.fs.rm(work(ctx, 'n'));
+        await rm(ctx, ['keep'], { cached: true });
+        await ctx.fs.writeUtf8(work(ctx, 'keep'), 'occ\n');
+        const sut = rebaseSkip;
+
+        // Act
+        const data = await dataOf(() => sut(ctx));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges: [], untracked: ['keep'] });
+        expect(await readMerge(ctx, 'done')).toBe(`edit ${w} # w\npick ${x} # x\n`);
+        expect(await readMerge(ctx, 'msgnum')).toBe('2\n');
       });
     });
   });

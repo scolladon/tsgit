@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCombinedMessage } from '../../../../src/domain/rebase/index.js';
+import { buildCombinedMessage, firstCommitMessage } from '../../../../src/domain/rebase/index.js';
 
 const keep = (message: string) => ({ message });
 const skip = (message: string) => ({ message, skip: true });
@@ -123,6 +123,61 @@ describe('rebase squash combined-message builder', () => {
 
         // Assert
         expect(withNewline).toBe(without);
+      });
+    });
+  });
+});
+
+describe('rebase squash first-commit-message reader', () => {
+  describe('Given firstCommitMessage', () => {
+    describe('When given a template built from several members', () => {
+      it.each([
+        { label: 'a kept member', members: [keep('base'), keep('next')], base: 'base\n' },
+        { label: 'a skipped member', members: [keep('base'), skip('next')], base: 'base\n' },
+        {
+          label: 'a multi-line base',
+          members: [keep('base\n\nbody'), keep('next')],
+          base: 'base\n\nbody\n',
+        },
+        { label: 'the base alone', members: [keep('base')], base: 'base\n' },
+      ])('Then it returns the base message of $label', ({ members, base }) => {
+        // Arrange
+        const template = buildCombinedMessage(members);
+        const sut = firstCommitMessage;
+
+        // Act
+        const result = sut(template);
+
+        // Assert
+        expect(result).toBe(base);
+      });
+    });
+
+    describe('When given a lone block whose message ends without a newline', () => {
+      it('Then it returns the whole message with one trailing newline', () => {
+        // Arrange
+        const template =
+          '# This is a combination of 1 commit.\n# This is the 1st commit message:\n\nbase';
+        const sut = firstCommitMessage;
+
+        // Act
+        const result = sut(template);
+
+        // Assert
+        expect(result).toBe('base\n');
+      });
+    });
+
+    describe('When given text that is not a combined template', () => {
+      it('Then it returns undefined', () => {
+        // Arrange
+        const sut = firstCommitMessage;
+
+        // Act
+        const result = sut('plain message\n');
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

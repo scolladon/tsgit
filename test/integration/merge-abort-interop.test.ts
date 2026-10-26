@@ -12,20 +12,49 @@
  *   unique:         merge --abort HEAD reflog message matches canonical git
  *   interopSurface: reflog
  */
-import { writeFileSync } from 'node:fs';
+import { existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.node.js';
+import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
   git,
+  initBothRepos,
   makePeerPair,
   type PeerPair,
   runGit,
   runGitEnv,
   topReflogSubject,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
+import {
+  COMMIT_ENV,
+  directoryHolding,
+  fileAt,
+  gitlink,
+  gitOutcomeOfExit,
+  ignoring,
+  indexState,
+  listing,
+  NESTED_CONFLICT,
+  NESTED_OCCUPANTS,
+  type Occupant,
+  OK,
+  type Outcome,
+  regular,
+  replacing,
+  tsgitOutcomeOf,
+  v1,
+} from './occupant-displacement-fixtures.js';
+import {
+  ABORT_ROWS,
+  buildStoppedMerge,
+  entriesOf,
+  firstClassified,
+} from './stopped-state-fixtures.js';
+import { RESET_MERGE_PINS } from './stopped-state-pins.js';
 
 const AUTHOR = {
   name: 'Ada',
@@ -104,6 +133,272 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort reflog interop', () => {
         expect(topReflogSubject(pair.ours, 'HEAD')).toBe('reset: moving to HEAD');
         expect(topReflogSubject(pair.peer, 'refs/heads/main')).toBe(peerBranchTop);
         expect(topReflogSubject(pair.ours, 'refs/heads/main')).toBe(oursBranchTop);
+      });
+    });
+  });
+});
+
+const REFUSED_EXIT = 128;
+
+const gitOutcomeOfAbort = (dir: string): Outcome =>
+  gitOutcomeOfExit(
+    tryRunGitWithExit(['-C', dir, 'merge', '--abort']),
+    REFUSED_EXIT,
+    firstClassified,
+  );
+
+const tsgitOutcomeOfAbort = (repo: Repository): Promise<Outcome> =>
+  tsgitOutcomeOf(() => repo.merge.abort(), 'WORKING_TREE_DIRTY');
+
+const stopTsgitMerge = async (
+  repo: Repository,
+  extra: { autostash?: boolean } = {},
+): Promise<void> => {
+  const result = await repo.merge.run({ rev: 't', author: AUTHOR, ...extra });
+  expect(result.kind).toBe('conflict');
+};
+
+const stopGitMerge = (dir: string, ...extra: ReadonlyArray<string>): void => {
+  const result = tryRunGit(['-C', dir, 'merge', ...extra, 't'], { env: COMMIT_ENV });
+  expect(result.ok).toBe(false);
+};
+
+const gitState = (dir: string): ReadonlyArray<unknown> => [
+  listing(dir),
+  indexState(dir),
+  runGit(['-C', dir, 'rev-parse', 'HEAD']),
+  existsSync(path.join(dir, '.git', 'MERGE_HEAD')),
+  existsSync(path.join(dir, '.git', 'ORIG_HEAD')),
+  existsSync(path.join(dir, '.git', 'MERGE_AUTOSTASH')),
+  tryRunGit(['-C', dir, 'stash', 'list']).stdout,
+];
+
+describe.skipIf(!GIT_AVAILABLE)('merge --abort occupant interop', { timeout: 60_000 }, () => {
+  let pair: PeerPair;
+  let repo: Repository | undefined;
+
+  beforeEach(async () => {
+    pair = await makePeerPair('merge-abort-occupant');
+    initBothRepos(pair.peer, pair.ours);
+    repo = undefined;
+  });
+  afterEach(async () => {
+    await repo?.dispose();
+    await pair.dispose();
+  });
+
+  const abortOnBoth = async (): Promise<{ expected: Outcome; result: Outcome }> => {
+    const opened = await openRepository({ cwd: pair.ours });
+    repo = opened;
+    const expected = gitOutcomeOfAbort(pair.peer);
+    const result = await tsgitOutcomeOfAbort(opened);
+    return { expected, result };
+  };
+
+  const stopBoth = async (
+    entries: ReturnType<typeof entriesOf>,
+    stopped?: Parameters<typeof buildStoppedMerge>[2],
+  ): Promise<void> => {
+    for (const dir of [pair.peer, pair.ours]) buildStoppedMerge(dir, entries, stopped);
+    stopGitMerge(pair.peer);
+    repo = await openRepository({ cwd: pair.ours });
+    await stopTsgitMerge(repo);
+    await repo.dispose();
+  };
+
+  const CASES = ABORT_ROWS.flatMap((row) =>
+    row.variants.map((variant) => ({
+      id: `${row.shape}/${variant}`,
+      row,
+      variant,
+      occupant: variant === 'reset-adds' ? (row.addOccupant ?? row.occupant) : row.occupant,
+      pinned: RESET_MERGE_PINS[`${row.shape}/${variant}`],
+    })),
+  );
+
+  describe.each(CASES)('Given the stopped merge $id', ({ row, variant, occupant, pinned }) => {
+    describe('When both tools abort it', () => {
+      it('Then the outcome, work tree, index and merge state match git', async () => {
+        // Arrange
+        await stopBoth(entriesOf(variant, row));
+        occupant(pair.peer);
+        occupant(pair.ours);
+
+        // Act
+        const { expected, result } = await abortOnBoth();
+
+        // Assert
+        expect(expected).toEqual(pinned ?? expected);
+        expect(result).toEqual(expected);
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a stop where an untracked add precedes a local change in path order', () => {
+    describe('When both tools abort it', () => {
+      it('Then each names only the first path, in its class', async () => {
+        // Arrange — t deletes a (abort re-adds it) and changes z.
+        const entries = {
+          base: [v1('a'), v1('z')],
+          main: [v1('a'), v1('z')],
+          theirs: [regular('z')],
+        };
+        await stopBoth(entries);
+        for (const dir of [pair.peer, pair.ours]) {
+          fileAt('a')(dir);
+          replacing('z', directoryHolding('z', 'u'))(dir);
+        }
+
+        // Act
+        const { expected, result } = await abortOnBoth();
+
+        // Assert
+        expect(expected).toEqual({ refused: true, localChanges: [], untracked: ['a'] });
+        expect(result).toEqual(expected);
+        expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a stop where a local change precedes an untracked add in path order', () => {
+    describe('When both tools abort it', () => {
+      it('Then each names only the first path, in its class', async () => {
+        // Arrange — t deletes z (abort re-adds it) and changes a.
+        const entries = {
+          base: [v1('a'), v1('z')],
+          main: [v1('a'), v1('z')],
+          theirs: [regular('a')],
+        };
+        await stopBoth(entries);
+        for (const dir of [pair.peer, pair.ours]) {
+          fileAt('z')(dir);
+          replacing('a', directoryHolding('a', 'u'))(dir);
+        }
+
+        // Act
+        const { expected, result } = await abortOnBoth();
+
+        // Assert
+        expect(expected).toEqual({ refused: true, localChanges: ['a'], untracked: [] });
+        expect(result).toEqual(expected);
+        expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
+      });
+    });
+  });
+
+  const UNMERGED_OCCUPANTS: ReadonlyArray<readonly [string, Occupant, Outcome]> = [
+    [
+      'a directory holding an untracked file',
+      replacing('keep', directoryHolding('keep', 'u')),
+      { refused: true, localChanges: [], untracked: ['keep'] },
+    ],
+    [
+      'a directory holding only an ignored file',
+      replacing('keep', ignoring('keep/ign', directoryHolding('keep', 'ign'))),
+      OK,
+    ],
+    ['a plain file', replacing('keep', fileAt('keep')), OK],
+    ['a symlink', replacing('keep', (dir) => symlinkSync('nowhere', path.join(dir, 'keep'))), OK],
+  ];
+
+  describe.each(UNMERGED_OCCUPANTS)(
+    'Given the unmerged keep replaced by %s',
+    (_label, occupant, pinned) => {
+      describe('When both tools abort it', () => {
+        it('Then the outcome and the kept merge state match git', async () => {
+          // Arrange
+          await stopBoth({ base: [], main: [], theirs: [] });
+          occupant(pair.peer);
+          occupant(pair.ours);
+
+          // Act
+          const { expected, result } = await abortOnBoth();
+
+          // Assert
+          expect(expected).toEqual(pinned);
+          expect(result).toEqual(expected);
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
+        });
+      });
+    },
+  );
+
+  describe.each(NESTED_OCCUPANTS)('Given the unmerged d/x beneath %s', (_label, occupant) => {
+    describe('When both tools abort it', () => {
+      it('Then d/x is restored as in git and the merge state is cleared', async () => {
+        // Arrange
+        await stopBoth(NESTED_CONFLICT);
+        occupant(pair.peer);
+        occupant(pair.ours);
+
+        // Act
+        const { expected, result } = await abortOnBoth();
+
+        // Assert
+        expect(expected).toEqual(OK);
+        expect(result).toEqual(expected);
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a gitlink modified upstream and deleted here, then its directory populated', () => {
+    describe('When both tools abort it', () => {
+      it('Then the directory is left untracked and the merge state is cleared as in git', async () => {
+        // Arrange
+        const bumped = '2222222222222222222222222222222222222222';
+        const entries = { base: [gitlink('sub')], main: [], theirs: [gitlink('sub', bumped)] };
+        for (const dir of [pair.peer, pair.ours]) {
+          buildStoppedMerge(dir, entries);
+          stopGitMerge(dir);
+          directoryHolding('sub', 'child')(dir);
+        }
+
+        // Act
+        const { expected, result } = await abortOnBoth();
+
+        // Assert
+        expect(expected).toEqual(OK);
+        expect(result).toEqual(expected);
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a merge stopped with --autostash, then a directory replacing the updated f', () => {
+    describe('When both tools abort it', () => {
+      it('Then the abort is refused, MERGE_AUTOSTASH is consumed and nothing is applied', async () => {
+        // Arrange
+        const entries = {
+          base: [v1('f'), v1('dirty')],
+          main: [v1('f'), v1('dirty')],
+          theirs: [regular('f'), v1('dirty')],
+        };
+        for (const dir of [pair.peer, pair.ours]) {
+          buildStoppedMerge(dir, entries);
+          writeFileSync(path.join(dir, 'dirty'), 'local\n');
+        }
+        stopGitMerge(pair.peer, '--autostash');
+        repo = await openRepository({ cwd: pair.ours });
+        await stopTsgitMerge(repo, { autostash: true });
+        for (const dir of [pair.peer, pair.ours]) {
+          replacing('f', directoryHolding('f', 'u'))(dir);
+        }
+
+        // Act
+        const { expected, result } = await abortOnBoth();
+
+        // Assert
+        expect(expected).toEqual({ refused: true, localChanges: ['f'], untracked: [] });
+        expect(result).toEqual(expected);
+        expect(existsSync(path.join(pair.peer, '.git', 'MERGE_AUTOSTASH'))).toBe(false);
+        expect(existsSync(path.join(pair.ours, '.git', 'MERGE_AUTOSTASH'))).toBe(false);
+        expect(gitState(pair.ours)).toEqual(gitState(pair.peer));
       });
     });
   });

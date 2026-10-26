@@ -66,6 +66,12 @@ type RevertResult =
   pre-sequence `HEAD` (with git's `reset: moving to <oid>` reflog). The sequencer
   is byte-faithful to git, so a tsgit-started range can be finished with
   `git revert --continue`, and vice-versa.
+- **`skip` and `abort` follow `reset --merge`.** A path whose index entry equals
+  the target keeps its occupant or local change; every other path is checked as an
+  unforced checkout is. A refusal is `WORKING_TREE_DIRTY` naming only the first
+  offending path in path order, and leaves the work tree, index, HEAD, `ORIG_HEAD`,
+  the operation's head file and `sequencer/` as they were. `ORIG_HEAD` is written
+  only after the reset succeeds.
 - **Merge commits.** Reverting a merge commit (≥2 parents) without a mainline
   refuses with `REVERT_MERGE_NO_MAINLINE`; in a range, earlier reverts are
   committed and the sequence stops at the merge (git-faithful partial-apply).
@@ -73,7 +79,9 @@ type RevertResult =
   (`NO_INITIAL_COMMIT`), staged changes (`WORKING_TREE_DIRTY`; the index must match HEAD, except a gitlink difference its submodule ignore mode hides),
   and an operation already in progress (`OPERATION_IN_PROGRESS`). Unstaged
   changes do not refuse, as in git: the merge's would-overwrite check guards
-  the paths it touches. `--no-commit` refuses only on unmerged entries.
+  the paths it touches, and that check also refuses an untracked file or
+  symlink standing in a leading path of a path the revert adds (`untracked`
+  names the obstructing component). `--no-commit` refuses only on unmerged entries.
 - **Index-cut commit.** The commit is cut from the index git leaves after the
   merge, so a staged change the pre-flight let through (a gitlink under
   `ignore = all`, a staged addition) rides into the reverted commit, and the

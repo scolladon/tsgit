@@ -3,6 +3,8 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { init } from '../../../../../src/application/commands/init.js';
 import { octopusMerge } from '../../../../../src/application/commands/internal/octopus-merge.js';
 import { flattenTree } from '../../../../../src/application/primitives/flatten-tree.js';
+import { hasObject } from '../../../../../src/application/primitives/has-object.js';
+import { hashBlob } from '../../../../../src/application/primitives/hash-blob.js';
 import { readTree } from '../../../../../src/application/primitives/read-tree.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
@@ -242,6 +244,56 @@ describe('octopusMerge', () => {
           expected: 'commit',
           actual: 'blob',
         });
+      });
+    });
+  });
+
+  describe('Given a merge the working tree refuses', () => {
+    describe('When the last head is merged', () => {
+      it('Then it is refused before the merged blob or the merged tree is written', async () => {
+        // Arrange
+        const base: Files = { f: ['1\n2\n3\n4\n5\n'] };
+        const { ctx, head, remotes } = await setup(
+          { f: ['1x\n2\n3\n4\n5\n'] },
+          { f: ['1\n2\n3\n4\n5x\n'] },
+          base,
+        );
+        const sut = octopusMerge;
+        const mergedBlob = await hashBlob(ctx, new TextEncoder().encode('1x\n2\n3\n4\n5x\n'));
+
+        // Act
+        const result = await sut(ctx, head, remotes, async () => false);
+
+        // Assert
+        expect(result).toEqual({ kind: 'refused' });
+        expect(await hasObject(ctx, mergedBlob)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a merge the working tree admits', () => {
+    describe('When the last head is merged', () => {
+      it('Then the admission sees the merged entries before they are written', async () => {
+        // Arrange
+        const base: Files = { f: ['1\n2\n3\n4\n5\n'] };
+        const { ctx, head, remotes } = await setup(
+          { f: ['1x\n2\n3\n4\n5\n'] },
+          { f: ['1\n2\n3\n4\n5x\n'] },
+          base,
+        );
+        const sut = octopusMerge;
+        const mergedBlob = await hashBlob(ctx, new TextEncoder().encode('1x\n2\n3\n4\n5x\n'));
+        let seen: ObjectId | undefined;
+
+        // Act
+        await sut(ctx, head, remotes, async (entries) => {
+          seen = entries.get('f' as FilePath)?.id;
+          return true;
+        });
+
+        // Assert
+        expect(seen).toBe(mergedBlob);
+        expect(await hasObject(ctx, mergedBlob)).toBe(true);
       });
     });
   });

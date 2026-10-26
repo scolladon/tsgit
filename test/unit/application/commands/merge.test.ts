@@ -7,8 +7,9 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { treeOf as commitTreeOf } from '../../../../src/application/commands/internal/history-rewrite.js';
+import { asMergeDirtyError } from '../../../../src/application/commands/internal/merge-dirty-error.js';
+import * as resetWorktreeMod from '../../../../src/application/commands/internal/reset-worktree.js';
 import {
-  asMergeDirtyError,
   buildConflictIndexEntries,
   type MergeRunInput,
   materialiseConflictBytes,
@@ -21,6 +22,7 @@ import {
 } from '../../../../src/application/commands/merge.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import * as stashMod from '../../../../src/application/commands/stash.js';
 import { tagCreate, tagDelete } from '../../../../src/application/commands/tag.js';
 import {
   createMergeResultWriter,
@@ -622,7 +624,7 @@ describe('merge', () => {
     'Given theirs deletes a/x, a was swapped for a symlink to real and the merge %s',
     (_title, conflicting) => {
       describe('When merge', () => {
-        it('Then it refuses with WORKING_TREE_DIRTY on a/x before any ref, index or work-tree write', async () => {
+        it('Then it refuses beyond the symbolic link on a/x before any ref, index or work-tree write', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await init(ctx);
@@ -660,9 +662,8 @@ describe('merge', () => {
 
           // Assert
           expect((error as TsgitError).data).toEqual({
-            code: 'WORKING_TREE_DIRTY',
-            localChanges: ['a/x'],
-            untracked: [],
+            code: 'PATHSPEC_BEYOND_SYMLINK',
+            path: 'a/x',
           });
           expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
@@ -2371,7 +2372,13 @@ describe('merge — updateRef CAS guard', () => {
   // Patch readUtf8 so the SECOND read of `refs/heads/main` (the updateRef
   // CAS read) returns a fabricated id, simulating a concurrent ref move.
   // resolveRef reads it once first; the CAS reads it again.
-  const patchStaleMainRef = (ctx: ReturnType<typeof createMemoryContext>): void => {
+  /** The reads of `main` the local-changes snapshot adds before the merge commit's own. */
+  const SNAPSHOT_HEAD_READS = 1;
+
+  const patchStaleMainRef = (
+    ctx: ReturnType<typeof createMemoryContext>,
+    readsBeforeStale = 1,
+  ): void => {
     const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
     const staleId = '1'.repeat(40);
     let mainReads = 0;
@@ -2379,7 +2386,7 @@ describe('merge — updateRef CAS guard', () => {
     (ctx.fs as { openWithNoFollow: typeof original }).openWithNoFollow = async (path, mode) => {
       if (path !== refPath) return original(path, mode);
       mainReads += 1;
-      if (mainReads > 1) await ctx.fs.writeUtf8(refPath, `${staleId}\n`);
+      if (mainReads > readsBeforeStale) await ctx.fs.writeUtf8(refPath, `${staleId}\n`);
       return original(path, mode);
     };
   };
@@ -2433,7 +2440,7 @@ describe('merge — updateRef CAS guard', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
         await add(ctx, ['c.txt']);
         await commit(ctx, { message: 'on-main', author });
-        patchStaleMainRef(ctx);
+        patchStaleMainRef(ctx, SNAPSHOT_HEAD_READS + 1);
 
         // Act
         let caught: unknown;
@@ -4657,6 +4664,7 @@ describe('merge — labels threading (slice 4)', () => {
 });
 
 describe('writeConflictToTree (direct)', () => {
+  const SUBMODULE_COMMIT = '2'.repeat(40) as ObjectId;
   const seedBlob = async (
     ctx: ReturnType<typeof createMemoryContext>,
     text: string,
@@ -4946,6 +4954,34 @@ describe('writeConflictToTree (direct)', () => {
         expect(data?.reason).toBe("'..' segment rejected");
         expect(data?.offset).toBe(NO_PARSER_OFFSET);
         expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a modify-delete conflict whose surviving side is a gitlink absent from the object store', () => {
+    describe('When writeConflictToTree runs', () => {
+      it.each([
+        {
+          label: 'theirs survives',
+          over: { theirId: SUBMODULE_COMMIT, theirMode: FILE_MODE.GITLINK },
+        },
+        {
+          label: 'ours survives',
+          over: { ourId: SUBMODULE_COMMIT, ourMode: FILE_MODE.GITLINK },
+        },
+      ])('Then an empty directory is left at the path when $label', async ({ over }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const conflict = conflictOf({ type: 'modify-delete', ...over });
+
+        // Act
+        await writeConflictToTree(ctx, conflict, await createMergeResultWriter(ctx, [], []));
+
+        // Assert
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+        expect(stat.isDirectory).toBe(true);
+        expect(await ctx.fs.readdir(`${ctx.layout.workDir}/p`)).toEqual([]);
       });
     });
   });
@@ -6163,7 +6199,7 @@ describe('merge — several heads (octopus)', () => {
 
   describe('Given a change staged on main', () => {
     describe('When merge is given two heads', () => {
-      it("Then octopus refuses the index that differs from HEAD, as git's diff-index does", async () => {
+      it("Then octopus fails on the index that differs from HEAD, as git's diff-index does", async () => {
         // Arrange
         const ctx = await seedOctopus();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s`, 's\n');
@@ -6177,9 +6213,8 @@ describe('merge — several heads (octopus)', () => {
 
         // Assert
         expect((caught as TsgitError).data).toEqual({
-          code: 'WORKING_TREE_DIRTY',
-          localChanges: ['s'],
-          untracked: [],
+          code: 'MERGE_STRATEGY_FAILED',
+          strategy: 'octopus',
         });
       });
     });
@@ -7832,6 +7867,721 @@ describe('merge — a distinct-types conflict validates each side with the mode 
         // Assert
         expect(result.kind).toBe('conflict');
         expect(await stagesOf(ctx)).toEqual(['gitmod:2', 'gitmod~1:3', 'readme.txt:0']);
+      });
+    });
+  });
+});
+
+describe('merge — snapshot of local changes before the strategies', () => {
+  const committer: AuthorIdentity = {
+    name: 'Bob',
+    email: 'bob@example.com',
+    timestamp: 1_700_000_100,
+    timezoneOffset: '+0000',
+  };
+
+  const put = (ctx: Context, path: string, content: string) =>
+    ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+  const commitPath = async (ctx: Context, path: string, content: string, message: string) => {
+    await put(ctx, path, content);
+    await add(ctx, [path]);
+    await commit(ctx, { message, author });
+  };
+
+  /** main and feature each add one file to a shared base; a.txt is then edited in the work tree. */
+  const divergedWithEdit = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await commitPath(ctx, 'a.txt', 'a\n', 'base');
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await commitPath(ctx, 'd.txt', 'd\n', 'on-feature');
+    await checkout(ctx, { rev: 'main' });
+    await commitPath(ctx, 'c.txt', 'c\n', 'on-main');
+    await put(ctx, 'a.txt', 'edited\n');
+    return ctx;
+  };
+
+  const spyOnSnapshot = () => vi.spyOn(stashMod, 'snapshotLocalChanges');
+
+  const snapshotOf = async (spy: ReturnType<typeof spyOnSnapshot>) =>
+    spy.mock.results[0]?.type === 'return' ? await spy.mock.results[0].value : 'not called';
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a trivially mergeable pair, every strategy allowing the trivial merge', () => {
+    describe('When merge commits', () => {
+      it('Then no snapshot is taken', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'feature', strategy: 'resolve', author });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(spy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the same pair', () => {
+    describe.each([
+      ['--no-commit', { commit: false }],
+      ['--squash', { squash: true }],
+    ])('When merge runs %s with resolve', (_label, extra) => {
+      it('Then the snapshot is taken', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', strategy: 'resolve', author, ...extra });
+
+        // Assert
+        expect(await snapshotOf(spy)).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+
+    describe('When merge runs with a strategy that refuses the trivial merge', () => {
+      it('Then the snapshot is taken', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(await snapshotOf(spy)).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+  });
+
+  describe('Given a clean work tree and a true merge', () => {
+    describe('When merge runs', () => {
+      it('Then the snapshot finds nothing to record', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        await put(ctx, 'a.txt', 'a\n');
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(await snapshotOf(spy)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a local edit and a true merge', () => {
+    describe('When merge runs', () => {
+      it('Then the snapshot exists before the first strategy starts', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const order: string[] = [];
+        const real = stashMod.snapshotLocalChanges;
+        vi.spyOn(stashMod, 'snapshotLocalChanges').mockImplementation(async (...args) => {
+          const id = await real(...args);
+          order.push('snapshot');
+          return id;
+        });
+        const reporter = { ...recordingProgress().reporter, start: () => order.push('strategies') };
+
+        // Act
+        await mergeRun(withProgress(ctx, reporter), { rev: 'feature', author });
+
+        // Assert
+        expect(order).toEqual(['snapshot', 'strategies']);
+      });
+
+      it('Then the merge author and committer sign both snapshot commits', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author, committer });
+
+        // Assert
+        const wip = await readObject(ctx, (await snapshotOf(spy)) as ObjectId);
+        if (wip.type !== 'commit') throw new Error('not a commit');
+        const index = await readObject(ctx, wip.data.parents[1] as ObjectId);
+        if (index.type !== 'commit') throw new Error('not a commit');
+        expect([wip.data.author, wip.data.committer]).toEqual([author, committer]);
+        expect([index.data.author, index.data.committer]).toEqual([author, committer]);
+      });
+    });
+  });
+
+  describe('Given a local edit and no identity anywhere', () => {
+    describe('When merge runs', () => {
+      it('Then git stash signs both snapshot commits instead of the merge refusing for want of an identity', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature' }).catch(() => undefined);
+
+        // Assert
+        const wip = await readObject(ctx, (await snapshotOf(spy)) as ObjectId);
+        if (wip.type !== 'commit') throw new Error('not a commit');
+        const index = await readObject(ctx, wip.data.parents[1] as ObjectId);
+        if (index.type !== 'commit') throw new Error('not a commit');
+        const stash = { name: 'git stash', email: 'git@stash' };
+        expect([wip.data.author, wip.data.committer]).toEqual([
+          expect.objectContaining(stash),
+          expect.objectContaining(stash),
+        ]);
+        expect(index.data.author).toEqual(expect.objectContaining(stash));
+      });
+
+      it('Then the fallback identity is stamped in whole seconds', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        const spy = spyOnSnapshot();
+        vi.spyOn(Date, 'now').mockReturnValue(1_700_000_123_999);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature' }).catch(() => undefined);
+
+        // Assert
+        const wip = await readObject(ctx, (await snapshotOf(spy)) as ObjectId);
+        if (wip.type !== 'commit') throw new Error('not a commit');
+        expect(wip.data.author).toEqual(
+          expect.objectContaining({ timestamp: 1_700_000_123, timezoneOffset: '+0000' }),
+        );
+      });
+    });
+  });
+
+  describe('Given a local edit and an octopus merge', () => {
+    describe('When merge runs', () => {
+      it('Then the snapshot is taken', async () => {
+        // Arrange
+        const ctx = await divergedWithEdit();
+        await checkout(ctx, { rev: 'feature' });
+        await branchCreate(ctx, { name: 'other' });
+        await checkout(ctx, { rev: 'other' });
+        await commitPath(ctx, 'e.txt', 'e\n', 'on-other');
+        await checkout(ctx, { rev: 'main' });
+        await put(ctx, 'a.txt', 'edited\n');
+        const spy = spyOnSnapshot();
+
+        // Act
+        await mergeRun(ctx, { rev: ['feature', 'other'], author });
+
+        // Assert
+        expect(await snapshotOf(spy)).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+  });
+});
+
+describe('merge — a staged change fails each strategy after the snapshot', () => {
+  const put = (ctx: Context, path: string, content: string) =>
+    ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+  const commitPath = async (ctx: Context, path: string, content: string, message: string) => {
+    await put(ctx, path, content);
+    await add(ctx, [path]);
+    await commit(ctx, { message, author });
+  };
+
+  /** main, t and t2 diverge from a shared base; `dirty` is then staged on main. */
+  const divergedWithStaged = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await commitPath(ctx, 'dirty', 'base\n', 'base');
+    for (const name of ['t', 't2']) {
+      await branchCreate(ctx, { name });
+      await checkout(ctx, { rev: name });
+      await commitPath(ctx, `${name}-file`, `${name}\n`, `on-${name}`);
+      await checkout(ctx, { rev: 'main' });
+    }
+    await commitPath(ctx, 'o-file', 'o\n', 'on-main');
+    await put(ctx, 'dirty', 'STAGED\n');
+    await add(ctx, ['dirty']);
+    return ctx;
+  };
+
+  const failureOf = async (ctx: Context, input: Partial<Parameters<typeof mergeRun>[1]>) => {
+    const caught = await mergeRun(ctx, { rev: 't', author, ...input } as Parameters<
+      typeof mergeRun
+    >[1]).catch((error: unknown) => error);
+    return (caught as TsgitError).data;
+  };
+
+  const spyOnSnapshot = () => vi.spyOn(stashMod, 'snapshotLocalChanges');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a staged change and a lone ort strategy', () => {
+    describe('When merge runs', () => {
+      it('Then the snapshot is taken and the merge refuses the staged path', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, {});
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['dirty'],
+          untracked: [],
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(await readIndex(ctx).then((i) => i.entries.some((e) => e.path === 'dirty'))).toBe(
+          true,
+        );
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/dirty`)).toBe('STAGED\n');
+      });
+    });
+
+    describe('When merge squashes', () => {
+      it('Then the snapshot is taken and the merge refuses the staged path', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { squash: true });
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['dirty'],
+          untracked: [],
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and the ours strategy', () => {
+    describe('When merge runs', () => {
+      it('Then the strategy fails after the snapshot', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { strategy: 'ours' });
+
+        // Assert
+        expect(data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'ours' });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and two heads', () => {
+    describe('When merge runs', () => {
+      it('Then the octopus strategy fails after the snapshot', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { rev: ['t', 't2'] });
+
+        // Assert
+        expect(data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'octopus' });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and resolve under --no-commit', () => {
+    describe('When merge runs', () => {
+      it('Then the strategy fails after the snapshot', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { strategy: 'resolve', commit: false });
+
+        // Assert
+        expect(data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'resolve' });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and several strategies', () => {
+    describe('When merge runs', () => {
+      it('Then no strategy handled the merge', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { strategy: ['ort', 'ours'] });
+
+        // Assert
+        expect(data).toEqual({
+          code: 'NO_MERGE_STRATEGY_HANDLED',
+          strategies: ['ort', 'ours'],
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a staged change and the trivial branch', () => {
+    describe('When merge commits with resolve', () => {
+      it('Then it refuses the staged path before any snapshot', async () => {
+        // Arrange
+        const ctx = await divergedWithStaged();
+        const spy = spyOnSnapshot();
+
+        // Act
+        const data = await failureOf(ctx, { strategy: 'resolve' });
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['dirty'],
+          untracked: [],
+        });
+        expect(spy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('merge — rewind and restore between strategies', () => {
+  const put = (ctx: Context, path: string, content: string) =>
+    ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+  const readWork = (ctx: Context, path: string) => ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`);
+
+  const commitPath = async (ctx: Context, path: string, content: string, message: string) => {
+    await put(ctx, path, content);
+    await add(ctx, [path]);
+    await commit(ctx, { message, author });
+  };
+
+  const NINE_LINES = '1\n2\n3\n4\n5\n6\n7\n8\n9\n';
+
+  /**
+   * `main` and `t` diverge; `t` rewrites `f`, and `keep` when `conflicting`. A `twoSided` pair
+   * edits `two` on both sides, so no in-index merge settles it.
+   */
+  const diverged = async ({ conflicting = false, twoSided = false } = {}): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await commitPath(ctx, 'f', 'v1\n', 'base-f');
+    await commitPath(ctx, 'two', NINE_LINES, 'base-two');
+    await commitPath(ctx, 'keep', 'k0\n', 'base-keep');
+    await commitPath(ctx, 'dirty', 'base\n', 'base-dirty');
+    await branchCreate(ctx, { name: 't' });
+    await checkout(ctx, { rev: 't' });
+    await commitPath(ctx, 'f', 'v2\n', 'on-t');
+    if (twoSided) await commitPath(ctx, 'two', NINE_LINES.replace('1\n', 'T\n'), 'on-t-two');
+    if (conflicting) await commitPath(ctx, 'keep', 'kT\n', 'on-t-keep');
+    await checkout(ctx, { rev: 'main' });
+    await commitPath(ctx, 'o-file', 'o\n', 'on-main');
+    if (twoSided) await commitPath(ctx, 'two', NINE_LINES.replace('9\n', 'O\n'), 'on-main-two');
+    if (conflicting) await commitPath(ctx, 'keep', 'kM\n', 'on-main-keep');
+    return ctx;
+  };
+
+  /** A directory holding an untracked file stands where `f` is tracked, and `dirty` is edited. */
+  const directoryOverTrackedF = async (ctx: Context): Promise<void> => {
+    await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+    await put(ctx, 'f/u', 'untracked\n');
+    await put(ctx, 'dirty', 'LOCAL\n');
+  };
+
+  const refusalOf = async (run: () => Promise<unknown>): Promise<TsgitError> => {
+    try {
+      await run();
+    } catch (error) {
+      return error as TsgitError;
+    }
+    throw new Error('expected a refusal');
+  };
+
+  const spyOnRewind = () => vi.spyOn(resetWorktreeMod, 'hardResetWorktreeToCommit');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a directory over a tracked path and ort named twice', () => {
+    describe('When merge runs', () => {
+      it('Then the first ort refuses, the rewind removes the directory and the second merges', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 't', strategy: ['ort', 'ort'], author });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(await readWork(ctx, 'f')).toBe('v2\n');
+        expect(await readWork(ctx, 'dirty')).toBe('LOCAL\n');
+      });
+    });
+  });
+
+  describe('Given a directory over a tracked path and a single ort', () => {
+    describe('When merge is refused', () => {
+      it('Then it names the path as a local change and restores the tree as it rewound it', async () => {
+        // Arrange
+        const ctx = await diverged();
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author }));
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
+        expect(await readWork(ctx, 'f')).toBe('v1\n');
+        expect(await readWork(ctx, 'dirty')).toBe('LOCAL\n');
+      });
+    });
+  });
+
+  describe('Given a single strategy that merges cleanly', () => {
+    describe('When merge runs', () => {
+      it('Then nothing is rewound', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        await mergeRun(ctx, { rev: 't', author });
+
+        // Assert
+        expect(rewind).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a first strategy that fails and a second that merges', () => {
+    describe('When merge runs', () => {
+      it('Then the tree is rewound to HEAD once, before the second', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const rewind = spyOnRewind();
+
+        // Act
+        await mergeRun(ctx, { rev: 't', strategy: ['octopus', 'ort'], author });
+
+        // Assert
+        expect(rewind.mock.calls.map(([, target]) => target)).toEqual([head]);
+      });
+    });
+  });
+
+  describe('Given the best conflicting strategy is the last one tried', () => {
+    describe('When merge runs', () => {
+      it('Then only the rewind before it happens', async () => {
+        // Arrange
+        const ctx = await diverged({ conflicting: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 't', strategy: ['octopus', 'ort'], author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(rewind).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given the best conflicting strategy was not the last one tried', () => {
+    describe('When merge runs', () => {
+      it('Then the tree is rewound again before the conflict is written', async () => {
+        // Arrange
+        const ctx = await diverged({ conflicting: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 't', strategy: ['ort', 'octopus'], author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(rewind).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given the only strategy is not handled', () => {
+    describe('When merge runs with octopus', () => {
+      it('Then it is rewound and fails with that strategy', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        const refusal = await refusalOf(() =>
+          mergeRun(ctx, { rev: 't', strategy: 'octopus', author }),
+        );
+
+        // Assert
+        expect(refusal.data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'octopus' });
+        expect(rewind).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('When merge runs with resolve and a strategy option', () => {
+      it('Then it fails with resolve, not as a dirty tree', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          mergeRun(ctx, { rev: 't', strategy: 'resolve', strategyOptions: ['theirs'], author }),
+        );
+
+        // Assert
+        expect(refusal.data).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'resolve' });
+      });
+    });
+  });
+
+  describe('Given several strategies and none handles the merge', () => {
+    describe('When merge runs', () => {
+      it('Then it is rewound and fails naming every strategy', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        const rewind = spyOnRewind();
+
+        // Act
+        const refusal = await refusalOf(() =>
+          mergeRun(ctx, { rev: 't', strategy: ['octopus', 'octopus'], author }),
+        );
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'NO_MERGE_STRATEGY_HANDLED',
+          strategies: ['octopus', 'octopus'],
+        });
+        expect(rewind).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given a conflicting merge whose clean path is blocked by a directory', () => {
+    describe('When merge is refused', () => {
+      it('Then it names the path as a local change and restores the tree', async () => {
+        // Arrange
+        const ctx = await diverged({ conflicting: true });
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author }));
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
+        expect(await readWork(ctx, 'f')).toBe('v1\n');
+      });
+    });
+  });
+
+  describe.each([
+    ['--no-commit', { commit: false }],
+    ['--squash', { squash: true }],
+  ])('Given %s over a directory at a tracked path', (_label, extra) => {
+    describe('When merge is refused', () => {
+      it('Then it names the path as a local change and restores the tree', async () => {
+        // Arrange
+        const ctx = await diverged({ twoSided: true });
+        await directoryOverTrackedF(ctx);
+
+        // Act
+        const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author, ...extra }));
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
+        expect(await readWork(ctx, 'f')).toBe('v1\n');
+        expect(await readWork(ctx, 'dirty')).toBe('LOCAL\n');
+      });
+    });
+  });
+
+  describe('Given an ignored file where the merge adds a path beneath it and conflicts elsewhere', () => {
+    describe('When merge runs', () => {
+      it('Then the conflict is written and the ignored file gives way to the directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitPath(ctx, 'keep', 'k0\n', 'base');
+        await branchCreate(ctx, { name: 't' });
+        await checkout(ctx, { rev: 't' });
+        await commitPath(ctx, 'keep', 'kT\n', 'on-t-keep');
+        await commitPath(ctx, 'd/x', 'v2\n', 'on-t-add');
+        await checkout(ctx, { rev: 'main' });
+        await commitPath(ctx, 'keep', 'kM\n', 'on-main-keep');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'd\n');
+        await put(ctx, 'd', 'ignored\n');
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 't', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await readWork(ctx, 'd/x')).toBe('v2\n');
+      });
+    });
+  });
+
+  describe('Given a fast-forward over a directory at a tracked path', () => {
+    describe('When merge is refused', () => {
+      it('Then nothing is rewound and the directory stays', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitPath(ctx, 'f', 'v1\n', 'base');
+        await branchCreate(ctx, { name: 't' });
+        await checkout(ctx, { rev: 't' });
+        await commitPath(ctx, 'f', 'v2\n', 'on-t');
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await put(ctx, 'f/u', 'untracked\n');
+        const rewind = spyOnRewind();
+
+        // Act
+        const refusal = await refusalOf(() => mergeRun(ctx, { rev: 't', author }));
+
+        // Assert
+        expect(refusal.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
+        expect(rewind).not.toHaveBeenCalled();
+        expect(await readWork(ctx, 'f/u')).toBe('untracked\n');
       });
     });
   });

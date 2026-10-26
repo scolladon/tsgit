@@ -86,6 +86,7 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   symbolic link refuses `PATHSPEC_BEYOND_SYMLINK { path }` (git's `'d/f' is beyond
   a symbolic link`), with `includeUntracked` too; nothing is created. The push
   classifies every tracked path against one shared leading-path scan.
+- **The work-tree (W) tree follows git's path set.** Every stage-0 index entry plus every HEAD entry absent from the index is considered. A directory at a tracked non-gitlink path keeps the index entry. An index entry absent from HEAD whose work file is missing or unreachable keeps the index entry and is never refused as beyond a symlink. A HEAD entry absent from the index is recorded from the work tree when a file or symlink stands there (mode from its stat), is left out when a directory stands there or nothing does, and refuses `PATHSPEC_BEYOND_SYMLINK` when it lies beyond a symlink. The reset that follows is `reset --hard`: it displaces occupants as [`reset`](reset.md#behaviour) does and, at a deleted index-only path that is now a directory, keeps the directory and logs `unable to unlink '<path>'`.
 - **Push is pooled.** `push` fans its work-tree comparisons and hashing through
   the `ioBound` pool and compares against the stat cache; a configured clean
   driver still hears the paths in index order.

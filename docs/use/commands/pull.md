@@ -102,6 +102,8 @@ created at it with the reflog `initial pull`. The result is
 
 - files already staged are kept; a staged or untracked file the head carries
   differently refuses with `WORKING_TREE_DIRTY` and the branch stays unborn;
+- an **ignored** file or directory standing where the head writes refuses too, as it
+  does in git (`overwrite_ignore = 0`), where `checkout` would overwrite it;
 - several fetched heads refuse with `PULL_EMPTY_HEAD_MULTIPLE_BRANCHES` (git's
   `Cannot merge multiple branches into empty head.`) after the fetch;
 - a rebasing pull with anything in the index refuses with `PULL_REBASE_UNBORN_INDEX`

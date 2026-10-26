@@ -37,6 +37,7 @@ interface ResetResult {
 - **Stat-cache donor strategy** (mixed): index entries whose `id + mode` match the prior index preserve their stat fields, so the next `status()` stays fast.
 - **Index extensions.** The index rewrite keeps git's extensions: `TREE` is invalidated along the changed paths, `mixed` keeps `REUC` (unless a conflicted path is resolved) and `hard` drops it, and `UNTR` is kept while the tracked set is unchanged; unknown extensions are dropped.
 - **Untracked files outside the target tree** are left alone in `hard` mode — only tracked paths are rewritten.
+- **`hard` displaces an occupant as git does.** A regular file or symlink in a leading path of a target entry is replaced by a directory, and a directory at the path of an added or updated entry (not a gitlink) is removed with its content. A tracked path that is now a directory is left in place when the target deletes it, with git's `unable to unlink '<path>'` warning logged; the index drops the entry either way.
 
 ## Examples
 

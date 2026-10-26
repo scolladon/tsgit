@@ -337,6 +337,67 @@ describe('materializeTree', () => {
     });
   });
 
+  describe('Given a scoped restore of d/x over an index tracking a file d', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the colliding entry d is dropped and only d/x remains', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idX = await writeBlob(ctx, 'x');
+        const idD = await writeBlob(ctx, 'd');
+        const treeId = await writeTree(ctx, [
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'd' as FilePath,
+            await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, idX)]),
+          ),
+        ]);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry('d', idD)] };
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: index,
+          paths: new Set(['d/x' as FilePath]),
+          force: true,
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => [e.path, e.id])).toEqual([['d/x', idX]]);
+      });
+    });
+  });
+
+  describe('Given a scoped restore of a file d over an index tracking d/x and d/y', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the entries beneath d are dropped and only d remains', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idD = await writeBlob(ctx, 'd');
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'd' as FilePath, idD)]);
+        const index: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [
+            makeIndexEntry('d/x', await writeBlob(ctx, 'x')),
+            makeIndexEntry('d/y', await writeBlob(ctx, 'y')),
+          ],
+        };
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: index,
+          paths: new Set(['d' as FilePath]),
+          force: true,
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => [e.path, e.id])).toEqual([['d', idD]]);
+      });
+    });
+  });
+
   describe('Given a scoped restore with a stage-0 index entry out of scope', () => {
     describe('When materializeTree runs', () => {
       it('Then that entry IS preserved in newIndexEntries', async () => {
@@ -1705,6 +1766,350 @@ describe('materializeTree carrying staged changes (headTree)', () => {
 
         // Assert
         expect(await readWork(ctx, 'c')).toBe('same');
+      });
+    });
+  });
+});
+
+describe('materializeTree unmerged paths', () => {
+  describe('Given a conflicted path the target has', () => {
+    describe('When materialised without force and with unmergedPaths reset', () => {
+      it('Then the work file takes the target content and the index holds one stage-0 entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const workDir = ctx.layout.workDir;
+        const theirs = await writeBlob(ctx, 'theirs');
+        const target = await writeBlob(ctx, 'target');
+        const targetTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'c' as FilePath, target),
+        ]);
+        await ctx.fs.write(`${workDir}/c`, new TextEncoder().encode('<<<<<<< markers'));
+        const currentIndex: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [makeIndexEntry('c', theirs, 2), makeIndexEntry('c', theirs, 3)],
+        };
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        expect(new TextDecoder().decode(await ctx.fs.read(`${workDir}/c`))).toBe('target');
+        expect(result.newIndexEntries.map((e) => [e.path, e.flags.stage, e.id])).toEqual([
+          ['c', 0, target],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a conflicted path the target lacks', () => {
+    describe('When materialised without force and with unmergedPaths reset', () => {
+      it('Then the work file is deleted and the index holds no entry for it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const workDir = ctx.layout.workDir;
+        const ours = await writeBlob(ctx, 'ours');
+        const kept = await writeBlob(ctx, 'kept');
+        const targetTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'k' as FilePath, kept),
+        ]);
+        await ctx.fs.write(`${workDir}/c`, new TextEncoder().encode('<<<<<<< markers'));
+        const currentIndex: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [makeIndexEntry('c', ours, 2), makeIndexEntry('c', ours, 3)],
+        };
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        expect(await ctx.fs.exists(`${workDir}/c`)).toBe(false);
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['k']);
+      });
+    });
+  });
+});
+
+describe('materializeTree conflicted-path projection and option forwarding', () => {
+  type SeededContext = Awaited<ReturnType<typeof buildSeededContext>>;
+
+  const flatTree = (
+    ctx: SeededContext,
+    files: Readonly<Record<string, ObjectId>>,
+  ): Promise<ObjectId> =>
+    writeTree(
+      ctx,
+      Object.entries(files).map(([name, id]) => treeEntry(FILE_MODE.REGULAR, name as FilePath, id)),
+    );
+
+  const writeWork = async (ctx: SeededContext, name: string, body: string): Promise<void> => {
+    await ctx.fs.write(`${ctx.layout.workDir}/${name}`, new TextEncoder().encode(body));
+  };
+
+  const outcomeOf = async (attempt: Promise<unknown>): Promise<unknown> => {
+    try {
+      await attempt;
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  const indexOf = (...entries: IndexEntry[]): GitIndex => ({ ...EMPTY_INDEX, entries });
+
+  describe('Given a restored path whose name no leading directory could share', () => {
+    describe('When materializeTree restores only that path', () => {
+      it('Then an unrelated out-of-scope entry is preserved', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const restored = await writeBlob(ctx, 'restored');
+        const other = await writeBlob(ctx, 'other');
+        const targetTree = await flatTree(ctx, { 'Stryker was here': restored });
+        const currentIndex = indexOf(makeIndexEntry('other', other));
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree,
+          currentIndex,
+          paths: new Set(['Stryker was here' as FilePath]),
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['Stryker was here', 'other']);
+      });
+    });
+  });
+
+  describe('Given a merged path beside a conflicted one', () => {
+    describe('When materialised with unmergedPaths reset', () => {
+      it('Then only the conflicted path is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const a = await writeBlob(ctx, 'A');
+        const c = await writeBlob(ctx, 'C');
+        const targetTree = await flatTree(ctx, { a, c });
+        await writeWork(ctx, 'a', 'A');
+        const currentIndex = indexOf(
+          makeIndexEntry('a', a),
+          makeIndexEntry('c', c, 2),
+          makeIndexEntry('c', c, 3),
+        );
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        expect(result.written).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a path recorded both merged and at a conflict stage', () => {
+    describe('When materialised with unmergedPaths reset', () => {
+      it('Then the path stays merged and nothing is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const c = await writeBlob(ctx, 'C');
+        const stale = await writeBlob(ctx, 'stale');
+        const targetTree = await flatTree(ctx, { c });
+        await writeWork(ctx, 'c', 'C');
+        const currentIndex = indexOf(makeIndexEntry('c', c), makeIndexEntry('c', stale, 2));
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        expect(result.written).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a conflicted directory path whose stages are a gitlink then a file', () => {
+    describe('When materialised with unmergedPaths reset and the target lacks the path', () => {
+      it('Then the lowest stage decides and the untracked file inside is left standing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const kept = await writeBlob(ctx, 'kept');
+        const targetTree = await flatTree(ctx, { k: kept });
+        await writeWork(ctx, 'c/u', 'mine');
+        const currentIndex = indexOf(
+          { ...makeIndexEntry('c', id, 1), mode: FILE_MODE.GITLINK },
+          makeIndexEntry('c', id, 3),
+        );
+        const sut = materializeTree;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' }),
+        );
+
+        // Assert
+        expect(outcome).toBeUndefined();
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/c/u`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a conflicted raw-byte path the target lacks', () => {
+    describe('When materialised with unmergedPaths reset', () => {
+      it('Then the literal U+FFFD file is not touched', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const kept = await writeBlob(ctx, 'kept');
+        const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const targetTree = await flatTree(ctx, { k: kept });
+        await writeWork(ctx, '�.txt', 'literal');
+        const currentIndex = indexOf({ ...makeIndexEntry('�.txt', id, 2), pathBytes: raw });
+        const sut = materializeTree;
+
+        // Act
+        await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/�.txt`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a conflicted raw-byte path the target holds', () => {
+    describe('When materialised with unmergedPaths reset', () => {
+      it('Then the raw entry comes back and no literal U+FFFD file is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const old = await writeBlob(ctx, 'old');
+        const next = await writeBlob(ctx, 'next');
+        const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const targetTree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, raw, next)]);
+        const currentIndex = indexOf({ ...makeIndexEntry('�.txt', old, 2), pathBytes: raw });
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => [e.id, e.pathBytes])).toEqual([[next, raw]]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/�.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a conflicted B and an added b that differ only by case', () => {
+    describe('When materialised with unmergedPaths reset', () => {
+      it('Then the apply writes them in path order', async () => {
+        // Arrange
+        const progress = recordingProgress();
+        const ctx = { ...(await buildSeededContext()), progress: progress.reporter };
+        const id = await writeBlob(ctx, 'x');
+        const targetTree = await flatTree(ctx, { B: id, b: id });
+        const currentIndex = indexOf(makeIndexEntry('B', id, 2));
+        const sut = materializeTree;
+
+        // Act
+        await sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' });
+
+        // Assert
+        const texts = progress.events.flatMap((e) => (e.kind === 'update' ? [e.text] : []));
+        expect(texts).toEqual(['B', 'b']);
+      });
+    });
+  });
+
+  describe('Given a conflicted directory path holding an untracked file', () => {
+    describe('When materialised with unmergedPaths reset', () => {
+      it('Then it refuses the path as untracked', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const kept = await writeBlob(ctx, 'kept');
+        const targetTree = await flatTree(ctx, { k: kept });
+        await writeWork(ctx, 'd/u', 'mine');
+        const currentIndex = indexOf(makeIndexEntry('d', id, 2));
+        const sut = materializeTree;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, { targetTree, currentIndex, unmergedPaths: 'reset' }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
+      });
+    });
+  });
+
+  describe('Given a conflicted path with an untracked occupant', () => {
+    describe('When materialised without unmergedPaths', () => {
+      it('Then the path stays an add and refuses the occupant', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const c = await writeBlob(ctx, 'C');
+        const targetTree = await flatTree(ctx, { c });
+        await writeWork(ctx, 'c', 'mine');
+        const currentIndex = indexOf(makeIndexEntry('c', c, 2));
+        const sut = materializeTree;
+
+        // Act
+        const outcome = await outcomeOf(sut(ctx, { targetTree, currentIndex }));
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['c'] });
+      });
+    });
+  });
+
+  describe('Given an ignored file where an added file is due', () => {
+    describe('When materialised with ignoredOccupants protect', () => {
+      it('Then it refuses the occupant as untracked and keeps it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const f = await writeBlob(ctx, 'F');
+        const ignore = await writeBlob(ctx, 'f\n');
+        const targetTree = await flatTree(ctx, { f, '.gitignore': ignore });
+        await writeWork(ctx, '.gitignore', 'f\n');
+        await writeWork(ctx, 'f', 'mine');
+        const currentIndex = indexOf(makeIndexEntry('.gitignore', ignore));
+        const sut = materializeTree;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, { targetTree, currentIndex, ignoredOccupants: 'protect' }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['f'] });
+      });
+    });
+  });
+
+  describe('Given an untracked file where an added file is due', () => {
+    describe('When materialised forced with untrackedOccupants protect', () => {
+      it('Then it refuses the occupant as untracked and keeps it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const f = await writeBlob(ctx, 'F');
+        const targetTree = await flatTree(ctx, { f });
+        await writeWork(ctx, 'f', 'mine');
+        const sut = materializeTree;
+
+        // Act
+        const outcome = await outcomeOf(
+          sut(ctx, {
+            targetTree,
+            currentIndex: EMPTY_INDEX,
+            force: true,
+            untrackedOccupants: 'protect',
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['f'] });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/f`)).toBe(true);
       });
     });
   });
