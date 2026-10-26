@@ -117,10 +117,10 @@ describe('upgradeStaleNoops', () => {
         };
 
         // Act
-        const sut = await upgradeStaleNoops(ctx, [added], indexOf([]), ctx.layout.workDir ?? '');
+        const result = await upgradeStaleNoops(ctx, [added], indexOf([]), ctx.layout.workDir ?? '');
 
         // Assert
-        expect(sut).toEqual([added]);
+        expect(result).toEqual([added]);
       });
     });
   });

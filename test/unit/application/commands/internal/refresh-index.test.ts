@@ -143,12 +143,14 @@ describe('Given a touched clean tracked file', () => {
       await touchF(ctx);
 
       // Act
-      const sut = await refreshedIndex(ctx, read);
+      const result = await refreshedIndex(ctx, read);
 
       // Assert
-      expect(entryFIn(sut.currentIndex).mtimeSeconds).toBeGreaterThan(entryFIn(read).mtimeSeconds);
-      expect(sut.refreshed.map((e) => e.path)).toEqual(['f']);
-      expect(sut.verified('f' as FilePath)).toBe(true);
+      expect(entryFIn(result.currentIndex).mtimeSeconds).toBeGreaterThan(
+        entryFIn(read).mtimeSeconds,
+      );
+      expect(result.refreshed.map((e) => e.path)).toEqual(['f']);
+      expect(result.verified('f' as FilePath)).toBe(true);
       expect(await entryF(ctx)).toEqual(entryFIn(read));
     });
   });
@@ -168,11 +170,11 @@ describe('Given a tracked file whose stat stays stale in the refreshed index', (
       await drift(ctx);
 
       // Act
-      const sut = await refreshedIndex(ctx, read);
+      const result = await refreshedIndex(ctx, read);
 
       // Assert
-      expect(entryFIn(sut.currentIndex)).toEqual(entryFIn(read));
-      expect(sut.refreshed).toEqual([]);
+      expect(entryFIn(result.currentIndex)).toEqual(entryFIn(read));
+      expect(result.refreshed).toEqual([]);
     });
   });
 });

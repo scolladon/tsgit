@@ -233,7 +233,7 @@ describe('materializeTree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('edited'));
 
         // Act
-        const sut = await materializeTree(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           force: true,
@@ -241,8 +241,8 @@ describe('materializeTree', () => {
         });
 
         // Assert
-        expect(sut.written).toBe(1);
-        expect(sut.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([true]);
+        expect(result.written).toBe(1);
+        expect(result.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([true]);
       });
     });
   });
@@ -265,7 +265,7 @@ describe('materializeTree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('old'));
 
         // Act
-        const sut = await materializeTree(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           force: true,
@@ -273,7 +273,7 @@ describe('materializeTree', () => {
         });
 
         // Assert
-        expect(sut.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([false]);
+        expect(result.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([false]);
       });
     });
   });
@@ -295,7 +295,7 @@ describe('materializeTree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('committed'));
 
         // Act
-        const sut = await materializeTree(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           force: true,
@@ -303,7 +303,7 @@ describe('materializeTree', () => {
         });
 
         // Assert
-        expect(sut.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([false]);
+        expect(result.newIndexEntries.map((e) => e.flags.assumeValid)).toEqual([false]);
       });
     });
   });

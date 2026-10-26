@@ -116,44 +116,37 @@ describe.skipIf(!GIT_AVAILABLE)('stash push opening step interop', () => {
     repo = await openRepository({ cwd: pair.ours });
   };
 
-  const refuseAsGit = async (
-    shape: (typeof UNMERGED_SHAPES)[keyof typeof UNMERGED_SHAPES],
-    variant: (typeof PUSH_VARIANTS)[keyof typeof PUSH_VARIANTS],
-  ): Promise<void> => {
-    // Arrange
-    const tracked = [v1('f'), regular('g', 'g1\n')];
-    for (const dir of [pair.peer, pair.ours]) {
-      runGit(['init', '-q', '-b', 'main', dir]);
-      buildHistory(dir, tracked, tracked);
-      settleIndex(dir);
-      shape.plant(dir);
-      fileWith('u', 'untracked\n')(dir);
-    }
-    await open();
-    const peerBefore = writtenState(pair.peer);
-    const oursBefore = writtenState(pair.ours);
-    const sut = repo.stash.push;
-
-    // Act
-    const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q', ...variant.git], {
-      env: COMMIT_ENV,
-    });
-    const data = await dataOf(() => sut(variant.opts));
-
-    // Assert
-    expect(git.exitCode).toBe(GIT_REFUSAL_EXIT);
-    expect(git.stderr).toBe(COULD_NOT_WRITE_INDEX);
-    expect(needsMerge(data.paths ?? [])).toBe(git.stdout);
-    expect(writtenState(pair.peer)).toEqual(peerBefore);
-    expect(writtenState(pair.ours)).toEqual(oursBefore);
-  };
-
   describe.each(Object.entries(UNMERGED_SHAPES))('Given an index holding %s', (_name, shape) => {
     describe.each(Object.entries(PUSH_VARIANTS))(
       'When git and tsgit run %s',
       (_variant, variant) => {
         it('Then both refuse and write nothing', async () => {
-          await refuseAsGit(shape, variant);
+          // Arrange
+          const tracked = [v1('f'), regular('g', 'g1\n')];
+          for (const dir of [pair.peer, pair.ours]) {
+            runGit(['init', '-q', '-b', 'main', dir]);
+            buildHistory(dir, tracked, tracked);
+            settleIndex(dir);
+            shape.plant(dir);
+            fileWith('u', 'untracked\n')(dir);
+          }
+          await open();
+          const peerBefore = writtenState(pair.peer);
+          const oursBefore = writtenState(pair.ours);
+          const sut = repo.stash.push;
+
+          // Act
+          const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q', ...variant.git], {
+            env: COMMIT_ENV,
+          });
+          const data = await dataOf(() => sut(variant.opts));
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_REFUSAL_EXIT);
+          expect(git.stderr).toBe(COULD_NOT_WRITE_INDEX);
+          expect(needsMerge(data.paths ?? [])).toBe(git.stdout);
+          expect(writtenState(pair.peer)).toEqual(peerBefore);
+          expect(writtenState(pair.ours)).toEqual(oursBefore);
         });
       },
     );

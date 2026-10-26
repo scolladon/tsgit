@@ -1789,11 +1789,12 @@ describe('racyContentMatcher', () => {
       it('Then the content matches', async () => {
         // Arrange
         const { ctx, entry } = await seedFile('a.txt', 'one\n');
-        const sut = racyContentMatcher(ctx);
+        const sut = racyContentMatcher;
+        const matcher = sut(ctx);
         const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
 
         // Act
-        const result = await sut(entry, work(ctx, 'a.txt'), stat);
+        const result = await matcher(entry, work(ctx, 'a.txt'), stat);
 
         // Assert
         expect(result).toBe(true);
@@ -1807,11 +1808,12 @@ describe('racyContentMatcher', () => {
         // Arrange
         const { ctx, entry } = await seedFile('a.txt', 'one\n');
         await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'two\n');
-        const sut = racyContentMatcher(ctx);
+        const sut = racyContentMatcher;
+        const matcher = sut(ctx);
         const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
 
         // Act
-        const result = await sut(entry, work(ctx, 'a.txt'), stat);
+        const result = await matcher(entry, work(ctx, 'a.txt'), stat);
 
         // Assert
         expect(result).toBe(false);
@@ -1824,14 +1826,15 @@ describe('racyContentMatcher', () => {
       it('Then the attribute sources are read once', async () => {
         // Arrange
         const { ctx, entry } = await seedFile('a.txt', 'one\n');
-        const sut = racyContentMatcher(ctx);
+        const sut = racyContentMatcher;
+        const matcher = sut(ctx);
         const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
         const readSpy = vi.spyOn(ctx.fs, 'lstatIfReachable');
-        await sut(entry, work(ctx, 'a.txt'), stat);
+        await matcher(entry, work(ctx, 'a.txt'), stat);
         const afterFirst = readSpy.mock.calls.filter(([p]) => p.endsWith('info/attributes')).length;
 
         // Act
-        await sut(entry, work(ctx, 'a.txt'), stat);
+        await matcher(entry, work(ctx, 'a.txt'), stat);
 
         // Assert
         const afterSecond = readSpy.mock.calls.filter(([p]) =>

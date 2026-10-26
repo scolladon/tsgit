@@ -66,10 +66,10 @@ describe('checkout path restore from the index', () => {
         const before = await readIndex(ctx);
 
         // Act
-        const sut = await failureOf(checkout(ctx, { paths: ['f', 'keep'] }));
+        const result = await failureOf(checkout(ctx, { paths: ['f', 'keep'] }));
 
         // Assert
-        expect(sut).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['f'] });
+        expect(result).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['f'] });
         expect((await readIndex(ctx)).entries).toEqual(before.entries);
         expect(runner.calls).toHaveLength(seeded);
       });
@@ -110,10 +110,10 @@ describe('checkout path restore from the index', () => {
         const { ctx } = await seed({ f: EVERY_STAGE });
 
         // Act
-        const sut = await failureOf(checkout(ctx, { paths: ['nosuch', 'f'] }));
+        const result = await failureOf(checkout(ctx, { paths: ['nosuch', 'f'] }));
 
         // Assert
-        expect(sut).toMatchObject({ code: 'PATHSPEC_NO_MATCH', pattern: 'nosuch' });
+        expect(result).toMatchObject({ code: 'PATHSPEC_NO_MATCH', pattern: 'nosuch' });
       });
     });
   });
@@ -125,10 +125,10 @@ describe('checkout path restore from the index', () => {
         const { ctx } = await seed({ f: [2, 3], g: [2, 3] });
 
         // Act
-        const sut = await failureOf(checkout(ctx, { paths: ['.'] }));
+        const result = await failureOf(checkout(ctx, { paths: ['.'] }));
 
         // Assert
-        expect(sut).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 2, paths: ['f', 'g'] });
+        expect(result).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 2, paths: ['f', 'g'] });
       });
     });
   });

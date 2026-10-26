@@ -40,10 +40,15 @@ describe('checkout of a bare HEAD spelling', () => {
       const before = await reflogMessages(ctx);
 
       // Act
-      const sut = await checkout(ctx, { rev });
+      const result = await checkout(ctx, { rev });
 
       // Assert
-      expect(sut).toEqual({ branch: 'refs/heads/main', id: tip, detached: false, changedPaths: 0 });
+      expect(result).toEqual({
+        branch: 'refs/heads/main',
+        id: tip,
+        detached: false,
+        changedPaths: 0,
+      });
       expect(await readHeadRaw(ctx)).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
       expect(await reflogMessages(ctx)).toEqual(before);
     });
@@ -57,10 +62,10 @@ describe('checkout of a bare HEAD spelling', () => {
       const before = await reflogMessages(ctx);
 
       // Act
-      const sut = await checkout(ctx, { rev: 'HEAD' });
+      const result = await checkout(ctx, { rev: 'HEAD' });
 
       // Assert
-      expect(sut).toEqual({ branch: undefined, id: tip, detached: true, changedPaths: 0 });
+      expect(result).toEqual({ branch: undefined, id: tip, detached: true, changedPaths: 0 });
       expect(await readHeadRaw(ctx)).toEqual({ kind: 'direct', id: tip });
       expect(await reflogMessages(ctx)).toEqual(before);
     });
@@ -72,10 +77,10 @@ describe('checkout of a bare HEAD spelling', () => {
       const { ctx, tip } = await seedMain();
 
       // Act
-      const sut = await checkout(ctx, { rev: 'HEAD', detach: true });
+      const result = await checkout(ctx, { rev: 'HEAD', detach: true });
 
       // Assert
-      expect(sut.detached).toBe(true);
+      expect(result.detached).toBe(true);
       expect(await readHeadRaw(ctx)).toEqual({ kind: 'direct', id: tip });
       expect((await reflogMessages(ctx)).at(-1)).toBe('checkout: moving from main to HEAD');
     });
@@ -87,10 +92,10 @@ describe('checkout of a bare HEAD spelling', () => {
       const { ctx } = await seedMain();
 
       // Act
-      const sut = await checkout(ctx, { rev: 'HEAD', createBranch: { name: 'nb' } });
+      const result = await checkout(ctx, { rev: 'HEAD', createBranch: { name: 'nb' } });
 
       // Assert
-      expect(sut.branch).toBe('refs/heads/nb');
+      expect(result.branch).toBe('refs/heads/nb');
       expect((await reflogMessages(ctx)).at(-1)).toBe('checkout: moving from main to nb');
     });
   });
@@ -101,10 +106,10 @@ describe('checkout of a bare HEAD spelling', () => {
       const { ctx, tip } = await seedMain();
 
       // Act
-      const sut = await checkout(ctx, { rev: 'HEAD~0' });
+      const result = await checkout(ctx, { rev: 'HEAD~0' });
 
       // Assert
-      expect(sut.detached).toBe(true);
+      expect(result.detached).toBe(true);
       expect(await readHeadRaw(ctx)).toEqual({ kind: 'direct', id: tip });
     });
   });

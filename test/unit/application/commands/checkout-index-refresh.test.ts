@@ -55,11 +55,11 @@ describe('checkout of the current branch', () => {
         vi.setSystemTime(T0 + 2 * LATER_MS);
 
         // Act
-        const sut = await checkout(ctx, { rev: 'main' });
+        const result = await checkout(ctx, { rev: 'main' });
 
         // Assert
         const after = await entryF(ctx);
-        expect(sut.changedPaths).toBe(0);
+        expect(result.changedPaths).toBe(0);
         expect(after.mtimeSeconds).toBeGreaterThan(before.mtimeSeconds);
         expect(after.id).toBe(before.id);
       });
@@ -76,10 +76,10 @@ describe('checkout of the current branch', () => {
         vi.setSystemTime(T0 + 2 * LATER_MS);
 
         // Act
-        const sut = await checkout(ctx, { rev: 'main', force: true });
+        const result = await checkout(ctx, { rev: 'main', force: true });
 
         // Assert
-        expect(sut.changedPaths).toBe(1);
+        expect(result.changedPaths).toBe(1);
       });
     });
   });
@@ -106,10 +106,10 @@ describe('checkout of the current branch', () => {
         const before = await ctx.fs.read(indexPath);
 
         // Act
-        const sut = await checkout(ctx, { rev: 'side' }).catch((err: unknown) => err);
+        const result = await checkout(ctx, { rev: 'side' }).catch((err: unknown) => err);
 
         // Assert
-        expect(sut).toMatchObject({
+        expect(result).toMatchObject({
           data: { code: 'CHECKOUT_OVERWRITE_DIRTY', localChanges: ['g'] },
         });
         expect(await ctx.fs.read(indexPath)).toEqual(before);
