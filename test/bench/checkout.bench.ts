@@ -100,6 +100,38 @@ await tieredScenario(
   },
 );
 
+await tieredScenario(
+  MULTI_TIERS,
+  'When checkout() forces HEAD on a clean tree, Then measure tsgit',
+  async (fixture) => {
+    const { repo, scratch } = await openFixtureCopy(fixture);
+    const teardown = async (): Promise<void> => {
+      scratch.disposeSync();
+      await repo.dispose();
+    };
+    const sut = async (): Promise<void> => {
+      await repo.checkout({ rev: 'HEAD', force: true });
+    };
+    return { sut, teardown };
+  },
+);
+
+await tieredScenario(
+  MULTI_TIERS,
+  'When reset() hard-resets HEAD on a clean tree, Then measure tsgit',
+  async (fixture) => {
+    const { repo, scratch } = await openFixtureCopy(fixture);
+    const teardown = async (): Promise<void> => {
+      scratch.disposeSync();
+      await repo.dispose();
+    };
+    const sut = async (): Promise<void> => {
+      await repo.reset({ mode: 'hard', rev: 'HEAD' });
+    };
+    return { sut, teardown };
+  },
+);
+
 const POOL_SIZE = 12;
 const FIXED_ITERATIONS = { warmup: 2, measured: 10 } as const;
 

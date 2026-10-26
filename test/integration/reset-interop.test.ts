@@ -11,7 +11,6 @@
  *   unique:         reset porcelain HEAD+index+worktree matches canonical git reset
  *   interopSurface: reset
  */
-import { rmSync } from 'node:fs';
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -30,36 +29,12 @@ import {
   tryRunGitWithExit,
 } from './interop-helpers.js';
 import {
-  assumingUnchanged,
   buildHistory,
-  chmodAt,
-  copiedBehindLink,
-  danglingLinkAt,
-  directoryHolding,
-  emptyDirectoryAt,
-  type FileIdentity,
-  fileAt,
-  fileWith,
-  flagListing,
-  gitlink,
-  indexState,
-  link1,
-  linkAt,
-  modeListing,
-  movedBehindLink,
-  type Occupant,
+  observe,
   regular,
-  replacing,
-  rewrittenPaths,
   settleIndex,
-  skipWorktreeAt,
-  staleEntries,
   statSnapshot,
-  type TreeEntry,
-  touchedAt,
-  unmergedAbsentAt,
-  unmergedAt,
-  v1,
+  WORK_TREE_SHAPES,
 } from './occupant-displacement-fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -330,69 +305,7 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
     });
   });
 
-  const stagedAt =
-    (rel: string, content: string): Occupant =>
-    (dir) => {
-      fileWith(rel, content)(dir);
-      runGit(['-C', dir, 'add', rel]);
-    };
-
-  interface WorkTreeShape {
-    readonly tracked: ReadonlyArray<TreeEntry>;
-    readonly plant: Occupant;
-  }
-
-  const shapes: Readonly<Record<string, WorkTreeShape>> = {
-    C: { tracked: [v1('f')], plant: () => undefined },
-    E: { tracked: [v1('f')], plant: fileWith('f', 'edited\n') },
-    T: { tracked: [v1('f')], plant: touchedAt('f') },
-    M: { tracked: [v1('f')], plant: chmodAt('f') },
-    Dw: { tracked: [v1('f')], plant: (dir) => rmSync(path.join(dir, 'f')) },
-    AU: { tracked: [v1('f')], plant: assumingUnchanged('f', fileWith('f', 'edited\n')) },
-    SW: { tracked: [v1('f')], plant: skipWorktreeAt('f', fileWith('f', 'edited\n')) },
-    S3a: { tracked: [v1('a/payload')], plant: replacing('a/payload', danglingLinkAt('a')) },
-    S3g: { tracked: [v1('a/payload')], plant: copiedBehindLink('a', 'held') },
-    S3i: { tracked: [v1('a/payload')], plant: movedBehindLink('a', 'held') },
-    S1: { tracked: [v1('d/x')], plant: replacing('d/x', fileAt('d')) },
-    S2: { tracked: [v1('f')], plant: replacing('f', directoryHolding('f', 'u')) },
-    S2e: { tracked: [v1('f')], plant: replacing('f', emptyDirectoryAt('f')) },
-    S3b: { tracked: [v1('f')], plant: replacing('f', danglingLinkAt('f')) },
-    LF: { tracked: [v1('f'), v1('g')], plant: linkAt('f', 'g') },
-    S3f: { tracked: [link1('l')], plant: replacing('l', fileWith('l', 't-v1')) },
-    S3c: { tracked: [link1('l')], plant: replacing('l', directoryHolding('l', 'u')) },
-    S3d: { tracked: [link1('d/l')], plant: replacing('d/l', fileAt('d')) },
-    LR: { tracked: [link1('l')], plant: linkAt('l', 'elsewhere') },
-    GL: { tracked: [gitlink('s')], plant: () => undefined },
-    GLf: { tracked: [gitlink('s')], plant: replacing('s', fileAt('s')) },
-    ST: { tracked: [v1('f')], plant: stagedAt('f', 'staged\n') },
-    SA: { tracked: [v1('f')], plant: stagedAt('n', 'new\n') },
-    SD: { tracked: [v1('f')], plant: (dir) => void runGit(['-C', dir, 'rm', '-q', 'f']) },
-    SDk: {
-      tracked: [v1('f')],
-      plant: (dir) => void runGit(['-C', dir, 'rm', '-q', '--cached', 'f']),
-    },
-    U: { tracked: [v1('f')], plant: fileWith('u', 'untracked\n') },
-    UM: { tracked: [v1('f')], plant: unmergedAt('f') },
-    UMn: { tracked: [v1('f')], plant: unmergedAbsentAt('n') },
-  };
-
-  interface Observed {
-    readonly work: string[];
-    readonly index: string[];
-    readonly flags: string;
-    readonly stale: string[];
-    readonly rewritten: string[];
-  }
-
-  const observe = (dir: string, before: ReadonlyMap<string, FileIdentity>): Observed => ({
-    work: modeListing(dir),
-    index: indexState(dir),
-    flags: flagListing(dir),
-    stale: staleEntries(dir),
-    rewritten: rewrittenPaths(before, statSnapshot(dir)),
-  });
-
-  describe.each(Object.entries(shapes))(
+  describe.each(Object.entries(WORK_TREE_SHAPES))(
     'Given the work tree shape %s over a settled index',
     (_name, shape) => {
       describe('When git and tsgit reset --hard HEAD', () => {

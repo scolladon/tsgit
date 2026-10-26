@@ -245,6 +245,56 @@ const headTreeOption = async (
   return unborn ? {} : { headTree: (await readTree(ctx, oldOid)).id };
 };
 
+/** git's `reset_tree`: a forced switch rewrites every stale entry and drops a conflict the target lacks. */
+const FORCED_RESET = { forceRewriteAll: true, unmergedPaths: 'reset' } as const;
+
+interface SwitchRequest {
+  readonly opts: CheckoutSwitchOptions;
+  readonly targetTree: ObjectId;
+  readonly branchName: string;
+  readonly oid: ObjectId;
+  readonly oldOid: ObjectId;
+  readonly matcher: Awaited<ReturnType<typeof loadSparseMatcher>>;
+}
+
+/**
+ * Acquire the index lock BEFORE reading the index. Wrapping the entire
+ * read-materialise-commit sequence in the lock closes the TOCTOU window
+ * where a concurrent index writer could otherwise stale the donor map
+ * between readIndex and lock.commit.
+ */
+const materializeSwitch = async (
+  ctx: Context,
+  request: SwitchRequest,
+): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
+  const { opts, matcher } = request;
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const currentIndex = await readIndex(ctx);
+    // git's `merge_working_tree`: only a forced switch may discard a conflict.
+    if (opts.force !== true) rejectUnmergedIndex(currentIndex.entries);
+    const result = await materializeTree(ctx, {
+      targetTree: request.targetTree,
+      currentIndex,
+      force: opts.force ?? false,
+      ...(opts.force === true ? FORCED_RESET : {}),
+      checkoutMetadata: await checkoutMetadataFor(ctx, request.branchName, request.oid),
+      ...(await headTreeOption(ctx, opts, currentIndex, request.oldOid)),
+      // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
+      ...(matcher !== undefined ? { sparse: matcher } : {}),
+    });
+    // Commit the index unconditionally. A no-op switch re-writes byte-identical
+    // bytes (harmless). Critically, a *sparse* switch can change excluded
+    // entries' ids — a skip-worktree file that differs between branches —
+    // while `written`/`deleted` are both 0; guarding the commit on those
+    // counts would leave a stale index that the next commit serialises wrong.
+    await lock.commit(result.newIndexEntries, 'replace');
+    return result;
+  } finally {
+    await lock.release();
+  }
+};
+
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const priorHead = await readHeadRaw(ctx);
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
@@ -272,34 +322,14 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   // `undefined` ⇒ sparse inactive — the materialize call stays as-is.
   const matcher = await loadSparseMatcher(ctx);
 
-  // Acquire the index lock BEFORE reading the index. Wrapping the entire
-  // read-materialise-commit sequence in the lock closes the TOCTOU window
-  // where a concurrent index writer could otherwise stale the donor map
-  // between readIndex and lock.commit. Matches the prior / 13.3 pattern.
-  const lock = await acquireIndexLock(ctx);
-  let materializeResult: Awaited<ReturnType<typeof materializeTree>>;
-  try {
-    const currentIndex = await readIndex(ctx);
-    // git's `merge_working_tree`: only a forced switch may discard a conflict.
-    if (opts.force !== true) rejectUnmergedIndex(currentIndex.entries);
-    materializeResult = await materializeTree(ctx, {
-      targetTree: target.id,
-      currentIndex,
-      force: opts.force ?? false,
-      checkoutMetadata: await checkoutMetadataFor(ctx, branchName, oid),
-      ...(await headTreeOption(ctx, opts, currentIndex, oldOid)),
-      // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
-      ...(matcher !== undefined ? { sparse: matcher } : {}),
-    });
-    // Commit the index unconditionally. A no-op switch re-writes byte-identical
-    // bytes (harmless). Critically, a *sparse* switch can change excluded
-    // entries' ids — a skip-worktree file that differs between branches —
-    // while `written`/`deleted` are both 0; guarding the commit on those
-    // counts would leave a stale index that the next commit serialises wrong.
-    await lock.commit(materializeResult.newIndexEntries, 'replace');
-  } finally {
-    await lock.release();
-  }
+  const materializeResult = await materializeSwitch(ctx, {
+    opts,
+    targetTree: target.id,
+    branchName,
+    oid,
+    oldOid,
+    matcher,
+  });
 
   // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
   const created = await createRequestedBranch(ctx, opts, arg);

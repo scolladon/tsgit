@@ -200,6 +200,35 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a worktree symlink a to an outside directory, a populated index and a tree holding only a/payload', () => {
+      describe('When both tools force-checkout HEAD', () => {
+        it('Then a is a real directory holding payload and the outside directory stays empty, matching git', async () => {
+          // Arrange
+          const sides = [
+            { dir: pair.peer, outside: outsides.peer },
+            { dir: pair.ours, outside: outsides.ours },
+          ];
+          for (const { dir, outside } of sides) {
+            commitTree(dir, [payload('a/payload')]);
+            symlinkSync(outside, path.join(dir, 'a'));
+          }
+          repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          runGit(['-C', pair.peer, 'checkout', '-q', '-f', 'HEAD']);
+          await repo.checkout({ rev: 'HEAD', force: true });
+
+          // Assert
+          for (const { dir, outside } of sides) {
+            expect(lstatSync(path.join(dir, 'a')).isDirectory()).toBe(true);
+            expect(readFileSync(path.join(dir, 'a', 'payload'), 'utf8')).toBe(PAYLOAD);
+            expect(readdirSync(outside)).toEqual([]);
+          }
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        });
+      });
+    });
+
     describe.skipIf(!CASE_INSENSITIVE)(
       'Given a tree holding a symlink A to an outside directory and a/payload, on a case-insensitive filesystem',
       () => {
