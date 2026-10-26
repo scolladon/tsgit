@@ -86,7 +86,7 @@ describe('Given a tracked file rewritten with the same bytes later', () => {
 
 describe('Given nothing drifted', () => {
   describe('When the index is refreshed', () => {
-    it('Then the index file is not rewritten', async () => {
+    it('Then the index file is rewritten with the same bytes as git does', async () => {
       // Arrange
       const ctx = await committedRepo();
       vi.setSystemTime(T0 + LATER_MS);
@@ -100,7 +100,7 @@ describe('Given nothing drifted', () => {
 
       // Assert
       expect(await ctx.fs.read(indexPath)).toEqual(bytes);
-      expect((await ctx.fs.stat(indexPath)).mtimeMs).toBe(mtime);
+      expect((await ctx.fs.stat(indexPath)).mtimeMs).toBeGreaterThan(mtime);
     });
   });
 });

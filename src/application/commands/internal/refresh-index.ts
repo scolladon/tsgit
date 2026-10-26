@@ -28,16 +28,18 @@ export const refreshedIndex = async (ctx: Context, index: GitIndex): Promise<Ref
   };
 };
 
-/** git's `refresh_and_write_cache`: refuses an unmerged index, refreshes stat-only drift, writes only when something refreshed. */
+/**
+ * git's `refresh_and_write_cache`: refreshes stage-0 stat drift, rewrites the index unconditionally,
+ * and only then refuses an unmerged one — the refusal leaves the refreshed index on disk.
+ */
 export const refreshAndWriteIndex = (ctx: Context): Promise<void> =>
   withFilterProcessPool(ctx, async () => {
     const lock = await acquireIndexLock(ctx);
     try {
       const index = await readIndex(ctx);
-      rejectUnmergedIndex(index.entries);
-      const { currentIndex, refreshed, verified } = await refreshedIndex(ctx, index);
-      if (refreshed.length === 0) return;
+      const { currentIndex, verified } = await refreshedIndex(ctx, index);
       await lock.commit(currentIndex.entries, 'update', { verified });
+      rejectUnmergedIndex(index.entries);
     } finally {
       await lock.release();
     }

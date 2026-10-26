@@ -17,6 +17,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import * as path from 'node:path';
@@ -41,6 +42,7 @@ import {
   observe,
   regular,
   settleIndex,
+  staleEntries,
   statSnapshot,
   unmergedAbsentAt,
   unmergedAt,
@@ -182,6 +184,48 @@ describe.skipIf(!GIT_AVAILABLE)('stash push opening step interop', () => {
         expect(git.stderr).toBe(COULD_NOT_WRITE_INDEX);
         expect(needsMerge(data.paths ?? [])).toBe(git.stdout);
         expect(writtenState(pair.ours)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a merge left conflicted on f and a stat-drifted clean entry', () => {
+    describe('When git and tsgit stash push', () => {
+      it('Then both refresh the clean entry and write the index before refusing', async () => {
+        // Arrange
+        const DRIFTED = new Date('2025-01-01T00:00:00Z');
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          const base = commitOn(dir, [KEEP, regular('f', 'base\n'), regular('clean', 'c\n')]);
+          const side = commitOn(dir, [KEEP, regular('f', 'side\n'), regular('clean', 'c\n')], base);
+          const main = commitOn(dir, [KEEP, regular('f', 'main\n'), regular('clean', 'c\n')], base);
+          runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
+          runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+          runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+          tryRunGitWithExit(['-C', dir, 'merge', '-q', 'side'], { env: COMMIT_ENV });
+          utimesSync(path.join(dir, 'clean'), DRIFTED, DRIFTED);
+        }
+        await open();
+        const cachedMtime = (dir: string): string =>
+          runGit(['-C', dir, 'ls-files', '--debug', 'clean'])
+            .split('\n')
+            .filter((line) => line.includes('mtime:'))
+            .join('');
+        const staleBefore = staleEntries(pair.ours);
+        const sut = repo.stash.push;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q'], {
+          env: COMMIT_ENV,
+        });
+        const data = await dataOf(() => sut({}));
+
+        // Assert
+        expect(staleBefore).toContain('clean');
+        expect(git.exitCode).toBe(GIT_REFUSAL_EXIT);
+        expect(needsMerge(data.paths ?? [])).toBe(git.stdout);
+        expect(staleEntries(pair.peer)).not.toContain('clean');
+        expect(staleEntries(pair.ours)).not.toContain('clean');
+        expect(cachedMtime(pair.ours)).toBe(cachedMtime(pair.peer));
       });
     });
   });
