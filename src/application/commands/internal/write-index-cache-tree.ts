@@ -15,10 +15,8 @@ import {
   updateCacheTree,
 } from '../../primitives/internal/update-cache-tree.js';
 import { readIndex } from '../../primitives/read-index.js';
+import { QUIET_SCAN } from './refresh-index.js';
 import { rejectUnmergedIndex } from './unmerged-index.js';
-
-/** git's commit refresh is `REFRESH_QUIET`: nothing reports per-entry progress. */
-const QUIET_SCAN = (): void => undefined;
 
 type Scan = Awaited<ReturnType<typeof scanTrackedEntries>>;
 

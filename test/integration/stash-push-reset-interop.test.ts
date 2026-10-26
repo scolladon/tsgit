@@ -1,0 +1,214 @@
+/**
+ * Cross-tool interop — `stash push` opening step. Real git refreshes the index and refuses an
+ * unmerged one before it writes any object, ref or reflog; tsgit is driven through the same
+ * fixtures and compared with git's own outcome. Refusal text is rebuilt from tsgit's structured
+ * fields.
+ *
+ * @proves
+ *   surface:        repo.stash.push
+ *   bucket:         cross-tool-interop
+ *   unique:         stash push refreshes the index and refuses an unmerged one as canonical git does
+ *   interopSurface: stash
+ */
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { TsgitError } from '../../src/domain/error.js';
+import { openRepository } from '../../src/index.node.js';
+import type { Repository } from '../../src/repository.js';
+import {
+  GIT_AVAILABLE,
+  makePeerPair,
+  type PeerPair,
+  runGit,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
+import {
+  buildHistory,
+  COMMIT_ENV,
+  commitOn,
+  fileWith,
+  KEEP,
+  listing,
+  observe,
+  regular,
+  settleIndex,
+  statSnapshot,
+  unmergedAbsentAt,
+  unmergedAt,
+  v1,
+  WORK_TREE_SHAPES,
+} from './occupant-displacement-fixtures.js';
+
+const GIT_REFUSAL_EXIT = 1;
+const COULD_NOT_WRITE_INDEX = 'error: could not write index\n';
+
+const looseObjectCount = (dir: string): number =>
+  readdirSync(path.join(dir, '.git', 'objects'), { withFileTypes: true })
+    .filter((fan) => fan.isDirectory() && fan.name.length === 2)
+    .reduce((sum, fan) => sum + readdirSync(path.join(dir, '.git', 'objects', fan.name)).length, 0);
+
+const reflogOf = (dir: string, ref: string): string => {
+  const file = path.join(dir, '.git', 'logs', ref);
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+};
+
+interface Written {
+  readonly objects: number;
+  readonly stashRef: boolean;
+  readonly index: string;
+  readonly work: string[];
+  readonly headLog: string;
+  readonly mainLog: string;
+}
+
+const writtenState = (dir: string): Written => ({
+  objects: looseObjectCount(dir),
+  stashRef: existsSync(path.join(dir, '.git', 'refs', 'stash')),
+  index: readFileSync(path.join(dir, '.git', 'index')).toString('hex'),
+  work: listing(dir),
+  headLog: reflogOf(dir, 'HEAD'),
+  mainLog: reflogOf(dir, 'refs/heads/main'),
+});
+
+const dataOf = async (run: () => Promise<unknown>): Promise<{ readonly paths?: string[] }> =>
+  run().then(
+    () => ({}),
+    (error: unknown) => (error as TsgitError).data as { readonly paths?: string[] },
+  );
+
+const needsMerge = (paths: ReadonlyArray<string>): string =>
+  paths.map((rel) => `${rel}: needs merge\n`).join('');
+
+const UNMERGED_SHAPES = {
+  'stages 1-3 of f': { rel: 'f', plant: unmergedAt('f') },
+  'stages 2-3 of n': { rel: 'n', plant: unmergedAbsentAt('n') },
+};
+
+const PUSH_VARIANTS = {
+  'a plain push': { git: [], opts: {} },
+  'an include-untracked push': { git: ['-u'], opts: { includeUntracked: true } },
+  'a keep-index push': { git: ['--keep-index'], opts: { keepIndex: true } },
+};
+
+describe.skipIf(!GIT_AVAILABLE)('stash push opening step interop', () => {
+  let pair: PeerPair;
+  let repo: Repository;
+
+  beforeEach(async () => {
+    pair = await makePeerPair('stash-push-reset');
+  });
+
+  afterEach(async () => {
+    await repo?.dispose();
+    await pair.dispose();
+  });
+
+  const open = async (): Promise<void> => {
+    repo = await openRepository({ cwd: pair.ours });
+  };
+
+  const refuseAsGit = async (
+    shape: (typeof UNMERGED_SHAPES)[keyof typeof UNMERGED_SHAPES],
+    variant: (typeof PUSH_VARIANTS)[keyof typeof PUSH_VARIANTS],
+  ): Promise<void> => {
+    // Arrange
+    const tracked = [v1('f'), regular('g', 'g1\n')];
+    for (const dir of [pair.peer, pair.ours]) {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      buildHistory(dir, tracked, tracked);
+      settleIndex(dir);
+      shape.plant(dir);
+      fileWith('u', 'untracked\n')(dir);
+    }
+    await open();
+    const peerBefore = writtenState(pair.peer);
+    const oursBefore = writtenState(pair.ours);
+    const sut = repo.stash.push;
+
+    // Act
+    const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q', ...variant.git], {
+      env: COMMIT_ENV,
+    });
+    const data = await dataOf(() => sut(variant.opts));
+
+    // Assert
+    expect(git.exitCode).toBe(GIT_REFUSAL_EXIT);
+    expect(git.stderr).toBe(COULD_NOT_WRITE_INDEX);
+    expect(needsMerge(data.paths ?? [])).toBe(git.stdout);
+    expect(writtenState(pair.peer)).toEqual(peerBefore);
+    expect(writtenState(pair.ours)).toEqual(oursBefore);
+  };
+
+  describe.each(Object.entries(UNMERGED_SHAPES))('Given an index holding %s', (_name, shape) => {
+    describe.each(Object.entries(PUSH_VARIANTS))(
+      'When git and tsgit run %s',
+      (_variant, variant) => {
+        it('Then both refuse and write nothing', async () => {
+          await refuseAsGit(shape, variant);
+        });
+      },
+    );
+  });
+
+  describe('Given a merge left conflicted on f', () => {
+    describe('When git and tsgit stash push', () => {
+      it('Then both refuse on the unmerged index and write nothing', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          const base = commitOn(dir, [KEEP, regular('f', 'base\n')]);
+          const side = commitOn(dir, [KEEP, regular('f', 'side\n')], base);
+          const main = commitOn(dir, [KEEP, regular('f', 'main\n')], base);
+          runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
+          runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+          runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+          const merged = tryRunGitWithExit(['-C', dir, 'merge', '-q', 'side'], { env: COMMIT_ENV });
+          expect(merged.exitCode).toBe(GIT_REFUSAL_EXIT);
+        }
+        await open();
+        const before = writtenState(pair.ours);
+        const sut = repo.stash.push;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q'], {
+          env: COMMIT_ENV,
+        });
+        const data = await dataOf(() => sut({}));
+
+        // Assert
+        expect(git.exitCode).toBe(GIT_REFUSAL_EXIT);
+        expect(git.stderr).toBe(COULD_NOT_WRITE_INDEX);
+        expect(needsMerge(data.paths ?? [])).toBe(git.stdout);
+        expect(writtenState(pair.ours)).toEqual(before);
+      });
+    });
+  });
+
+  describe.each(['C', 'E', 'T'])('Given the work tree shape %s over a settled index', (name) => {
+    describe('When git and tsgit stash push', () => {
+      it('Then the work tree, the index, its flags and the stale and rewritten sets match git', async () => {
+        // Arrange
+        const shape = WORK_TREE_SHAPES[name];
+        if (shape === undefined) throw new Error(`unknown shape ${name}`);
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          buildHistory(dir, shape.tracked, shape.tracked);
+          settleIndex(dir);
+          shape.plant(dir);
+        }
+        await open();
+        const peerBefore = statSnapshot(pair.peer);
+        const oursBefore = statSnapshot(pair.ours);
+        expect(statSync(path.join(pair.ours, 'keep')).isFile()).toBe(true);
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+        await repo.stash.push({});
+
+        // Assert
+        expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+      });
+    });
+  });
+});

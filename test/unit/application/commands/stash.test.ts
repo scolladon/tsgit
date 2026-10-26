@@ -183,7 +183,7 @@ const setupRepoWithSubmodule = async (checkedOut: ObjectId): Promise<Context> =>
 describe('stash push', () => {
   describe('Given three committed files sharing a directory', () => {
     describe('When push runs', () => {
-      it('Then the directory is lstat-ed once per pass: the classification, the restore, the index refresh', async () => {
+      it('Then the directory is lstat-ed once per pass: the opening refresh, the classification, the restore, the index refresh', async () => {
         // Arrange — the clock stands still, so the index and the files share one second and
         // every entry is racily clean: the refresh pass always runs.
         vi.useFakeTimers({ toFake: ['Date'] });
@@ -202,12 +202,12 @@ describe('stash push', () => {
         }
 
         // Assert
-        // Three passes walk the tree, each with its own leading-path memo: the classification of
-        // the tracked entries, the restore that writes HEAD back, and the racy-clean comparison
-        // that refreshes the index; none lstat-s the directory more than once.
+        // Four passes walk the tree, each with its own leading-path memo: the opening refresh,
+        // the classification of the tracked entries, the restore that writes HEAD back, and the
+        // racy-clean comparison that refreshes the index; none lstat-s the directory more than once.
         expect(
           lstat.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/d`),
-        ).toHaveLength(3);
+        ).toHaveLength(4);
       });
     });
   });

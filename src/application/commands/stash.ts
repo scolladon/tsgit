@@ -115,6 +115,7 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
+import { refreshAndWriteIndex } from './internal/refresh-index.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import {
   indexMessage,
@@ -572,6 +573,7 @@ export const stashPush = async (
   opts: StashPushInput = {},
 ): Promise<StashPushResult> => {
   const workDir = await gateStash(ctx, 'stash');
+  await refreshAndWriteIndex(ctx);
   await assertNoPendingOperation(ctx);
   return stashAndReset(ctx, workDir, opts, (w) => pushStashRef(ctx, w.stash, w.message));
 };
