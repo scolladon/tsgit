@@ -67,7 +67,7 @@ import {
   isAttributesPath,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
-import { upgradeStaleNoops } from './internal/stale-entries.js';
+import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
 
@@ -302,8 +302,9 @@ const rewriteStaleNoops = async (
   changeset: Changeset,
   index: GitIndex,
   workdir: string,
+  rule: StaleRule,
 ): Promise<Changeset> => {
-  const entries = await upgradeStaleNoops(ctx, changeset.entries, index, workdir);
+  const entries = await upgradeStaleNoops(ctx, changeset.entries, index, workdir, rule);
   return { entries, stats: tallyStats(entries) };
 };
 
@@ -481,9 +482,16 @@ const stagedOutsideTarget = (
   });
 };
 
-export const materializeTree = async (
+export const materializeTree = (
   ctx: Context,
   options: MaterializeTreeOpts,
+): Promise<MaterializeTreeResult> => materializeTreeJudging(ctx, options, 'oneway');
+
+/** `materializeTree` with the routine that judges a stale entry named; not part of the public surface. */
+export const materializeTreeJudging = async (
+  ctx: Context,
+  options: MaterializeTreeOpts,
+  staleRule: StaleRule,
 ): Promise<MaterializeTreeResult> => {
   const fullTarget = await collectTargetEntries(ctx, options.targetTree);
   const { opts, allTarget, carried } = await carryHeadAgreement(ctx, options, fullTarget);
@@ -502,7 +510,7 @@ export const materializeTree = async (
   const workdir = requireWorkTree(ctx, 'materializeTree');
   const changeset =
     opts.forceRewriteAll === true
-      ? await rewriteStaleNoops(ctx, rawChangeset, plan.indexForDiff, workdir)
+      ? await rewriteStaleNoops(ctx, rawChangeset, plan.indexForDiff, workdir, staleRule)
       : rawChangeset;
 
   const result = await applyChangesetWithAttributes(

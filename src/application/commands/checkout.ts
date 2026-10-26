@@ -31,7 +31,7 @@ import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import type { HeadState } from '../primitives/internal/repo-state.js';
 import type { IsVerified } from '../primitives/internal/smudge-racily-clean.js';
-import { materializeTree } from '../primitives/materialize-tree.js';
+import { materializeTree, materializeTreeJudging } from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { indexPath } from '../primitives/path-layout.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -561,16 +561,20 @@ const materializePathRestoreFromIndex = async (
   pathSet: ReadonlySet<FilePath>,
 ): Promise<MaterializeResult> => {
   const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
-  const result = await materializeTree(ctx, {
-    targetTree,
-    currentIndex,
-    force: true,
-    // The target tree is synthesised FROM the index, so every entry would
-    // classify `noop`; the flag lets the stale pass rewrite the matched
-    // entries whose work file no longer agrees with the index.
-    forceRewriteAll: true,
-    paths: pathSet,
-  });
+  const result = await materializeTreeJudging(
+    ctx,
+    {
+      targetTree,
+      currentIndex,
+      force: true,
+      // The target tree is synthesised FROM the index, so every entry would
+      // classify `noop`; the flag lets the stale pass rewrite the matched
+      // entries whose work file no longer agrees with the index.
+      forceRewriteAll: true,
+      paths: pathSet,
+    },
+    'checkoutEntry',
+  );
   await lock.commit(result.newIndexEntries, 'update');
   return result;
 };
@@ -582,16 +586,20 @@ const materializePathRestoreLocked = async (
   source: PathSource,
   pathSet: ReadonlySet<FilePath>,
 ): Promise<MaterializeResult> => {
-  const result = await materializeTree(ctx, {
-    targetTree: source.tree,
-    currentIndex,
-    force: true,
-    checkoutMetadata: source.metadata,
-    // A matched entry whose work file is stale or differs from the source
-    // is rewritten even when the index already records the source content.
-    forceRewriteAll: true,
-    paths: pathSet,
-  });
+  const result = await materializeTreeJudging(
+    ctx,
+    {
+      targetTree: source.tree,
+      currentIndex,
+      force: true,
+      checkoutMetadata: source.metadata,
+      // A matched entry whose work file is stale or differs from the source
+      // is rewritten even when the index already records the source content.
+      forceRewriteAll: true,
+      paths: pathSet,
+    },
+    'checkoutEntry',
+  );
   // The commit stays unconditional: git writes the index after a restore
   // whether or not an entry was rewritten, and `result.deleted` is always 0.
   await lock.commit(result.newIndexEntries, 'update');

@@ -298,6 +298,31 @@ describe('upgradeStaleNoops', () => {
     });
   });
 
+  describe('Given an up-to-date file reached through a leading symlink and the entry-checkout rule', () => {
+    describe('When the entry is judged', () => {
+      it('Then it becomes an update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(workOf(ctx, 'held'));
+        const seeded = await seed(ctx, 'held/x', 'one\n');
+        await ctx.fs.symlink('held', workOf(ctx, 'd'));
+        const entry = { ...seeded, path: 'd/x' as FilePath };
+
+        // Act
+        const sut = await upgradeStaleNoops(
+          ctx,
+          [noopOf(entry)],
+          indexOf([entry], NON_RACY),
+          ctx.layout.workDir ?? '',
+          'checkoutEntry',
+        );
+
+        // Assert
+        expect(sut.map((e) => e.kind)).toEqual(['update']);
+      });
+    });
+  });
+
   describe('Given a skip-worktree entry with no file', () => {
     describe('When it is judged', () => {
       it('Then it stays a noop', async () => {

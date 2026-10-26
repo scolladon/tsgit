@@ -13,6 +13,7 @@ import { boundedMapFor } from './concurrency.js';
 import type { RacyContentCheck } from './is-entry-stat-clean.js';
 import { lstatBeyondLink, matchesCachedStat, UNREACHABLE } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
+import { createLeadingPathScanner } from './symlinked-leading-path.js';
 
 const stageZeroByKey = (index: GitIndex): Map<IndexPathKey, IndexEntry> =>
   new Map(
@@ -32,19 +33,31 @@ const isUpToDate = async (
   return matchesCachedStat({ entry: cached, indexMtime }, absPath, stat, contentMatches);
 };
 
+/**
+ * Which git routine judges a work-tree path up to date: the one-way merge (`reset --hard`, forced
+ * switch, stash) follows a symlinked leading directory with a plain lstat, while `checkout_entry`
+ * (path restore) treats an entry beyond such a link as missing.
+ */
+export type StaleRule = 'oneway' | 'checkoutEntry';
+
 /** git's one-way merge: a noop whose work-tree path is not up to date becomes an update. */
 export const upgradeStaleNoops = async (
   ctx: Context,
   entries: ReadonlyArray<ChangesetEntry>,
   index: GitIndex,
   workdir: string,
+  rule: StaleRule = 'oneway',
 ): Promise<ReadonlyArray<ChangesetEntry>> => {
   const cachedByKey = stageZeroByKey(index);
   const contentMatches = racyContentMatcher(ctx);
+  const scanner = createLeadingPathScanner(ctx);
   const judged = await boundedMapFor(ctx, 'ioBound', entries, async (entry) => {
     if (entry.kind !== 'noop' || isLossy(entry)) return entry;
     const cached = cachedByKey.get(indexPathKey(entry));
     if (cached?.flags.skipWorktree === true) return entry;
+    if (rule === 'checkoutEntry' && (await scanner.hasSymlinkedLeadingPath(entry.path))) {
+      return { ...entry, kind: 'update' as const };
+    }
     const absPath = joinPath(workdir, entry.path);
     const upToDate =
       cached !== undefined &&
