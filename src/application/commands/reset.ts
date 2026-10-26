@@ -15,7 +15,6 @@ import type { GitIndex } from '../../domain/git-index/index.js';
 import { bareRepository } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import { MERGE_HEAD } from '../../domain/refs/state-files.js';
 import { MERGE } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
@@ -25,17 +24,14 @@ import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
-import { resolveRefOrMissing } from '../primitives/resolve-ref.js';
-import { updateRef } from '../primitives/update-ref.js';
-import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
-import { clearOrigHead, writeOrigHead } from './internal/merge-state.js';
 import {
   assertOperationalRepository,
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
+import { recordHardReset } from './internal/reset-refs.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 
 export type ResetMode = 'soft' | 'mixed' | 'hard';
@@ -86,25 +82,9 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   }
 
   const head = await readHeadRaw(ctx);
-  // Always written through the literal `HEAD` — git's own reset moves HEAD
-  // itself; `updateRef` dereferences a symbolic HEAD to its branch and logs
-  // the coupled split, while a detached HEAD is written directly. Either
-  // way it skips the reflog on a no-move — git's needs-commit semantics, so
-  // `reset --hard HEAD` records no entry while a real move records the message.
   const branch = head.kind === 'symbolic' ? head.target : undefined;
-  await recordOrigHead(ctx);
-  await updateRef(ctx, 'HEAD' as RefName, id, {
-    reflogMessage: resetMovingTo(opts.rev),
-  });
-  await removeBranchState(ctx, 'silent');
+  await recordHardReset(ctx, id, opts.rev);
   return { mode: opts.mode, id, branch };
-};
-
-/** git's `reset_refs`: ORIG_HEAD takes the commit HEAD leaves; an unborn HEAD drops it. */
-const recordOrigHead = async (ctx: Context): Promise<void> => {
-  const left = await resolveRefOrMissing(ctx, 'HEAD');
-  if (left !== undefined) return writeOrigHead(ctx, left);
-  await clearOrigHead(ctx);
 };
 
 /**

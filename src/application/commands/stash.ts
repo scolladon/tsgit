@@ -117,6 +117,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
 import { refreshAndWriteIndex } from './internal/refresh-index.js';
 import { toConflictList } from './internal/replay-sequence.js';
+import { recordHardReset } from './internal/reset-refs.js';
 import {
   indexMessage,
   onMessage,
@@ -575,7 +576,16 @@ export const stashPush = async (
   const workDir = await gateStash(ctx, 'stash');
   await refreshAndWriteIndex(ctx);
   await assertNoPendingOperation(ctx);
-  return stashAndReset(ctx, workDir, opts, (w) => pushStashRef(ctx, w.stash, w.message));
+  const saved = await stashAndReset(ctx, workDir, opts, (w) =>
+    pushStashRef(ctx, w.stash, w.message),
+  );
+  if (saved.kind === 'saved') await finishStashReset(ctx);
+  return saved;
+};
+
+/** git's child `reset --hard` of a push leaves the same ref tail as `reset --hard HEAD`. */
+const finishStashReset = async (ctx: Context): Promise<void> => {
+  await recordHardReset(ctx, await resolveRef(ctx, 'HEAD'), 'HEAD');
 };
 
 /** git's `stash create` then `reset --hard`: the local changes as an unrecorded stash. */

@@ -25,13 +25,19 @@ import { indexEntryFromStat } from '../../../../src/application/primitives/inter
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type {
   CommandRequest,
@@ -2642,6 +2648,104 @@ describe('stash push beyond a symbolic link, object order', () => {
           path: 'd/x',
         });
         expect(written.map((c) => c.message)).toEqual([expect.stringMatching(/^index on main: /)]);
+      });
+    });
+  });
+});
+
+describe('stash push ref tail', () => {
+  describe('Given HEAD on main and an edited file', () => {
+    describe('When stash push saves', () => {
+      it('Then HEAD reflog gains a reset entry with old = new = HEAD and main reflog is unchanged', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const head = await headId(ctx);
+        const headBefore = await readReflog(ctx, 'HEAD' as RefName);
+        const mainBefore = await readReflog(ctx, 'refs/heads/main' as RefName);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        const added = (await readReflog(ctx, 'HEAD' as RefName)).slice(headBefore.length);
+        expect(added.map((e) => [e.oldId, e.newId, e.message])).toEqual([
+          [head, head, 'reset: moving to HEAD'],
+        ]);
+        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual(mainBefore);
+      });
+
+      it('Then ORIG_HEAD names HEAD', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const head = await headId(ctx);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(`${head}\n`);
+      });
+    });
+  });
+
+  describe('Given a detached HEAD and an edited file', () => {
+    describe('When stash push saves', () => {
+      it('Then ORIG_HEAD names HEAD and HEAD reflog gains no entry', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const head = await headId(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${head}\n`);
+        await write(ctx, 'a.txt', 'edited\n');
+        const headBefore = await readReflog(ctx, 'HEAD' as RefName);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual(headBefore);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(`${head}\n`);
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When stash push finds nothing to save', () => {
+      it('Then neither ORIG_HEAD nor a HEAD reflog entry is written', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const headBefore = await readReflog(ctx, 'HEAD' as RefName);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual(headBefore);
+      });
+    });
+  });
+
+  describe('Given HEAD on main and an edited file', () => {
+    describe('When createAutostash saves', () => {
+      it('Then neither ORIG_HEAD nor a HEAD reflog entry is written', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        const headBefore = await readReflog(ctx, 'HEAD' as RefName);
+        const sut = createAutostash;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual(headBefore);
       });
     });
   });

@@ -10,7 +10,7 @@
  *   unique:         stash push refreshes the index and refuses an unmerged one as canonical git does
  *   interopSurface: stash
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -208,6 +208,126 @@ describe.skipIf(!GIT_AVAILABLE)('stash push opening step interop', () => {
 
         // Assert
         expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+      });
+    });
+  });
+});
+
+const logEntries = (dir: string, ref: string): string[] =>
+  reflogOf(dir, ref)
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => {
+      const [head, message = ''] = line.split('\t');
+      const [oldId, newId] = (head ?? '').split(' ');
+      return `${oldId} ${newId} ${message}`;
+    });
+
+const origHeadOf = (dir: string): string => {
+  const file = path.join(dir, '.git', 'ORIG_HEAD');
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+};
+
+const refTail = (dir: string): unknown => ({
+  head: logEntries(dir, 'HEAD').slice(1),
+  main: logEntries(dir, 'refs/heads/main').length,
+  origHead: origHeadOf(dir),
+  stashLog: logEntries(dir, 'refs/stash').map((entry) => entry.split(' ').slice(2).join(' ')),
+});
+
+const REF_TAIL_VARIANTS = {
+  'a quiet push': { git: [], opts: {} },
+  'an include-untracked push': { git: ['-u'], opts: { includeUntracked: true } },
+  'a keep-index push': { git: ['--keep-index'], opts: { keepIndex: true } },
+};
+
+describe.skipIf(!GIT_AVAILABLE)('stash push ref tail interop', () => {
+  let pair: PeerPair;
+  let repo: Repository;
+
+  beforeEach(async () => {
+    pair = await makePeerPair('stash-push-ref-tail');
+  });
+
+  afterEach(async () => {
+    await repo?.dispose();
+    await pair.dispose();
+  });
+
+  const arrange = async (detach: boolean): Promise<void> => {
+    const tracked = [v1('f'), regular('g', 'g1\n')];
+    for (const dir of [pair.peer, pair.ours]) {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      buildHistory(dir, tracked, tracked);
+      settleIndex(dir);
+      rmSync(path.join(dir, '.git', 'ORIG_HEAD'), { force: true });
+      runGit(['-C', dir, 'config', 'user.name', 'Ada']);
+      runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
+      fileWith('f', 'edited\n')(dir);
+      fileWith('u', 'untracked\n')(dir);
+      if (detach) runGit(['-C', dir, 'checkout', '-q', '--detach']);
+    }
+    repo = await openRepository({ cwd: pair.ours });
+  };
+
+  describe.each(Object.entries(REF_TAIL_VARIANTS))('Given an edited file and %s', (_n, variant) => {
+    describe('When git and tsgit push', () => {
+      it('Then the HEAD reflog, the branch reflog, ORIG_HEAD and the stash reflog match git', async () => {
+        // Arrange
+        await arrange(false);
+        const sut = repo.stash.push;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q', ...variant.git], { env: COMMIT_ENV });
+        await sut(variant.opts);
+
+        // Assert
+        expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+        expect(origHeadOf(pair.ours)).not.toBe('');
+      });
+    });
+  });
+
+  describe('Given a detached HEAD and an edited file', () => {
+    describe('When git and tsgit push', () => {
+      it('Then no HEAD entry is written and ORIG_HEAD names HEAD as git does', async () => {
+        // Arrange
+        await arrange(true);
+        const sut = repo.stash.push;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+        await sut({});
+
+        // Assert
+        expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+        expect(origHeadOf(pair.ours)).not.toBe('');
+      });
+    });
+  });
+
+  describe('Given two pushes in a row', () => {
+    describe('When git and tsgit push twice', () => {
+      it('Then the HEAD reflog holds two reset entries as git does', async () => {
+        // Arrange
+        await arrange(false);
+        const sut = repo.stash.push;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+        fileWith('f', 'edited again\n')(pair.peer);
+        await sut({});
+        fileWith('f', 'edited again\n')(pair.ours);
+        runGit(['-C', pair.peer, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+        await sut({});
+
+        // Assert
+        expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+        expect(
+          (refTail(pair.ours) as { head: string[] }).head.filter((e) =>
+            e.endsWith('reset: moving to HEAD'),
+          ),
+        ).toHaveLength(2);
       });
     });
   });
