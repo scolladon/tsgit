@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -560,6 +561,75 @@ describe('stash push', () => {
         const entry = idx.entries.find((e) => e.path === 'a.txt');
         const blob = await readObject(ctx, entry?.id as ObjectId);
         expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('staged\n');
+      });
+    });
+  });
+
+  describe('Given a staged and an unstaged change', () => {
+    const arrangeStaged = async (runner: MemoryHookRunner): Promise<Context> => {
+      const ctx = createMemoryContext({ hooks: runner });
+      await init(ctx);
+      await commitFile(ctx, 'a.txt', 'committed\n', 'initial commit');
+      await write(ctx, 'a.txt', 'staged\n');
+      await add(ctx, ['a.txt']);
+      await write(ctx, 'a.txt', 'unstaged\n');
+      return ctx;
+    };
+    const postCheckoutSince = (runner: MemoryHookRunner, since: number) =>
+      runner.calls.slice(since).filter((call) => call.name === 'post-checkout');
+
+    describe('When stash push keeps the index', () => {
+      it('Then post-checkout fires once with [head, head, 0]', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = await arrangeStaged(runner);
+        const head = await headId(ctx);
+        const before = runner.calls.length;
+
+        // Act
+        await stashPush(ctx, { keepIndex: true });
+
+        // Assert
+        const post = postCheckoutSince(runner, before);
+        expect(post).toHaveLength(1);
+        expect(post[0]?.args).toEqual([head, head, '0']);
+      });
+    });
+
+    describe('When stash push does not keep the index', () => {
+      it('Then post-checkout does not fire', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = await arrangeStaged(runner);
+        const before = runner.calls.length;
+
+        // Act
+        await stashPush(ctx, {});
+
+        // Assert
+        expect(postCheckoutSince(runner, before)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given nothing to stash', () => {
+    describe('When stash push keeps the index', () => {
+      it('Then post-checkout does not fire', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'committed\n', 'initial commit');
+        const before = runner.calls.length;
+
+        // Act
+        const result = await stashPush(ctx, { keepIndex: true });
+
+        // Assert
+        expect(result.kind).not.toBe('saved');
+        expect(runner.calls.slice(before).filter((c) => c.name === 'post-checkout')).toHaveLength(
+          0,
+        );
       });
     });
   });

@@ -59,6 +59,7 @@ import {
   trackPositives,
   unmatchedPositives,
 } from './internal/pathspec-intake.js';
+import { BRANCH_FLAG, FILE_FLAG } from './internal/post-checkout.js';
 import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import { refreshedIndex } from './internal/refresh-index.js';
 import {
@@ -105,9 +106,6 @@ export interface CheckoutResult {
 
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
 const INDEX_SOURCE = 'index';
-/** post-checkout's 3rd argument: `1` for a branch checkout, `0` for a file checkout. */
-const BRANCH_FLAG = '1';
-const FILE_FLAG = '0';
 
 const isSwitch = (opts: CheckoutOptions): opts is CheckoutSwitchOptions =>
   'rev' in opts && opts.rev !== undefined;

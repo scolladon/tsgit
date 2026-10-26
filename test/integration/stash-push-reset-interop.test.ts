@@ -10,7 +10,15 @@
  *   unique:         stash push refreshes the index and refuses an unmerged one as canonical git does
  *   interopSurface: stash
  */
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -332,3 +340,87 @@ describe.skipIf(!GIT_AVAILABLE)('stash push ref tail interop', () => {
     });
   });
 });
+
+const HOOK_LOG = 'hook-log';
+const APPEND_ARGS_HOOK = `#!/bin/sh\nprintf '%s\\n' "$*" >> "$(git rev-parse --git-dir)/${HOOK_LOG}"\n`;
+
+const installLoggingHook = (dir: string): void => {
+  const hook = path.join(dir, '.git', 'hooks', 'post-checkout');
+  writeFileSync(hook, APPEND_ARGS_HOOK);
+  chmodSync(hook, 0o755);
+};
+
+const hookLogOf = (dir: string): string => {
+  const file = path.join(dir, '.git', HOOK_LOG);
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+};
+
+const stagedListing = (dir: string): string => runGit(['-C', dir, 'ls-files', '-s']).toString();
+
+const POST_CHECKOUT_VARIANTS = {
+  'a keep-index push': { git: ['--keep-index'], opts: { keepIndex: true }, fires: true },
+  'an include-untracked keep-index push': {
+    git: ['-u', '--keep-index'],
+    opts: { includeUntracked: true, keepIndex: true },
+    fires: true,
+  },
+  'a plain push': { git: [], opts: {}, fires: false },
+  'an include-untracked push': { git: ['-u'], opts: { includeUntracked: true }, fires: false },
+};
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'stash push post-checkout interop',
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('stash-push-post-checkout');
+    });
+
+    afterEach(async () => {
+      await repo?.dispose();
+      await pair.dispose();
+    });
+
+    const arrange = async (): Promise<void> => {
+      const tracked = [v1('f'), regular('g', 'g1\n')];
+      for (const dir of [pair.peer, pair.ours]) {
+        runGit(['init', '-q', '-b', 'main', dir]);
+        buildHistory(dir, tracked, tracked);
+        settleIndex(dir);
+        runGit(['-C', dir, 'config', 'user.name', 'Ada']);
+        runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
+        fileWith('f', 'staged\n')(dir);
+        runGit(['-C', dir, 'add', 'f']);
+        fileWith('f', 'edited\n')(dir);
+        fileWith('u', 'untracked\n')(dir);
+        installLoggingHook(dir);
+      }
+      repo = await openRepository({ cwd: pair.ours });
+    };
+
+    describe.each(Object.entries(POST_CHECKOUT_VARIANTS))(
+      'Given a staged and an edited file and %s',
+      (_n, variant) => {
+        describe('When git and tsgit push', () => {
+          it('Then the post-checkout log, the index and the listing match git', async () => {
+            // Arrange
+            await arrange();
+            const sut = repo.stash.push;
+
+            // Act
+            runGit(['-C', pair.peer, 'stash', 'push', '-q', ...variant.git], { env: COMMIT_ENV });
+            await sut(variant.opts);
+
+            // Assert
+            expect(hookLogOf(pair.ours)).toBe(hookLogOf(pair.peer));
+            expect(hookLogOf(pair.ours) !== '').toBe(variant.fires);
+            expect(stagedListing(pair.ours)).toBe(stagedListing(pair.peer));
+            expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          });
+        });
+      },
+    );
+  },
+);

@@ -101,6 +101,7 @@ import { readObject } from '../primitives/read-object.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
 import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
+import { runInformationalHook } from '../primitives/run-hook.js';
 import {
   dropStashEntry,
   pushStashRef,
@@ -115,6 +116,7 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
+import { FILE_FLAG } from './internal/post-checkout.js';
 import { refreshAndWriteIndex } from './internal/refresh-index.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import { recordHardReset } from './internal/reset-refs.js';
@@ -579,13 +581,19 @@ export const stashPush = async (
   const saved = await stashAndReset(ctx, workDir, opts, (w) =>
     pushStashRef(ctx, w.stash, w.message),
   );
-  if (saved.kind === 'saved') await finishStashReset(ctx);
+  if (saved.kind === 'saved') await finishStashReset(ctx, opts);
   return saved;
 };
 
-/** git's child `reset --hard` of a push leaves the same ref tail as `reset --hard HEAD`. */
-const finishStashReset = async (ctx: Context): Promise<void> => {
-  await recordHardReset(ctx, await resolveRef(ctx, 'HEAD'), 'HEAD');
+/**
+ * git's child `reset --hard` of a push leaves the same ref tail as `reset --hard HEAD`; only
+ * `--keep-index` re-checks the kept index out afterwards, which is what fires `post-checkout`.
+ */
+const finishStashReset = async (ctx: Context, opts: StashPushInput): Promise<void> => {
+  const head = await resolveRef(ctx, 'HEAD');
+  await recordHardReset(ctx, head, 'HEAD');
+  if (opts.keepIndex !== true) return;
+  await runInformationalHook(ctx, 'post-checkout', { args: [head, head, FILE_FLAG] });
 };
 
 /** git's `stash create` then `reset --hard`: the local changes as an unrecorded stash. */
