@@ -25,7 +25,7 @@ interface ResetResult {
 |---|---|---|---|
 | `soft` | untouched | untouched | moved to `rev` |
 | `mixed` | untouched | rebuilt from `rev`'s tree (stat-cache preserved for unchanged paths) | moved to `rev` |
-| `hard` | rewritten to match `rev` (force-overwriting modifications) | rebuilt | moved to `rev` |
+| `hard` | rewritten to match `rev`: every path whose work-tree file is not up to date is overwritten, a clean one is left alone | rebuilt | moved to `rev` |
 
 ## Behaviour
 
@@ -36,6 +36,7 @@ interface ResetResult {
 - **Sparse-aware:** `mode: 'hard'` and `mode: 'mixed'` honour the active sparse pattern. Out-of-cone paths keep `skipWorktree: true`; their working-tree files are not materialised.
 - **Stat-cache donor strategy** (mixed): index entries whose `id + mode` match the prior index preserve their stat fields, so the next `status()` stays fast.
 - **Index extensions.** The index rewrite keeps git's extensions: `TREE` is invalidated along the changed paths, `mixed` keeps `REUC` (unless a conflicted path is resolved) and `hard` drops it, and `UNTR` is kept while the tracked set is unchanged; unknown extensions are dropped.
+- **`hard` rewrites only stale paths.** As git's one-way merge does, a tracked path is rewritten when its work-tree file is not up to date (edited, deleted, or an occupant in the way); a file whose cached stat matches is not touched, and an assume-unchanged entry keeps its flag. A skip-worktree entry is left alone. A conflicted path is reset to the target, or removed when the target lacks it. The index is written on every `hard` reset, even when the target tree is empty. A symlinked leading directory whose target stat matches is kept.
 - **Untracked files outside the target tree** are left alone in `hard` mode — only tracked paths are rewritten.
 - **`hard` displaces an occupant as git does.** A regular file or symlink in a leading path of a target entry is replaced by a directory, and a directory at the path of an added or updated entry (not a gitlink) is removed with its content. A tracked path that is now a directory is left in place when the target deletes it, with git's `unable to unlink '<path>'` warning logged; the index drops the entry either way.
 

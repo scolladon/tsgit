@@ -67,6 +67,18 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
 - **Save then reset.** `push` writes the W/I/U commits and the `refs/stash`
   reflog entry *before* resetting the working tree, so a crash never loses data
   before it is saved.
+- **Push opens with an index refresh.** Before saving anything, `push` refreshes
+  the stat of stage-0 entries whose content is unchanged and writes the index, as
+  git's `refresh_and_write_cache` does. An unmerged index then refuses
+  `MERGE_HAS_CONFLICTS`; the refreshed index stays on disk, and no object, ref or
+  reflog entry is written.
+- **Push ends as `reset --hard HEAD` does.** After a save, the reset rewrites only
+  the files whose work-tree stat is not up to date, writes `ORIG_HEAD`, and, on an
+  attached HEAD, appends a `reset: moving to HEAD` entry to the HEAD reflog. There
+  is no pending-operation gate: a resolved merge, cherry-pick, revert or rebase does
+  not refuse, and the push clears `MERGE_HEAD`, `CHERRY_PICK_HEAD` and `REVERT_HEAD`
+  and keeps `REBASE_HEAD`. With `keepIndex`, `post-checkout` runs with the saved
+  HEAD id twice and the file flag `0`.
 - **Apply leaves changes unstaged.** A clean `apply` materialises the merged
   result onto the working tree and writes the index as git's
   `unstage_changes_unless_new` does: a path the merge changed goes back to its
@@ -164,6 +176,7 @@ await repo.stash.apply({ restoreIndex: true });
 
 - `NO_INITIAL_COMMIT` — `push` on an unborn branch (no commit yet).
 - `PATHSPEC_BEYOND_SYMLINK { path }` — `push` found a tracked path whose leading directory is a symbolic link. Nothing is saved.
+- `MERGE_HAS_CONFLICTS` — `push` while the index holds conflict stages; nothing is saved.
 - `STASH_NOT_FOUND` — the selector `index` is out of range.
 - `STASH_APPLY_WOULD_OVERWRITE` — `apply`/`pop` would overwrite uncommitted
   working-tree changes or an existing untracked file. The untracked-restore
