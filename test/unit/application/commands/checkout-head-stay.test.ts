@@ -100,6 +100,22 @@ describe('checkout of a bare HEAD spelling', () => {
     });
   });
 
+  describe.each(['HEAD', '@'])('Given a branch named HEAD, When checkout rev %s', (rev) => {
+    it('Then HEAD attaches that branch and the reflog logs the move from main to HEAD', async () => {
+      // Arrange
+      const { ctx, tip } = await seedMain();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/HEAD`, `${tip}\n`);
+
+      // Act
+      const result = await checkout(ctx, { rev });
+
+      // Assert
+      expect(result.branch).toBe('refs/heads/HEAD');
+      expect(await readHeadRaw(ctx)).toEqual({ kind: 'symbolic', target: 'refs/heads/HEAD' });
+      expect((await reflogMessages(ctx)).at(-1)).toBe('checkout: moving from main to HEAD');
+    });
+  });
+
   describe('Given HEAD on main, When checkout rev HEAD~0', () => {
     it('Then HEAD detaches', async () => {
       // Arrange

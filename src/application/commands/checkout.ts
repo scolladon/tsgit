@@ -165,11 +165,14 @@ interface SwitchTarget {
   readonly object: ObjectId;
 }
 
+const HEAD_ALIAS = '@';
+const HEAD_NAME = 'HEAD';
+
 /** git's `parse_branchname_arg`: the branch `refs/heads/<arg>` names, else the revision ladder. */
 const resolveSwitch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<SwitchTarget> => {
   const arg = previousCheckoutArg(opts.rev);
   const named = await resolveSwitchTarget(ctx, arg);
-  const branchName = await interpretBranchName(ctx, arg);
+  const branchName = arg === HEAD_ALIAS ? HEAD_NAME : await interpretBranchName(ctx, arg);
   const branch = await branchFor(ctx, branchName);
   if (branch !== undefined) return { arg, branchName, onBranch: branch.ref, object: branch.id };
   if (named === undefined) throw unresolvedSwitch(opts);
@@ -316,10 +319,13 @@ const materializeSwitch = async (
   }
 };
 
-/** git's update_refs_for_switch: a bare HEAD name moves nothing. */
+/** git's update_refs_for_switch: a bare HEAD name that resolved to no branch moves nothing. */
 const HEAD_SPELLINGS: ReadonlySet<string> = new Set(['HEAD', '@']);
-const staysOnHead = (opts: CheckoutSwitchOptions): boolean =>
-  HEAD_SPELLINGS.has(opts.rev) && opts.detach !== true && opts.createBranch === undefined;
+const staysOnHead = (opts: CheckoutSwitchOptions, branchRef: RefName | undefined): boolean =>
+  HEAD_SPELLINGS.has(opts.rev) &&
+  opts.detach !== true &&
+  opts.createBranch === undefined &&
+  branchRef === undefined;
 
 interface SwitchFinish {
   readonly opts: CheckoutSwitchOptions;
@@ -341,7 +347,7 @@ const finishSwitch = async (ctx: Context, finish: SwitchFinish): Promise<Checkou
   const { opts, priorHead, branchName, oid, oldOid } = finish;
   // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
   const created = await createRequestedBranch(ctx, opts, finish.arg);
-  const stays = staysOnHead(opts);
+  const stays = staysOnHead(opts, finish.branchRef);
   const attached = stays ? attachedBranch(priorHead) : (created ?? finish.branchRef);
   if (!stays) {
     // git echoes the argument it was handed, abbreviated or not.

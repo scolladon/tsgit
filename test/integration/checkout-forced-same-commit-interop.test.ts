@@ -196,6 +196,34 @@ describe.skipIf(!GIT_AVAILABLE)('checkout forced same-commit interop', () => {
   });
 
   describe.each([
+    ['checkout HEAD', ['HEAD'], { rev: 'HEAD' }],
+    ['checkout -f HEAD', ['-f', 'HEAD'], { rev: 'HEAD', force: true }],
+    ['checkout @', ['@'], { rev: '@' }],
+  ] as const)('Given a branch named HEAD and the command %s', (_name, gitArgs, tsgit) => {
+    describe('When git and tsgit run it', () => {
+      it('Then both attach the branch named HEAD and the work tree, the index and the reflog match git', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildHistory(dir, [v1('f'), regular('other')], [v1('f')]);
+          git(dir, 'update-ref', 'refs/heads/HEAD', git(dir, 'rev-parse', 't').trim());
+          settleIndex(dir);
+        }
+        repo = await openRepository({ cwd: pair.ours });
+        const peerBefore = statSnapshot(pair.peer);
+        const oursBefore = statSnapshot(pair.ours);
+
+        // Act
+        git(pair.peer, 'checkout', '-q', ...gitArgs);
+        await repo.checkout(tsgit);
+
+        // Assert
+        expect(observe(pair.ours, oursBefore)).toEqual(observe(pair.peer, peerBefore));
+        expect(headState(pair.ours)).toEqual(headState(pair.peer));
+      });
+    });
+  });
+
+  describe.each([
     ['-f HEAD', 'HEAD'],
     ['-f main', 'main'],
   ])('Given pending operation state files and checkout %s', (_name, rev) => {
