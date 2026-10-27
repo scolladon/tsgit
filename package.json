@@ -1363,7 +1363,7 @@
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.15",
     "@cloudflare/vitest-pool-workers": "0.23.0",
-    "@cloudflare/workers-types": "5.20261026.1",
+    "@cloudflare/workers-types": "5.20261027.1",
     "@commitlint/cli": "21.2.4",
     "@commitlint/config-conventional": "21.2.4",
     "@ls-lint/ls-lint": "2.3.1",
@@ -1394,6 +1394,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.11",
     "wireit": "0.15.0",
-    "wrangler": "4.153.0"
+    "wrangler": "4.154.0"
   }
 }
