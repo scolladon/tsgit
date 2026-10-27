@@ -111,25 +111,43 @@ export interface IndexPathRules {
   ) => void;
   /** Same checks as `validateIndexPath` for a tree entry, which has no index-file offset. */
   readonly validateTreePath: (path: FilePath, mode: FileMode) => void;
+  /**
+   * The same checks as `validateTreePath`, answered as a verdict: git's `apply`
+   * check phase reads `verify_path` this way, collecting every refused name
+   * before it writes anything, so a throw per name would be the wrong shape.
+   */
+  readonly isAdmissibleTreePath: (path: FilePath, mode: FileMode) => boolean;
 }
 
 const indexPathRulesFor = (verify: PathVerifier): IndexPathRules => {
+  const rejectionOf = (
+    path: string,
+    mode: FileMode,
+    pathBytes?: Uint8Array,
+  ): string | undefined => {
+    const reason = unsafeReason(path);
+    if (reason !== undefined) return reason;
+    const rejection = verify(path, mode, pathBytes);
+    return rejection === undefined ? undefined : VERIFY_PATH_REASON[rejection];
+  };
   const validateIndexPath = (
     path: string,
     offset: number,
     mode: FileMode,
     pathBytes?: Uint8Array,
   ): void => {
-    const reason = unsafeReason(path);
+    const reason = rejectionOf(path, mode, pathBytes);
     if (reason !== undefined) throw invalidIndexEntry(offset, reason);
-    const rejection = verify(path, mode, pathBytes);
-    if (rejection !== undefined) throw invalidIndexEntry(offset, VERIFY_PATH_REASON[rejection]);
   };
   const validateTreePath = (path: FilePath, mode: FileMode): void => {
     const { path: view, pathBytes } = indexPathOfEscaped(path);
     validateIndexPath(view, NO_PARSER_OFFSET, mode, pathBytes);
   };
-  return { validateIndexPath, validateTreePath };
+  const isAdmissibleTreePath = (path: FilePath, mode: FileMode): boolean => {
+    const { path: view, pathBytes } = indexPathOfEscaped(path);
+    return rejectionOf(view, mode, pathBytes) === undefined;
+  };
+  return { validateIndexPath, validateTreePath, isAdmissibleTreePath };
 };
 
 /** git's rules on POSIX: parse, write-tree and archive use them on every platform. */

@@ -3,7 +3,6 @@ import { pairIsBinary } from '../../../domain/diff/binary-decision.js';
 import type { FlatTreeEntry } from '../../../domain/diff/flat-tree.js';
 import { isSameKind, kindOf } from '../../../domain/diff/mode-kind.js';
 import { comparePaths } from '../../../domain/diff/path-compare.js';
-import { TsgitError } from '../../../domain/error.js';
 import { viewOfEscaped } from '../../../domain/git-index/index-path-key.js';
 import type { FileMode, FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -110,15 +109,8 @@ const judgeModify = (
 };
 
 /** git's `verify_path` on the name a patch creates: a refused name fails the check phase. */
-const isAdmissibleName = (ctx: Context, path: FilePath, entry: FlatTreeEntry): boolean => {
-  try {
-    indexPathRulesOf(ctx).validateTreePath(path, entry.mode);
-    return true;
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'INVALID_INDEX_ENTRY') return false;
-    throw err;
-  }
-};
+const isAdmissibleName = (ctx: Context, path: FilePath, entry: FlatTreeEntry): boolean =>
+  indexPathRulesOf(ctx).isAdmissibleTreePath(path, entry.mode);
 
 const judgePath = async (judge: Judge, path: FilePath, { b, i, c }: Sides): Promise<Outcome> => {
   if (i !== undefined && !isAdmissibleName(judge.ctx, path, i)) return FAILS;
