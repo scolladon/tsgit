@@ -211,6 +211,28 @@ const setupRepoWithSubmodule = async (checkedOut: ObjectId): Promise<Context> =>
   return ctx;
 };
 
+/** `f` is committed as a file, then staged as a gitlink while whatever `standIn` writes stands on disk. */
+const setupGitlinkStagedOverFile = async (
+  standIn: (ctx: Context) => Promise<void>,
+): Promise<Context> => {
+  const ctx = await setupRepo();
+  await commitFile(ctx, 'f', 'f\n', 'add f');
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f`);
+  const tracked = await readIndex(ctx);
+  await replaceIndexEntries(ctx, [
+    ...tracked.entries.filter((entry) => entry.path !== 'f'),
+    indexEntryFromStat(stat, FILE_MODE.GITLINK as IndexEntry['mode'], GITLINK_A, 'f' as FilePath),
+  ]);
+  await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+  await standIn(ctx);
+  return ctx;
+};
+
+const workTreeEntryOf = async (ctx: Context, stash: ObjectId, path: string) => {
+  const flat = await flattenTree(ctx, (await commitOf(ctx, stash)).tree);
+  return flat.entries.get(path as FilePath);
+};
+
 describe('stash push', () => {
   describe('Given three committed files sharing a directory', () => {
     describe('When push runs', () => {
@@ -402,6 +424,89 @@ describe('stash push', () => {
           id: GITLINK_A,
           mode: FILE_MODE.GITLINK,
         });
+      });
+    });
+  });
+
+  describe('Given a gitlink staged over a path where a regular file stands', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file as a blob and the work tree is reset to HEAD', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile((c) => write(c, 'f', 'precious\n'));
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const entry = await workTreeEntryOf(ctx, result.stash, 'f');
+        expect(entry?.mode).toBe(FILE_MODE.REGULAR);
+        expect(await treeContent(ctx, (await commitOf(ctx, result.stash)).tree, 'f')).toBe(
+          'precious\n',
+        );
+        expect(await read(ctx, 'f')).toBe('f\n');
+      });
+    });
+  });
+
+  describe('Given a gitlink staged over a path where a symlink stands', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the symlink target', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile((c) =>
+          c.fs.symlink('target', `${c.layout.workDir}/f`),
+        );
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const entry = await workTreeEntryOf(ctx, result.stash, 'f');
+        expect(entry?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(await treeContent(ctx, (await commitOf(ctx, result.stash)).tree, 'f')).toBe(
+          'target',
+        );
+      });
+    });
+  });
+
+  describe('Given a gitlink staged over a path where nothing stands', () => {
+    describe('When push runs', () => {
+      it('Then the W tree does not hold the path', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile(async () => undefined);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'f')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a committed gitlink the index lost and a regular file standing at its path', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file as a blob', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+        await unstagePath(ctx, 'sub');
+        await write(ctx, 'sub', 'precious\n');
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const entry = await workTreeEntryOf(ctx, result.stash, 'sub');
+        expect(entry?.mode).toBe(FILE_MODE.REGULAR);
+        expect(await treeContent(ctx, (await commitOf(ctx, result.stash)).tree, 'sub')).toBe(
+          'precious\n',
+        );
       });
     });
   });
@@ -3815,7 +3920,7 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
 
   describe('Given a gitlink with no checkout and a tracked file edited', () => {
     describe('When push runs', () => {
-      it('Then the work-tree tree keeps the gitlink at its index id', async () => {
+      it('Then the work-tree tree drops the gitlink as git does', async () => {
         // Arrange
         const ctx = await setupRepoWithSubmodule(GITLINK_A);
         await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
@@ -3827,10 +3932,7 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         const result = await sut(ctx);
 
         // Assert
-        expect(result.entries.get('sub' as FilePath)).toMatchObject({
-          id: GITLINK_A,
-          mode: FILE_MODE.GITLINK,
-        });
+        expect(result.entries.get('sub' as FilePath)).toBeUndefined();
       });
     });
   });

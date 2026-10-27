@@ -684,6 +684,74 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
       .toString()
       .trim();
 
+  const PUSH_FLAGS = [
+    { name: 'quietly', git: [], ours: {} },
+    { name: '-u', git: ['-u'], ours: { includeUntracked: true } },
+  ] as const;
+
+  const stageGitlinkOver =
+    (stand: (dir: string) => void) =>
+    (dir: string): void => {
+      const head = gitOut(dir, ['rev-parse', 'HEAD']);
+      runGit(['-C', dir, 'rm', '-q', '--cached', 'f']);
+      runGit(['-C', dir, 'update-index', '--add', '--cacheinfo', `160000,${head},f`]);
+      rmSync(path.join(dir, 'f'), { force: true });
+      stand(dir);
+    };
+
+  const GITLINK_STAND_INS: Record<string, (dir: string) => void> = {
+    'a regular file': fileWith('f', 'precious\n'),
+    'a symlink': linkAt('f', 'target'),
+    nothing: () => undefined,
+  };
+
+  describe.each(Object.entries(GITLINK_STAND_INS))(
+    'Given an index gitlink with %s standing at its path',
+    (_name, stand) => {
+      describe.each(PUSH_FLAGS)('When git and tsgit stash push $name', (push) => {
+        it('Then both stash the same trees, reset the same tree and leave the same index', async () => {
+          // Arrange
+          await arrange(stageGitlinkOver(stand));
+          const sut = repo.stash.push;
+
+          // Act
+          runGit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], { env: COMMIT_ENV });
+          const result = await sut(push.ours);
+
+          // Assert
+          expect(result.kind).toBe('saved');
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          for (const rev of ['stash@{0}', 'stash@{0}^2']) {
+            expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
+          }
+          expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+          expectSameIndexOutcome();
+        });
+      });
+    },
+  );
+
+  describe('Given an index gitlink with a regular file standing at its path', () => {
+    describe('When git and tsgit stash push then apply', () => {
+      it('Then both bring the file back with its bytes', async () => {
+        // Arrange
+        await arrange(stageGitlinkOver(fileWith('f', 'precious\n')));
+        const sut = repo.stash;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+        await sut.push({});
+        runGit(['-C', pair.peer, 'stash', 'apply', '-q'], { env: COMMIT_ENV });
+        await sut.apply();
+
+        // Assert
+        expect(readFileSync(path.join(pair.peer, 'f'), 'utf8')).toBe('precious\n');
+        expect(readFileSync(path.join(pair.ours, 'f'), 'utf8')).toBe('precious\n');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+      });
+    });
+  });
+
   const SHAPES: Record<string, (dir: string) => void> = {
     'an edited file': fileWith('f', 'edited\n'),
     'a staged edit of a file': (dir) => {

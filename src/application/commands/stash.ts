@@ -331,8 +331,11 @@ const classifyEntry = async (
   if (entry.flags.stage !== 0) return undefined;
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
   if (entry.flags.skipWorktree) return { kind: 'indexed', entry, state: 'unchanged' };
-  // git stashes with --ignore-submodules: the index id of a gitlink rides into the W tree as it is.
-  if (isGitlink(entry.mode)) return { kind: 'indexed', entry, state: 'unchanged' };
+  // git stashes with --ignore-submodules, which skips a submodule checkout's own changes only: a
+  // file, a symlink or nothing at a gitlink's path is a type change and falls through.
+  if (isGitlink(entry.mode) && (await isDirectoryAt(ctx, entry.path))) {
+    return { kind: 'indexed', entry, state: 'unchanged' };
+  }
   const indexed = scope.head === undefined || scope.head.entries.has(escapedPathOf(entry));
   // git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink.
   if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
@@ -358,9 +361,8 @@ const classifyHeadOnly = async (
   scanner: LeadingPathScanner,
 ): Promise<TrackedEntry | undefined> => {
   const headEntry = head.entries.get(path);
-  // A gitlink rides on the index id (--ignore-submodules); a lossy name has no string path to stat.
-  if (headEntry === undefined || isGitlink(headEntry.mode) || hasEscapedBytes(path))
-    return undefined;
+  // A lossy name has no string path to stat; a gitlink's checkout directory is skipped below.
+  if (headEntry === undefined || hasEscapedBytes(path)) return undefined;
   if (await scanner.hasSymlinkedLeadingPath(path)) throw pathspecBeyondSymlink(path);
   const stat = await statReachable(ctx, path);
   if (stat === undefined || stat.isDirectory) return undefined;
