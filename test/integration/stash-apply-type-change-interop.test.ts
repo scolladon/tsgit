@@ -130,7 +130,6 @@ const expand = (
     ),
   );
 
-const WITHOUT_INDEX: ReadonlyArray<CommandName> = ['apply', 'pop'];
 const STAGED_SHAPES: ReadonlyArray<ShapeName> = ['DFa', 'DFna', 'FDa', 'LDa', 'LFa', 'FLa'];
 const MERGED = { git: { exit: 0, autoMerge: true } };
 const UNCHANGED = { git: { exit: 0, autoMerge: false } };
@@ -150,8 +149,7 @@ const ROWS: ReadonlyArray<Row> = [
   ...expand(['FD', 'LD'], WITHOUT_UNTRACKED, UNCHANGED),
   ...expand(['DF', 'DFn'], WITHOUT_UNTRACKED, MERGED),
   ...expand(['LF', 'FL'], ALL_PUSHES, MERGED),
-  ...expand(STAGED_SHAPES, ['--keep-index'], MERGED),
-  ...expand(STAGED_SHAPES, ['plain', '-u'], { ...MERGED, commands: WITHOUT_INDEX }),
+  ...expand(STAGED_SHAPES, ALL_PUSHES, MERGED),
   ...expand(['DL', 'DLa'], ALL_PUSHES, NO_STASH),
   ...Object.entries(POSTS).flatMap(([after, post]) =>
     expand(['DFa'], ['plain'], {
@@ -159,7 +157,6 @@ const ROWS: ReadonlyArray<Row> = [
       after,
       post,
       pushedBy: 'git',
-      commands: WITHOUT_INDEX,
     }),
   ),
 ];

@@ -1026,6 +1026,32 @@ describe('stash apply', () => {
     });
   });
 
+  describe('Given a staged type swap stashed plain', () => {
+    describe('When stash apply runs with restoreIndex', () => {
+      it('Then the reinstated entry d carries the stat of the written file', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'x\n', 'add d/x');
+        await ctx.fs.rm(`${ctx.layout.workDir}/d/x`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'now a file\n');
+        await add(ctx, ['d', 'd/x']);
+        await stashPush(ctx, {});
+
+        // Act
+        const sut = stashApply;
+        const result = await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'd');
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/d`);
+        expect(entry?.mtimeSeconds).toBe(Math.floor(stat.mtimeMs / 1000));
+        expect(entry?.fileSize).toBe(stat.size);
+      });
+    });
+  });
+
   describe('Given a stash of an unstaged change applied onto a clean tree', () => {
     describe('When apply runs', () => {
       it('Then the change returns to the working tree and stays unstaged', async () => {

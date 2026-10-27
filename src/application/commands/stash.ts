@@ -941,7 +941,11 @@ const hasStagedChanges = (trees: {
   readonly iTree: ObjectId;
 }): boolean => trees.iTree !== trees.bTree && trees.iTree !== trees.cTree;
 
-/** Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. */
+/**
+ * Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. The donor is the
+ * index the work-tree merge just wrote: git's one-way reset keeps that entry, with its stat, when its
+ * id and mode agree with the target.
+ */
 const reinstateIndex = async (
   ctx: Context,
   lock: IndexLock,
@@ -949,7 +953,7 @@ const reinstateIndex = async (
     readonly bTree: ObjectId;
     readonly cTree: ObjectId;
     readonly iTree: ObjectId;
-    readonly currentIndex: GitIndex;
+    readonly writtenIndex: GitIndex;
   },
 ): Promise<void> => {
   const merged = await mergeTreesToTree(ctx, {
@@ -961,7 +965,7 @@ const reinstateIndex = async (
   if (merged.kind !== 'clean') return;
   const entries = await buildIndexFromTree(ctx, {
     targetTree: merged.mergedTree,
-    currentIndex: args.currentIndex,
+    currentIndex: args.writtenIndex,
   });
   await lock.commit(entries, 'replace');
 };
@@ -1060,7 +1064,12 @@ const applyUnderLock = async (
   }
   const iTree = await commitTreeOf(ctx, parsed.indexParent);
   if (input.restoreIndex === true && hasStagedChanges({ bTree, cTree, iTree })) {
-    await reinstateIndex(ctx, lock, { bTree, cTree, iTree, currentIndex });
+    await reinstateIndex(ctx, lock, {
+      bTree,
+      cTree,
+      iTree,
+      writtenIndex: { ...currentIndex, entries: result.newIndexEntries },
+    });
   } else {
     const { entries, restagedPaths } = unstageChangesUnlessNew(
       result.newIndexEntries,
