@@ -980,6 +980,52 @@ const commit2 = async (ctx: Context, content: string, message: string): Promise<
 };
 
 describe('stash apply', () => {
+  describe('Given a stash whose work tree equals its base because a tracked file became a directory', () => {
+    describe('When apply runs', () => {
+      it('Then it applies without writing AUTO_MERGE and keeps the index entries', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+        await write(ctx, 'a.txt/y', 'inside\n');
+        const saved = await stashPush(ctx, {});
+        if (saved.kind !== 'saved') throw new Error('expected saved');
+        const entriesBefore = (await readIndex(ctx)).entries.map((e) => [e.path, e.id]);
+
+        // Act
+        const sut = stashApply;
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'applied', stash: saved.stash });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+        const entriesAfter = (await readIndex(ctx)).entries.map((e) => [e.path, e.id]);
+        expect(entriesAfter).toEqual(entriesBefore);
+      });
+    });
+  });
+
+  describe('Given a stash whose work file equals the committed bytes while the index staged another blob', () => {
+    describe('When apply runs with restoreIndex', () => {
+      it('Then the index holds the staged blob and the work file keeps the committed bytes', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'staged\n');
+        await add(ctx, ['a.txt']);
+        await write(ctx, 'a.txt', 'committed\n');
+        await stashPush(ctx, {});
+
+        // Act
+        const sut = stashApply;
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'a.txt');
+        expect(entry?.id).toBe(await hashBlob(ctx, new TextEncoder().encode('staged\n')));
+        expect(await read(ctx, 'a.txt')).toBe('committed\n');
+      });
+    });
+  });
+
   describe('Given a stash of an unstaged change applied onto a clean tree', () => {
     describe('When apply runs', () => {
       it('Then the change returns to the working tree and stays unstaged', async () => {

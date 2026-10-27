@@ -42,7 +42,11 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
-import { applyMergeToWorktree, mergeTreesToTree } from '../primitives/apply-merge-to-worktree.js';
+import {
+  type ApplyMergeResult,
+  applyMergeToWorktree,
+  mergeTreesToTree,
+} from '../primitives/apply-merge-to-worktree.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import {
   compareAndRefresh,
@@ -1059,7 +1063,7 @@ const applyUnderLock = async (
     await reinstateIndex(ctx, lock, { bTree, cTree, iTree, currentIndex });
   } else {
     const { entries, restagedPaths } = unstageChangesUnlessNew(
-      result.result.newIndexEntries,
+      result.newIndexEntries,
       currentIndex.entries,
     );
     await lock.commit(entries, 'replace', { restagedPaths });
@@ -1077,6 +1081,15 @@ const refuseUntrackedOverwrites = async (
   if (clobbered.length > 0) throw stashApplyWouldOverwrite(clobbered);
 };
 
+type StashMerge =
+  | { readonly kind: 'clean'; readonly newIndexEntries: ReadonlyArray<IndexEntry> }
+  | Extract<ApplyMergeResult, { readonly kind: 'conflict' }>;
+
+const unchangedMerge = (currentIndex: GitIndex): StashMerge => ({
+  kind: 'clean',
+  newIndexEntries: currentIndex.entries,
+});
+
 /** Three-way merge the stash's work tree onto the current index; refuse a clobber. */
 const mergeStash = async (
   ctx: Context,
@@ -1086,7 +1099,9 @@ const mergeStash = async (
     readonly wTree: ObjectId;
     readonly currentIndex: GitIndex;
   },
-) => {
+): Promise<StashMerge> => {
+  // git's merge returns early when the stash tree is its base: no merge, no AUTO_MERGE.
+  if (trees.wTree === trees.bTree) return unchangedMerge(trees.currentIndex);
   const result = await applyMergeToWorktree(ctx, {
     baseTree: trees.bTree,
     oursTree: trees.cTree,
@@ -1096,7 +1111,8 @@ const mergeStash = async (
   });
   if (result.kind === 'would-overwrite')
     throw stashApplyWouldOverwrite([...result.localChanges, ...result.untracked]);
-  return result;
+  if (result.kind === 'conflict') return result;
+  return { kind: 'clean', newIndexEntries: result.result.newIndexEntries };
 };
 
 export type StashPopResult =
