@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { WalkWorkingTreeEntry } from '../../../../src/application/primitives/types.js';
-import { walkWorkingTree } from '../../../../src/application/primitives/walk-working-tree.js';
+import {
+  walkWorkingTree,
+  walkWorkingTreeReporting,
+} from '../../../../src/application/primitives/walk-working-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
@@ -1030,6 +1033,134 @@ describe('walkWorkingTree isNestedRepository', () => {
 
         // Assert
         expect(error.data).toMatchObject({ count: 2, limit: 1 });
+      });
+    });
+  });
+});
+
+describe('walkWorkingTreeReporting', () => {
+  const mkdir = (ctx: Context, path: string) => ctx.fs.mkdir(`${ctx.layout.workDir}/${path}`);
+
+  const walkReporting = async (
+    ctx: Context,
+    options?: Parameters<typeof walkWorkingTreeReporting>[1],
+  ): Promise<{ readonly yielded: string[]; readonly reported: string[] }> => {
+    const reported: string[] = [];
+    const sut = walkWorkingTreeReporting;
+    const yielded = await collect(sut(ctx, options, (directory) => reported.push(directory)));
+    return { yielded, reported };
+  };
+
+  describe('Given a file and an empty directory', () => {
+    describe('When walked with a report', () => {
+      it('Then the directory is reported and only the file is yielded', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'a.txt': 'a' });
+        await mkdir(ctx, 'e');
+
+        // Act
+        const result = await walkReporting(ctx);
+
+        // Assert
+        expect(result).toEqual({ yielded: ['a.txt'], reported: ['e'] });
+      });
+    });
+  });
+
+  describe('Given an ignored empty directory', () => {
+    describe('When walked with a report', () => {
+      it('Then it is not reported', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'a.txt': 'a' });
+        await mkdir(ctx, 'e');
+
+        // Act
+        const result = await walkReporting(ctx, { ignore: (path) => path === 'e' });
+
+        // Assert
+        expect(result.reported).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an empty directory under an embedded repository', () => {
+    describe('When walked with a report', () => {
+      it('Then it is not reported', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'r/.git/HEAD': 'ref' });
+        await mkdir(ctx, 'r/e');
+
+        // Act
+        const result = await walkReporting(ctx);
+
+        // Assert
+        expect(result).toEqual({ yielded: [], reported: [] });
+      });
+    });
+  });
+
+  describe('Given an empty directory inside an otherwise empty directory', () => {
+    describe('When walked with a report', () => {
+      it('Then only the leaf is reported', async () => {
+        // Arrange
+        const ctx = await seedFs({});
+        await mkdir(ctx, 'n/i');
+
+        // Act
+        const result = await walkReporting(ctx);
+
+        // Assert
+        expect(result.reported).toEqual(['n/i']);
+      });
+    });
+  });
+
+  describe('Given an empty work tree', () => {
+    describe('When walked with a report', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = await seedFs({});
+
+        // Act
+        const result = await walkReporting(ctx);
+
+        // Assert
+        expect(result).toEqual({ yielded: [], reported: [] });
+      });
+    });
+  });
+
+  describe('Given one file and two empty directories', () => {
+    describe('When walked with maxEntries 1', () => {
+      it('Then no limit error is raised since reports are not entries', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'a.txt': 'a' });
+        await mkdir(ctx, 'e1');
+        await mkdir(ctx, 'e2');
+
+        // Act
+        const result = await walkReporting(ctx, { maxEntries: 1 });
+
+        // Assert
+        expect(result.yielded).toEqual(['a.txt']);
+        expect(result.reported.sort()).toEqual(['e1', 'e2']);
+      });
+    });
+  });
+
+  describe('Given the same tree with an empty directory', () => {
+    describe('When walked through the public walkWorkingTree', () => {
+      it('Then the same entries are yielded', async () => {
+        // Arrange
+        const ctx = await seedFs({ 'a.txt': 'a' });
+        await mkdir(ctx, 'e');
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collect(sut(ctx));
+
+        // Assert
+        expect(result).toEqual(['a.txt']);
       });
     });
   });
