@@ -518,34 +518,68 @@ const plumb = (dir: string, args: ReadonlyArray<string>, input?: string): string
     ...(input === undefined ? {} : { input }),
   }).trim();
 
-type HostileShape = 'invalid-name' | 'base-only' | 'duplicate-name';
+type HostileShape =
+  | 'invalid-name'
+  | 'base-only'
+  | 'duplicate-name'
+  | 'duplicate-over-file'
+  | 'duplicate-over-moved-file';
 
-/** A stash whose stashed index (or base) holds a `.git/x` entry or a name that is both file and directory, built with plumbing as a hostile peer could. */
-const storeHostileStash = (dir: string, shape: HostileShape): void => {
+const OVER_FILE_SHAPES = new Set<HostileShape>([
+  'duplicate-over-file',
+  'duplicate-over-moved-file',
+]);
+const MODIFIED_X = withLine(10, 'L10');
+
+const commitTreeIn = (dir: string, tree: string, ...parents: string[]): string =>
+  plumb(dir, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', 'x']);
+
+/** HEAD's tree with one more entry, built with plumbing as a hostile peer could. */
+const headTreeWith = (dir: string, entry: string): string =>
+  plumb(dir, ['mktree'], `${plumb(dir, ['ls-tree', 'HEAD'])}\n${entry}\n`);
+
+/** HEAD's other entries beside `n` as both a blob and a tree whose `x` holds the given content. */
+const duplicatedNameTree = (dir: string, x: string): string => {
+  const blob = plumb(dir, ['hash-object', '-w', '--stdin'], 'x\n');
+  const xBlob = plumb(dir, ['hash-object', '-w', '--stdin'], x);
+  const inner = plumb(dir, ['mktree'], `100644 blob ${xBlob}\tx\n`);
+  const others = plumb(dir, ['ls-tree', 'HEAD'])
+    .split('\n')
+    .filter((line) => !line.endsWith('\tn'));
+  const entries = [...others, `100644 blob ${blob}\tn`, `040000 tree ${inner}\tn`];
+  return plumb(dir, ['mktree', '--missing'], `${entries.join('\n')}\n`);
+};
+
+/** The stash's base and stashed-index commits for a hostile shape, built on the current HEAD. */
+const hostileStashCommits = (dir: string, shape: HostileShape): readonly [string, string] => {
   const blob = plumb(dir, ['hash-object', '-w', '--stdin'], 'x\n');
   const inner = plumb(dir, ['mktree'], `100644 blob ${blob}\tx\n`);
   const head = plumb(dir, ['rev-parse', 'HEAD']);
-  const headTree = plumb(dir, ['rev-parse', 'HEAD^{tree}']);
-  const listed = plumb(dir, ['ls-tree', 'HEAD']);
-  const treeWith = (entry: string): string => plumb(dir, ['mktree'], `${listed}\n${entry}\n`);
-  const commitTree = (tree: string, ...parents: string[]): string =>
-    plumb(dir, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', 'x']);
-  const hostile = treeWith(`040000 tree ${inner}\t.git`);
-  const duplicated = plumb(
-    dir,
-    ['mktree', '--missing'],
-    `${listed}\n100644 blob ${blob}\tn\n040000 tree ${inner}\tn\n`,
-  );
-  const stashed = {
-    'invalid-name': () => [head, commitTree(hostile, head)],
-    'duplicate-name': () => [head, commitTree(duplicated, head)],
+  const dotGit = headTreeWith(dir, `040000 tree ${inner}\t.git`);
+  const duplicated = (x: string): string => commitTreeIn(dir, duplicatedNameTree(dir, x), head);
+  const commits: Record<HostileShape, () => readonly [string, string]> = {
+    'invalid-name': () => [head, commitTreeIn(dir, dotGit, head)],
+    'duplicate-name': () => [head, duplicated('x\n')],
+    'duplicate-over-file': () => [head, duplicated(MODIFIED_X)],
+    'duplicate-over-moved-file': () => [head, duplicated(MODIFIED_X)],
     'base-only': () => [
-      commitTree(hostile),
-      commitTree(treeWith(`100644 blob ${blob}\tz`), commitTree(hostile)),
+      commitTreeIn(dir, dotGit),
+      commitTreeIn(dir, headTreeWith(dir, `100644 blob ${blob}\tz`), commitTreeIn(dir, dotGit)),
     ],
-  }[shape]();
-  const [base, index] = stashed as [string, string];
-  plumb(dir, ['stash', 'store', '-m', 'wip', commitTree(headTree, base, index)]);
+  };
+  return commits[shape]();
+};
+
+/** Stores a stash of the hostile shape; the over-file shapes commit `n/x` first, and the moved one moves it on after the store. */
+const storeHostileStash = (dir: string, shape: HostileShape): void => {
+  if (OVER_FILE_SHAPES.has(shape)) {
+    mkdirSync(path.join(dir, 'n'));
+    committed('n/x', TEN_LINES)(dir);
+  }
+  const headTree = plumb(dir, ['rev-parse', 'HEAD^{tree}']);
+  const [base, index] = hostileStashCommits(dir, shape);
+  plumb(dir, ['stash', 'store', '-m', 'wip', commitTreeIn(dir, headTree, base, index)]);
+  if (shape === 'duplicate-over-moved-file') committed('n/x', `top\n${TEN_LINES}`)(dir);
 };
 
 describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
@@ -621,39 +655,42 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
       );
     });
   });
-  describe.each(['invalid-name', 'base-only', 'duplicate-name'] as const)(
-    'Given a stash holding a hostile entry as %s',
-    (shape) => {
-      describe.each(BOTH_COMMANDS)('When %s runs in git and in tsgit on a twin', (command) => {
-        it(
-          'Then both refuse with the same paths and write nothing',
-          async () => {
-            // Arrange
-            for (const dir of [pair.peer, pair.ours]) {
-              seed(dir);
-              storeHostileStash(dir, shape);
-              touchedAt('keep')(dir);
-            }
-            const inodes = [indexInode(pair.peer), indexInode(pair.ours)] as const;
+  describe.each([
+    'invalid-name',
+    'base-only',
+    'duplicate-name',
+    'duplicate-over-file',
+    'duplicate-over-moved-file',
+  ] as const)('Given a stash holding a hostile entry as %s', (shape) => {
+    describe.each(BOTH_COMMANDS)('When %s runs in git and in tsgit on a twin', (command) => {
+      it(
+        'Then both refuse with the same paths and write nothing',
+        async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            seed(dir);
+            storeHostileStash(dir, shape);
+            touchedAt('keep')(dir);
+          }
+          const inodes = [indexInode(pair.peer), indexInode(pair.ours)] as const;
 
-            // Act
-            const gitRun = gitStash(pair.peer, COMMANDS[command].git);
-            const outcome = await tsgitApply(pair.ours, { command });
+          // Act
+          const gitRun = gitStash(pair.peer, COMMANDS[command].git);
+          const outcome = await tsgitApply(pair.ours, { command });
 
-            // Assert
-            expect(gitRun.exitCode).toBe(1);
-            expect(lastLine(gitRun.stderr)).toBe(CONFLICTS_IN_INDEX);
-            expect(outcome).toStrictEqual({
-              kind: 'STASH_INDEX_CONFLICT',
-              paths: conflictedPathsOfGit(gitRun.stderr),
-            });
-            expect(observed(pair.ours, inodes[1])).toStrictEqual(observed(pair.peer, inodes[0]));
-          },
-          ROW_TIMEOUT_MS,
-        );
-      });
-    },
-  );
+          // Assert
+          expect(gitRun.exitCode).toBe(1);
+          expect(lastLine(gitRun.stderr)).toBe(CONFLICTS_IN_INDEX);
+          expect(outcome).toStrictEqual({
+            kind: 'STASH_INDEX_CONFLICT',
+            paths: conflictedPathsOfGit(gitRun.stderr),
+          });
+          expect(observed(pair.ours, inodes[1])).toStrictEqual(observed(pair.peer, inodes[0]));
+        },
+        ROW_TIMEOUT_MS,
+      );
+    });
+  });
 
   describe.each(BOTH_COMMANDS)('Given a staged stash and an unborn HEAD', (command) => {
     describe(`When ${command} runs in git and in tsgit on a twin`, () => {

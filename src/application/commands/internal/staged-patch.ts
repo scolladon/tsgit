@@ -133,28 +133,30 @@ const hasOccupiedAncestor = (path: FilePath, occupied: ReadonlySet<FilePath>): b
   return false;
 };
 
-const isPlacement = (outcome: Outcome): boolean => outcome.kind === 'set';
+const isPlacement = (outcome: Outcome): boolean =>
+  outcome.kind === 'set' || outcome.kind === 'patched';
 
+/** The entries still in C once git's first write phase has taken every patched path out of it. */
 const survivingEntriesOf = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): Set<FilePath> => {
   const occupied = new Set(c.keys());
-  for (const [path, outcome] of outcomes) {
-    if (outcome.kind === 'remove') occupied.delete(path);
-  }
+  for (const path of outcomes.keys()) occupied.delete(path);
   return occupied;
 };
 
 /**
  * git refuses a path that is both a file and a directory, but only once the check phase has passed,
- * and at the first one in the order it writes: the placements clash with each other as well as with C.
+ * and in the order it writes: every modified or deleted path leaves the index first, then each
+ * creation or modification is added in patch order, and the first addition that lands under a file
+ * or on a directory is the clash it reports. Placements arrive in index order, so a later one is
+ * never an ancestor of an earlier one and the directory set needs no update.
  */
 const firstClash = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): FilePath | undefined => {
   const occupied = survivingEntriesOf(c, outcomes);
-  const directories = new Set(survivingDirectoriesOf(occupied));
+  const directories = survivingDirectoriesOf(occupied);
   for (const [path, outcome] of outcomes) {
     if (!isPlacement(outcome)) continue;
     if (directories.has(path) || hasOccupiedAncestor(path, occupied)) return path;
     occupied.add(path);
-    for (const directory of survivingDirectoriesOf([path])) directories.add(directory);
   }
   return undefined;
 };

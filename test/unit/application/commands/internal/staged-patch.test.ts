@@ -72,12 +72,12 @@ const hostileTree = async (ctx: Context, dir: string, name: string): Promise<Obj
   });
 };
 
-const duplicateNameTree = async (ctx: Context, name: string): Promise<ObjectId> => {
+const duplicateNameTree = async (ctx: Context, name: string, x = 'x\n'): Promise<ObjectId> => {
   const blob = await hashBlob(ctx, text('x\n'), { write: true });
   const inner = await writeObject(ctx, {
     type: 'tree',
     id: '' as ObjectId,
-    entries: [treeEntry(FILE_MODE.REGULAR, 'x', blob)],
+    entries: [treeEntry(FILE_MODE.REGULAR, 'x', await hashBlob(ctx, text(x), { write: true }))],
   });
   return writeObject(ctx, {
     type: 'tree',
@@ -660,6 +660,67 @@ describe('judgeStagedPatch', () => {
 
         // Assert
         expect(result).toStrictEqual({ kind: 'refused', paths: ['n/x'] });
+      });
+    });
+
+    describe('When C holds n/x as the base does', () => {
+      it('Then the placement under the directory is refused as the clash', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { 'n/x': file('x\n') });
+        const iTree = await duplicateNameTree(ctx, 'n', 'X\n');
+        const cTree = bTree;
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['n/x'] });
+      });
+    });
+
+    describe('When C holds n/x with a line the stash never saw', () => {
+      it('Then the placement under the directory is refused as the clash', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { 'n/x': file(lines(9)) });
+        const iTree = await duplicateNameTree(ctx, 'n', lines(9, { at: 9, to: 'L9' }));
+        const cTree = await treeOf(ctx, { 'n/x': file(`top\n${lines(9)}`) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['n/x'] });
+      });
+    });
+  });
+
+  describe('Given a path unchanged between B and I that C deleted', () => {
+    describe('When the judge runs', () => {
+      it('Then the patch applies without it', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { keep: file('k\n'), gone: file('g\n') });
+        const iTree = await treeOf(ctx, {
+          added: file('a\n'),
+          keep: file('k\n'),
+          gone: file('g\n'),
+        });
+        const cTree = await treeOf(ctx, { keep: file('k\n') });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        if (result.kind !== 'applies') throw new Error('expected applies');
+        expect([...(await flattenTree(ctx, result.tree)).entries.keys()].sort()).toStrictEqual([
+          'added',
+          'keep',
+        ]);
       });
     });
   });
