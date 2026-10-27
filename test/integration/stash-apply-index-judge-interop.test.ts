@@ -10,7 +10,7 @@
  *   unique:         stash apply --index judges the stashed index before any write, as git's apply --cached does
  *   interopSurface: stash
  */
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -37,7 +37,8 @@ import {
 const ROW_TIMEOUT_MS = 60_000;
 const TEN_LINES = Array.from({ length: 10 }, (_, i) => `l${i + 1}\n`).join('');
 const CONFLICTS_IN_INDEX = 'error: conflicts in index. Try without --index.';
-const INDEX_ERROR_LINE = /^error: (.+): (?:patch does not apply|already exists in index)$/;
+const INDEX_ERROR_LINE =
+  /^error: (?:(.+): (?:patch does not apply|already exists in index)|unable to add cache entry for (.+))$/;
 
 const withLine = (n: number, text: string): string =>
   TEN_LINES.split('\n')
@@ -71,6 +72,13 @@ const stagedThenReverted =
   (dir) => {
     stageFile(rel, staged)(dir);
     put(rel, worked)(dir);
+  };
+
+const stageInDirectory =
+  (rel: string, content: string): Occupant =>
+  (dir) => {
+    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    stageFile(rel, content)(dir);
   };
 
 const removed: Occupant = (dir) => gitIn(dir, 'rm', '-q', 'f');
@@ -134,6 +142,30 @@ const SHAPES = {
     stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
     post: stagedThenReverted('g', 'g9\n', 'g0\n'),
   },
+  adjacent: {
+    stage: inOrder(stageFile('f', withLine(4, 'L4\n')), put('g', 'g1\n')),
+    post: committed('f', withLine(6, 'L6\n')),
+  },
+  'same-change': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: inOrder(committed('f', withLine(2, 'L2\n')), committed('h', 'h\n')),
+  },
+  'non-overlap-kept': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: committed('f', withLine(9, 'L9\n').replace('l2\n', 'L2\n')),
+  },
+  'add-same': {
+    stage: inOrder(stageFile('n', 'N\n'), put('g', 'g1\n')),
+    post: inOrder(committed('n', 'N\n'), committed('h', 'h\n')),
+  },
+  'offset-top': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: committed('f', `x1\nx2\n${TEN_LINES}`),
+  },
+  'create-df': {
+    stage: inOrder(stageInDirectory('n/x', 'X\n'), put('g', 'g1\n')),
+    post: committed('n', 'N\n'),
+  },
 } satisfies Record<string, { stage: Occupant; post: Occupant }>;
 
 type ShapeName = keyof typeof SHAPES;
@@ -184,6 +216,13 @@ const ROWS: ReadonlyArray<Row> = [
   ...rowsOf(['i-is-b', 'i-is-c'], ['plain'], BOTH_COMMANDS, 'applies'),
   ...rowsOf(['i-is-b', 'i-is-c'], ['-u', '--keep-index'], ['apply --index'], 'applies'),
   ...rowsOf(['w-is-b'], ['plain'], ['apply --index'], 'applies'),
+  ...rowsOf(['adjacent'], ['plain', '-u'], BOTH_COMMANDS, 'refuses'),
+  ...rowsOf(['same-change'], ['plain', '-u', '--keep-index'], BOTH_COMMANDS, 'refuses'),
+  ...rowsOf(['non-overlap-kept'], ['--keep-index'], BOTH_COMMANDS, 'refuses'),
+  ...rowsOf(['add-same'], ['plain'], BOTH_COMMANDS, 'refuses'),
+  ...rowsOf(['offset-top'], ['plain', '-u', '--keep-index'], ['apply --index'], 'refuses'),
+  ...rowsOf(['offset-top'], ['plain'], ['pop --index'], 'refuses'),
+  ...rowsOf(['create-df'], ['plain'], BOTH_COMMANDS, 'refuses'),
   ...rowsOf(['H2'], ['plain'], ['apply'], 'applies'),
   ...rowsOf(['staged-non-overlap'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
   ...rowsOf(['staged-other'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
@@ -269,7 +308,10 @@ const tsgitApply = async (dir: string, row: Row): Promise<Outcome> => {
 const conflictedPathsOfGit = (stderr: string): string[] =>
   stderr
     .split('\n')
-    .map((line) => INDEX_ERROR_LINE.exec(line)?.[1])
+    .map((line) => {
+      const match = INDEX_ERROR_LINE.exec(line);
+      return match?.[1] ?? match?.[2];
+    })
     .filter((p): p is string => p !== undefined);
 
 const uncleanBlock = (localChanges: ReadonlyArray<string>): string =>

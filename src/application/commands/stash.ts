@@ -34,14 +34,8 @@ import {
   indexPathKey,
   indexPathOfEscaped,
   keyOfPath,
-  viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
-import {
-  abbreviateOid,
-  type ConflictType,
-  type MergeConflict,
-  STASH_LABELS,
-} from '../../domain/merge/index.js';
+import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
@@ -56,7 +50,6 @@ import type { FileStat } from '../../ports/file-system.js';
 import {
   type ApplyMergeResult,
   applyMergeToWorktree,
-  mergeTreesToTree,
 } from '../primitives/apply-merge-to-worktree.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import {
@@ -139,6 +132,7 @@ import { FILE_FLAG } from './internal/post-checkout.js';
 import { refreshAndWriteIndex, refreshedIndex } from './internal/refresh-index.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import { recordResetRefs } from './internal/reset-refs.js';
+import { judgeStagedPatch } from './internal/staged-patch.js';
 import {
   indexMessage,
   onMessage,
@@ -1058,18 +1052,10 @@ const judgeIndexSide = async (
   if (app.input.restoreIndex !== true) return undefined;
   const iTree = await commitTreeOf(ctx, app.parsed.indexParent);
   if (!hasStagedChanges({ bTree: app.bTree, cTree, iTree })) return undefined;
-  const merged = await mergeTreesToTree(ctx, {
-    baseTree: app.bTree,
-    oursTree: cTree,
-    theirsTree: iTree,
-    labels: STASH_LABELS,
-  });
-  if (merged.kind !== 'clean') throw stashIndexConflict(conflictedPathsOf(merged.conflicts));
-  return merged.mergedTree;
+  const verdict = await judgeStagedPatch(ctx, { bTree: app.bTree, cTree, iTree });
+  if (verdict.kind === 'refused') throw stashIndexConflict(verdict.paths);
+  return verdict.tree;
 };
-
-const conflictedPathsOf = (conflicts: ReadonlyArray<MergeConflict>): ReadonlyArray<FilePath> =>
-  conflicts.map((conflict) => viewOfEscaped(conflict.path));
 
 const indexOrdered = (paths: ReadonlyArray<IndexPath>): ReadonlyArray<FilePath> =>
   sortByPath(paths, escapedPathOf).map((entry) => entry.path);
