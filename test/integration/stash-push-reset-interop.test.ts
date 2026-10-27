@@ -36,9 +36,12 @@ import {
   buildHistory,
   COMMIT_ENV,
   commitOn,
+  emptyDirectoryAt,
   fileWith,
+  gitlink,
   indexState,
   KEEP,
+  linkAt,
   listing,
   observe,
   regular,
@@ -46,6 +49,7 @@ import {
   staleEntries,
   statSnapshot,
   symlink,
+  type TreeEntry,
   touchedAt,
   unmergedAbsentAt,
   unmergedAt,
@@ -626,10 +630,13 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
   const indexInode = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
   const inodesBefore = new Map<string, number>();
 
-  const arrange = async (edit: (dir: string) => void): Promise<void> => {
+  const arrange = async (
+    edit: (dir: string) => void,
+    seed: ReadonlyArray<TreeEntry> = SWAP_SEED,
+  ): Promise<void> => {
     for (const dir of [pair.peer, pair.ours]) {
       runGit(['init', '-q', '-b', 'main', dir]);
-      buildHistory(dir, SWAP_SEED, SWAP_SEED);
+      buildHistory(dir, seed, seed);
       settleIndex(dir);
       touchedAt('keep')(dir);
       inodesBefore.set(dir, indexInode(dir));
@@ -744,6 +751,121 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
     });
   });
 
+  const EXCLUDED_PATTERNS = ['*.cache', 'build/', 'out/'];
+  const excludeAll = (dir: string): void =>
+    writeFileSync(path.join(dir, '.git', 'info', 'exclude'), `${EXCLUDED_PATTERNS.join('\n')}\n`);
+
+  interface EmptyDirectoryShape {
+    readonly plant: ReadonlyArray<(dir: string) => void>;
+    readonly seed?: ReadonlyArray<TreeEntry>;
+    readonly withoutTop?: true;
+    readonly withoutKeepEdit?: true;
+    readonly stageForKeepIndex?: (dir: string) => void;
+  }
+
+  const stageKeep = (dir: string): void => {
+    runGit(['-C', dir, 'add', 'keep']);
+  };
+
+  const EMPTY_DIRECTORY_SHAPES: Record<string, EmptyDirectoryShape> = {
+    'an empty directory': { plant: [emptyDirectoryAt('emptydir')] },
+    'a nested empty directory': { plant: [emptyDirectoryAt('nest/inner')] },
+    'a file beside an empty directory': {
+      plant: [fileWith('w/u', 'u\n'), emptyDirectoryAt('w/e')],
+    },
+    'empty, nested empty and file-holding directories': {
+      plant: [emptyDirectoryAt('emptydir'), emptyDirectoryAt('nest/inner'), fileWith('w/u', 'u\n')],
+    },
+    'two nested empty directories': {
+      plant: [emptyDirectoryAt('nest/i1'), emptyDirectoryAt('nest/i2/i3')],
+    },
+    'an empty directory under a tracked directory': { plant: [emptyDirectoryAt('d/b')] },
+    'a file and an empty directory under a tracked directory': {
+      plant: [fileWith('d/z', 'z\n'), emptyDirectoryAt('d/e')],
+    },
+    'an empty directory beside an empty ignored directory': {
+      plant: [emptyDirectoryAt('nest/inner'), emptyDirectoryAt('nest/build')],
+    },
+    'an empty directory and no untracked file': {
+      plant: [emptyDirectoryAt('emptydir')],
+      withoutTop: true,
+    },
+    'a tracked file replaced by an empty directory': {
+      plant: [
+        (dir) => {
+          rmSync(path.join(dir, 'f'));
+          emptyDirectoryAt('f')(dir);
+        },
+      ],
+      withoutTop: true,
+      withoutKeepEdit: true,
+      stageForKeepIndex: (dir) => {
+        runGit(['-C', dir, 'rm', '-q', '--cached', 'f']);
+      },
+    },
+    'an ignored file beside an untracked file': {
+      plant: [fileWith('m/.cache', 'cache\n'), fileWith('m/z', 'z\n')],
+    },
+    'an empty ignored directory': { plant: [emptyDirectoryAt('build')] },
+    'an empty directory under an ignored directory': { plant: [emptyDirectoryAt('out/e')] },
+    'an ignored file deep under untracked directories': {
+      plant: [fileWith('x/y/.cache', 'cache\n')],
+    },
+    'an empty ignored directory under an untracked directory': {
+      plant: [emptyDirectoryAt('p/build')],
+    },
+    'a link to a tracked directory': { plant: [linkAt('alias', 'd')] },
+    'an empty directory at a gitlink': {
+      plant: [],
+      seed: [...SWAP_SEED, gitlink('sub')],
+    },
+  };
+
+  const PUSHES = [
+    { name: '-u', git: ['-u'], ours: { includeUntracked: true, keepIndex: false } },
+    {
+      name: '-u --keep-index',
+      git: ['-u', '--keep-index'],
+      ours: { includeUntracked: true, keepIndex: true },
+    },
+  ] as const;
+
+  const statusOf = (dir: string): string =>
+    runGit(['-C', dir, 'status', '--porcelain', '-uall']).toString();
+
+  describe.each(Object.entries(EMPTY_DIRECTORY_SHAPES))('Given %s', (_name, shape) => {
+    describe.each(PUSHES)('When git and tsgit stash push $name', (push) => {
+      it('Then both leave the same work tree, stash trees and index', async () => {
+        // Arrange
+        const stage = shape.stageForKeepIndex ?? stageKeep;
+        await arrange((dir) => {
+          excludeAll(dir);
+          for (const plant of shape.plant) plant(dir);
+          if (shape.withoutKeepEdit === undefined) fileWith('keep', 'edited\n')(dir);
+          if (shape.withoutTop === undefined) fileWith('top', 'top\n')(dir);
+          if (push.ours.keepIndex === true) stage(dir);
+        }, shape.seed);
+        const sut = repo.stash.push;
+
+        // Act
+        const peerStatus = statusOf(pair.peer);
+        const oursStatus = statusOf(pair.ours);
+        runGit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], { env: COMMIT_ENV });
+        const result = await sut(push.ours);
+
+        // Assert
+        expect(oursStatus).toBe(peerStatus);
+        expect(peerStatus.split('\n').filter((line) => line.endsWith('/'))).toEqual([]);
+        expect(result.kind).toBe('saved');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        for (const rev of ['stash@{0}', 'stash@{0}^2', 'stash@{0}^3']) {
+          expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
+        }
+        expectSameIndexOutcome();
+      });
+    });
+  });
+
   describe('Given a clean tree', () => {
     describe('When git and tsgit stash push -u', () => {
       it('Then neither saves and no stash ref exists', async () => {
@@ -760,6 +882,29 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
         // Assert
         expect(git.exitCode).toBe(0);
         expect(result).toEqual({ kind: 'no-local-changes' });
+        expect(existsSync(path.join(pair.peer, '.git', 'refs', 'stash'))).toBe(false);
+        expect(existsSync(path.join(pair.ours, '.git', 'refs', 'stash'))).toBe(false);
+      });
+    });
+  });
+  describe.each(PUSHES)('Given only an empty directory and nothing else changed', (push) => {
+    describe(`When git and tsgit stash push ${push.name}`, () => {
+      it('Then neither saves, the directory stays and no stash ref exists', async () => {
+        // Arrange
+        await arrange(emptyDirectoryAt('emptydir'));
+        const sut = repo.stash.push;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], {
+          env: COMMIT_ENV,
+        });
+        const result = await sut(push.ours);
+
+        // Assert
+        expect(git.exitCode).toBe(0);
+        expect(result).toEqual({ kind: 'no-local-changes' });
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect(existsSync(path.join(pair.ours, 'emptydir'))).toBe(true);
         expect(existsSync(path.join(pair.peer, '.git', 'refs', 'stash'))).toBe(false);
         expect(existsSync(path.join(pair.ours, '.git', 'refs', 'stash'))).toBe(false);
       });

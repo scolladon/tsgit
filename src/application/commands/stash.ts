@@ -87,7 +87,8 @@ import { lazily } from '../primitives/internal/lazily.js';
 import { forgetAfterLink } from '../primitives/internal/link-first-wave.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import {
-  pruneEmptiedDirectories,
+  parentDirectory,
+  pruneDirectoriesFrom,
   survivingDirectoriesOf,
 } from '../primitives/internal/prune-emptied-directories.js';
 import {
@@ -130,7 +131,7 @@ import {
 } from '../primitives/stash-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../primitives/types.js';
-import { walkWorkingTree } from '../primitives/walk-working-tree.js';
+import { walkWorkingTreeReporting } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
@@ -508,6 +509,8 @@ interface LocalChanges {
   readonly scope: ConversionScope;
   readonly tracked: ReadonlyArray<TrackedEntry>;
   readonly untrackedFiles: ReadonlyArray<UntrackedFile>;
+  /** Untracked directories holding no file: git's `clean -d` removes them, yet they never count as a change. */
+  readonly untrackedEmptyDirectories: ReadonlyArray<FilePath>;
 }
 
 const countsAsLocalChange = (change: DiffChange): boolean => {
@@ -528,6 +531,17 @@ const differsBeyondGitlinks = (index: GitIndex, head: EscapedFlatTree | undefine
   return diffIndexAgainstTreeKeyed(index, head).changes.some(countsAsLocalChange);
 };
 
+const untrackedChanges = async (
+  ctx: Context,
+  opts: StashPushInput,
+  index: GitIndex,
+): Promise<Pick<LocalChanges, 'untrackedFiles' | 'untrackedEmptyDirectories'>> => {
+  const { files, emptyDirectories } = opts.includeUntracked
+    ? await listUntracked(ctx, index)
+    : NO_UNTRACKED;
+  return { untrackedFiles: files, untrackedEmptyDirectories: emptyDirectories };
+};
+
 const findLocalChanges = async (
   ctx: Context,
   opts: StashPushInput,
@@ -539,8 +553,8 @@ const findLocalChanges = async (
   const head = iTree === base.bTree ? undefined : await flattenEscapedTree(ctx, base.bTree);
   const tracked = await classifyTracked(ctx, index, scope.provider, head);
   const stagedBeyondGitlinks = differsBeyondGitlinks(index, head);
-  const untrackedFiles = opts.includeUntracked ? await listUntracked(ctx, index) : [];
-  return { iTree, stagedBeyondGitlinks, scope, tracked, untrackedFiles };
+  const untracked = await untrackedChanges(ctx, opts, index);
+  return { iTree, stagedBeyondGitlinks, scope, tracked, ...untracked };
 };
 
 const hasLocalChanges = (found: LocalChanges): boolean =>
@@ -548,18 +562,26 @@ const hasLocalChanges = (found: LocalChanges): boolean =>
   found.tracked.some(({ state }) => state !== 'unchanged') ||
   found.untrackedFiles.length > 0;
 
-const listUntracked = async (
-  ctx: Context,
-  index: GitIndex,
-): Promise<ReadonlyArray<UntrackedFile>> => {
+interface UntrackedListing {
+  readonly files: ReadonlyArray<UntrackedFile>;
+  readonly emptyDirectories: ReadonlyArray<FilePath>;
+}
+
+const NO_UNTRACKED: UntrackedListing = { files: [], emptyDirectories: [] };
+
+const listUntracked = async (ctx: Context, index: GitIndex): Promise<UntrackedListing> => {
   const tracked = new Set(index.entries.map(indexPathKey));
   const ignore = await buildRepoIgnorePredicate(ctx);
   const files: UntrackedFile[] = [];
-  for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
+  const emptyDirectories: FilePath[] = [];
+  const reportEmpty = (directory: FilePath): void => {
+    if (!tracked.has(keyOfPath(directory))) emptyDirectories.push(directory);
+  };
+  for await (const { path, stat } of walkWorkingTreeReporting(ctx, { ignore }, reportEmpty)) {
     if (tracked.has(keyOfPath(path))) continue;
     files.push({ path, stat: await stat() });
   }
-  return files;
+  return { files, emptyDirectories };
 };
 
 const hashUntracked = async (
@@ -641,7 +663,14 @@ const stashAndReset = async (
     const w = await createStashCommits(ctx, workDir, { base, found, opts });
     const { untracked, working } = w;
     await record(w);
-    await resetAfterPush(ctx, lock, { workDir, base, iTree, untracked, opts });
+    await resetAfterPush(ctx, lock, {
+      workDir,
+      base,
+      iTree,
+      untracked,
+      emptyDirectories: found.untrackedEmptyDirectories,
+      opts,
+    });
     return {
       kind: 'saved',
       stash: w.stash,
@@ -806,6 +835,7 @@ interface ResetInputs {
   readonly base: BaseState;
   readonly iTree: ObjectId;
   readonly untracked: UntrackedProjection;
+  readonly emptyDirectories: ReadonlyArray<FilePath>;
   readonly opts: StashPushInput;
 }
 
@@ -839,20 +869,21 @@ const keptIndexPaths = async (
   opts.keepIndex === true ? pathsDifferingBetween(ctx, iTree, base.bTree) : [];
 
 /**
- * git runs `clean -d` over the stashed untracked files before its reset, so a directory they
- * alone filled disappears; one still holding anything (tracked or ignored files) stays.
+ * git runs `clean -d` over the stashed untracked files before its reset: a directory they
+ * alone filled disappears, and so does every untracked directory holding no file; one still
+ * holding anything (tracked or ignored files) stays.
  */
 const cleanStashedUntracked = async (
   ctx: Context,
   workDir: string,
-  untracked: UntrackedProjection,
+  { untracked, emptyDirectories }: Pick<ResetInputs, 'untracked' | 'emptyDirectories'>,
   currentIndex: GitIndex,
 ): Promise<void> => {
   for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
-  await pruneEmptiedDirectories(
+  await pruneDirectoriesFrom(
     ctx,
     workDir,
-    untracked.paths,
+    [...untracked.paths.map(parentDirectory), ...emptyDirectories],
     survivingDirectoriesOf(currentIndex.entries.map((entry) => entry.path)),
   );
 };
@@ -863,11 +894,11 @@ const resetAfterPush = async (
   lock: IndexLock,
   inputs: ResetInputs,
 ): Promise<void> => {
-  const { workDir, base, iTree, untracked, opts } = inputs;
+  const { workDir, base, iTree, opts } = inputs;
   const currentIndex = await readIndex(ctx);
   // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
   if (opts.includeUntracked === true)
-    await cleanStashedUntracked(ctx, workDir, untracked, currentIndex);
+    await cleanStashedUntracked(ctx, workDir, inputs, currentIndex);
   const target = opts.keepIndex === true ? iTree : base.bTree;
   const result = await materializeTreeJudging(
     ctx,

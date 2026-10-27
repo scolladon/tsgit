@@ -767,6 +767,155 @@ describe('stash push', () => {
     });
   });
 
+  describe('Given an edited tracked file, an untracked file and an empty directory with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the empty directory is gone from the work tree', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        await write(ctx, 'top', 'top\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/emptydir`);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(await lstatOrUndefined(ctx, 'emptydir')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an edited tracked file and a nested empty chain nest/inner with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then nest and nest/inner are both gone', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/nest/inner`);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'nest/inner')).toBeUndefined();
+        expect(await lstatOrUndefined(ctx, 'nest')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given untracked w/u beside an empty w/e with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then w/e and w are gone', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'w/u', 'u\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/w/e`);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'w/e')).toBeUndefined();
+        expect(await lstatOrUndefined(ctx, 'w')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an ignored file in a directory with an edited tracked file and includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the directory and the ignored file stay', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, '.gitignore', '*.cache\n', 'ignore caches');
+        await write(ctx, 'a.txt', 'modified\n');
+        await write(ctx, 'm/.cache', 'cache\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await read(ctx, 'm/.cache')).toBe('cache\n');
+      });
+    });
+  });
+
+  describe('Given an ignored empty directory with an edited tracked file and includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the ignored directory stays', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, '.gitignore', 'build/\n', 'ignore build');
+        await write(ctx, 'a.txt', 'modified\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/build`);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'build')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a submodule whose directory is empty and an edited file with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the submodule directory stays', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await write(ctx, 'a.txt', 'modified\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'sub')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given only an empty directory with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then there is nothing to save and the directory stays', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/emptydir`);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+        expect(await lstatOrUndefined(ctx, 'emptydir')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given an edited tracked file and an empty directory without includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the empty directory stays', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/emptydir`);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'emptydir')).toBeDefined();
+      });
+    });
+  });
+
   describe('Given a tracked directory replaced by an untracked file of the same name', () => {
     describe('When push runs with includeUntracked', () => {
       it('Then the directory content is restored and the file is kept in the untracked commit', async () => {
