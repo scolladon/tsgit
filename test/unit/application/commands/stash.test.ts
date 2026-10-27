@@ -2829,6 +2829,28 @@ describe('stash apply — index-side judge', () => {
     });
   });
 
+  describe('Given a staged path and a cyclic HEAD ref chain', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the ref cycle propagates instead of reading HEAD as unborn', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/a\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/a`, 'ref: refs/heads/b\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/b`, 'ref: refs/heads/a\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'REF_CYCLE_DETECTED' });
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a staged path while the current index holds a change off HEAD', () => {
     const OFF_HEAD = {
       code: 'STASH_APPLY_WOULD_OVERWRITE',

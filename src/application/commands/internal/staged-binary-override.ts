@@ -31,6 +31,7 @@ export const binaryOverrideReader = (
     const { sources, macros } = await (await provider()).sourcesForPath(path);
     const value = resolveAttribute(sources, path, 'diff', macros);
     const driverBinary = await resolveDriverBinary(ctx, value);
+    // rawIsBinary is read only when a textconv is configured, which `diff-tree --binary` never runs
     return resolveBinaryOverride(value, {
       textconvConfigured: false,
       driverBinary,

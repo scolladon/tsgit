@@ -98,6 +98,11 @@ const inOrder =
     for (const step of steps) step(dir);
   };
 
+const configured =
+  (key: string, value: string): Occupant =>
+  (dir) =>
+    gitIn(dir, 'config', key, value);
+
 const BINARY = `\0${TEN_LINES}`;
 const NUL_LINES = `\0\n${TEN_LINES}`;
 const GITLINK_B = '3333333333333333333333333333333333333333';
@@ -295,6 +300,34 @@ const SHAPES = {
     ),
     post: committed('f', `${NUL_LINES}tail\n`),
   },
+  'attr-driver-nul': {
+    stage: inOrder(
+      committed('.gitattributes', 'f diff=drv\n'),
+      committed('f', NUL_LINES),
+      stageFile('f', `\0\n${withLine(6, 'L6\n')}`),
+      put('g', 'g1\n'),
+    ),
+    post: committed('f', `${NUL_LINES}tail\n`),
+  },
+  'attr-driver-binary': {
+    stage: inOrder(
+      committed('.gitattributes', 'f diff=drv\n'),
+      configured('diff.drv.binary', 'true'),
+      stageFile('f', withLine(2, 'L2\n')),
+      put('g', 'g1\n'),
+    ),
+    post: committed('f', withLine(9, 'L9\n')),
+  },
+  'attr-driver-text': {
+    stage: inOrder(
+      committed('.gitattributes', 'f diff=drv\n'),
+      configured('diff.drv.binary', 'false'),
+      committed('f', NUL_LINES),
+      stageFile('f', `\0\n${withLine(6, 'L6\n')}`),
+      put('g', 'g1\n'),
+    ),
+    post: committed('f', `${NUL_LINES}tail\n`),
+  },
 } satisfies Record<string, { stage: Occupant; post: Occupant }>;
 
 type ShapeName = keyof typeof SHAPES;
@@ -369,6 +402,8 @@ const ROWS: ReadonlyArray<Row> = [
   ),
   ...rowsOf(['gitlink-same', 'mode-only-content'], ['plain'], BOTH_COMMANDS, 'applies'),
   ...rowsOf(['attr-diff-nul'], ['plain'], BOTH_COMMANDS, 'merge-conflicts'),
+  ...rowsOf(['attr-driver-nul', 'attr-driver-binary'], ['plain'], BOTH_COMMANDS, 'refuses'),
+  ...rowsOf(['attr-driver-text'], ['plain'], BOTH_COMMANDS, 'merge-conflicts'),
   ...rowsOf(['H2'], ['plain'], ['apply'], 'applies'),
   ...rowsOf(['staged-non-overlap'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
   ...rowsOf(['staged-other'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),

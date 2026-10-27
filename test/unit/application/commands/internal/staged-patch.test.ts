@@ -8,6 +8,7 @@ import { stage0Entry } from '../../../../../src/application/primitives/internal/
 import { readBlob } from '../../../../../src/application/primitives/read-blob.js';
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
 import { synthesizeTreeFromIndex } from '../../../../../src/application/primitives/synthesize-tree-from-index.js';
+import { updateConfigEntries } from '../../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import {
   FILE_MODE,
@@ -790,6 +791,75 @@ describe('judgeStagedPatch', () => {
         expect(await blobAt(ctx, result.tree, 'f')).toBe(
           `\0\n${lines(10, { at: 6, to: 'L6' })}tail\n`,
         );
+      });
+    });
+  });
+
+  describe('Given f marked with a diff driver, holding a NUL byte and changed in both I and C', () => {
+    const attributes = { '.gitattributes': file('f diff=drv\n') };
+    const trees = async (ctx: Context) => ({
+      bTree: await treeOf(ctx, { ...attributes, f: file(`\0\n${lines(10)}`) }),
+      iTree: await treeOf(ctx, {
+        ...attributes,
+        f: file(`\0\n${lines(10, { at: 6, to: 'L6' })}`),
+      }),
+      cTree: await treeOf(ctx, { ...attributes, f: file(`\0\n${lines(10)}tail\n`) }),
+    });
+
+    describe('When the driver has no configuration', () => {
+      it('Then f is refused as binary by its content', async () => {
+        // Arrange
+        const ctx = await setup();
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, await trees(ctx));
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['f'] });
+      });
+    });
+
+    describe('When the driver is configured as not binary', () => {
+      it('Then f is merged as text', async () => {
+        // Arrange
+        const ctx = await setup();
+        await updateConfigEntries(ctx, [
+          { section: 'diff', subsection: 'drv', key: 'binary', value: 'false' },
+        ]);
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, await trees(ctx));
+
+        // Assert
+        if (result.kind !== 'applies') throw new Error('expected applies');
+        expect(await blobAt(ctx, result.tree, 'f')).toBe(
+          `\0\n${lines(10, { at: 6, to: 'L6' })}tail\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a text file f marked with a diff driver configured as binary', () => {
+    describe('When I and C changed distant lines of f', () => {
+      it('Then f is refused as binary', async () => {
+        // Arrange
+        const ctx = await setup();
+        await updateConfigEntries(ctx, [
+          { section: 'diff', subsection: 'drv', key: 'binary', value: 'true' },
+        ]);
+        const attributes = { '.gitattributes': file('f diff=drv\n') };
+        const bTree = await treeOf(ctx, { ...attributes, f: file(lines(10)) });
+        const iTree = await treeOf(ctx, { ...attributes, f: file(lines(10, { at: 2, to: 'L2' })) });
+        const cTree = await treeOf(ctx, { ...attributes, f: file(`${lines(10)}tail\n`) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['f'] });
       });
     });
   });
