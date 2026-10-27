@@ -738,6 +738,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `stash@{${data.index}} is not a valid stash reference (stack size ${data.stackSize})`;
     case 'STASH_APPLY_WOULD_OVERWRITE':
       return `cannot apply stash: ${data.paths.length} local change(s) would be overwritten`;
+    case 'STASH_UNTRACKED_NOT_RESTORED':
+      return 'could not restore untracked files from stash';
     case 'AMBIGUOUS_OID_PREFIX':
       return `short object id ${data.prefix} is ambiguous (${data.candidates.length} candidates)`;
     case 'INVALID_SEQUENCER_TODO':

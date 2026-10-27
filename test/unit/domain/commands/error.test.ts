@@ -96,6 +96,7 @@ import {
   sparsePatternFileTooLarge,
   stashApplyWouldOverwrite,
   stashNotFound,
+  stashUntrackedNotRestored,
   tagExists,
   tagNotFound,
   targetDirectoryNotEmpty,
@@ -197,6 +198,43 @@ describe('domain commands error — factory data', () => {
           code: 'STASH_APPLY_WOULD_OVERWRITE',
           paths: ['a', 'b'],
         });
+      });
+    });
+  });
+
+  describe('Given the stashUntrackedNotRestored error helper', () => {
+    describe('When called with existing paths and a blocking component', () => {
+      it('Then data carries both', () => {
+        // Arrange
+        const report = {
+          existing: ['u' as FilePath, 'v/w' as FilePath],
+          blockedAt: 'v' as FilePath,
+        };
+
+        // Act
+        const sut = stashUntrackedNotRestored;
+        const result = sut(report);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'STASH_UNTRACKED_NOT_RESTORED',
+          existing: ['u', 'v/w'],
+          blockedAt: 'v',
+        });
+      });
+    });
+
+    describe('When called with a report without a blocking component', () => {
+      it('Then data carries no blockedAt key', () => {
+        // Arrange
+        const report = { existing: ['u' as FilePath] };
+
+        // Act
+        const sut = stashUntrackedNotRestored;
+        const result = sut(report);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u'] });
       });
     });
   });
@@ -1982,6 +2020,18 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a' as FilePath, 'b' as FilePath] },
       'STASH_APPLY_WOULD_OVERWRITE: cannot apply stash: 2 local change(s) would be overwritten',
+    ],
+    [
+      { code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u' as FilePath] },
+      'STASH_UNTRACKED_NOT_RESTORED: could not restore untracked files from stash',
+    ],
+    [
+      {
+        code: 'STASH_UNTRACKED_NOT_RESTORED',
+        existing: ['u' as FilePath],
+        blockedAt: 'v' as FilePath,
+      },
+      'STASH_UNTRACKED_NOT_RESTORED: could not restore untracked files from stash',
     ],
     [
       { code: 'CONFIG_MISSING_VALUE', key: 'user.name', source: '/repo/.git/config', line: 2 },

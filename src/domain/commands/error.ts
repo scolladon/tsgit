@@ -450,6 +450,13 @@ export type CommandError =
   | { readonly code: 'STASH_NOT_FOUND'; readonly index: number; readonly stackSize: number }
   | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> }
   | {
+      readonly code: 'STASH_UNTRACKED_NOT_RESTORED';
+      /** Every untracked path that already existed, in index order; git prints `<path> already exists, no checkout` for each. */
+      readonly existing: ReadonlyArray<FilePath>;
+      /** The leading component where git stopped restoring; git prints `cannot create directory at '<path>': File exists`. Absent when nothing blocked. */
+      readonly blockedAt?: FilePath;
+    }
+  | {
       readonly code: 'AMBIGUOUS_OID_PREFIX';
       readonly prefix: string;
       /** The objects git's `hint:` lists, in its order: unreadable objects, tags, commits, trees, then blobs, each by id. */
@@ -577,6 +584,17 @@ export type TimestampRangeReason = 'before-epoch' | 'too-large';
 export type FormatPlaceholderReason = 'not-supported' | 'unparsable';
 
 export const sanitize = sanitizeForDisplay;
+
+/**
+ * What an untracked-files restore left unwritten after a clean merge: `existing`
+ * is every path that already existed (git's `<path> already exists, no checkout`
+ * lines, in index order); `blockedAt` is the leading component git names in
+ * `cannot create directory at '<path>': File exists` when the restore stopped.
+ */
+export interface UntrackedNotRestored {
+  readonly existing: ReadonlyArray<FilePath>;
+  readonly blockedAt?: FilePath;
+}
 
 /**
  * The two would-overwrite refusal classes: `localChanges` is git's "Your local
@@ -1387,6 +1405,7 @@ export const rmRecursiveWithoutR = (pattern: string): TsgitError =>
 // callers can render `stash@{index}`; `STASH_APPLY_WOULD_OVERWRITE` mirrors
 // git's pre-merge "local changes would be overwritten" abort. `paths` are
 // pathspec-validated index paths, embedded verbatim like `rm`/`mv`.
+// `STASH_UNTRACKED_NOT_RESTORED` reports untracked files a clean apply could not write.
 export const noInitialCommit = (): TsgitError => new TsgitError({ code: 'NO_INITIAL_COMMIT' });
 
 export const stashNotFound = (index: number, stackSize: number): TsgitError =>
@@ -1394,6 +1413,16 @@ export const stashNotFound = (index: number, stackSize: number): TsgitError =>
 
 export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths });
+
+export const stashUntrackedNotRestored = ({
+  existing,
+  blockedAt,
+}: UntrackedNotRestored): TsgitError =>
+  new TsgitError({
+    code: 'STASH_UNTRACKED_NOT_RESTORED',
+    existing,
+    ...(blockedAt === undefined ? {} : { blockedAt }),
+  });
 
 // Abbreviated-oid resolution. `candidates` holds every match git's hint lists,
 // uncapped as git's is; `prefix` is the validated 4–39-hex query, embedded verbatim.
