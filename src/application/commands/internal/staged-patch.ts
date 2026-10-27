@@ -5,11 +5,11 @@ import { isSameKind, kindOf } from '../../../domain/diff/mode-kind.js';
 import { comparePaths } from '../../../domain/diff/path-compare.js';
 import { TsgitError } from '../../../domain/error.js';
 import { viewOfEscaped } from '../../../domain/git-index/index-path-key.js';
-import { validateTreePath } from '../../../domain/git-index/path-validator.js';
 import type { FileMode, FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
 import { hashBlob } from '../../primitives/hash-blob.js';
+import { indexPathRulesOf } from '../../primitives/internal/index-path-rules.js';
 import {
   parentDirectory,
   survivingDirectoriesOf,
@@ -110,9 +110,9 @@ const judgeModify = (
 };
 
 /** git's `verify_path` on the name a patch creates: a refused name fails the check phase. */
-const isAdmissibleName = (path: FilePath, entry: FlatTreeEntry): boolean => {
+const isAdmissibleName = (ctx: Context, path: FilePath, entry: FlatTreeEntry): boolean => {
   try {
-    validateTreePath(path, entry.mode);
+    indexPathRulesOf(ctx).validateTreePath(path, entry.mode);
     return true;
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'INVALID_INDEX_ENTRY') return false;
@@ -121,7 +121,7 @@ const isAdmissibleName = (path: FilePath, entry: FlatTreeEntry): boolean => {
 };
 
 const judgePath = async (judge: Judge, path: FilePath, { b, i, c }: Sides): Promise<Outcome> => {
-  if (i !== undefined && !isAdmissibleName(path, i)) return FAILS;
+  if (i !== undefined && !isAdmissibleName(judge.ctx, path, i)) return FAILS;
   if (b === undefined) return judgeCreation(i as FlatTreeEntry, c);
   if (i === undefined) return judgeReplacement(b, c, REMOVE);
   if (!isSameKind(b.mode, i.mode)) return judgeReplacement(b, c, { kind: 'set', entry: i });
@@ -143,17 +143,28 @@ const hasOccupiedAncestor = (path: FilePath, occupied: ReadonlySet<FilePath>): b
 
 const isPlacement = (outcome: Outcome): boolean => outcome.kind === 'set';
 
-/** git refuses a path that is both a file and a directory, but only once the check phase has passed, and at the first one. */
-const firstClash = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): FilePath | undefined => {
+const survivingEntriesOf = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): Set<FilePath> => {
   const occupied = new Set(c.keys());
   for (const [path, outcome] of outcomes) {
     if (outcome.kind === 'remove') occupied.delete(path);
   }
-  const directories = survivingDirectoriesOf(occupied);
-  return [...outcomes]
-    .filter(([, outcome]) => isPlacement(outcome))
-    .map(([path]) => path)
-    .find((path) => directories.has(path) || hasOccupiedAncestor(path, occupied));
+  return occupied;
+};
+
+/**
+ * git refuses a path that is both a file and a directory, but only once the check phase has passed,
+ * and at the first one in the order it writes: the placements clash with each other as well as with C.
+ */
+const firstClash = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): FilePath | undefined => {
+  const occupied = survivingEntriesOf(c, outcomes);
+  const directories = new Set(survivingDirectoriesOf(occupied));
+  for (const [path, outcome] of outcomes) {
+    if (!isPlacement(outcome)) continue;
+    if (directories.has(path) || hasOccupiedAncestor(path, occupied)) return path;
+    occupied.add(path);
+    for (const directory of survivingDirectoriesOf([path])) directories.add(directory);
+  }
+  return undefined;
 };
 
 const judgeAll = async (

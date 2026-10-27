@@ -483,9 +483,9 @@ const plumb = (dir: string, args: ReadonlyArray<string>, input?: string): string
     ...(input === undefined ? {} : { input }),
   }).trim();
 
-type HostileShape = 'invalid-name' | 'base-only';
+type HostileShape = 'invalid-name' | 'base-only' | 'duplicate-name';
 
-/** A stash whose stashed index (or base) holds a `.git/x` entry, built with plumbing as a hostile peer could. */
+/** A stash whose stashed index (or base) holds a `.git/x` entry or a name that is both file and directory, built with plumbing as a hostile peer could. */
 const storeHostileStash = (dir: string, shape: HostileShape): void => {
   const blob = plumb(dir, ['hash-object', '-w', '--stdin'], 'x\n');
   const inner = plumb(dir, ['mktree'], `100644 blob ${blob}\tx\n`);
@@ -496,10 +496,19 @@ const storeHostileStash = (dir: string, shape: HostileShape): void => {
   const commitTree = (tree: string, ...parents: string[]): string =>
     plumb(dir, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', 'x']);
   const hostile = treeWith(`040000 tree ${inner}\t.git`);
-  const stashed =
-    shape === 'invalid-name'
-      ? [head, commitTree(hostile, head)]
-      : [commitTree(hostile), commitTree(treeWith(`100644 blob ${blob}\tz`), commitTree(hostile))];
+  const duplicated = plumb(
+    dir,
+    ['mktree', '--missing'],
+    `${listed}\n100644 blob ${blob}\tn\n040000 tree ${inner}\tn\n`,
+  );
+  const stashed = {
+    'invalid-name': () => [head, commitTree(hostile, head)],
+    'duplicate-name': () => [head, commitTree(duplicated, head)],
+    'base-only': () => [
+      commitTree(hostile),
+      commitTree(treeWith(`100644 blob ${blob}\tz`), commitTree(hostile)),
+    ],
+  }[shape]();
   const [base, index] = stashed as [string, string];
   plumb(dir, ['stash', 'store', '-m', 'wip', commitTree(headTree, base, index)]);
 };
@@ -577,8 +586,8 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
       );
     });
   });
-  describe.each(['invalid-name', 'base-only'] as const)(
-    'Given a stash holding .git/x as %s',
+  describe.each(['invalid-name', 'base-only', 'duplicate-name'] as const)(
+    'Given a stash holding a hostile entry as %s',
     (shape) => {
       describe.each(BOTH_COMMANDS)('When %s runs in git and in tsgit on a twin', (command) => {
         it(

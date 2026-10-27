@@ -71,6 +71,23 @@ const hostileTree = async (ctx: Context, dir: string, name: string): Promise<Obj
   });
 };
 
+const duplicateNameTree = async (ctx: Context, name: string): Promise<ObjectId> => {
+  const blob = await hashBlob(ctx, text('x\n'), { write: true });
+  const inner = await writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [treeEntry(FILE_MODE.REGULAR, 'x', blob)],
+  });
+  return writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [
+      treeEntry(FILE_MODE.REGULAR, name, blob),
+      treeEntry(FILE_MODE.DIRECTORY, name, inner),
+    ],
+  });
+};
+
 const lines = (n: number, edit?: { at: number; to: string }): string =>
   Array.from({ length: n }, (_, k) => (edit?.at === k + 1 ? edit.to : `l${k + 1}`))
     .map((l) => `${l}\n`)
@@ -627,6 +644,25 @@ describe('judgeStagedPatch', () => {
     });
   });
 
+  describe('Given an I holding both a file n and a directory n', () => {
+    describe('When C holds neither', () => {
+      it('Then the placement under the directory is refused as the clash', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { keep: file('k\n') });
+        const iTree = await duplicateNameTree(ctx, 'n');
+        const cTree = await treeOf(ctx, { keep: file('k\n') });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['n/x'] });
+      });
+    });
+  });
+
   describe('Given a file created in I under a .git directory', () => {
     describe('When the judge runs', () => {
       it('Then the path is refused before anything is written', async () => {
@@ -642,6 +678,25 @@ describe('judgeStagedPatch', () => {
 
         // Assert
         expect(result).toStrictEqual({ kind: 'refused', paths: ['.git/x'] });
+      });
+    });
+  });
+
+  describe('Given a file x\\y created in I', () => {
+    describe('When the host runs under Windows path syntax', () => {
+      it('Then the path is refused as the Windows rules do', async () => {
+        // Arrange
+        const ctx = { ...(await setup()), windowsPathSyntax: true };
+        const bTree = await treeOf(ctx, { f: file('f\n') });
+        const iTree = await treeOf(ctx, { f: file('f\n'), 'x\\y': file('Y\n') });
+        const cTree = await treeOf(ctx, { f: file('f\n') });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['x\\y'] });
       });
     });
   });
