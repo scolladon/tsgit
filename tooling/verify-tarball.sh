@@ -423,7 +423,14 @@ done
 # pass and its shared index-stat judge, the stash push opening refresh and reset ref
 # tail, the bare-HEAD stay and the path-restore unmerged refusal — runtime code
 # shipped in every distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((1488 * 1024))
+# Raised 1488 -> 1496 KiB by the stash apply and push faithfulness work: the measured
+# pack landed at 1 530 964 B, 7 252 B over the old cap, attributable to the index-side
+# judge (git's apply --cached rule: hunk application, the per-path rules, the diff
+# attribute reader), the reset-to-HEAD refusal, the untracked restore verdicts, the
+# walker's empty-directory report and prune entry, and the two new error codes —
+# runtime code shipped in every distribution form, none removable without dropping
+# the refusals git performs.
+SIZE_CAP=$((1496 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
