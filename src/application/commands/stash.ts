@@ -13,6 +13,8 @@ import {
   noInitialCommit,
   pathspecBeyondSymlink,
   stashApplyWouldOverwrite,
+  stashUntrackedNotRestored,
+  type UntrackedNotRestored,
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
 import type { DiffChange } from '../../domain/diff/diff-change.js';
@@ -881,21 +883,6 @@ const parseStashCommit = async (ctx: Context, w: ObjectId): Promise<StashParents
   return { base, indexParent, untrackedParent, wTree: obj.data.tree };
 };
 
-/** Untracked paths whose restoration would overwrite an existing working file. */
-const untrackedOverwrites = async (
-  ctx: Context,
-  workDir: string,
-  uTree: ObjectId,
-): Promise<ReadonlyArray<FilePath>> => {
-  const flat = await flattenEscapedTree(ctx, uTree);
-  const clobbered: FilePath[] = [];
-  for (const path of flat.entries.keys()) {
-    if (hasEscapedBytes(path)) continue;
-    if (await pathIsOccupied(ctx, joinPath(workDir, path))) clobbered.push(path);
-  }
-  return clobbered;
-};
-
 /** git restores untracked files through a checkout of a temporary index holding exactly them. */
 const untrackedWriter = (
   ctx: Context,
@@ -912,25 +899,85 @@ const untrackedWriter = (
     limiter: limiterFor(ctx, 'cpuBound'),
   });
 
-/** Check out the untracked tree into the working tree (clean-apply path only). */
-const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
-  const flat = await flattenEscapedTree(ctx, uTree);
-  // Whole-tree name gate before the first write: a stash's untracked tree is
-  // attacker-controllable, so a hostile entry name (`.git/**`, a `.git` alias,
-  // a traversal) must refuse the entire restore untouched — mirroring the
-  // index-write boundary a checkout crosses.
+type RestoreVerdict =
+  | { readonly kind: 'free' }
+  | { readonly kind: 'exists' }
+  | { readonly kind: 'blocked'; readonly at: FilePath };
+
+const FREE: RestoreVerdict = { kind: 'free' };
+const EXISTS: RestoreVerdict = { kind: 'exists' };
+
+/** git's checkout-index judges each entry: a leading file or link stops the restore, a present path is skipped. */
+const restoreVerdict = async (
+  ctx: Context,
+  workDir: string,
+  scanner: LeadingPathScanner,
+  path: FilePath,
+): Promise<RestoreVerdict> => {
+  if (hasEscapedBytes(path)) return FREE;
+  const obstruction = await scanner.obstructingLeadingComponent(path);
+  if (obstruction !== undefined) return { kind: 'blocked', at: obstruction.path };
+  return (await pathIsOccupied(ctx, joinPath(workDir, path))) ? EXISTS : FREE;
+};
+
+/**
+ * Whole-tree name gate before the first write: a stash's untracked tree is
+ * attacker-controllable, so a hostile entry name (`.git/**`, a `.git` alias,
+ * a traversal) must refuse the entire restore untouched — mirroring the
+ * index-write boundary a checkout crosses.
+ */
+const validateUntrackedNames = (ctx: Context, flat: EscapedFlatTree): void => {
   const pathRules = indexPathRulesOf(ctx);
   for (const [path, entry] of flat.entries) {
     pathRules.validateTreePath(path, entry.mode);
   }
+};
+
+/** Write each untracked entry git's checkout-index would, in index order, and report the rest. */
+const restoreEntries = async (
+  ctx: Context,
+  workDir: string,
+  flat: EscapedFlatTree,
+): Promise<UntrackedNotRestored> => {
   // One scanner for the whole restore: its per-directory memo means a deep
   // untracked tree with many paths under the same symlinked directory costs
   // one `lstat` per distinct directory, not one per path.
   const scanner = createLeadingPathScanner(ctx);
   const writer = untrackedWriter(ctx, flat.entries);
+  const existing: FilePath[] = [];
   for (const [path, entry] of flat.entries) {
+    const verdict = await restoreVerdict(ctx, workDir, scanner, path);
+    if (verdict.kind === 'blocked') return { existing, blockedAt: verdict.at };
+    if (verdict.kind === 'exists') {
+      existing.push(path);
+      continue;
+    }
     await writer.writeBlob(path, entry.id, entry.mode, scanner);
     forgetAfterLink(scanner, [entry.mode]);
+  }
+  return { existing };
+};
+
+/** Check out the untracked tree into the working tree and report what was not restored. */
+const restoreUntracked = async (
+  ctx: Context,
+  workDir: string,
+  uTree: ObjectId,
+): Promise<UntrackedNotRestored> => {
+  const flat = await flattenEscapedTree(ctx, uTree);
+  validateUntrackedNames(ctx, flat);
+  return restoreEntries(ctx, workDir, flat);
+};
+
+/** Restoring nothing is not a failure; leaving a stashed path unwritten is, as git exits 1 there. */
+const restoreUntrackedOrThrow = async (
+  ctx: Context,
+  workDir: string,
+  uTree: ObjectId,
+): Promise<void> => {
+  const report = await restoreUntracked(ctx, workDir, uTree);
+  if (report.existing.length > 0 || report.blockedAt !== undefined) {
+    throw stashUntrackedNotRestored(report);
   }
 };
 
@@ -1053,7 +1100,6 @@ const applyUnderLock = async (
   const currentIndex = await readIndex(ctx);
   rejectUnmergedIndex(currentIndex.entries);
   const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
-  if (uTree !== undefined) await refuseUntrackedOverwrites(ctx, workDir, uTree);
   const result = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
   if (result.kind === 'conflict') {
     await lock.commit(result.indexEntries, 'replace');
@@ -1077,17 +1123,8 @@ const applyUnderLock = async (
     );
     await lock.commit(entries, 'replace', { restagedPaths });
   }
-  if (uTree !== undefined) await restoreUntracked(ctx, uTree);
+  if (uTree !== undefined) await restoreUntrackedOrThrow(ctx, workDir, uTree);
   return { kind: 'applied', stash: w };
-};
-
-const refuseUntrackedOverwrites = async (
-  ctx: Context,
-  workDir: string,
-  uTree: ObjectId,
-): Promise<void> => {
-  const clobbered = await untrackedOverwrites(ctx, workDir, uTree);
-  if (clobbered.length > 0) throw stashApplyWouldOverwrite(clobbered);
 };
 
 type StashMerge =

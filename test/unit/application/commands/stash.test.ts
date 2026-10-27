@@ -131,6 +131,29 @@ const pushHostileUntrackedStash = async (ctx: Context, untrackedTree: ObjectId):
   await pushStashRef(ctx, w, 'WIP on main');
 };
 
+const refusalDataOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+  } catch (err) {
+    return (err as TsgitError).data;
+  }
+  return undefined;
+};
+
+const lstatOrUndefined = async (ctx: Context, path: string) =>
+  ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
+
+/** Pushes untracked `a`, `m/z`, `u`, `z` with `-u`, leaving a clean tree. */
+const stashFourUntracked = async (): Promise<Context> => {
+  const ctx = await setupRepo();
+  for (const name of ['a', 'm/z', 'u', 'z']) await write(ctx, name, `${name}\n`);
+  await stashPush(ctx, { includeUntracked: true });
+  await ctx.fs.rmRecursive(`${ctx.layout.workDir}/m`);
+  return ctx;
+};
+
+const NOT_WRITTEN = ['m/z', 'u', 'z'];
+
 const GITLINK_A = 'a'.repeat(40) as ObjectId;
 const GITLINK_C = 'c'.repeat(40) as ObjectId;
 
@@ -1206,32 +1229,6 @@ describe('stash apply', () => {
           paths: ['a.txt'],
           preserved: { path: 'a.txt', content: 'local edit\n' },
         },
-        {
-          label: 'a dangling symlink squatting a stashed untracked path',
-          // The lstat-based presence probe sees the link where a
-          // target-following probe would not (its target does not exist).
-          build: async (): Promise<Context> => {
-            const ctx = await setupRepo();
-            await write(ctx, 'new.txt', 'untracked\n');
-            await stashPush(ctx, { includeUntracked: true });
-            await ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`);
-            return ctx;
-          },
-          paths: ['new.txt'],
-          preserved: undefined,
-        },
-        {
-          label: 'an untracked file already present at a stashed untracked path',
-          build: async (): Promise<Context> => {
-            const ctx = await setupRepo();
-            await write(ctx, 'new.txt', 'untracked\n');
-            await stashPush(ctx, { includeUntracked: true });
-            await write(ctx, 'new.txt', 'in the way\n');
-            return ctx;
-          },
-          paths: ['new.txt'],
-          preserved: undefined,
-        },
       ])(
         'Then it refuses with STASH_APPLY_WOULD_OVERWRITE for $label',
         async ({ build, paths, preserved }) => {
@@ -1257,6 +1254,209 @@ describe('stash apply', () => {
           }
         },
       );
+    });
+  });
+
+  describe('Given an untracked path whose leading component is an obstruction', () => {
+    describe('When apply runs', () => {
+      it.each([
+        {
+          label: 'a regular file',
+          plant: async (ctx: Context): Promise<void> => write(ctx, 'm', 'occupant\n'),
+          kept: { symlink: false, target: undefined },
+        },
+        {
+          label: 'a link to a file',
+          plant: async (ctx: Context): Promise<void> =>
+            ctx.fs.symlink('a.txt', `${ctx.layout.workDir}/m`),
+          kept: { symlink: true, target: 'a.txt' },
+        },
+        {
+          label: 'a link to a directory',
+          plant: async (ctx: Context): Promise<void> => {
+            await ctx.fs.mkdir(`${ctx.layout.workDir}/elsewhere`);
+            await ctx.fs.symlink('elsewhere', `${ctx.layout.workDir}/m`);
+          },
+          kept: { symlink: true, target: 'elsewhere' },
+        },
+        {
+          label: 'a dangling link',
+          plant: async (ctx: Context): Promise<void> =>
+            ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/m`),
+          kept: { symlink: true, target: 'nowhere' },
+        },
+      ])(
+        'Then it throws with blockedAt m, keeps $label and writes only the entries before it',
+        async ({ plant, kept }) => {
+          // Arrange
+          const ctx = await stashFourUntracked();
+          await plant(ctx);
+          const sut = stashApply;
+
+          // Act
+          const data = await refusalDataOf(() => sut(ctx, {}));
+
+          // Assert
+          expect(data).toEqual({
+            code: 'STASH_UNTRACKED_NOT_RESTORED',
+            existing: [],
+            blockedAt: 'm',
+          });
+          expect(await read(ctx, 'a')).toBe('a\n');
+          const stat = await lstatOrUndefined(ctx, 'm');
+          expect(stat?.isSymbolicLink).toBe(kept.symlink);
+          if (kept.target !== undefined) {
+            expect(await ctx.fs.readlink(`${ctx.layout.workDir}/m`)).toBe(kept.target);
+          }
+          for (const name of NOT_WRITTEN) {
+            expect(await lstatOrUndefined(ctx, name)).toBeUndefined();
+          }
+        },
+      );
+    });
+  });
+
+  describe('Given content already present at a stashed untracked path', () => {
+    describe('When apply runs', () => {
+      it.each([
+        {
+          label: 'a dangling symlink',
+          // The lstat-based presence probe sees the link where a
+          // target-following probe would not (its target does not exist).
+          squat: async (ctx: Context): Promise<void> =>
+            ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`),
+        },
+        {
+          label: 'an untracked file',
+          squat: async (ctx: Context): Promise<void> => write(ctx, 'new.txt', 'in the way\n'),
+        },
+      ])('Then it throws STASH_UNTRACKED_NOT_RESTORED and keeps $label', async ({ squat }) => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'new.txt', 'untracked\n');
+        await stashPush(ctx, { includeUntracked: true });
+        await squat(ctx);
+        const before = await lstatOrUndefined(ctx, 'new.txt');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['new.txt'] });
+        const after = await lstatOrUndefined(ctx, 'new.txt');
+        expect(after?.isSymbolicLink).toBe(before?.isSymbolicLink);
+        expect(after?.size).toBe(before?.size);
+      });
+    });
+  });
+
+  describe('Given a stashed untracked path recreated after the push', () => {
+    describe('When apply runs', () => {
+      it('Then the other untracked paths and the tracked edit are applied and the recreated file is kept', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        for (const name of ['a', 'm/z', 'u', 'z']) await write(ctx, name, `${name}\n`);
+        await stashPush(ctx, { includeUntracked: true });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/m`);
+        await write(ctx, 'u', 'other\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u'] });
+        expect(await read(ctx, 'a')).toBe('a\n');
+        expect(await read(ctx, 'm/z')).toBe('m/z\n');
+        expect(await read(ctx, 'z')).toBe('z\n');
+        expect(await read(ctx, 'u')).toBe('other\n');
+        expect(await read(ctx, 'a.txt')).toBe('edited\n');
+      });
+    });
+  });
+
+  describe('Given a directory replaced by an untracked file of the same name', () => {
+    describe('When apply runs on the reset tree', () => {
+      it('Then the merge deletes the tracked entry and the file is restored', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'x\n', 'add d/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'file\n');
+        await stashPush(ctx, { includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'd')).toBe('file\n');
+        expect(await lstatOrUndefined(ctx, 'd/x')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given stashed untracked paths u, v, w and x with u and w already present', () => {
+    describe('When apply runs', () => {
+      it.each([
+        {
+          label: 'a directory holding a file',
+          squat: async (ctx: Context): Promise<void> => write(ctx, 'u/inner', 'kept\n'),
+        },
+        {
+          label: 'an empty directory',
+          squat: async (ctx: Context): Promise<void> => ctx.fs.mkdir(`${ctx.layout.workDir}/u`),
+        },
+        {
+          label: 'a dangling link',
+          squat: async (ctx: Context): Promise<void> =>
+            ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/u`),
+        },
+      ])(
+        'Then it lists both present paths in order and still writes the free ones: $label at u',
+        async ({ squat }) => {
+          // Arrange
+          const ctx = await setupRepo();
+          for (const name of ['u', 'v', 'w', 'x']) await write(ctx, name, `${name}\n`);
+          await stashPush(ctx, { includeUntracked: true });
+          await squat(ctx);
+          await write(ctx, 'w', 'other\n');
+          const sut = stashApply;
+
+          // Act
+          const data = await refusalDataOf(() => sut(ctx, {}));
+
+          // Assert
+          expect(data).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u', 'w'] });
+          expect(await read(ctx, 'v')).toBe('v\n');
+          expect(await read(ctx, 'x')).toBe('x\n');
+          expect(await read(ctx, 'w')).toBe('other\n');
+        },
+      );
+    });
+  });
+
+  describe('Given stashed untracked paths m/y and m/z with no m on disk', () => {
+    describe('When apply runs', () => {
+      it('Then both are restored', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        for (const name of ['m/y', 'm/z']) await write(ctx, name, `${name}\n`);
+        await stashPush(ctx, { includeUntracked: true });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/m`);
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'm/y')).toBe('m/y\n');
+        expect(await read(ctx, 'm/z')).toBe('m/z\n');
+      });
     });
   });
 
@@ -1699,6 +1899,29 @@ describe('stash pop', () => {
         expect(result.kind).toBe('applied');
         expect(await read(ctx, 'a.txt')).toBe('modified\n');
         expect((await stashList(ctx)).entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a link to a directory squatting the leading component of a stashed untracked path', () => {
+    describe('When pop runs', () => {
+      it('Then it throws STASH_UNTRACKED_NOT_RESTORED and the stash is kept', async () => {
+        // Arrange
+        const ctx = await stashFourUntracked();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/elsewhere`);
+        await ctx.fs.symlink('elsewhere', `${ctx.layout.workDir}/m`);
+        const sut = stashPop;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_UNTRACKED_NOT_RESTORED',
+          existing: [],
+          blockedAt: 'm',
+        });
+        expect((await stashList(ctx)).entries).toHaveLength(1);
       });
     });
   });

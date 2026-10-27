@@ -25,6 +25,7 @@ import {
 import {
   buildHistory,
   COMMIT_ENV,
+  danglingLinkAt,
   emptyDirectoryAt,
   fileAt,
   fileWith,
@@ -67,8 +68,22 @@ const PLANTS: Readonly<Record<string, Occupant>> = {
   FL: replacing('f', linkAt('f', 'keep')),
 };
 
+const EDITED_F: Occupant = fileWith('f', 'f2\n');
+
+const UNTRACKED_PLANTS: Readonly<Record<string, Occupant>> = {
+  FU: (dir) => {
+    EDITED_F(dir);
+    fileWith('u', 'u\n')(dir);
+  },
+  UP: (dir) => {
+    EDITED_F(dir);
+    for (const rel of ['a', 'm/z', 'u', 'z']) fileWith(rel, `${rel}\n`)(dir);
+  },
+};
+
 const SHAPES: Readonly<Record<string, Occupant>> = {
   ...PLANTS,
+  ...UNTRACKED_PLANTS,
   ...Object.fromEntries(Object.entries(PLANTS).map(([name, plant]) => [`${name}a`, staged(plant)])),
 };
 
@@ -89,6 +104,11 @@ type ShapeName = keyof typeof SHAPES;
 type PushName = keyof typeof PUSHES;
 type CommandName = keyof typeof COMMANDS;
 
+interface RestoreReport {
+  readonly existing: ReadonlyArray<string>;
+  readonly blockedAt?: string;
+}
+
 interface Row {
   readonly shape: ShapeName;
   readonly push: PushName;
@@ -99,6 +119,7 @@ interface Row {
   readonly git: { readonly exit: number; readonly autoMerge: boolean };
   readonly refusal?: string;
   readonly pushRefusal?: string;
+  readonly restore?: RestoreReport;
 }
 
 const NO_POST: Occupant = () => undefined;
@@ -138,7 +159,47 @@ const NO_STASH = {
   refusal: 'STASH_NOT_FOUND',
   pushRefusal: 'PATHSPEC_BEYOND_SYMLINK',
 };
+const bothPlanted: Occupant = (dir) => {
+  fileAt('m')(dir);
+  fileWith('u', 'other\n')(dir);
+};
 const REMOVED_DIRECTORY_ENTRY: Occupant = (dir) => rmSync(path.join(dir, 'd', 'x'));
+const UNTRACKED_POSTS: Readonly<Record<string, Occupant>> = {
+  'an untracked file in the way': fileWith('d/u', 'untracked\n'),
+  'an empty directory in the way': emptyDirectoryAt('d/e'),
+  'an ignored file in the way': ignoring('d/u', fileWith('d/u', 'untracked\n')),
+};
+
+const UNTRACKED_NOT_RESTORED = 'STASH_UNTRACKED_NOT_RESTORED';
+const RESTORE_STOPPED = { git: { exit: 1, autoMerge: true }, refusal: UNTRACKED_NOT_RESTORED };
+const blockedAt = (component: string) => ({
+  ...RESTORE_STOPPED,
+  restore: { existing: [], blockedAt: component },
+});
+const existing = (...paths: string[]) => ({ ...RESTORE_STOPPED, restore: { existing: paths } });
+
+const U_POSTS: Readonly<Record<string, Occupant>> = {
+  'a recreated u': fileWith('u', 'other\n'),
+  'an empty directory at u': emptyDirectoryAt('u'),
+};
+
+const M_POSTS: Readonly<Record<string, Occupant>> = {
+  'a file at m': fileAt('m'),
+  'a link at m to a file': linkAt('m', 'keep'),
+  'a link at m to a directory': linkAt('m', 'd'),
+  'a dangling link at m': danglingLinkAt('m'),
+};
+
+const afterPosts = (
+  shape: ShapeName,
+  push: PushName,
+  posts: Readonly<Record<string, Occupant>>,
+  pin: Pin,
+): Row[] =>
+  Object.entries(posts).flatMap(([after, post]) =>
+    expand([shape], [push], { ...pin, after, post, pushedBy: 'git' }),
+  );
+
 const POSTS: Readonly<Record<string, Occupant>> = {
   'an empty directory in the way': emptyDirectoryAt('d/e'),
   'an ignored file in the way': ignoring('d/u', fileWith('d/u', 'untracked\n')),
@@ -159,6 +220,28 @@ const ROWS: ReadonlyArray<Row> = [
       pushedBy: 'git',
     }),
   ),
+  ...afterPosts('UP', '-u', M_POSTS, blockedAt('m')),
+  ...afterPosts('UP', '-u', { 'a file at m and a recreated u': bothPlanted }, blockedAt('m')),
+  ...expand(['FD'], ['-u'], {
+    git: { exit: 1, autoMerge: false },
+    refusal: UNTRACKED_NOT_RESTORED,
+    restore: { existing: [], blockedAt: 'f' },
+  }),
+  ...expand(['LD'], ['-u'], {
+    git: { exit: 1, autoMerge: false },
+    refusal: UNTRACKED_NOT_RESTORED,
+    restore: { existing: [], blockedAt: 'l' },
+  }),
+  ...expand(['DF', 'DFn'], ['-u'], MERGED),
+  ...afterPosts('DF', '-u', { 'the tracked entry removed': REMOVED_DIRECTORY_ENTRY }, MERGED),
+  ...afterPosts(
+    'FU',
+    '-u',
+    { 'a recreated u': U_POSTS['a recreated u'] as Occupant },
+    existing('u'),
+  ),
+  ...afterPosts('UP', '-u', U_POSTS, existing('u')),
+  ...afterPosts('DF', '-u', UNTRACKED_POSTS, existing('d')),
 ];
 
 const title = (row: Row): string => `${row.shape} pushed by ${row.push} onto ${row.after}`;
@@ -213,17 +296,42 @@ const settle = (dir: string, row: Row): void => {
 
 const indexInode = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
 
-const tsgitApply = async (dir: string, row: Row): Promise<string> => {
+interface Outcome {
+  readonly kind: string;
+  readonly data?: TsgitError['data'];
+}
+
+const tsgitApply = async (dir: string, row: Row): Promise<Outcome> => {
   const command = COMMANDS[row.command];
   const sut = command.pops ? stashPop : stashApply;
   try {
     const result = await sut(createNodeContext({ workDir: dir }), {
       restoreIndex: command.restoreIndex,
     });
-    return result.kind;
+    return { kind: result.kind };
   } catch (error) {
-    return (error as TsgitError).data.code;
+    const { data } = error as TsgitError;
+    return { kind: data.code, data };
   }
+};
+
+/** git's stderr for a restore that stopped, rebuilt from the data tsgit returns. */
+const restoreStderr = ({ existing: paths, blockedAt: component }: RestoreReport): string =>
+  [
+    ...paths.map((rel) => `${rel} already exists, no checkout`),
+    ...(component === undefined
+      ? []
+      : [`fatal: cannot create directory at '${component}': File exists`]),
+    'error: could not restore untracked files from stash',
+  ]
+    .map((line) => `${line}\n`)
+    .join('');
+
+const expectRestoreReport = (row: Row, gitStderr: string, outcome: Outcome): void => {
+  if (row.restore === undefined) return;
+  const expected = restoreStderr(row.restore);
+  expect(gitStderr.slice(-expected.length)).toBe(expected);
+  expect(outcome.data).toEqual({ code: UNTRACKED_NOT_RESTORED, ...row.restore });
 };
 
 const reflogLines = (dir: string): number => {
@@ -273,7 +381,8 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply over type swaps interop', () => {
 
           // Assert
           expect(gitRun.exitCode).toBe(row.git.exit);
-          expect(outcome).toBe(row.git.exit === 0 ? 'applied' : row.refusal);
+          expect(outcome.kind).toBe(row.git.exit === 0 ? 'applied' : row.refusal);
+          expectRestoreReport(row, gitRun.stderr, outcome);
           expect(pushRefusal).toBe(row.pushRefusal);
           expect(pushed[1]).toBe(pushed[0]);
           expect(observed(pair.ours, inodes[1])).toEqual(observed(pair.peer, inodes[0]));

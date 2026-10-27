@@ -207,7 +207,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
 
   describe('Given an untracked DANGLING symlink squats a stashed untracked path', () => {
     describe('When stash pop runs in each', () => {
-      it('Then both refuse to overwrite it, and the stash is kept — matching git exactly', async () => {
+      it('Then both leave it, report the path as not restored and keep the stash — matching git exactly', async () => {
         // Arrange
         await seed();
         await writeFile(path.join(pair.peer, 'u.txt'), 'untracked\n');
@@ -222,12 +222,16 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
 
         // Assert
         expect(peerResult.ok).toBe(false);
-        expect(peerResult.stderr).toContain('already exists');
-        let oursCode: string | undefined;
+        let oursData: TsgitError['data'] | undefined;
         await repo.stash.pop().catch((err: TsgitError) => {
-          oursCode = err.data.code;
+          oursData = err.data;
         });
-        expect(oursCode).toBe('STASH_APPLY_WOULD_OVERWRITE');
+        expect(oursData).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u.txt'] });
+        expect(
+          peerResult.stderr.endsWith(
+            'u.txt already exists, no checkout\nerror: could not restore untracked files from stash\n',
+          ),
+        ).toBe(true);
         // The stash is kept on both — a failed pop never drops its entry.
         expect(tryRunGit(['-C', pair.peer, 'stash', 'list']).stdout).not.toBe('');
         expect((await repo.stash.list()).entries).toHaveLength(1);
