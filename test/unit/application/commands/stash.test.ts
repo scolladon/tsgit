@@ -1309,6 +1309,8 @@ describe('stash apply', () => {
           expect((caught as TsgitError).data).toEqual({
             code: 'STASH_APPLY_WOULD_OVERWRITE',
             paths,
+            localChanges: paths,
+            untracked: [],
           });
           if (preserved !== undefined) {
             expect(await read(ctx, preserved.path)).toBe(preserved.content);
@@ -1433,6 +1435,174 @@ describe('stash apply', () => {
         expect(await read(ctx, 'z')).toBe('z\n');
         expect(await read(ctx, 'u')).toBe('other\n');
         expect(await read(ctx, 'a.txt')).toBe('edited\n');
+      });
+    });
+  });
+
+  describe('Given a staged directory-to-file stash', () => {
+    describe('When apply runs after a file under the directory was edited', () => {
+      it('Then it refuses with the local-changes class only', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'x\n', 'add d/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'file\n');
+        await add(ctx, ['d']);
+        await stashPush(ctx, {});
+        await write(ctx, 'd/x', 'edited\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['d/x'],
+          localChanges: ['d/x'],
+          untracked: [],
+        });
+      });
+    });
+
+    describe('When apply runs after an untracked file appeared under the directory', () => {
+      it('Then it refuses with the untracked class only', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'x\n', 'add d/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'file\n');
+        await add(ctx, ['d']);
+        await stashPush(ctx, {});
+        await write(ctx, 'd/u', 'in the way\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['d'],
+          localChanges: [],
+          untracked: ['d'],
+        });
+      });
+    });
+  });
+
+  describe('Given a stash holding a tracked edit and an untracked file', () => {
+    const stashEditAndUntracked = async (): Promise<Context> => {
+      const ctx = await setupRepo();
+      await write(ctx, 'a.txt', 'stashed\n');
+      await write(ctx, 'u', 'untracked\n');
+      await stashPush(ctx, { includeUntracked: true });
+      return ctx;
+    };
+
+    describe('When apply runs after the tracked file was edited again', () => {
+      it('Then the merge refuses and the untracked file is restored', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await write(ctx, 'a.txt', 'local edit\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a.txt'],
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
+        expect(await read(ctx, 'u')).toBe('untracked\n');
+        expect(await read(ctx, 'a.txt')).toBe('local edit\n');
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+
+    describe('When apply runs after the tracked file was committed differently', () => {
+      it('Then the conflict is returned and the untracked file is restored', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await commit2(ctx, 'current\n', 'diverge');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'conflict',
+          conflicts: [{ path: 'a.txt', type: expect.any(String) }],
+        });
+        expect(await read(ctx, 'u')).toBe('untracked\n');
+      });
+    });
+
+    describe('When apply runs after the tracked file was edited again and the untracked path recreated', () => {
+      it('Then the refusal carries the restore report', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await write(ctx, 'a.txt', 'local edit\n');
+        await write(ctx, 'u', 'other\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a.txt'],
+          localChanges: ['a.txt'],
+          untracked: [],
+          untrackedNotRestored: { existing: ['u'] },
+        });
+        expect(await read(ctx, 'u')).toBe('other\n');
+      });
+    });
+
+    describe('When apply conflicts and the untracked path was recreated', () => {
+      it('Then the conflict result carries the restore report', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await commit2(ctx, 'current\n', 'diverge');
+        await write(ctx, 'u', 'other\n');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'conflict',
+          conflicts: [{ path: 'a.txt', type: expect.any(String) }],
+          untrackedNotRestored: { existing: ['u'] },
+        });
+      });
+    });
+
+    describe('When pop conflicts and the untracked path was recreated', () => {
+      it('Then the conflict result carries the report and the stash is kept', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await commit2(ctx, 'current\n', 'diverge');
+        await write(ctx, 'u', 'other\n');
+        const sut = stashPop;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'conflict',
+          conflicts: [{ path: 'a.txt', type: expect.any(String) }],
+          untrackedNotRestored: { existing: ['u'] },
+        });
+        expect((await stashList(ctx)).entries).toHaveLength(1);
       });
     });
   });
@@ -1906,6 +2076,8 @@ describe('stash apply and pop open with the index refresh', () => {
         expect((caught as TsgitError).data).toEqual({
           code: 'STASH_APPLY_WOULD_OVERWRITE',
           paths: ['a.txt'],
+          localChanges: ['a.txt'],
+          untracked: [],
         });
         expect(await mtimeOf(ctx, 'b.txt')).toBeGreaterThan(before);
       });

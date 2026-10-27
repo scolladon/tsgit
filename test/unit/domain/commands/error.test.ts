@@ -191,12 +191,40 @@ describe('domain commands error — factory data', () => {
   });
 
   describe('Given the stashApplyWouldOverwrite error helper', () => {
-    describe('When called', () => {
-      it('Then data carries the overwrite-blocked paths', () => {
-        // Arrange + Assert
-        expect(stashApplyWouldOverwrite(['a' as FilePath, 'b' as FilePath]).data).toEqual({
+    describe('When called with both refusal classes', () => {
+      it('Then data carries the classes and their concatenation as paths', () => {
+        // Arrange
+        const sut = stashApplyWouldOverwrite;
+
+        // Act
+        const result = sut({ localChanges: ['a' as FilePath], untracked: ['b' as FilePath] });
+
+        // Assert
+        expect(result.data).toEqual({
           code: 'STASH_APPLY_WOULD_OVERWRITE',
           paths: ['a', 'b'],
+          localChanges: ['a'],
+          untracked: ['b'],
+        });
+      });
+    });
+
+    describe('When called with a restore report', () => {
+      it('Then data carries the report', () => {
+        // Arrange
+        const sut = stashApplyWouldOverwrite;
+        const report = { existing: ['u' as FilePath], blockedAt: 'd' as FilePath };
+
+        // Act
+        const result = sut({ localChanges: ['a' as FilePath], untracked: [] }, report);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a'],
+          localChanges: ['a'],
+          untracked: [],
+          untrackedNotRestored: report,
         });
       });
     });
@@ -2018,7 +2046,12 @@ describe('domain commands error — extractDetail message formatting', () => {
       'STASH_NOT_FOUND: stash@{2} is not a valid stash reference (stack size 1)',
     ],
     [
-      { code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a' as FilePath, 'b' as FilePath] },
+      {
+        code: 'STASH_APPLY_WOULD_OVERWRITE',
+        paths: ['a' as FilePath, 'b' as FilePath],
+        localChanges: ['a' as FilePath],
+        untracked: ['b' as FilePath],
+      },
       'STASH_APPLY_WOULD_OVERWRITE: cannot apply stash: 2 local change(s) would be overwritten',
     ],
     [

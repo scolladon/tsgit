@@ -15,6 +15,7 @@ import {
   stashApplyWouldOverwrite,
   stashUntrackedNotRestored,
   type UntrackedNotRestored,
+  type WouldOverwriteClasses,
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
 import type { DiffChange } from '../../domain/diff/diff-change.js';
@@ -882,9 +883,16 @@ export interface StashConflict {
   readonly type: ConflictType;
 }
 
+export interface StashApplyConflict {
+  readonly kind: 'conflict';
+  readonly conflicts: ReadonlyArray<StashConflict>;
+  /** What git printed after the conflict: untracked files the restore left alone. */
+  readonly untrackedNotRestored?: UntrackedNotRestored;
+}
+
 export type StashApplyResult =
   | { readonly kind: 'applied'; readonly stash: ObjectId }
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> };
+  | StashApplyConflict;
 
 interface StashParents {
   readonly base: ObjectId;
@@ -990,18 +998,6 @@ const restoreUntracked = async (
   const flat = await flattenEscapedTree(ctx, uTree);
   validateUntrackedNames(ctx, flat);
   return restoreEntries(ctx, workDir, flat);
-};
-
-/** Restoring nothing is not a failure; leaving a stashed path unwritten is, as git exits 1 there. */
-const restoreUntrackedOrThrow = async (
-  ctx: Context,
-  workDir: string,
-  uTree: ObjectId,
-): Promise<void> => {
-  const report = await restoreUntracked(ctx, workDir, uTree);
-  if (report.existing.length > 0 || report.blockedAt !== undefined) {
-    throw stashUntrackedNotRestored(report);
-  }
 };
 
 /** git skips `--index` when the stash staged nothing, or the index already equals what was staged. */
@@ -1114,45 +1110,92 @@ interface StashApplication {
   readonly uTree: ObjectId | undefined;
 }
 
-/** Merge the stash into the index and work tree, then restore its index and untracked files. */
+const NOTHING_RESTORED: UntrackedNotRestored = { existing: [] };
+
+const isReported = (restore: UntrackedNotRestored): boolean =>
+  restore.existing.length > 0 || restore.blockedAt !== undefined;
+
+const reportOf = (restore: UntrackedNotRestored) =>
+  isReported(restore) ? { untrackedNotRestored: restore } : {};
+
+/** Merge the stash, settle the index, restore its untracked files, then report the outcome. */
 const applyUnderLock = async (
   ctx: Context,
   lock: IndexLock,
-  { workDir, w, input, parsed, bTree, uTree }: StashApplication,
+  app: StashApplication,
 ): Promise<StashApplyResult> => {
   const currentIndex = await readIndex(ctx);
   rejectUnmergedIndex(currentIndex.entries);
   const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
-  const result = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
-  if (result.kind === 'conflict') {
-    await lock.commit(result.indexEntries, 'replace');
-    return {
-      kind: 'conflict',
-      conflicts: toConflictList(result.conflicts),
-    };
+  const { bTree, parsed, uTree } = app;
+  const merged = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
+  const settled = await settleIndex(ctx, lock, merged, { ...app, cTree, currentIndex });
+  const restore =
+    uTree === undefined ? NOTHING_RESTORED : await restoreUntracked(ctx, app.workDir, uTree);
+  return reportApply(settled, restore, app.w);
+};
+
+type SettledApply =
+  | { readonly kind: 'clean' }
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> }
+  | (WouldOverwriteClasses & { readonly kind: 'would-overwrite' });
+
+type SettleInputs = StashApplication & {
+  readonly cTree: ObjectId;
+  readonly currentIndex: GitIndex;
+};
+
+/** Write the index the merge calls for; a refused merge writes nothing. */
+const settleIndex = async (
+  ctx: Context,
+  lock: IndexLock,
+  merged: StashMerge,
+  app: SettleInputs,
+): Promise<SettledApply> => {
+  if (merged.kind === 'would-overwrite') return merged;
+  if (merged.kind === 'conflict') {
+    await lock.commit(merged.indexEntries, 'replace');
+    return { kind: 'conflict', conflicts: toConflictList(merged.conflicts) };
   }
+  await settleCleanIndex(ctx, lock, merged.newIndexEntries, app);
+  return { kind: 'clean' };
+};
+
+const settleCleanIndex = async (
+  ctx: Context,
+  lock: IndexLock,
+  newIndexEntries: ReadonlyArray<IndexEntry>,
+  { bTree, cTree, currentIndex, input, parsed }: SettleInputs,
+): Promise<void> => {
   const iTree = await commitTreeOf(ctx, parsed.indexParent);
   if (input.restoreIndex === true && hasStagedChanges({ bTree, cTree, iTree })) {
-    await reinstateIndex(ctx, lock, {
-      bTree,
-      cTree,
-      iTree,
-      writtenIndex: { ...currentIndex, entries: result.newIndexEntries },
-    });
-  } else {
-    const { entries, restagedPaths } = unstageChangesUnlessNew(
-      result.newIndexEntries,
-      currentIndex.entries,
-    );
-    await lock.commit(entries, 'replace', { restagedPaths });
+    const writtenIndex = { ...currentIndex, entries: newIndexEntries };
+    await reinstateIndex(ctx, lock, { bTree, cTree, iTree, writtenIndex });
+    return;
   }
-  if (uTree !== undefined) await restoreUntrackedOrThrow(ctx, workDir, uTree);
-  return { kind: 'applied', stash: w };
+  const { entries, restagedPaths } = unstageChangesUnlessNew(newIndexEntries, currentIndex.entries);
+  await lock.commit(entries, 'replace', { restagedPaths });
+};
+
+/** Leaving a stashed path unwritten is a failure, as git exits 1 there. */
+const reportApply = (
+  settled: SettledApply,
+  restore: UntrackedNotRestored,
+  stash: ObjectId,
+): StashApplyResult => {
+  if (settled.kind === 'would-overwrite') {
+    throw stashApplyWouldOverwrite(settled, isReported(restore) ? restore : undefined);
+  }
+  if (settled.kind === 'conflict') {
+    return { kind: 'conflict', conflicts: settled.conflicts, ...reportOf(restore) };
+  }
+  if (isReported(restore)) throw stashUntrackedNotRestored(restore);
+  return { kind: 'applied', stash };
 };
 
 type StashMerge =
   | { readonly kind: 'clean'; readonly newIndexEntries: ReadonlyArray<IndexEntry> }
-  | Extract<ApplyMergeResult, { readonly kind: 'conflict' }>;
+  | Extract<ApplyMergeResult, { readonly kind: 'conflict' | 'would-overwrite' }>;
 
 const unchangedMerge = (currentIndex: GitIndex): StashMerge => ({
   kind: 'clean',
@@ -1178,15 +1221,13 @@ const mergeStash = async (
     currentIndex: trees.currentIndex,
     labels: STASH_LABELS,
   });
-  if (result.kind === 'would-overwrite')
-    throw stashApplyWouldOverwrite([...result.localChanges, ...result.untracked]);
-  if (result.kind === 'conflict') return result;
+  if (result.kind !== 'clean') return result;
   return { kind: 'clean', newIndexEntries: result.result.newIndexEntries };
 };
 
 export type StashPopResult =
   | { readonly kind: 'applied'; readonly stash: ObjectId; readonly dropped: ObjectId }
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> };
+  | StashApplyConflict;
 
 /** Apply `stash@{index}` then drop it; on conflict the stash is retained. */
 export const stashPop = async (

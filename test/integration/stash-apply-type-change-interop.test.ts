@@ -35,6 +35,7 @@ import {
   linkAt,
   listing,
   type Occupant,
+  outcomeOfGitStderr,
   regular,
   replacing,
   settleIndex,
@@ -190,6 +191,30 @@ const M_POSTS: Readonly<Record<string, Occupant>> = {
   'a dangling link at m': danglingLinkAt('m'),
 };
 
+const WOULD_OVERWRITE = 'STASH_APPLY_WOULD_OVERWRITE';
+const REFUSED = { git: { exit: 1, autoMerge: false }, refusal: WOULD_OVERWRITE };
+const CONFLICTED = { git: { exit: 1, autoMerge: true }, refusal: 'conflict' };
+const refusedWith = (...paths: string[]) => ({ ...REFUSED, restore: { existing: paths } });
+const conflictedWith = (...paths: string[]) => ({ ...CONFLICTED, restore: { existing: paths } });
+
+const committed =
+  (plant: Occupant): Occupant =>
+  (dir) => {
+    plant(dir);
+    runGit(['-C', dir, 'commit', '-q', '-a', '-m', 'c'], { env: COMMIT_ENV });
+  };
+
+const EDITED_AGAIN: Occupant = fileWith('f', 'f3\n');
+const COMMITTED_DIFFERENTLY: Occupant = committed(fileWith('f', 'c\n'));
+const RECREATED_U: Occupant = fileWith('u', 'other\n');
+const both =
+  (first: Occupant, second: Occupant): Occupant =>
+  (dir) => {
+    first(dir);
+    second(dir);
+  };
+const DIRTY_DX: Occupant = fileWith('d/x', 'edited\n');
+
 const afterPosts = (
   shape: ShapeName,
   push: PushName,
@@ -242,6 +267,23 @@ const ROWS: ReadonlyArray<Row> = [
   ),
   ...afterPosts('UP', '-u', U_POSTS, existing('u')),
   ...afterPosts('DF', '-u', UNTRACKED_POSTS, existing('d')),
+  ...afterPosts('DFa', 'plain', { 'a dirty d/x': DIRTY_DX }, REFUSED),
+  ...afterPosts('DFa', 'plain', { 'an untracked d/u': fileWith('d/u', 'untracked\n') }, REFUSED),
+  ...afterPosts('FU', '-u', { 'an edited f': EDITED_AGAIN }, REFUSED),
+  ...afterPosts('FU', '-u', { 'f committed differently': COMMITTED_DIFFERENTLY }, CONFLICTED),
+  ...afterPosts(
+    'FU',
+    '-u',
+    { 'an edited f and a recreated u': both(EDITED_AGAIN, RECREATED_U) },
+    refusedWith('u'),
+  ),
+  ...afterPosts(
+    'FU',
+    '-u',
+    { 'f committed differently and a recreated u': both(COMMITTED_DIFFERENTLY, RECREATED_U) },
+    conflictedWith('u'),
+  ),
+  ...afterPosts('DF', '-u', { 'a dirty d/x': DIRTY_DX }, refusedWith('d')),
 ];
 
 const title = (row: Row): string => `${row.shape} pushed by ${row.push} onto ${row.after}`;
@@ -298,8 +340,28 @@ const indexInode = (dir: string): number => statSync(path.join(dir, '.git', 'ind
 
 interface Outcome {
   readonly kind: string;
-  readonly data?: TsgitError['data'];
+  readonly report?: RestoreReport;
+  readonly classes?: Pick<ReturnType<typeof outcomeOfGitStderr>, 'localChanges' | 'untracked'>;
 }
+
+const restoreReportOf = (data: TsgitError['data']): RestoreReport | undefined => {
+  if (data.code === UNTRACKED_NOT_RESTORED) {
+    const { existing: paths, blockedAt: component } = data;
+    return { existing: paths, ...(component === undefined ? {} : { blockedAt: component }) };
+  }
+  return data.code === WOULD_OVERWRITE ? data.untrackedNotRestored : undefined;
+};
+
+const refusalOutcome = (data: TsgitError['data']): Outcome => {
+  const report = restoreReportOf(data);
+  return {
+    kind: data.code,
+    ...(report === undefined ? {} : { report }),
+    ...(data.code === WOULD_OVERWRITE
+      ? { classes: { localChanges: data.localChanges, untracked: data.untracked } }
+      : {}),
+  };
+};
 
 const tsgitApply = async (dir: string, row: Row): Promise<Outcome> => {
   const command = COMMANDS[row.command];
@@ -308,10 +370,13 @@ const tsgitApply = async (dir: string, row: Row): Promise<Outcome> => {
     const result = await sut(createNodeContext({ workDir: dir }), {
       restoreIndex: command.restoreIndex,
     });
-    return { kind: result.kind };
+    if (result.kind === 'applied') return { kind: result.kind };
+    return {
+      kind: result.kind,
+      ...(result.untrackedNotRestored === undefined ? {} : { report: result.untrackedNotRestored }),
+    };
   } catch (error) {
-    const { data } = error as TsgitError;
-    return { kind: data.code, data };
+    return refusalOutcome((error as TsgitError).data);
   }
 };
 
@@ -327,11 +392,16 @@ const restoreStderr = ({ existing: paths, blockedAt: component }: RestoreReport)
     .map((line) => `${line}\n`)
     .join('');
 
-const expectRestoreReport = (row: Row, gitStderr: string, outcome: Outcome): void => {
+const expectRestoreReport = (row: Row, gitStderr: string): void => {
   if (row.restore === undefined) return;
   const expected = restoreStderr(row.restore);
   expect(gitStderr.slice(-expected.length)).toBe(expected);
-  expect(outcome.data).toEqual({ code: UNTRACKED_NOT_RESTORED, ...row.restore });
+};
+
+const expectRefusalClasses = (row: Row, gitStderr: string, outcome: Outcome): void => {
+  if (row.refusal !== WOULD_OVERWRITE) return;
+  const { localChanges, untracked } = outcomeOfGitStderr(gitStderr);
+  expect(outcome.classes).toEqual({ localChanges, untracked });
 };
 
 const reflogLines = (dir: string): number => {
@@ -382,7 +452,9 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply over type swaps interop', () => {
           // Assert
           expect(gitRun.exitCode).toBe(row.git.exit);
           expect(outcome.kind).toBe(row.git.exit === 0 ? 'applied' : row.refusal);
-          expectRestoreReport(row, gitRun.stderr, outcome);
+          expectRestoreReport(row, gitRun.stderr);
+          expectRefusalClasses(row, gitRun.stderr, outcome);
+          expect(outcome.report).toEqual(row.restore);
           expect(pushRefusal).toBe(row.pushRefusal);
           expect(pushed[1]).toBe(pushed[0]);
           expect(observed(pair.ours, inodes[1])).toEqual(observed(pair.peer, inodes[0]));

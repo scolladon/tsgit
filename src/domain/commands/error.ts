@@ -448,7 +448,13 @@ export type CommandError =
   | { readonly code: 'RM_RECURSIVE_WITHOUT_R'; readonly pattern: string }
   | { readonly code: 'NO_INITIAL_COMMIT' }
   | { readonly code: 'STASH_NOT_FOUND'; readonly index: number; readonly stackSize: number }
-  | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> }
+  | {
+      readonly code: 'STASH_APPLY_WOULD_OVERWRITE';
+      readonly paths: ReadonlyArray<FilePath>;
+      readonly localChanges: ReadonlyArray<FilePath>;
+      readonly untracked: ReadonlyArray<FilePath>;
+      readonly untrackedNotRestored?: UntrackedNotRestored;
+    }
   | {
       readonly code: 'STASH_UNTRACKED_NOT_RESTORED';
       /** Every untracked path that already existed, in index order; git prints `<path> already exists, no checkout` for each. */
@@ -1411,8 +1417,17 @@ export const noInitialCommit = (): TsgitError => new TsgitError({ code: 'NO_INIT
 export const stashNotFound = (index: number, stackSize: number): TsgitError =>
   new TsgitError({ code: 'STASH_NOT_FOUND', index, stackSize });
 
-export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitError =>
-  new TsgitError({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths });
+export const stashApplyWouldOverwrite = (
+  { localChanges, untracked }: WouldOverwriteClasses,
+  untrackedNotRestored?: UntrackedNotRestored,
+): TsgitError =>
+  new TsgitError({
+    code: 'STASH_APPLY_WOULD_OVERWRITE',
+    paths: [...localChanges, ...untracked],
+    localChanges,
+    untracked,
+    ...(untrackedNotRestored === undefined ? {} : { untrackedNotRestored }),
+  });
 
 export const stashUntrackedNotRestored = ({
   existing,
