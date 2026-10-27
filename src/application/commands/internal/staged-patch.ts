@@ -10,6 +10,10 @@ import type { FileMode, FilePath, ObjectId } from '../../../domain/objects/index
 import type { Context } from '../../../ports/context.js';
 import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
 import { hashBlob } from '../../primitives/hash-blob.js';
+import {
+  parentDirectory,
+  survivingDirectoriesOf,
+} from '../../primitives/internal/prune-emptied-directories.js';
 import { stage0Entry } from '../../primitives/internal/synthetic-index-entry.js';
 import { readBlob } from '../../primitives/read-blob.js';
 import { synthesizeTreeFromIndex } from '../../primitives/synthesize-tree-from-index.js';
@@ -74,18 +78,13 @@ const judgeGitlink = (b: FlatTreeEntry, i: FlatTreeEntry, c: FlatTreeEntry): Out
 
 const judgeModeOnly = (i: FlatTreeEntry, c: FlatTreeEntry): Outcome => setOf(c.id, i.mode);
 
-const judgeBinary = (b: FlatTreeEntry, i: FlatTreeEntry, c: FlatTreeEntry): Outcome =>
-  c.id === b.id ? setOf(i.id, patchedMode(b, i, c)) : FAILS;
-
 const judgeText = async (
   ctx: Context,
   [b, i, c]: readonly [FlatTreeEntry, FlatTreeEntry, FlatTreeEntry],
   [base, target]: readonly [Uint8Array, Uint8Array],
 ): Promise<Outcome> => {
-  const mode = patchedMode(b, i, c);
-  if (c.id === b.id) return setOf(i.id, mode);
   const bytes = applyDiffOnto({ base, target, current: await bytesOf(ctx, c.id) });
-  return bytes === undefined ? FAILS : { kind: 'patched', bytes, mode };
+  return bytes === undefined ? FAILS : { kind: 'patched', bytes, mode: patchedMode(b, i, c) };
 };
 
 const judgeContent = async (
@@ -93,9 +92,9 @@ const judgeContent = async (
   path: FilePath,
   entries: readonly [FlatTreeEntry, FlatTreeEntry, FlatTreeEntry],
 ): Promise<Outcome> => {
-  const [b, i, c] = entries;
+  const [b, i] = entries;
   const sides = await Promise.all([bytesOf(ctx, b.id), bytesOf(ctx, i.id)] as const);
-  if (pairIsBinary(sides[0], sides[1], await overrideOf(path))) return judgeBinary(b, i, c);
+  if (pairIsBinary(sides[0], sides[1], await overrideOf(path))) return FAILS;
   return judgeText(ctx, entries, sides);
 };
 
@@ -106,6 +105,7 @@ const judgeModify = (
 ): Promise<Outcome> | Outcome => {
   if (kindOf(b.mode) === 'gitlink') return judgeGitlink(b, i, c);
   if (b.id === i.id) return judgeModeOnly(i, c);
+  if (c.id === b.id) return setOf(i.id, patchedMode(b, i, c));
   return judgeContent(judge, path, [b, i, c]);
 };
 
@@ -134,9 +134,11 @@ const changedPaths = (b: Flat, i: Flat): FilePath[] =>
     .filter((path) => !sameEntry(b.get(path), i.get(path)))
     .sort(comparePaths);
 
-const ancestorsOf = (path: FilePath): FilePath[] => {
-  const parts = path.split('/').slice(0, -1);
-  return parts.map((_, k) => parts.slice(0, k + 1).join('/') as FilePath);
+const hasOccupiedAncestor = (path: FilePath, occupied: ReadonlySet<FilePath>): boolean => {
+  for (let dir = parentDirectory(path); dir !== ''; dir = parentDirectory(dir)) {
+    if (occupied.has(dir as FilePath)) return true;
+  }
+  return false;
 };
 
 const isPlacement = (outcome: Outcome): boolean =>
@@ -149,11 +151,11 @@ const firstClash = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): FilePath
     if (outcome.kind === 'remove') occupied.delete(path);
     if (isPlacement(outcome)) occupied.add(path);
   }
-  const directories = new Set([...occupied].flatMap(ancestorsOf));
+  const directories = survivingDirectoriesOf(occupied);
   return [...outcomes]
     .filter(([, outcome]) => isPlacement(outcome))
     .map(([path]) => path)
-    .find((path) => directories.has(path) || ancestorsOf(path).some((dir) => occupied.has(dir)));
+    .find((path) => directories.has(path) || hasOccupiedAncestor(path, occupied));
 };
 
 const judgeAll = async (

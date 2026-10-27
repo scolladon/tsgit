@@ -644,4 +644,33 @@ describe('judgeStagedPatch', () => {
       });
     });
   });
+
+  describe('Given f changed in I that C holds at the base content', () => {
+    describe('When I carries a blob the store cannot read', () => {
+      it('Then the entry of I is taken without reading any blob', async () => {
+        // Arrange
+        const ctx = await setup();
+        const absent = '2'.repeat(40) as ObjectId;
+        const bTree = await treeOf(ctx, { f: file(lines(9)), g: file('g0\n') });
+        const cTree = await treeOf(ctx, { f: file(lines(9)), g: file('g1\n') });
+        const iTree = await synthesizeTreeFromIndex(ctx, [
+          stage0Entry('f' as FilePath, absent, FILE_MODE.REGULAR),
+          stage0Entry(
+            'g' as FilePath,
+            await hashBlob(ctx, text('g0\n'), { write: true }),
+            FILE_MODE.REGULAR,
+          ),
+        ]);
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        if (result.kind !== 'applies') throw new Error('expected applies');
+        const entry = (await flattenTree(ctx, result.tree)).entries.get('f' as FilePath);
+        expect(entry?.id).toBe(absent);
+      });
+    });
+  });
 });
