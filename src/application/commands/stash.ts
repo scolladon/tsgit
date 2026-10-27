@@ -977,13 +977,17 @@ const restoreEntries = async (
   const existing: FilePath[] = [];
   for (const [path, entry] of flat.entries) {
     const verdict = await restoreVerdict(ctx, workDir, scanner, path);
-    if (verdict.kind === 'blocked') return { existing, blockedAt: verdict.at };
-    if (verdict.kind === 'exists') {
-      existing.push(path);
-      continue;
+    switch (verdict.kind) {
+      case 'blocked':
+        return { existing, blockedAt: verdict.at };
+      case 'exists':
+        existing.push(path);
+        break;
+      case 'free':
+        await writer.writeBlob(path, entry.id, entry.mode, scanner);
+        forgetAfterLink(scanner, [entry.mode]);
+        break;
     }
-    await writer.writeBlob(path, entry.id, entry.mode, scanner);
-    forgetAfterLink(scanner, [entry.mode]);
   }
   return { existing };
 };
@@ -1150,13 +1154,16 @@ const settleIndex = async (
   merged: StashMerge,
   app: SettleInputs,
 ): Promise<SettledApply> => {
-  if (merged.kind === 'would-overwrite') return merged;
-  if (merged.kind === 'conflict') {
-    await lock.commit(merged.indexEntries, 'replace');
-    return { kind: 'conflict', conflicts: toConflictList(merged.conflicts) };
+  switch (merged.kind) {
+    case 'would-overwrite':
+      return merged;
+    case 'conflict':
+      await lock.commit(merged.indexEntries, 'replace');
+      return { kind: 'conflict', conflicts: toConflictList(merged.conflicts) };
+    case 'clean':
+      await settleCleanIndex(ctx, lock, merged.newIndexEntries, app);
+      return { kind: 'clean' };
   }
-  await settleCleanIndex(ctx, lock, merged.newIndexEntries, app);
-  return { kind: 'clean' };
 };
 
 const settleCleanIndex = async (
@@ -1181,14 +1188,15 @@ const reportApply = (
   restore: UntrackedNotRestored,
   stash: ObjectId,
 ): StashApplyResult => {
-  if (settled.kind === 'would-overwrite') {
-    throw stashApplyWouldOverwrite(settled, isReported(restore) ? restore : undefined);
+  switch (settled.kind) {
+    case 'would-overwrite':
+      throw stashApplyWouldOverwrite(settled, isReported(restore) ? restore : undefined);
+    case 'conflict':
+      return { kind: 'conflict', conflicts: settled.conflicts, ...reportOf(restore) };
+    case 'clean':
+      if (isReported(restore)) throw stashUntrackedNotRestored(restore);
+      return { kind: 'applied', stash };
   }
-  if (settled.kind === 'conflict') {
-    return { kind: 'conflict', conflicts: settled.conflicts, ...reportOf(restore) };
-  }
-  if (isReported(restore)) throw stashUntrackedNotRestored(restore);
-  return { kind: 'applied', stash };
 };
 
 type StashMerge =

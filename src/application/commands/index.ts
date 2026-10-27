@@ -345,6 +345,7 @@ export {
   sparseCheckoutSet,
 } from './sparse-checkout.js';
 export {
+  type StashApplyConflict,
   type StashApplyInput,
   type StashApplyResult,
   type StashConflict,

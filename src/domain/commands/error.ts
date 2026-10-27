@@ -592,7 +592,8 @@ export type FormatPlaceholderReason = 'not-supported' | 'unparsable';
 export const sanitize = sanitizeForDisplay;
 
 /**
- * What an untracked-files restore left unwritten after a clean merge: `existing`
+ * What an untracked-files restore left unwritten (it runs after any merge outcome: clean,
+ * conflicted or refused): `existing`
  * is every path that already existed (git's `<path> already exists, no checkout`
  * lines, in index order); `blockedAt` is the leading component git names in
  * `cannot create directory at '<path>': File exists` when the restore stopped.
