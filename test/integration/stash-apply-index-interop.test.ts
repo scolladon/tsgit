@@ -63,6 +63,18 @@ const ROWS: ReadonlyArray<Row> = [
       git(dir, 'add', '-A');
     },
   },
+  {
+    title: 'a directory replaced by a file',
+    stage: async (dir) => {
+      await rm(path.join(dir, 'd'));
+      await put(dir, 'd/x', 'x\n');
+      git(dir, 'add', '-A');
+      git(dir, 'commit', '-q', '-m', 'dir');
+      await rm(path.join(dir, 'd'), { recursive: true });
+      await put(dir, 'd', 'file\n');
+      git(dir, 'add', '-A');
+    },
+  },
 ];
 
 const zeroStatPaths = (dir: string): string[] => {
