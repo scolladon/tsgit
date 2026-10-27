@@ -2017,6 +2017,32 @@ const mtimeOf = async (ctx: Context, path: string): Promise<number> => {
   return found.mtimeSeconds;
 };
 
+describe('stash apply during a pending operation', () => {
+  describe.each(['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD'])(
+    'Given %s naming HEAD and a stashed edit',
+    (marker) => {
+      describe('When stash apply runs', () => {
+        it('Then it applies and the marker stays', async () => {
+          // Arrange
+          const ctx = await setupRepo();
+          await write(ctx, 'a.txt', 'stashed\n');
+          await stashPush(ctx, {});
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, `${await headId(ctx)}\n`);
+          const sut = stashApply;
+
+          // Act
+          const result = await sut(ctx, {});
+
+          // Assert
+          expect(result.kind).toBe('applied');
+          expect(await read(ctx, 'a.txt')).toBe('stashed\n');
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/${marker}`)).toBe(true);
+        });
+      });
+    },
+  );
+});
+
 describe('stash apply and pop open with the index refresh', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -2153,6 +2179,28 @@ describe('stash pop', () => {
           blockedAt: 'm',
         });
         expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given CHERRY_PICK_HEAD naming HEAD and a stashed edit', () => {
+    describe('When pop runs', () => {
+      it('Then it applies, drops the stash and the marker stays', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'stashed\n');
+        await stashPush(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`, `${await headId(ctx)}\n`);
+        const sut = stashPop;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'a.txt')).toBe('stashed\n');
+        expect((await stashList(ctx)).entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(true);
       });
     });
   });

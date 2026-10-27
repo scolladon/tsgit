@@ -90,7 +90,6 @@ import {
 } from '../primitives/internal/read-gitattributes.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
-  assertNoPendingOperation,
   assertOperationalRepository,
   type HeadState,
   readHeadRaw,
@@ -1044,7 +1043,6 @@ export const stashApply = async (
   const workDir = await gateStash(ctx, 'stash apply');
   const stash = await resolveStashEntry(ctx, input.index ?? 0);
   await refreshAndWriteIndex(ctx);
-  await assertNoPendingOperation(ctx);
   return applyStashCommit(ctx, workDir, stash, input);
 };
 

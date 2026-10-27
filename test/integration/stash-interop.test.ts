@@ -14,7 +14,7 @@
  *   unique:         stash push/apply index+tree state matches canonical git stash
  *   interopSurface: stash
  */
-import { statSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -701,6 +701,165 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(listing(pair.ours)).toEqual(listing(pair.peer));
           expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
           expect(snapshotTrees(pair.ours)).toEqual(snapshotTrees(pair.peer));
+        });
+      });
+    });
+  },
+);
+
+const PLANTED_MARKERS = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD'] as const;
+const MERGE_STATE_FILES = ['MERGE_HEAD', 'MERGE_MODE', 'MERGE_MSG'] as const;
+const OPERATION_STATE_FILES = [
+  ...PLANTED_MARKERS,
+  'MERGE_MODE',
+  'MERGE_MSG',
+  'rebase-merge',
+] as const;
+
+interface PendingRow {
+  readonly title: string;
+  readonly build: (dir: string) => void;
+}
+
+const seedStashOfS = (dir: string): void => {
+  const base = commitOn(dir, [KEEP, regular('f', 'base\n'), regular('s', 's\n')]);
+  const side = commitOn(dir, [KEEP, regular('f', 'side\n'), regular('s', 's\n')], base);
+  const main = commitOn(dir, [KEEP, regular('f', 'main\n'), regular('s', 's\n')], base);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+  runGit([
+    '-C',
+    dir,
+    'update-ref',
+    'refs/heads/topic',
+    commitOn(dir, [KEEP, regular('f', 'topic\n'), regular('s', 's\n')], base),
+  ]);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+  writeFileSync(path.join(dir, 's'), 'stashed\n');
+  runGit(['-C', dir, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+};
+
+const resolveF = (dir: string): void => {
+  writeFileSync(path.join(dir, 'f'), 'resolved\n');
+  runGit(['-C', dir, 'add', 'f']);
+};
+
+const plantMarker =
+  (marker: (typeof PLANTED_MARKERS)[number]) =>
+  (dir: string): void => {
+    seedStashOfS(dir);
+    const head = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+    writeFileSync(path.join(dir, '.git', marker), `${head}\n`);
+  };
+
+const resolvedCherryPick = (dir: string): void => {
+  seedStashOfS(dir);
+  tryRunGitWithExit(['-C', dir, 'cherry-pick', 'side'], { env: COMMIT_ENV });
+  resolveF(dir);
+};
+
+const stoppedRebase = (dir: string): void => {
+  seedStashOfS(dir);
+  runGit(['-C', dir, 'checkout', '-q', 'topic']);
+  tryRunGitWithExit(['-C', dir, 'rebase', 'side'], { env: COMMIT_ENV });
+  resolveF(dir);
+};
+
+const mergeNoCommit = (dir: string): void => {
+  const base = commitOn(dir, [KEEP, regular('s', 's\n')]);
+  const side = commitOn(dir, [KEEP, regular('f', 'side\n'), regular('s', 's\n')], base);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', base]);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+  writeFileSync(path.join(dir, 'keep'), 'stashed\n');
+  runGit(['-C', dir, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+  runGit(['-C', dir, 'merge', '-q', '--no-commit', '--no-ff', 'side'], { env: COMMIT_ENV });
+};
+
+const PENDING_ROWS: ReadonlyArray<PendingRow> = [
+  ...PLANTED_MARKERS.map((marker) => ({ title: `planted ${marker}`, build: plantMarker(marker) })),
+  { title: 'a resolved cherry-pick', build: resolvedCherryPick },
+  { title: 'a stopped rebase', build: stoppedRebase },
+  { title: 'a merge --no-commit', build: mergeNoCommit },
+];
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'stash apply interop — a pending operation stands',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository | undefined;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('stash-pending-operation');
+      initBothRepos(pair.peer, pair.ours);
+      repo = undefined;
+    });
+
+    afterEach(async () => {
+      await repo?.dispose();
+      await pair.dispose();
+    });
+
+    const keptStateFiles = (dir: string): string[] =>
+      OPERATION_STATE_FILES.filter((name) => existsSync(path.join(dir, '.git', name)));
+
+    const tsgitVerdict = async (target: Repository): Promise<string> => {
+      try {
+        return (await target.stash.apply()).kind;
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        return err.data.code;
+      }
+    };
+
+    describe.each(PENDING_ROWS)('Given $title and a stashed edit', ({ build }) => {
+      describe('When git and tsgit stash apply', () => {
+        it('Then both apply, keep every marker and leave the same work tree and index', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            build(dir);
+            touchedAt('keep')(dir);
+          }
+          repo = await openRepository({ cwd: pair.ours });
+          const inodeOf = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
+          const peerInode = inodeOf(pair.peer);
+          const oursInode = inodeOf(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'stash', 'apply'], {
+            env: COMMIT_ENV,
+          });
+          const verdict = await tsgitVerdict(repo);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(verdict).toBe('applied');
+          expect(keptStateFiles(pair.ours)).toEqual(keptStateFiles(pair.peer));
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+          expect(staleEntries(pair.ours)).toEqual(staleEntries(pair.peer));
+          expect(inodeOf(pair.ours) !== oursInode).toBe(inodeOf(pair.peer) !== peerInode);
+        });
+      });
+    });
+
+    describe('Given a merge --no-commit and a stashed edit', () => {
+      describe('When tsgit stash apply runs', () => {
+        it('Then MERGE_HEAD, MERGE_MODE and MERGE_MSG stay', async () => {
+          // Arrange
+          mergeNoCommit(pair.ours);
+          repo = await openRepository({ cwd: pair.ours });
+          const sut = repo.stash.apply.bind(repo.stash);
+
+          // Act
+          await sut();
+
+          // Assert
+          const kept = MERGE_STATE_FILES.filter((name) =>
+            existsSync(path.join(pair.ours, '.git', name)),
+          );
+          expect(kept).toEqual([...MERGE_STATE_FILES]);
         });
       });
     });
