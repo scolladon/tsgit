@@ -1041,25 +1041,18 @@ describe('walkWorkingTree isNestedRepository', () => {
 describe('walkWorkingTreeReporting', () => {
   const mkdir = (ctx: Context, path: string) => ctx.fs.mkdir(`${ctx.layout.workDir}/${path}`);
 
-  const walkReporting = async (
-    ctx: Context,
-    options?: Parameters<typeof walkWorkingTreeReporting>[1],
-  ): Promise<{ readonly yielded: string[]; readonly reported: string[] }> => {
-    const reported: string[] = [];
-    const sut = walkWorkingTreeReporting;
-    const yielded = await collect(sut(ctx, options, (directory) => reported.push(directory)));
-    return { yielded, reported };
-  };
-
   describe('Given a file and an empty directory', () => {
     describe('When walked with a report', () => {
       it('Then the directory is reported and only the file is yielded', async () => {
         // Arrange
         const ctx = await seedFs({ 'a.txt': 'a' });
         await mkdir(ctx, 'e');
+        const sut = walkWorkingTreeReporting;
+        const reported: string[] = [];
 
         // Act
-        const result = await walkReporting(ctx);
+        const yielded = await collect(sut(ctx, undefined, (directory) => reported.push(directory)));
+        const result = { yielded, reported };
 
         // Assert
         expect(result).toEqual({ yielded: ['a.txt'], reported: ['e'] });
@@ -1073,9 +1066,14 @@ describe('walkWorkingTreeReporting', () => {
         // Arrange
         const ctx = await seedFs({ 'a.txt': 'a' });
         await mkdir(ctx, 'e');
+        const sut = walkWorkingTreeReporting;
+        const reported: string[] = [];
 
         // Act
-        const result = await walkReporting(ctx, { ignore: (path) => path === 'e' });
+        const yielded = await collect(
+          sut(ctx, { ignore: (path) => path === 'e' }, (directory) => reported.push(directory)),
+        );
+        const result = { yielded, reported };
 
         // Assert
         expect(result.reported).toEqual([]);
@@ -1089,9 +1087,12 @@ describe('walkWorkingTreeReporting', () => {
         // Arrange
         const ctx = await seedFs({ 'r/.git/HEAD': 'ref' });
         await mkdir(ctx, 'r/e');
+        const sut = walkWorkingTreeReporting;
+        const reported: string[] = [];
 
         // Act
-        const result = await walkReporting(ctx);
+        const yielded = await collect(sut(ctx, undefined, (directory) => reported.push(directory)));
+        const result = { yielded, reported };
 
         // Assert
         expect(result).toEqual({ yielded: [], reported: [] });
@@ -1105,9 +1106,12 @@ describe('walkWorkingTreeReporting', () => {
         // Arrange
         const ctx = await seedFs({});
         await mkdir(ctx, 'n/i');
+        const sut = walkWorkingTreeReporting;
+        const reported: string[] = [];
 
         // Act
-        const result = await walkReporting(ctx);
+        const yielded = await collect(sut(ctx, undefined, (directory) => reported.push(directory)));
+        const result = { yielded, reported };
 
         // Assert
         expect(result.reported).toEqual(['n/i']);
@@ -1120,9 +1124,12 @@ describe('walkWorkingTreeReporting', () => {
       it('Then nothing is reported', async () => {
         // Arrange
         const ctx = await seedFs({});
+        const sut = walkWorkingTreeReporting;
+        const reported: string[] = [];
 
         // Act
-        const result = await walkReporting(ctx);
+        const yielded = await collect(sut(ctx, undefined, (directory) => reported.push(directory)));
+        const result = { yielded, reported };
 
         // Assert
         expect(result).toEqual({ yielded: [], reported: [] });
@@ -1137,9 +1144,14 @@ describe('walkWorkingTreeReporting', () => {
         const ctx = await seedFs({ 'a.txt': 'a' });
         await mkdir(ctx, 'e1');
         await mkdir(ctx, 'e2');
+        const sut = walkWorkingTreeReporting;
+        const reported: string[] = [];
 
         // Act
-        const result = await walkReporting(ctx, { maxEntries: 1 });
+        const yielded = await collect(
+          sut(ctx, { maxEntries: 1 }, (directory) => reported.push(directory)),
+        );
+        const result = { yielded, reported };
 
         // Assert
         expect(result.yielded).toEqual(['a.txt']);

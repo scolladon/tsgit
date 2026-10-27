@@ -10,7 +10,16 @@
  *   unique:         stash apply --index judges the stashed index before any write, as git's apply --cached does
  *   interopSurface: stash
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -38,7 +47,7 @@ const ROW_TIMEOUT_MS = 60_000;
 const TEN_LINES = Array.from({ length: 10 }, (_, i) => `l${i + 1}\n`).join('');
 const CONFLICTS_IN_INDEX = 'error: conflicts in index. Try without --index.';
 const INDEX_ERROR_LINE =
-  /^error: (?:(.+): (?:patch does not apply|already exists in index|does not exist in index)|unable to add cache entry for (.+)|the patch applies to '(.+)' \(\w+\), which does not match the current contents\.|invalid path '(.+)')$/;
+  /^error: (?:(.+): (?:patch does not apply|already exists in index|does not exist in index|wrong type)|unable to add cache entry for (.+)|the patch applies to '(.+)' \(\w+\), which does not match the current contents\.|invalid path '(.+)')$/;
 
 const withLine = (n: number, text: string): string =>
   TEN_LINES.split('\n')
@@ -87,6 +96,49 @@ const inOrder =
   (...steps: Occupant[]): Occupant =>
   (dir) => {
     for (const step of steps) step(dir);
+  };
+
+const BINARY = `\0${TEN_LINES}`;
+const NUL_LINES = `\0\n${TEN_LINES}`;
+const GITLINK_B = '3333333333333333333333333333333333333333';
+const GITLINK_I = '4444444444444444444444444444444444444444';
+const GITLINK_C = '5555555555555555555555555555555555555555';
+
+const removedCommitted =
+  (rel: string): Occupant =>
+  (dir) => {
+    gitIn(dir, 'rm', '-q', '--cached', rel);
+    gitIn(dir, 'commit', '-q', '-m', 'post');
+  };
+
+const executable =
+  (rel: string): Occupant =>
+  (dir) => {
+    chmodSync(path.join(dir, rel), 0o755);
+    gitIn(dir, 'add', rel);
+  };
+
+const symlinkCommitted =
+  (rel: string, target: string): Occupant =>
+  (dir) => {
+    rmSync(path.join(dir, rel), { force: true });
+    symlinkSync(target, path.join(dir, rel));
+    gitIn(dir, 'add', rel);
+    gitIn(dir, 'commit', '-q', '-m', 'post');
+  };
+
+const gitlinkStaged =
+  (rel: string, oid: string): Occupant =>
+  (dir) => {
+    mkdirSync(path.join(dir, rel), { recursive: true });
+    gitIn(dir, 'update-index', '--add', '--cacheinfo', `160000,${oid},${rel}`);
+  };
+
+const gitlinkCommitted =
+  (rel: string, oid: string): Occupant =>
+  (dir) => {
+    gitlinkStaged(rel, oid)(dir);
+    gitIn(dir, 'commit', '-q', '-m', 'post');
   };
 
 const SHAPES = {
@@ -182,6 +234,67 @@ const SHAPES = {
     ),
     post: committed('f', withLine(9, 'L9\n')),
   },
+  'c-lacks': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: removedCommitted('f'),
+  },
+  'symlink-c': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: symlinkCommitted('f', 'elsewhere'),
+  },
+  'delete-symlink-c': {
+    stage: inOrder(removed, put('g', 'g1\n')),
+    post: symlinkCommitted('f', TEN_LINES),
+  },
+  'binary-differs': {
+    stage: inOrder(committed('bin', BINARY), stageFile('bin', `${BINARY}x\n`), put('g', 'g1\n')),
+    post: committed('bin', `y\n${BINARY}`),
+  },
+  'gitlink-same': {
+    stage: inOrder(
+      gitlinkCommitted('sub', GITLINK_B),
+      gitlinkStaged('sub', GITLINK_I),
+      put('g', 'g1\n'),
+    ),
+    post: committed('h', 'h\n'),
+  },
+  'gitlink-differ': {
+    stage: inOrder(
+      gitlinkCommitted('sub', GITLINK_B),
+      gitlinkStaged('sub', GITLINK_I),
+      put('g', 'g1\n'),
+    ),
+    post: gitlinkCommitted('sub', GITLINK_C),
+  },
+  'mode-only-content': {
+    stage: inOrder(executable('f'), put('g', 'g1\n')),
+    post: committed('f', withLine(9, 'L9\n')),
+  },
+  'staged-order': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: inOrder(stageFile('a', 'A\n'), stageFile('keep', 'k2\n')),
+  },
+  'index-order': {
+    stage: inOrder(stageFile('a', 'A\n'), stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: inOrder(removedCommitted('f'), committed('a', 'other\n')),
+  },
+  'binary-lines': {
+    stage: inOrder(
+      committed('f', NUL_LINES),
+      stageFile('f', `\0\n${withLine(6, 'L6\n')}`),
+      put('g', 'g1\n'),
+    ),
+    post: committed('f', `${NUL_LINES}tail\n`),
+  },
+  'attr-diff-nul': {
+    stage: inOrder(
+      committed('.gitattributes', 'f diff\n'),
+      committed('f', NUL_LINES),
+      stageFile('f', `\0\n${withLine(6, 'L6\n')}`),
+      put('g', 'g1\n'),
+    ),
+    post: committed('f', `${NUL_LINES}tail\n`),
+  },
 } satisfies Record<string, { stage: Occupant; post: Occupant }>;
 
 type ShapeName = keyof typeof SHAPES;
@@ -205,7 +318,7 @@ interface Row {
   readonly shape: ShapeName;
   readonly push: PushName;
   readonly command: CommandName;
-  readonly git: 'refuses' | 'unclean' | 'applies';
+  readonly git: 'refuses' | 'unclean' | 'applies' | 'merge-conflicts';
 }
 
 const BOTH_COMMANDS: ReadonlyArray<CommandName> = ['apply --index', 'pop --index'];
@@ -240,10 +353,27 @@ const ROWS: ReadonlyArray<Row> = [
   ...rowsOf(['offset-top'], ['plain'], ['pop --index'], 'refuses'),
   ...rowsOf(['create-df'], ['plain'], BOTH_COMMANDS, 'refuses'),
   ...rowsOf(['create-df-two', 'attr-no-diff'], ['plain'], BOTH_COMMANDS, 'refuses'),
+  ...rowsOf(
+    [
+      'c-lacks',
+      'symlink-c',
+      'delete-symlink-c',
+      'binary-differs',
+      'gitlink-differ',
+      'index-order',
+      'binary-lines',
+    ],
+    ['plain'],
+    BOTH_COMMANDS,
+    'refuses',
+  ),
+  ...rowsOf(['gitlink-same', 'mode-only-content'], ['plain'], BOTH_COMMANDS, 'applies'),
+  ...rowsOf(['attr-diff-nul'], ['plain'], BOTH_COMMANDS, 'merge-conflicts'),
   ...rowsOf(['H2'], ['plain'], ['apply'], 'applies'),
   ...rowsOf(['staged-non-overlap'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
   ...rowsOf(['staged-other'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
   ...rowsOf(['w-is-b-staged'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
+  ...rowsOf(['staged-order'], ['plain'], BOTH_COMMANDS, 'unclean'),
   ...rowsOf(['staged-revert'], ['plain'], ['apply --index'], 'unclean'),
   ...rowsOf(['i-is-b-staged'], ['plain'], BOTH_COMMANDS, 'applies'),
 ];
@@ -432,6 +562,10 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
             expect(observed(pair.ours, inodes[1]).reflog).toBe(1);
             expect(observed(pair.ours, inodes[1]).autoMerge).toBe(false);
             expect(existsSync(path.join(pair.ours, 'u'))).toBe(row.push === '-u');
+          } else if (row.git === 'merge-conflicts') {
+            expect(gitRun.exitCode).toBe(1);
+            expect(gitRun.stderr).not.toContain(CONFLICTS_IN_INDEX);
+            expect(outcome).toStrictEqual({ kind: 'conflict' });
           } else {
             expect(gitRun.exitCode).toBe(0);
             expect(outcome).toStrictEqual({ kind: 'applied' });

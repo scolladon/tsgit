@@ -83,6 +83,45 @@ describe('applyDiffOnto', () => {
     });
   });
 
+  describe('Given a current missing the first two lines of the base', () => {
+    describe('When the edit sits at line 8', () => {
+      it('Then the hunk is found two lines higher', () => {
+        // Arrange
+        const sut = applyDiffOnto;
+        const target = lines(...withLine(numbered(10), 8, 'L8'));
+        const current = lines(...numbered(10).slice(2));
+
+        // Act
+        const result = sut({ base: TEN_LINES, target, current });
+
+        // Assert
+        expect(decode(result as Uint8Array)).toBe(
+          decode(lines(...withLine(numbered(10), 8, 'L8').slice(2))),
+        );
+      });
+    });
+  });
+
+  describe('Given a current holding only the tail of a twenty line base', () => {
+    describe('When the edit sits at line 15 and the tail starts at line 12', () => {
+      it('Then the hunk is found at the top, past the end of the search start', () => {
+        // Arrange
+        const sut = applyDiffOnto;
+        const base = lines(...numbered(20));
+        const target = lines(...withLine(numbered(20), 15, 'L15'));
+        const current = lines(...numbered(20).slice(11));
+
+        // Act
+        const result = sut({ base, target, current });
+
+        // Assert
+        expect(decode(result as Uint8Array)).toBe(
+          decode(lines(...withLine(numbered(20), 15, 'L15').slice(11))),
+        );
+      });
+    });
+  });
+
   describe('Given a hunk anchored at the first line', () => {
     describe('When current has two lines added above', () => {
       it('Then the result is undefined', () => {

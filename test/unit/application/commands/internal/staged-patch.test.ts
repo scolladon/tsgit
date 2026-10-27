@@ -194,9 +194,7 @@ describe('judgeStagedPatch', () => {
         expect(result).toStrictEqual({ kind: 'refused', paths: ['n'] });
       });
     });
-  });
 
-  describe('Given a file n created in I', () => {
     describe('When C holds the same n', () => {
       it('Then n is refused', async () => {
         // Arrange
@@ -213,9 +211,7 @@ describe('judgeStagedPatch', () => {
         expect(result).toStrictEqual({ kind: 'refused', paths: ['n'] });
       });
     });
-  });
 
-  describe('Given a file n created in I', () => {
     describe('When C lacks n', () => {
       it('Then the result holds the entry of I', async () => {
         // Arrange
@@ -296,9 +292,7 @@ describe('judgeStagedPatch', () => {
         expect(await blobAt(ctx, result.tree, 'keep')).toBe('k\n');
       });
     });
-  });
 
-  describe('Given f deleted in I', () => {
     describe('When C holds f with other content', () => {
       it('Then f is refused', async () => {
         // Arrange
@@ -306,6 +300,40 @@ describe('judgeStagedPatch', () => {
         const bTree = await treeOf(ctx, { f: file(lines(3)) });
         const iTree = await treeOf(ctx, {});
         const cTree = await treeOf(ctx, { f: file(lines(3, { at: 3, to: 'L3' })) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['f'] });
+      });
+    });
+
+    describe('When C lacks f', () => {
+      it('Then f is refused', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { f: file(lines(3)), keep: file('k\n') });
+        const iTree = await treeOf(ctx, { keep: file('k\n') });
+        const cTree = await treeOf(ctx, { keep: file('k\n') });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['f'] });
+      });
+    });
+
+    describe('When C holds f as a symlink whose target is the base content', () => {
+      it('Then f is refused as of the wrong type', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { f: file(lines(3)), keep: file('k\n') });
+        const iTree = await treeOf(ctx, { keep: file('k\n') });
+        const cTree = await treeOf(ctx, { f: symlink(lines(3)), keep: file('k\n') });
         const sut = judgeStagedPatch;
 
         // Act
@@ -336,9 +364,7 @@ describe('judgeStagedPatch', () => {
         expect(await blobAt(ctx, result.tree, 'f')).toBe('t');
       });
     });
-  });
 
-  describe('Given f turned into a symlink in I', () => {
     describe('When C holds f with other content', () => {
       it('Then f is refused', async () => {
         // Arrange
@@ -357,14 +383,14 @@ describe('judgeStagedPatch', () => {
     });
   });
 
-  describe('Given f deleted in I', () => {
-    describe('When C lacks f', () => {
-      it('Then f is refused', async () => {
+  describe('Given f turned into a gitlink in I', () => {
+    describe('When C holds f with other content', () => {
+      it('Then f is refused without reading the gitlink as a blob', async () => {
         // Arrange
         const ctx = await setup();
-        const bTree = await treeOf(ctx, { f: file(lines(3)), keep: file('k\n') });
-        const iTree = await treeOf(ctx, { keep: file('k\n') });
-        const cTree = await treeOf(ctx, { keep: file('k\n') });
+        const bTree = await treeOf(ctx, { f: file(lines(3)) });
+        const iTree = await treeOf(ctx, { f: gitlink('a') });
+        const cTree = await treeOf(ctx, { f: file(lines(3, { at: 3, to: 'L3' })) });
         const sut = judgeStagedPatch;
 
         // Act
@@ -395,9 +421,7 @@ describe('judgeStagedPatch', () => {
         expect(entry).toStrictEqual({ id: '2'.repeat(40), mode: FILE_MODE.GITLINK });
       });
     });
-  });
 
-  describe('Given a gitlink sub moved in I', () => {
     describe('When C holds the gitlink at another oid', () => {
       it('Then sub is refused', async () => {
         // Arrange
@@ -436,9 +460,7 @@ describe('judgeStagedPatch', () => {
         expect(entry?.id).toBe(await hashBlob(ctx, new Uint8Array([0, 1, 2, 2])));
       });
     });
-  });
 
-  describe('Given a binary file changed in I', () => {
     describe('When C changed its content otherwise', () => {
       it('Then bin is refused', async () => {
         // Arrange
@@ -476,9 +498,7 @@ describe('judgeStagedPatch', () => {
         expect(await modeAt(ctx, result.tree, 'f')).toBe(FILE_MODE.EXECUTABLE);
       });
     });
-  });
 
-  describe('Given a mode-only change of f in I', () => {
     describe('When C holds f as a symlink', () => {
       it('Then f is refused', async () => {
         // Arrange
@@ -497,21 +517,21 @@ describe('judgeStagedPatch', () => {
     });
   });
 
-  describe('Given two paths b and a/x that C cannot take', () => {
-    describe('When the judge runs', () => {
-      it('Then both are refused in index order', async () => {
+  describe('Given a file a created and a file b edited in I that C cannot take', () => {
+    describe('When C staged a otherwise and removed b', () => {
+      it('Then both are refused in index order, whatever order the trees list them', async () => {
         // Arrange
         const ctx = await setup();
-        const bTree = await treeOf(ctx, { b: file('1\n'), 'a/x': file('1\n') });
-        const iTree = await treeOf(ctx, { b: file('2\n'), 'a/x': file('2\n') });
-        const cTree = await treeOf(ctx, { keep: file('k\n') });
+        const bTree = await treeOf(ctx, { b: file('1\n') });
+        const iTree = await treeOf(ctx, { a: file('A\n'), b: file('2\n') });
+        const cTree = await treeOf(ctx, { a: file('other\n'), keep: file('k\n') });
         const sut = judgeStagedPatch;
 
         // Act
         const result = await sut(ctx, { bTree, cTree, iTree });
 
         // Assert
-        expect(result).toStrictEqual({ kind: 'refused', paths: ['a/x', 'b'] });
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['a', 'b'] });
       });
     });
   });
@@ -670,6 +690,96 @@ describe('judgeStagedPatch', () => {
         if (result.kind !== 'applies') throw new Error('expected applies');
         const entry = (await flattenTree(ctx, result.tree)).entries.get('f' as FilePath);
         expect(entry?.id).toBe(absent);
+      });
+    });
+  });
+
+  describe('Given a binary file with text lines edited in I', () => {
+    describe('When C appended a line', () => {
+      it('Then f is refused as binary', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { f: file(`\0\n${lines(10)}`) });
+        const iTree = await treeOf(ctx, { f: file(`\0\n${lines(10, { at: 6, to: 'L6' })}`) });
+        const cTree = await treeOf(ctx, { f: file(`\0\n${lines(10)}tail\n`) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['f'] });
+      });
+    });
+  });
+
+  describe('Given f marked diff, holding a NUL byte and changed in both I and C', () => {
+    describe('When the judge runs', () => {
+      it('Then f is merged as text', async () => {
+        // Arrange
+        const ctx = await setup();
+        const attributes = { '.gitattributes': file('f diff\n') };
+        const bTree = await treeOf(ctx, { ...attributes, f: file(`\0\n${lines(10)}`) });
+        const iTree = await treeOf(ctx, {
+          ...attributes,
+          f: file(`\0\n${lines(10, { at: 6, to: 'L6' })}`),
+        });
+        const cTree = await treeOf(ctx, { ...attributes, f: file(`\0\n${lines(10)}tail\n`) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        if (result.kind !== 'applies') throw new Error('expected applies');
+        expect(await blobAt(ctx, result.tree, 'f')).toBe(
+          `\0\n${lines(10, { at: 6, to: 'L6' })}tail\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a mode-only change of a binary file in I', () => {
+    describe('When C changed its content', () => {
+      it('Then the result holds the blob of C with the mode of I', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { bin: binary(1) });
+        const iTree = await treeOf(ctx, { bin: binary(1, FILE_MODE.EXECUTABLE) });
+        const cTree = await treeOf(ctx, { bin: binary(3) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        if (result.kind !== 'applies') throw new Error('expected applies');
+        const entry = (await flattenTree(ctx, result.tree)).entries.get('bin' as FilePath);
+        expect(entry?.mode).toBe(FILE_MODE.EXECUTABLE);
+        expect(entry?.id).toBe(await hashBlob(ctx, new Uint8Array([0, 1, 2, 3])));
+      });
+    });
+  });
+
+  describe('Given a text edit and a mode change of f in I', () => {
+    describe('When C holds f at its base mode with a line added on top', () => {
+      it('Then the patched f takes the mode of I', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { f: file(lines(9)) });
+        const iTree = await treeOf(ctx, {
+          f: file(lines(9, { at: 5, to: 'L5' }), FILE_MODE.EXECUTABLE),
+        });
+        const cTree = await treeOf(ctx, { f: file(`top\n${lines(9)}`) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        if (result.kind !== 'applies') throw new Error('expected applies');
+        expect(await modeAt(ctx, result.tree, 'f')).toBe(FILE_MODE.EXECUTABLE);
+        expect(await blobAt(ctx, result.tree, 'f')).toBe(`top\n${lines(9, { at: 5, to: 'L5' })}`);
       });
     });
   });

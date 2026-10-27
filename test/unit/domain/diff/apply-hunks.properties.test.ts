@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { applyDiffOnto } from '../../../../src/domain/diff/apply-hunks.js';
-import { concatBytes, decode } from '../../../../src/domain/objects/encoding.js';
+import { concatBytes, decode, encode } from '../../../../src/domain/objects/encoding.js';
 import { arbLineBlob, arbUniqueLineEdit } from './arbitraries.js';
 
 describe('apply-hunks properties', () => {
@@ -37,6 +37,31 @@ describe('apply-hunks properties', () => {
             // Assert
             expect(result === undefined ? undefined : decode(result)).toBe(
               decode(concatBytes([prefix, target])),
+            );
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+
+    describe('When leading lines are removed from the current', () => {
+      it('Then the result is the target without the same leading lines', () => {
+        // Arrange
+        const sut = applyDiffOnto;
+        const withoutLeading = (bytes: Uint8Array, count: number): string =>
+          decode(bytes).split('\n').slice(count).join('\n');
+        fc.assert(
+          fc.property(arbUniqueLineEdit(), ({ base, target, droppedLines }) => {
+            // Act
+            const result = sut({
+              base,
+              target,
+              current: encode(withoutLeading(base, droppedLines)),
+            });
+
+            // Assert
+            expect(result === undefined ? undefined : decode(result)).toBe(
+              withoutLeading(target, droppedLines),
             );
           }),
           { numRuns: 100 },

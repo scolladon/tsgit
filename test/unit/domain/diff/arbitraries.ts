@@ -212,28 +212,32 @@ export function arbLineBlob(): fc.Arbitrary<Uint8Array> {
 }
 
 /** A base of unique line tokens, a target editing only lines past the first
- *  anchored ones, and an unrelated prefix of unique lines. */
+ *  anchored ones, an unrelated prefix of unique lines, and how many leading
+ *  lines can be dropped without touching the first hunk's context. */
 export function arbUniqueLineEdit(): fc.Arbitrary<{
   readonly base: Uint8Array;
   readonly target: Uint8Array;
   readonly prefix: Uint8Array;
+  readonly droppedLines: number;
 }> {
   return fc
     .record({
       length: fc.integer({ min: FIRST_UNANCHORED_LINE + 3, max: 30 }),
+      droppedLines: fc.integer({ min: 1, max: FIRST_UNANCHORED_LINE - 3 }),
       edited: fc.uniqueArray(fc.integer({ min: FIRST_UNANCHORED_LINE, max: 99 }), {
         minLength: 1,
         maxLength: 4,
       }),
       prefixLength: fc.integer({ min: 1, max: 8 }),
     })
-    .map(({ length, edited, prefixLength }) => {
+    .map(({ length, edited, prefixLength, droppedLines }) => {
       const rows = Array.from({ length }, (_, i) => `t${i}`);
       const editable = length - FIRST_UNANCHORED_LINE;
       const lineOf = (pick: number): number => FIRST_UNANCHORED_LINE + (pick % editable);
       const picked = edited.map(lineOf);
       const targetRows = rows.map((row, i) => (picked.includes(i) ? `E${i}` : row));
       return {
+        droppedLines,
         base: joinLines(rows, true),
         target: joinLines(targetRows, true),
         prefix: joinLines(

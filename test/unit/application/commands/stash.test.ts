@@ -880,6 +880,28 @@ describe('stash push', () => {
     });
   });
 
+  describe('Given an unpopulated submodule directory and an edited file with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the directory of the tracked gitlink is never removed', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+        await stageGitlink(ctx, FILE_MODE.GITLINK, GITLINK_A);
+        await commit(ctx, { message: 'add submodule', author });
+        await write(ctx, 'a.txt', 'modified\n');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(rmdir.mock.calls.map(([path]) => path)).not.toContain(`${ctx.layout.workDir}/sub`);
+        expect(await lstatOrUndefined(ctx, 'sub')).toBeDefined();
+      });
+    });
+  });
+
   describe('Given only an empty directory with includeUntracked', () => {
     describe('When push runs', () => {
       it('Then there is nothing to save and the directory stays', async () => {
@@ -2700,23 +2722,22 @@ describe('stash apply — index-side judge', () => {
     });
   });
 
-  describe('Given several staged paths that no longer apply', () => {
+  describe('Given a new path a and an edited path b that the current commit cannot take', () => {
     describe('When stashApply runs with restoreIndex', () => {
-      it('Then the paths come in index order', async () => {
+      it('Then the paths come in index order, not the order the trees list them', async () => {
         // Arrange
         const ctx = await setupRepo();
         await commitFile(ctx, 'b', 'b0\n', 'add b');
-        await commitFile(ctx, 'a/x', 'x0\n', 'add a/x');
-        await stageAndStash(ctx, { b: 'b1\n', 'a/x': 'x1\n' }, {});
-        await commitFile(ctx, 'b', 'b2\n', 'change b');
-        await commitFile(ctx, 'a/x', 'x2\n', 'change a/x');
+        await stageAndStash(ctx, { a: 'A\n', b: 'b1\n' }, {});
+        await rm(ctx, ['b']);
+        await commitFile(ctx, 'a', 'other\n', 'add a, drop b');
         const sut = stashApply;
 
         // Act
         const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
 
         // Assert
-        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['a/x', 'b'] });
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['a', 'b'] });
       });
     });
   });
@@ -2863,6 +2884,56 @@ describe('stash apply — index-side judge', () => {
         // Assert
         expect(data).toStrictEqual(OFF_HEAD);
         expect(await read(ctx, 'u')).toBe('u\n');
+      });
+    });
+  });
+
+  describe('Given a new path a and an edited path z staged off HEAD in the current index', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the differing paths are listed in index order, not HEAD paths first', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await commitFile(ctx, 'z', 'z0\n', 'add z');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, {});
+        await write(ctx, 'a', 'A\n');
+        await write(ctx, 'z', 'z1\n');
+        await add(ctx, ['a', 'z']);
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a', 'z'],
+          localChanges: ['a', 'z'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given racily clean entries and a current index holding a change off HEAD', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the reset index is written without the lock re-reading the files its refresh verified', async () => {
+        // Arrange — the clock stands still, so every entry is as new as the index file.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const ctx = await setupStagedOffHead({});
+        const read = vi.spyOn(ctx.fs, 'read');
+        const sut = stashApply;
+
+        // Act
+        try {
+          await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+        } finally {
+          vi.useRealTimers();
+        }
+
+        // Assert — one pass for the opening scan, one for the reset's refresh, none for the lock.
+        const readsOfG = read.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/g`);
+        expect(readsOfG).toHaveLength(2);
       });
     });
   });

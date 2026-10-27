@@ -388,6 +388,7 @@ describe('pruneDirectoriesFrom', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.write(inWork(ctx, 'n/i/file'), bytes('keep\n'));
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
         const sut = pruneDirectoriesFrom;
 
         // Act
@@ -395,6 +396,7 @@ describe('pruneDirectoriesFrom', () => {
 
         // Assert
         expect(await ctx.fs.exists(inWork(ctx, 'n/i/file'))).toBe(true);
+        expect(rmdir.mock.calls.map(([path]) => path)).toStrictEqual([inWork(ctx, 'n/i')]);
       });
     });
   });
