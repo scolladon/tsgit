@@ -66,6 +66,13 @@ const committed =
     gitIn(dir, 'commit', '-q', '-m', 'post');
   };
 
+const stagedThenReverted =
+  (rel: string, staged: string, worked: string): Occupant =>
+  (dir) => {
+    stageFile(rel, staged)(dir);
+    put(rel, worked)(dir);
+  };
+
 const removed: Occupant = (dir) => gitIn(dir, 'rm', '-q', 'f');
 
 const inOrder =
@@ -107,6 +114,26 @@ const SHAPES = {
     stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('f', TEN_LINES)),
     post: committed('h', 'h\n'),
   },
+  'staged-non-overlap': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: stageFile('f', withLine(9, 'L9\n')),
+  },
+  'staged-other': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: stageFile('h', 'h\n'),
+  },
+  'w-is-b-staged': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('f', TEN_LINES)),
+    post: stageFile('h', 'h\n'),
+  },
+  'i-is-b-staged': {
+    stage: inOrder(put('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: stageFile('h', 'h\n'),
+  },
+  'staged-revert': {
+    stage: inOrder(stageFile('f', withLine(2, 'L2\n')), put('g', 'g1\n')),
+    post: stagedThenReverted('g', 'g9\n', 'g0\n'),
+  },
 } satisfies Record<string, { stage: Occupant; post: Occupant }>;
 
 type ShapeName = keyof typeof SHAPES;
@@ -130,7 +157,7 @@ interface Row {
   readonly shape: ShapeName;
   readonly push: PushName;
   readonly command: CommandName;
-  readonly git: 'refuses' | 'applies';
+  readonly git: 'refuses' | 'unclean' | 'applies';
 }
 
 const BOTH_COMMANDS: ReadonlyArray<CommandName> = ['apply --index', 'pop --index'];
@@ -158,6 +185,11 @@ const ROWS: ReadonlyArray<Row> = [
   ...rowsOf(['i-is-b', 'i-is-c'], ['-u', '--keep-index'], ['apply --index'], 'applies'),
   ...rowsOf(['w-is-b'], ['plain'], ['apply --index'], 'applies'),
   ...rowsOf(['H2'], ['plain'], ['apply'], 'applies'),
+  ...rowsOf(['staged-non-overlap'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
+  ...rowsOf(['staged-other'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
+  ...rowsOf(['w-is-b-staged'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
+  ...rowsOf(['staged-revert'], ['plain'], ['apply --index'], 'unclean'),
+  ...rowsOf(['i-is-b-staged'], ['plain'], BOTH_COMMANDS, 'applies'),
 ];
 
 const title = (row: Row): string => `${row.shape} pushed by ${row.push}`;
@@ -208,7 +240,14 @@ const observed = (dir: string, inodeBefore: number) => ({
 
 type Outcome =
   | { readonly kind: 'applied' | 'conflict' }
-  | { readonly kind: 'STASH_INDEX_CONFLICT'; readonly paths: ReadonlyArray<string> };
+  | { readonly kind: 'STASH_INDEX_CONFLICT'; readonly paths: ReadonlyArray<string> }
+  | {
+      readonly kind: 'STASH_APPLY_WOULD_OVERWRITE';
+      readonly localChanges: ReadonlyArray<string>;
+      readonly untracked: ReadonlyArray<string>;
+    };
+
+type UncleanOutcome = Extract<Outcome, { kind: 'STASH_APPLY_WOULD_OVERWRITE' }>;
 
 const tsgitApply = async (dir: string, row: Row): Promise<Outcome> => {
   const command = COMMANDS[row.command];
@@ -220,6 +259,8 @@ const tsgitApply = async (dir: string, row: Row): Promise<Outcome> => {
     return { kind: result.kind };
   } catch (error) {
     const { data } = error as TsgitError;
+    if (data.code === 'STASH_APPLY_WOULD_OVERWRITE')
+      return { kind: data.code, localChanges: data.localChanges, untracked: data.untracked };
     if (data.code !== 'STASH_INDEX_CONFLICT') throw error;
     return { kind: data.code, paths: data.paths };
   }
@@ -230,6 +271,13 @@ const conflictedPathsOfGit = (stderr: string): string[] =>
     .split('\n')
     .map((line) => INDEX_ERROR_LINE.exec(line)?.[1])
     .filter((p): p is string => p !== undefined);
+
+const uncleanBlock = (localChanges: ReadonlyArray<string>): string =>
+  [
+    'error: Your local changes to the following files would be overwritten by merge:',
+    ...localChanges.map((p) => `  ${p}`),
+    'Index was not unstashed.',
+  ].join('\n');
 
 const lastLine = (stderr: string): string => stderr.trimEnd().split('\n').at(-1) ?? '';
 
@@ -284,6 +332,15 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
             expect(observed(pair.ours, inodes[1]).reflog).toBe(1);
             expect(observed(pair.ours, inodes[1]).autoMerge).toBe(false);
             expect(existsSync(path.join(pair.ours, 'u'))).toBe(false);
+          } else if (row.git === 'unclean') {
+            expect(gitRun.exitCode).toBe(1);
+            expect(outcome.kind).toBe('STASH_APPLY_WOULD_OVERWRITE');
+            const { localChanges, untracked } = outcome as UncleanOutcome;
+            expect(untracked).toStrictEqual([]);
+            expect(gitRun.stderr).toContain(uncleanBlock(localChanges));
+            expect(observed(pair.ours, inodes[1]).reflog).toBe(1);
+            expect(observed(pair.ours, inodes[1]).autoMerge).toBe(false);
+            expect(existsSync(path.join(pair.ours, 'u'))).toBe(row.push === '-u');
           } else {
             expect(gitRun.exitCode).toBe(0);
             expect(outcome).toStrictEqual({ kind: 'applied' });

@@ -2449,6 +2449,18 @@ const blobTextAt = async (ctx: Context, path: string): Promise<string> => {
   return blob.type === 'blob' ? new TextDecoder().decode(blob.content) : '<not-blob>';
 };
 
+/** `f` staged as `L2` and `g` edited in the stash; afterwards `h` is staged, off HEAD. */
+const setupStagedOffHead = async (input: { readonly includeUntracked?: true }) => {
+  const ctx = await setupRepo();
+  await commitFile(ctx, 'f', TEN_LINES, 'add f');
+  await commitFile(ctx, 'g', 'g0\n', 'add g');
+  if (input.includeUntracked === true) await write(ctx, 'u', 'u\n');
+  await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, { g: 'g1\n' }, input);
+  await write(ctx, 'h', 'h\n');
+  await add(ctx, ['h']);
+  return ctx;
+};
+
 describe('stash apply — index-side judge', () => {
   describe('Given a staged path that no longer applies to the current index', () => {
     describe('When stashApply runs with restoreIndex', () => {
@@ -2617,6 +2629,90 @@ describe('stash apply — index-side judge', () => {
         // Assert
         expect(result.kind).toBe('applied');
         expect(await read(ctx, 'f')).toBe(withLine(2, 'L2\n'));
+      });
+    });
+  });
+
+  describe('Given a staged path while the current index holds a change off HEAD', () => {
+    const OFF_HEAD = {
+      code: 'STASH_APPLY_WOULD_OVERWRITE',
+      paths: ['h'],
+      localChanges: ['h'],
+      untracked: [],
+    };
+
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then it resets the index to HEAD and refuses with the differing path', async () => {
+        // Arrange
+        const ctx = await setupStagedOffHead({});
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual(OFF_HEAD);
+        expect((await readIndex(ctx)).entries.some((e) => e.path === 'h')).toBe(false);
+        expect(await blobTextAt(ctx, 'f')).toBe(TEN_LINES);
+        expect(await read(ctx, 'h')).toBe('h\n');
+        expect(await read(ctx, 'f')).toBe(TEN_LINES);
+        expect(await read(ctx, 'g')).toBe('g0\n');
+        expect(await lstatOrUndefined(ctx, '.git/AUTO_MERGE')).toBeUndefined();
+      });
+    });
+
+    describe('When stashPop runs with restoreIndex', () => {
+      it('Then it refuses and keeps the stash entry', async () => {
+        // Arrange
+        const ctx = await setupStagedOffHead({});
+        const sut = stashPop;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual(OFF_HEAD);
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+
+    describe('When stashApply runs with restoreIndex on a stash that holds untracked files', () => {
+      it('Then the untracked file is restored with its stashed bytes', async () => {
+        // Arrange
+        const ctx = await setupStagedOffHead({ includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual(OFF_HEAD);
+        expect(await read(ctx, 'u')).toBe('u\n');
+      });
+    });
+  });
+
+  describe('Given a work tree equal to its base while the current index holds a change off HEAD', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then it refuses instead of taking the unchanged-work-tree return', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, { f: TEN_LINES });
+        await write(ctx, 'h', 'h\n');
+        await add(ctx, ['h']);
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['h'],
+          localChanges: ['h'],
+          untracked: [],
+        });
       });
     });
   });

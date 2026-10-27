@@ -23,6 +23,7 @@ import type { DiffChange } from '../../domain/diff/diff-change.js';
 import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { isGitlink } from '../../domain/diff/index.js';
 import { diffIndexAgainstTreeKeyed } from '../../domain/diff/index-diff.js';
+import { sortByPath } from '../../domain/diff/path-compare.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
@@ -134,7 +135,7 @@ import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
 import { FILE_FLAG } from './internal/post-checkout.js';
-import { refreshAndWriteIndex } from './internal/refresh-index.js';
+import { refreshAndWriteIndex, refreshedIndex } from './internal/refresh-index.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import { recordResetRefs } from './internal/reset-refs.js';
 import {
@@ -1039,6 +1040,40 @@ const judgeIndexSide = async (
 const conflictedPathsOf = (conflicts: ReadonlyArray<MergeConflict>): ReadonlyArray<FilePath> =>
   conflicts.map((conflict) => viewOfEscaped(conflict.path));
 
+const indexOrdered = (paths: ReadonlyArray<IndexPath>): ReadonlyArray<FilePath> =>
+  sortByPath(paths, escapedPathOf).map((entry) => entry.path);
+
+const resetIndexTo = async (
+  ctx: Context,
+  lock: IndexLock,
+  tree: ObjectId,
+  currentIndex: GitIndex,
+): Promise<void> => {
+  const entries = await buildIndexFromTree(ctx, { targetTree: tree, currentIndex });
+  const refreshed = await refreshedIndex(ctx, { ...currentIndex, entries });
+  await lock.commit(refreshed.currentIndex.entries, 'replace', { verified: refreshed.verified });
+};
+
+type UnstageInputs = {
+  readonly cTree: ObjectId;
+  readonly currentIndex: GitIndex;
+  readonly stagedTree: ObjectId | undefined;
+};
+
+/** git's `reset_head()` then `unclean()`: a staged state to reinstate meets an index off HEAD. */
+const unstageOffHead = async (
+  ctx: Context,
+  lock: IndexLock,
+  inputs: UnstageInputs,
+): Promise<SettledApply | undefined> => {
+  if (inputs.stagedTree === undefined) return undefined;
+  const headTree = await commitTreeOf(ctx, await resolveHeadCommit(ctx, await readHeadRaw(ctx)));
+  if (headTree === inputs.cTree) return undefined;
+  const differing = await pathsDifferingBetween(ctx, headTree, inputs.cTree);
+  await resetIndexTo(ctx, lock, headTree, inputs.currentIndex);
+  return { kind: 'would-overwrite', localChanges: indexOrdered(differing), untracked: [] };
+};
+
 /**
  * Reinstate the staged state (`--index`). The donor is the index the work-tree merge just wrote:
  * git's one-way reset keeps that entry, with its stat, when its id and mode agree with the target.
@@ -1147,8 +1182,15 @@ const applyUnderLock = async (
   const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
   const { bTree, parsed, uTree } = app;
   const stagedTree = await judgeIndexSide(ctx, app, cTree);
-  const merged = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
-  const settled = await settleIndex(ctx, lock, merged, { currentIndex, stagedTree });
+  const settled =
+    (await unstageOffHead(ctx, lock, { cTree, currentIndex, stagedTree })) ??
+    (await mergeAndSettle(ctx, lock, {
+      bTree,
+      cTree,
+      wTree: parsed.wTree,
+      currentIndex,
+      stagedTree,
+    }));
   const restore =
     uTree === undefined ? NOTHING_RESTORED : await restoreUntracked(ctx, app.workDir, uTree);
   return reportApply(settled, restore, app.w);
@@ -1162,6 +1204,20 @@ type SettledApply =
 type SettleInputs = {
   readonly currentIndex: GitIndex;
   readonly stagedTree: ObjectId | undefined;
+};
+
+const mergeAndSettle = async (
+  ctx: Context,
+  lock: IndexLock,
+  inputs: SettleInputs & {
+    readonly bTree: ObjectId;
+    readonly cTree: ObjectId;
+    readonly wTree: ObjectId;
+  },
+): Promise<SettledApply> => {
+  const { bTree, cTree, wTree, ...settle } = inputs;
+  const merged = await mergeStash(ctx, { bTree, cTree, wTree, currentIndex: settle.currentIndex });
+  return settleIndex(ctx, lock, merged, settle);
 };
 
 /** Write the index the merge calls for; a refused merge writes nothing. */
