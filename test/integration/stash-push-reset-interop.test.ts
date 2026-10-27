@@ -698,6 +698,35 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
     });
   });
 
+  describe('Given an edited f and untracked m/z and deep/er/w', () => {
+    describe('When git and tsgit stash push -u', () => {
+      it('Then both leave no emptied directory and the same ref tail', async () => {
+        // Arrange
+        await arrange((dir) => {
+          fileWith('f', 'edited\n')(dir);
+          fileWith('m/z', 'z\n')(dir);
+          fileWith('deep/er/w', 'w\n')(dir);
+        });
+        const sut = repo.stash.push;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q', '-u'], { env: COMMIT_ENV });
+        await sut({ includeUntracked: true });
+
+        // Assert
+        expect(existsSync(path.join(pair.peer, 'm'))).toBe(false);
+        expect(existsSync(path.join(pair.peer, 'deep'))).toBe(false);
+        expect(existsSync(path.join(pair.ours, 'm'))).toBe(false);
+        expect(existsSync(path.join(pair.ours, 'deep'))).toBe(false);
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        for (const rev of ['stash@{0}', 'stash@{0}^2', 'stash@{0}^3']) {
+          expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
+        }
+        expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+      });
+    });
+  });
+
   describe('Given a clean tree', () => {
     describe('When git and tsgit stash push -u', () => {
       it('Then neither saves and no stash ref exists', async () => {

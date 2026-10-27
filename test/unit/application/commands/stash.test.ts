@@ -148,7 +148,6 @@ const stashFourUntracked = async (): Promise<Context> => {
   const ctx = await setupRepo();
   for (const name of ['a', 'm/z', 'u', 'z']) await write(ctx, name, `${name}\n`);
   await stashPush(ctx, { includeUntracked: true });
-  await ctx.fs.rmRecursive(`${ctx.layout.workDir}/m`);
   return ctx;
 };
 
@@ -701,6 +700,68 @@ describe('stash push', () => {
         // The untracked commit holds ONLY untracked files — the tracked `a.txt` is excluded.
         expect(await treeContent(ctx, uTree, 'a.txt')).toBe('<absent>');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/new.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given untracked m/z and deep/er/w with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the emptied directories m, deep/er and deep are gone from the work tree', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'm/z', 'z\n');
+        await write(ctx, 'deep/er/w', 'w\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'm')).toBeUndefined();
+        expect(await lstatOrUndefined(ctx, 'deep/er')).toBeUndefined();
+        expect(await lstatOrUndefined(ctx, 'deep')).toBeUndefined();
+        expect(await read(ctx, 'a.txt')).toBe('committed\n');
+      });
+    });
+  });
+
+  describe('Given untracked m/z beside tracked m/t with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then m and m/t remain', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'm/t', 't\n', 'track m/t');
+        await write(ctx, 'm/z', 'z\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'm')).toBeDefined();
+        expect(await read(ctx, 'm/t')).toBe('t\n');
+        expect(await lstatOrUndefined(ctx, 'm/z')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given untracked m/z beside an ignored m/.cache with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then m and m/.cache remain', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, '.gitignore', 'm/.cache\n', 'ignore cache');
+        await write(ctx, 'm/z', 'z\n');
+        await write(ctx, 'm/.cache', 'cache\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'm')).toBeDefined();
+        expect(await read(ctx, 'm/.cache')).toBe('cache\n');
+        expect(await lstatOrUndefined(ctx, 'm/z')).toBeUndefined();
       });
     });
   });
@@ -1359,7 +1420,6 @@ describe('stash apply', () => {
         await write(ctx, 'a.txt', 'edited\n');
         for (const name of ['a', 'm/z', 'u', 'z']) await write(ctx, name, `${name}\n`);
         await stashPush(ctx, { includeUntracked: true });
-        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/m`);
         await write(ctx, 'u', 'other\n');
         const sut = stashApply;
 
@@ -1446,7 +1506,6 @@ describe('stash apply', () => {
         const ctx = await setupRepo();
         for (const name of ['m/y', 'm/z']) await write(ctx, name, `${name}\n`);
         await stashPush(ctx, { includeUntracked: true });
-        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/m`);
         const sut = stashApply;
 
         // Act

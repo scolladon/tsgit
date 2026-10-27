@@ -78,6 +78,10 @@ import { lazily } from '../primitives/internal/lazily.js';
 import { forgetAfterLink } from '../primitives/internal/link-first-wave.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import {
+  pruneEmptiedDirectories,
+  survivingDirectoriesOf,
+} from '../primitives/internal/prune-emptied-directories.js';
+import {
   type AttributeProvider,
   attributeBlobLookup,
   buildAttributeProvider,
@@ -629,7 +633,7 @@ const stashAndReset = async (
     const w = await createStashCommits(ctx, workDir, { base, found, opts });
     const { untracked, working } = w;
     await record(w);
-    await resetAfterPush(ctx, lock, { base, iTree, untracked, opts });
+    await resetAfterPush(ctx, lock, { workDir, base, iTree, untracked, opts });
     return {
       kind: 'saved',
       stash: w.stash,
@@ -790,6 +794,7 @@ export const stashDrop = async (
 };
 
 interface ResetInputs {
+  readonly workDir: string;
   readonly base: BaseState;
   readonly iTree: ObjectId;
   readonly untracked: UntrackedProjection;
@@ -825,18 +830,36 @@ const keptIndexPaths = async (
 ): Promise<ReadonlyArray<IndexPath>> =>
   opts.keepIndex === true ? pathsDifferingBetween(ctx, iTree, base.bTree) : [];
 
+/**
+ * git runs `clean -d` over the stashed untracked files before its reset, so a directory they
+ * alone filled disappears; one still holding anything (tracked or ignored files) stays.
+ */
+const cleanStashedUntracked = async (
+  ctx: Context,
+  workDir: string,
+  untracked: UntrackedProjection,
+  currentIndex: GitIndex,
+): Promise<void> => {
+  for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
+  await pruneEmptiedDirectories(
+    ctx,
+    workDir,
+    untracked.paths,
+    survivingDirectoriesOf(currentIndex.entries.map((entry) => entry.path)),
+  );
+};
+
 /** Reset the working tree + index to HEAD (or the index tree under `--keep-index`). */
 const resetAfterPush = async (
   ctx: Context,
   lock: IndexLock,
   inputs: ResetInputs,
 ): Promise<void> => {
-  const { base, iTree, untracked, opts } = inputs;
-  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
-  if (opts.includeUntracked === true) {
-    for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
-  }
+  const { workDir, base, iTree, untracked, opts } = inputs;
   const currentIndex = await readIndex(ctx);
+  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
+  if (opts.includeUntracked === true)
+    await cleanStashedUntracked(ctx, workDir, untracked, currentIndex);
   const target = opts.keepIndex === true ? iTree : base.bTree;
   const result = await materializeTreeJudging(
     ctx,
