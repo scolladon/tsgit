@@ -4,7 +4,7 @@
 > (`STASH_APPLY_WOULD_OVERWRITE`, "1 local change(s) would be overwritten") on a clean tree where git 2.55 applies it.
 > Pin the dir↔file / dir↔symlink matrix for `stash apply`, `apply --index`, `pop`, `pop --index` against git 2.55,
 > fix the refusal git-faithfully, and fold every in-perimeter gap the matrix proves on the same stash path.
-> Status: draft → self-reviewed ×3
+> Status: draft → self-reviewed ×3 → revised against ADRs 1101–1102 → self-reviewed ×3
 
 ## Context
 
@@ -50,6 +50,13 @@
   v1 surface: `includeUntracked`, `keepIndex`, `restoreIndex`), ADR-212 (merge refusal is atomic, conflict is a
   result kind, pop keeps the stash on conflict), ADR-343 (`lstat` presence probe), ADR-1092 (push refresh), ADR-1095
   (push has no pending-operation gate). No ADR decides the pre-merge untracked check or the U-commit omission.
+- Revision (HEAD 0589e7c5, P1–P8 shipped on the branch): the review proved two more gaps on the same functions,
+  folded by ADR-1101 (`--index` index-side conflict) and ADR-1102 (`push -u` empty directories). Today
+  `applyUnderLock` (`stash.ts:1120-1134`) merges W first and judges the index side last, inside
+  `settleCleanIndex` (`:1162-1177`) → `reinstateIndex` (`:1014-1037`), whose `if (merged.kind !== 'clean') return;`
+  (`:1030`) skips the reinstatement silently. On the push side `listUntracked` (`:543-555`) keeps the walker's
+  files only, and the walker (`primitives/walk-working-tree.ts:179`) never yields a directory except a nested
+  repository under `isNestedRepository`, so `cleanStashedUntracked` (`:837-851`) never learns of an empty one.
 - Lessons: 017 (a refusal expectation is git's own, through the public command), 018 (a "writes nothing" pin
   drifts a clean entry's stat first — every row here drifts `keep`), 019 (name git's routine behind each
   up-to-date judge: the untracked restore is `checkout-index`, not `verify_uptodate`).
@@ -92,6 +99,24 @@
   vs untr-du).
 - R11 Every Appendix A row SAME today stays SAME (the DL/DLa push refusals, the DFa/FDa/LDa/LF/FL index outcomes);
   every DIFF row covered by R1–R10 becomes SAME.
+- R12 (ADR-1101) `stash apply` / `pop` with `restoreIndex`, when the stashed index tree differs from both its base
+  and the current index (git's `has_index`), judge the index side before the work-tree merge, as git's
+  `do_apply_stash` runs `diff-tree --binary <w>^2^..<w>^2 | apply --cached` before `merge-ort`'s non-recursive entry point. A
+  side that does not apply refuses `STASH_INDEX_CONFLICT { paths }` (index order). Nothing is written beyond the
+  opening refresh (R5): no work-tree change, no `AUTO_MERGE`, no untracked file restored, `refs/stash` kept, `pop`
+  drops nothing (A.7 H2, delete, add-add rows). A side that
+  applies is reinstated as today, from the tree the judge produced, without a second index-side merge (A.7 non-overlap,
+  offset-mid). `iTree` equal to `bTree` or `cTree` runs no judge (A.7 i-is-b, i-is-c). The shapes where git's patch
+  judge and a three-way merge disagree (A.7 adjacent, same-change, non-overlap × `--keep-index`, add-same, offset-top) follow DC6;
+  the current-index-differs-from-HEAD shapes (A.7 staged-non-overlap, staged-other, w-is-b-staged) follow DC7.
+- R13 (ADR-1102) `stash push --include-untracked` removes what git's `clean --force --quiet -d :/` removes before
+  its reset: the stashed untracked files, every untracked directory with no file under it (`readdir` empty, or
+  holding only such directories), and every parent those removals leave empty, deepest first. Kept: a tracked
+  directory (any ancestor of an index path), a directory still holding an ignored file or an ignored directory,
+  an ignored directory and everything under it, a path the index tracks (an unpopulated gitlink's empty
+  directory), and the work-tree root. Empty directories never enter the U tree and never count as a local change
+  (A.8 only-empty: `No local changes to save`, directory kept). `status` is unchanged (A.8: `status --porcelain
+  -uall` equal before every push, never listing an empty directory). Same with `--keep-index` (A.8, every row).
 
 ## Design
 
@@ -143,6 +168,10 @@ state files.
 | F11 | `stash apply` / `pop` refuse `OPERATION_IN_PROGRESS` while `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD` or `REBASE_HEAD` stands; git applies and keeps the marker | A.5 P1–P5 | DC5 |
 | F12 | `STASH_APPLY_WOULD_OVERWRITE { paths }` merges git's two refusal classes into one list | A.2 DFa × dirty-dx vs untr-du | DC3 |
 | — | Merge and cherry-pick of a dir→file branch (clean, untracked `d/u`, dirty `d/x`) match git on main | A.6 M1–M6 | not a gap |
+| F13 | `--index` with an index side that does not apply: git refuses `conflicts in index. Try without --index.` before any write and keeps the stash; tsgit merges W, skips the reinstatement silently, returns `applied` (or the W merge's `conflict`), and `pop` drops the stash on `applied` | A.7 H2, delete, add-add | in (R12, ADR-1101) |
+| F14 | git's patch judge (`apply --cached`: exact context, no three-way fallback, a creation needs an absent path) refuses where tsgit's three-way index-side merge is clean | A.7 adjacent, same-change, non-overlap × `--keep-index`, add-same, offset-top | DC6 |
+| F15 | `--index` with a current index that differs from HEAD: git's `reset_head` leaves the index at HEAD, then `merge-ort`'s non-recursive entry point's `unclean()` refuses "local changes would be overwritten" for every path where HEAD and C differ; tsgit applies | A.7 staged-non-overlap, staged-other; i-is-b-staged (no `has_index`: both apply) | DC7 |
+| F16 | `stash push -u` leaves untracked directories holding no file, which git's `clean -d` removes | A.8 empty-dir, nest, file-and-empty, reviewer, tracked-parent, tracked-sibling, mixed, two-empty, change-only, type-empty × `--keep-index` | in (R13, ADR-1102) |
 
 ### Root causes (main 23ff6c1e)
 
@@ -167,6 +196,23 @@ state files.
 - RC7 (F10) — `createStashCommits` (`:750-753`) skips the U commit when no untracked path was found.
 - RC8 (F11) — `assertNoPendingOperation` (`:971`), present since #98, no ADR (ADR-1095 removed its push twin).
 - RC9 (F12) — `mergeStash` (`:1096-1097`) concatenates `localChanges` and `untracked`.
+
+Revision root causes (HEAD 0589e7c5):
+
+- RC10 (F13) — the index side is judged after the work-tree merge (`settleCleanIndex` `stash.ts:1162-1177`, only
+  on a clean W merge) and its conflict is swallowed (`reinstateIndex` `:1030`). git judges it first: in
+  `do_apply_stash`, after `refresh_and_write_cache` and `write_index_as_tree(c_tree)`, the `has_index` branch runs
+  `diff_tree_binary` + `apply_cached` and returns `error: conflicts in index. Try without --index.` before
+  `merge-ort`'s non-recursive entry point and before `restore_untracked` (A.7 H2 × `-u`: `u` not restored).
+- RC11 (F14) — tsgit's judge is `mergeTreesToTree` (a three-way merge); git's is `apply --cached` of the B→I
+  patch (3 lines of context, exact context match, offsets allowed, a hunk at line 1 anchored at the file start, a
+  creation refused when the path is in the index, a deletion needing the whole preimage).
+- RC12 (F15) — after `apply_cached`, git's `reset_head` (`reset --quiet --refresh`) resets the index to HEAD, and
+  `merge-ort`'s non-recursive entry point's `unclean()` compares that index with `c_tree`: any path where HEAD ≠ C refuses. tsgit
+  never resets to HEAD.
+- RC13 (F16) — `listUntracked` (`stash.ts:543-555`) sees files only; `walkWorkingTree` descends into an empty
+  directory and yields nothing, so `cleanStashedUntracked` prunes only the parents of the removed files
+  (`pruneEmptiedDirectories(…, untracked.paths, …)`).
 
 ### Fix design
 
@@ -316,6 +362,148 @@ Context block: `stash.ts:1079-1098`; `primitives/apply-merge-to-worktree.ts:106-
 - Context block: `domain/commands/error.ts:440-460`, `:1380-1397`; `domain/error.ts:700-745`; `reports/api.json`
   (`StashApplyResult`, `StashPopResult`, the error-data union); `stash.ts:80-90` (imports), `:966-973`.
 
+Revision parts (ADRs 1101–1102), on top of P1–P8 as shipped at 0589e7c5. P9 and P10 are independent of each other.
+P11 exists only if DC6 = (a), P12 only if DC7 = (a); both build on P9. Line numbers below are HEAD 0589e7c5's.
+
+**P9 — the index side is judged before the work-tree merge (F13, RC10, R12, ADR-1101)** — git's order in
+`do_apply_stash`: refresh → `c_tree` → `has_index` judge (`apply_cached`, refusal returns here) → merge →
+reinstatement (`reset_tree(index_tree)`) → `restore_untracked`. The judge moves into `applyUnderLock`, after
+`rejectUnmergedIndex` and `cTree`, before `mergeStash`; its clean tree rides to the reinstatement, so the index-side
+merge runs once:
+
+```ts
+/** git's `has_index` branch: the stashed index as a tree on top of the current one, judged before any write. */
+const judgeIndexSide = async (ctx: Context, app: StashApplication, cTree: ObjectId): Promise<ObjectId | undefined> => {
+  if (app.input.restoreIndex !== true) return undefined;
+  const iTree = await commitTreeOf(ctx, app.parsed.indexParent);
+  if (!hasStagedChanges({ bTree: app.bTree, cTree, iTree })) return undefined;
+  const merged = await mergeTreesToTree(ctx, { baseTree: app.bTree, oursTree: cTree, theirsTree: iTree, labels: STASH_LABELS });
+  if (merged.kind !== 'clean') throw stashIndexConflict(conflictedPathsOf(merged.conflicts));
+  return merged.mergedTree;
+};
+
+// applyUnderLock
+const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
+const stagedTree = await judgeIndexSide(ctx, app, cTree);        // throws before any write; the lock is released unused
+const merged = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
+const settled = await settleIndex(ctx, lock, merged, { ...app, cTree, currentIndex, stagedTree });
+```
+
+- Inside the lock, not before it: `cTree` comes from the index read under the lock, exactly as git builds `c_tree`
+  after its refresh. A throw inside `applyStashCommit`'s `try` releases the lock without a commit; the refresh (P2)
+  is already on disk, matching git's rewritten index on every A.7 refusal row.
+- `SettleInputs` gains `stagedTree: ObjectId | undefined`. `settleCleanIndex` reinstates when it is defined, else runs
+  `unstageChangesUnlessNew` as today; it no longer reads `parsed.indexParent` (the judge did). `reinstateIndex`
+  loses its merge and its silent `return`: `buildIndexFromTree({ targetTree: stagedTree, currentIndex: writtenIndex })`
+  → `lock.commit(entries, 'replace')`. The conflict and would-overwrite branches of `settleIndex` are unchanged
+  (git's "Index was not unstashed." is rendering).
+- `conflictedPathsOf`: each conflict's `path` through `viewOfEscaped` (`domain/git-index/index-path-key.ts:42`, as
+  `toConflictList` does), de-duplicated, sorted with `comparePaths` (`domain/diff/path-compare.ts`), so `paths` is in
+  index order whatever order `mergeEscapedTrees` reports.
+- `pop`: `stashPop` reaches `stashDrop` only after `stashApply` returns, so the throw keeps the stash. `applyAutostash`
+  passes `{}`: no judge.
+- `mergeTreesToTree` (`primitives/apply-merge-to-worktree.ts:602-632`): its only caller now refuses on `conflict`, so
+  the `Stryker disable` on `if (!merged.cleanMerge)` (`:629-630`) goes (the refusal test kills both mutants) and its doc
+  comment says the caller refuses instead of "leaves the index untouched".
+- Error (surface gates, `.claude/workflow/surface-gates.md`): union member `{ code: 'STASH_INDEX_CONFLICT'; paths:
+  ReadonlyArray<FilePath> }` after `STASH_UNTRACKED_NOT_RESTORED` (`domain/commands/error.ts:458-464`); constructor
+  `stashIndexConflict(paths)` beside `stashUntrackedNotRestored` (`:1432-1440`), one line added to the comment block
+  at `:1410-1415`; message case in `domain/error.ts:741` (wording only, e.g. `` `cannot apply stash: conflicts in
+  index (${data.paths.length} path(s)); try without restoreIndex` ``); `test/unit/domain/exhaustiveness.ts:239`;
+  `reports/api.json` regenerated with `npm run docs:json` in the same part (prepush gate).
+- ADR-211's carve-out now reads as ADR-1101 states; the doc comment on `reinstateIndex` and `hasStagedChanges` keep
+  git's names.
+- Context block: `stash.ts:1003-1037` (`hasStagedChanges`, `reinstateIndex` — current signature
+  `reinstateIndex(ctx, lock, { bTree, cTree, iTree, writtenIndex })`), `:1081-1177` (`applyStashCommit`,
+  `StashApplication`, `applyUnderLock`, `SettledApply`, `SettleInputs`, `settleIndex`, `settleCleanIndex`),
+  `:1231-1242` (`stashPop`); `primitives/apply-merge-to-worktree.ts:592-632` (`MergeTreesResult`,
+  `mergeTreesToTree`); `domain/merge/merge-types.ts:17-40` (`MergeConflict.path` is an escaped `FilePath`);
+  `commands/internal/replay-sequence.ts:114-117` (`toConflictList`, the `viewOfEscaped` precedent);
+  `domain/commands/error.ts:446-464`, `:598-615`, `:1408-1440`; `domain/error.ts:734-746`;
+  `test/unit/domain/exhaustiveness.ts:237-239`; `test/unit/domain/commands/error.test.ts:200-266`; unit
+  `stash.test.ts:1092-1180` (the `restoreIndex` rows that must stay green), `refusalDataOf` (`:134`), `setupRepo`
+  (`:87`), `commitFile` (`:66`), `write` (`:60`); interop `stash-apply-index-interop.test.ts` (`seed` `:41`, `put` `:36`,
+  the `git` helper, `zeroStatPaths` `:80`).
+
+**P10 — `stash push -u` removes the untracked directories git's `clean -d` removes (F16, RC13, R13, ADR-1102)**:
+
+- The walker reports an entered directory whose `readdir` is empty. "Entered" already means: not ignored
+  (`ignore(path, true)` is asked first), not an embedded repository, below the root. In `walkWorkingTree`'s loop
+  (`walk-working-tree.ts:194-208`), a `push` step whose `frame.entries.length === 0` calls the report hook when the
+  caller asked for it (DC8 decides where that hook lives; the public `walkWorkingTree` output is unchanged under
+  every DC8 option). The report is not counted against `maxEntries` (an empty directory is never a tree entry).
+  Literal emptiness is enough: a directory holding only empty directories is reported through its leaves and
+  removed by the climb; one holding an ignored file or an ignored directory is not empty (A.8 ignored-file, ignored-deep, ignored-inner,
+  mixed).
+- `listUntracked` (`stash.ts:543-555`) returns `{ files, emptyDirectories }`; an empty directory whose path the
+  index tracks is dropped by the same `tracked.has(keyOfPath(path))` filter the files use (A.8 gitlink-dir: an
+  unpopulated gitlink's directory stays, as in git). `LocalChanges` (`:496-503`) gains
+  `untrackedEmptyDirectories: ReadonlyArray<FilePath>`; `hasLocalChanges` (`:538-541`) and `createStashCommits` are
+  unchanged (A.8 only-empty; U trees equal on every A.8 row).
+- `ResetInputs` (`:796-802`) gains `emptyDirectories`; `stashAndReset` (`:619-650`) passes
+  `found.untrackedEmptyDirectories`. `cleanStashedUntracked` (`:837-851`) removes the files, then prunes from the
+  files' parents and from the empty directories themselves in one deepest-first pass:
+
+```ts
+for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
+await pruneDirectoriesFrom(
+  ctx,
+  workDir,
+  [...untracked.paths.map(parentDirectory), ...emptyDirectories],   // git's clean -d: files, then empty dirs, bottom-up
+  survivingDirectoriesOf(currentIndex.entries.map((entry) => entry.path)),
+);
+```
+
+- `prune-emptied-directories.ts`: new export `pruneDirectoriesFrom(ctx, workdir, startDirectories, surviving)`
+  schedules each start directory itself; `pruneEmptiedDirectories` becomes `pruneDirectoriesFrom` over the removed
+  paths' parents, so its callers (`rm.ts:192`, `apply-changeset.ts:571`, `apply-merge-to-worktree.ts:233`, stash)
+  keep their behaviour and its unit suite stays green. `parentDirectory` is exported for the stash or the mapping
+  stays inside the module (implementer's call, no behaviour difference).
+- A tracked ancestor is in `surviving` and ends the climb (A.8 tracked-parent, tracked-sibling); a directory a race
+  filled refuses `rmdir` and stays, as git's `rmdir` would.
+- `status` (`status.ts:485`), `add` (`add.ts:1303`, `:1742`) and `fs-workdir-enumerator.ts:63` do not ask for the
+  report; their output is unchanged.
+- The `Stryker disable` on `resetAfterPush`'s `if (opts.includeUntracked === true)` (`:860-861`) keeps its argument:
+  without `-u`, `listUntracked` is not called and both lists are empty.
+- Context block: `stash.ts:484-555` (`UntrackedProjection`, `UntrackedFile`, `LocalChanges`, `findLocalChanges`,
+  `hasLocalChanges`, `listUntracked`), `:619-650` (`stashAndReset`), `:796-802` (`ResetInputs`), `:837-878`
+  (`cleanStashedUntracked`, `resetAfterPush`); `primitives/walk-working-tree.ts` (`WalkConfig` `:17-28`,
+  `enterSubdirectory` `:67-86`, `stepEntry` `:99-120`, `walkWorkingTree` `:179-209`); `primitives/types.ts:253-290`
+  (`WalkWorkingTreeEntry`, `WalkWorkingTreeOptions`, the `isNestedRepository` precedent);
+  `primitives/internal/prune-emptied-directories.ts` (whole file, 93 lines); `primitives/index.ts:120` and
+  `repository.ts:1087` (the public exposure DC8 weighs); unit `walk-working-tree.test.ts` (the `describe` tree from
+  `:46`), `prune-emptied-directories.test.ts`, `stash.test.ts` P6 rows (`-u` push), `stash-clean-order.test.ts`;
+  interop `stash-push-reset-interop.test.ts:582-760` (`SWAP_SEED`, `SWAPS`, `arrange`, `expectSameIndexOutcome`,
+  `treeAt`, the emptied-directory row `:717-745`); fixtures `emptyDirectoryAt`, `fileWith`, `ignoring`, `listing`
+  (lists directories with a trailing `/`, so an empty one shows) in `occupant-displacement-fixtures.ts`.
+
+**P11 — git's patch judge (F14, RC11; only if DC6 = (a))** — `judgeIndexSide` keeps its signature and swaps
+`mergeTreesToTree` for git's `apply --cached` rule over the B→I diff: per changed path, the hunks `diff-tree`
+writes (Myers, 3 lines of context; plumbing reads no `diff.algorithm` / `diff.context`) applied to C's blob with
+`apply.c`'s matching: exact context lines, an offset search outwards from the hunk's position, a hunk starting at
+line 1 anchored at the file start, a hunk with no trailing context anchored at the end, hunks in order with the
+running offset; a creation refuses when C holds the path (A.7 add-add, add-same: `already exists in index`); a
+deletion and a binary or mode-only change need C's entry to equal B's. Failing paths are collected (git checks the
+whole list before refusing). The result tree is C with the patched blobs, git's `index_tree`. A domain module
+(`domain/diff/apply-hunks.ts` or a sibling of `patch-serializer.ts`) over `computeHunks`; a `*.properties.test.ts`
+sibling (a hunk set applies to its own preimage and yields the postimage; offsets shift nothing else).
+Context block: `domain/diff/patch-serializer.ts` (`computeHunks`, `OutputHunk`, `BodyLine`), `domain/diff/line-diff.ts`,
+`domain/diff/xdiff/*`, `.claude/workflow/property-testing.md`.
+
+**P12 — git's `reset_head` before the work-tree merge (F15, RC12; only if DC7 = (a))** — when the judge returns a
+tree and C ≠ HEAD's tree, git leaves the index at HEAD (stat refreshed) and refuses with the local-changes class
+listing every path where HEAD and C differ, then restores the untracked tree as after any merge refusal (A.7
+staged-non-overlap × `-u`: `u` restored; the work tree is not touched, so a staged new file reads `?? h` afterwards, A.7
+staged-other). In `applyUnderLock`, after the judge returned a tree: read HEAD's tree (`resolveHeadCommit` +
+`commitTreeOf`, `stash.ts:169-185`; the stash base `bTree` is not HEAD once HEAD moved); if it differs from `cTree`,
+commit a mixed reset (git's `reset --quiet --refresh`: `buildIndexFromTree({ targetTree: headTree, currentIndex })`,
+which keeps the stat of an entry whose id and mode agree; the work tree is not written) and settle a
+`would-overwrite` with `localChanges` = the paths where HEAD and C differ (`pathsDifferingBetween`,
+`stash.ts:805-825`, mapped to `FilePath` and sorted), `untracked: []`. git's `unclean()` runs before its W = B early
+return (A.7 w-is-b-staged: refusal, no `Already up to date.`), so P5's early return sits after this check. Context
+block: `stash.ts:169-198`, `:805-825`, `:1014-1037`, `:1120-1160`; `primitives/build-index-from-tree.ts`
+(`buildIndexFromTree`, as `reinstateIndex` calls it).
+
 ### Performance
 
 | operation | today | after |
@@ -324,8 +512,15 @@ Context block: `stash.ts:1079-1098`; `primitives/apply-merge-to-worktree.ts:106-
 | `-u` apply | `pathIsOccupied` per U path before the merge, then one write per path | one verdict per U path (`lstat` of the path, plus one per unseen leading prefix), then the write; no pre-scan |
 | apply with W = base | full 3-way merge, `AUTO_MERGE` write | none (P5) |
 | `stash push -u` | reset, then removals | removals, then reset (same work) |
+| `apply --index` with a staged state (P9) | W merge, then the index-side merge (clean only) | the index-side merge before the W merge, run once; a refusal skips the W merge and the restore |
+| `apply` without `restoreIndex` (P9) | `commitTreeOf(indexParent)` read on every clean apply | not read (the judge returns before it) |
+| `stash push -u` (P10) | the walk's files; prune from their parents | + one array push per empty directory the walk already `readdir`s; one `rmdir` per reported directory and per emptied parent (git's `clean -d` pays the same) |
+| `status`, `add`, enumerator walks (P10) | — | unchanged: the report hook is unset, one `undefined` check per entered directory |
+| P11 (DC6 = (a)) | three-way merge per changed path | Myers hunks per changed path + a context scan per hunk; same order of cost, `apply --index` only |
+| P12 (DC7 = (a)) | — | one HEAD tree read per `apply --index` that reinstates |
 
 No new pass on the hot paths of merge, cherry-pick or rebase: P5 is stash-local and P3/P4 touch `stash.ts` only.
+P9–P12 touch `stash.ts`, the walker's per-directory step (one branch) and the prune module (one indirection).
 Bench: `npm run bench:ab` on `test/bench/stash.bench.ts` (apply pays P2's scan). Add one scenario only if the
 existing apply row moves by more than its noise band.
 
@@ -334,7 +529,9 @@ existing apply row moves by more than its noise band.
 None expected. The verdict uses `lstat` (no follow) through `ctx.fs`. The memory adapter's `lstat` reports a
 symlink as a symlink and a path under a file as `NOT_A_DIRECTORY` (the codes `path-occupied.ts` already reads).
 P4's unit rows run on the memory adapter and the interop rows on node, so the leading-file and leading-symlink
-verdicts are pinned on both.
+verdicts are pinned on both. P10 needs `readdir` of an empty directory to return `[]` and an empty directory to be
+removable: the memory adapter keeps explicit directories (`memory-file-system.ts:272`, `mkdir`), and the prune
+module already handles an adapter without `rmdir` (`removeIfEmptyDirectory`).
 
 ### Size-cap impact
 
@@ -344,13 +541,21 @@ message case, optional fields; the removed gate gives back ~20 B). Net about +40
 browser entry, beyond the <100 B headroom. Caps are re-measured from a clean build (`rm -rf dist .wireit`) and raised
 in the same change. `reports/api.json` changes only under DC1/DC2/DC3 = (a).
 
+| part | estimated gzip | what |
+|---|---|---|
+| P9 | +90–150 B | `judgeIndexSide`, `conflictedPathsOf`, constructor, union member, message case; `reinstateIndex` loses its merge (−30 B) |
+| P10 | +60–110 B | walker report branch + config field, `listUntracked` split, threading, `pruneDirectoriesFrom` |
+| P11 (DC6 = (a)) | +1.2–2.0 kB | fragment matcher, offset search, anchoring, creation/deletion/binary rules, result tree |
+| P12 (DC7 = (a)) | +60–100 B | HEAD tree read, mixed reset, refusal |
+
+The session raises the caps once, after review, from a clean build (`rm -rf dist .wireit`). `reports/api.json`
+changes in P9 (new code) and in P10 only under DC8 = (a).
+
 ### Out of perimeter
 
 - Hunch, not proven: `applyAutostash` (merge/rebase `--autostash`) reaches the apply without P2's refresh; git's
   `apply_autostash` runs `stash apply`, which would refresh. To prove: drift a clean bystander's stat between a
   `rebase --autostash` stop and its finish in both tools, compare `ls-files --debug`.
-- `--index` conflicts in the index-side merge ("Index was not unstashed"): unchanged (ADR-211), rendered by
-  the caller.
 
 ## Decision candidates
 
@@ -365,6 +570,19 @@ Settled by matching git, so not candidates: the untracked restore after the merg
 | DC3 | F12: `STASH_APPLY_WOULD_OVERWRITE` loses git's local-changes vs untracked split | (a) add `localChanges` and `untracked` beside `paths` (b) leave as is, IMPACT line | (a) | Same refusal path P3 restructures. git prints two different messages (A.2 DFa dirty-dx vs untr-du), and `findWouldOverwrite` already returns both lists. Against (a): additive `api.json` change; `paths` becomes redundant. |
 | DC4 | F10: `stash push -u` with no untracked file writes git's empty-tree U commit | (a) fold into P6 (b) keep out, IMPACT line with A.4 E1/E2 | (a) | Proven on the same function the probes exercised, so the fold rule applies; the change is one condition. Against (a): a push behaviour, not an apply one; W gains a third parent for `-u` users, which a consumer reading parents sees. |
 | DC5 | F11: drop `stash apply` / `pop`'s pending-operation gate | (a) drop it (git applies and keeps every marker) (b) keep it after P2's refresh, IMPACT line with A.5 | (a) | Proven on the function P2 edits; ADR-1095 removed the push twin for the same reason. The implementer first pins a real resolved cherry-pick and a stopped rebase (lesson 017). Against (a): removes a refusal shipped since #98, and a caller relying on it loses a guard. |
+
+Revision (ADRs 1101–1102). Settled by ADR-1101 or by matching git, so not candidates: the code name and its single
+`paths` field (ADR-1101); where the judge runs (under the lock, after `cTree`, before the W merge: git's
+`do_apply_stash` order, A.7 H2 writes nothing); a refused index side restores no untracked file (A.7 H2 × `-u`); the
+clean tree carried to the reinstatement (one merge, same result as today's second merge); the removal set, order and
+kept directories of P10 (ADR-1102, A.8); the tracked-path filter on empty directories (A.8 gitlink-dir); empty directories
+never counting as a local change (A.8 only-empty).
+
+| # | Choice | Alternatives (≤3) | Recommendation | Why |
+|---|---|---|---|---|
+| DC6 | F14: what decides "the index side applies" — ADR-1101 asks the design to record the shapes where git's patch judge and a three-way merge disagree; it does not ratify a divergence | (a) P11: port git's `apply --cached` rule (B→I hunks, exact context, offsets, anchoring, creation/deletion/binary rules) (b) keep `mergeTreesToTree` and write an ADR recording A.7 adjacent, same-change, non-overlap × `--keep-index`, add-same and offset-top as accepted divergence (tsgit reinstates, git refuses) (c) the three-way merge plus "refuse when C's entry for a staged path differs from B's" | (a) | ADR-226: faithful refusal conditions unless an ADR diverges. The divergence is not a corner: `stash push --keep-index`, commit the kept index, then `stash pop --index` (git-stash's "Testing partial commits" example, popped with `--index`) is refused by git (A.7 non-overlap × `--keep-index`) while (b) pops and drops. (c) is wrong both ways: it refuses A.7 non-overlap and offset-mid, which git applies. Against (a): +1.2–2.0 kB gzip and a new domain module with its own property suite; the result tree becomes git's `index_tree` (C patched), not a merge. |
+| DC7 | F15: `--index` that reinstates on a current index differing from HEAD — git resets the index to HEAD, then refuses "local changes would be overwritten" for every path where HEAD and C differ (A.7 staged-non-overlap, staged-other, w-is-b-staged); the user's staging is left unstaged, the work tree untouched | (a) P12: replicate (mixed reset to HEAD, `STASH_APPLY_WOULD_OVERWRITE { localChanges }`, untracked restored, stash kept) (b) out of this change: IMPACT line with the A.7 rows, backlog only on the user's word (c) refuse as git does but keep the current index (ADR recording the divergence on the index state) | (a) | Same function and same `--index` step P9 rewrites, so the fold rule applies; ADR-226 binds refusal conditions and on-disk index state, and every file's content survives in the work tree (only the staging is lost, as in git). Against (a): tsgit reproduces a git behaviour that discards a user's staging; not covered by ADR-1101, so it needs the user's word either way. (c) protects the staging at the price of a recorded divergence. |
+| DC8 | Where the walker's empty-directory report lives (ADR-1102: "exposes … to callers that ask for them") | (a) public: a new `WalkWorkingTreeOptions` field (e.g. `onEmptyDirectory?: (directory: FilePath) => void`), additive `api.json`, reachable through `repo.walkWorkingTree` (b) internal: the same hook on a non-barrelled entry point in `walk-working-tree.ts` that `walkWorkingTree` wraps with the hook unset; public surface unchanged (c) a second, stash-local walk listing empty directories | (b) | The stash is the only caller; YAGNI keeps the public surface to what a consumer needs, and the hook adds no per-entry cost to `status`. (a) follows the `isNestedRepository` precedent but publishes an option no consumer asked for; it can be promoted later without a break. (c) duplicates the walker's ignore, `.git`, embedded-repository and depth rules and pays a second full-tree `readdir`. Against (b): one more internal export of the walker module. |
 
 ## Test strategy
 
@@ -427,14 +645,79 @@ Mutation: `stash.ts` (`stashApply`, `applyUnderLock`, the new `settleIndex` / `r
 its verdict, `mergeStash`, `resetAfterPush`, `createStashCommits`), the new error constructor and message case;
 narrowed Stryker buckets per prefix (`.claude/workflow/mutation.md`).
 
+### Revision tests (P9–P12)
+
+Interop, git 2.55, same isolation and comparisons as above; every row drifts `keep` after the push and records the
+index inode before the command (lesson 018: A.7 refusals rewrite the index in both tools, through the refresh).
+
+- P9 — `test/integration/stash-apply-index-interop.test.ts`, a new `describe` "stash apply index-side judge interop"
+  over `INDEX_SIDE_ROWS` (`{ shape, push, command, git: 'refuses' | 'applies' }`). Seed: `keep=k`, `f` = ten lines
+  `l1`…`l10`, `g=g0` (the file's own `seed`/`put` style, then `settleIndex`). Each tool pushes on its own twin; W/I/U
+  trees asserted equal. Rows, exactly the A.7 combinations: H2 × push {plain, `-u` with untracked `u`,
+  `--keep-index`} × {`apply --index`, `pop --index`}, delete and add-add × plain × both commands, delete × `-u`,
+  add-add × {`-u`, `--keep-index`} × `apply --index` → refuses (delete × `--keep-index` is no row: the kept index
+  already holds the deletion, so I = C); non-overlap × {plain, `-u`} × both commands, offset-mid × plain × both
+  commands and × `-u` × `apply --index`, i-is-b and i-is-c × {plain × both commands, `-u`, `--keep-index` ×
+  `apply --index`}, w-is-b, and H2 × plain `stash apply` → applies. A refusal row asserts: git exit 1 and stderr ending
+  `error: conflicts in index. Try without --index.`; tsgit `STASH_INDEX_CONFLICT` with `paths` = the paths of git's
+  `error: <p>: patch does not apply` / `error: <p>: already exists in index` lines; `listing`, `indexState`,
+  `staleEntries` equal; no `AUTO_MERGE` in either; `refs/stash` count 1 in both; index rewritten in both; `u` absent
+  in both on `-u`. An applies row asserts the same comparisons plus `status --porcelain -uall` equal. The DC6 and DC7
+  rows (adjacent, same-change, non-overlap × `--keep-index`, add-same, offset-top; staged-non-overlap, staged-other, w-is-b-staged) join the
+  table with git's outcome once P11 / P12 land; under DC6 = (b) or DC7 = (b)/(c) they are pinned as the recorded
+  divergence (tsgit's outcome asserted, git's beside it in the row), never left out.
+- P10 — `test/integration/stash-push-reset-interop.test.ts`, inside "stash push include-untracked interop", a
+  `describe.each` over `EMPTY_DIRECTORY_SHAPES` × push {`-u`, `-u --keep-index` with `keep` staged}: the A.8 rows
+  (empty-dir, nest, file-and-empty, reviewer, tracked-parent as `d/b` under `SWAP_SEED`'s tracked `d/x`, tracked-sibling, ignored-file, ignored-dir,
+  under-ignored, link-to-dir, ignored-deep, ignored-inner, mixed, two-empty, change-only, type-empty, gitlink-dir) built with `emptyDirectoryAt`,
+  `fileWith`, `linkAt`, `gitlink`, and an `info/exclude` holding `*.cache`, `build/`, `out/` (`ignoring` writes one
+  pattern; the row writes the three). Asserts: `status --porcelain -uall` equal before the push; `listing` equal
+  after (it shows empty directories); trees of `stash@{0}`, `^2`, `^3` equal; `expectSameIndexOutcome()`.
+  only-empty sits beside the clean-tree row (`:747`): both `no-local-changes`, `emptydir/` kept, no `refs/stash`.
+
+Unit (memory adapter, Given/When/Then split, AAA, `sut`, data asserted through `refusalDataOf`):
+
+- `stash.test.ts`, P9: H2 shape → `STASH_INDEX_CONFLICT { paths: ['f'] }`, `g` unchanged, no `AUTO_MERGE`, the index
+  holds the committed `f`; `pop` with `restoreIndex` → same data, `stashList` still one entry; with `-u` → `u` not
+  restored; delete (the W merge would conflict too) → the index-side code wins; two conflicting paths → `paths` in index
+  order; the H2 shape without `restoreIndex` → applies (guards the `restoreIndex !== true` return); i-is-c and i-is-b
+  under `restoreIndex` → no refusal (each `hasStagedChanges` arm alone); a clean index side → the existing
+  reinstatement rows (`:1092-1180`) stay green. `test/unit/domain/commands/error.test.ts`: `stashIndexConflict` data
+  and message; `exhaustiveness.ts` gains the case.
+- `walk-working-tree.test.ts` (or the internal entry point's suite under DC8 = (b)), P10: an empty directory is
+  reported, not yielded; an ignored empty directory is not reported; an empty directory inside an embedded
+  repository is not reported; a directory holding only an empty directory reports the leaf only; an empty work tree
+  reports nothing (the root is never reported); the report does not count against `maxEntries`; without the hook the
+  output equals today's.
+- `prune-emptied-directories.test.ts`, P10: `pruneDirectoriesFrom` removes a start directory itself, climbs, stops
+  at a surviving one, keeps a non-empty one; the `pruneEmptiedDirectories` rows stay unchanged.
+- `stash.test.ts`, P10: a `-u` push removes an empty directory, a nested empty chain, `d/e/` beside `d/u`; keeps a
+  directory holding an ignored file, an ignored directory, a tracked path's empty directory; `-u` with only an empty
+  directory → `no-local-changes`, directory kept; a push without `-u` keeps every empty directory.
+- P11 (DC6 = (a)): the fragment matcher's example suite (exact context, offset, start/end anchoring, creation,
+  deletion, binary, mode) and a `*.properties.test.ts` sibling (`.claude/workflow/property-testing.md`). P12
+  (DC7 = (a)): the staged-other shape → `STASH_APPLY_WOULD_OVERWRITE { localChanges: ['h'], untracked: [] }`, the index
+  at HEAD with `h` unstaged, the work tree unchanged, untracked files restored.
+
+Lesson 017: every refusal above is git's own (A.7 H2, delete, add-add; A.7 STAGED* for P12), reached through
+`repo.stash.apply` / `pop`. Lesson 015: P9 changes a step of every `apply --index` / `pop --index`; its gate runs the
+`applyStashCommit` interop family listed above and reports the count. P10 changes every `stash push -u` and touches
+the walker and the prune module shared by `status`, `add`, `rm`, checkout and merge: its gate runs every `stash push`
+interop file plus every interop file that reaches `walkWorkingTree` or `pruneEmptiedDirectories` (`status`, `add`,
+`rm`, `checkout`, `merge`, `cherry-pick` suites; count reported). Lesson 018: every A.7 / A.8 row drifts `keep` and
+compares the index inode and `staleEntries`.
+
+Mutation (narrowed buckets per prefix): P9 — `judgeIndexSide`, `conflictedPathsOf`, `settleCleanIndex`,
+`reinstateIndex`, `mergeTreesToTree`'s conflict line (no longer disabled), `stashIndexConflict` and its message case;
+P10 — the walker's report branch, `listUntracked`, `cleanStashedUntracked`, `pruneDirectoriesFrom`; P11 / P12 — their
+new modules and branches.
+
 ## Out of scope
 
 - The autostash refresh hunch (above): unproven.
 - `stash push -- <pathspec>`, `stash -p`, `--index` reinstatement of a conflicted index side: not exposed (ADR-211).
 - git's rendered output (`Already up to date.`, the status block `stash apply` prints, `Index was not unstashed.`):
   rendering, rebuilt by the caller (ADR-249).
-- `git clean -d`'s removal of untracked empty directories during `push -u`: tsgit's `-u` stashes files only, and
-  no row here probes an untracked empty directory at push time.
 
 ## Appendix A — pinned matrix (git 2.55.0 vs tsgit 23ff6c1e)
 
@@ -516,3 +799,82 @@ every row except where noted; `--index` variants agree with their plain twin unl
 | O1 / O2 / O3 | DFa × plain × `apply`, tsgit `src/` from 7337e22e / 4899565f / fb6bc5b0 | `STASH_APPLY_WOULD_OVERWRITE ['d']` / same / `applied` |
 | M1–M3 | `merge --no-ff side` where `side` replaced `d/x` with file `d`: clean / untracked `d/u` / dirty `d/x` | git exit 0 / 2 lose-untracked `d` / 2 local changes `d/x`; tsgit `merge` / `WORKING_TREE_DIRTY { untracked: ['d'] }` / `{ localChanges: ['d/x'] }`; trees equal |
 | M4–M6 | `cherry-pick side`, same three | git exit 0 / 128 / 128; tsgit `picked` / same two refusals; trees equal |
+
+### How the revision matrices were pinned (A.7, A.8)
+
+The A.1–A.6 harness, with tsgit taken from the committed tree, not the worktree (another agent edits `src/`):
+`git archive 0589e7c5 src` extracted into the throwaway, loaded through `jiti` (`createNodeContext({ workDir })`,
+`stashPush` / `stashApply` / `stashPop`). git asserted `git version 2.55.0`, `GIT_*` scrubbed and asserted absent,
+isolated `HOME`, every repository guarded before use. Each tool pushes on its own twin; W, I and U trees compared
+(equal on every A.7 and A.8 row). A.7: after the push, a sleep past the racy window, the post-push state planted
+in both, `keep` drifted (`touch -t 202001010000 keep`), the index inode recorded, then the command. Compared: exit
+and stderr / result kind or error data, `ls-files -s`, `ls-files -v` tags, the recursive listing, `refs/stash`
+reflog count, `.git` state files, `keep`'s cached mtime against `lstat`, the index inode, `status --porcelain
+-uall`. A.8: `status --porcelain -uall` compared before the push, then the listing, `ls-files -s` and the three
+stash trees after it.
+
+### A.7 — `apply --index` / `pop --index`: the index-side judge (git 2.55.0 vs tsgit 0589e7c5)
+
+Seed: `keep=k`, `f` = ten lines `l1`…`l10`, `g=g0`, one commit. "Staged" is the stash's I; "current" is the index
+after the post-push step. Every row: both indexes rewritten (the opening refresh), `keep` fresh in both; on every
+git refusal `refs/stash` is kept, no `AUTO_MERGE`, the work tree and index equal to their post-push state.
+
+| row | staged (I) and work tree at push → post-push | git 2.55.0 | tsgit 0589e7c5 |
+|---|---|---|---|
+| H2 | `f=I` staged, work `f=W`, `g=g1` → `f=W` committed | exit 1, `error: patch failed: f:1` / `error: f: patch does not apply` / `error: conflicts in index. Try without --index.`; `g=g0`, status clean | `applied`; `g=g1` (` M g`), `AUTO_MERGE`; `pop` drops the stash (F13) |
+| H2 × `-u` (untracked `u`) | same + `u` | as H2; `u` not restored | `applied`, `u` restored, `pop` drops |
+| H2 × `--keep-index` | same | as H2 | as H2 tsgit |
+| H2, plain `stash apply` (no `--index`) | same | exit 0, ` M g` (no judge) | SAME |
+| delete | `git rm f`, `g=g1` → `l9` edited in `f`, committed | exit 1, `f: patch does not apply`, `conflicts in index`; nothing written | `conflict [{ f, modify-delete }]`, `UD f`, `g=g1` staged, `AUTO_MERGE` (the W merge conflicts) |
+| delete × `-u` | same + `u` | as delete | as delete tsgit |
+| add-add | new `n=N` staged, `g=g1` → `n=M` committed | exit 1, `error: n: already exists in index` / `conflicts in index` | `conflict [{ n, add-add }]`, markers in `n`, `AUTO_MERGE` |
+| add-add × `-u`, × `--keep-index` | same | as add-add | as add-add tsgit |
+| non-overlap | `l2`→`L2` staged, `g=g1` → `l9`→`L9` committed | exit 0; index `f` = `L2`+`L9` (`M  f`), ` M g`, `AUTO_MERGE` | SAME |
+| non-overlap × `-u` | same + `u` | exit 0, `u` restored | SAME |
+| offset-mid | `l6`→`L6` staged, `g=g1` → two lines inserted above `l1`, committed | exit 0; hunk found at offset +2; `M  f`, ` M g` | SAME |
+| offset-mid × `-u` | same + `u` | exit 0 | SAME |
+| i-is-c (I = C, no judge) | `l2`→`L2` staged, `g=g1` → `L2` committed | exit 0, ` M g` | SAME (× plain, `-u`, `--keep-index`) |
+| i-is-b (I = B, no judge) | `l2`→`L2` unstaged, `g=g1` → new `h` committed | exit 0, ` M f`, ` M g` | SAME (× plain, `-u`, `--keep-index`) |
+| w-is-b (W = B, I ≠ B) | `l2`→`L2` staged, work `f` back to base → new `h` committed | exit 0 | SAME |
+| adjacent (F14) | `l4`→`L4` staged, `g=g1` → `l6`→`L6` committed (inside the hunk's trailing context) | exit 1, `f: patch does not apply`, `conflicts in index`; nothing written | `applied`; index `f` = `L4`+`L6` (`M  f`), `g=g1`, `AUTO_MERGE`; `pop` drops (× `-u`, × both commands) |
+| same-change (F14) | `l2`→`L2` staged, `g=g1` → `L2` and new `h` committed (C ≠ I through `h`) | exit 1, `f: patch does not apply`, `conflicts in index` | `applied` (× `-u`, `--keep-index`, both commands) |
+| non-overlap × `--keep-index` (F14) | the kept index holds `L2`; post-push commits it with `L9` | exit 1, `f: patch does not apply`, `conflicts in index` | `applied`; `pop` drops |
+| add-same (F14) | new `n=N` staged, `g=g1` → `n=N` and new `h` committed | exit 1, `n: already exists in index`, `conflicts in index` | `applied` (the add/add of equal blobs merges clean) |
+| offset-top (F14) | `l2`→`L2` staged (hunk at line 1), `g=g1` → two lines inserted above `l1`, committed | exit 1, `f: patch does not apply` (a hunk at line 1 is anchored at the file start) | `applied`; `f` = inserted lines + `L2` (× `-u`, `--keep-index`) |
+| staged-non-overlap (F15) | as non-overlap → `l9`→`L9` staged, not committed (C ≠ HEAD) | exit 1, `error: Your local changes to the following files would be overwritten by merge:` / `  f` / `Index was not unstashed.`; index reset to HEAD (`f` = base, ` M f`), work `f` keeps `L9` only, `g=g0`; × `-u`: `u` restored | `applied`; `M  f` (`L2`+`L9`), ` M g`, `AUTO_MERGE`; `pop` drops |
+| staged-other (F15) | as non-overlap → new `h` staged, not committed | exit 1, local-changes block listing `h`, `Index was not unstashed.`; index at HEAD, `?? h`, `f` and `g` untouched | `applied`; `A  h`, `M  f`, ` M g` |
+| w-is-b-staged (F15) | as w-is-b → new `h` staged, not committed | exit 1, local-changes block listing `h`, `Index was not unstashed.` (no `Already up to date.`: the index check precedes the W = B return) | `applied` |
+| i-is-b-staged (bound of F15) | as i-is-b → new `h` staged, not committed | exit 0 (no `has_index`, no `reset_head`) | SAME |
+
+Where the two judges agree (H2, delete, add-add refuse; non-overlap, offset-mid apply) P9 alone makes tsgit match git. Where
+they disagree, git refuses and a three-way merge is clean: a change in C inside the hunk's 3-line context (adjacent), C
+already holding the staged change (same-change, non-overlap × `--keep-index`), C having added the same file (add-same), C
+shifting a hunk anchored at line 1 (offset-top). No probed shape has git applying where the three-way merge conflicts.
+
+### A.8 — `stash push -u` and untracked directories holding no file (git 2.55.0 vs tsgit 0589e7c5)
+
+Seed: `keep=k`, `a/t=t`, `.gitignore` = `*.cache`, `build/`, `out/`, one commit. Each row also edits `keep` and adds
+an untracked `top` unless noted; × `--keep-index` stages `keep` first. Every row: `status --porcelain -uall` equal
+in both before the push and never listing an empty directory; W, I, U trees equal; `ls-files -s` equal after.
+Listings below omit `.gitignore`, `a/t`, `keep`.
+
+| row | planted before the push | git 2.55.0 after `push -u` (and × `--keep-index`) | tsgit 0589e7c5 |
+|---|---|---|---|
+| empty-dir | `emptydir/` | gone | `emptydir/` kept (F16) |
+| nest | `nest/inner/` | gone | `nest/`, `nest/inner/` kept |
+| file-and-empty | `d/u`, `d/e/` | `d/` gone | `d/`, `d/e/` kept |
+| reviewer | `emptydir/`, `nest/inner/`, `d/u` | all gone | `emptydir/`, `nest/inner/` kept (`d/` pruned) |
+| two-empty | `nest/i1/`, `nest/i2/i3/` | gone | all kept |
+| tracked-parent | `a/b/` (`a` tracked) | `a/b/` gone, `a/` kept | `a/b/` kept |
+| tracked-sibling | `a/z`, `a/e/` | `a/z`, `a/e/` gone, `a/` kept | `a/e/` kept |
+| mixed | `nest/inner/`, `nest/build/` (ignored) | `nest/inner/` gone; `nest/`, `nest/build/` kept | `nest/inner/` kept |
+| change-only (no untracked file) | `emptydir/`, `keep` edited only | gone (git's `clean -d` runs on every `-u` save; U = empty tree) | kept |
+| type-empty | tracked `keep` replaced by empty `keep/` (no `top`) | `-u`: file `keep` back (SAME); × `--keep-index` (deletion staged): no `keep` at all | `-u`: SAME; × `--keep-index`: `keep/` kept |
+| ignored-file | `m/.cache` (ignored), `m/z` | `m/z` gone, `m/`, `m/.cache` kept | SAME |
+| ignored-dir | `build/` (ignored, empty) | kept | SAME |
+| under-ignored | `out/e/` (under an ignored directory) | kept | SAME |
+| ignored-deep | `x/y/.cache` (ignored) only | `x/`, `x/y/`, `x/y/.cache` kept | SAME |
+| ignored-inner | `p/build/` (ignored, empty) | `p/`, `p/build/` kept | SAME |
+| link-to-dir | `alias → a` (untracked link to a directory) | stashed in U, removed | SAME |
+| gitlink-dir | gitlink `sub` committed, `sub/` empty (unpopulated) | `sub/` kept | SAME |
+| only-empty (nothing else changed) | `emptydir/` only | exit 0, `No local changes to save`, `emptydir/` kept, no `refs/stash` | SAME (`no-local-changes`) |
