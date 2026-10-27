@@ -37,6 +37,7 @@ import {
   COMMIT_ENV,
   commitOn,
   fileWith,
+  indexState,
   KEEP,
   listing,
   observe,
@@ -45,6 +46,7 @@ import {
   staleEntries,
   statSnapshot,
   symlink,
+  touchedAt,
   unmergedAbsentAt,
   unmergedAt,
   v1,
@@ -621,17 +623,29 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
     await pair.dispose();
   });
 
+  const indexInode = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
+  const inodesBefore = new Map<string, number>();
+
   const arrange = async (edit: (dir: string) => void): Promise<void> => {
     for (const dir of [pair.peer, pair.ours]) {
       runGit(['init', '-q', '-b', 'main', dir]);
       buildHistory(dir, SWAP_SEED, SWAP_SEED);
       settleIndex(dir);
+      touchedAt('keep')(dir);
+      inodesBefore.set(dir, indexInode(dir));
       rmSync(path.join(dir, '.git', 'ORIG_HEAD'), { force: true });
       runGit(['-C', dir, 'config', 'user.name', 'Ada']);
       runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
       edit(dir);
     }
     repo = await openRepository({ cwd: pair.ours });
+  };
+
+  const expectSameIndexOutcome = (): void => {
+    expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+    expect(staleEntries(pair.ours)).toEqual(staleEntries(pair.peer));
+    const rewritten = (dir: string): boolean => indexInode(dir) !== inodesBefore.get(dir);
+    expect(rewritten(pair.ours)).toBe(rewritten(pair.peer));
   };
 
   describe.each(Object.entries(SWAPS))('Given %s', (_name, swap) => {
@@ -652,6 +666,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
           expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
         }
         expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+        expectSameIndexOutcome();
       });
     });
   });
@@ -694,6 +709,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
         const untrackedSubject = (dir: string): string =>
           gitOut(dir, ['log', '-1', '--format=%s', 'stash@{0}^3']);
         expect(untrackedSubject(pair.ours)).toBe(untrackedSubject(pair.peer));
+        expectSameIndexOutcome();
       });
     });
   });
@@ -723,6 +739,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
           expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
         }
         expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+        expectSameIndexOutcome();
       });
     });
   });

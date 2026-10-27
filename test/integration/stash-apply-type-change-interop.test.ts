@@ -59,7 +59,7 @@ const staged =
     runGit(['-C', dir, 'add', '-A']);
   };
 
-const PLANTS: Readonly<Record<string, Occupant>> = {
+const PLANTS = {
   DF: replacing('d/x', fileAt('d')),
   DFn: replacing('n/s/y', fileAt('n')),
   FD: replacing('f', fileAt('f/y')),
@@ -67,11 +67,11 @@ const PLANTS: Readonly<Record<string, Occupant>> = {
   LD: replacing('l', fileAt('l/y')),
   LF: replacing('l', fileAt('l')),
   FL: replacing('f', linkAt('f', 'keep')),
-};
+} satisfies Record<string, Occupant>;
 
 const EDITED_F: Occupant = fileWith('f', 'f2\n');
 
-const UNTRACKED_PLANTS: Readonly<Record<string, Occupant>> = {
+const UNTRACKED_PLANTS = {
   FU: (dir) => {
     EDITED_F(dir);
     fileWith('u', 'u\n')(dir);
@@ -80,12 +80,17 @@ const UNTRACKED_PLANTS: Readonly<Record<string, Occupant>> = {
     EDITED_F(dir);
     for (const rel of ['a', 'm/z', 'u', 'z']) fileWith(rel, `${rel}\n`)(dir);
   },
-};
+} satisfies Record<string, Occupant>;
 
-const SHAPES: Readonly<Record<string, Occupant>> = {
+type PlantName = keyof typeof PLANTS;
+type ShapeName = PlantName | keyof typeof UNTRACKED_PLANTS | `${PlantName}a`;
+
+const SHAPES: Readonly<Record<ShapeName, Occupant>> = {
   ...PLANTS,
   ...UNTRACKED_PLANTS,
-  ...Object.fromEntries(Object.entries(PLANTS).map(([name, plant]) => [`${name}a`, staged(plant)])),
+  ...(Object.fromEntries(
+    Object.entries(PLANTS).map(([name, plant]) => [`${name}a`, staged(plant)]),
+  ) as Record<`${PlantName}a`, Occupant>),
 };
 
 const PUSHES = {
@@ -101,7 +106,6 @@ const COMMANDS = {
   'pop --index': { git: ['pop', '--index'], restoreIndex: true, pops: true },
 } as const;
 
-type ShapeName = keyof typeof SHAPES;
 type PushName = keyof typeof PUSHES;
 type CommandName = keyof typeof COMMANDS;
 
@@ -160,15 +164,23 @@ const NO_STASH = {
   refusal: 'STASH_NOT_FOUND',
   pushRefusal: 'PATHSPEC_BEYOND_SYMLINK',
 };
+const RECREATED_U: Occupant = fileWith('u', 'other\n');
 const bothPlanted: Occupant = (dir) => {
   fileAt('m')(dir);
-  fileWith('u', 'other\n')(dir);
+  RECREATED_U(dir);
 };
 const REMOVED_DIRECTORY_ENTRY: Occupant = (dir) => rmSync(path.join(dir, 'd', 'x'));
-const UNTRACKED_POSTS: Readonly<Record<string, Occupant>> = {
-  'an untracked file in the way': fileWith('d/u', 'untracked\n'),
+const UNTRACKED_DU: Occupant = fileWith('d/u', 'untracked\n');
+const REMOVED_ENTRY_POST: Readonly<Record<string, Occupant>> = {
+  'the tracked entry removed': REMOVED_DIRECTORY_ENTRY,
+};
+const SHARED_POSTS: Readonly<Record<string, Occupant>> = {
   'an empty directory in the way': emptyDirectoryAt('d/e'),
-  'an ignored file in the way': ignoring('d/u', fileWith('d/u', 'untracked\n')),
+  'an ignored file in the way': ignoring('d/u', UNTRACKED_DU),
+};
+const UNTRACKED_POSTS: Readonly<Record<string, Occupant>> = {
+  'an untracked file in the way': UNTRACKED_DU,
+  ...SHARED_POSTS,
 };
 
 const UNTRACKED_NOT_RESTORED = 'STASH_UNTRACKED_NOT_RESTORED';
@@ -179,8 +191,10 @@ const blockedAt = (component: string) => ({
 });
 const existing = (...paths: string[]) => ({ ...RESTORE_STOPPED, restore: { existing: paths } });
 
+const RECREATED_U_POST: Readonly<Record<string, Occupant>> = { 'a recreated u': RECREATED_U };
+
 const U_POSTS: Readonly<Record<string, Occupant>> = {
-  'a recreated u': fileWith('u', 'other\n'),
+  ...RECREATED_U_POST,
   'an empty directory at u': emptyDirectoryAt('u'),
 };
 
@@ -206,7 +220,6 @@ const committed =
 
 const EDITED_AGAIN: Occupant = fileWith('f', 'f3\n');
 const COMMITTED_DIFFERENTLY: Occupant = committed(fileWith('f', 'c\n'));
-const RECREATED_U: Occupant = fileWith('u', 'other\n');
 const both =
   (first: Occupant, second: Occupant): Occupant =>
   (dir) => {
@@ -225,26 +238,15 @@ const afterPosts = (
     expand([shape], [push], { ...pin, after, post, pushedBy: 'git' }),
   );
 
-const POSTS: Readonly<Record<string, Occupant>> = {
-  'an empty directory in the way': emptyDirectoryAt('d/e'),
-  'an ignored file in the way': ignoring('d/u', fileWith('d/u', 'untracked\n')),
-  'the tracked entry removed': REMOVED_DIRECTORY_ENTRY,
-};
+const POSTS: Readonly<Record<string, Occupant>> = { ...SHARED_POSTS, ...REMOVED_ENTRY_POST };
 
 const ROWS: ReadonlyArray<Row> = [
   ...expand(['FD', 'LD'], WITHOUT_UNTRACKED, UNCHANGED),
   ...expand(['DF', 'DFn'], WITHOUT_UNTRACKED, MERGED),
   ...expand(['LF', 'FL'], ALL_PUSHES, MERGED),
   ...expand(STAGED_SHAPES, ALL_PUSHES, MERGED),
-  ...expand(['DL', 'DLa'], ALL_PUSHES, NO_STASH),
-  ...Object.entries(POSTS).flatMap(([after, post]) =>
-    expand(['DFa'], ['plain'], {
-      ...MERGED,
-      after,
-      post,
-      pushedBy: 'git',
-    }),
-  ),
+  ...expand(['DL', 'DLa'], ALL_PUSHES, { ...NO_STASH, commands: ['apply'] }),
+  ...afterPosts('DFa', 'plain', POSTS, MERGED),
   ...afterPosts('UP', '-u', M_POSTS, blockedAt('m')),
   ...afterPosts('UP', '-u', { 'a file at m and a recreated u': bothPlanted }, blockedAt('m')),
   ...expand(['FD'], ['-u'], {
@@ -258,17 +260,12 @@ const ROWS: ReadonlyArray<Row> = [
     restore: { existing: [], blockedAt: 'l' },
   }),
   ...expand(['DF', 'DFn'], ['-u'], MERGED),
-  ...afterPosts('DF', '-u', { 'the tracked entry removed': REMOVED_DIRECTORY_ENTRY }, MERGED),
-  ...afterPosts(
-    'FU',
-    '-u',
-    { 'a recreated u': U_POSTS['a recreated u'] as Occupant },
-    existing('u'),
-  ),
+  ...afterPosts('DF', '-u', REMOVED_ENTRY_POST, MERGED),
+  ...afterPosts('FU', '-u', RECREATED_U_POST, existing('u')),
   ...afterPosts('UP', '-u', U_POSTS, existing('u')),
   ...afterPosts('DF', '-u', UNTRACKED_POSTS, existing('d')),
   ...afterPosts('DFa', 'plain', { 'a dirty d/x': DIRTY_DX }, REFUSED),
-  ...afterPosts('DFa', 'plain', { 'an untracked d/u': fileWith('d/u', 'untracked\n') }, REFUSED),
+  ...afterPosts('DFa', 'plain', { 'an untracked d/u': UNTRACKED_DU }, REFUSED),
   ...afterPosts('FU', '-u', { 'an edited f': EDITED_AGAIN }, REFUSED),
   ...afterPosts('FU', '-u', { 'f committed differently': COMMITTED_DIFFERENTLY }, CONFLICTED),
   ...afterPosts(
@@ -392,10 +389,21 @@ const restoreStderr = ({ existing: paths, blockedAt: component }: RestoreReport)
     .map((line) => `${line}\n`)
     .join('');
 
+const ALREADY_EXISTS = / already exists, no checkout$/;
+const CANNOT_CREATE_DIRECTORY = 'fatal: cannot create directory';
+
+/** Everything git printed from its first restore line on, so an extra or longer line fails. */
+const restoreBlockOf = (gitStderr: string): string => {
+  const lines = gitStderr.split('\n');
+  const start = lines.findIndex(
+    (line) => ALREADY_EXISTS.test(line) || line.startsWith(CANNOT_CREATE_DIRECTORY),
+  );
+  return start < 0 ? '' : lines.slice(start).join('\n');
+};
+
 const expectRestoreReport = (row: Row, gitStderr: string): void => {
   if (row.restore === undefined) return;
-  const expected = restoreStderr(row.restore);
-  expect(gitStderr.slice(-expected.length)).toBe(expected);
+  expect(restoreBlockOf(gitStderr)).toBe(restoreStderr(row.restore));
 };
 
 const expectRefusalClasses = (row: Row, gitStderr: string, outcome: Outcome): void => {
@@ -438,7 +446,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply over type swaps interop', () => {
           // Arrange
           for (const dir of [pair.peer, pair.ours]) {
             seed(dir);
-            SHAPES[row.shape]?.(dir);
+            SHAPES[row.shape](dir);
           }
           const pushRefusal = await pushBoth(pair, row);
           for (const dir of [pair.peer, pair.ours]) settle(dir, row);

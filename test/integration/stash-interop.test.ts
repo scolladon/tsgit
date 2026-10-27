@@ -719,6 +719,7 @@ const OPERATION_STATE_FILES = [
 interface PendingRow {
   readonly title: string;
   readonly build: (dir: string) => void;
+  readonly kept: ReadonlyArray<(typeof OPERATION_STATE_FILES)[number]>;
 }
 
 const seedStashOfS = (dir: string): void => {
@@ -777,10 +778,26 @@ const mergeNoCommit = (dir: string): void => {
 };
 
 const PENDING_ROWS: ReadonlyArray<PendingRow> = [
-  ...PLANTED_MARKERS.map((marker) => ({ title: `planted ${marker}`, build: plantMarker(marker) })),
-  { title: 'a resolved cherry-pick', build: resolvedCherryPick },
-  { title: 'a stopped rebase', build: stoppedRebase },
-  { title: 'a merge --no-commit', build: mergeNoCommit },
+  ...PLANTED_MARKERS.map((marker) => ({
+    title: `planted ${marker}`,
+    build: plantMarker(marker),
+    kept: [marker],
+  })),
+  {
+    title: 'a resolved cherry-pick',
+    build: resolvedCherryPick,
+    kept: ['CHERRY_PICK_HEAD', 'MERGE_MSG'],
+  },
+  {
+    title: 'a stopped rebase',
+    build: stoppedRebase,
+    kept: ['REBASE_HEAD', 'MERGE_MSG', 'rebase-merge'],
+  },
+  {
+    title: 'a merge --no-commit',
+    build: mergeNoCommit,
+    kept: ['MERGE_HEAD', 'MERGE_MODE', 'MERGE_MSG'],
+  },
 ];
 
 describe.skipIf(!GIT_AVAILABLE)(
@@ -813,7 +830,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       }
     };
 
-    describe.each(PENDING_ROWS)('Given $title and a stashed edit', ({ build }) => {
+    describe.each(PENDING_ROWS)('Given $title and a stashed edit', ({ build, kept }) => {
       describe('When git and tsgit stash apply', () => {
         it('Then both apply, keep every marker and leave the same work tree and index', async () => {
           // Arrange
@@ -834,6 +851,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitRun.exitCode).toBe(0);
+          expect(keptStateFiles(pair.peer)).toEqual(kept);
           expect(verdict).toBe('applied');
           expect(keptStateFiles(pair.ours)).toEqual(keptStateFiles(pair.peer));
           expect(listing(pair.ours)).toEqual(listing(pair.peer));

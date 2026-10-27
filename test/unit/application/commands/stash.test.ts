@@ -1097,9 +1097,9 @@ describe('stash apply', () => {
         await add(ctx, ['a.txt']);
         await write(ctx, 'a.txt', 'committed\n');
         await stashPush(ctx, {});
+        const sut = stashApply;
 
         // Act
-        const sut = stashApply;
         await sut(ctx, { restoreIndex: true });
 
         // Assert
@@ -1121,9 +1121,9 @@ describe('stash apply', () => {
         await write(ctx, 'd', 'now a file\n');
         await add(ctx, ['d', 'd/x']);
         await stashPush(ctx, {});
+        const sut = stashApply;
 
         // Act
-        const sut = stashApply;
         const result = await sut(ctx, { restoreIndex: true });
 
         // Assert
@@ -1406,7 +1406,7 @@ describe('stash apply', () => {
         const data = await refusalDataOf(() => sut(ctx, {}));
 
         // Assert
-        expect(data).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['new.txt'] });
+        expect(data).toStrictEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['new.txt'] });
         const after = await lstatOrUndefined(ctx, 'new.txt');
         expect(after?.isSymbolicLink).toBe(before?.isSymbolicLink);
         expect(after?.size).toBe(before?.size);
@@ -1429,7 +1429,7 @@ describe('stash apply', () => {
         const data = await refusalDataOf(() => sut(ctx, {}));
 
         // Assert
-        expect(data).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u'] });
+        expect(data).toStrictEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u'] });
         expect(await read(ctx, 'a')).toBe('a\n');
         expect(await read(ctx, 'm/z')).toBe('m/z\n');
         expect(await read(ctx, 'z')).toBe('z\n');
@@ -1511,12 +1511,13 @@ describe('stash apply', () => {
         const data = await refusalDataOf(() => sut(ctx, {}));
 
         // Assert
-        expect(data).toEqual({
+        expect(data).toStrictEqual({
           code: 'STASH_APPLY_WOULD_OVERWRITE',
           paths: ['a.txt'],
           localChanges: ['a.txt'],
           untracked: [],
         });
+        expect('untrackedNotRestored' in (data as object)).toBe(false);
         expect(await read(ctx, 'u')).toBe('untracked\n');
         expect(await read(ctx, 'a.txt')).toBe('local edit\n');
         expect((await stashList(ctx)).entries).toHaveLength(1);
@@ -1660,7 +1661,10 @@ describe('stash apply', () => {
           const data = await refusalDataOf(() => sut(ctx, {}));
 
           // Assert
-          expect(data).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u', 'w'] });
+          expect(data).toStrictEqual({
+            code: 'STASH_UNTRACKED_NOT_RESTORED',
+            existing: ['u', 'w'],
+          });
           expect(await read(ctx, 'v')).toBe('v\n');
           expect(await read(ctx, 'x')).toBe('x\n');
           expect(await read(ctx, 'w')).toBe('other\n');
@@ -2089,22 +2093,18 @@ describe('stash apply and pop open with the index refresh', () => {
         await write(ctx, 'a.txt', 'dirty\n');
         const before = await mtimeOf(ctx, 'b.txt');
         const sut = stashApply;
-        let caught: unknown;
 
         // Act
-        try {
-          await sut(ctx, {});
-        } catch (err) {
-          caught = err;
-        }
+        const data = await refusalDataOf(() => sut(ctx, {}));
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({
+        expect(data).toEqual({
           code: 'STASH_APPLY_WOULD_OVERWRITE',
           paths: ['a.txt'],
           localChanges: ['a.txt'],
           untracked: [],
         });
+        expect('untrackedNotRestored' in (data as object)).toBe(false);
         expect(await mtimeOf(ctx, 'b.txt')).toBeGreaterThan(before);
       });
     });
@@ -2119,17 +2119,12 @@ describe('stash apply and pop open with the index refresh', () => {
         const indexPath = `${ctx.layout.gitDir}/index`;
         const before = await ctx.fs.read(indexPath);
         const sut = stashApply;
-        let caught: unknown;
 
         // Act
-        try {
-          await sut(ctx, {});
-        } catch (err) {
-          caught = err;
-        }
+        const data = await refusalDataOf(() => sut(ctx, {}));
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({
+        expect(data).toEqual({
           code: 'STASH_NOT_FOUND',
           index: 0,
           stackSize: 0,

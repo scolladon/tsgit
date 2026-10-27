@@ -206,6 +206,7 @@ describe('domain commands error — factory data', () => {
           localChanges: ['a'],
           untracked: ['b'],
         });
+        expect('untrackedNotRestored' in result.data).toBe(false);
       });
     });
 
@@ -239,8 +240,9 @@ describe('domain commands error — factory data', () => {
           blockedAt: 'v' as FilePath,
         };
 
-        // Act
         const sut = stashUntrackedNotRestored;
+
+        // Act
         const result = sut(report);
 
         // Assert
@@ -257,12 +259,17 @@ describe('domain commands error — factory data', () => {
         // Arrange
         const report = { existing: ['u' as FilePath] };
 
-        // Act
         const sut = stashUntrackedNotRestored;
+
+        // Act
         const result = sut(report);
 
         // Assert
-        expect(result.data).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u'] });
+        expect(result.data).toStrictEqual({
+          code: 'STASH_UNTRACKED_NOT_RESTORED',
+          existing: ['u'],
+        });
+        expect('blockedAt' in result.data).toBe(false);
       });
     });
   });
