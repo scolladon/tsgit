@@ -15,8 +15,9 @@ ADR-1101 refuses `stash apply --index` when the stashed index "does not apply" t
 design to record where git's judge and a three-way merge disagree. git's judge is a patch: the base-to-index diff
 (`diff-tree --binary`, Myers, three lines of context) applied with `apply --cached` onto the current index, with
 exact context matching, an outward offset search, a hunk at line 1 anchored at the file start, a hunk without
-trailing context anchored at the end, a creation refused when the path exists, and a deletion or a binary or mode
-change requiring the current entry to equal the base. tsgit's `mergeTreesToTree` is a three-way merge. On five
+trailing context anchored at the end, a creation refused when the path exists, a deletion, binary or type change
+requiring the current content to equal the base's (a differing mode is only a warning), and a mode-only change
+applying whatever the current content. tsgit's `mergeTreesToTree` is a three-way merge. On five
 pinned shapes git refuses and the merge is clean: a current change inside the hunk's context, the current index
 already holding the staged change, `stash push --keep-index` then a commit of the kept index then `pop --index`
 (git's own documented partial-commit flow), the same file added on both sides, and a line-1 hunk shifted by lines
@@ -37,9 +38,10 @@ inserted above it. No pinned shape has git applying where the merge conflicts.
 
 **User-ratified: option 1.** The index side is judged by applying the base-to-index hunks onto the current index's
 blobs with git's `apply` matching rules; a path whose hunks do not apply, a creation onto an existing path, or a
-deletion, binary or mode change whose current entry differs from the base refuses `STASH_INDEX_CONFLICT { paths }`
-with every failing path, in index order, before any write. The reinstated index tree is the current index with the
-patched blobs. The hunks come from the repository's own diff (`computeHunks`, three lines of context, plumbing
+deletion, binary or type change whose current content differs from the base's refuses `STASH_INDEX_CONFLICT { paths }`
+with every failing path, in index order, before any write. A mode-only change applies onto any content, a mode
+difference alone never refuses, and a reinstated entry keeps the current index's mode unless the stash changed it,
+as `apply --cached` does. The reinstated index tree is the current index with the patched blobs. The hunks come from the repository's own diff (`computeHunks`, three lines of context, plumbing
 reads no `diff.algorithm` or `diff.context`).
 
 ## Consequences
