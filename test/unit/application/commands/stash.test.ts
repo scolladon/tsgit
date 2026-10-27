@@ -5,6 +5,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { hardResetWorktreeToCommit } from '../../../../src/application/commands/internal/reset-worktree.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import {
   applyAutostash,
   createAutostash,
@@ -2407,6 +2408,215 @@ describe('stash apply — index staging', () => {
         const entry = idx.entries.find((e) => e.path === 'a.txt');
         const blob = await readObject(ctx, entry?.id as ObjectId);
         expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('committed\n');
+      });
+    });
+  });
+});
+
+const TEN_LINES = Array.from({ length: 10 }, (_, i) => `l${i + 1}\n`).join('');
+
+const withLine = (n: number, text: string): string =>
+  TEN_LINES.split('\n')
+    .map((line, i) => (i === n - 1 ? text : line))
+    .join('\n');
+
+const stageAndStash = async (
+  ctx: Context,
+  staged: Readonly<Record<string, string>>,
+  worked: Readonly<Record<string, string>>,
+  input: { readonly includeUntracked?: true } = {},
+): Promise<void> => {
+  for (const [path, content] of Object.entries(staged)) await write(ctx, path, content);
+  if (Object.keys(staged).length > 0) await add(ctx, Object.keys(staged));
+  for (const [path, content] of Object.entries(worked)) await write(ctx, path, content);
+  await stashPush(ctx, input);
+};
+
+/** `f` staged as `I` then worked as `W` and `g` edited; `f` committed as `W` afterwards. */
+const setupStagedConflict = async (input: { readonly includeUntracked?: true } = {}) => {
+  const ctx = await setupRepo();
+  await commitFile(ctx, 'f', TEN_LINES, 'add f');
+  await commitFile(ctx, 'g', 'g0\n', 'add g');
+  if (input.includeUntracked === true) await write(ctx, 'u', 'u\n');
+  await stageAndStash(ctx, { f: 'I\n' }, { f: 'W\n', g: 'g1\n' }, input);
+  await commitFile(ctx, 'f', 'W\n', 'commit W');
+  return ctx;
+};
+
+const blobTextAt = async (ctx: Context, path: string): Promise<string> => {
+  const entry = (await readIndex(ctx)).entries.find((e) => e.path === path);
+  const blob = await readObject(ctx, entry?.id as ObjectId);
+  return blob.type === 'blob' ? new TextDecoder().decode(blob.content) : '<not-blob>';
+};
+
+describe('stash apply — index-side judge', () => {
+  describe('Given a staged path that no longer applies to the current index', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then it refuses with the path before the work-tree merge writes anything', async () => {
+        // Arrange
+        const ctx = await setupStagedConflict();
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f'] });
+        expect(await read(ctx, 'g')).toBe('g0\n');
+        expect(await lstatOrUndefined(ctx, '.git/AUTO_MERGE')).toBeUndefined();
+        expect(await blobTextAt(ctx, 'f')).toBe('W\n');
+      });
+    });
+
+    describe('When stashPop runs with restoreIndex', () => {
+      it('Then it refuses and keeps the stash entry', async () => {
+        // Arrange
+        const ctx = await setupStagedConflict();
+        const sut = stashPop;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f'] });
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+
+    describe('When stashApply runs without restoreIndex', () => {
+      it('Then the work tree merge applies', async () => {
+        // Arrange
+        const ctx = await setupStagedConflict();
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'g')).toBe('g1\n');
+      });
+    });
+  });
+
+  describe('Given the same refusal with an untracked file in the stash', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the untracked file is not restored', async () => {
+        // Arrange
+        const ctx = await setupStagedConflict({ includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f'] });
+        expect(await lstatOrUndefined(ctx, 'u')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a staged deletion of a path the current commit changed', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the index side refuses instead of the work-tree modify/delete conflict', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await commitFile(ctx, 'g', 'g0\n', 'add g');
+        await rm(ctx, ['f']);
+        await write(ctx, 'g', 'g1\n');
+        await stashPush(ctx, {});
+        await commitFile(ctx, 'f', withLine(9, 'L9\n'), 'change f');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f'] });
+        expect(await lstatOrUndefined(ctx, '.git/AUTO_MERGE')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given several staged paths that no longer apply', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the paths come in index order', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'b', 'b0\n', 'add b');
+        await commitFile(ctx, 'a/x', 'x0\n', 'add a/x');
+        await stageAndStash(ctx, { b: 'b1\n', 'a/x': 'x1\n' }, {});
+        await commitFile(ctx, 'b', 'b2\n', 'change b');
+        await commitFile(ctx, 'a/x', 'x2\n', 'change a/x');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['a/x', 'b'] });
+      });
+    });
+  });
+
+  describe('Given two staged paths that both no longer apply', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then both paths are listed', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'f0\n', 'add f');
+        await commitFile(ctx, 'g', 'g0\n', 'add g');
+        await stageAndStash(ctx, { f: 'f1\n', g: 'g1\n' }, {});
+        await commitFile(ctx, 'f', 'f2\n', 'change f');
+        await commitFile(ctx, 'g', 'g2\n', 'change g');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f', 'g'] });
+      });
+    });
+  });
+
+  describe('Given a staged path the current commit already holds', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the stash applies and the index is reinstated', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, {});
+        await commitFile(ctx, 'f', withLine(2, 'L2\n'), 'commit L2');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await blobTextAt(ctx, 'f')).toBe(withLine(2, 'L2\n'));
+      });
+    });
+  });
+
+  describe('Given a staged path that equals the base while the work tree changed', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the stash applies', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, {}, { f: withLine(2, 'L2\n') });
+        await commitFile(ctx, 'h', 'h\n', 'add h');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'f')).toBe(withLine(2, 'L2\n'));
       });
     });
   });

@@ -13,6 +13,7 @@ import {
   noInitialCommit,
   pathspecBeyondSymlink,
   stashApplyWouldOverwrite,
+  stashIndexConflict,
   stashUntrackedNotRestored,
   type UntrackedNotRestored,
   type WouldOverwriteClasses,
@@ -32,8 +33,14 @@ import {
   indexPathKey,
   indexPathOfEscaped,
   keyOfPath,
+  viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
-import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
+import {
+  abbreviateOid,
+  type ConflictType,
+  type MergeConflict,
+  STASH_LABELS,
+} from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
@@ -1010,30 +1017,39 @@ const hasStagedChanges = (trees: {
   readonly iTree: ObjectId;
 }): boolean => trees.iTree !== trees.bTree && trees.iTree !== trees.cTree;
 
+/** git's `has_index` branch: the stashed index on top of the current one, judged before any write. */
+const judgeIndexSide = async (
+  ctx: Context,
+  app: StashApplication,
+  cTree: ObjectId,
+): Promise<ObjectId | undefined> => {
+  if (app.input.restoreIndex !== true) return undefined;
+  const iTree = await commitTreeOf(ctx, app.parsed.indexParent);
+  if (!hasStagedChanges({ bTree: app.bTree, cTree, iTree })) return undefined;
+  const merged = await mergeTreesToTree(ctx, {
+    baseTree: app.bTree,
+    oursTree: cTree,
+    theirsTree: iTree,
+    labels: STASH_LABELS,
+  });
+  if (merged.kind !== 'clean') throw stashIndexConflict(conflictedPathsOf(merged.conflicts));
+  return merged.mergedTree;
+};
+
+const conflictedPathsOf = (conflicts: ReadonlyArray<MergeConflict>): ReadonlyArray<FilePath> =>
+  conflicts.map((conflict) => viewOfEscaped(conflict.path));
+
 /**
- * Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. The donor is the
- * index the work-tree merge just wrote: git's one-way reset keeps that entry, with its stat, when its
- * id and mode agree with the target.
+ * Reinstate the staged state (`--index`). The donor is the index the work-tree merge just wrote:
+ * git's one-way reset keeps that entry, with its stat, when its id and mode agree with the target.
  */
 const reinstateIndex = async (
   ctx: Context,
   lock: IndexLock,
-  args: {
-    readonly bTree: ObjectId;
-    readonly cTree: ObjectId;
-    readonly iTree: ObjectId;
-    readonly writtenIndex: GitIndex;
-  },
+  args: { readonly stagedTree: ObjectId; readonly writtenIndex: GitIndex },
 ): Promise<void> => {
-  const merged = await mergeTreesToTree(ctx, {
-    baseTree: args.bTree,
-    oursTree: args.cTree,
-    theirsTree: args.iTree,
-    labels: STASH_LABELS,
-  });
-  if (merged.kind !== 'clean') return;
   const entries = await buildIndexFromTree(ctx, {
-    targetTree: merged.mergedTree,
+    targetTree: args.stagedTree,
     currentIndex: args.writtenIndex,
   });
   await lock.commit(entries, 'replace');
@@ -1130,8 +1146,9 @@ const applyUnderLock = async (
   rejectUnmergedIndex(currentIndex.entries);
   const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
   const { bTree, parsed, uTree } = app;
+  const stagedTree = await judgeIndexSide(ctx, app, cTree);
   const merged = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
-  const settled = await settleIndex(ctx, lock, merged, { ...app, cTree, currentIndex });
+  const settled = await settleIndex(ctx, lock, merged, { currentIndex, stagedTree });
   const restore =
     uTree === undefined ? NOTHING_RESTORED : await restoreUntracked(ctx, app.workDir, uTree);
   return reportApply(settled, restore, app.w);
@@ -1142,9 +1159,9 @@ type SettledApply =
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> }
   | (WouldOverwriteClasses & { readonly kind: 'would-overwrite' });
 
-type SettleInputs = StashApplication & {
-  readonly cTree: ObjectId;
+type SettleInputs = {
   readonly currentIndex: GitIndex;
+  readonly stagedTree: ObjectId | undefined;
 };
 
 /** Write the index the merge calls for; a refused merge writes nothing. */
@@ -1170,12 +1187,11 @@ const settleCleanIndex = async (
   ctx: Context,
   lock: IndexLock,
   newIndexEntries: ReadonlyArray<IndexEntry>,
-  { bTree, cTree, currentIndex, input, parsed }: SettleInputs,
+  { currentIndex, stagedTree }: SettleInputs,
 ): Promise<void> => {
-  const iTree = await commitTreeOf(ctx, parsed.indexParent);
-  if (input.restoreIndex === true && hasStagedChanges({ bTree, cTree, iTree })) {
+  if (stagedTree !== undefined) {
     const writtenIndex = { ...currentIndex, entries: newIndexEntries };
-    await reinstateIndex(ctx, lock, { bTree, cTree, iTree, writtenIndex });
+    await reinstateIndex(ctx, lock, { stagedTree, writtenIndex });
     return;
   }
   const { entries, restagedPaths } = unstageChangesUnlessNew(newIndexEntries, currentIndex.entries);
