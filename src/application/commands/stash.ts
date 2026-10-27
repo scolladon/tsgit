@@ -968,8 +968,10 @@ export const stashApply = async (
   input: StashApplyInput = {},
 ): Promise<StashApplyResult> => {
   const workDir = await gateStash(ctx, 'stash apply');
+  const stash = await resolveStashEntry(ctx, input.index ?? 0);
+  await refreshAndWriteIndex(ctx);
   await assertNoPendingOperation(ctx);
-  return applyStashCommit(ctx, workDir, await resolveStashEntry(ctx, input.index ?? 0), input);
+  return applyStashCommit(ctx, workDir, stash, input);
 };
 
 /**

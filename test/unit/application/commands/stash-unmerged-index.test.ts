@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -39,8 +39,11 @@ const commitFile = async (ctx: Context, path: string, content: string): Promise<
   await commit(ctx, { message: `edit ${path}`, author: AUTHOR, committer: AUTHOR });
 };
 
-/** A stash of a dirty `o`, then a merge left conflicted on `c`. */
-const conflictedRepoWithStash = async (): Promise<Context> => {
+const CLOCK_START_MS = 1_700_000_000_000;
+const DRIFT_MS = 10_000;
+
+/** A stash of a dirty `o`, then a merge left conflicted on `c`, MERGE_HEAD still present. */
+const mergeConflictedWithStash = async (): Promise<Context> => {
   const ctx = createMemoryContext();
   await init(ctx);
   await write(ctx, 'c', 'a\nb\nc\n');
@@ -55,12 +58,24 @@ const conflictedRepoWithStash = async (): Promise<Context> => {
   await write(ctx, 'o', DIRTY_O);
   await stashPush(ctx, {});
   await mergeRun(ctx, { rev: 'theirs', author: AUTHOR });
+  return ctx;
+};
+
+/** The same conflicted state with the pending-operation marker removed. */
+const conflictedRepoWithStash = async (): Promise<Context> => {
+  const ctx = await mergeConflictedWithStash();
   await ctx.fs.rm(`${ctx.layout.gitDir}/MERGE_HEAD`);
   return ctx;
 };
 
 const stagesOf = async (ctx: Context): Promise<ReadonlyArray<string>> =>
   (await readIndex(ctx)).entries.map((e) => `${e.flags.stage} ${e.path}`);
+
+const oMtime = async (ctx: Context): Promise<number> => {
+  const found = (await readIndex(ctx)).entries.find((e) => e.path === 'o');
+  if (found === undefined) throw new Error('o is not tracked');
+  return found.mtimeSeconds;
+};
 
 const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
   try {
@@ -70,6 +85,34 @@ const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
   }
   return undefined;
 };
+
+describe('Given a merge left conflicted with MERGE_HEAD present and a drifted bystander', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe('When stash apply runs', () => {
+    it('Then it refuses the unmerged path, keeps the stages and refreshes the bystander', async () => {
+      // Arrange
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(CLOCK_START_MS);
+      const ctx = await mergeConflictedWithStash();
+      const stages = await stagesOf(ctx);
+      const before = await oMtime(ctx);
+      vi.setSystemTime(CLOCK_START_MS + DRIFT_MS);
+      await write(ctx, 'o', 'o\n');
+      const sut = stashApply;
+
+      // Act
+      const data = await refusalOf(() => sut(ctx, {}));
+
+      // Assert
+      expect(data).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['c'] });
+      expect(await stagesOf(ctx)).toEqual(stages);
+      expect(await oMtime(ctx)).toBeGreaterThan(before);
+    });
+  });
+});
 
 describe('Given a stash and an index holding conflict stages', () => {
   describe('When stash apply runs', () => {

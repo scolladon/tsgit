@@ -14,6 +14,7 @@
  *   unique:         stash push/apply index+tree state matches canonical git stash
  *   interopSurface: stash
  */
+import { statSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -42,6 +43,7 @@ import {
 } from './interop-helpers.js';
 import {
   buildHistory,
+  COMMIT_ENV,
   commitOn,
   indexState,
   KEEP,
@@ -49,7 +51,10 @@ import {
   MERGE_FAMILY_ROWS,
   OK,
   type Outcome,
+  regular,
   runGitOutcome,
+  staleEntries,
+  touchedAt,
 } from './occupant-displacement-fixtures.js';
 import { type AbortRow, STASH_PUSH_ROWS, type Variant } from './stopped-state-fixtures.js';
 import { STASH_PUSH_PINS } from './stopped-state-pins.js';
@@ -625,6 +630,50 @@ describe.skipIf(!GIT_AVAILABLE)(
         return err.data.code === 'PATHSPEC_BEYOND_SYMLINK' ? 'beyond-symlink' : err.data.code;
       }
     };
+
+    const buildConflictedMergeWithStash = (dir: string): void => {
+      const base = commitOn(dir, [KEEP, regular('f', 'base\n'), regular('s', 's\n')]);
+      const side = commitOn(dir, [KEEP, regular('f', 'side\n'), regular('s', 's\n')], base);
+      const main = commitOn(dir, [KEEP, regular('f', 'main\n'), regular('s', 's\n')], base);
+      runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
+      runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+      runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+      writeFileSync(path.join(dir, 's'), 'stashed\n');
+      runGit(['-C', dir, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+      tryRunGitWithExit(['-C', dir, 'merge', '-q', 'side'], { env: COMMIT_ENV });
+      touchedAt('keep')(dir);
+    };
+
+    describe('Given a merge left conflicted on f, a stash and a stat-drifted clean entry', () => {
+      describe('When git and tsgit stash apply', () => {
+        it('Then both refresh the clean entry, rewrite the index and refuse on the unmerged path', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) buildConflictedMergeWithStash(dir);
+          repo = await openRepository({ cwd: pair.ours });
+          const inodeOf = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
+          const peerInode = inodeOf(pair.peer);
+          const oursInode = inodeOf(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'stash', 'apply'], {
+            env: COMMIT_ENV,
+          });
+          const refusal = await repo.stash.apply().catch((err: unknown) => err);
+
+          // Assert
+          const paths = (refusal as TsgitError).data as { code: string; paths: string[] };
+          expect(paths).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['f'] });
+          expect(gitRun.exitCode).toBe(1);
+          expect(gitRun.stdout).toBe(paths.paths.map((p) => `${p}: needs merge\n`).join(''));
+          expect(gitRun.stderr).toBe('error: could not write index\n');
+          expect(staleEntries(pair.ours)).toEqual(staleEntries(pair.peer));
+          expect(staleEntries(pair.ours)).not.toContain('keep');
+          expect(inodeOf(pair.peer)).not.toBe(peerInode);
+          expect(inodeOf(pair.ours)).not.toBe(oursInode);
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
 
     describe.each(
       STASH_PUSH_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant }))),

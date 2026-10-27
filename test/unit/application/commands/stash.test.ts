@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -1403,6 +1403,123 @@ describe('stash apply', () => {
         const touched = spies.flatMap((spy) => spy.mock.calls.map(([path]) => String(path)));
         expect(touched.filter((path) => /[\uDC80-\uDCFF]/.test(path))).toEqual([]);
         expect(touched.filter((path) => path.includes('\uFFFD.txt'))).toEqual([]);
+      });
+    });
+  });
+});
+
+const STASH_CLOCK_MS = 1_700_000_000_000;
+const DRIFT_MS = 10_000;
+
+/** A stash of an edit to a.txt, then clean b.txt rewritten with the same bytes later. */
+const repoWithDriftedBystander = async (): Promise<Context> => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(STASH_CLOCK_MS);
+  const ctx = await setupRepo();
+  await commitFile(ctx, 'b.txt', 'bystander\n', 'add b');
+  await write(ctx, 'a.txt', 'modified\n');
+  await stashPush(ctx, {});
+  vi.setSystemTime(STASH_CLOCK_MS + DRIFT_MS);
+  await write(ctx, 'b.txt', 'bystander\n');
+  return ctx;
+};
+
+const mtimeOf = async (ctx: Context, path: string): Promise<number> => {
+  const found = (await readIndex(ctx)).entries.find((e) => e.path === path);
+  if (found === undefined) throw new Error(`${path} is not tracked`);
+  return found.mtimeSeconds;
+};
+
+describe('stash apply and pop open with the index refresh', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe('Given a stash and a clean bystander rewritten later with the same bytes', () => {
+    describe('When stash apply runs', () => {
+      it('Then the bystander entry records its new mtime', async () => {
+        // Arrange
+        const ctx = await repoWithDriftedBystander();
+        const before = await mtimeOf(ctx, 'b.txt');
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await mtimeOf(ctx, 'b.txt')).toBeGreaterThan(before);
+      });
+    });
+
+    describe('When stash pop runs', () => {
+      it('Then the bystander entry is refreshed and the stash dropped', async () => {
+        // Arrange
+        const ctx = await repoWithDriftedBystander();
+        const before = await mtimeOf(ctx, 'b.txt');
+        const sut = stashPop;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await mtimeOf(ctx, 'b.txt')).toBeGreaterThan(before);
+        expect((await stashList(ctx)).entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a stash whose path is dirty and a drifted bystander', () => {
+    describe('When stash apply refuses', () => {
+      it('Then the bystander entry is refreshed anyway', async () => {
+        // Arrange
+        const ctx = await repoWithDriftedBystander();
+        await write(ctx, 'a.txt', 'dirty\n');
+        const before = await mtimeOf(ctx, 'b.txt');
+        const sut = stashApply;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, {});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a.txt'],
+        });
+        expect(await mtimeOf(ctx, 'b.txt')).toBeGreaterThan(before);
+      });
+    });
+  });
+
+  describe('Given an empty stack and a drifted bystander', () => {
+    describe('When stash apply runs', () => {
+      it('Then it refuses STASH_NOT_FOUND and leaves the index bytes unchanged', async () => {
+        // Arrange
+        const ctx = await repoWithDriftedBystander();
+        await stashDrop(ctx, {});
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const before = await ctx.fs.read(indexPath);
+        const sut = stashApply;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, {});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'STASH_NOT_FOUND',
+          index: 0,
+          stackSize: 0,
+        });
+        expect(await ctx.fs.read(indexPath)).toEqual(before);
       });
     });
   });
