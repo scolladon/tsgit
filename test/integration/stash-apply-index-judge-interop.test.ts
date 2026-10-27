@@ -38,7 +38,7 @@ const ROW_TIMEOUT_MS = 60_000;
 const TEN_LINES = Array.from({ length: 10 }, (_, i) => `l${i + 1}\n`).join('');
 const CONFLICTS_IN_INDEX = 'error: conflicts in index. Try without --index.';
 const INDEX_ERROR_LINE =
-  /^error: (?:(.+): (?:patch does not apply|already exists in index)|unable to add cache entry for (.+))$/;
+  /^error: (?:(.+): (?:patch does not apply|already exists in index|does not exist in index)|unable to add cache entry for (.+)|the patch applies to '(.+)' \(\w+\), which does not match the current contents\.|invalid path '(.+)')$/;
 
 const withLine = (n: number, text: string): string =>
   TEN_LINES.split('\n')
@@ -166,6 +166,22 @@ const SHAPES = {
     stage: inOrder(stageInDirectory('n/x', 'X\n'), put('g', 'g1\n')),
     post: committed('n', 'N\n'),
   },
+  'create-df-two': {
+    stage: inOrder(
+      stageInDirectory('m/y', 'Y\n'),
+      stageInDirectory('n/x', 'X\n'),
+      put('g', 'g1\n'),
+    ),
+    post: inOrder(committed('m', 'M\n'), committed('n', 'N\n')),
+  },
+  'attr-no-diff': {
+    stage: inOrder(
+      committed('.gitattributes', 'f -diff\n'),
+      stageFile('f', withLine(2, 'L2\n')),
+      put('g', 'g1\n'),
+    ),
+    post: committed('f', withLine(9, 'L9\n')),
+  },
 } satisfies Record<string, { stage: Occupant; post: Occupant }>;
 
 type ShapeName = keyof typeof SHAPES;
@@ -223,6 +239,7 @@ const ROWS: ReadonlyArray<Row> = [
   ...rowsOf(['offset-top'], ['plain', '-u', '--keep-index'], ['apply --index'], 'refuses'),
   ...rowsOf(['offset-top'], ['plain'], ['pop --index'], 'refuses'),
   ...rowsOf(['create-df'], ['plain'], BOTH_COMMANDS, 'refuses'),
+  ...rowsOf(['create-df-two', 'attr-no-diff'], ['plain'], BOTH_COMMANDS, 'refuses'),
   ...rowsOf(['H2'], ['plain'], ['apply'], 'applies'),
   ...rowsOf(['staged-non-overlap'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
   ...rowsOf(['staged-other'], ['plain', '-u'], BOTH_COMMANDS, 'unclean'),
@@ -288,7 +305,7 @@ type Outcome =
 
 type UncleanOutcome = Extract<Outcome, { kind: 'STASH_APPLY_WOULD_OVERWRITE' }>;
 
-const tsgitApply = async (dir: string, row: Row): Promise<Outcome> => {
+const tsgitApply = async (dir: string, row: Pick<Row, 'command'>): Promise<Outcome> => {
   const command = COMMANDS[row.command];
   const sut = command.pops ? stashPop : stashApply;
   try {
@@ -305,25 +322,57 @@ const tsgitApply = async (dir: string, row: Row): Promise<Outcome> => {
   }
 };
 
-const conflictedPathsOfGit = (stderr: string): string[] =>
-  stderr
-    .split('\n')
-    .map((line) => {
-      const match = INDEX_ERROR_LINE.exec(line);
-      return match?.[1] ?? match?.[2];
-    })
-    .filter((p): p is string => p !== undefined);
+/** git names a path once per failure kind it reports: the content-mismatch form comes with a second line. */
+const conflictedPathsOfGit = (stderr: string): string[] => [
+  ...new Set(
+    stderr
+      .split('\n')
+      .map((line) =>
+        INDEX_ERROR_LINE.exec(line)
+          ?.slice(1)
+          .find((captured) => captured !== undefined),
+      )
+      .filter((p): p is string => p !== undefined),
+  ),
+];
 
 const uncleanBlock = (localChanges: ReadonlyArray<string>): string =>
   [
     'error: Your local changes to the following files would be overwritten by merge:',
-    ...localChanges.map((p) => `  ${p}`),
+    `  ${localChanges.join(' ')}`,
     'Index was not unstashed.',
   ].join('\n');
 
 const lastLine = (stderr: string): string => stderr.trimEnd().split('\n').at(-1) ?? '';
 
 const statusOf = (dir: string): string => runGit(['-C', dir, 'status', '--porcelain', '-uall']);
+
+const plumb = (dir: string, args: ReadonlyArray<string>, input?: string): string =>
+  runGit(['-C', dir, ...args], {
+    env: COMMIT_ENV,
+    ...(input === undefined ? {} : { input }),
+  }).trim();
+
+type HostileShape = 'invalid-name' | 'base-only';
+
+/** A stash whose stashed index (or base) holds a `.git/x` entry, built with plumbing as a hostile peer could. */
+const storeHostileStash = (dir: string, shape: HostileShape): void => {
+  const blob = plumb(dir, ['hash-object', '-w', '--stdin'], 'x\n');
+  const inner = plumb(dir, ['mktree'], `100644 blob ${blob}\tx\n`);
+  const head = plumb(dir, ['rev-parse', 'HEAD']);
+  const headTree = plumb(dir, ['rev-parse', 'HEAD^{tree}']);
+  const listed = plumb(dir, ['ls-tree', 'HEAD']);
+  const treeWith = (entry: string): string => plumb(dir, ['mktree'], `${listed}\n${entry}\n`);
+  const commitTree = (tree: string, ...parents: string[]): string =>
+    plumb(dir, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', 'x']);
+  const hostile = treeWith(`040000 tree ${inner}\t.git`);
+  const stashed =
+    shape === 'invalid-name'
+      ? [head, commitTree(hostile, head)]
+      : [commitTree(hostile), commitTree(treeWith(`100644 blob ${blob}\tz`), commitTree(hostile))];
+  const [base, index] = stashed as [string, string];
+  plumb(dir, ['stash', 'store', '-m', 'wip', commitTree(headTree, base, index)]);
+};
 
 describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
   let pair: PeerPair;
@@ -388,6 +437,77 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
             expect(outcome).toStrictEqual({ kind: 'applied' });
             expect(statusOf(pair.ours)).toBe(statusOf(pair.peer));
           }
+          expect(observed(pair.ours, inodes[1])).toStrictEqual(observed(pair.peer, inodes[0]));
+        },
+        ROW_TIMEOUT_MS,
+      );
+    });
+  });
+  describe.each(['invalid-name', 'base-only'] as const)(
+    'Given a stash holding .git/x as %s',
+    (shape) => {
+      describe.each(BOTH_COMMANDS)('When %s runs in git and in tsgit on a twin', (command) => {
+        it(
+          'Then both refuse with the same paths and write nothing',
+          async () => {
+            // Arrange
+            for (const dir of [pair.peer, pair.ours]) {
+              seed(dir);
+              storeHostileStash(dir, shape);
+              touchedAt('keep')(dir);
+            }
+            const inodes = [indexInode(pair.peer), indexInode(pair.ours)] as const;
+
+            // Act
+            const gitRun = gitStash(pair.peer, COMMANDS[command].git);
+            const outcome = await tsgitApply(pair.ours, { command });
+
+            // Assert
+            expect(gitRun.exitCode).toBe(1);
+            expect(lastLine(gitRun.stderr)).toBe(CONFLICTS_IN_INDEX);
+            expect(outcome).toStrictEqual({
+              kind: 'STASH_INDEX_CONFLICT',
+              paths: conflictedPathsOfGit(gitRun.stderr),
+            });
+            expect(observed(pair.ours, inodes[1])).toStrictEqual(observed(pair.peer, inodes[0]));
+          },
+          ROW_TIMEOUT_MS,
+        );
+      });
+    },
+  );
+
+  describe.each(BOTH_COMMANDS)('Given a staged stash and an unborn HEAD', (command) => {
+    describe(`When ${command} runs in git and in tsgit on a twin`, () => {
+      it(
+        'Then both empty the index, refuse as unclean and keep the stash',
+        async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            seed(dir);
+            stageFile('f', 'F\n')(dir);
+          }
+          gitStash(pair.peer, ['push', '-q']);
+          await stashPush(createNodeContext({ workDir: pair.ours }), {});
+          for (const dir of [pair.peer, pair.ours]) {
+            gitIn(dir, 'symbolic-ref', 'HEAD', 'refs/heads/orphan');
+            settleIndex(dir);
+            touchedAt('keep')(dir);
+          }
+          const inodes = [indexInode(pair.peer), indexInode(pair.ours)] as const;
+
+          // Act
+          const gitRun = gitStash(pair.peer, COMMANDS[command].git);
+          const outcome = await tsgitApply(pair.ours, { command });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(1);
+          expect(outcome.kind).toBe('STASH_APPLY_WOULD_OVERWRITE');
+          const { localChanges, untracked } = outcome as UncleanOutcome;
+          expect(untracked).toStrictEqual([]);
+          expect(gitRun.stderr).toContain(uncleanBlock(localChanges));
+          expect(runGit(['-C', pair.ours, 'ls-files'])).toBe('');
+          expect(statusOf(pair.ours)).toBe(statusOf(pair.peer));
           expect(observed(pair.ours, inodes[1])).toStrictEqual(observed(pair.peer, inodes[0]));
         },
         ROW_TIMEOUT_MS,

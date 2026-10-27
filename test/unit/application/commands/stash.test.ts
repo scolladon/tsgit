@@ -2782,6 +2782,32 @@ describe('stash apply — index-side judge', () => {
     });
   });
 
+  describe('Given a staged path and an unborn HEAD', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then it empties the index and refuses with the path the index held', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/orphan\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a.txt', 'f'],
+          localChanges: ['a.txt', 'f'],
+          untracked: [],
+        });
+        expect((await readIndex(ctx)).entries).toStrictEqual([]);
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a staged path while the current index holds a change off HEAD', () => {
     const OFF_HEAD = {
       code: 'STASH_APPLY_WOULD_OVERWRITE',

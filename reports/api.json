@@ -41549,7 +41549,7 @@
 												"summary": [
 													{
 														"kind": "text",
-														"text": "Every staged path that does not apply to the current index, in index order; git prints "
+														"text": "Every staged path that does not apply to the current index, in index order, or only the first path that is both a file and a directory once every other check passed; git prints "
 													},
 													{
 														"kind": "code",
@@ -41578,6 +41578,14 @@
 													{
 														"kind": "code",
 														"text": "`wrong type`"
+													},
+													{
+														"kind": "text",
+														"text": ", "
+													},
+													{
+														"kind": "code",
+														"text": "`invalid path`"
 													},
 													{
 														"kind": "text",

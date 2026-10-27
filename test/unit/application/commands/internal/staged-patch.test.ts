@@ -8,12 +8,14 @@ import { stage0Entry } from '../../../../../src/application/primitives/internal/
 import { readBlob } from '../../../../../src/application/primitives/read-blob.js';
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
 import { synthesizeTreeFromIndex } from '../../../../../src/application/primitives/synthesize-tree-from-index.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import {
   FILE_MODE,
   type FileMode,
   type FilePath,
   type ObjectId,
 } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const text = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -54,6 +56,20 @@ const blobAt = async (ctx: Context, tree: ObjectId, path: string): Promise<strin
 
 const modeAt = async (ctx: Context, tree: ObjectId, path: string): Promise<FileMode | undefined> =>
   (await flattenTree(ctx, tree)).entries.get(path as FilePath)?.mode;
+
+const hostileTree = async (ctx: Context, dir: string, name: string): Promise<ObjectId> => {
+  const blob = await hashBlob(ctx, text('x\n'), { write: true });
+  const inner = await writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [treeEntry(FILE_MODE.REGULAR, name, blob)],
+  });
+  return writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [treeEntry(FILE_MODE.DIRECTORY, dir, inner)],
+  });
+};
 
 const lines = (n: number, edit?: { at: number; to: string }): string =>
   Array.from({ length: n }, (_, k) => (edit?.at === k + 1 ? edit.to : `l${k + 1}`))
@@ -523,6 +539,108 @@ describe('judgeStagedPatch', () => {
         await expect(readObject(ctx, patchedId)).rejects.toMatchObject({
           data: { code: 'OBJECT_NOT_FOUND', id: patchedId },
         });
+      });
+    });
+  });
+
+  describe('Given f marked -diff and changed in both I and C', () => {
+    describe('When the judge runs', () => {
+      it('Then f is refused as a binary file C did not leave untouched', async () => {
+        // Arrange
+        const ctx = await setup();
+        const attributes = { '.gitattributes': file('f -diff\n') };
+        const bTree = await treeOf(ctx, { ...attributes, f: file(lines(9)) });
+        const iTree = await treeOf(ctx, { ...attributes, f: file(lines(9, { at: 5, to: 'L5' })) });
+        const cTree = await treeOf(ctx, { ...attributes, f: file(`top\n${lines(9)}`) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['f'] });
+      });
+    });
+  });
+
+  describe('Given f marked diff and changed in both I and C', () => {
+    describe('When the judge runs', () => {
+      it('Then f is merged as text', async () => {
+        // Arrange
+        const ctx = await setup();
+        const attributes = { '.gitattributes': file('f diff\n') };
+        const bTree = await treeOf(ctx, { ...attributes, f: file(lines(9)) });
+        const iTree = await treeOf(ctx, { ...attributes, f: file(lines(9, { at: 5, to: 'L5' })) });
+        const cTree = await treeOf(ctx, { ...attributes, f: file(`top\n${lines(9)}`) });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        if (result.kind !== 'applies') throw new Error('expected applies');
+        expect(await blobAt(ctx, result.tree, 'f')).toBe(`top\n${lines(9, { at: 5, to: 'L5' })}`);
+      });
+    });
+  });
+
+  describe('Given two files created in I that C blocks with files of the same name as their directories', () => {
+    describe('When the judge runs', () => {
+      it('Then only the first clash in index order is refused', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { keep: file('k\n') });
+        const iTree = await treeOf(ctx, {
+          keep: file('k\n'),
+          'm/y': file('Y\n'),
+          'n/x': file('X\n'),
+        });
+        const cTree = await treeOf(ctx, { keep: file('k\n'), m: file('M\n'), n: file('N\n') });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['m/y'] });
+      });
+    });
+  });
+
+  describe('Given a file created in I under a .git directory', () => {
+    describe('When the judge runs', () => {
+      it('Then the path is refused before anything is written', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await treeOf(ctx, { keep: file('k\n') });
+        const iTree = await hostileTree(ctx, '.git', 'x');
+        const cTree = await treeOf(ctx, { keep: file('k\n') });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['.git/x'] });
+      });
+    });
+  });
+
+  describe('Given a file removed in I that only B holds under a .git directory', () => {
+    describe('When the judge runs', () => {
+      it('Then the path is refused as absent from C', async () => {
+        // Arrange
+        const ctx = await setup();
+        const bTree = await hostileTree(ctx, '.git', 'x');
+        const iTree = await treeOf(ctx, { z: file('z\n') });
+        const cTree = await treeOf(ctx, { keep: file('k\n') });
+        const sut = judgeStagedPatch;
+
+        // Act
+        const result = await sut(ctx, { bTree, cTree, iTree });
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'refused', paths: ['.git/x'] });
       });
     });
   });

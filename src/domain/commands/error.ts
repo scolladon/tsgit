@@ -464,7 +464,7 @@ export type CommandError =
     }
   | {
       readonly code: 'STASH_INDEX_CONFLICT';
-      /** Every staged path that does not apply to the current index, in index order; git prints `error: <path>: patch does not apply` (or `already exists in index`, `does not exist in index`, `wrong type`) for each, then `error: conflicts in index. Try without --index.` */
+      /** Every staged path that does not apply to the current index, in index order, or only the first path that is both a file and a directory once every other check passed; git prints `error: <path>: patch does not apply` (or `already exists in index`, `does not exist in index`, `wrong type`, `invalid path`) for each, then `error: conflicts in index. Try without --index.` */
       readonly paths: ReadonlyArray<FilePath>;
     }
   | {

@@ -45,6 +45,7 @@ import {
   type FilePath,
   type ObjectId,
 } from '../../domain/objects/index.js';
+import { emptyTreeOid } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import {
@@ -1077,6 +1078,19 @@ type UnstageInputs = {
   readonly stagedTree: ObjectId | undefined;
 };
 
+/** git's `reset_head()` reads an unborn HEAD as the empty tree. */
+const headTreeOrEmpty = async (ctx: Context): Promise<ObjectId> => {
+  const head = await readHeadRaw(ctx);
+  try {
+    return await commitTreeOf(ctx, await resolveHeadCommit(ctx, head));
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'NO_INITIAL_COMMIT') {
+      return emptyTreeOid(ctx.hashConfig);
+    }
+    throw err;
+  }
+};
+
 /** git's `reset_head()` then `unclean()`: a staged state to reinstate meets an index off HEAD. */
 const unstageOffHead = async (
   ctx: Context,
@@ -1084,7 +1098,7 @@ const unstageOffHead = async (
   inputs: UnstageInputs,
 ): Promise<SettledApply | undefined> => {
   if (inputs.stagedTree === undefined) return undefined;
-  const headTree = await commitTreeOf(ctx, await resolveHeadCommit(ctx, await readHeadRaw(ctx)));
+  const headTree = await headTreeOrEmpty(ctx);
   if (headTree === inputs.cTree) return undefined;
   const differing = await pathsDifferingBetween(ctx, headTree, inputs.cTree);
   await resetIndexTo(ctx, lock, headTree, inputs.currentIndex);

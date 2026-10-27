@@ -3,7 +3,9 @@ import { pairIsBinary } from '../../../domain/diff/binary-decision.js';
 import type { FlatTreeEntry } from '../../../domain/diff/flat-tree.js';
 import { isSameKind, kindOf } from '../../../domain/diff/mode-kind.js';
 import { comparePaths } from '../../../domain/diff/path-compare.js';
+import { TsgitError } from '../../../domain/error.js';
 import { viewOfEscaped } from '../../../domain/git-index/index-path-key.js';
+import { validateTreePath } from '../../../domain/git-index/path-validator.js';
 import type { FileMode, FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
@@ -11,6 +13,7 @@ import { hashBlob } from '../../primitives/hash-blob.js';
 import { stage0Entry } from '../../primitives/internal/synthetic-index-entry.js';
 import { readBlob } from '../../primitives/read-blob.js';
 import { synthesizeTreeFromIndex } from '../../primitives/synthesize-tree-from-index.js';
+import { type BinaryOverrideOf, binaryOverrideReader } from './staged-binary-override.js';
 
 export type StagedPatchVerdict =
   | { readonly kind: 'applies'; readonly tree: ObjectId }
@@ -29,6 +32,11 @@ interface Sides {
 }
 
 type Flat = ReadonlyMap<FilePath, FlatTreeEntry>;
+
+interface Judge {
+  readonly ctx: Context;
+  readonly overrideOf: BinaryOverrideOf;
+}
 
 type Outcome =
   | { readonly kind: 'set'; readonly entry: FlatTreeEntry }
@@ -81,32 +89,44 @@ const judgeText = async (
 };
 
 const judgeContent = async (
-  ctx: Context,
+  { ctx, overrideOf }: Judge,
+  path: FilePath,
   entries: readonly [FlatTreeEntry, FlatTreeEntry, FlatTreeEntry],
 ): Promise<Outcome> => {
   const [b, i, c] = entries;
   const sides = await Promise.all([bytesOf(ctx, b.id), bytesOf(ctx, i.id)] as const);
-  if (pairIsBinary(sides[0], sides[1], undefined)) return judgeBinary(b, i, c);
+  if (pairIsBinary(sides[0], sides[1], await overrideOf(path))) return judgeBinary(b, i, c);
   return judgeText(ctx, entries, sides);
 };
 
 const judgeModify = (
-  ctx: Context,
-  b: FlatTreeEntry,
-  i: FlatTreeEntry,
-  c: FlatTreeEntry,
+  judge: Judge,
+  path: FilePath,
+  [b, i, c]: readonly [FlatTreeEntry, FlatTreeEntry, FlatTreeEntry],
 ): Promise<Outcome> | Outcome => {
   if (kindOf(b.mode) === 'gitlink') return judgeGitlink(b, i, c);
   if (b.id === i.id) return judgeModeOnly(i, c);
-  return judgeContent(ctx, [b, i, c]);
+  return judgeContent(judge, path, [b, i, c]);
 };
 
-const judgePath = async (ctx: Context, { b, i, c }: Sides): Promise<Outcome> => {
+/** git's `verify_path` on the name a patch creates: a refused name fails the check phase. */
+const isAdmissibleName = (path: FilePath, entry: FlatTreeEntry): boolean => {
+  try {
+    validateTreePath(path, entry.mode);
+    return true;
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'INVALID_INDEX_ENTRY') return false;
+    throw err;
+  }
+};
+
+const judgePath = async (judge: Judge, path: FilePath, { b, i, c }: Sides): Promise<Outcome> => {
+  if (i !== undefined && !isAdmissibleName(path, i)) return FAILS;
   if (b === undefined) return judgeCreation(i as FlatTreeEntry, c);
   if (i === undefined) return judgeReplacement(b, c, REMOVE);
   if (!isSameKind(b.mode, i.mode)) return judgeReplacement(b, c, { kind: 'set', entry: i });
   if (c === undefined || !isSameKind(b.mode, c.mode)) return FAILS;
-  return judgeModify(ctx, b, i, c);
+  return judgeModify(judge, path, [b, i, c]);
 };
 
 const changedPaths = (b: Flat, i: Flat): FilePath[] =>
@@ -122,8 +142,8 @@ const ancestorsOf = (path: FilePath): FilePath[] => {
 const isPlacement = (outcome: Outcome): boolean =>
   outcome.kind === 'set' || outcome.kind === 'patched';
 
-/** git refuses a path that is both a file and a directory, but only once the check phase has passed. */
-const clashingPaths = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): FilePath[] => {
+/** git refuses a path that is both a file and a directory, but only once the check phase has passed, and at the first one. */
+const firstClash = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): FilePath | undefined => {
   const occupied = new Set(c.keys());
   for (const [path, outcome] of outcomes) {
     if (outcome.kind === 'remove') occupied.delete(path);
@@ -133,17 +153,17 @@ const clashingPaths = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): FileP
   return [...outcomes]
     .filter(([, outcome]) => isPlacement(outcome))
     .map(([path]) => path)
-    .filter((path) => directories.has(path) || ancestorsOf(path).some((dir) => occupied.has(dir)));
+    .find((path) => directories.has(path) || ancestorsOf(path).some((dir) => occupied.has(dir)));
 };
 
 const judgeAll = async (
-  ctx: Context,
+  judge: Judge,
   [b, c, i]: readonly [Flat, Flat, Flat],
 ): Promise<Map<FilePath, Outcome>> => {
   const outcomes = new Map<FilePath, Outcome>();
   for (const path of changedPaths(b, i)) {
     const sides = { b: b.get(path), i: i.get(path), c: c.get(path) };
-    outcomes.set(path, await judgePath(ctx, sides));
+    outcomes.set(path, await judgePath(judge, path, sides));
   }
   return outcomes;
 };
@@ -181,10 +201,11 @@ export const judgeStagedPatch = async (ctx: Context, trees: Trees): Promise<Stag
     flattenEscapedTree(ctx, trees.cTree),
     flattenEscapedTree(ctx, trees.iTree),
   ]);
-  const outcomes = await judgeAll(ctx, [b.entries, c.entries, i.entries]);
+  const judge = { ctx, overrideOf: binaryOverrideReader(ctx, c.entries) };
+  const outcomes = await judgeAll(judge, [b.entries, c.entries, i.entries]);
   const failed = [...outcomes].filter(([, outcome]) => outcome.kind === 'fails');
   if (failed.length > 0) return refused(failed.map(([path]) => path));
-  const clashes = clashingPaths(c.entries, outcomes);
-  if (clashes.length > 0) return refused(clashes);
+  const clash = firstClash(c.entries, outcomes);
+  if (clash !== undefined) return refused([clash]);
   return { kind: 'applies', tree: await writeResultTree(ctx, c.entries, outcomes) };
 };
