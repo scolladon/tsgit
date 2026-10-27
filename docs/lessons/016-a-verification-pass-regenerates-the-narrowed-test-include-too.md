@@ -12,7 +12,7 @@ evidence:
 source: { run: forced-checkout-displace-occupant, phase: validation, date: 2026-10-26 }
 status: active
 supersedes: []
-last-verified: 2026-10-26
+last-verified: 2026-10-27
 ---
 # 016 — A verification pass regenerates the narrowed test include too
 
@@ -34,11 +34,14 @@ kill claims with it re-scores them against a corpus that omits the tests making 
 Before the verification pass, regenerate the include as well as the mutate ranges, and add
 every test file the triage commits created or touched (`git diff --name-only <pre-triage>..HEAD -- test`).
 When hand-verifying a survivor in a copy, run it with a config that includes the files you
-pass. A narrowed include silently filters them out, and vitest's "no test files" exit reads as
-a kill.
+pass: a narrowed include silently filters them out, and vitest's "no test files" exit reads as a kill.
+List test suites only in the include: a helper file in it stops the dry run (`No test suite found`).
+Delete the generated configs from the tree root before the phase gate, or the whole-tree format check flags them.
 
 ## Evidence
 
 `.claude/workflow/mutation.md` — the run and triage procedure.
 `test/unit/application/commands/merge-worktree-gate.test.ts`, `test/unit/application/commands/merge-submodule-type-change.test.ts` —
 the triage suites the stale include missed.
+`.claude/workflow/mutation.md` — the bucket procedure the stash-apply run followed when a helper
+file in the generated include stopped the dry run and the leftover configs turned the gate red.
