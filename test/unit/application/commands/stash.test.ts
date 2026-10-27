@@ -682,6 +682,92 @@ describe('stash push', () => {
     });
   });
 
+  describe('Given a tracked directory replaced by an untracked file of the same name', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then the directory content is restored and the file is kept in the untracked commit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'd/x', 'x\n', 'initial commit');
+        await ctx.fs.rm(`${ctx.layout.workDir}/d/x`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'untracked\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        expect(w.parents).toHaveLength(3);
+        const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+        expect(await treeContent(ctx, uTree, 'd')).toBe('untracked\n');
+        expect(await read(ctx, 'd/x')).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given a tracked file replaced by an untracked file in a directory of the same name', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then the tracked file is back in the work tree', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'f', 'f\n', 'initial commit');
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await write(ctx, 'f/y', 'untracked\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(await read(ctx, 'f')).toBe('f\n');
+      });
+    });
+  });
+
+  describe('Given a tracked edit and no untracked file', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then the third parent is a parentless commit holding the empty tree', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        expect(w.parents).toHaveLength(3);
+        const u = await commitOf(ctx, w.parents[2] as ObjectId);
+        expect(u.tree).toBe('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+        expect(u.parents).toEqual([]);
+        expect(u.message.startsWith('untracked files on main: ')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then nothing is saved', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+      });
+    });
+  });
+
   describe('Given a tracked lossy path and an untracked file named like its decoded view', () => {
     describe('When push runs with includeUntracked', () => {
       it('Then the untracked file is stashed and removed from the working tree', async () => {

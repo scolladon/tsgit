@@ -44,6 +44,7 @@ import {
   settleIndex,
   staleEntries,
   statSnapshot,
+  symlink,
   unmergedAbsentAt,
   unmergedAt,
   v1,
@@ -571,6 +572,150 @@ describe.skipIf(!GIT_AVAILABLE)('stash push pending operation interop', () => {
         expect(git.exitCode).toBe(0);
         expect(pendingObservation(pair.ours)).toEqual(pendingObservation(pair.peer));
         expect((pendingObservation(pair.peer) as { stash: boolean }).stash).toBe(true);
+      });
+    });
+  });
+});
+
+const SWAP_SEED = [
+  regular('d/x', 'x\n'),
+  regular('n/s/y', 'y\n'),
+  regular('f', 'f\n'),
+  symlink('l', 'keep'),
+];
+
+const SWAPS: Record<string, (dir: string) => void> = {
+  'a directory swapped for a file': (dir) => {
+    rmSync(path.join(dir, 'd'), { recursive: true });
+    fileWith('d', 'untracked\n')(dir);
+  },
+  'a nested directory swapped for a file': (dir) => {
+    rmSync(path.join(dir, 'n'), { recursive: true });
+    fileWith('n', 'untracked\n')(dir);
+  },
+  'a file swapped for a directory': (dir) => {
+    rmSync(path.join(dir, 'f'));
+    fileWith('f/y', 'untracked\n')(dir);
+  },
+  'a symlink swapped for a directory': (dir) => {
+    rmSync(path.join(dir, 'l'));
+    fileWith('l/y', 'untracked\n')(dir);
+  },
+};
+
+const treeAt = (dir: string, rev: string): string =>
+  runGit(['-C', dir, 'rev-parse', `${rev}^{tree}`])
+    .toString()
+    .trim();
+
+describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
+  let pair: PeerPair;
+  let repo: Repository;
+
+  beforeEach(async () => {
+    pair = await makePeerPair('stash-push-untracked');
+  });
+
+  afterEach(async () => {
+    await repo?.dispose();
+    await pair.dispose();
+  });
+
+  const arrange = async (edit: (dir: string) => void): Promise<void> => {
+    for (const dir of [pair.peer, pair.ours]) {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      buildHistory(dir, SWAP_SEED, SWAP_SEED);
+      settleIndex(dir);
+      rmSync(path.join(dir, '.git', 'ORIG_HEAD'), { force: true });
+      runGit(['-C', dir, 'config', 'user.name', 'Ada']);
+      runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
+      edit(dir);
+    }
+    repo = await openRepository({ cwd: pair.ours });
+  };
+
+  describe.each(Object.entries(SWAPS))('Given %s', (_name, swap) => {
+    describe('When git and tsgit stash push -u', () => {
+      it('Then both save, reset the tree and write the same ref tail', async () => {
+        // Arrange
+        await arrange(swap);
+        const sut = repo.stash.push;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q', '-u'], { env: COMMIT_ENV });
+        const result = await sut({ includeUntracked: true });
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        for (const rev of ['stash@{0}', 'stash@{0}^2', 'stash@{0}^3']) {
+          expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
+        }
+        expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+      });
+    });
+  });
+
+  const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+  const gitOut = (dir: string, args: string[]): string =>
+    runGit(['-C', dir, ...args])
+      .toString()
+      .trim();
+
+  const SHAPES: Record<string, (dir: string) => void> = {
+    'an edited file': fileWith('f', 'edited\n'),
+    'a staged edit of a file': (dir) => {
+      fileWith('f', 'staged\n')(dir);
+      runGit(['-C', dir, 'add', 'f']);
+    },
+  };
+
+  describe.each(Object.entries(SHAPES))('Given %s and no untracked file', (_name, edit) => {
+    describe('When git and tsgit stash push -u', () => {
+      it('Then the W commit has three parents and an empty untracked tree as git writes', async () => {
+        // Arrange
+        await arrange(edit);
+        const sut = repo.stash.push;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q', '-u'], { env: COMMIT_ENV });
+        await sut({ includeUntracked: true });
+
+        // Assert
+        for (const dir of [pair.peer, pair.ours]) {
+          expect(
+            gitOut(dir, ['rev-list', '--parents', '-n', '1', 'stash@{0}']).split(' '),
+          ).toHaveLength(4);
+          expect(treeAt(dir, 'stash@{0}^3')).toBe(EMPTY_TREE);
+          expect(
+            gitOut(dir, ['rev-list', '--parents', '-n', '1', 'stash@{0}^3']).split(' '),
+          ).toHaveLength(1);
+        }
+        const untrackedSubject = (dir: string): string =>
+          gitOut(dir, ['log', '-1', '--format=%s', 'stash@{0}^3']);
+        expect(untrackedSubject(pair.ours)).toBe(untrackedSubject(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When git and tsgit stash push -u', () => {
+      it('Then neither saves and no stash ref exists', async () => {
+        // Arrange
+        await arrange(() => undefined);
+        const sut = repo.stash.push;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q', '-u'], {
+          env: COMMIT_ENV,
+        });
+        const result = await sut({ includeUntracked: true });
+
+        // Assert
+        expect(git.exitCode).toBe(0);
+        expect(result).toEqual({ kind: 'no-local-changes' });
+        expect(existsSync(path.join(pair.peer, '.git', 'refs', 'stash'))).toBe(false);
+        expect(existsSync(path.join(pair.ours, '.git', 'refs', 'stash'))).toBe(false);
       });
     });
   });

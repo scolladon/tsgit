@@ -748,9 +748,9 @@ const createStashCommits = async (
   const i = await writer.index(found.iTree);
   const untracked = await hashUntracked(ctx, workDir, found.untrackedFiles, found.scope);
   const u =
-    untracked.paths.length === 0
-      ? []
-      : [await writer.untracked(await synthesizeTreeFromIndex(ctx, untracked.entries))];
+    opts.includeUntracked === true
+      ? [await writer.untracked(await synthesizeTreeFromIndex(ctx, untracked.entries))]
+      : [];
   const working = await projectWorkingTree(ctx, workDir, found.tracked, found.scope);
   const wTree = await synthesizeTreeFromIndex(ctx, working.entries);
   const stash = await writer.stash(wTree, [base.b, i, ...u]);
@@ -826,6 +826,10 @@ const resetAfterPush = async (
   inputs: ResetInputs,
 ): Promise<void> => {
   const { base, iTree, untracked, opts } = inputs;
+  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
+  if (opts.includeUntracked === true) {
+    for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
+  }
   const currentIndex = await readIndex(ctx);
   const target = opts.keepIndex === true ? iTree : base.bTree;
   const result = await materializeTreeJudging(
@@ -837,10 +841,6 @@ const resetAfterPush = async (
     verified: result.verified,
     restagedPaths: await keptIndexPaths(ctx, inputs),
   });
-  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
-  if (opts.includeUntracked === true) {
-    for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
-  }
 };
 
 export interface StashApplyInput {
