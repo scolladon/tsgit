@@ -26,6 +26,23 @@ describe('applyDiffOnto', () => {
     });
   });
 
+  describe('Given a current whose line just past the hunk differs from the base', () => {
+    describe('When applied', () => {
+      it('Then the hunk lands and the differing line is kept', () => {
+        // Arrange
+        const sut = applyDiffOnto;
+        const edited = withLine(numbered(10), 3, 'L3');
+        const current = lines(...withLine(numbered(10), 7, 'other'));
+
+        // Act
+        const result = sut({ base: TEN_LINES, target: lines(...edited), current });
+
+        // Assert
+        expect(decode(result as Uint8Array)).toBe(decode(lines(...withLine(edited, 7, 'other'))));
+      });
+    });
+  });
+
   describe('Given a current whose context line differs from the base', () => {
     describe('When applied', () => {
       it('Then the result is undefined', () => {

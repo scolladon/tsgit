@@ -45,16 +45,21 @@ const matchesAt = (image: Lines, fragment: Fragment, at: number): boolean =>
   fitsAt(image, fragment, at) &&
   fragment.pre.every((line, i) => bytesEqual(line, image[at + i] as Uint8Array));
 
+/**
+ * git's `find_pos` walk: the hunk's own line, then one step down, one step up, and so on. A
+ * candidate past the image is harmless, `fitsAt` rejects it before a line is read; one before the
+ * first line would read outside the image, so only that side is guarded.
+ */
 function* candidatesFrom(start: number, length: number): Generator<number> {
   yield start;
   for (let step = 1; step <= length; step++) {
-    if (start + step <= length) yield start + step;
+    yield start + step;
     if (start - step >= 0) yield start - step;
   }
 }
 
 const findMatch = (image: Lines, fragment: Fragment): number | undefined => {
-  const start = Math.min(fragment.newStart > 0 ? fragment.newStart - 1 : 0, image.length);
+  const start = Math.min(Math.max(fragment.newStart - 1, 0), image.length);
   for (const at of candidatesFrom(start, image.length)) {
     if (matchesAt(image, fragment, at)) return at;
   }
