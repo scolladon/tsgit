@@ -1,6 +1,6 @@
 # Plan — stash-apply-dir-file-replacement
 
-> Source: design doc `docs/design/stash-apply-dir-file-replacement.md` · ADRs 1096, 1097, 1098, 1099, 1100 (binding: 212, 226, 249, 1092, 1095)
+> Source: design doc `docs/design/stash-apply-dir-file-replacement.md` · ADRs 1096, 1097, 1098, 1099, 1100, 1101, 1102, 1103, 1104, 1105 (binding: 211, 212, 226, 249, 1092, 1095)
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
@@ -31,8 +31,9 @@ Read this section before your part. The part blocks do not repeat it.
   GIT_* variable (SAFE_ENV in test/integration/interop-helpers.ts) and fixtures commit through COMMIT_ENV
   (fixed Ada identity, date 1700000000 +0000), so commit, tree and blob ids built with commitOn or
   buildHistory are equal across twins. No suite asserts `git --version` (no house precedent).
-- Line numbers below were re-derived on this worktree at HEAD 2889796b (src identical to main 23ff6c1e). They
-  drift as earlier parts land: locate by symbol name, use the line as a hint.
+- Line numbers below were re-derived on this worktree at HEAD 2889796b (src identical to main 23ff6c1e) for
+  Parts 1–8 and at db5d854c for Parts 9–16. They drift as earlier parts land: locate by symbol name, use the line
+  as a hint.
 - TDD: one RED per function or per interop row, each RUN and SEEN failing for the stated reason before the code
   that satisfies it; GREEN is the minimal code; REFACTOR never changes behaviour. A test that already passes
   at its step is a GUARD and cites why it passes. Never break code to watch a test fail. Every interop row a
@@ -66,27 +67,39 @@ Read this section before your part. The part blocks do not repeat it.
   `npx tsc --noEmit -p tsconfig.json` (types) and `npx cspell --no-progress <touched files>` (spelling).
 - Size caps: no part raises a cap. If a gate you choose to run goes red ONLY on check:size/check:tarball, record
   the measured overshoot in the final report and commit; the session raises the caps once after review. Expected
-  gzip delta per part is in each Commit block's note; net about +400–600 B.
+  gzip delta per part is in each Commit block's note; net about +400–600 B for Parts 1–8 and +0.7–1.4 kB for
+  Parts 9–16 (Parts 14–15 carry most of it).
 - reports/api.json is regenerated (`npm run docs:json`) and committed by the parts that change a public type
-  (Parts 5 and 7); the huge typedoc-id renumbering diff is normal.
+  (Parts 5, 7 and 9); the huge typedoc-id renumbering diff is normal. Part 12 regenerates it and must see no diff.
 - User docs (docs/use/commands/stash.md, Throws and Behaviour sections) are NOT edited by any part: the
   documentation phase owns them (new code, the two refusal classes, the untracked restore order, the
-  empty-tree U commit, the dropped pending-operation refusal).
+  empty-tree U commit, the dropped pending-operation refusal; from the revision: STASH_INDEX_CONFLICT, the
+  `--index` judge before any write, the reset to HEAD on a staged index, push `-u` removing empty directories).
 - Commit only after the gate is green: `git add <the part's files>` then `git commit -m "<message>"` with the exact
   message of the part's Commit block. Never `--no-verify`.
-- Apply family (lesson 015: Parts 2, 4, 6, 7, 8 change a step every `stash apply`, `pop` and autostash
-  re-apply runs). Run it as written and report the file count:
+- Apply family (lesson 015: Parts 2, 4, 6, 7, 8, 10, 11, 16 change a step every `stash apply`, `pop` and
+  autostash re-apply runs). Run it as written and report the file count:
   `PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run $(grep -lE "stash\.(apply|pop)|stashApply|stashPop|autostash" test/integration/*.test.ts) > "${TMPDIR:-/tmp}/stash-apply-family.log" 2>&1 || { tail -n 80 "${TMPDIR:-/tmp}/stash-apply-family.log"; false; }; tail -n 8 "${TMPDIR:-/tmp}/stash-apply-family.log"`
-  (17 files at plan time; 18 once Part 4 creates the type-change suite).
-- Push family (Part 3): the same form over
+  (17 files at plan time; 18 once Part 4 created the type-change suite; 19 once Part 10 creates
+  test/integration/stash-apply-index-judge-interop.test.ts).
+- Push family (Parts 3, 13): the same form over
   `$(grep -lE "stash\.push|stashPush|'stash', 'push'|stash push" test/integration/*.test.ts)` (17 files at
-  plan time), log `${TMPDIR:-/tmp}/stash-push-family.log`.
+  plan time, 18 at the revision), log `${TMPDIR:-/tmp}/stash-push-family.log`.
+- Walker family (Part 12: the walker and the prune module are shared by status, add, rm, checkout, merge and
+  cherry-pick): the same form over
+  `$(ls test/integration/*.test.ts | grep -E '/(status|add|rm|checkout|merge|cherry-pick)[-.]')` (44 files at the
+  revision), log `${TMPDIR:-/tmp}/walker-family.log`.
+- zsh: if a family run prints "No test files found", assign the list first and expand it split:
+  `files=$(…); PATH="$HOME/.local/git-2.55.0/bin:$PATH" ./node_modules/.bin/vitest run ${=files} > <log> 2>&1; echo $?`.
 
 - Shared files across parts are intentional (plan-lint locality warnings): the parts are sequential on one
   tree and every fix lives in src/application/commands/stash.ts and its unit suite; splitting by behaviour
   (refresh, push, W = base, restore, refusal data, gate) keeps each part within 5 RED→GREEN cycles and 6 files.
   Parts 5 and 7 both touch the error module, its test and reports/api.json because Part 5 adds a new code ahead
-  of its caller (Part 6's file budget) and Part 7 extends an existing code with its restructure.
+  of its caller (Part 6's file budget) and Part 7 extends an existing code with its restructure. Parts 9–16 repeat
+  the pattern: Part 9 is the error surface ahead of Part 10; Parts 10, 11 and 16 share stash.ts and the new judge
+  suite (one behaviour each: judge order, reset to HEAD, patch rule); Parts 12/13 and 14/15/16 are layer splits
+  (primitive then caller, domain then application then wiring).
 
 ### Public-surface decisions (decided here, per new symbol)
 
@@ -98,8 +111,16 @@ Read this section before your part. The part blocks do not repeat it.
 | STASH_APPLY_WOULD_OVERWRITE gains `localChanges`, `untracked`, `untrackedNotRestored?` | same union | PUBLIC, additive | 7 |
 | `StashApplyResult` / `StashPopResult` conflict variant gains `untrackedNotRestored?` | src/application/commands/stash.ts (already barrelled in src/application/commands/index.ts:349-355) | PUBLIC, additive | 7 |
 | stash-local helpers (`StashMerge`, `unchangedMerge`, `RestoreVerdict`, `settleIndex`, `reportApply`, …) | src/application/commands/stash.ts | internal, not exported | 4, 6, 7 |
+| error code STASH_INDEX_CONFLICT and its data `{ paths }` | src/domain/commands/error.ts union | PUBLIC (ADR-1101) | 9 |
+| `stashIndexConflict` constructor | src/domain/commands/error.ts | internal (constructors are not barrelled) | 9 |
+| stash-local `judgeIndexSide`, `conflictedPathsOf`, `unstageOffHead`, `resetIndexTo`, `mergeAndSettle`, `indexOrdered`, `UntrackedListing`, `NO_UNTRACKED` | src/application/commands/stash.ts | internal, not exported | 10, 11, 13 |
+| `walkWorkingTreeReporting`, `EmptyDirectoryReport` | src/application/primitives/walk-working-tree.ts | internal, not barrelled (ADR-1105); the public `walkWorkingTree` keeps its signature | 12 |
+| `pruneDirectoriesFrom`, `parentDirectory` export | src/application/primitives/internal/prune-emptied-directories.ts | internal | 12 |
+| `applyDiffOnto` | src/domain/diff/apply-hunks.ts | internal, not added to src/domain/diff/index.ts | 14 |
+| `judgeStagedPatch`, `StagedPatchVerdict` | src/application/commands/internal/staged-patch.ts | internal | 15 |
+| `mergeTreesToTree`, `MergeTreesResult` | src/application/primitives/apply-merge-to-worktree.ts | REMOVED (never barrelled; no caller after Part 16) | 16 |
 
-Surface gates for the public ones (pre-paid in-part): the union member in src/domain/commands/error.ts, the
+Surface gates for the public ones (pre-paid in-part, Parts 5, 7 and 9 alike): the union member in src/domain/commands/error.ts, the
 message case in src/domain/error.ts (exhaustive switch), the shared exhaustiveness switch
 test/unit/domain/exhaustiveness.ts, the constructor and message rows in
 test/unit/domain/commands/error.test.ts, and reports/api.json (prepush `check:doc-typedoc`; `npm run validate`
@@ -728,6 +749,719 @@ then the apply family.
 `fix(stash): apply and pop during a pending operation as git does`
 (size delta about −20 B gzip)
 
+## Revision — Parts 9–16 (ADRs 1101–1105)
+
+Parts 1–8 landed as 9c160ae5, fe2c2557, 431ecf7a, 624a7f07, 98acb0af, a54cb228, c9dc42ed, fa6cceaf (in part order),
+plus the session folds 96f0e09f (reinstateIndex keeps the merge-written stats) and 93ef6797 (push `-u` prunes the
+emptied parents) and the review fixes 44b89d64, c6ae674c. The design revision (0b3ab47f) adds R12 and R13 and its parts
+P9–P12; this plan splits them by file budget:
+
+| design part | plan parts | why split |
+|---|---|---|
+| P9 (judge before the merge, new code) | 9 (error surface), 10 (judge) | Part 5 precedent: the four surface-gate files plus api.json would put Part 10 at 8 files |
+| P12 (reset_head, then refuse) | 11 | planned before P11: it needs only Part 10's judge, and its rows then guard Part 16's swap |
+| P10 (push `-u` removes empty directories) | 12 (walker hook, prune entry), 13 (stash wiring, A.8 rows) | 7 files in one part |
+| P11 (git's patch judge) | 14 (domain hunk application), 15 (tree-level judge), 16 (swap, F14 rows, three-way judge removed) | ~15 RED→GREEN cycles in one part |
+
+Line numbers in Parts 9–16 were re-derived at db5d854c (`src/` identical to c6ae674c).
+
+Facts the planning probes pinned (git 2.55.0, a `mktemp -d` throwaway, isolated HOME, `GIT_*` scrubbed, `diff-tree
+--binary -p B I | apply --cached` onto a committed C; the stash's own judge is that pipeline). Parts 14–16 rely on them;
+they refine ADR-1103's one-line summary of the deletion, binary and mode rules (PC-M):
+
+| probe | B→I | C (committed) | git |
+|---|---|---|---|
+| mode-only/content-differs | `chmod +x f` | `l9`→`L9` in f | exit 0; f = C's blob, mode 100755 |
+| text/mode-differs | `l2`→`L2` | `chmod +x f` | exit 0 (warning `f has type 100755, expected 100644`); f patched, mode 100755 (C's) |
+| binary/mode-differs | binary `bin` changed | `chmod +x bin` | exit 0; bin = I's blob, mode 100755 (C's) |
+| binary/content-differs | binary `bin` changed | `bin` changed otherwise | exit 1, `bin: patch does not apply` |
+| delete/mode-differs | `rm f` | `chmod +x f` | exit 0, f removed |
+| delete/content-differs | `rm f` | `l9`→`L9` | exit 1, `f: patch does not apply` |
+| type/mode-differs / type/content-differs | f → symlink | `chmod +x f` / `l9`→`L9` | exit 0 (symlink entry) / exit 1 |
+| text/type-differs / mode-only/type-differs | `l2`→`L2` / `chmod +x f` | f → symlink | exit 1, `f: wrong type` |
+| text/absent | `l2`→`L2` | f removed | exit 1, `f: does not exist in index` |
+| gitlink same / differ | sub 111…→222… | sub 111… / 333… | exit 0 (222…) / exit 1, `sub: patch does not apply` |
+| create-df / create-df2 | new `n/x` / new file `g` | file `n` / `g/x` | exit 128, `'n/x' appears as both a file and as a directory` / same for `g`; via `stash apply --index`: exit 1, `conflicts in index`, nothing written, stash kept |
+| search order | periodic `x`/`y` file, line 6 `y`→`Y` | one line inserted on top | `Hunk #1 succeeded at 4 (offset 1 line)`: +1 tried before −1, both matching |
+
+## Part 9 — the STASH_INDEX_CONFLICT error
+
+### Context
+
+- Requirement R12, ADR-1101 (user-ratified): `stash apply` / `pop` with `restoreIndex` refuse an index side that does
+  not apply with `STASH_INDEX_CONFLICT { paths }`, a single field, every failing path in index order. Its caller
+  lands in Part 10; this part is the public surface alone (Part 5 precedent). knip counts test files as entries, so a
+  constructor exercised only by error.test.ts passes check:dead-code.
+- Edit `src/domain/commands/error.ts`:
+  - union member after the STASH_UNTRACKED_NOT_RESTORED member (458-464):
+    `| { readonly code: 'STASH_INDEX_CONFLICT'; readonly paths: ReadonlyArray<FilePath> }`, with a TSDoc on
+    `paths`: every staged path that does not apply to the current index, in index order; git prints
+    `error: <path>: patch does not apply` (or `already exists in index`, `does not exist in index`, `wrong type`)
+    for each, then `error: conflicts in index. Try without --index.`
+  - constructor after stashUntrackedNotRestored (1433-1441):
+    `export const stashIndexConflict = (paths: ReadonlyArray<FilePath>): TsgitError => new TsgitError({ code: 'STASH_INDEX_CONFLICT', paths });`
+  - one line appended to the stash comment block (1410-1415): `STASH_INDEX_CONFLICT` lists the staged paths an
+    `--index` apply could not reinstate; nothing was written.
+- Edit `src/domain/error.ts`: message case after 'STASH_UNTRACKED_NOT_RESTORED' (741-742), wording only (ADR-249):
+  `` `cannot apply stash: conflicts in index (${data.paths.length} path(s)); try without restoreIndex` ``.
+- Edit `test/unit/domain/exhaustiveness.ts`: `case 'STASH_INDEX_CONFLICT':` after line 239.
+- Edit `test/unit/domain/commands/error.test.ts`: import list (97-99, alphabetical: stashIndexConflict sits between
+  stashApplyWouldOverwrite and stashNotFound), a helper describe after the stashUntrackedNotRestored one (234-275),
+  one message-table row after the STASH_UNTRACKED_NOT_RESTORED rows (2064-2075).
+- Regenerate `reports/api.json` (`npm run docs:json`) and stage it. No barrel entry: the data shape is inline (no new
+  interface), and no barrel-surface snapshot lists error codes.
+
+### TDD steps
+
+1. RED (error.test.ts, stashIndexConflict) — 'Given the stashIndexConflict error helper' > 'When called with two
+   paths' > 'Then data carries the code and the paths in the given order':
+   `toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['a', 'b'] })`. Fails: the helper is not exported.
+2. RED (error.test.ts, message table) — `{ code: 'STASH_INDEX_CONFLICT', paths: ['f'] }` →
+   `'STASH_INDEX_CONFLICT: cannot apply stash: conflicts in index (1 path(s)); try without restoreIndex'`. Fails: the
+   message switch has no case for the code (and check:types rejects the literal).
+3. GREEN — union member, constructor, message case, exhaustiveness case.
+4. REFACTOR — none. Regenerate reports/api.json last (see Gate).
+
+### Gate
+
+`PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/domain/commands/error.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/commands/error.ts src/domain/error.ts test/unit/domain/exhaustiveness.ts test/unit/domain/commands/error.test.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+then, as the last step before staging, `npm run docs:json` and stage reports/api.json with the part's files.
+
+### Commit
+
+`fix(stash): add the STASH_INDEX_CONFLICT error`
+(size delta ~40–60 B gzip; reports/api.json staged in this commit)
+
+## Part 10 — `--index` judges the stashed index before the work-tree merge writes anything
+
+### Context
+
+- Requirement R12, ADR-1101 (design P9, F13, RC10). git's `do_apply_stash` order: refresh → `c_tree` → `has_index`
+  judge (refusal returns here) → merge → `reset_tree(index_tree)` → `restore_untracked`. Today tsgit judges the index
+  side only after the W merge wrote, inside reinstateIndex, and silently skips a conflicting side. This part moves that
+  judge (still the three-way `mergeTreesToTree`) ahead of the merge and refuses; Part 16 swaps its internals for git's
+  patch rule (ADR-1103). Where both judges agree (A.7 H2, delete, add-add refuse; non-overlap, offset-mid apply), this
+  part alone makes tsgit match git.
+- Edit `src/application/commands/stash.ts` (1250 lines):
+  - imports: `stashIndexConflict` into the domain/commands/error import (12-20); `viewOfEscaped` into the
+    index-path-key import (29-35); `type MergeConflict` from '../../domain/merge/index.js' (exported there, line 32;
+    the file already imports `STASH_LABELS` from it at 36).
+  - new, beside hasStagedChanges (1007-1011, keep git's names in its doc comment):
+    ```ts
+    /** git's `has_index` branch: the stashed index on top of the current one, judged before any write. */
+    const judgeIndexSide = async (ctx: Context, app: StashApplication, cTree: ObjectId): Promise<ObjectId | undefined> => {
+      if (app.input.restoreIndex !== true) return undefined;
+      const iTree = await commitTreeOf(ctx, app.parsed.indexParent);
+      if (!hasStagedChanges({ bTree: app.bTree, cTree, iTree })) return undefined;
+      const merged = await mergeTreesToTree(ctx, { baseTree: app.bTree, oursTree: cTree, theirsTree: iTree, labels: STASH_LABELS });
+      if (merged.kind !== 'clean') throw stashIndexConflict(conflictedPathsOf(merged.conflicts));
+      return merged.mergedTree;
+    };
+    ```
+  - new `conflictedPathsOf(conflicts: ReadonlyArray<MergeConflict>): ReadonlyArray<FilePath>`: each `path` (an escaped
+    FilePath, src/domain/merge/merge-types.ts:17-40) through `viewOfEscaped`, as `toConflictList` does
+    (commands/internal/replay-sequence.ts:114-117). A de-dup or sort is added only if TDD step 7 proves the merge's
+    order or multiplicity differs from index order (sort the ESCAPED paths with `comparePaths` from
+    src/domain/diff/path-compare.ts:10 before the lossy view). Part 16 deletes this function.
+  - applyUnderLock (1124-1138): `const stagedTree = await judgeIndexSide(ctx, app, cTree);` right after `cTree`
+    (1132), before `mergeStash`; pass `stagedTree` into settleIndex's inputs. The judge runs under the lock on the
+    index read under it, as git builds `c_tree` after its refresh. A throw leaves through applyStashCommit's
+    `finally` (1085-1103): the lock is released uncommitted; Part 2's refresh is already on disk (A.7: both indexes
+    rewritten on every refusal row).
+  - `SettleInputs` (1145-1148) gains `readonly stagedTree: ObjectId | undefined`.
+  - settleCleanIndex (1169-1183): reinstates when `stagedTree !== undefined` (writtenIndex = currentIndex with the
+    merge's newIndexEntries, as today), else runs unstageChangesUnlessNew as today. It no longer reads
+    `parsed.indexParent`, `input.restoreIndex`, `bTree` or `cTree` (the judge did).
+  - reinstateIndex (1018-1040): args become `{ stagedTree, writtenIndex }`; body = `buildIndexFromTree(ctx, {
+    targetTree: stagedTree, currentIndex: writtenIndex })` → `lock.commit(entries, 'replace')`; the merge and the
+    silent `return` go (one index-side merge per apply). The conflict and would-overwrite branches of settleIndex
+    are unchanged (git's "Index was not unstashed." is rendering).
+  - stashPop (1239-1250) unchanged: stashDrop runs only after stashApply returns, so the throw keeps the stash.
+    applyAutostash (1057-1070) passes `{}`: no judge.
+  - src/application/primitives/apply-merge-to-worktree.ts is NOT edited: the design's removal of the `Stryker
+    disable` on `if (!merged.cleanMerge)` (629-630) is moot because Part 16 deletes mergeTreesToTree (PC-I).
+- Edit `test/unit/application/commands/stash.test.ts`: new top-level describe 'stash apply — index-side judge' after
+  'stash apply — index staging' (2391-2413). Helpers: setupRepo (87), write (60), read (63), commitFile (66),
+  refusalDataOf (134), lstatOrUndefined (143); readIndex, stashList, stashPop already imported. Add a named constant
+  `TEN_LINES` = 'l1\n' … 'l10\n' and a `withLine(n, text)` helper that rewrites one line of it.
+- Create `test/integration/stash-apply-index-judge-interop.test.ts` (PC-F): header copied from
+  stash-apply-index-interop.test.ts:1-11 with `unique: stash apply --index judges the stashed index before any write,
+  as git's apply --cached does`, `surface: stash`, `bucket: cross-tool-interop`, `interopSurface: stash`. Harness,
+  mirrored from stash-apply-type-change-interop.test.ts (gitStash 295, pushedTrees 298-308, tsgitPush 310-318,
+  tsgitApply 363-379, reflogLines 415-418, observed 420-428, indexInode 336), without importing it (test files do not
+  import each other):
+  - seed per twin: `runGit(['init', '-q', '-b', 'main', dir])`, user.name/email config, `keep=k`, `f` = TEN_LINES,
+    `g=g0`, `git add .`, `git commit -q -m base` under COMMIT_ENV, then `settleIndex(dir)`
+    (test/integration/occupant-displacement-fixtures.ts:257).
+  - `SHAPES: Record<ShapeName, { stage: Occupant; post: Occupant }>`: `stage` builds the state at push time, `post`
+    the state after it (git CLI in both twins, commits under COMMIT_ENV); `PUSHES` {plain, `-u` (plants untracked
+    `u` first), `--keep-index`} and `COMMANDS` {`apply --index`, `pop --index`, `apply`} as in the type-change suite.
+  - row `{ shape, push, command, git: 'refuses' | 'applies' }`. Per row: both twins seeded and staged; git pushes the
+    peer (`stash push -q …`), tsgit pushes ours (`stashPush`); `pushedTrees` equal; `post` both; `touchedAt('keep')`
+    both; record `indexInode` both; git runs `stash <command>` (`tryRunGitWithExit`), tsgit runs stashApply/stashPop
+    (`createNodeContext({ workDir })`).
+  - refuses: git exit 1 and stderr's last line `error: conflicts in index. Try without --index.`; tsgit data
+    `{ code: 'STASH_INDEX_CONFLICT', paths }` with `paths` = the `<p>` of git's `error: <p>: patch does not apply` /
+    `error: <p>: already exists in index` lines, in stderr order; `observed()` equal between twins (listing,
+    indexState, ls-files -v, staleEntries, AUTO_MERGE absent in both, `refs/stash` reflog 1 in both, index rewritten in
+    both); under `-u`, `u` absent in both.
+  - applies: git exit 0, tsgit `applied`; `observed()` equal plus `status --porcelain -uall` equal.
+- Shapes this part owns (A.7, seed `keep=k`, `f`=TEN_LINES, `g=g0`; "staged" = `git add`):
+  | shape | stage (at push) | post (after push) |
+  |---|---|---|
+  | H2 | `f` = `I\n` staged, then work `f` = `W\n`, `g=g1` | `f` = `W\n` committed |
+  | delete | `git rm -q f`, `g=g1` | `l9`→`L9` in f, committed |
+  | add-add | new `n=N` staged, `g=g1` | `n=M` committed |
+  | non-overlap | `l2`→`L2` staged, `g=g1` | `l9`→`L9` committed |
+  | offset-mid | `l6`→`L6` staged, `g=g1` | two lines `x1`, `x2` inserted above `l1`, committed |
+  | i-is-c | `l2`→`L2` staged, `g=g1` | `L2` committed |
+  | i-is-b | `l2`→`L2` in the work tree only, `g=g1` | new `h` committed |
+  | w-is-b | `l2`→`L2` staged, then work `f` back to TEN_LINES (no `g` edit) | new `h` committed |
+
+### TDD steps
+
+One RED per function or row, each run and seen failing before the code that satisfies it.
+
+1. RED (stash.test.ts, stashApply) — A.7 H2 on the memory adapter: commit `f`=TEN_LINES and `g=g0`; stage `f=I`, work
+   `f=W`, `g=g1`; push; commit `f=W`; apply with `restoreIndex: true` → `STASH_INDEX_CONFLICT { paths: ['f'] }`; `g`
+   reads `g0`; no `${gitDir}/AUTO_MERGE`; the index entry of `f` is the committed `W` blob. Fails: tsgit applies (g1
+   written, AUTO_MERGE present).
+2. RED (stash.test.ts, stashPop) — the same shape with `restoreIndex: true` → same data; `stashList` still holds one
+   entry. Fails: pop applies and drops.
+3. RED (stash.test.ts, stashApply) — the H2 shape pushed with `includeUntracked: true` and an untracked `u` → same
+   data and `u` absent (lstatOrUndefined). Fails: `u` restored.
+4. RED (stash.test.ts, stashApply) — A.7 delete (`rm f` staged, `g=g1`; post: `l9`→`L9` committed) → the index-side
+   code wins over the W merge's modify/delete conflict: `STASH_INDEX_CONFLICT { paths: ['f'] }`, no AUTO_MERGE. Fails:
+   returns `{ kind: 'conflict' }`.
+5. RED (interop) — refusal rows, added one shape at a time, each run and seen failing: H2 × push {plain, `-u`,
+   `--keep-index`} × {`apply --index`, `pop --index`} (6 rows, A.7 H2, H2 × `-u`, H2 × `--keep-index`); delete × plain
+   × both commands and delete × `-u` × `apply --index` (3 rows, A.7 delete, delete × `-u`; no `--keep-index` row: the
+   kept index already holds the deletion, so I = C); add-add × plain × both commands, add-add × {`-u`,
+   `--keep-index`} × `apply --index` (4 rows, A.7 add-add, add-add × `-u`, × `--keep-index`). Fail: tsgit applies
+   (H2) or returns `conflict` (delete, add-add).
+6. GREEN — judgeIndexSide, conflictedPathsOf (plain view map), applyUnderLock order, SettleInputs.stagedTree,
+   settleCleanIndex and reinstateIndex from the judged tree.
+7. RED-or-GUARD (stash.test.ts) — two staged paths that both conflict (`f` and `g` each replaced whole, then both
+   committed differently) → `paths: ['f', 'g']`, and a pair whose index order differs from insertion order (`b` and
+   `a/x`) → `['a/x', 'b']`. If the plain map already yields index order, record it as a GUARD (the merge walks the
+   flat trees in index order) and keep the map; otherwise GREEN adds the escaped-path sort (and de-dup) described
+   in the Context.
+8. GUARD (stash.test.ts) — the H2 shape without `restoreIndex` applies (`restoreIndex !== true` returns before the
+   judge); A.7 i-is-c and i-is-b under `restoreIndex` apply (each `hasStagedChanges` arm alone); the restoreIndex rows
+   at 1090-1180 stay green (the reinstatement now reads the judged tree; same tree as the old second merge);
+   stash-unmerged-index.test.ts autostash rows stay green (`{}` input, no judge).
+9. GUARD (interop) — applies rows, passing before and after the GREEN (A.7 marks them SAME; they pin the reorder):
+   non-overlap × {plain, `-u`} × {`apply --index`, `pop --index`} (4, A.7 non-overlap, × `-u`), offset-mid × plain ×
+   both and × `-u` × `apply --index` (3, A.7 offset-mid, × `-u`), i-is-b and i-is-c × {plain × both commands, `-u` ×
+   `apply --index`, `--keep-index` × `apply --index`} (8, A.7 i-is-b, i-is-c), w-is-b × plain × `apply --index` (1,
+   A.7 w-is-b), H2 × plain × `apply` (1, A.7 H2 plain `stash apply`: exit 0, ` M g`, no judge).
+10. REFACTOR — applyUnderLock, judgeIndexSide, settleCleanIndex each under 20 lines, nesting ≤ 2.
+
+### Gate
+
+`PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/stash.test.ts test/unit/application/commands/stash-unmerged-index.test.ts test/integration/stash-apply-index-judge-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/stash.ts test/unit/application/commands/stash.test.ts test/integration/stash-apply-index-judge-interop.test.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+then the apply family (conventions; 19 files from this part on).
+
+### Commit
+
+`fix(stash): refuse an index side that does not apply before the stash merge writes anything`
+(size delta ~50–90 B gzip: judge, path view, error import; reinstateIndex loses its merge, about −30 B)
+
+## Part 11 — `--index` resets to HEAD and refuses when the current index differs from HEAD
+
+### Context
+
+- Requirement R12, ADR-1104 (user-ratified, DC7 = (a); design P12, F15, RC12). When the judge returns a tree, git's
+  `reset_head()` runs `git reset --quiet --refresh` (a mixed reset of the index to HEAD, stats refreshed; the work tree
+  is not written), then merge-ort's `unclean()` refuses "Your local changes to the following files would be
+  overwritten by merge" for every path where HEAD and the pre-reset index C differ; the untracked tree is restored as
+  after any merge refusal and the stash is kept. The check precedes git's W = B early return (A.7 w-is-b-staged: no
+  `Already up to date.`). When C equals HEAD's tree the reset only refreshes, which Part 2's refresh already did.
+- Edit `src/application/commands/stash.ts`:
+  - new, after judgeIndexSide (Part 10):
+    ```ts
+    /** git's `reset_head()` then `unclean()`: a staged state to reinstate meets an index off HEAD. */
+    const unstageOffHead = async (
+      ctx: Context,
+      lock: IndexLock,
+      inputs: { readonly cTree: ObjectId; readonly currentIndex: GitIndex; readonly stagedTree: ObjectId | undefined },
+    ): Promise<SettledApply | undefined> => {
+      if (inputs.stagedTree === undefined) return undefined;
+      const headTree = await commitTreeOf(ctx, await resolveHeadCommit(ctx, await readHeadRaw(ctx)));
+      if (headTree === inputs.cTree) return undefined;
+      const differing = await pathsDifferingBetween(ctx, headTree, inputs.cTree);
+      await resetIndexTo(ctx, lock, headTree, inputs.currentIndex);
+      return { kind: 'would-overwrite', localChanges: indexOrdered(differing), untracked: [] };
+    };
+    ```
+    commitTreeOf 169-173, resolveHeadCommit 176-185 and readHeadRaw (imported at 95) already exist; the stash base
+    `bTree` is not HEAD once HEAD moved, so HEAD is read. `pathsDifferingBetween` (805-825) returns `IndexPath`s in
+    left-then-right order; `indexOrdered` sorts them with `sortByPath(paths, escapedPathOf)`
+    (src/domain/diff/path-compare.ts:14; escapedPathOf at src/domain/git-index/index-path-key.ts:22, already imported)
+    and maps to `.path`, the FilePath view WouldOverwriteClasses carries.
+  - `resetIndexTo(ctx, lock, tree, currentIndex)`: `buildIndexFromTree(ctx, { targetTree: tree, currentIndex })`
+    (src/application/primitives/build-index-from-tree.ts:130; keeps the stat of an entry whose id and mode agree,
+    as reinstateIndex relies on), then `lock.commit(entries, 'replace')`. Step 6 adds git's `--refresh`.
+  - applyUnderLock (1124-1138): `const settled = (await unstageOffHead(ctx, lock, { cTree, currentIndex, stagedTree }))
+    ?? (await mergeAndSettle(…))`, extracting the existing mergeStash → settleIndex pair into `mergeAndSettle` so the
+    function stays under 20 lines. The would-overwrite outcome then flows through the existing restore and reportApply
+    (1186-1200): `u` restored, STASH_APPLY_WOULD_OVERWRITE thrown with `paths` = localChanges, the stash kept by pop.
+    mergeStash's W = B early return (1222) sits after this check, as git's does.
+  - imports: `sortByPath` from '../../domain/diff/path-compare.js'; `refreshedIndex` from
+    './internal/refresh-index.js' (already imports refreshAndWriteIndex from it, 130) at step 6.
+- Edit `test/unit/application/commands/stash.test.ts`: rows in Part 10's 'stash apply — index-side judge' describe.
+- Edit `test/integration/stash-apply-index-judge-interop.test.ts`: shapes and rows below; a refusal by this path
+  asserts git exit 1, stderr holding `Your local changes to the following files would be overwritten by merge:` with
+  the tab-indented paths (rebuild them from tsgit's `localChanges`, ADR-249) and `Index was not unstashed.`; tsgit
+  `{ code: 'STASH_APPLY_WOULD_OVERWRITE', paths, localChanges, untracked: [] }`; `observed()` and
+  `status --porcelain -uall` equal; `refs/stash` reflog 1 in both after `pop --index`.
+- Shapes this part owns (A.7):
+  | shape | stage (at push) | post (after push) |
+  |---|---|---|
+  | staged-non-overlap | as non-overlap | `l9`→`L9` staged, not committed |
+  | staged-other | as non-overlap | new `h` staged, not committed |
+  | w-is-b-staged | as w-is-b | new `h` staged, not committed |
+  | i-is-b-staged | as i-is-b | new `h` staged, not committed |
+  | staged-revert (not an A.7 row; ADR-1104's "stats refreshed", twin-pinned) | as non-overlap | `g=g9` staged, then work `g` back to `g0` |
+
+### TDD steps
+
+One RED per function or row, each run and seen failing before the code that satisfies it.
+
+1. RED (stash.test.ts, stashApply) — A.7 staged-other on the memory adapter: `l2`→`L2` staged + `g=g1`, push, then
+   `h` written and added → `restoreIndex: true` throws `{ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['h'],
+   localChanges: ['h'], untracked: [] }`; the index equals HEAD's entries (no `h`, `f` = TEN_LINES blob); the work
+   tree is unchanged (`h` present, `f` = TEN_LINES, `g` = `g0`); no AUTO_MERGE. Fails: tsgit applies.
+2. RED (stash.test.ts, stashPop) — same shape → same data, `stashList` holds one entry. Fails: pop applies and drops.
+3. RED (stash.test.ts, stashApply) — staged-other pushed with `includeUntracked` and an untracked `u` → the same
+   refusal and `u` restored with its stashed bytes. Fails: tsgit applies (no refusal).
+4. RED (stash.test.ts, stashApply) — A.7 w-is-b-staged → the refusal although W equals its base. Fails: the W = B
+   return applies.
+5. RED (interop) — staged-non-overlap, staged-other, w-is-b-staged, each × push {plain, `-u`} × {`apply --index`,
+   `pop --index`} (12 rows, A.7 staged-non-overlap incl. its `-u` note, staged-other, w-is-b-staged), added one shape
+   at a time. Fail: tsgit applies (`M  f`, `A  h`, AUTO_MERGE; pop drops).
+6. GREEN — unstageOffHead, resetIndexTo (build + commit), indexOrdered, mergeAndSettle.
+7. RED (interop) — staged-revert × plain × `apply --index`: git's `reset --refresh` leaves `g` (work = HEAD) fresh;
+   expected failure on `staleEntries` (tsgit's reset writes `g` from HEAD's tree with no donor stat, so its cached
+   stat is zero). If it passes, record a GUARD and keep step 6's reset (no refresh). Otherwise GREEN: resetIndexTo
+   runs `refreshedIndex(ctx, { ...currentIndex, entries })` (src/application/commands/internal/refresh-index.ts:22, a
+   pure scan, no lock of its own; checkout.ts:281 calls it the same way) and commits
+   `refreshed.currentIndex.entries` with `{ verified: refreshed.verified }`.
+8. GUARD (interop) — i-is-b-staged × plain × {`apply --index`, `pop --index`} (2 rows, A.7 i-is-b-staged: exit 0 in
+   both; no `has_index`, so neither the reset nor the check runs). Passes: the judge returns `undefined` for I = B.
+9. GUARD — Part 10's rows (judge suite and unit) and the restoreIndex rows at 1090-1180 stay green: every one has
+   C equal to HEAD's tree (post-push states commit), so unstageOffHead returns `undefined`.
+10. REFACTOR — applyUnderLock, unstageOffHead, mergeAndSettle under 20 lines; no boolean parameter.
+
+### Gate
+
+`PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/stash.test.ts test/unit/application/commands/stash-unmerged-index.test.ts test/integration/stash-apply-index-judge-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/stash.ts test/unit/application/commands/stash.test.ts test/integration/stash-apply-index-judge-interop.test.ts && npm run check:spelling && npm run check:test-pyramid`
+then the apply family.
+
+### Commit
+
+`fix(stash): on apply --index reset a staged index off HEAD to HEAD and refuse, as git does`
+(size delta ~60–100 B gzip)
+
+## Part 12 — the untracked walk reports empty directories; pruning starts from given directories
+
+### Context
+
+- Requirement R13, ADR-1102 (user-ratified) and ADR-1105 (DC8 = (b), adopted): the walker reports an entered
+  directory whose `readdir` is empty through an internal hook on a non-barrelled entry point; the public
+  `walkWorkingTree` keeps its signature and output, the report is not counted against `maxEntries`. This part adds
+  the hook and the prune entry point; Part 13 wires the stash. knip counts tests as entries, so the two new exports
+  exercised only by their suites pass check:dead-code until Part 13 calls them.
+- Edit `src/application/primitives/walk-working-tree.ts` (242 lines):
+  - `export type EmptyDirectoryReport = (directory: FilePath) => void;` (internal: src/application/primitives/index.ts:120
+    re-exports `walkWorkingTree` by name only, so nothing new reaches the package).
+  - `WalkConfig` (17-28) gains `readonly onEmptyDirectory: EmptyDirectoryReport | undefined`.
+  - today's generator body (179-209) becomes a private `async function* walkEntries(ctx, options, onEmptyDirectory)`;
+    `export function walkWorkingTree(ctx: Context, options?: WalkWorkingTreeOptions): AsyncIterable<WalkWorkingTreeEntry>`
+    keeps its TSDoc and returns `walkEntries(ctx, options, undefined)`; new
+    `export function walkWorkingTreeReporting(ctx: Context, options: WalkWorkingTreeOptions | undefined, onEmptyDirectory: EmptyDirectoryReport): AsyncIterable<WalkWorkingTreeEntry>`
+    returns `walkEntries(ctx, options, onEmptyDirectory)` (PC-J: plain wrappers, so `status`/`add` pay no `yield*`
+    hop per entry; the generator stays lazy, `requireWorkTree` still throws on the first `next()`).
+  - the report: in the loop (194-208; the push at 206), a `push` step whose `frame.entries.length === 0` calls
+    `config.onEmptyDirectory?.(frame.prefix as FilePath)` before pushing (extract a `descend(config, stack, frame)`
+    helper to keep nesting ≤ 2). Only enterSubdirectory frames arrive as `push` steps (67-86), so the root frame
+    (readDirectoryFrame at 192) is never reported; an ignored directory never reaches enterSubdirectory (stepEntry
+    112-113); an embedded repository returns `skip` or `yield`, never `push`. A directory holding only empty
+    directories is reported through its leaves.
+- Edit `src/application/primitives/internal/prune-emptied-directories.ts` (93 lines):
+  - new `export const pruneDirectoriesFrom = async (ctx, workdir, startDirectories: Iterable<string>, surviving)`:
+    today's pruneEmptiedDirectories body (73-93) with `schedule(levels, dir, surviving)` per start directory itself;
+  - `pruneEmptiedDirectories(ctx, workdir, removedPaths, surviving)` becomes
+    `pruneDirectoriesFrom(ctx, workdir, Array.from(removedPaths, parentDirectory), surviving)`; its callers
+    (src/application/commands/rm.ts:192, src/application/primitives/apply-changeset.ts:571,
+    src/application/primitives/apply-merge-to-worktree.ts:233, stash.ts:844) keep their behaviour;
+  - `parentDirectory` (16-19) gains `export` for Part 13's mapping of file paths to their parents.
+- Edit `test/unit/application/primitives/walk-working-tree.test.ts` (1036 lines): new top-level describe
+  'walkWorkingTreeReporting' at the end; seedFs (14-26) and collect (28-32) helpers; empty directories via
+  ctx.fs.mkdir on the work-tree path with `{ recursive: true }` (the memory adapter keeps explicit directories,
+  src/adapters/memory/memory-file-system.ts:272).
+- Edit `test/unit/application/primitives/internal/prune-emptied-directories.test.ts` (326 lines): new top-level
+  describe 'pruneDirectoriesFrom'; its existing rows stay as written.
+- api.json must NOT change (ADR-1105): the gate regenerates it and diffs.
+
+### TDD steps
+
+One RED per function or row, each run and seen failing before the code that satisfies it.
+
+1. RED (walk-working-tree.test.ts, walkWorkingTreeReporting) — 'Given a file and an empty directory' > 'When walked
+   with a report' > 'Then the directory is reported and only the file is yielded': yields `['a.txt']`, reports
+   `['e']`. Fails: walkWorkingTreeReporting is not exported.
+2. GREEN — config field, private walkEntries, the two wrappers, the report.
+3. GUARD (walk-working-tree.test.ts) — each passes by construction of step 2 (one `it` each): an ignored empty
+   directory (ignore returns true for `e`) is not reported (skipped before enterSubdirectory); an empty directory
+   under an embedded repository (`r/.git/` and `r/e/`) is not reported (the frame is skipped); `n/i` empty under an
+   otherwise empty `n` reports `['n/i']` only (n's entries are not empty); an empty work tree reports nothing (the
+   root is never a `push` step); `maxEntries: 1` with one file and two empty directories does not throw (no
+   leafStep); `walkWorkingTree` over the same tree yields the same entries as before and takes no hook.
+4. RED (prune-emptied-directories.test.ts, pruneDirectoriesFrom) — 'Given an empty directory e' > 'When pruned from
+   e' > 'Then e itself is removed'. Fails: pruneDirectoriesFrom is not exported.
+5. GREEN — pruneDirectoriesFrom; pruneEmptiedDirectories delegates; parentDirectory exported.
+6. GUARD (prune-emptied-directories.test.ts) — a start `n/i` with `n` holding nothing else removes `n/i` then `n`
+   (the climb schedules the parent of a removed start); a start under a surviving `d` stops before `d`; a start
+   holding a file stays and its parent is not tried. Each passes on step 5's code (same scheduler).
+7. GUARD — the pruneEmptiedDirectories rows and test/unit/application/commands/stash-clean-order.test.ts stay
+   green (delegation keeps their order); walk-working-tree.properties.test.ts stays green.
+8. REFACTOR — walkEntries' loop body stays flat; no function over 20 lines.
+
+### Gate
+
+`PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/primitives/walk-working-tree.test.ts test/unit/application/primitives/walk-working-tree.properties.test.ts test/unit/application/primitives/internal/prune-emptied-directories.test.ts test/unit/application/commands/stash-clean-order.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/walk-working-tree.ts src/application/primitives/internal/prune-emptied-directories.ts test/unit/application/primitives/walk-working-tree.test.ts test/unit/application/primitives/internal/prune-emptied-directories.test.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+then `npm run docs:json && git diff --no-ext-diff --exit-code -- reports/api.json` (must exit 0; a diff means the
+public `walkWorkingTree` changed shape: fix its declaration and rerun until the diff is empty; never commit
+api.json from this part), then the
+walker family (conventions; the walker and the prune module are shared by status, add, rm, checkout, merge and
+cherry-pick).
+
+### Commit
+
+`fix(stash): report empty directories from the untracked walk and prune from given directories`
+(size delta ~40–70 B gzip)
+
+## Part 13 — `stash push -u` removes the untracked directories holding no file
+
+### Context
+
+- Requirement R13, ADR-1102 (design P10, F16, RC13, A.8). git's `clean --force --quiet -d :/` before the reset
+  removes the stashed files, every untracked directory with no file under it, and every parent those removals leave
+  empty, deepest first. Kept: tracked directories, a directory holding an ignored file or an ignored directory, an
+  ignored directory and what is under it, a path the index tracks (an unpopulated gitlink's empty directory), the
+  root. Empty directories never enter U and never count as a local change (A.8 only-empty).
+- Edit `src/application/commands/stash.ts`:
+  - imports: `walkWorkingTreeReporting` replaces `walkWorkingTree` (125; listUntracked at 550 is its only use);
+    `pruneDirectoriesFrom` and `parentDirectory` replace `pruneEmptiedDirectories` in the prune import (81-84; keep
+    `survivingDirectoriesOf`).
+  - listUntracked (543-555) returns `{ files, emptyDirectories }` (a local `UntrackedListing` interface): the report
+    keeps a directory unless `tracked.has(keyOfPath(directory))` (the files' own filter; A.8 gitlink-dir). A named
+    constant `NO_UNTRACKED: UntrackedListing = { files: [], emptyDirectories: [] }` serves the no-`-u` path.
+  - `LocalChanges` (496-503) gains `readonly untrackedEmptyDirectories: ReadonlyArray<FilePath>`; findLocalChanges
+    (523-536) fills both lists. hasLocalChanges (538-541) and createStashCommits (751-768) are unchanged.
+  - `ResetInputs` (796-802) gains `readonly emptyDirectories: ReadonlyArray<FilePath>`; stashAndReset (619-650)
+    passes `found.untrackedEmptyDirectories`.
+  - cleanStashedUntracked (837-851) takes `({ workDir, untracked, emptyDirectories }, currentIndex)`: removes the
+    files (removeWorkingTreeFile), then
+    `pruneDirectoriesFrom(ctx, workDir, [...untracked.paths.map(parentDirectory), ...emptyDirectories], survivingDirectoriesOf(currentIndex.entries.map((entry) => entry.path)))`
+    in one deepest-first pass. resetAfterPush (853-873) passes them; its `// Stryker disable` line (860) stays
+    verbatim (without `-u` both lists are empty).
+  - snapshotLocalChanges / createAutostash never pass `includeUntracked`: NO_UNTRACKED.
+- Edit `test/unit/application/commands/stash.test.ts`: rows beside 'Given untracked m/z and deep/er/w with
+  includeUntracked' (706-725); setupRepoWithSubmodule (204) for the gitlink row; lstatOrUndefined (143).
+- Edit `test/integration/stash-push-reset-interop.test.ts`, inside 'stash push include-untracked interop' (612-768):
+  - arrange (629-642) gains an optional seed (default SWAP_SEED, 582-587) for gitlink-dir;
+  - an `excludeAll(dir)` helper writing the three patterns `*.cache`, build/, out/ to the repository's info/exclude file (the
+    `ignoring` fixture writes one pattern);
+  - `EMPTY_DIRECTORY_SHAPES` × push {`-u`, `-u --keep-index`} via describe.each; each row: `excludeAll`, its
+    plant, `keep` edited (`fileWith('keep', 'edited\n')`) and an untracked `top` unless the row says otherwise; under
+    `--keep-index` the row's staging (default `git add keep`). Asserts: `status --porcelain -uall` equal before the
+    push (and listing no directory); `listing` equal after (it shows empty directories); `treeAt` of `stash@{0}`,
+    `^2`, `^3` equal; `expectSameIndexOutcome()` (644-649).
+  - only-empty beside 'Given a clean tree' (747-767), × both pushes: both `no-local-changes`, emptydir/ present in
+    both, no refs/stash.
+- A.8 rows translated to SWAP_SEED (tracked: `keep`, d/x, n/s/y, `f`, symlink `l`; A.8's tracked a/ becomes
+  d/, its untracked d/ becomes w/, its replaced `keep` becomes `f`):
+  | row | plant | git (A.8) | before this part |
+  |---|---|---|---|
+  | empty-dir | emptydir/ | gone | kept (RED) |
+  | nest | nest/inner/ | gone | kept (RED) |
+  | file-and-empty | w/u, w/e/ | w/ gone | w/e/ kept (RED) |
+  | reviewer | emptydir/, nest/inner/, w/u | all gone | kept (RED) |
+  | two-empty | nest/i1/, nest/i2/i3/ | gone | kept (RED) |
+  | tracked-parent | d/b/ | d/b/ gone, d/ kept | kept (RED) |
+  | tracked-sibling | d/z, d/e/ | both gone, d/ kept | d/e/ kept (RED) |
+  | mixed | nest/inner/, nest/build/ | nest/inner/ gone; nest/, nest/build/ kept | kept (RED) |
+  | change-only | emptydir/, `keep` edited, no `top` | gone | kept (RED) |
+  | type-empty | tracked `f` replaced by empty f/, no `top`, no `keep` edit; `--keep-index` stages the deletion (`git rm -q --cached f`) | `-u`: file `f` back; `--keep-index`: no `f` | `-u` SAME; `--keep-index` f/ kept (RED) |
+  | ignored-file | m/.cache, m/z | m/z gone, m/, m/.cache kept | SAME |
+  | ignored-dir | build/ | kept | SAME |
+  | under-ignored | out/e/ | kept | SAME |
+  | ignored-deep | x/y/.cache | all kept | SAME |
+  | ignored-inner | p/build/ | kept | SAME |
+  | link-to-dir | `alias` → `d` | stashed in U, removed | SAME |
+  | gitlink-dir | seed adds `gitlink('sub')`; sub/ empty | kept | SAME |
+  | only-empty | emptydir/ only, nothing else | `no-local-changes`, kept | SAME |
+
+### TDD steps
+
+One RED per function or row, each run and seen failing before the code that satisfies it.
+
+1. RED (stash.test.ts, stashPush) — A.8 empty-dir: `a.txt` edited, untracked `top`, empty `emptydir` →
+   `includeUntracked: true` saves and `emptydir` is gone (lstatOrUndefined). Fails: kept.
+2. RED (interop) — the DIFF rows of the table (empty-dir, nest, file-and-empty, reviewer, two-empty,
+   tracked-parent, tracked-sibling, mixed, change-only, type-empty × `--keep-index`), added one row at a time × both
+   pushes where RED; fail on `listing` (tsgit keeps the directories).
+3. GREEN — listUntracked split, LocalChanges and ResetInputs threading, cleanStashedUntracked's one prune pass.
+4. GUARD (stash.test.ts) — each passes on step 3's code: a nested empty chain `nest/inner` goes with `nest`; `w/e/`
+   beside `w/u` goes with `w`; a directory holding an ignored file (`.gitignore` = `*.cache`) stays; an ignored empty
+   directory stays; a submodule's empty directory (setupRepoWithSubmodule) stays; `-u` with only `emptydir` →
+   `{ kind: 'no-local-changes' }` and `emptydir` kept; a push without `-u` keeps every empty directory.
+5. GUARD (interop) — the SAME rows (ignored-file, ignored-dir, under-ignored, ignored-deep, ignored-inner,
+   link-to-dir, gitlink-dir, type-empty × `-u`, only-empty × both pushes): equal before and after (A.8 SAME).
+6. GUARD — SWAPS (589-606), SHAPES (680-686) and the emptied-directory row (717-745) stay green;
+   stash-clean-order.test.ts and stash-pool.test.ts stay green.
+7. REFACTOR — listUntracked, findLocalChanges, cleanStashedUntracked under 20 lines; no parameter list over 4.
+
+### Gate
+
+`PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/stash.test.ts test/unit/application/commands/stash-clean-order.test.ts test/unit/application/commands/stash-pool.test.ts test/integration/stash-push-reset-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/stash.ts test/unit/application/commands/stash.test.ts test/integration/stash-push-reset-interop.test.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+then the push family (conventions). The apply family is not needed: autostash never passes `includeUntracked`.
+
+### Commit
+
+`fix(stash): remove untracked directories holding no file on push -u as git clean -d does`
+(size delta ~30–60 B gzip)
+
+## Part 14 — git's hunk application over the repository's own diff
+
+### Context
+
+- Requirement R12, ADR-1103 (user-ratified, DC6 = (a)): the judge applies the base-to-index hunks onto the current
+  blob with git's `apply` matching. This part is the pure domain half: one blob triple in, the patched bytes or
+  `undefined` out. Its caller lands in Part 15 (knip counts tests as entries). Internal: NOT added to the
+  src/domain/diff/index.ts barrel.
+- Create `src/domain/diff/apply-hunks.ts`:
+  `export const applyDiffOnto = (sides: { readonly base: Uint8Array; readonly target: Uint8Array; readonly current: Uint8Array }): Uint8Array | undefined`
+  — git `apply.c` (`apply_one_fragment`, `find_pos`, `match_fragment`) at its defaults (`p_context` unbounded so no
+  fuzz, no whitespace option):
+  - hunks = `computeHunks(base, target, DIFF_CONTEXT_LINES)` (src/domain/diff/patch-serializer.ts:501, no options:
+    Myers, as plumbing `diff-tree` reads no `diff.algorithm`); `DIFF_CONTEXT_LINES = 3` is a local named constant
+    (the serializer's DEFAULT_CONTEXT_LINES at 60 is not exported). `OutputHunk` (160-166): `oldStart`, `oldLen`,
+    `newStart`, `newLen`, `body: BodyLine[]`; `BodyLine` (154-158): `kind: 'context' | 'delete' | 'insert'`, `text`,
+    `trailingNoNewline`.
+  - line BYTES come from `splitLines` (src/domain/diff/line-diff.ts:70; each line keeps its LF, a last line without
+    LF stays unterminated, so "\ No newline at end of file" needs no special case), never from `BodyLine.text`
+    (decoded through a non-fatal TextDecoder, patch-serializer.ts:65, so it is lossy) — PC-G.
+  - per hunk: preimage = baseLines from `from(oldStart, oldLen)` for `oldLen` lines, postimage = targetLines from
+    `from(newStart, newLen)` for `newLen` lines, where `from(start, len) = len === 0 ? start : start - 1`
+    (computeRange, patch-serializer.ts:291-323, stores the 1-based first line, or for an empty side the 0-based index
+    of the line before); `trailing` = the count of `context` body lines after the last change.
+  - `matchBeginning = oldStart <= 1` (git: an old start of 0 or 1), `matchEnd = trailing === 0`.
+  - search start = `newStart > 0 ? newStart - 1 : 0`, clamped to the image length, in the image the earlier hunks
+    already patched (git starts from the fragment's new-side position; it keeps no running offset).
+  - candidates in git's order: start, start+1, start−1, start+2, start−2, … within [0, image length] (forward first:
+    the "search order" probe above).
+  - candidate `p` matches when `p + pre.length <= image.length`, `matchBeginning` ⇒ `p === 0`, `matchEnd` ⇒
+    `p + pre.length === image.length`, and every line is `bytesEqual` (src/domain/objects/encoding.ts:56).
+  - a hunk with no match → `undefined`; else splice postimage in; the result is `concatBytes(image)` (encoding.ts:44).
+- Create `test/unit/domain/diff/apply-hunks.test.ts` (example suite, `sut = applyDiffOnto`; a `lines(...)` helper
+  joining with LF; TEN_LINES-style fixtures).
+- Create `test/unit/domain/diff/apply-hunks.properties.test.ts` (fast-check, ADRs 134–136): lens 1 round-trip
+  (`computeHunks` and `applyDiffOnto` are a serialize/apply pair: `applyDiffOnto({ base, target, current: base })`
+  equals `target` byte for byte, over line arrays drawn from a 3-letter alphabet so repeated context is common, with
+  or without a final LF; 200 runs); lens 4 invariant (an unrelated prefix of k ≥ 1 unique lines shifts nothing:
+  bases of unique tokens `t<i>`, edits only at line ≥ 5 so no hunk is line-1 anchored, then
+  `applyDiffOnto({ base, target, current: prefix + base })` equals `prefix + target`; 100 runs). Never commit a seed.
+- Edit `test/unit/domain/diff/arbitraries.ts`: the two line-array generators (`arbLineBlob`,
+  `arbUniqueLineEdit`) live here, as ADR-134 asks for per-family generators.
+
+### TDD steps
+
+One RED per function or row, each run and seen failing before the code that satisfies it.
+
+1. RED (apply-hunks.test.ts) — 'Given a base, a one-line edit and the base itself as current' > 'When applied' >
+   'Then the result is the edited bytes'. Fails: the module does not exist.
+2. GREEN — hunks from computeHunks, splice each postimage at its search start (no matching yet).
+3. RED — a current whose context line `l1` differs → `undefined`. Fails: step 2 splices blindly.
+4. GREEN — candidate matching at the search start only (bytesEqual over the preimage).
+5. RED — A.7 offset-mid at blob level: `l6`→`L6`, current = two lines above TEN_LINES → patched at +2. Fails: no
+   outward search.
+6. GREEN — the outward search in git's order.
+7. GUARD — the periodic `x`/`y` file of the search-order probe, one line on top → the `Y` lands where git put it
+   (line 7 of the result, the +1 candidate). Passes if step 6 searches forward first; it pins the order.
+8. RED — A.7 offset-top at blob level (`l2`→`L2`, hunk at line 1, two lines above) → `undefined`; and a change on
+   the last line (no trailing context) with a line appended to current → `undefined`. Fail: the search finds them.
+9. GREEN — matchBeginning and matchEnd.
+10. GUARD — each passes on step 9's code: two hunks where the first inserts three lines (second found in place);
+    an empty base with a non-empty current → `undefined` (oldStart 0 anchors both ends); a base without a final LF
+    whose last line the target terminates, current = base → target; base equal to target → current returned as is.
+11. GUARD (properties) — the two properties, run 3 times locally; they pass on step 9's code.
+12. REFACTOR — each function under 20 lines; `DIFF_CONTEXT_LINES` named; no index arithmetic duplicated.
+
+### Gate
+
+`npx vitest run test/unit/domain/diff/apply-hunks.test.ts test/unit/domain/diff/apply-hunks.properties.test.ts test/unit/domain/diff/patch-serializer.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/diff/apply-hunks.ts test/unit/domain/diff/apply-hunks.test.ts test/unit/domain/diff/apply-hunks.properties.test.ts test/unit/domain/diff/arbitraries.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+(no interop file touched, so no git 2.55 PATH and no family).
+
+### Commit
+
+`fix(stash): apply the stashed index's hunks with git's apply matching rules`
+(size delta ~350–600 B gzip). Type `fix(stash)`, not `fix(diff)`: the module exists only for the stash's `--index`
+judge, changes no diff output, and the changelog entry belongs to the stash fix.
+
+## Part 15 — the stashed index is judged per path as `apply --cached` does
+
+### Context
+
+- Requirement R12, ADR-1103, refined by the planning probes (table above; PC-M). Tree-level half of the judge:
+  B→I changes applied onto C, every failing path collected before any write, the result tree = C with the patched
+  entries (git's `index_tree`). Its caller lands in Part 16.
+- Create `src/application/commands/internal/staged-patch.ts` (internal, not barrelled):
+  ```ts
+  export type StagedPatchVerdict =
+    | { readonly kind: 'applies'; readonly tree: ObjectId }
+    | { readonly kind: 'refused'; readonly paths: ReadonlyArray<FilePath> };
+  /** git's `diff-tree --binary B I | apply --cached` onto the current index C, judged before any write. */
+  export const judgeStagedPatch = async (ctx: Context, trees: { readonly bTree: ObjectId; readonly cTree: ObjectId; readonly iTree: ObjectId }): Promise<StagedPatchVerdict>
+  ```
+  - flatten the three trees in parallel with `flattenEscapedTree` (src/application/primitives/flatten-tree.ts:36;
+    escaped keys, `FlatTreeEntry { id, mode }` in src/domain/diff/flat-tree.ts); changed paths = keys of B or I whose
+    entries differ (id or mode), sorted with `comparePaths` on the escaped key (index order).
+  - per path, B/I/C entries → `set(entry)` | `remove` | `fails` (git's check phase; nothing written):
+    | B→I | rule on C | outcome |
+    |---|---|---|
+    | creation (no B) | C holds p | fails (`already exists in index`) |
+    | creation | C lacks p | set I |
+    | deletion (no I) | C lacks p, or another kind (`kindOf`, src/domain/diff/mode-kind.ts:6), or C.id ≠ B.id | fails |
+    | deletion | otherwise (C's mode may differ: delete/mode-differs) | remove |
+    | kind change (`!isSameKind`) | as deletion | set I |
+    | same kind, C lacks p / another kind | — | fails (`does not exist in index` / `wrong type`) |
+    | gitlink, same kind | C.id ≠ B.id | fails; else set I |
+    | B.id = I.id (mode-only change) | — | set `{ id: C.id, mode: I.mode }` (mode-only/content-differs) |
+    | binary (`pairIsBinary(bBytes, iBytes, undefined)`, src/domain/diff/binary-decision.ts:33) | C.id ≠ B.id | fails; else set `{ id: I.id, mode }` |
+    | text | C.id = B.id | set `{ id: I.id, mode }` (the round-trip property: no blob read needed) |
+    | text | otherwise | `applyDiffOnto({ base, target, current })` (Part 14); `undefined` → fails; else set `{ bytes, mode }` |
+    where `mode` = I.mode when B.mode ≠ I.mode, else C.mode (text/mode-differs, binary/mode-differs). Blobs are read with `readBlob`
+    (src/application/primitives/read-blob.ts:7, `.content`), only for the binary and text rows.
+  - write phase, only when no path failed: (1) D/F clash — a set path that has, among the result entries, an
+    ancestor that is a file or entries beneath it fails (`'n/x' appears as both a file and as a directory`;
+    create-df / create-df2), checked only once the check phase passed, as git reaches it only then; (2) patched
+    bytes written with `hashBlob(ctx, bytes, { write: true })` (src/application/primitives/hash-blob.ts:25), so a
+    refused judge writes no object; (3) the result entries via `stage0Entry(path, id, mode)`
+    (src/application/primitives/internal/synthetic-index-entry.ts:25, escaped path in) and
+    `synthesizeTreeFromIndex` (src/application/primitives/synthesize-tree-from-index.ts:260).
+  - refused: the failing escaped paths, already in index order, mapped through `viewOfEscaped`
+    (src/domain/git-index/index-path-key.ts:42).
+  - each rule its own small function; no function over 20 lines; FILE_MODE from src/domain/objects.
+- Create `test/unit/application/commands/internal/staged-patch.test.ts`: memory adapter (`createMemoryContext` +
+  `init`); a local `treeOf(ctx, entries)` helper writing blobs with `hashBlob(ctx, bytes, { write: true })` and the
+  tree with `stage0Entry` + `synthesizeTreeFromIndex`; gitlink entries use `'a'.repeat(40)` ids with
+  `FILE_MODE.GITLINK` (no blob); a `blobAt(ctx, tree, path)` reader through `flattenTree` + `readBlob`.
+
+### TDD steps
+
+One RED per function or row, each run and seen failing before the code that satisfies it.
+
+1. RED — text modify applies at an offset (A.7 offset-mid at tree level): verdict `applies`, `f` in the result
+   tree holds the patched bytes, other C entries kept as they are; and with C's `f` executable the result keeps
+   100755 (text/mode-differs). Fails: the module does not exist.
+2. GREEN — flatten, changed paths, the text rows, write phase steps 2–3.
+3. RED — text refusals, one `it` each: context mismatch (A.7 adjacent at tree level) → `refused ['f']`; C lacks f →
+   `refused ['f']`; C holds f as a symlink → `refused ['f']`. Fail: the C-lacks and other-kind rows throw or apply.
+4. GREEN — the C-lacks / other-kind guard.
+5. RED — creation: C holds `n` → `refused ['n']` (A.7 add-add, add-same); C lacks `n` → applies with I's entry; D/F:
+   I creates `n/x` while C holds file `n` → `refused ['n/x']`, and I creates file `g` while C holds `g/x` →
+   `refused ['g']` (create-df, create-df2). Fail: creation rules absent.
+6. GREEN — creation rows and the clash check.
+7. RED — deletion and kind change: C equal in content with another mode → removed (delete/mode-differs); C content differs →
+   `refused` (delete/content-differs, A.7 delete); f → symlink with C equal → the symlink entry (type/mode-differs); with C content
+   differing → `refused` (type/content-differs). Fail: deletion and kind-change rules absent.
+8. RED — equal-content rules: gitlink same → I's oid, differ → refused; binary with C mode-only different → I's blob
+   with C's mode (binary/mode-differs), binary with C content different → refused (binary/content-differs); mode-only change onto C with
+   other content → C's blob with I's mode (mode-only/content-differs); mode-only onto a symlink C → refused (mode-only/type-differs).
+   Fail: those rules absent.
+9. GREEN — deletion, kind-change, gitlink, binary and mode-only rules.
+10. RED-or-GUARD — two failing paths `b` and `a/x` → `['a/x', 'b']`, and no patched blob of an applying sibling is
+    written when another path fails (`readObject` of its id, computed with `hashBlob` without `write`, rejects with
+    `{ code: 'OBJECT_NOT_FOUND', id }`, asserted through its data). GUARD if steps 2–9 already sort before collecting and write only in the write phase; say which.
+11. REFACTOR — one function per rule; the verdict assembly under 20 lines.
+
+### Gate
+
+`npx vitest run test/unit/application/commands/internal/staged-patch.test.ts test/unit/domain/diff/apply-hunks.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/internal/staged-patch.ts test/unit/application/commands/internal/staged-patch.test.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+
+### Commit
+
+`fix(stash): judge the stashed index per path as git's apply --cached does`
+(size delta ~350–600 B gzip)
+
+## Part 16 — the index side is judged by git's patch rule; the three-way judge goes
+
+### Context
+
+- Requirement R12, ADR-1103 (F14, RC11). Swap judgeIndexSide's internals for Part 15's judge; the five A.7 shapes
+  where git refuses and a three-way merge is clean now refuse in both tools.
+- Edit `src/application/commands/stash.ts`: judgeIndexSide (Part 10) becomes
+  ```ts
+  const verdict = await judgeStagedPatch(ctx, { bTree: app.bTree, cTree, iTree });
+  if (verdict.kind === 'refused') throw stashIndexConflict(verdict.paths);
+  return verdict.tree;
+  ```
+  (import from './internal/staged-patch.js'); conflictedPathsOf, the `MergeConflict` type import and the
+  `mergeTreesToTree` import (51) go; `STASH_LABELS` stays (mergeStash uses it).
+- Edit `src/application/primitives/apply-merge-to-worktree.ts`: delete `MergeTreesResult` and `mergeTreesToTree`
+  (592-632, with the `Stryker disable` at 629) — no caller left, never barrelled (PC-I). synthesiseMergedTree,
+  configuredRenormalize, buildContentMerger, buildBlobUnchanged stay (applyMergeToWorktree uses each; check:dead-code
+  confirms).
+- Edit `test/unit/application/primitives/apply-merge-to-worktree.test.ts`: drop `mergeTreesToTree` from the import
+  (6) and the two describes whose When is 'When mergeTreesToTree runs' (2937-2979); the applyMergeToWorktree
+  renormalize rows beside them keep the merger covered.
+- Edit `test/integration/stash-apply-index-judge-interop.test.ts`: shapes and rows below (refusal asserts as Part 10).
+  | shape | stage (at push) | post (after push) |
+  |---|---|---|
+  | adjacent | `l4`→`L4` staged, `g=g1` | `l6`→`L6` committed (inside the hunk's trailing context) |
+  | same-change | `l2`→`L2` staged, `g=g1` | `L2` and new `h` committed |
+  | non-overlap × `--keep-index` | as non-overlap, pushed `--keep-index` | `l9`→`L9` in the kept `f` (which holds `L2`), committed |
+  | add-same | new `n=N` staged, `g=g1` | `n=N` and new `h` committed |
+  | offset-top | `l2`→`L2` staged, `g=g1` | `x1`, `x2` inserted above `l1`, committed |
+  | create-df (not an A.7 row; the planning probe above) | new `n/x` staged, `g=g1` | file `n` committed |
+
+### TDD steps
+
+One RED per function or row, each run and seen failing before the code that satisfies it.
+
+1. RED (interop) — adjacent × {plain, `-u`} × {`apply --index`, `pop --index`} (4 rows, A.7 adjacent). Fail: tsgit
+   applies (merge clean), pop drops.
+2. RED (interop) — same-change × {plain, `-u`, `--keep-index`} × both commands (6 rows, A.7 same-change). Fail: applies.
+3. RED (interop) — non-overlap × `--keep-index` × both commands (2 rows, A.7 non-overlap × `--keep-index`, git's
+   documented partial-commit flow). Fail: applies.
+4. RED (interop) — add-same × plain × both commands (2 rows, A.7 add-same; git: `n: already exists in index`).
+   Fail: applies (equal adds merge clean).
+5. RED (interop) — offset-top × {plain, `-u`, `--keep-index`} × `apply --index` and × plain × `pop --index` (4 rows,
+   A.7 offset-top). Fail: applies.
+6. RED-or-GUARD (interop) — create-df × plain × both commands (2 rows): git exit 1, `conflicts in index`, paths
+   `['n/x']` read from `unable to add cache entry for n/x`. GUARD if the three-way judge already refuses with
+   `['n/x']`; say which.
+7. GREEN — the swap.
+8. GUARD — Part 10's and Part 11's judge-suite rows and unit rows; the restoreIndex rows at 1090-1180 (the staged
+   type swap `d/x` → `d` reinstates through deletion + creation); stash-apply-type-change-interop.test.ts's
+   `apply --index` / `pop --index` rows (DFa, DFna, FDa, LDa, LFa, FLa: a kind change judged with C = B), all in the
+   apply family.
+9. REFACTOR — delete mergeTreesToTree, MergeTreesResult and their two test describes; conflictedPathsOf gone;
+   check:dead-code green.
+
+### Gate
+
+`PATH="$HOME/.local/git-2.55.0/bin:$PATH" npx vitest run test/unit/application/commands/stash.test.ts test/unit/application/commands/internal/staged-patch.test.ts test/unit/application/primitives/apply-merge-to-worktree.test.ts test/integration/stash-apply-index-judge-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/stash.ts src/application/primitives/apply-merge-to-worktree.ts test/unit/application/primitives/apply-merge-to-worktree.test.ts test/integration/stash-apply-index-judge-interop.test.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+then the apply family.
+
+### Commit
+
+`fix(stash): judge the stashed index by git's patch rule before any write`
+(size delta about −150 to −250 B gzip: mergeTreesToTree and conflictedPathsOf go)
+
 ## Requirement map
 
 | Req | Parts |
@@ -742,11 +1476,14 @@ then the apply family.
 | R8 push `-u` writes the empty-tree U commit | 3 |
 | R9 no pending-operation gate | 8 (after the ADR-1100 pin) |
 | R10 two refusal classes | 7 |
-| R11 SAME rows stay SAME, DIFF rows become SAME | 4 (SAME guards incl. DL/DLa, DFa, FDa, LDa, LF, FL), 6, 7; every part runs the apply family |
+| R11 SAME rows stay SAME, DIFF rows become SAME | 4 (SAME guards incl. DL/DLa, DFa, FDa, LDa, LF, FL), 6, 7; every part runs the apply family; 10, 11, 13 (A.7 / A.8 SAME rows as GUARDs) |
+| R12 `--index` judges the stashed index before any write: STASH_INDEX_CONFLICT, git's patch rule, reset to HEAD on a staged index | 9 (code), 10 (judge order; A.7 H2, delete, add-add, non-overlap, offset-mid, i-is-b, i-is-c, w-is-b, H2 plain), 11 (A.7 staged-non-overlap, staged-other, w-is-b-staged, i-is-b-staged), 14–15 (patch rule), 16 (A.7 adjacent, same-change, non-overlap × `--keep-index`, add-same, offset-top) |
+| R13 push `-u` removes the untracked directories holding no file | 12 (walker report, prune entry), 13 (A.8, every row × `-u` and `-u --keep-index`) |
 
 ## Decision candidates
 
-Choices the design and ADRs do not settle; each part assumes the recommendation.
+Choices the design and ADRs do not settle; each part assumes the recommendation. DC6–DC8 are settled by ADRs
+1103–1105 (DC6 = (a), DC7 = (a), DC8 = (b)); PC-F to PC-M are this revision's planning choices.
 
 | # | Choice | Alternatives | Recommendation | Why |
 |---|---|---|---|---|
@@ -755,3 +1492,10 @@ Choices the design and ADRs do not settle; each part assumes the recommendation.
 | PC-C | `UntrackedNotRestored` barrel export | (a) not barrelled, like WouldOverwriteClasses; (b) re-export from stash.ts and src/application/commands/index.ts | (a) | House precedent for error-data shapes; typedoc renders it from the public result and error types. (b) adds a barrel entry nobody asked for. |
 | PC-D | Home of the new apply unit rows | (a) test/unit/application/commands/stash.test.ts as the design says; (b) a new sibling stash-untracked-restore.test.ts | (a) | Follows the design and keeps the existing it.each it reshapes in place; the file already holds the apply/pop describes the rows extend. |
 | PC-E | Where the pending gate sits between Parts 2 and 8 | (a) after the refresh (Part 2), removed in Part 8; (b) leave it first until Part 8 | (a) | (a) makes A.5 U1 SAME in Part 2 and leaves Part 8 a one-line removal guarded by its pin; (b) keeps U1 red until Part 8. |
+| PC-F | Home of the A.7 interop rows | (a) a new suite test/integration/stash-apply-index-judge-interop.test.ts; (b) test/integration/stash-apply-index-interop.test.ts as the design says | (a) | The existing file seeds `m`, `k`, `d` and asserts three things per row in a plain loop; A.7 needs its own seed (`keep`, ten-line `f`, `g`), a push-then-post row shape and the type-change suite's observation set. One more file in the apply family (19). |
+| PC-G | Where the patch judge reads line bytes | (a) spans from computeHunks, bytes from splitLines of the raw blobs; (b) BodyLine.text re-encoded | (a) | BodyLine.text goes through a non-fatal TextDecoder, so two different invalid-UTF-8 lines compare equal and the postimage loses bytes; git matches bytes. |
+| PC-H | Home of the tree-level judge | (a) src/application/commands/internal/staged-patch.ts; (b) inside stash.ts | (a) | stash.ts is 1250 lines; a separate module keeps Part 15 at 2 files and gives mutation testing a narrow bucket. |
+| PC-I | The three-way index judge after the swap | (a) Part 10 leaves apply-merge-to-worktree.ts alone, Part 16 deletes mergeTreesToTree; (b) Part 10 removes its `Stryker disable` as the design says, Part 16 deletes it | (a) | Its only caller goes in Part 16; editing a function one part before deleting it is waste. |
+| PC-J | Shape of the walker's internal entry point | (a) two plain exported functions over one private generator; (b) the public generator delegating to the internal one with `yield*` | (a) | (b) adds one async hop per yielded entry to `status` and `add`, the hot walk; (a) keeps the public signature (api.json diff-checked in Part 12). |
+| PC-K | git's `--refresh` on Part 11's reset | (a) refresh the reset entries (`refreshedIndex`) when the staged-revert row shows a stale entry; (b) buildIndexFromTree alone, as the design sketch | (a) | git runs `reset --quiet --refresh` and ADR-1104's Context says "stats refreshed"; the row decides with git as the oracle, and the refresh is skipped if it passes without. |
+| PC-M | Deletion, binary and mode rules of the patch judge | (a) git's probed rule: deletion, kind change, binary and gitlink need C's CONTENT equal to B's (C's mode may differ); a mode-only change applies onto any same-kind C; the result keeps C's mode unless B→I changes it; (b) ADR-1103's sentence literally: "a deletion, binary or mode change whose current entry differs from the base refuses" | (a) | ADR-1103 ratifies porting git's `apply --cached` rule (option 1); its one-line summary of these three cases disagrees with git 2.55 (probes mode-only/content-differs, delete/mode-differs, binary/mode-differs, text/mode-differs above: git applies). (b) would be a divergence no ADR explains (ADR-226). Needs the user's word because it rewords a user-ratified ADR's Decision line; Parts 15–16 assume (a). Against (a): none found beyond the ADR wording. |
