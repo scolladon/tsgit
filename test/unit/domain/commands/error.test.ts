@@ -95,6 +95,7 @@ import {
   signingFailed,
   sparsePatternFileTooLarge,
   stashApplyWouldOverwrite,
+  stashIndexConflict,
   stashNotFound,
   stashUntrackedNotRestored,
   tagExists,
@@ -270,6 +271,22 @@ describe('domain commands error — factory data', () => {
           existing: ['u'],
         });
         expect('blockedAt' in result.data).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the stashIndexConflict error helper', () => {
+    describe('When called with two paths', () => {
+      it('Then data carries the code and the paths in the given order', () => {
+        // Arrange
+        const paths = ['a' as FilePath, 'b' as FilePath];
+
+        // Act
+        const sut = stashIndexConflict;
+        const result = sut(paths);
+
+        // Assert
+        expect(result.data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['a', 'b'] });
       });
     });
   });
@@ -2072,6 +2089,10 @@ describe('domain commands error — extractDetail message formatting', () => {
         blockedAt: 'v' as FilePath,
       },
       'STASH_UNTRACKED_NOT_RESTORED: could not restore untracked files from stash',
+    ],
+    [
+      { code: 'STASH_INDEX_CONFLICT', paths: ['f' as FilePath] },
+      'STASH_INDEX_CONFLICT: cannot apply stash: conflicts in index (1 path(s)); try without restoreIndex',
     ],
     [
       { code: 'CONFIG_MISSING_VALUE', key: 'user.name', source: '/repo/.git/config', line: 2 },

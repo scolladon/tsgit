@@ -740,6 +740,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot apply stash: ${data.paths.length} local change(s) would be overwritten`;
     case 'STASH_UNTRACKED_NOT_RESTORED':
       return 'could not restore untracked files from stash';
+    case 'STASH_INDEX_CONFLICT':
+      return `cannot apply stash: conflicts in index (${data.paths.length} path(s)); try without restoreIndex`;
     case 'AMBIGUOUS_OID_PREFIX':
       return `short object id ${data.prefix} is ambiguous (${data.candidates.length} candidates)`;
     case 'INVALID_SEQUENCER_TODO':

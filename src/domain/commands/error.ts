@@ -463,6 +463,11 @@ export type CommandError =
       readonly blockedAt?: FilePath;
     }
   | {
+      readonly code: 'STASH_INDEX_CONFLICT';
+      /** Every staged path that does not apply to the current index, in index order; git prints `error: <path>: patch does not apply` (or `already exists in index`, `does not exist in index`, `wrong type`) for each, then `error: conflicts in index. Try without --index.` */
+      readonly paths: ReadonlyArray<FilePath>;
+    }
+  | {
       readonly code: 'AMBIGUOUS_OID_PREFIX';
       readonly prefix: string;
       /** The objects git's `hint:` lists, in its order: unreadable objects, tags, commits, trees, then blobs, each by id. */
@@ -1413,6 +1418,7 @@ export const rmRecursiveWithoutR = (pattern: string): TsgitError =>
 // git's pre-merge "local changes would be overwritten" abort. `paths` are
 // pathspec-validated index paths, embedded verbatim like `rm`/`mv`.
 // `STASH_UNTRACKED_NOT_RESTORED` reports untracked files a clean apply could not write.
+// `STASH_INDEX_CONFLICT` lists the staged paths an `--index` apply could not reinstate; nothing was written.
 export const noInitialCommit = (): TsgitError => new TsgitError({ code: 'NO_INITIAL_COMMIT' });
 
 export const stashNotFound = (index: number, stackSize: number): TsgitError =>
@@ -1439,6 +1445,9 @@ export const stashUntrackedNotRestored = ({
     existing,
     ...(blockedAt === undefined ? {} : { blockedAt }),
   });
+
+export const stashIndexConflict = (paths: ReadonlyArray<FilePath>): TsgitError =>
+  new TsgitError({ code: 'STASH_INDEX_CONFLICT', paths });
 
 // Abbreviated-oid resolution. `candidates` holds every match git's hint lists,
 // uncapped as git's is; `prefix` is the validated 4–39-hex query, embedded verbatim.
