@@ -20,10 +20,8 @@ interface Fragment {
   readonly matchEnd: boolean;
 }
 
-const spanOf = (all: Lines, start: number, len: number): Lines => {
-  const from = len === 0 ? start : start - 1;
-  return all.slice(from, from + len);
-};
+const spanOf = (all: Lines, start: number, len: number): Lines =>
+  all.slice(start - 1, start - 1 + len);
 
 const trailingContext = (hunk: OutputHunk): number =>
   [...hunk.body].reverse().findIndex((line) => line.kind !== 'context');

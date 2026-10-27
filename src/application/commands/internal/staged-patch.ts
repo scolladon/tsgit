@@ -141,15 +141,13 @@ const hasOccupiedAncestor = (path: FilePath, occupied: ReadonlySet<FilePath>): b
   return false;
 };
 
-const isPlacement = (outcome: Outcome): boolean =>
-  outcome.kind === 'set' || outcome.kind === 'patched';
+const isPlacement = (outcome: Outcome): boolean => outcome.kind === 'set';
 
 /** git refuses a path that is both a file and a directory, but only once the check phase has passed, and at the first one. */
 const firstClash = (c: Flat, outcomes: ReadonlyMap<FilePath, Outcome>): FilePath | undefined => {
   const occupied = new Set(c.keys());
   for (const [path, outcome] of outcomes) {
     if (outcome.kind === 'remove') occupied.delete(path);
-    if (isPlacement(outcome)) occupied.add(path);
   }
   const directories = survivingDirectoriesOf(occupied);
   return [...outcomes]

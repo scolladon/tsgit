@@ -891,7 +891,7 @@ const resetAfterPush = async (
 ): Promise<void> => {
   const { workDir, base, iTree, opts } = inputs;
   const currentIndex = await readIndex(ctx);
-  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
+  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty and, with no untracked files to read (`NO_UNTRACKED`), `emptyDirectories` is empty too, so the `if(true)` variant iterates empty lists (no-op); the `if(false)` variant is killed by the `-u` removal test.
   if (opts.includeUntracked === true)
     await cleanStashedUntracked(ctx, workDir, inputs, currentIndex);
   const target = opts.keepIndex === true ? iTree : base.bTree;
