@@ -139,6 +139,21 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   a moved or edited submodule, staged or not, never counts, and alone it returns
   `no-local-changes`. When other changes are stashed, the gitlink's index id rides
   into the stash trees unchanged and the submodule's own checkout is untouched.
+- **A file or symlink at a gitlink's path is stashed.** Only the submodule
+  checkout's own changes are ignored; a gitlink whose path holds a directory (or
+  whose name holds bytes outside UTF-8) rides on its index id. A regular file or a
+  symlink standing there is recorded in the W tree (blob or symlink) and brought
+  back by `apply`, when the gitlink is newly staged, staged over a different HEAD
+  entry, or lost from the index. When HEAD and the index hold the same gitlink,
+  the occupant is recorded unless that gitlink sorts before every other changed
+  tracked path: then W keeps the gitlink's index id and the reset discards the
+  occupant, as git does on 2.55 and 2.56. Deleted gitlinks, lost gitlinks and
+  untracked files do not count as changed paths for that rule. A gitlink with
+  nothing at its path is dropped from W.
+- **A gitlink path's work-tree state alone is no local change.** With nothing else
+  changed, `push` returns `no-local-changes`, writes no stash and leaves the path
+  untouched, whether a file, a symlink, nothing, or a path beyond a symlinked
+  leading directory stands there.
 - **Beyond a symbolic link.** A tracked path whose leading directory became a
   symbolic link refuses `PATHSPEC_BEYOND_SYMLINK { path }` (git's `'d/f' is beyond
   a symbolic link`), with `includeUntracked` too; nothing is created. The push
@@ -275,5 +290,5 @@ See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list
 - Primitives: [`readObject`](../primitives/read-object.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`merge`](merge.md) · [`reset`](reset.md) · [`checkout`](checkout.md)
 - Recipes: [`../recipes.md`](../recipes.md)
-- ADRs: 210–216, 625, 627–628, 950, 952–954, 956
+- ADRs: 210–216, 625, 627–628, 950, 952–954, 956, 1106
 - Roadmap: Phase 21.3
