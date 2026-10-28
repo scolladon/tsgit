@@ -56,7 +56,7 @@
   {
     "name": "Browser bundle (no-build)",
     "path": "dist/browser/tsgit.js",
-    "limit": "358.6 kB",
+    "limit": "358.8 kB",
     "gzip": true
   },
   {
@@ -374,7 +374,7 @@
   {
     "name": "Full library",
     "path": "dist/esm/**/*.js",
-    "limit": "416.7 kB",
+    "limit": "416.9 kB",
     "gzip": true
   },
   {
@@ -392,7 +392,7 @@
   {
     "name": "Chunks: commands-internal",
     "path": "dist/esm/chunks/commands-internal-*.js",
-    "limit": "91.2 kB",
+    "limit": "91.5 kB",
     "gzip": true
   },
   {
