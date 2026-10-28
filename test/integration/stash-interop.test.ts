@@ -14,7 +14,7 @@
  *   unique:         stash push/apply index+tree state matches canonical git stash
  *   interopSurface: stash
  */
-import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -45,6 +45,7 @@ import {
   buildHistory,
   COMMIT_ENV,
   commitOn,
+  indexIdentity,
   indexState,
   KEEP,
   listing,
@@ -654,7 +655,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Arrange
           for (const dir of [pair.peer, pair.ours]) buildConflictedMergeWithStash(dir);
           repo = await openRepository({ cwd: pair.ours });
-          const inodeOf = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
+          const inodeOf = indexIdentity;
           const peerInode = inodeOf(pair.peer);
           const oursInode = inodeOf(pair.ours);
 
@@ -839,7 +840,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             touchedAt('keep')(dir);
           }
           repo = await openRepository({ cwd: pair.ours });
-          const inodeOf = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
+          const inodeOf = indexIdentity;
           const peerInode = inodeOf(pair.peer);
           const oursInode = inodeOf(pair.ours);
 

@@ -9,7 +9,7 @@
  *   unique:         stash apply and pop leave the work tree, index, refs and state files git leaves across type swaps
  *   interopSurface: stash
  */
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -31,6 +31,7 @@ import {
   fileWith,
   flagListing,
   ignoring,
+  indexIdentity,
   indexState,
   linkAt,
   listing,
@@ -333,7 +334,7 @@ const settle = (dir: string, row: Row): void => {
   touchedAt('keep')(dir);
 };
 
-const indexInode = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
+const indexInode = indexIdentity;
 
 interface Outcome {
   readonly kind: string;
@@ -417,7 +418,7 @@ const reflogLines = (dir: string): number => {
   return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0;
 };
 
-const observed = (dir: string, inodeBefore: number) => ({
+const observed = (dir: string, inodeBefore: string) => ({
   work: listing(dir),
   index: indexState(dir),
   flags: flagListing(dir),

@@ -16,7 +16,6 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
-  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -35,6 +34,7 @@ import {
 import {
   COMMIT_ENV,
   flagListing,
+  indexIdentity,
   indexState,
   listing,
   type Occupant,
@@ -442,14 +442,14 @@ const pushedTrees = (dir: string): string => {
   ].join(' ');
 };
 
-const indexInode = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
+const indexInode = indexIdentity;
 
 const reflogLines = (dir: string): number => {
   const file = path.join(dir, '.git', 'logs', 'refs', 'stash');
   return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0;
 };
 
-const observed = (dir: string, inodeBefore: number) => ({
+const observed = (dir: string, inodeBefore: string) => ({
   work: listing(dir),
   index: indexState(dir),
   flags: flagListing(dir),

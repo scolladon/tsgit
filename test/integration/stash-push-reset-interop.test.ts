@@ -41,6 +41,7 @@ import {
   emptyDirectoryAt,
   fileWith,
   gitlink,
+  indexIdentity,
   indexState,
   KEEP,
   linkAt,
@@ -629,8 +630,8 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
     await pair.dispose();
   });
 
-  const indexInode = (dir: string): number => statSync(path.join(dir, '.git', 'index')).ino;
-  const inodesBefore = new Map<string, number>();
+  const indexInode = indexIdentity;
+  const inodesBefore = new Map<string, string>();
 
   const arrange = async (
     edit: (dir: string) => void,
