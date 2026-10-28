@@ -1153,6 +1153,30 @@ describe('stash push', () => {
     });
   });
 
+  describe('Given a gitlink unmoved from HEAD with a file at its path behind a staged type change that keeps the blob', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'a0', 't', 'add a0');
+        await stageNewGitlink(ctx, 'g');
+        await commit(ctx, { message: 'add gitlink', author });
+        await ctx.fs.rm(`${ctx.layout.workDir}/a0`);
+        await ctx.fs.symlink('t', `${ctx.layout.workDir}/a0`);
+        await add(ctx, ['a0']);
+        await occupy(ctx, 'g', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'g')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
   describe('Given a clean working tree', () => {
     describe('When push runs', () => {
       it('Then it reports no local changes and writes no stash ref', async () => {
