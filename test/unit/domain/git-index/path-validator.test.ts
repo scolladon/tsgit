@@ -437,3 +437,82 @@ describe('posixIndexPathRules', () => {
     });
   });
 });
+
+describe('isAdmissibleTreePath', () => {
+  describe('Given an escaped tree path that names no reserved component', () => {
+    describe('When judged under the posix rules', () => {
+      it('Then it is admissible', () => {
+        // Arrange
+        const sut = posixIndexPathRules;
+
+        // Act
+        const result = sut.isAdmissibleTreePath('dir/\uDCFF.txt' as FilePath, FILE_MODE.REGULAR);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tree path under a .git component', () => {
+    describe('When judged under the posix rules', () => {
+      it('Then it is refused without a throw', () => {
+        // Arrange
+        const sut = posixIndexPathRules;
+
+        // Act
+        const result = sut.isAdmissibleTreePath('.git/x' as FilePath, FILE_MODE.REGULAR);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tree path holding a NUL byte', () => {
+    describe('When judged under the posix rules', () => {
+      it('Then it is refused as the index format would refuse it', () => {
+        // Arrange
+        const sut = posixIndexPathRules;
+
+        // Act
+        const result = sut.isAdmissibleTreePath('a\0b' as FilePath, FILE_MODE.REGULAR);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a .gitmodules path with symlink mode', () => {
+    describe('When judged under the posix rules', () => {
+      it('Then it is refused', () => {
+        // Arrange
+        const sut = posixIndexPathRules;
+
+        // Act
+        const result = sut.isAdmissibleTreePath('.gitmodules' as FilePath, FILE_MODE.SYMLINK);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tree path holding a backslash', () => {
+    describe('When judged under the windows rules', () => {
+      it('Then it is refused where the posix rules admit it', () => {
+        // Arrange
+        const path = 'x\\y' as FilePath;
+
+        // Act
+        const underWindows = windowsIndexPathRules.isAdmissibleTreePath(path, FILE_MODE.REGULAR);
+        const underPosix = posixIndexPathRules.isAdmissibleTreePath(path, FILE_MODE.REGULAR);
+
+        // Assert
+        expect(underWindows).toBe(false);
+        expect(underPosix).toBe(true);
+      });
+    });
+  });
+});

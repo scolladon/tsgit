@@ -95,7 +95,9 @@ import {
   signingFailed,
   sparsePatternFileTooLarge,
   stashApplyWouldOverwrite,
+  stashIndexConflict,
   stashNotFound,
+  stashUntrackedNotRestored,
   tagExists,
   tagNotFound,
   targetDirectoryNotEmpty,
@@ -190,13 +192,101 @@ describe('domain commands error — factory data', () => {
   });
 
   describe('Given the stashApplyWouldOverwrite error helper', () => {
-    describe('When called', () => {
-      it('Then data carries the overwrite-blocked paths', () => {
-        // Arrange + Assert
-        expect(stashApplyWouldOverwrite(['a' as FilePath, 'b' as FilePath]).data).toEqual({
+    describe('When called with both refusal classes', () => {
+      it('Then data carries the classes and their concatenation as paths', () => {
+        // Arrange
+        const sut = stashApplyWouldOverwrite;
+
+        // Act
+        const result = sut({ localChanges: ['a' as FilePath], untracked: ['b' as FilePath] });
+
+        // Assert
+        expect(result.data).toEqual({
           code: 'STASH_APPLY_WOULD_OVERWRITE',
           paths: ['a', 'b'],
+          localChanges: ['a'],
+          untracked: ['b'],
         });
+        expect('untrackedNotRestored' in result.data).toBe(false);
+      });
+    });
+
+    describe('When called with a restore report', () => {
+      it('Then data carries the report', () => {
+        // Arrange
+        const sut = stashApplyWouldOverwrite;
+        const report = { existing: ['u' as FilePath], blockedAt: 'd' as FilePath };
+
+        // Act
+        const result = sut({ localChanges: ['a' as FilePath], untracked: [] }, report);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a'],
+          localChanges: ['a'],
+          untracked: [],
+          untrackedNotRestored: report,
+        });
+      });
+    });
+  });
+
+  describe('Given the stashUntrackedNotRestored error helper', () => {
+    describe('When called with existing paths and a blocking component', () => {
+      it('Then data carries both', () => {
+        // Arrange
+        const report = {
+          existing: ['u' as FilePath, 'v/w' as FilePath],
+          blockedAt: 'v' as FilePath,
+        };
+
+        const sut = stashUntrackedNotRestored;
+
+        // Act
+        const result = sut(report);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'STASH_UNTRACKED_NOT_RESTORED',
+          existing: ['u', 'v/w'],
+          blockedAt: 'v',
+        });
+      });
+    });
+
+    describe('When called with a report without a blocking component', () => {
+      it('Then data carries no blockedAt key', () => {
+        // Arrange
+        const report = { existing: ['u' as FilePath] };
+
+        const sut = stashUntrackedNotRestored;
+
+        // Act
+        const result = sut(report);
+
+        // Assert
+        expect(result.data).toStrictEqual({
+          code: 'STASH_UNTRACKED_NOT_RESTORED',
+          existing: ['u'],
+        });
+        expect('blockedAt' in result.data).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the stashIndexConflict error helper', () => {
+    describe('When called with two paths', () => {
+      it('Then data carries the code and the paths in the given order', () => {
+        // Arrange
+        const paths = ['a' as FilePath, 'b' as FilePath];
+
+        // Act
+        const sut = stashIndexConflict;
+        const result = sut(paths);
+
+        // Assert
+        expect(result.data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['a', 'b'] });
       });
     });
   });
@@ -1980,8 +2070,29 @@ describe('domain commands error — extractDetail message formatting', () => {
       'STASH_NOT_FOUND: stash@{2} is not a valid stash reference (stack size 1)',
     ],
     [
-      { code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['a' as FilePath, 'b' as FilePath] },
+      {
+        code: 'STASH_APPLY_WOULD_OVERWRITE',
+        paths: ['a' as FilePath, 'b' as FilePath],
+        localChanges: ['a' as FilePath],
+        untracked: ['b' as FilePath],
+      },
       'STASH_APPLY_WOULD_OVERWRITE: cannot apply stash: 2 local change(s) would be overwritten',
+    ],
+    [
+      { code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u' as FilePath] },
+      'STASH_UNTRACKED_NOT_RESTORED: could not restore untracked files from stash',
+    ],
+    [
+      {
+        code: 'STASH_UNTRACKED_NOT_RESTORED',
+        existing: ['u' as FilePath],
+        blockedAt: 'v' as FilePath,
+      },
+      'STASH_UNTRACKED_NOT_RESTORED: could not restore untracked files from stash',
+    ],
+    [
+      { code: 'STASH_INDEX_CONFLICT', paths: ['f' as FilePath] },
+      'STASH_INDEX_CONFLICT: cannot apply stash: conflicts in index (1 path(s)); try without restoreIndex',
     ],
     [
       { code: 'CONFIG_MISSING_VALUE', key: 'user.name', source: '/repo/.git/config', line: 2 },

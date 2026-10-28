@@ -25,7 +25,11 @@ interface WalkConfig {
   readonly maxEntries: number;
   readonly ignore: WalkIgnorePredicate | undefined;
   readonly isNestedRepository: WalkNestedRepositoryPredicate | undefined;
+  readonly onEmptyDirectory: EmptyDirectoryReport | undefined;
 }
+
+/** Called with each entered directory whose `readdir` is empty; never with the root, and never counted as an entry. */
+export type EmptyDirectoryReport = (directory: FilePath) => void;
 
 interface Counter {
   value: number;
@@ -176,9 +180,30 @@ function leafStep(
  * config (default 2048, honoured unclamped) — never from `~/.gitconfig` or
  * any other scope, which tsgit does not read for this key.
  */
-export async function* walkWorkingTree(
+export function walkWorkingTree(
   ctx: Context,
   options?: WalkWorkingTreeOptions,
+): AsyncIterable<WalkWorkingTreeEntry> {
+  return walkEntries(ctx, options, undefined);
+}
+
+/**
+ * {@link walkWorkingTree} that also reports every entered directory holding
+ * nothing, which the leaf-only walk cannot surface. A plain wrapper over the
+ * shared generator, so the unreported walk pays no per-entry delegation hop.
+ */
+export function walkWorkingTreeReporting(
+  ctx: Context,
+  options: WalkWorkingTreeOptions | undefined,
+  onEmptyDirectory: EmptyDirectoryReport,
+): AsyncIterable<WalkWorkingTreeEntry> {
+  return walkEntries(ctx, options, onEmptyDirectory);
+}
+
+async function* walkEntries(
+  ctx: Context,
+  options: WalkWorkingTreeOptions | undefined,
+  onEmptyDirectory: EmptyDirectoryReport | undefined,
 ): AsyncIterable<WalkWorkingTreeEntry> {
   const config: WalkConfig = {
     ctx,
@@ -187,6 +212,7 @@ export async function* walkWorkingTree(
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     ignore: options?.ignore,
     isNestedRepository: options?.isNestedRepository,
+    onEmptyDirectory,
   };
   const counter: Counter = { value: 0 };
   const stack: WalkFrame[] = [await readDirectoryFrame(config, '', 0)];
@@ -203,10 +229,15 @@ export async function* walkWorkingTree(
     if (isDotGitWalkEntry(entry.name)) continue;
 
     const step = await stepEntry(config, counter, frame, entry);
-    if (step.kind === 'push') stack.push(step.frame);
+    if (step.kind === 'push') descend(config, stack, step.frame);
     if (step.kind === 'yield') yield step.entry;
   }
 }
+
+const descend = (config: WalkConfig, stack: WalkFrame[], frame: WalkFrame): void => {
+  if (frame.entries.length === 0) config.onEmptyDirectory?.(frame.prefix as FilePath);
+  stack.push(frame);
+};
 
 /**
  * Builds a memoised stat accessor for one leaf entry. `lstat` is deferred

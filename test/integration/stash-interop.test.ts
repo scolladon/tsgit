@@ -14,6 +14,7 @@
  *   unique:         stash push/apply index+tree state matches canonical git stash
  *   interopSurface: stash
  */
+import { existsSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -42,14 +43,19 @@ import {
 } from './interop-helpers.js';
 import {
   buildHistory,
+  COMMIT_ENV,
   commitOn,
+  indexIdentity,
   indexState,
   KEEP,
   listing,
   MERGE_FAMILY_ROWS,
   OK,
   type Outcome,
+  regular,
   runGitOutcome,
+  staleEntries,
+  touchedAt,
 } from './occupant-displacement-fixtures.js';
 import { type AbortRow, STASH_PUSH_ROWS, type Variant } from './stopped-state-fixtures.js';
 import { STASH_PUSH_PINS } from './stopped-state-pins.js';
@@ -202,7 +208,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
 
   describe('Given an untracked DANGLING symlink squats a stashed untracked path', () => {
     describe('When stash pop runs in each', () => {
-      it('Then both refuse to overwrite it, and the stash is kept — matching git exactly', async () => {
+      it('Then both leave it, report the path as not restored and keep the stash — matching git exactly', async () => {
         // Arrange
         await seed();
         await writeFile(path.join(pair.peer, 'u.txt'), 'untracked\n');
@@ -217,12 +223,16 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
 
         // Assert
         expect(peerResult.ok).toBe(false);
-        expect(peerResult.stderr).toContain('already exists');
-        let oursCode: string | undefined;
+        let oursData: TsgitError['data'] | undefined;
         await repo.stash.pop().catch((err: TsgitError) => {
-          oursCode = err.data.code;
+          oursData = err.data;
         });
-        expect(oursCode).toBe('STASH_APPLY_WOULD_OVERWRITE');
+        expect(oursData).toEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u.txt'] });
+        expect(
+          peerResult.stderr.endsWith(
+            'u.txt already exists, no checkout\nerror: could not restore untracked files from stash\n',
+          ),
+        ).toBe(true);
         // The stash is kept on both — a failed pop never drops its entry.
         expect(tryRunGit(['-C', pair.peer, 'stash', 'list']).stdout).not.toBe('');
         expect((await repo.stash.list()).entries).toHaveLength(1);
@@ -626,6 +636,50 @@ describe.skipIf(!GIT_AVAILABLE)(
       }
     };
 
+    const buildConflictedMergeWithStash = (dir: string): void => {
+      const base = commitOn(dir, [KEEP, regular('f', 'base\n'), regular('s', 's\n')]);
+      const side = commitOn(dir, [KEEP, regular('f', 'side\n'), regular('s', 's\n')], base);
+      const main = commitOn(dir, [KEEP, regular('f', 'main\n'), regular('s', 's\n')], base);
+      runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
+      runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+      runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+      writeFileSync(path.join(dir, 's'), 'stashed\n');
+      runGit(['-C', dir, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+      tryRunGitWithExit(['-C', dir, 'merge', '-q', 'side'], { env: COMMIT_ENV });
+      touchedAt('keep')(dir);
+    };
+
+    describe('Given a merge left conflicted on f, a stash and a stat-drifted clean entry', () => {
+      describe('When git and tsgit stash apply', () => {
+        it('Then both refresh the clean entry, rewrite the index and refuse on the unmerged path', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) buildConflictedMergeWithStash(dir);
+          repo = await openRepository({ cwd: pair.ours });
+          const inodeOf = indexIdentity;
+          const peerInode = inodeOf(pair.peer);
+          const oursInode = inodeOf(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'stash', 'apply'], {
+            env: COMMIT_ENV,
+          });
+          const refusal = await repo.stash.apply().catch((err: unknown) => err);
+
+          // Assert
+          const paths = (refusal as TsgitError).data as { code: string; paths: string[] };
+          expect(paths).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['f'] });
+          expect(gitRun.exitCode).toBe(1);
+          expect(gitRun.stdout).toBe(paths.paths.map((p) => `${p}: needs merge\n`).join(''));
+          expect(gitRun.stderr).toBe('error: could not write index\n');
+          expect(staleEntries(pair.ours)).toEqual(staleEntries(pair.peer));
+          expect(staleEntries(pair.ours)).not.toContain('keep');
+          expect(inodeOf(pair.peer)).not.toBe(peerInode);
+          expect(inodeOf(pair.ours)).not.toBe(oursInode);
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
+
     describe.each(
       STASH_PUSH_ROWS.flatMap((row) => row.variants.map((variant) => ({ row, variant }))),
     )('Given $row.shape/$variant', ({ row, variant }) => {
@@ -648,6 +702,183 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(listing(pair.ours)).toEqual(listing(pair.peer));
           expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
           expect(snapshotTrees(pair.ours)).toEqual(snapshotTrees(pair.peer));
+        });
+      });
+    });
+  },
+);
+
+const PLANTED_MARKERS = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD'] as const;
+const MERGE_STATE_FILES = ['MERGE_HEAD', 'MERGE_MODE', 'MERGE_MSG'] as const;
+const OPERATION_STATE_FILES = [
+  ...PLANTED_MARKERS,
+  'MERGE_MODE',
+  'MERGE_MSG',
+  'rebase-merge',
+] as const;
+
+interface PendingRow {
+  readonly title: string;
+  readonly build: (dir: string) => void;
+  readonly kept: ReadonlyArray<(typeof OPERATION_STATE_FILES)[number]>;
+}
+
+const seedStashOfS = (dir: string): void => {
+  const base = commitOn(dir, [KEEP, regular('f', 'base\n'), regular('s', 's\n')]);
+  const side = commitOn(dir, [KEEP, regular('f', 'side\n'), regular('s', 's\n')], base);
+  const main = commitOn(dir, [KEEP, regular('f', 'main\n'), regular('s', 's\n')], base);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', main]);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+  runGit([
+    '-C',
+    dir,
+    'update-ref',
+    'refs/heads/topic',
+    commitOn(dir, [KEEP, regular('f', 'topic\n'), regular('s', 's\n')], base),
+  ]);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+  writeFileSync(path.join(dir, 's'), 'stashed\n');
+  runGit(['-C', dir, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+};
+
+const resolveF = (dir: string): void => {
+  writeFileSync(path.join(dir, 'f'), 'resolved\n');
+  runGit(['-C', dir, 'add', 'f']);
+};
+
+const plantMarker =
+  (marker: (typeof PLANTED_MARKERS)[number]) =>
+  (dir: string): void => {
+    seedStashOfS(dir);
+    const head = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+    writeFileSync(path.join(dir, '.git', marker), `${head}\n`);
+  };
+
+const resolvedCherryPick = (dir: string): void => {
+  seedStashOfS(dir);
+  tryRunGitWithExit(['-C', dir, 'cherry-pick', 'side'], { env: COMMIT_ENV });
+  resolveF(dir);
+};
+
+const stoppedRebase = (dir: string): void => {
+  seedStashOfS(dir);
+  runGit(['-C', dir, 'checkout', '-q', 'topic']);
+  tryRunGitWithExit(['-C', dir, 'rebase', 'side'], { env: COMMIT_ENV });
+  resolveF(dir);
+};
+
+const mergeNoCommit = (dir: string): void => {
+  const base = commitOn(dir, [KEEP, regular('s', 's\n')]);
+  const side = commitOn(dir, [KEEP, regular('f', 'side\n'), regular('s', 's\n')], base);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', base]);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+  writeFileSync(path.join(dir, 'keep'), 'stashed\n');
+  runGit(['-C', dir, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+  runGit(['-C', dir, 'merge', '-q', '--no-commit', '--no-ff', 'side'], { env: COMMIT_ENV });
+};
+
+const PENDING_ROWS: ReadonlyArray<PendingRow> = [
+  ...PLANTED_MARKERS.map((marker) => ({
+    title: `planted ${marker}`,
+    build: plantMarker(marker),
+    kept: [marker],
+  })),
+  {
+    title: 'a resolved cherry-pick',
+    build: resolvedCherryPick,
+    kept: ['CHERRY_PICK_HEAD', 'MERGE_MSG'],
+  },
+  {
+    title: 'a stopped rebase',
+    build: stoppedRebase,
+    kept: ['REBASE_HEAD', 'MERGE_MSG', 'rebase-merge'],
+  },
+  {
+    title: 'a merge --no-commit',
+    build: mergeNoCommit,
+    kept: ['MERGE_HEAD', 'MERGE_MODE', 'MERGE_MSG'],
+  },
+];
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'stash apply interop — a pending operation stands',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository | undefined;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('stash-pending-operation');
+      initBothRepos(pair.peer, pair.ours);
+      repo = undefined;
+    });
+
+    afterEach(async () => {
+      await repo?.dispose();
+      await pair.dispose();
+    });
+
+    const keptStateFiles = (dir: string): string[] =>
+      OPERATION_STATE_FILES.filter((name) => existsSync(path.join(dir, '.git', name)));
+
+    const tsgitVerdict = async (target: Repository): Promise<string> => {
+      try {
+        return (await target.stash.apply()).kind;
+      } catch (err) {
+        if (!(err instanceof TsgitError)) throw err;
+        return err.data.code;
+      }
+    };
+
+    describe.each(PENDING_ROWS)('Given $title and a stashed edit', ({ build, kept }) => {
+      describe('When git and tsgit stash apply', () => {
+        it('Then both apply, keep every marker and leave the same work tree and index', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            build(dir);
+            touchedAt('keep')(dir);
+          }
+          repo = await openRepository({ cwd: pair.ours });
+          const inodeOf = indexIdentity;
+          const peerInode = inodeOf(pair.peer);
+          const oursInode = inodeOf(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'stash', 'apply'], {
+            env: COMMIT_ENV,
+          });
+          const verdict = await tsgitVerdict(repo);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(keptStateFiles(pair.peer)).toEqual(kept);
+          expect(verdict).toBe('applied');
+          expect(keptStateFiles(pair.ours)).toEqual(keptStateFiles(pair.peer));
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+          expect(staleEntries(pair.ours)).toEqual(staleEntries(pair.peer));
+          expect(inodeOf(pair.ours) !== oursInode).toBe(inodeOf(pair.peer) !== peerInode);
+        });
+      });
+    });
+
+    describe('Given a merge --no-commit and a stashed edit', () => {
+      describe('When tsgit stash apply runs', () => {
+        it('Then MERGE_HEAD, MERGE_MODE and MERGE_MSG stay', async () => {
+          // Arrange
+          mergeNoCommit(pair.ours);
+          repo = await openRepository({ cwd: pair.ours });
+          const sut = repo.stash.apply.bind(repo.stash);
+
+          // Act
+          await sut();
+
+          // Assert
+          const kept = MERGE_STATE_FILES.filter((name) =>
+            existsSync(path.join(pair.ours, '.git', name)),
+          );
+          expect(kept).toEqual([...MERGE_STATE_FILES]);
         });
       });
     });

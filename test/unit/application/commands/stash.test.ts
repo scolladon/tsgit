@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { hardResetWorktreeToCommit } from '../../../../src/application/commands/internal/reset-worktree.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import {
   applyAutostash,
   createAutostash,
@@ -131,6 +132,28 @@ const pushHostileUntrackedStash = async (ctx: Context, untrackedTree: ObjectId):
   await pushStashRef(ctx, w, 'WIP on main');
 };
 
+const refusalDataOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+  } catch (err) {
+    return (err as TsgitError).data;
+  }
+  return undefined;
+};
+
+const lstatOrUndefined = async (ctx: Context, path: string) =>
+  ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
+
+/** Pushes untracked `a`, `m/z`, `u`, `z` with `-u`, leaving a clean tree. */
+const stashFourUntracked = async (): Promise<Context> => {
+  const ctx = await setupRepo();
+  for (const name of ['a', 'm/z', 'u', 'z']) await write(ctx, name, `${name}\n`);
+  await stashPush(ctx, { includeUntracked: true });
+  return ctx;
+};
+
+const NOT_WRITTEN = ['m/z', 'u', 'z'];
+
 const GITLINK_A = 'a'.repeat(40) as ObjectId;
 const GITLINK_C = 'c'.repeat(40) as ObjectId;
 
@@ -187,6 +210,89 @@ const setupRepoWithSubmodule = async (checkedOut: ObjectId): Promise<Context> =>
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/modules/sub/refs/heads/main`, `${checkedOut}\n`);
   return ctx;
 };
+
+/** `f` is committed as a file, then staged as a gitlink while whatever `standIn` writes stands on disk. */
+const setupGitlinkStagedOverFile = async (
+  standIn: (ctx: Context) => Promise<void>,
+): Promise<Context> => {
+  const ctx = await setupRepo();
+  await commitFile(ctx, 'f', 'f\n', 'add f');
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f`);
+  const tracked = await readIndex(ctx);
+  await replaceIndexEntries(ctx, [
+    ...tracked.entries.filter((entry) => entry.path !== 'f'),
+    indexEntryFromStat(stat, FILE_MODE.GITLINK as IndexEntry['mode'], GITLINK_A, 'f' as FilePath),
+  ]);
+  await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+  await standIn(ctx);
+  return ctx;
+};
+
+/** HEAD commits the gitlink `sub`, the index lost it, `standIn` fills its path; `a.txt` is edited when `dirty`. */
+const setupLostGitlink = async (
+  standIn: (ctx: Context) => Promise<void>,
+  dirty = true,
+): Promise<Context> => {
+  const ctx = await setupRepoWithSubmodule(GITLINK_A);
+  await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+  await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+  await unstagePath(ctx, 'sub');
+  await standIn(ctx);
+  if (dirty) await write(ctx, 'a.txt', 'edited\n');
+  return ctx;
+};
+
+/** HEAD commits the gitlink `sub` at A; the index holds it at `indexed`; `standIn` fills its path. */
+const setupGitlinkWithStandIn = async (
+  indexed: ObjectId,
+  standIn: (ctx: Context) => Promise<void>,
+  edited = true,
+): Promise<Context> => {
+  const ctx = await setupRepoWithSubmodule(indexed);
+  await stageGitlink(ctx, FILE_MODE.GITLINK, indexed);
+  await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+  await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+  await standIn(ctx);
+  if (edited) await write(ctx, 'a.txt', 'edited\n');
+  return ctx;
+};
+
+/** The index gains the gitlink `new` at A over a HEAD that has no such path. */
+const stageNewGitlink = async (ctx: Context, name = 'new'): Promise<void> => {
+  await write(ctx, name, 'x\n');
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${name}`);
+  const tracked = await readIndex(ctx);
+  await replaceIndexEntries(ctx, [
+    ...tracked.entries,
+    indexEntryFromStat(stat, FILE_MODE.GITLINK as IndexEntry['mode'], GITLINK_A, name as FilePath),
+  ]);
+  await ctx.fs.rm(`${ctx.layout.workDir}/${name}`);
+};
+
+const workTreeEntryOf = async (ctx: Context, stash: ObjectId, path: string) => {
+  const flat = await flattenTree(ctx, (await commitOf(ctx, stash)).tree);
+  return flat.entries.get(path as FilePath);
+};
+
+/** HEAD and the index hold the gitlinks `names` alike; `files` are committed beside them. */
+const setupSameGitlinks = async (
+  names: ReadonlyArray<string>,
+  files: ReadonlyArray<string> = [],
+): Promise<Context> => {
+  const ctx = await setupRepo();
+  for (const file of files) await commitFile(ctx, file, `${file}\n`, `add ${file}`);
+  for (const name of names) await stageNewGitlink(ctx, name);
+  await commit(ctx, { message: 'add gitlinks', author });
+  return ctx;
+};
+
+const occupy = async (ctx: Context, name: string, kind: 'file' | 'symlink'): Promise<void> => {
+  if (kind === 'file') await write(ctx, name, 'precious\n');
+  else await ctx.fs.symlink('target', `${ctx.layout.workDir}/${name}`);
+};
+
+const modeAt = async (ctx: Context, stash: ObjectId, path: string) =>
+  (await workTreeEntryOf(ctx, stash, path))?.mode;
 
 describe('stash push', () => {
   describe('Given three committed files sharing a directory', () => {
@@ -379,6 +485,694 @@ describe('stash push', () => {
           id: GITLINK_A,
           mode: FILE_MODE.GITLINK,
         });
+      });
+    });
+  });
+
+  describe('Given a gitlink staged over a path where a regular file stands', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file as a blob and the work tree is reset to HEAD', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile((c) => write(c, 'f', 'precious\n'));
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const entry = await workTreeEntryOf(ctx, result.stash, 'f');
+        expect(entry?.mode).toBe(FILE_MODE.REGULAR);
+        expect(await treeContent(ctx, (await commitOf(ctx, result.stash)).tree, 'f')).toBe(
+          'precious\n',
+        );
+        expect(await read(ctx, 'f')).toBe('f\n');
+      });
+    });
+
+    describe('When push then apply run', () => {
+      it('Then the file comes back with its bytes', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile((c) => write(c, 'f', 'precious\n'));
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+        await stashApply(ctx, {});
+
+        // Assert
+        expect(await read(ctx, 'f')).toBe('precious\n');
+      });
+    });
+  });
+
+  describe('Given a gitlink staged over a path where a symlink stands', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the symlink target', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile((c) =>
+          c.fs.symlink('target', `${c.layout.workDir}/f`),
+        );
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const entry = await workTreeEntryOf(ctx, result.stash, 'f');
+        expect(entry?.mode).toBe(FILE_MODE.SYMLINK);
+        expect(await treeContent(ctx, (await commitOf(ctx, result.stash)).tree, 'f')).toBe(
+          'target',
+        );
+      });
+    });
+
+    describe('When push then apply run', () => {
+      it('Then the symlink comes back with its target', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile((c) =>
+          c.fs.symlink('target', `${c.layout.workDir}/f`),
+        );
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+        await stashApply(ctx, {});
+
+        // Assert
+        expect(await ctx.fs.readlink(`${ctx.layout.workDir}/f`)).toBe('target');
+      });
+    });
+  });
+
+  describe('Given a gitlink staged over a path where nothing stands', () => {
+    describe('When push runs', () => {
+      it('Then the W tree does not hold the path', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile(async () => undefined);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'f')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a gitlink staged over a path where a directory holding an untracked file stands', () => {
+    describe('When push runs', () => {
+      it('Then the W tree keeps the gitlink at its index id', async () => {
+        // Arrange
+        const ctx = await setupGitlinkStagedOverFile(async (c) => {
+          await c.fs.mkdir(`${c.layout.workDir}/f`);
+          await write(c, 'f/u', 'u\n');
+          await write(c, 'a.txt', 'edited\n');
+        });
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'f')).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+      });
+    });
+  });
+
+  describe('Given a committed gitlink the index lost and a regular file standing at its path', () => {
+    describe('When push runs beside another edited file', () => {
+      it('Then the W tree records the file as a blob', async () => {
+        // Arrange
+        const ctx = await setupLostGitlink((c) => write(c, 'sub', 'precious\n'));
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const entry = await workTreeEntryOf(ctx, result.stash, 'sub');
+        expect(entry?.mode).toBe(FILE_MODE.REGULAR);
+        expect(await treeContent(ctx, (await commitOf(ctx, result.stash)).tree, 'sub')).toBe(
+          'precious\n',
+        );
+      });
+    });
+
+    describe('When push runs and nothing else changed', () => {
+      it('Then it reports no local changes and writes no stash ref', async () => {
+        // Arrange
+        const ctx = await setupLostGitlink((c) => write(c, 'sub', 'precious\n'), false);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'no-local-changes' });
+        expect(await readStashStack(ctx)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a committed gitlink the index lost and a symlink standing at its path', () => {
+    describe('When push runs beside another edited file', () => {
+      it('Then the W tree records the symlink', async () => {
+        // Arrange
+        const ctx = await setupLostGitlink((c) =>
+          c.fs.symlink('target', `${c.layout.workDir}/sub`),
+        );
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect((await workTreeEntryOf(ctx, result.stash, 'sub'))?.mode).toBe(FILE_MODE.SYMLINK);
+      });
+    });
+  });
+
+  describe('Given a committed gitlink the index lost and nothing standing at its path', () => {
+    describe('When push runs beside another edited file', () => {
+      it('Then the W tree does not hold the path', async () => {
+        // Arrange
+        const ctx = await setupLostGitlink(async () => undefined);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a committed gitlink the index lost and an empty directory standing at its path', () => {
+    describe('When push runs beside another edited file', () => {
+      it('Then the W tree does not hold the path', async () => {
+        // Arrange
+        const ctx = await setupLostGitlink((c) => c.fs.mkdir(`${c.layout.workDir}/sub`));
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'sub')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a gitlink in HEAD and the index with a regular file at its path and nothing else changed', () => {
+    describe('When push runs', () => {
+      it('Then it reports no local changes', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/sub`);
+        await write(ctx, 'sub', 'precious\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'no-local-changes' });
+        expect(await read(ctx, 'sub')).toBe('precious\n');
+      });
+    });
+  });
+
+  describe('Given a gitlink with a lossy name in HEAD and the index and another file edited', () => {
+    describe('When push runs', () => {
+      it('Then the W tree keeps the gitlink', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const view = '\uFFFDsub';
+        const pathBytes = Uint8Array.of(0xff, 0x73, 0x75, 0x62);
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/a.txt`);
+        const tracked = await readIndex(ctx);
+        const lossy: IndexEntry = {
+          ...indexEntryFromStat(
+            stat,
+            FILE_MODE.GITLINK as IndexEntry['mode'],
+            GITLINK_A,
+            view as FilePath,
+          ),
+          pathBytes,
+        };
+        await replaceIndexEntries(ctx, [...tracked.entries, lossy]);
+        await commit(ctx, { message: 'add lossy gitlink', author });
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const flat = await flattenTree(ctx, (await commitOf(ctx, result.stash)).tree);
+        expect([...flat.entries.values()].map(({ mode }) => mode)).toContain(FILE_MODE.GITLINK);
+      });
+    });
+  });
+
+  describe.each([
+    ['a regular file', (c: Context) => write(c, 'sub', 'precious\n'), FILE_MODE.REGULAR],
+    [
+      'a symlink',
+      (c: Context) => c.fs.symlink('target', `${c.layout.workDir}/sub`),
+      FILE_MODE.SYMLINK,
+    ],
+  ] as const)('Given a gitlink unmoved from HEAD with %s at its path', (_name, standIn, mode) => {
+    describe('When push runs beside another edited file', () => {
+      it('Then the W tree records what stands there', async () => {
+        // Arrange
+        const ctx = await setupGitlinkWithStandIn(GITLINK_A, standIn);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect((await workTreeEntryOf(ctx, result.stash, 'sub'))?.mode).toBe(mode);
+      });
+    });
+
+    describe('When push runs and nothing else changed', () => {
+      it('Then it reports no local changes and leaves the path as it is', async () => {
+        // Arrange
+        const ctx = await setupGitlinkWithStandIn(GITLINK_A, standIn, false);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'no-local-changes' });
+        expect((await lstatOrUndefined(ctx, 'sub'))?.isDirectory).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a gitlink moved from HEAD with a regular file at its path', () => {
+    describe('When push runs beside another edited file', () => {
+      it('Then the W tree records the file as a blob', async () => {
+        // Arrange
+        const ctx = await setupGitlinkWithStandIn(GITLINK_C, (c) => write(c, 'sub', 'precious\n'));
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect((await workTreeEntryOf(ctx, result.stash, 'sub'))?.mode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+
+    describe('When push runs and nothing else changed', () => {
+      it('Then it reports no local changes', async () => {
+        // Arrange
+        const ctx = await setupGitlinkWithStandIn(
+          GITLINK_C,
+          (c) => write(c, 'sub', 'precious\n'),
+          false,
+        );
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toStrictEqual({ kind: 'no-local-changes' });
+      });
+    });
+  });
+
+  describe('Given a gitlink newly staged', () => {
+    describe('When push runs beside another edited file with nothing at its path', () => {
+      it('Then the W tree keeps the gitlink at its index id', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await stageNewGitlink(ctx);
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'new')).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+      });
+    });
+
+    describe('When push runs beside another edited file with a regular file at its path', () => {
+      it('Then the W tree records the file as a blob', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await stageNewGitlink(ctx);
+        await write(ctx, 'new', 'precious\n');
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect((await workTreeEntryOf(ctx, result.stash, 'new'))?.mode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe.each([
+    ['a regular file', 'file', FILE_MODE.REGULAR],
+    ['a symlink', 'symlink', FILE_MODE.SYMLINK],
+  ] as const)('Given a gitlink unmoved from HEAD with %s at its path', (_name, kind, mode) => {
+    describe('When push runs and the gitlink leads the changed paths', () => {
+      it('Then the W tree keeps the gitlink at its index id', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a']);
+        await occupy(ctx, 'a', kind);
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'a')).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+        expect((await lstatOrUndefined(ctx, 'a'))?.isDirectory).toBe(true);
+      });
+    });
+
+    describe('When push runs and an edited path sorts before the gitlink', () => {
+      it('Then the W tree records what stands there', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['b'], ['a1']);
+        await occupy(ctx, 'b', kind);
+        await write(ctx, 'a1', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'b')).toBe(mode);
+      });
+    });
+  });
+
+  describe('Given two gitlinks unmoved from HEAD with files at their paths', () => {
+    describe('When push runs and both lead the changed paths', () => {
+      it('Then the W tree keeps both at their index ids', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
+        await occupy(ctx, 'a', 'file');
+        await occupy(ctx, 'b', 'file');
+        await write(ctx, 'z', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const kept = { id: GITLINK_A, mode: FILE_MODE.GITLINK };
+        expect(await workTreeEntryOf(ctx, result.stash, 'a')).toEqual(kept);
+        expect(await workTreeEntryOf(ctx, result.stash, 'b')).toEqual(kept);
+        expect((await lstatOrUndefined(ctx, 'b'))?.isDirectory).toBe(true);
+      });
+    });
+
+    describe('When push runs and an edited path sorts between them', () => {
+      it('Then the first keeps its index id and the second records the file', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'c'], ['b']);
+        await occupy(ctx, 'a', 'file');
+        await occupy(ctx, 'c', 'file');
+        await write(ctx, 'b', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
+        expect(await modeAt(ctx, result.stash, 'c')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and an untracked file sorting before it', () => {
+    describe('When push runs with includeUntracked beside an edited tracked file', () => {
+      it('Then the W tree keeps the gitlink at its index id', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a']);
+        await occupy(ctx, 'a', 'file');
+        await write(ctx, '0-untracked', 'u\n');
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+
+  describe('Given a deleted gitlink beside a gitlink unmoved from HEAD with a file at its path', () => {
+    describe('When push runs beside an edited file', () => {
+      it('Then the deleted gitlink does not end the lead and the other keeps its index id', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
+        await occupy(ctx, 'b', 'file');
+        await write(ctx, 'z', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'b')).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+      });
+    });
+  });
+
+  describe('Given a gitlink the index lost beside a gitlink unmoved from HEAD with a file at its path', () => {
+    describe('When push runs beside an edited file', () => {
+      it('Then the lost gitlink does not end the lead and the other keeps its index id', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
+        await unstagePath(ctx, 'a');
+        await occupy(ctx, 'a', 'file');
+        await occupy(ctx, 'b', 'file');
+        await write(ctx, 'z', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.REGULAR);
+        expect(await workTreeEntryOf(ctx, result.stash, 'b')).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and a file the index lost sorting before it', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['b'], ['a0']);
+        await unstagePath(ctx, 'a0');
+        await occupy(ctx, 'b', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'b')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and a staged-only change sorting before it', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['b'], ['a0']);
+        await write(ctx, 'a0', 'staged\n');
+        await add(ctx, ['a0']);
+        await occupy(ctx, 'b', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'b')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given two gitlinks unmoved from HEAD with nothing at their paths', () => {
+    describe('When push runs beside an edited file', () => {
+      it('Then the W tree holds neither', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
+        await write(ctx, 'z', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'a')).toBeUndefined();
+        expect(await workTreeEntryOf(ctx, result.stash, 'b')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and a lossy-named file edited', () => {
+    describe('When push runs', () => {
+      it('Then the lossy file leads in byte order and the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['\u00E9']);
+        const view = '\uFFFD';
+        await write(ctx, view, 'lossy\n');
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${view}`);
+        const tracked = await readIndex(ctx);
+        await replaceIndexEntries(ctx, [
+          ...tracked.entries,
+          {
+            ...indexEntryFromStat(
+              stat,
+              FILE_MODE.REGULAR,
+              await writeObject(ctx, {
+                type: 'blob',
+                id: '' as ObjectId,
+                content: new TextEncoder().encode('lossy\n'),
+              }),
+              view as FilePath,
+            ),
+            pathBytes: Uint8Array.of(0x80),
+          },
+        ]);
+        await commit(ctx, { message: 'add lossy', author });
+        await write(ctx, view, 'edited\n');
+        await occupy(ctx, '\u00E9', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, '\u00E9')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and a file the index lost and the disk lost', () => {
+    describe('When push runs', () => {
+      it('Then the lost file still leads and the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['g'], ['a0']);
+        await unstagePath(ctx, 'a0');
+        await ctx.fs.rm(`${ctx.layout.workDir}/a0`);
+        await occupy(ctx, 'g', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'g')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+
+    describe('When push runs beside an edited file sorting after the gitlink', () => {
+      it('Then the smallest listed path decides, not the first one found', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['g'], ['a0', 'm']);
+        await unstagePath(ctx, 'a0');
+        await ctx.fs.rm(`${ctx.layout.workDir}/a0`);
+        await write(ctx, 'm', 'edited\n');
+        await occupy(ctx, 'g', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'g')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path behind a staged type change that keeps the blob', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'a0', 't', 'add a0');
+        await stageNewGitlink(ctx, 'g');
+        await commit(ctx, { message: 'add gitlink', author });
+        await ctx.fs.rm(`${ctx.layout.workDir}/a0`);
+        await ctx.fs.symlink('t', `${ctx.layout.workDir}/a0`);
+        await add(ctx, ['a0']);
+        await occupy(ctx, 'g', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'g')).toBe(FILE_MODE.REGULAR);
       });
     });
   });
@@ -682,6 +1476,325 @@ describe('stash push', () => {
     });
   });
 
+  describe('Given untracked m/z and deep/er/w with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the emptied directories m, deep/er and deep are gone from the work tree', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'm/z', 'z\n');
+        await write(ctx, 'deep/er/w', 'w\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'm')).toBeUndefined();
+        expect(await lstatOrUndefined(ctx, 'deep/er')).toBeUndefined();
+        expect(await lstatOrUndefined(ctx, 'deep')).toBeUndefined();
+        expect(await read(ctx, 'a.txt')).toBe('committed\n');
+      });
+    });
+  });
+
+  describe('Given untracked m/z beside tracked m/t with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then m and m/t remain', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'm/t', 't\n', 'track m/t');
+        await write(ctx, 'm/z', 'z\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'm')).toBeDefined();
+        expect(await read(ctx, 'm/t')).toBe('t\n');
+        expect(await lstatOrUndefined(ctx, 'm/z')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given untracked m/z beside an ignored m/.cache with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then m and m/.cache remain', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, '.gitignore', 'm/.cache\n', 'ignore cache');
+        await write(ctx, 'm/z', 'z\n');
+        await write(ctx, 'm/.cache', 'cache\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'm')).toBeDefined();
+        expect(await read(ctx, 'm/.cache')).toBe('cache\n');
+        expect(await lstatOrUndefined(ctx, 'm/z')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an edited tracked file, an untracked file and an empty directory with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the empty directory is gone from the work tree', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        await write(ctx, 'top', 'top\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/emptydir`);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(await lstatOrUndefined(ctx, 'emptydir')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an edited tracked file and a nested empty chain nest/inner with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then nest and nest/inner are both gone', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/nest/inner`);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'nest/inner')).toBeUndefined();
+        expect(await lstatOrUndefined(ctx, 'nest')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given untracked w/u beside an empty w/e with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then w/e and w are gone', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'w/u', 'u\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/w/e`);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'w/e')).toBeUndefined();
+        expect(await lstatOrUndefined(ctx, 'w')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an ignored file in a directory with an edited tracked file and includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the directory and the ignored file stay', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, '.gitignore', '*.cache\n', 'ignore caches');
+        await write(ctx, 'a.txt', 'modified\n');
+        await write(ctx, 'm/.cache', 'cache\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await read(ctx, 'm/.cache')).toBe('cache\n');
+      });
+    });
+  });
+
+  describe('Given an ignored empty directory with an edited tracked file and includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the ignored directory stays', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, '.gitignore', 'build/\n', 'ignore build');
+        await write(ctx, 'a.txt', 'modified\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/build`);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'build')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a submodule whose directory is empty and an edited file with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the submodule directory stays', async () => {
+        // Arrange
+        const ctx = await setupRepoWithSubmodule(GITLINK_A);
+        await write(ctx, 'a.txt', 'modified\n');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'sub')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given an unpopulated submodule directory and an edited file with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the directory of the tracked gitlink is never removed', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+        await stageGitlink(ctx, FILE_MODE.GITLINK, GITLINK_A);
+        await commit(ctx, { message: 'add submodule', author });
+        await write(ctx, 'a.txt', 'modified\n');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(rmdir.mock.calls.map(([path]) => path)).not.toContain(`${ctx.layout.workDir}/sub`);
+        expect(await lstatOrUndefined(ctx, 'sub')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given only an empty directory with includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then there is nothing to save and the directory stays', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/emptydir`);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+        expect(await lstatOrUndefined(ctx, 'emptydir')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given an edited tracked file and an empty directory without includeUntracked', () => {
+    describe('When push runs', () => {
+      it('Then the empty directory stays', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/emptydir`);
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await lstatOrUndefined(ctx, 'emptydir')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a tracked directory replaced by an untracked file of the same name', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then the directory content is restored and the file is kept in the untracked commit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'd/x', 'x\n', 'initial commit');
+        await ctx.fs.rm(`${ctx.layout.workDir}/d/x`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'untracked\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        expect(w.parents).toHaveLength(3);
+        const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+        expect(await treeContent(ctx, uTree, 'd')).toBe('untracked\n');
+        expect(await read(ctx, 'd/x')).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given a tracked file replaced by an untracked file in a directory of the same name', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then the tracked file is back in the work tree', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'f', 'f\n', 'initial commit');
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await write(ctx, 'f/y', 'untracked\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(await read(ctx, 'f')).toBe('f\n');
+      });
+    });
+  });
+
+  describe('Given a tracked edit and no untracked file', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then the third parent is a parentless commit holding the empty tree', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'modified\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        expect(w.parents).toHaveLength(3);
+        const u = await commitOf(ctx, w.parents[2] as ObjectId);
+        expect(u.tree).toBe('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+        expect(u.parents).toEqual([]);
+        expect(u.message.startsWith('untracked files on main: ')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then nothing is saved', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+      });
+    });
+  });
+
   describe('Given a tracked lossy path and an untracked file named like its decoded view', () => {
     describe('When push runs with includeUntracked', () => {
       it('Then the untracked file is stashed and removed from the working tree', async () => {
@@ -894,6 +2007,78 @@ const commit2 = async (ctx: Context, content: string, message: string): Promise<
 };
 
 describe('stash apply', () => {
+  describe('Given a stash whose work tree equals its base because a tracked file became a directory', () => {
+    describe('When apply runs', () => {
+      it('Then it applies without writing AUTO_MERGE and keeps the index entries', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+        await write(ctx, 'a.txt/y', 'inside\n');
+        const saved = await stashPush(ctx, {});
+        if (saved.kind !== 'saved') throw new Error('expected saved');
+        const entriesBefore = (await readIndex(ctx)).entries.map((e) => [e.path, e.id]);
+
+        // Act
+        const sut = stashApply;
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'applied', stash: saved.stash });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+        const entriesAfter = (await readIndex(ctx)).entries.map((e) => [e.path, e.id]);
+        expect(entriesAfter).toEqual(entriesBefore);
+      });
+    });
+  });
+
+  describe('Given a stash whose work file equals the committed bytes while the index staged another blob', () => {
+    describe('When apply runs with restoreIndex', () => {
+      it('Then the index holds the staged blob and the work file keeps the committed bytes', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'staged\n');
+        await add(ctx, ['a.txt']);
+        await write(ctx, 'a.txt', 'committed\n');
+        await stashPush(ctx, {});
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'a.txt');
+        expect(entry?.id).toBe(await hashBlob(ctx, new TextEncoder().encode('staged\n')));
+        expect(await read(ctx, 'a.txt')).toBe('committed\n');
+      });
+    });
+  });
+
+  describe('Given a staged type swap stashed plain', () => {
+    describe('When stash apply runs with restoreIndex', () => {
+      it('Then the reinstated entry d carries the stat of the written file', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'x\n', 'add d/x');
+        await ctx.fs.rm(`${ctx.layout.workDir}/d/x`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'now a file\n');
+        await add(ctx, ['d', 'd/x']);
+        await stashPush(ctx, {});
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'd');
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/d`);
+        expect(entry?.mtimeSeconds).toBe(Math.floor(stat.mtimeMs / 1000));
+        expect(entry?.fileSize).toBe(stat.size);
+      });
+    });
+  });
+
   describe('Given a stash of an unstaged change applied onto a clean tree', () => {
     describe('When apply runs', () => {
       it('Then the change returns to the working tree and stays unstaged', async () => {
@@ -1048,32 +2233,6 @@ describe('stash apply', () => {
           paths: ['a.txt'],
           preserved: { path: 'a.txt', content: 'local edit\n' },
         },
-        {
-          label: 'a dangling symlink squatting a stashed untracked path',
-          // The lstat-based presence probe sees the link where a
-          // target-following probe would not (its target does not exist).
-          build: async (): Promise<Context> => {
-            const ctx = await setupRepo();
-            await write(ctx, 'new.txt', 'untracked\n');
-            await stashPush(ctx, { includeUntracked: true });
-            await ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`);
-            return ctx;
-          },
-          paths: ['new.txt'],
-          preserved: undefined,
-        },
-        {
-          label: 'an untracked file already present at a stashed untracked path',
-          build: async (): Promise<Context> => {
-            const ctx = await setupRepo();
-            await write(ctx, 'new.txt', 'untracked\n');
-            await stashPush(ctx, { includeUntracked: true });
-            await write(ctx, 'new.txt', 'in the way\n');
-            return ctx;
-          },
-          paths: ['new.txt'],
-          preserved: undefined,
-        },
       ])(
         'Then it refuses with STASH_APPLY_WOULD_OVERWRITE for $label',
         async ({ build, paths, preserved }) => {
@@ -1093,12 +2252,387 @@ describe('stash apply', () => {
           expect((caught as TsgitError).data).toEqual({
             code: 'STASH_APPLY_WOULD_OVERWRITE',
             paths,
+            localChanges: paths,
+            untracked: [],
           });
           if (preserved !== undefined) {
             expect(await read(ctx, preserved.path)).toBe(preserved.content);
           }
         },
       );
+    });
+  });
+
+  describe('Given an untracked path whose leading component is an obstruction', () => {
+    describe('When apply runs', () => {
+      it.each([
+        {
+          label: 'a regular file',
+          plant: async (ctx: Context): Promise<void> => write(ctx, 'm', 'occupant\n'),
+          kept: { symlink: false, target: undefined },
+        },
+        {
+          label: 'a link to a file',
+          plant: async (ctx: Context): Promise<void> =>
+            ctx.fs.symlink('a.txt', `${ctx.layout.workDir}/m`),
+          kept: { symlink: true, target: 'a.txt' },
+        },
+        {
+          label: 'a link to a directory',
+          plant: async (ctx: Context): Promise<void> => {
+            await ctx.fs.mkdir(`${ctx.layout.workDir}/elsewhere`);
+            await ctx.fs.symlink('elsewhere', `${ctx.layout.workDir}/m`);
+          },
+          kept: { symlink: true, target: 'elsewhere' },
+        },
+        {
+          label: 'a dangling link',
+          plant: async (ctx: Context): Promise<void> =>
+            ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/m`),
+          kept: { symlink: true, target: 'nowhere' },
+        },
+      ])(
+        'Then it throws with blockedAt m, keeps $label and writes only the entries before it',
+        async ({ plant, kept }) => {
+          // Arrange
+          const ctx = await stashFourUntracked();
+          await plant(ctx);
+          const sut = stashApply;
+
+          // Act
+          const data = await refusalDataOf(() => sut(ctx, {}));
+
+          // Assert
+          expect(data).toEqual({
+            code: 'STASH_UNTRACKED_NOT_RESTORED',
+            existing: [],
+            blockedAt: 'm',
+          });
+          expect(await read(ctx, 'a')).toBe('a\n');
+          const stat = await lstatOrUndefined(ctx, 'm');
+          expect(stat?.isSymbolicLink).toBe(kept.symlink);
+          if (kept.target !== undefined) {
+            expect(await ctx.fs.readlink(`${ctx.layout.workDir}/m`)).toBe(kept.target);
+          }
+          for (const name of NOT_WRITTEN) {
+            expect(await lstatOrUndefined(ctx, name)).toBeUndefined();
+          }
+        },
+      );
+    });
+  });
+
+  describe('Given content already present at a stashed untracked path', () => {
+    describe('When apply runs', () => {
+      it.each([
+        {
+          label: 'a dangling symlink',
+          // The lstat-based presence probe sees the link where a
+          // target-following probe would not (its target does not exist).
+          squat: async (ctx: Context): Promise<void> =>
+            ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`),
+        },
+        {
+          label: 'an untracked file',
+          squat: async (ctx: Context): Promise<void> => write(ctx, 'new.txt', 'in the way\n'),
+        },
+      ])('Then it throws STASH_UNTRACKED_NOT_RESTORED and keeps $label', async ({ squat }) => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'new.txt', 'untracked\n');
+        await stashPush(ctx, { includeUntracked: true });
+        await squat(ctx);
+        const before = await lstatOrUndefined(ctx, 'new.txt');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['new.txt'] });
+        const after = await lstatOrUndefined(ctx, 'new.txt');
+        expect(after?.isSymbolicLink).toBe(before?.isSymbolicLink);
+        expect(after?.size).toBe(before?.size);
+      });
+    });
+  });
+
+  describe('Given a stashed untracked path recreated after the push', () => {
+    describe('When apply runs', () => {
+      it('Then the other untracked paths and the tracked edit are applied and the recreated file is kept', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'edited\n');
+        for (const name of ['a', 'm/z', 'u', 'z']) await write(ctx, name, `${name}\n`);
+        await stashPush(ctx, { includeUntracked: true });
+        await write(ctx, 'u', 'other\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_UNTRACKED_NOT_RESTORED', existing: ['u'] });
+        expect(await read(ctx, 'a')).toBe('a\n');
+        expect(await read(ctx, 'm/z')).toBe('m/z\n');
+        expect(await read(ctx, 'z')).toBe('z\n');
+        expect(await read(ctx, 'u')).toBe('other\n');
+        expect(await read(ctx, 'a.txt')).toBe('edited\n');
+      });
+    });
+  });
+
+  describe('Given a staged directory-to-file stash', () => {
+    describe('When apply runs after a file under the directory was edited', () => {
+      it('Then it refuses with the local-changes class only', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'x\n', 'add d/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'file\n');
+        await add(ctx, ['d']);
+        await stashPush(ctx, {});
+        await write(ctx, 'd/x', 'edited\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['d/x'],
+          localChanges: ['d/x'],
+          untracked: [],
+        });
+      });
+    });
+
+    describe('When apply runs after an untracked file appeared under the directory', () => {
+      it('Then it refuses with the untracked class only', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'x\n', 'add d/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'file\n');
+        await add(ctx, ['d']);
+        await stashPush(ctx, {});
+        await write(ctx, 'd/u', 'in the way\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['d'],
+          localChanges: [],
+          untracked: ['d'],
+        });
+      });
+    });
+  });
+
+  describe('Given a stash holding a tracked edit and an untracked file', () => {
+    const stashEditAndUntracked = async (): Promise<Context> => {
+      const ctx = await setupRepo();
+      await write(ctx, 'a.txt', 'stashed\n');
+      await write(ctx, 'u', 'untracked\n');
+      await stashPush(ctx, { includeUntracked: true });
+      return ctx;
+    };
+
+    describe('When apply runs after the tracked file was edited again', () => {
+      it('Then the merge refuses and the untracked file is restored', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await write(ctx, 'a.txt', 'local edit\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toStrictEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a.txt'],
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
+        expect('untrackedNotRestored' in (data as object)).toBe(false);
+        expect(await read(ctx, 'u')).toBe('untracked\n');
+        expect(await read(ctx, 'a.txt')).toBe('local edit\n');
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+
+    describe('When apply runs after the tracked file was committed differently', () => {
+      it('Then the conflict is returned and the untracked file is restored', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await commit2(ctx, 'current\n', 'diverge');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'conflict',
+          conflicts: [{ path: 'a.txt', type: expect.any(String) }],
+        });
+        expect(await read(ctx, 'u')).toBe('untracked\n');
+      });
+    });
+
+    describe('When apply runs after the tracked file was edited again and the untracked path recreated', () => {
+      it('Then the refusal carries the restore report', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await write(ctx, 'a.txt', 'local edit\n');
+        await write(ctx, 'u', 'other\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a.txt'],
+          localChanges: ['a.txt'],
+          untracked: [],
+          untrackedNotRestored: { existing: ['u'] },
+        });
+        expect(await read(ctx, 'u')).toBe('other\n');
+      });
+    });
+
+    describe('When apply conflicts and the untracked path was recreated', () => {
+      it('Then the conflict result carries the restore report', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await commit2(ctx, 'current\n', 'diverge');
+        await write(ctx, 'u', 'other\n');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'conflict',
+          conflicts: [{ path: 'a.txt', type: expect.any(String) }],
+          untrackedNotRestored: { existing: ['u'] },
+        });
+      });
+    });
+
+    describe('When pop conflicts and the untracked path was recreated', () => {
+      it('Then the conflict result carries the report and the stash is kept', async () => {
+        // Arrange
+        const ctx = await stashEditAndUntracked();
+        await commit2(ctx, 'current\n', 'diverge');
+        await write(ctx, 'u', 'other\n');
+        const sut = stashPop;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'conflict',
+          conflicts: [{ path: 'a.txt', type: expect.any(String) }],
+          untrackedNotRestored: { existing: ['u'] },
+        });
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a directory replaced by an untracked file of the same name', () => {
+    describe('When apply runs on the reset tree', () => {
+      it('Then the merge deletes the tracked entry and the file is restored', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'd/x', 'x\n', 'add d/x');
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d`);
+        await write(ctx, 'd', 'file\n');
+        await stashPush(ctx, { includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'd')).toBe('file\n');
+        expect(await lstatOrUndefined(ctx, 'd/x')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given stashed untracked paths u, v, w and x with u and w already present', () => {
+    describe('When apply runs', () => {
+      it.each([
+        {
+          label: 'a directory holding a file',
+          squat: async (ctx: Context): Promise<void> => write(ctx, 'u/inner', 'kept\n'),
+        },
+        {
+          label: 'an empty directory',
+          squat: async (ctx: Context): Promise<void> => ctx.fs.mkdir(`${ctx.layout.workDir}/u`),
+        },
+        {
+          label: 'a dangling link',
+          squat: async (ctx: Context): Promise<void> =>
+            ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/u`),
+        },
+      ])(
+        'Then it lists both present paths in order and still writes the free ones: $label at u',
+        async ({ squat }) => {
+          // Arrange
+          const ctx = await setupRepo();
+          for (const name of ['u', 'v', 'w', 'x']) await write(ctx, name, `${name}\n`);
+          await stashPush(ctx, { includeUntracked: true });
+          await squat(ctx);
+          await write(ctx, 'w', 'other\n');
+          const sut = stashApply;
+
+          // Act
+          const data = await refusalDataOf(() => sut(ctx, {}));
+
+          // Assert
+          expect(data).toStrictEqual({
+            code: 'STASH_UNTRACKED_NOT_RESTORED',
+            existing: ['u', 'w'],
+          });
+          expect(await read(ctx, 'v')).toBe('v\n');
+          expect(await read(ctx, 'x')).toBe('x\n');
+          expect(await read(ctx, 'w')).toBe('other\n');
+        },
+      );
+    });
+  });
+
+  describe('Given stashed untracked paths m/y and m/z with no m on disk', () => {
+    describe('When apply runs', () => {
+      it('Then both are restored', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        for (const name of ['m/y', 'm/z']) await write(ctx, name, `${name}\n`);
+        await stashPush(ctx, { includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'm/y')).toBe('m/y\n');
+        expect(await read(ctx, 'm/z')).toBe('m/z\n');
+      });
     });
   });
 
@@ -1408,6 +2942,142 @@ describe('stash apply', () => {
   });
 });
 
+const STASH_CLOCK_MS = 1_700_000_000_000;
+const DRIFT_MS = 10_000;
+
+/** A stash of an edit to a.txt, then clean b.txt rewritten with the same bytes later. */
+const repoWithDriftedBystander = async (): Promise<Context> => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(STASH_CLOCK_MS);
+  const ctx = await setupRepo();
+  await commitFile(ctx, 'b.txt', 'bystander\n', 'add b');
+  await write(ctx, 'a.txt', 'modified\n');
+  await stashPush(ctx, {});
+  vi.setSystemTime(STASH_CLOCK_MS + DRIFT_MS);
+  await write(ctx, 'b.txt', 'bystander\n');
+  return ctx;
+};
+
+const mtimeOf = async (ctx: Context, path: string): Promise<number> => {
+  const found = (await readIndex(ctx)).entries.find((e) => e.path === path);
+  if (found === undefined) throw new Error(`${path} is not tracked`);
+  return found.mtimeSeconds;
+};
+
+describe('stash apply during a pending operation', () => {
+  describe.each(['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD'])(
+    'Given %s naming HEAD and a stashed edit',
+    (marker) => {
+      describe('When stash apply runs', () => {
+        it('Then it applies and the marker stays', async () => {
+          // Arrange
+          const ctx = await setupRepo();
+          await write(ctx, 'a.txt', 'stashed\n');
+          await stashPush(ctx, {});
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, `${await headId(ctx)}\n`);
+          const sut = stashApply;
+
+          // Act
+          const result = await sut(ctx, {});
+
+          // Assert
+          expect(result.kind).toBe('applied');
+          expect(await read(ctx, 'a.txt')).toBe('stashed\n');
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/${marker}`)).toBe(true);
+        });
+      });
+    },
+  );
+});
+
+describe('stash apply and pop open with the index refresh', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe('Given a stash and a clean bystander rewritten later with the same bytes', () => {
+    describe('When stash apply runs', () => {
+      it('Then the bystander entry records its new mtime', async () => {
+        // Arrange
+        const ctx = await repoWithDriftedBystander();
+        const before = await mtimeOf(ctx, 'b.txt');
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await mtimeOf(ctx, 'b.txt')).toBeGreaterThan(before);
+      });
+    });
+
+    describe('When stash pop runs', () => {
+      it('Then the bystander entry is refreshed and the stash dropped', async () => {
+        // Arrange
+        const ctx = await repoWithDriftedBystander();
+        const before = await mtimeOf(ctx, 'b.txt');
+        const sut = stashPop;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await mtimeOf(ctx, 'b.txt')).toBeGreaterThan(before);
+        expect((await stashList(ctx)).entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a stash whose path is dirty and a drifted bystander', () => {
+    describe('When stash apply refuses', () => {
+      it('Then the bystander entry is refreshed anyway', async () => {
+        // Arrange
+        const ctx = await repoWithDriftedBystander();
+        await write(ctx, 'a.txt', 'dirty\n');
+        const before = await mtimeOf(ctx, 'b.txt');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a.txt'],
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
+        expect('untrackedNotRestored' in (data as object)).toBe(false);
+        expect(await mtimeOf(ctx, 'b.txt')).toBeGreaterThan(before);
+      });
+    });
+  });
+
+  describe('Given an empty stack and a drifted bystander', () => {
+    describe('When stash apply runs', () => {
+      it('Then it refuses STASH_NOT_FOUND and leaves the index bytes unchanged', async () => {
+        // Arrange
+        const ctx = await repoWithDriftedBystander();
+        await stashDrop(ctx, {});
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const before = await ctx.fs.read(indexPath);
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_NOT_FOUND',
+          index: 0,
+          stackSize: 0,
+        });
+        expect(await ctx.fs.read(indexPath)).toEqual(before);
+      });
+    });
+  });
+});
+
 describe('stash pop', () => {
   describe('Given a clean apply', () => {
     describe('When pop runs', () => {
@@ -1424,6 +3094,51 @@ describe('stash pop', () => {
         expect(result.kind).toBe('applied');
         expect(await read(ctx, 'a.txt')).toBe('modified\n');
         expect((await stashList(ctx)).entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a link to a directory squatting the leading component of a stashed untracked path', () => {
+    describe('When pop runs', () => {
+      it('Then it throws STASH_UNTRACKED_NOT_RESTORED and the stash is kept', async () => {
+        // Arrange
+        const ctx = await stashFourUntracked();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/elsewhere`);
+        await ctx.fs.symlink('elsewhere', `${ctx.layout.workDir}/m`);
+        const sut = stashPop;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, {}));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'STASH_UNTRACKED_NOT_RESTORED',
+          existing: [],
+          blockedAt: 'm',
+        });
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given CHERRY_PICK_HEAD naming HEAD and a stashed edit', () => {
+    describe('When pop runs', () => {
+      it('Then it applies, drops the stash and the marker stays', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'a.txt', 'stashed\n');
+        await stashPush(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`, `${await headId(ctx)}\n`);
+        const sut = stashPop;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'a.txt')).toBe('stashed\n');
+        expect((await stashList(ctx)).entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(true);
       });
     });
   });
@@ -1635,6 +3350,408 @@ describe('stash apply — index staging', () => {
         const entry = idx.entries.find((e) => e.path === 'a.txt');
         const blob = await readObject(ctx, entry?.id as ObjectId);
         expect(blob.type === 'blob' && new TextDecoder().decode(blob.content)).toBe('committed\n');
+      });
+    });
+  });
+});
+
+const TEN_LINES = Array.from({ length: 10 }, (_, i) => `l${i + 1}\n`).join('');
+
+const withLine = (n: number, text: string): string =>
+  TEN_LINES.split('\n')
+    .map((line, i) => (i === n - 1 ? text : line))
+    .join('\n');
+
+const stageAndStash = async (
+  ctx: Context,
+  staged: Readonly<Record<string, string>>,
+  worked: Readonly<Record<string, string>>,
+  input: { readonly includeUntracked?: true } = {},
+): Promise<void> => {
+  for (const [path, content] of Object.entries(staged)) await write(ctx, path, content);
+  if (Object.keys(staged).length > 0) await add(ctx, Object.keys(staged));
+  for (const [path, content] of Object.entries(worked)) await write(ctx, path, content);
+  await stashPush(ctx, input);
+};
+
+/** `f` staged as `I` then worked as `W` and `g` edited; `f` committed as `W` afterwards. */
+const setupStagedConflict = async (input: { readonly includeUntracked?: true } = {}) => {
+  const ctx = await setupRepo();
+  await commitFile(ctx, 'f', TEN_LINES, 'add f');
+  await commitFile(ctx, 'g', 'g0\n', 'add g');
+  if (input.includeUntracked === true) await write(ctx, 'u', 'u\n');
+  await stageAndStash(ctx, { f: 'I\n' }, { f: 'W\n', g: 'g1\n' }, input);
+  await commitFile(ctx, 'f', 'W\n', 'commit W');
+  return ctx;
+};
+
+const blobTextAt = async (ctx: Context, path: string): Promise<string> => {
+  const entry = (await readIndex(ctx)).entries.find((e) => e.path === path);
+  const blob = await readObject(ctx, entry?.id as ObjectId);
+  return blob.type === 'blob' ? new TextDecoder().decode(blob.content) : '<not-blob>';
+};
+
+/** `f` staged as `L2` and `g` edited in the stash; afterwards `h` is staged, off HEAD. */
+const setupStagedOffHead = async (input: { readonly includeUntracked?: true }) => {
+  const ctx = await setupRepo();
+  await commitFile(ctx, 'f', TEN_LINES, 'add f');
+  await commitFile(ctx, 'g', 'g0\n', 'add g');
+  if (input.includeUntracked === true) await write(ctx, 'u', 'u\n');
+  await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, { g: 'g1\n' }, input);
+  await write(ctx, 'h', 'h\n');
+  await add(ctx, ['h']);
+  return ctx;
+};
+
+describe('stash apply — index-side judge', () => {
+  describe('Given a staged path that no longer applies to the current index', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then it refuses with the path before the work-tree merge writes anything', async () => {
+        // Arrange
+        const ctx = await setupStagedConflict();
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f'] });
+        expect(await read(ctx, 'g')).toBe('g0\n');
+        expect(await lstatOrUndefined(ctx, '.git/AUTO_MERGE')).toBeUndefined();
+        expect(await blobTextAt(ctx, 'f')).toBe('W\n');
+      });
+    });
+
+    describe('When stashPop runs with restoreIndex', () => {
+      it('Then it refuses and keeps the stash entry', async () => {
+        // Arrange
+        const ctx = await setupStagedConflict();
+        const sut = stashPop;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f'] });
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+
+    describe('When stashApply runs without restoreIndex', () => {
+      it('Then the work tree merge applies', async () => {
+        // Arrange
+        const ctx = await setupStagedConflict();
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'g')).toBe('g1\n');
+      });
+    });
+  });
+
+  describe('Given the same refusal with an untracked file in the stash', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the untracked file is not restored', async () => {
+        // Arrange
+        const ctx = await setupStagedConflict({ includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f'] });
+        expect(await lstatOrUndefined(ctx, 'u')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a staged deletion of a path the current commit changed', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the index side refuses instead of the work-tree modify/delete conflict', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await commitFile(ctx, 'g', 'g0\n', 'add g');
+        await rm(ctx, ['f']);
+        await write(ctx, 'g', 'g1\n');
+        await stashPush(ctx, {});
+        await commitFile(ctx, 'f', withLine(9, 'L9\n'), 'change f');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f'] });
+        expect(await lstatOrUndefined(ctx, '.git/AUTO_MERGE')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a new path a and an edited path b that the current commit cannot take', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the paths come in index order, not the order the trees list them', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'b', 'b0\n', 'add b');
+        await stageAndStash(ctx, { a: 'A\n', b: 'b1\n' }, {});
+        await rm(ctx, ['b']);
+        await commitFile(ctx, 'a', 'other\n', 'add a, drop b');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['a', 'b'] });
+      });
+    });
+  });
+
+  describe('Given two staged paths that both no longer apply', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then both paths are listed', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'f0\n', 'add f');
+        await commitFile(ctx, 'g', 'g0\n', 'add g');
+        await stageAndStash(ctx, { f: 'f1\n', g: 'g1\n' }, {});
+        await commitFile(ctx, 'f', 'f2\n', 'change f');
+        await commitFile(ctx, 'g', 'g2\n', 'change g');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({ code: 'STASH_INDEX_CONFLICT', paths: ['f', 'g'] });
+      });
+    });
+  });
+
+  describe('Given a staged path the current commit already holds', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the stash applies and the index is reinstated', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, {});
+        await commitFile(ctx, 'f', withLine(2, 'L2\n'), 'commit L2');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await blobTextAt(ctx, 'f')).toBe(withLine(2, 'L2\n'));
+      });
+    });
+  });
+
+  describe('Given a staged path that equals the base while the work tree changed', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the stash applies', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, {}, { f: withLine(2, 'L2\n') });
+        await commitFile(ctx, 'h', 'h\n', 'add h');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, 'f')).toBe(withLine(2, 'L2\n'));
+      });
+    });
+  });
+
+  describe('Given a staged path and an unborn HEAD', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then it empties the index and refuses with the path the index held', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/orphan\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a.txt', 'f'],
+          localChanges: ['a.txt', 'f'],
+          untracked: [],
+        });
+        expect((await readIndex(ctx)).entries).toStrictEqual([]);
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a staged path and a cyclic HEAD ref chain', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the ref cycle propagates instead of reading HEAD as unborn', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/a\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/a`, 'ref: refs/heads/b\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/b`, 'ref: refs/heads/a\n');
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'REF_CYCLE_DETECTED' });
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a staged path while the current index holds a change off HEAD', () => {
+    const OFF_HEAD = {
+      code: 'STASH_APPLY_WOULD_OVERWRITE',
+      paths: ['h'],
+      localChanges: ['h'],
+      untracked: [],
+    };
+
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then it resets the index to HEAD and refuses with the differing path', async () => {
+        // Arrange
+        const ctx = await setupStagedOffHead({});
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual(OFF_HEAD);
+        expect((await readIndex(ctx)).entries.some((e) => e.path === 'h')).toBe(false);
+        expect(await blobTextAt(ctx, 'f')).toBe(TEN_LINES);
+        expect(await read(ctx, 'h')).toBe('h\n');
+        expect(await read(ctx, 'f')).toBe(TEN_LINES);
+        expect(await read(ctx, 'g')).toBe('g0\n');
+        expect(await lstatOrUndefined(ctx, '.git/AUTO_MERGE')).toBeUndefined();
+      });
+    });
+
+    describe('When stashPop runs with restoreIndex', () => {
+      it('Then it refuses and keeps the stash entry', async () => {
+        // Arrange
+        const ctx = await setupStagedOffHead({});
+        const sut = stashPop;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual(OFF_HEAD);
+        expect((await stashList(ctx)).entries).toHaveLength(1);
+      });
+    });
+
+    describe('When stashApply runs with restoreIndex on a stash that holds untracked files', () => {
+      it('Then the untracked file is restored with its stashed bytes', async () => {
+        // Arrange
+        const ctx = await setupStagedOffHead({ includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual(OFF_HEAD);
+        expect(await read(ctx, 'u')).toBe('u\n');
+      });
+    });
+  });
+
+  describe('Given a new path a and an edited path z staged off HEAD in the current index', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the differing paths are listed in index order, not HEAD paths first', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await commitFile(ctx, 'z', 'z0\n', 'add z');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, {});
+        await write(ctx, 'a', 'A\n');
+        await write(ctx, 'z', 'z1\n');
+        await add(ctx, ['a', 'z']);
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['a', 'z'],
+          localChanges: ['a', 'z'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given racily clean entries and a current index holding a change off HEAD', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then the reset index is written without the lock re-reading the files its refresh verified', async () => {
+        // Arrange — the clock stands still, so every entry is as new as the index file.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const ctx = await setupStagedOffHead({});
+        const read = vi.spyOn(ctx.fs, 'read');
+        const sut = stashApply;
+
+        // Act
+        try {
+          await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+        } finally {
+          vi.useRealTimers();
+        }
+
+        // Assert — one pass for the opening scan, one for the reset's refresh, none for the lock.
+        const readsOfG = read.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/g`);
+        expect(readsOfG).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a work tree equal to its base while the current index holds a change off HEAD', () => {
+    describe('When stashApply runs with restoreIndex', () => {
+      it('Then it refuses instead of taking the unchanged-work-tree return', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', TEN_LINES, 'add f');
+        await stageAndStash(ctx, { f: withLine(2, 'L2\n') }, { f: TEN_LINES });
+        await write(ctx, 'h', 'h\n');
+        await add(ctx, ['h']);
+        const sut = stashApply;
+
+        // Act
+        const data = await refusalDataOf(() => sut(ctx, { restoreIndex: true }));
+
+        // Assert
+        expect(data).toStrictEqual({
+          code: 'STASH_APPLY_WOULD_OVERWRITE',
+          paths: ['h'],
+          localChanges: ['h'],
+          untracked: [],
+        });
       });
     });
   });
@@ -2469,7 +4586,7 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
 
   describe('Given a gitlink with no checkout and a tracked file edited', () => {
     describe('When push runs', () => {
-      it('Then the work-tree tree keeps the gitlink at its index id', async () => {
+      it('Then the work-tree tree drops the gitlink as git does', async () => {
         // Arrange
         const ctx = await setupRepoWithSubmodule(GITLINK_A);
         await ctx.fs.rm(`${ctx.layout.workDir}/sub/.git`);
@@ -2481,10 +4598,7 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
         const result = await sut(ctx);
 
         // Assert
-        expect(result.entries.get('sub' as FilePath)).toMatchObject({
-          id: GITLINK_A,
-          mode: FILE_MODE.GITLINK,
-        });
+        expect(result.entries.get('sub' as FilePath)).toBeUndefined();
       });
     });
   });

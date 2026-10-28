@@ -13,7 +13,7 @@ import { removeEmptyDirectory } from './empty-directories.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { joinPath } from './join-working-tree-path.js';
 
-const parentDirectory = (path: string): string => {
+export const parentDirectory = (path: string): string => {
   const slash = path.lastIndexOf('/');
   return slash === -1 ? '' : path.slice(0, slash);
 };
@@ -70,14 +70,14 @@ const deepestDepth = (levels: Levels): number => Math.max(...levels.keys());
  * as git does. A directory that refuses ends its chain; its parent is tried
  * only when it is itself a start or another child of it was removed.
  */
-export const pruneEmptiedDirectories = async (
+export const pruneDirectoriesFrom = async (
   ctx: Context,
   workdir: string,
-  removedPaths: Iterable<string>,
+  startDirectories: Iterable<string>,
   surviving: SurvivingDirectories,
 ): Promise<void> => {
   const levels: Levels = new Map();
-  for (const path of removedPaths) schedule(levels, parentDirectory(path), surviving);
+  for (const directory of startDirectories) schedule(levels, directory, surviving);
   while (levels.size > 0) {
     const depth = deepestDepth(levels);
     // Stryker disable next-line ArrayDeclaration: equivalent — depth is one of levels.keys(), so levels.get(depth) is always defined and the ?? fallback never runs.
@@ -91,3 +91,12 @@ export const pruneEmptiedDirectories = async (
     });
   }
 };
+
+/** {@link pruneDirectoriesFrom} starting at the directory each removed path sat in. */
+export const pruneEmptiedDirectories = (
+  ctx: Context,
+  workdir: string,
+  removedPaths: Iterable<string>,
+  surviving: SurvivingDirectories,
+): Promise<void> =>
+  pruneDirectoriesFrom(ctx, workdir, Array.from(removedPaths, parentDirectory), surviving);

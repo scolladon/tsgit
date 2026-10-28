@@ -10,6 +10,7 @@ import {
   readlinkSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -57,6 +58,15 @@ export const gitlink = (entryPath: string, commit = GITLINK_OID): TreeEntry => (
   content: commit,
   path: entryPath,
 });
+
+/**
+ * Whether the index file was rewritten is judged by inode AND ctime: ext4 hands a freed inode
+ * straight back to the next `index.lock`, so the inode alone reads a rewrite as untouched.
+ */
+export const indexIdentity = (dir: string): string => {
+  const stat = statSync(path.join(dir, '.git', 'index'), { bigint: true });
+  return `${stat.ino}:${stat.ctimeNs}`;
+};
 
 export const commitOn = (
   dir: string,

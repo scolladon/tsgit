@@ -13,12 +13,17 @@ import {
   noInitialCommit,
   pathspecBeyondSymlink,
   stashApplyWouldOverwrite,
+  stashIndexConflict,
+  stashUntrackedNotRestored,
+  type UntrackedNotRestored,
+  type WouldOverwriteClasses,
   workingTreeFileTooLarge,
 } from '../../domain/commands/error.js';
 import type { DiffChange } from '../../domain/diff/diff-change.js';
 import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { isGitlink } from '../../domain/diff/index.js';
 import { diffIndexAgainstTreeKeyed } from '../../domain/diff/index-diff.js';
+import { sortByPath } from '../../domain/diff/path-compare.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
@@ -29,10 +34,11 @@ import {
   indexPathKey,
   indexPathOfEscaped,
   keyOfPath,
+  pathBytesOf,
 } from '../../domain/git-index/index-path-key.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import { hasEscapedBytes } from '../../domain/objects/encoding.js';
+import { compareBytes, encodeEscaped, hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
   type AuthorIdentity,
@@ -40,9 +46,13 @@ import {
   type FilePath,
   type ObjectId,
 } from '../../domain/objects/index.js';
+import { emptyTreeOid } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
-import { applyMergeToWorktree, mergeTreesToTree } from '../primitives/apply-merge-to-worktree.js';
+import {
+  type ApplyMergeResult,
+  applyMergeToWorktree,
+} from '../primitives/apply-merge-to-worktree.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import {
   compareAndRefresh,
@@ -72,6 +82,11 @@ import { lazily } from '../primitives/internal/lazily.js';
 import { forgetAfterLink } from '../primitives/internal/link-first-wave.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import {
+  parentDirectory,
+  pruneDirectoriesFrom,
+  survivingDirectoriesOf,
+} from '../primitives/internal/prune-emptied-directories.js';
+import {
   type AttributeProvider,
   attributeBlobLookup,
   buildAttributeProvider,
@@ -79,7 +94,6 @@ import {
 } from '../primitives/internal/read-gitattributes.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
-  assertNoPendingOperation,
   assertOperationalRepository,
   type HeadState,
   readHeadRaw,
@@ -112,14 +126,15 @@ import {
 } from '../primitives/stash-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../primitives/types.js';
-import { walkWorkingTree } from '../primitives/walk-working-tree.js';
+import { walkWorkingTreeReporting } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
 import { FILE_FLAG } from './internal/post-checkout.js';
-import { refreshAndWriteIndex } from './internal/refresh-index.js';
+import { refreshAndWriteIndex, refreshedIndex } from './internal/refresh-index.js';
 import { toConflictList } from './internal/replay-sequence.js';
 import { recordResetRefs } from './internal/reset-refs.js';
+import { judgeStagedPatch } from './internal/staged-patch.js';
 import {
   indexMessage,
   onMessage,
@@ -307,6 +322,15 @@ const snapshotState = async (
   return (await isDirectoryAt(ctx, entry.path)) ? 'occluded' : status;
 };
 
+/**
+ * git stashes with --ignore-submodules, which skips a submodule checkout's own changes only: a
+ * file, a symlink or nothing at a gitlink's path is snapshotted, though no change by itself. A
+ * lossy name has no string path to stat, so its gitlink keeps the index id.
+ */
+const ridesOnIndexId = async (ctx: Context, entry: IndexEntry): Promise<boolean> =>
+  isGitlink(entry.mode) &&
+  (entry.pathBytes !== undefined || (await isDirectoryAt(ctx, entry.path)));
+
 /** One entry against its work-tree file; a conflicted stage is not a tracked file to compare. */
 const classifyEntry = async (
   ctx: Context,
@@ -317,8 +341,7 @@ const classifyEntry = async (
   if (entry.flags.stage !== 0) return undefined;
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
   if (entry.flags.skipWorktree) return { kind: 'indexed', entry, state: 'unchanged' };
-  // git stashes with --ignore-submodules: the index id of a gitlink rides into the W tree as it is.
-  if (isGitlink(entry.mode)) return { kind: 'indexed', entry, state: 'unchanged' };
+  if (await ridesOnIndexId(ctx, entry)) return { kind: 'indexed', entry, state: 'unchanged' };
   const indexed = scope.head === undefined || scope.head.entries.has(escapedPathOf(entry));
   // git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink.
   if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
@@ -344,9 +367,8 @@ const classifyHeadOnly = async (
   scanner: LeadingPathScanner,
 ): Promise<TrackedEntry | undefined> => {
   const headEntry = head.entries.get(path);
-  // A gitlink rides on the index id (--ignore-submodules); a lossy name has no string path to stat.
-  if (headEntry === undefined || isGitlink(headEntry.mode) || hasEscapedBytes(path))
-    return undefined;
+  // A lossy name has no string path to stat; a gitlink's checkout directory is skipped below.
+  if (headEntry === undefined || hasEscapedBytes(path)) return undefined;
   if (await scanner.hasSymlinkedLeadingPath(path)) throw pathspecBeyondSymlink(path);
   const stat = await statReachable(ctx, path);
   if (stat === undefined || stat.isDirectory) return undefined;
@@ -360,6 +382,63 @@ const classifyHeadOnly = async (
 const headOnlyPaths = (head: EscapedFlatTree, index: GitIndex): ReadonlyArray<FilePath> => {
   const indexed = new Set(index.entries.map(indexPathKey));
   return [...head.entries.keys()].filter((path) => !indexed.has(keyOfPath(path)));
+};
+
+const differsFromBase = (scope: SnapshotScope, entry: IndexEntry): boolean => {
+  if (scope.head === undefined) return false;
+  const base = scope.head.entries.get(escapedPathOf(entry));
+  return base?.id !== entry.id || base.mode !== entry.mode;
+};
+
+const isSameGitlinkInBase = (scope: SnapshotScope, entry: IndexEntry): boolean =>
+  isGitlink(entry.mode) && !differsFromBase(scope, entry);
+
+const isListedChange = (scope: SnapshotScope, { entry, state }: TrackedEntry): boolean =>
+  !isGitlink(entry.mode) && (state !== 'unchanged' || differsFromBase(scope, entry));
+
+/** The smallest path of git's work-tree diff in index byte order; git never lists a gitlink of its own accord. */
+const firstListedPath = (
+  scope: SnapshotScope,
+  index: GitIndex,
+  tracked: ReadonlyArray<TrackedEntry>,
+): Uint8Array | undefined => {
+  const lost = scope.head === undefined ? [] : headOnlyPaths(scope.head, index);
+  const lostFiles = lost.filter((path) => {
+    const mode = scope.head?.entries.get(path)?.mode;
+    return mode !== undefined && !isGitlink(mode);
+  });
+  const listed = tracked
+    .filter((entry) => isListedChange(scope, entry))
+    .map(({ entry }) => pathBytesOf(entry));
+  return [...listed, ...lostFiles.map(encodeEscaped)].sort(compareBytes)[0];
+};
+
+const OCCUPIED_STATES: ReadonlySet<SnapshotState> = new Set([
+  'modified',
+  'type-changed',
+  'mode-changed',
+]);
+
+/**
+ * git's `stash push` leaves a gitlink HEAD already holds, with a file or symlink standing in its
+ * place, out of the working-tree diff while it sorts before every other changed path; behind any
+ * such path the occupant is recorded (verified on git 2.55.0 and 2.56.0).
+ */
+const keepLeadingGitlinks = (
+  tracked: ReadonlyArray<TrackedEntry>,
+  scope: SnapshotScope,
+  index: GitIndex,
+): ReadonlyArray<TrackedEntry> => {
+  const lead = firstListedPath(scope, index, tracked);
+  const rides = (candidate: TrackedEntry): candidate is IndexedEntry =>
+    candidate.kind === 'indexed' &&
+    OCCUPIED_STATES.has(candidate.state) &&
+    isSameGitlinkInBase(scope, candidate.entry) &&
+    // Stryker disable next-line EqualityOperator: equivalent — the lead is a non-gitlink or lost path, never the candidate's own, so the bytes never compare equal
+    (lead === undefined || compareBytes(pathBytesOf(candidate.entry), lead) < 0);
+  return tracked.map((candidate) =>
+    rides(candidate) ? { ...candidate, state: 'unchanged' as const } : candidate,
+  );
 };
 
 /**
@@ -392,7 +471,8 @@ const classifyTracked = async (
       : await boundedMapFor(ctx, 'ioBound', headOnlyPaths(head, index), (path) =>
           classifyHeadOnly(ctx, path, head, scanner),
         );
-  return [...classified, ...headOnly].filter((tracked) => tracked !== undefined);
+  const tracked = [...classified, ...headOnly].filter((entry) => entry !== undefined);
+  return keepLeadingGitlinks(tracked, scope, index);
 };
 
 /**
@@ -490,6 +570,8 @@ interface LocalChanges {
   readonly scope: ConversionScope;
   readonly tracked: ReadonlyArray<TrackedEntry>;
   readonly untrackedFiles: ReadonlyArray<UntrackedFile>;
+  /** Untracked directories holding no file: git's `clean -d` removes them, yet they never count as a change. */
+  readonly untrackedEmptyDirectories: ReadonlyArray<FilePath>;
 }
 
 const countsAsLocalChange = (change: DiffChange): boolean => {
@@ -510,6 +592,17 @@ const differsBeyondGitlinks = (index: GitIndex, head: EscapedFlatTree | undefine
   return diffIndexAgainstTreeKeyed(index, head).changes.some(countsAsLocalChange);
 };
 
+const untrackedChanges = async (
+  ctx: Context,
+  opts: StashPushInput,
+  index: GitIndex,
+): Promise<Pick<LocalChanges, 'untrackedFiles' | 'untrackedEmptyDirectories'>> => {
+  const { files, emptyDirectories } = opts.includeUntracked
+    ? await listUntracked(ctx, index)
+    : NO_UNTRACKED;
+  return { untrackedFiles: files, untrackedEmptyDirectories: emptyDirectories };
+};
+
 const findLocalChanges = async (
   ctx: Context,
   opts: StashPushInput,
@@ -521,27 +614,39 @@ const findLocalChanges = async (
   const head = iTree === base.bTree ? undefined : await flattenEscapedTree(ctx, base.bTree);
   const tracked = await classifyTracked(ctx, index, scope.provider, head);
   const stagedBeyondGitlinks = differsBeyondGitlinks(index, head);
-  const untrackedFiles = opts.includeUntracked ? await listUntracked(ctx, index) : [];
-  return { iTree, stagedBeyondGitlinks, scope, tracked, untrackedFiles };
+  const untracked = await untrackedChanges(ctx, opts, index);
+  return { iTree, stagedBeyondGitlinks, scope, tracked, ...untracked };
 };
+
+/** git's `--ignore-submodules` check drops every gitlink: it is snapshotted, yet not a change by itself. */
+const countsAsChange = (tracked: TrackedEntry): boolean =>
+  tracked.state !== 'unchanged' && !isGitlink(tracked.entry.mode);
 
 const hasLocalChanges = (found: LocalChanges): boolean =>
   found.stagedBeyondGitlinks ||
-  found.tracked.some(({ state }) => state !== 'unchanged') ||
+  found.tracked.some(countsAsChange) ||
   found.untrackedFiles.length > 0;
 
-const listUntracked = async (
-  ctx: Context,
-  index: GitIndex,
-): Promise<ReadonlyArray<UntrackedFile>> => {
+interface UntrackedListing {
+  readonly files: ReadonlyArray<UntrackedFile>;
+  readonly emptyDirectories: ReadonlyArray<FilePath>;
+}
+
+const NO_UNTRACKED: UntrackedListing = { files: [], emptyDirectories: [] };
+
+const listUntracked = async (ctx: Context, index: GitIndex): Promise<UntrackedListing> => {
   const tracked = new Set(index.entries.map(indexPathKey));
   const ignore = await buildRepoIgnorePredicate(ctx);
   const files: UntrackedFile[] = [];
-  for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
+  const emptyDirectories: FilePath[] = [];
+  const reportEmpty = (directory: FilePath): void => {
+    if (!tracked.has(keyOfPath(directory))) emptyDirectories.push(directory);
+  };
+  for await (const { path, stat } of walkWorkingTreeReporting(ctx, { ignore }, reportEmpty)) {
     if (tracked.has(keyOfPath(path))) continue;
     files.push({ path, stat: await stat() });
   }
-  return files;
+  return { files, emptyDirectories };
 };
 
 const hashUntracked = async (
@@ -623,7 +728,14 @@ const stashAndReset = async (
     const w = await createStashCommits(ctx, workDir, { base, found, opts });
     const { untracked, working } = w;
     await record(w);
-    await resetAfterPush(ctx, lock, { base, iTree, untracked, opts });
+    await resetAfterPush(ctx, lock, {
+      workDir,
+      base,
+      iTree,
+      untracked,
+      emptyDirectories: found.untrackedEmptyDirectories,
+      opts,
+    });
     return {
       kind: 'saved',
       stash: w.stash,
@@ -748,9 +860,9 @@ const createStashCommits = async (
   const i = await writer.index(found.iTree);
   const untracked = await hashUntracked(ctx, workDir, found.untrackedFiles, found.scope);
   const u =
-    untracked.paths.length === 0
-      ? []
-      : [await writer.untracked(await synthesizeTreeFromIndex(ctx, untracked.entries))];
+    opts.includeUntracked === true
+      ? [await writer.untracked(await synthesizeTreeFromIndex(ctx, untracked.entries))]
+      : [];
   const working = await projectWorkingTree(ctx, workDir, found.tracked, found.scope);
   const wTree = await synthesizeTreeFromIndex(ctx, working.entries);
   const stash = await writer.stash(wTree, [base.b, i, ...u]);
@@ -784,9 +896,11 @@ export const stashDrop = async (
 };
 
 interface ResetInputs {
+  readonly workDir: string;
   readonly base: BaseState;
   readonly iTree: ObjectId;
   readonly untracked: UntrackedProjection;
+  readonly emptyDirectories: ReadonlyArray<FilePath>;
   readonly opts: StashPushInput;
 }
 
@@ -819,14 +933,37 @@ const keptIndexPaths = async (
 ): Promise<ReadonlyArray<IndexPath>> =>
   opts.keepIndex === true ? pathsDifferingBetween(ctx, iTree, base.bTree) : [];
 
+/**
+ * git runs `clean -d` over the stashed untracked files before its reset: a directory they
+ * alone filled disappears, and so does every untracked directory holding no file; one still
+ * holding anything (tracked or ignored files) stays.
+ */
+const cleanStashedUntracked = async (
+  ctx: Context,
+  workDir: string,
+  { untracked, emptyDirectories }: Pick<ResetInputs, 'untracked' | 'emptyDirectories'>,
+  currentIndex: GitIndex,
+): Promise<void> => {
+  for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
+  await pruneDirectoriesFrom(
+    ctx,
+    workDir,
+    [...untracked.paths.map(parentDirectory), ...emptyDirectories],
+    survivingDirectoriesOf(currentIndex.entries.map((entry) => entry.path)),
+  );
+};
+
 /** Reset the working tree + index to HEAD (or the index tree under `--keep-index`). */
 const resetAfterPush = async (
   ctx: Context,
   lock: IndexLock,
   inputs: ResetInputs,
 ): Promise<void> => {
-  const { base, iTree, untracked, opts } = inputs;
+  const { workDir, base, iTree, opts } = inputs;
   const currentIndex = await readIndex(ctx);
+  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty and, with no untracked files to read (`NO_UNTRACKED`), `emptyDirectories` is empty too, so the `if(true)` variant iterates empty lists (no-op); the `if(false)` variant is killed by the `-u` removal test.
+  if (opts.includeUntracked === true)
+    await cleanStashedUntracked(ctx, workDir, inputs, currentIndex);
   const target = opts.keepIndex === true ? iTree : base.bTree;
   const result = await materializeTreeJudging(
     ctx,
@@ -837,10 +974,6 @@ const resetAfterPush = async (
     verified: result.verified,
     restagedPaths: await keptIndexPaths(ctx, inputs),
   });
-  // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
-  if (opts.includeUntracked === true) {
-    for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
-  }
 };
 
 export interface StashApplyInput {
@@ -853,9 +986,16 @@ export interface StashConflict {
   readonly type: ConflictType;
 }
 
+export interface StashApplyConflict {
+  readonly kind: 'conflict';
+  readonly conflicts: ReadonlyArray<StashConflict>;
+  /** What git printed after the conflict: untracked files the restore left alone. */
+  readonly untrackedNotRestored?: UntrackedNotRestored;
+}
+
 export type StashApplyResult =
   | { readonly kind: 'applied'; readonly stash: ObjectId }
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> };
+  | StashApplyConflict;
 
 interface StashParents {
   readonly base: ObjectId;
@@ -877,21 +1017,6 @@ const parseStashCommit = async (ctx: Context, w: ObjectId): Promise<StashParents
   return { base, indexParent, untrackedParent, wTree: obj.data.tree };
 };
 
-/** Untracked paths whose restoration would overwrite an existing working file. */
-const untrackedOverwrites = async (
-  ctx: Context,
-  workDir: string,
-  uTree: ObjectId,
-): Promise<ReadonlyArray<FilePath>> => {
-  const flat = await flattenEscapedTree(ctx, uTree);
-  const clobbered: FilePath[] = [];
-  for (const path of flat.entries.keys()) {
-    if (hasEscapedBytes(path)) continue;
-    if (await pathIsOccupied(ctx, joinPath(workDir, path))) clobbered.push(path);
-  }
-  return clobbered;
-};
-
 /** git restores untracked files through a checkout of a temporary index holding exactly them. */
 const untrackedWriter = (
   ctx: Context,
@@ -908,26 +1033,78 @@ const untrackedWriter = (
     limiter: limiterFor(ctx, 'cpuBound'),
   });
 
-/** Check out the untracked tree into the working tree (clean-apply path only). */
-const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
-  const flat = await flattenEscapedTree(ctx, uTree);
-  // Whole-tree name gate before the first write: a stash's untracked tree is
-  // attacker-controllable, so a hostile entry name (`.git/**`, a `.git` alias,
-  // a traversal) must refuse the entire restore untouched — mirroring the
-  // index-write boundary a checkout crosses.
+type RestoreVerdict =
+  | { readonly kind: 'free' }
+  | { readonly kind: 'exists' }
+  | { readonly kind: 'blocked'; readonly at: FilePath };
+
+const FREE: RestoreVerdict = { kind: 'free' };
+const EXISTS: RestoreVerdict = { kind: 'exists' };
+
+/** git's checkout-index judges each entry: a leading file or link stops the restore, a present path is skipped. */
+const restoreVerdict = async (
+  ctx: Context,
+  workDir: string,
+  scanner: LeadingPathScanner,
+  path: FilePath,
+): Promise<RestoreVerdict> => {
+  if (hasEscapedBytes(path)) return FREE;
+  const obstruction = await scanner.obstructingLeadingComponent(path);
+  if (obstruction !== undefined) return { kind: 'blocked', at: obstruction.path };
+  return (await pathIsOccupied(ctx, joinPath(workDir, path))) ? EXISTS : FREE;
+};
+
+/**
+ * Whole-tree name gate before the first write: a stash's untracked tree is
+ * attacker-controllable, so a hostile entry name (`.git/**`, a `.git` alias,
+ * a traversal) must refuse the entire restore untouched — mirroring the
+ * index-write boundary a checkout crosses.
+ */
+const validateUntrackedNames = (ctx: Context, flat: EscapedFlatTree): void => {
   const pathRules = indexPathRulesOf(ctx);
   for (const [path, entry] of flat.entries) {
     pathRules.validateTreePath(path, entry.mode);
   }
+};
+
+/** Write each untracked entry git's checkout-index would, in index order, and report the rest. */
+const restoreEntries = async (
+  ctx: Context,
+  workDir: string,
+  flat: EscapedFlatTree,
+): Promise<UntrackedNotRestored> => {
   // One scanner for the whole restore: its per-directory memo means a deep
   // untracked tree with many paths under the same symlinked directory costs
   // one `lstat` per distinct directory, not one per path.
   const scanner = createLeadingPathScanner(ctx);
   const writer = untrackedWriter(ctx, flat.entries);
+  const existing: FilePath[] = [];
   for (const [path, entry] of flat.entries) {
-    await writer.writeBlob(path, entry.id, entry.mode, scanner);
-    forgetAfterLink(scanner, [entry.mode]);
+    const verdict = await restoreVerdict(ctx, workDir, scanner, path);
+    switch (verdict.kind) {
+      case 'blocked':
+        return { existing, blockedAt: verdict.at };
+      case 'exists':
+        existing.push(path);
+        break;
+      case 'free':
+        await writer.writeBlob(path, entry.id, entry.mode, scanner);
+        forgetAfterLink(scanner, [entry.mode]);
+        break;
+    }
   }
+  return { existing };
+};
+
+/** Check out the untracked tree into the working tree and report what was not restored. */
+const restoreUntracked = async (
+  ctx: Context,
+  workDir: string,
+  uTree: ObjectId,
+): Promise<UntrackedNotRestored> => {
+  const flat = await flattenEscapedTree(ctx, uTree);
+  validateUntrackedNames(ctx, flat);
+  return restoreEntries(ctx, workDir, flat);
 };
 
 /** git skips `--index` when the stash staged nothing, or the index already equals what was staged. */
@@ -937,27 +1114,79 @@ const hasStagedChanges = (trees: {
   readonly iTree: ObjectId;
 }): boolean => trees.iTree !== trees.bTree && trees.iTree !== trees.cTree;
 
-/** Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. */
+/** git's `has_index` branch: the stashed index on top of the current one, judged before any write. */
+const judgeIndexSide = async (
+  ctx: Context,
+  app: StashApplication,
+  cTree: ObjectId,
+): Promise<ObjectId | undefined> => {
+  if (app.input.restoreIndex !== true) return undefined;
+  const iTree = await commitTreeOf(ctx, app.parsed.indexParent);
+  if (!hasStagedChanges({ bTree: app.bTree, cTree, iTree })) return undefined;
+  const verdict = await judgeStagedPatch(ctx, { bTree: app.bTree, cTree, iTree });
+  if (verdict.kind === 'refused') throw stashIndexConflict(verdict.paths);
+  return verdict.tree;
+};
+
+const indexOrdered = (paths: ReadonlyArray<IndexPath>): ReadonlyArray<FilePath> =>
+  sortByPath(paths, escapedPathOf).map((entry) => entry.path);
+
+const resetIndexTo = async (
+  ctx: Context,
+  lock: IndexLock,
+  tree: ObjectId,
+  currentIndex: GitIndex,
+): Promise<void> => {
+  const entries = await buildIndexFromTree(ctx, { targetTree: tree, currentIndex });
+  const refreshed = await refreshedIndex(ctx, { ...currentIndex, entries });
+  await lock.commit(refreshed.currentIndex.entries, 'replace', { verified: refreshed.verified });
+};
+
+type UnstageInputs = {
+  readonly cTree: ObjectId;
+  readonly currentIndex: GitIndex;
+  readonly stagedTree: ObjectId | undefined;
+};
+
+/** git's `reset_head()` reads an unborn HEAD as the empty tree. */
+const headTreeOrEmpty = async (ctx: Context): Promise<ObjectId> => {
+  const head = await readHeadRaw(ctx);
+  try {
+    return await commitTreeOf(ctx, await resolveHeadCommit(ctx, head));
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'NO_INITIAL_COMMIT') {
+      return emptyTreeOid(ctx.hashConfig);
+    }
+    throw err;
+  }
+};
+
+/** git's `reset_head()` then `unclean()`: a staged state to reinstate meets an index off HEAD. */
+const unstageOffHead = async (
+  ctx: Context,
+  lock: IndexLock,
+  inputs: UnstageInputs,
+): Promise<SettledApply | undefined> => {
+  if (inputs.stagedTree === undefined) return undefined;
+  const headTree = await headTreeOrEmpty(ctx);
+  if (headTree === inputs.cTree) return undefined;
+  const differing = await pathsDifferingBetween(ctx, headTree, inputs.cTree);
+  await resetIndexTo(ctx, lock, headTree, inputs.currentIndex);
+  return { kind: 'would-overwrite', localChanges: indexOrdered(differing), untracked: [] };
+};
+
+/**
+ * Reinstate the staged state (`--index`). The donor is the index the work-tree merge just wrote:
+ * git's one-way reset keeps that entry, with its stat, when its id and mode agree with the target.
+ */
 const reinstateIndex = async (
   ctx: Context,
   lock: IndexLock,
-  args: {
-    readonly bTree: ObjectId;
-    readonly cTree: ObjectId;
-    readonly iTree: ObjectId;
-    readonly currentIndex: GitIndex;
-  },
+  args: { readonly stagedTree: ObjectId; readonly writtenIndex: GitIndex },
 ): Promise<void> => {
-  const merged = await mergeTreesToTree(ctx, {
-    baseTree: args.bTree,
-    oursTree: args.cTree,
-    theirsTree: args.iTree,
-    labels: STASH_LABELS,
-  });
-  if (merged.kind !== 'clean') return;
   const entries = await buildIndexFromTree(ctx, {
-    targetTree: merged.mergedTree,
-    currentIndex: args.currentIndex,
+    targetTree: args.stagedTree,
+    currentIndex: args.writtenIndex,
   });
   await lock.commit(entries, 'replace');
 };
@@ -968,8 +1197,9 @@ export const stashApply = async (
   input: StashApplyInput = {},
 ): Promise<StashApplyResult> => {
   const workDir = await gateStash(ctx, 'stash apply');
-  await assertNoPendingOperation(ctx);
-  return applyStashCommit(ctx, workDir, await resolveStashEntry(ctx, input.index ?? 0), input);
+  const stash = await resolveStashEntry(ctx, input.index ?? 0);
+  await refreshAndWriteIndex(ctx);
+  return applyStashCommit(ctx, workDir, stash, input);
 };
 
 /**
@@ -1034,46 +1264,122 @@ interface StashApplication {
   readonly uTree: ObjectId | undefined;
 }
 
-/** Merge the stash into the index and work tree, then restore its index and untracked files. */
+const NOTHING_RESTORED: UntrackedNotRestored = { existing: [] };
+
+const isReported = (restore: UntrackedNotRestored): boolean =>
+  restore.existing.length > 0 || restore.blockedAt !== undefined;
+
+const reportOf = (restore: UntrackedNotRestored) =>
+  isReported(restore) ? { untrackedNotRestored: restore } : {};
+
+/** Merge the stash, settle the index, restore its untracked files, then report the outcome. */
 const applyUnderLock = async (
   ctx: Context,
   lock: IndexLock,
-  { workDir, w, input, parsed, bTree, uTree }: StashApplication,
+  app: StashApplication,
 ): Promise<StashApplyResult> => {
   const currentIndex = await readIndex(ctx);
   rejectUnmergedIndex(currentIndex.entries);
   const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
-  if (uTree !== undefined) await refuseUntrackedOverwrites(ctx, workDir, uTree);
-  const result = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
-  if (result.kind === 'conflict') {
-    await lock.commit(result.indexEntries, 'replace');
-    return {
-      kind: 'conflict',
-      conflicts: toConflictList(result.conflicts),
-    };
-  }
-  const iTree = await commitTreeOf(ctx, parsed.indexParent);
-  if (input.restoreIndex === true && hasStagedChanges({ bTree, cTree, iTree })) {
-    await reinstateIndex(ctx, lock, { bTree, cTree, iTree, currentIndex });
-  } else {
-    const { entries, restagedPaths } = unstageChangesUnlessNew(
-      result.result.newIndexEntries,
-      currentIndex.entries,
-    );
-    await lock.commit(entries, 'replace', { restagedPaths });
-  }
-  if (uTree !== undefined) await restoreUntracked(ctx, uTree);
-  return { kind: 'applied', stash: w };
+  const { bTree, parsed, uTree } = app;
+  const stagedTree = await judgeIndexSide(ctx, app, cTree);
+  const settled =
+    (await unstageOffHead(ctx, lock, { cTree, currentIndex, stagedTree })) ??
+    (await mergeAndSettle(ctx, lock, {
+      bTree,
+      cTree,
+      wTree: parsed.wTree,
+      currentIndex,
+      stagedTree,
+    }));
+  const restore =
+    uTree === undefined ? NOTHING_RESTORED : await restoreUntracked(ctx, app.workDir, uTree);
+  return reportApply(settled, restore, app.w);
 };
 
-const refuseUntrackedOverwrites = async (
-  ctx: Context,
-  workDir: string,
-  uTree: ObjectId,
-): Promise<void> => {
-  const clobbered = await untrackedOverwrites(ctx, workDir, uTree);
-  if (clobbered.length > 0) throw stashApplyWouldOverwrite(clobbered);
+type SettledApply =
+  | { readonly kind: 'clean' }
+  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> }
+  | (WouldOverwriteClasses & { readonly kind: 'would-overwrite' });
+
+type SettleInputs = {
+  readonly currentIndex: GitIndex;
+  readonly stagedTree: ObjectId | undefined;
 };
+
+const mergeAndSettle = async (
+  ctx: Context,
+  lock: IndexLock,
+  inputs: SettleInputs & {
+    readonly bTree: ObjectId;
+    readonly cTree: ObjectId;
+    readonly wTree: ObjectId;
+  },
+): Promise<SettledApply> => {
+  const { bTree, cTree, wTree, ...settle } = inputs;
+  const merged = await mergeStash(ctx, { bTree, cTree, wTree, currentIndex: settle.currentIndex });
+  return settleIndex(ctx, lock, merged, settle);
+};
+
+/** Write the index the merge calls for; a refused merge writes nothing. */
+const settleIndex = async (
+  ctx: Context,
+  lock: IndexLock,
+  merged: StashMerge,
+  app: SettleInputs,
+): Promise<SettledApply> => {
+  switch (merged.kind) {
+    case 'would-overwrite':
+      return merged;
+    case 'conflict':
+      await lock.commit(merged.indexEntries, 'replace');
+      return { kind: 'conflict', conflicts: toConflictList(merged.conflicts) };
+    case 'clean':
+      await settleCleanIndex(ctx, lock, merged.newIndexEntries, app);
+      return { kind: 'clean' };
+  }
+};
+
+const settleCleanIndex = async (
+  ctx: Context,
+  lock: IndexLock,
+  newIndexEntries: ReadonlyArray<IndexEntry>,
+  { currentIndex, stagedTree }: SettleInputs,
+): Promise<void> => {
+  if (stagedTree !== undefined) {
+    const writtenIndex = { ...currentIndex, entries: newIndexEntries };
+    await reinstateIndex(ctx, lock, { stagedTree, writtenIndex });
+    return;
+  }
+  const { entries, restagedPaths } = unstageChangesUnlessNew(newIndexEntries, currentIndex.entries);
+  await lock.commit(entries, 'replace', { restagedPaths });
+};
+
+/** Leaving a stashed path unwritten is a failure, as git exits 1 there. */
+const reportApply = (
+  settled: SettledApply,
+  restore: UntrackedNotRestored,
+  stash: ObjectId,
+): StashApplyResult => {
+  switch (settled.kind) {
+    case 'would-overwrite':
+      throw stashApplyWouldOverwrite(settled, isReported(restore) ? restore : undefined);
+    case 'conflict':
+      return { kind: 'conflict', conflicts: settled.conflicts, ...reportOf(restore) };
+    case 'clean':
+      if (isReported(restore)) throw stashUntrackedNotRestored(restore);
+      return { kind: 'applied', stash };
+  }
+};
+
+type StashMerge =
+  | { readonly kind: 'clean'; readonly newIndexEntries: ReadonlyArray<IndexEntry> }
+  | Extract<ApplyMergeResult, { readonly kind: 'conflict' | 'would-overwrite' }>;
+
+const unchangedMerge = (currentIndex: GitIndex): StashMerge => ({
+  kind: 'clean',
+  newIndexEntries: currentIndex.entries,
+});
 
 /** Three-way merge the stash's work tree onto the current index; refuse a clobber. */
 const mergeStash = async (
@@ -1084,7 +1390,9 @@ const mergeStash = async (
     readonly wTree: ObjectId;
     readonly currentIndex: GitIndex;
   },
-) => {
+): Promise<StashMerge> => {
+  // git's merge returns early when the stash tree is its base: no merge, no AUTO_MERGE.
+  if (trees.wTree === trees.bTree) return unchangedMerge(trees.currentIndex);
   const result = await applyMergeToWorktree(ctx, {
     baseTree: trees.bTree,
     oursTree: trees.cTree,
@@ -1092,14 +1400,13 @@ const mergeStash = async (
     currentIndex: trees.currentIndex,
     labels: STASH_LABELS,
   });
-  if (result.kind === 'would-overwrite')
-    throw stashApplyWouldOverwrite([...result.localChanges, ...result.untracked]);
-  return result;
+  if (result.kind !== 'clean') return result;
+  return { kind: 'clean', newIndexEntries: result.result.newIndexEntries };
 };
 
 export type StashPopResult =
   | { readonly kind: 'applied'; readonly stash: ObjectId; readonly dropped: ObjectId }
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<StashConflict> };
+  | StashApplyConflict;
 
 /** Apply `stash@{index}` then drop it; on conflict the stash is retained. */
 export const stashPop = async (

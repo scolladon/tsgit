@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  pruneDirectoriesFrom,
   pruneEmptiedDirectories,
   survivingDirectoriesOf,
 } from '../../../../../src/application/primitives/internal/prune-emptied-directories.js';
@@ -320,6 +321,82 @@ describe('survivingDirectoriesOf', () => {
 
         // Assert
         expect([...result].sort()).toEqual(['a', 'a/b']);
+      });
+    });
+  });
+});
+
+describe('pruneDirectoriesFrom', () => {
+  const mkdir = (ctx: Context, path: string) => ctx.fs.mkdir(inWork(ctx, path));
+
+  describe('Given an empty directory e', () => {
+    describe('When pruned from e', () => {
+      it('Then e itself is removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await mkdir(ctx, 'e');
+        const sut = pruneDirectoriesFrom;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['e'], NO_SURVIVORS);
+
+        // Assert
+        expect(await ctx.fs.exists(inWork(ctx, 'e'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an empty n/i under an otherwise empty n', () => {
+    describe('When pruned from n/i', () => {
+      it('Then n/i and n are removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await mkdir(ctx, 'n/i');
+        const sut = pruneDirectoriesFrom;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['n/i'], NO_SURVIVORS);
+
+        // Assert
+        expect(await ctx.fs.exists(inWork(ctx, 'n/i'))).toBe(false);
+        expect(await ctx.fs.exists(inWork(ctx, 'n'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an empty d/i under a surviving d', () => {
+    describe('When pruned from d/i', () => {
+      it('Then d/i is removed and d stays', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await mkdir(ctx, 'd/i');
+        const sut = pruneDirectoriesFrom;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['d/i'], survivingDirectoriesOf(['d/tracked']));
+
+        // Assert
+        expect(await ctx.fs.exists(inWork(ctx, 'd/i'))).toBe(false);
+        expect(await ctx.fs.exists(inWork(ctx, 'd'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a start directory holding a file', () => {
+    describe('When pruned from it', () => {
+      it('Then it stays and its parent is not tried', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(inWork(ctx, 'n/i/file'), bytes('keep\n'));
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
+        const sut = pruneDirectoriesFrom;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['n/i'], NO_SURVIVORS);
+
+        // Assert
+        expect(await ctx.fs.exists(inWork(ctx, 'n/i/file'))).toBe(true);
+        expect(rmdir.mock.calls.map(([path]) => path)).toStrictEqual([inWork(ctx, 'n/i')]);
       });
     });
   });

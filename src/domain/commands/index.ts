@@ -5,6 +5,7 @@ export type {
   CommandError,
   PushUnmatchedRefspec,
   RebaseRevisionFailure,
+  UntrackedNotRestored,
 } from './error.js';
 export {
   authorUnconfigured,

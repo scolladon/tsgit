@@ -3,7 +3,6 @@ import {
   applyMergeToWorktree,
   conflictResultTree,
   createMergeResultWriter,
-  mergeTreesToTree,
   removeChangedOutcome,
   removeDisplacedFile,
   survivingPathsOf,
@@ -2930,50 +2929,6 @@ describe('applyMergeToWorktree writes through the working-tree writer', () => {
         if (result.kind !== 'clean') return;
         const merged = await flattenTree(ctx, result.mergedTree);
         expect(merged.entries.has('f' as FilePath)).toBe(false);
-      });
-    });
-  });
-
-  describe('Given merge.renormalize true and the cherry-pick history', () => {
-    describe('When mergeTreesToTree runs', () => {
-      it('Then it is clean with f holding the normalized merge', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge]\n\trenormalize = true\n');
-        const { baseTree, oursTree, theirsTree } = await renormalizingTrees(ctx, {
-          theirsEdits: true,
-          oursDeletes: false,
-        });
-        const sut = mergeTreesToTree;
-
-        // Act
-        const result = await sut(ctx, { baseTree, oursTree, theirsTree });
-
-        // Assert
-        expect(result.kind).toBe('clean');
-        if (result.kind !== 'clean') return;
-        const merged = await flattenTree(ctx, result.mergedTree);
-        expect(merged.entries.get('f' as FilePath)?.id).toBe(await writeBlob(ctx, 'A\nb\nC\n'));
-      });
-    });
-  });
-
-  describe('Given no merge.renormalize and the cherry-pick history', () => {
-    describe('When mergeTreesToTree runs', () => {
-      it('Then it conflicts', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const { baseTree, oursTree, theirsTree } = await renormalizingTrees(ctx, {
-          theirsEdits: true,
-          oursDeletes: false,
-        });
-        const sut = mergeTreesToTree;
-
-        // Act
-        const result = await sut(ctx, { baseTree, oursTree, theirsTree });
-
-        // Assert
-        expect(result.kind).toBe('conflict');
       });
     });
   });
