@@ -321,6 +321,15 @@ const snapshotState = async (
   return (await isDirectoryAt(ctx, entry.path)) ? 'occluded' : status;
 };
 
+/**
+ * git stashes with --ignore-submodules, which skips a submodule checkout's own changes only: a
+ * file, a symlink or nothing at a gitlink's path is snapshotted, though no change by itself. A
+ * lossy name has no string path to stat, so its gitlink keeps the index id.
+ */
+const ridesOnIndexId = async (ctx: Context, entry: IndexEntry): Promise<boolean> =>
+  isGitlink(entry.mode) &&
+  (entry.pathBytes !== undefined || (await isDirectoryAt(ctx, entry.path)));
+
 /** One entry against its work-tree file; a conflicted stage is not a tracked file to compare. */
 const classifyEntry = async (
   ctx: Context,
@@ -331,11 +340,7 @@ const classifyEntry = async (
   if (entry.flags.stage !== 0) return undefined;
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
   if (entry.flags.skipWorktree) return { kind: 'indexed', entry, state: 'unchanged' };
-  // git stashes with --ignore-submodules, which skips a submodule checkout's own changes only: a
-  // file, a symlink or nothing at a gitlink's path is a type change and falls through.
-  if (isGitlink(entry.mode) && (await isDirectoryAt(ctx, entry.path))) {
-    return { kind: 'indexed', entry, state: 'unchanged' };
-  }
+  if (await ridesOnIndexId(ctx, entry)) return { kind: 'indexed', entry, state: 'unchanged' };
   const indexed = scope.head === undefined || scope.head.entries.has(escapedPathOf(entry));
   // git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink.
   if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
@@ -554,9 +559,13 @@ const findLocalChanges = async (
   return { iTree, stagedBeyondGitlinks, scope, tracked, ...untracked };
 };
 
+/** git's `--ignore-submodules` check drops every gitlink: it is snapshotted, yet not a change by itself. */
+const countsAsChange = (tracked: TrackedEntry): boolean =>
+  tracked.state !== 'unchanged' && !isGitlink(tracked.entry.mode);
+
 const hasLocalChanges = (found: LocalChanges): boolean =>
   found.stagedBeyondGitlinks ||
-  found.tracked.some(({ state }) => state !== 'unchanged') ||
+  found.tracked.some(countsAsChange) ||
   found.untrackedFiles.length > 0;
 
 interface UntrackedListing {

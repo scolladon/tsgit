@@ -13,10 +13,12 @@
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -703,6 +705,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
     'a regular file': fileWith('f', 'precious\n'),
     'a symlink': linkAt('f', 'target'),
     nothing: () => undefined,
+    'a directory holding an untracked file': fileWith('f/u', 'u\n'),
   };
 
   describe.each(Object.entries(GITLINK_STAND_INS))(
@@ -731,22 +734,349 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
     },
   );
 
-  describe('Given an index gitlink with a regular file standing at its path', () => {
-    describe('When git and tsgit stash push then apply', () => {
-      it('Then both bring the file back with its bytes', async () => {
+  describe.each([
+    ['a regular file', fileWith('f', 'precious\n')],
+    ['a symlink', linkAt('f', 'target')],
+  ] as const)('Given an index gitlink with %s standing at its path', (_name, stand) => {
+    describe.each(PUSH_FLAGS)('When git and tsgit stash push $name then apply', (push) => {
+      it('Then both bring the path back the same', async () => {
         // Arrange
-        await arrange(stageGitlinkOver(fileWith('f', 'precious\n')));
+        await arrange(stageGitlinkOver(stand));
         const sut = repo.stash;
 
         // Act
-        runGit(['-C', pair.peer, 'stash', 'push', '-q'], { env: COMMIT_ENV });
-        await sut.push({});
+        runGit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], { env: COMMIT_ENV });
+        await sut.push(push.ours);
         runGit(['-C', pair.peer, 'stash', 'apply', '-q'], { env: COMMIT_ENV });
         await sut.apply();
 
         // Assert
-        expect(readFileSync(path.join(pair.peer, 'f'), 'utf8')).toBe('precious\n');
-        expect(readFileSync(path.join(pair.ours, 'f'), 'utf8')).toBe('precious\n');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        expect(indexState(pair.ours)).toEqual(indexState(pair.peer));
+        expect(staleEntries(pair.ours)).toEqual(staleEntries(pair.peer));
+      });
+    });
+  });
+
+  const withTop = (dir: string): void => fileWith('keep', 'edited\n')(dir);
+  const HEAD_ONLY_SEED = [...SWAP_SEED, gitlink('sub')];
+  const loseGitlink = (stand: (dir: string) => void) => (dir: string) => {
+    runGit(['-C', dir, 'rm', '-q', '--cached', 'sub']);
+    rmSync(path.join(dir, 'sub'), { recursive: true, force: true });
+    stand(dir);
+  };
+
+  const LOST_GITLINK_STAND_INS: Record<string, (dir: string) => void> = {
+    'a regular file': fileWith('sub', 'precious\n'),
+    'a symlink': linkAt('sub', 'target'),
+    nothing: () => undefined,
+    'an empty directory': emptyDirectoryAt('sub'),
+  };
+
+  describe.each(Object.entries(LOST_GITLINK_STAND_INS))(
+    'Given a HEAD gitlink the index lost with %s standing at its path and another file edited',
+    (_name, stand) => {
+      describe.each(PUSH_FLAGS)('When git and tsgit stash push $name', (push) => {
+        it('Then both stash the same trees and leave the same tree and index', async () => {
+          // Arrange
+          await arrange((dir) => {
+            loseGitlink(stand)(dir);
+            withTop(dir);
+          }, HEAD_ONLY_SEED);
+          const sut = repo.stash.push;
+
+          // Act
+          runGit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], { env: COMMIT_ENV });
+          const result = await sut(push.ours);
+
+          // Assert
+          expect(result.kind).toBe('saved');
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          for (const rev of ['stash@{0}', 'stash@{0}^2']) {
+            expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
+          }
+          expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+          expectSameIndexOutcome();
+        });
+      });
+    },
+  );
+
+  describe.each(Object.entries(LOST_GITLINK_STAND_INS))(
+    'Given a HEAD gitlink the index lost with %s standing at its path and nothing else changed',
+    (_name, stand) => {
+      describe('When git and tsgit stash push', () => {
+        it('Then neither saves and no stash ref exists', async () => {
+          // Arrange
+          await arrange(loseGitlink(stand), HEAD_ONLY_SEED);
+          const sut = repo.stash.push;
+
+          // Act
+          const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q'], {
+            env: COMMIT_ENV,
+          });
+          const result = await sut({});
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(result).toStrictEqual({ kind: 'no-local-changes' });
+          expect(existsSync(path.join(pair.peer, '.git', 'refs', 'stash'))).toBe(false);
+          expect(existsSync(path.join(pair.ours, '.git', 'refs', 'stash'))).toBe(false);
+        });
+      });
+    },
+  );
+
+  describe('Given a gitlink in HEAD and the index with nothing standing at its path and another file edited', () => {
+    describe.each(PUSH_FLAGS)('When git and tsgit stash push $name', (push) => {
+      it('Then both drop the gitlink from W and leave the same tree', async () => {
+        // Arrange
+        await arrange((dir) => {
+          rmSync(path.join(dir, 'sub'), { recursive: true, force: true });
+          withTop(dir);
+        }, HEAD_ONLY_SEED);
+        const sut = repo.stash.push;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], { env: COMMIT_ENV });
+        const result = await sut(push.ours);
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        for (const rev of ['stash@{0}', 'stash@{0}^2']) {
+          expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
+        }
+        expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+        expectSameIndexOutcome();
+      });
+    });
+  });
+
+  const COMMITTED_GITLINK_SEED = [...SWAP_SEED, gitlink('m'), gitlink('lead/m')];
+  const outsideOf = (dir: string): string => `${dir}-outside`;
+  const redirectLeadingDirectory =
+    (holder: (outside: string) => void) =>
+    (dir: string): void => {
+      const outside = outsideOf(dir);
+      mkdirSync(outside, { recursive: true });
+      holder(outside);
+      rmSync(path.join(dir, 'lead'), { recursive: true, force: true });
+      symlinkSync(path.relative(dir, outside), path.join(dir, 'lead'));
+    };
+  const replacingGitlink = (stand: (dir: string) => void) => (dir: string) => {
+    rmSync(path.join(dir, 'm'), { recursive: true, force: true });
+    stand(dir);
+  };
+
+  const COMMITTED_GITLINK_STAND_INS: Record<string, (dir: string) => void> = {
+    'a regular file': replacingGitlink(fileWith('m', 'precious\n')),
+    'a symlink': replacingGitlink(linkAt('m', 'target')),
+    'a symlink to a directory': replacingGitlink(linkAt('m', 'd')),
+    nothing: replacingGitlink(() => undefined),
+  };
+
+  const BEYOND_SYMLINK_STAND_INS: Record<string, (dir: string) => void> = {
+    'a symlinked leading directory over a file': redirectLeadingDirectory((outside) =>
+      writeFileSync(path.join(outside, 'm'), 'outside\n'),
+    ),
+    'a symlinked leading directory over nothing': redirectLeadingDirectory(() => undefined),
+  };
+
+  describe.each(Object.entries(COMMITTED_GITLINK_STAND_INS))(
+    'Given a gitlink in HEAD and the index with %s at its path and nothing else changed',
+    (_name, stand) => {
+      describe.each(PUSH_FLAGS)('When git and tsgit stash push $name', (push) => {
+        it('Then neither saves, no stash ref exists and the work tree is untouched', async () => {
+          // Arrange
+          await arrange(stand, COMMITTED_GITLINK_SEED);
+          const before = listing(pair.ours);
+          const sut = repo.stash.push;
+
+          // Act
+          const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], {
+            env: COMMIT_ENV,
+          });
+          const result = await sut(push.ours);
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(result).toStrictEqual({ kind: 'no-local-changes' });
+          expect(existsSync(path.join(pair.peer, '.git', 'refs', 'stash'))).toBe(false);
+          expect(existsSync(path.join(pair.ours, '.git', 'refs', 'stash'))).toBe(false);
+          expect(listing(pair.ours)).toEqual(before);
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        });
+      });
+    },
+  );
+
+  describe.each(Object.entries(BEYOND_SYMLINK_STAND_INS))(
+    'Given a gitlink in HEAD and the index with %s and nothing else changed',
+    (_name, stand) => {
+      describe('When git and tsgit stash push', () => {
+        it('Then neither saves, no stash ref exists and the work tree is untouched', async () => {
+          // Arrange
+          await arrange(stand, COMMITTED_GITLINK_SEED);
+          const before = listing(pair.ours);
+          const sut = repo.stash.push;
+
+          // Act
+          const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q'], {
+            env: COMMIT_ENV,
+          });
+          const result = await sut({});
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(result).toStrictEqual({ kind: 'no-local-changes' });
+          expect(existsSync(path.join(pair.ours, '.git', 'refs', 'stash'))).toBe(false);
+          expect(listing(pair.ours)).toEqual(before);
+        });
+      });
+    },
+  );
+
+  const moveGitlink = (dir: string): void => {
+    const moved = gitOut(dir, ['rev-parse', 'HEAD']);
+    runGit(['-C', dir, 'update-index', '--cacheinfo', `160000,${moved},sub`]);
+  };
+  const addGitlink = (dir: string): void => {
+    const added = gitOut(dir, ['rev-parse', 'HEAD']);
+    runGit(['-C', dir, 'update-index', '--add', '--cacheinfo', `160000,${added},sub`]);
+  };
+  const standingAtSub =
+    (stand: (dir: string) => void) =>
+    (dir: string): void => {
+      rmSync(path.join(dir, 'sub'), { recursive: true, force: true });
+      stand(dir);
+    };
+  const nestedCheckoutAtSub = (dir: string): void => {
+    runGit(['-C', path.join(dir, 'sub'), 'init', '-q']);
+  };
+
+  interface GitlinkProjection {
+    readonly seed: ReadonlyArray<TreeEntry>;
+    readonly plant: (dir: string) => void;
+  }
+
+  const GITLINK_PROJECTIONS: Record<string, GitlinkProjection> = {
+    'a gitlink unmoved from HEAD with a regular file at its path': {
+      seed: HEAD_ONLY_SEED,
+      plant: standingAtSub(fileWith('sub', 'precious\n')),
+    },
+    'a gitlink unmoved from HEAD with a symlink at its path': {
+      seed: HEAD_ONLY_SEED,
+      plant: standingAtSub(linkAt('sub', 'target')),
+    },
+    'a gitlink unmoved from HEAD with a symlink to a directory at its path': {
+      seed: HEAD_ONLY_SEED,
+      plant: standingAtSub(linkAt('sub', 'd')),
+    },
+    'a gitlink moved from HEAD with a regular file at its path': {
+      seed: HEAD_ONLY_SEED,
+      plant: (dir) => {
+        moveGitlink(dir);
+        standingAtSub(fileWith('sub', 'precious\n'))(dir);
+      },
+    },
+    'a gitlink moved from HEAD with a real checkout at its path': {
+      seed: HEAD_ONLY_SEED,
+      plant: (dir) => {
+        moveGitlink(dir);
+        nestedCheckoutAtSub(dir);
+      },
+    },
+    'a gitlink newly staged with nothing at its path': {
+      seed: SWAP_SEED,
+      plant: (dir) => addGitlink(dir),
+    },
+  };
+
+  describe.each(PUSH_FLAGS)(
+    'Given a gitlink newly staged with a regular file at its path and another file edited, when git and tsgit stash push $name',
+    (push) => {
+      it('Then both stash the same trees', async () => {
+        // Arrange
+        await arrange((dir) => {
+          addGitlink(dir);
+          fileWith('sub', 'precious\n')(dir);
+          withTop(dir);
+        }, SWAP_SEED);
+        const sut = repo.stash.push;
+
+        // Act
+        runGit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], { env: COMMIT_ENV });
+        const result = await sut(push.ours);
+
+        // Assert
+        expect(result.kind).toBe('saved');
+        for (const rev of ['stash@{0}', 'stash@{0}^2']) {
+          expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
+        }
+        expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+      });
+    },
+  );
+
+  const ALONE_IS_NO_CHANGE = [
+    'a gitlink unmoved from HEAD with a regular file at its path',
+    'a gitlink unmoved from HEAD with a symlink at its path',
+    'a gitlink unmoved from HEAD with a symlink to a directory at its path',
+    'a gitlink moved from HEAD with a regular file at its path',
+  ];
+
+  describe.each(Object.entries(GITLINK_PROJECTIONS))(
+    'Given %s and another file edited',
+    (_name, shape) => {
+      describe.each(PUSH_FLAGS)('When git and tsgit stash push $name', (push) => {
+        it('Then both stash the same trees and leave the same tree and index', async () => {
+          // Arrange
+          await arrange((dir) => {
+            shape.plant(dir);
+            withTop(dir);
+          }, shape.seed);
+          const sut = repo.stash.push;
+
+          // Act
+          runGit(['-C', pair.peer, 'stash', 'push', '-q', ...push.git], { env: COMMIT_ENV });
+          const result = await sut(push.ours);
+
+          // Assert
+          expect(result.kind).toBe('saved');
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          for (const rev of ['stash@{0}', 'stash@{0}^2']) {
+            expect(treeAt(pair.ours, rev)).toBe(treeAt(pair.peer, rev));
+          }
+          expect(refTail(pair.ours)).toEqual(refTail(pair.peer));
+          expectSameIndexOutcome();
+        });
+      });
+    },
+  );
+
+  describe.each(ALONE_IS_NO_CHANGE)('Given %s and nothing else changed', (name) => {
+    describe('When git and tsgit stash push', () => {
+      it('Then neither saves, no stash ref exists and the work tree is untouched', async () => {
+        // Arrange
+        const shape = GITLINK_PROJECTIONS[name];
+        if (shape === undefined) throw new Error(`unknown shape ${name}`);
+        await arrange(shape.plant, shape.seed);
+        const before = listing(pair.ours);
+        const sut = repo.stash.push;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-q'], {
+          env: COMMIT_ENV,
+        });
+        const result = await sut({});
+
+        // Assert
+        expect(git.exitCode).toBe(0);
+        expect(result).toStrictEqual({ kind: 'no-local-changes' });
+        expect(existsSync(path.join(pair.peer, '.git', 'refs', 'stash'))).toBe(false);
+        expect(existsSync(path.join(pair.ours, '.git', 'refs', 'stash'))).toBe(false);
+        expect(listing(pair.ours)).toEqual(before);
         expect(listing(pair.ours)).toEqual(listing(pair.peer));
       });
     });
