@@ -31,11 +31,14 @@ working-tree diff step. Two correct probes disagreed only because one seeded the
 
 ## Decision
 
-**User-ratified: option 1.** Among every path the stash's working-tree diff lists (tracked entries whose state is
-not unchanged, plus HEAD-only paths), the smallest path in index order rides on its index id when it is a gitlink
-that HEAD and the index hold alike with a regular file or a symlink standing at its path; every later position
-records the occupant, as does a deletion, a lost-HEAD gitlink or a staged type change in any position. A gitlink
-path's work-tree state never counts as a local change on its own, as git's `check_changes` with
+**User-ratified: option 1.** A gitlink that HEAD and the index hold alike, with a regular file or a symlink
+standing at its path, rides on its index id when it sorts before every listed non-gitlink changed path (a tracked
+non-gitlink entry whose state is not unchanged or that differs from the base, or a non-gitlink path HEAD holds and
+the index lost); once such a path precedes it, the occupant is recorded. Deleted gitlinks, lost-HEAD gitlinks and
+untracked files are not listed paths, so they neither end nor start the leading run; a deletion, a lost-HEAD
+gitlink or a staged type change at a gitlink is recorded in any position. Probed on git 2.55.0: `T a, T b, M z`
+keeps `a` and `b`; `T a1, M a15, T a2` keeps `a1` and records `a15` and `a2`; `d a1, T a2, M z1` keeps `a2`. A
+gitlink path's work-tree state never counts as a local change on its own, as git's `check_changes` with
 `--ignore-submodules` never counts it.
 
 ## Consequences
