@@ -290,5 +290,5 @@ See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list
 - Primitives: [`readObject`](../primitives/read-object.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`merge`](merge.md) · [`reset`](reset.md) · [`checkout`](checkout.md)
 - Recipes: [`../recipes.md`](../recipes.md)
-- ADRs: 210–216, 625, 627–628, 950, 952–954, 956, 1106
+- ADRs: 210–216, 625, 627–628, 950, 952–954, 956, 1096–1106
 - Roadmap: Phase 21.3
