@@ -258,21 +258,41 @@ const setupGitlinkWithStandIn = async (
 };
 
 /** The index gains the gitlink `new` at A over a HEAD that has no such path. */
-const stageNewGitlink = async (ctx: Context): Promise<void> => {
-  await write(ctx, 'new', 'x\n');
-  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/new`);
+const stageNewGitlink = async (ctx: Context, name = 'new'): Promise<void> => {
+  await write(ctx, name, 'x\n');
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${name}`);
   const tracked = await readIndex(ctx);
   await replaceIndexEntries(ctx, [
     ...tracked.entries,
-    indexEntryFromStat(stat, FILE_MODE.GITLINK as IndexEntry['mode'], GITLINK_A, 'new' as FilePath),
+    indexEntryFromStat(stat, FILE_MODE.GITLINK as IndexEntry['mode'], GITLINK_A, name as FilePath),
   ]);
-  await ctx.fs.rm(`${ctx.layout.workDir}/new`);
+  await ctx.fs.rm(`${ctx.layout.workDir}/${name}`);
 };
 
 const workTreeEntryOf = async (ctx: Context, stash: ObjectId, path: string) => {
   const flat = await flattenTree(ctx, (await commitOf(ctx, stash)).tree);
   return flat.entries.get(path as FilePath);
 };
+
+/** HEAD and the index hold the gitlinks `names` alike; `files` are committed beside them. */
+const setupSameGitlinks = async (
+  names: ReadonlyArray<string>,
+  files: ReadonlyArray<string> = [],
+): Promise<Context> => {
+  const ctx = await setupRepo();
+  for (const file of files) await commitFile(ctx, file, `${file}\n`, `add ${file}`);
+  for (const name of names) await stageNewGitlink(ctx, name);
+  await commit(ctx, { message: 'add gitlinks', author });
+  return ctx;
+};
+
+const occupy = async (ctx: Context, name: string, kind: 'file' | 'symlink'): Promise<void> => {
+  if (kind === 'file') await write(ctx, name, 'precious\n');
+  else await ctx.fs.symlink('target', `${ctx.layout.workDir}/${name}`);
+};
+
+const modeAt = async (ctx: Context, stash: ObjectId, path: string) =>
+  (await workTreeEntryOf(ctx, stash, path))?.mode;
 
 describe('stash push', () => {
   describe('Given three committed files sharing a directory', () => {
@@ -840,6 +860,105 @@ describe('stash push', () => {
         // Assert
         if (result.kind !== 'saved') throw new Error('expected saved');
         expect((await workTreeEntryOf(ctx, result.stash, 'new'))?.mode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe.each([
+    ['a regular file', 'file', FILE_MODE.REGULAR],
+    ['a symlink', 'symlink', FILE_MODE.SYMLINK],
+  ] as const)('Given a gitlink unmoved from HEAD with %s at its path', (_name, kind, mode) => {
+    describe('When push runs and the gitlink leads the changed paths', () => {
+      it('Then the W tree keeps the gitlink at its index id', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a']);
+        await occupy(ctx, 'a', kind);
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
+      });
+    });
+
+    describe('When push runs and an edited path sorts before the gitlink', () => {
+      it('Then the W tree records what stands there', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['b'], ['a1']);
+        await occupy(ctx, 'b', kind);
+        await write(ctx, 'a1', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'b')).toBe(mode);
+      });
+    });
+  });
+
+  describe('Given two gitlinks unmoved from HEAD with files at their paths', () => {
+    describe('When push runs and both lead the changed paths', () => {
+      it('Then the W tree keeps both at their index ids', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
+        await occupy(ctx, 'a', 'file');
+        await occupy(ctx, 'b', 'file');
+        await write(ctx, 'z', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
+        expect(await modeAt(ctx, result.stash, 'b')).toBe(FILE_MODE.GITLINK);
+      });
+    });
+
+    describe('When push runs and an edited path sorts between them', () => {
+      it('Then the first keeps its index id and the second records the file', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'c'], ['b']);
+        await occupy(ctx, 'a', 'file');
+        await occupy(ctx, 'c', 'file');
+        await write(ctx, 'b', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
+        expect(await modeAt(ctx, result.stash, 'c')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and an untracked file sorting before it', () => {
+    describe('When push runs with includeUntracked beside an edited tracked file', () => {
+      it('Then the W tree keeps the gitlink at its index id', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a']);
+        await occupy(ctx, 'a', 'file');
+        await write(ctx, '0-untracked', 'u\n');
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
       });
     });
   });

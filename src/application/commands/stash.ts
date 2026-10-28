@@ -23,7 +23,7 @@ import type { DiffChange } from '../../domain/diff/diff-change.js';
 import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { isGitlink } from '../../domain/diff/index.js';
 import { diffIndexAgainstTreeKeyed } from '../../domain/diff/index-diff.js';
-import { sortByPath } from '../../domain/diff/path-compare.js';
+import { comparePaths, sortByPath } from '../../domain/diff/path-compare.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
@@ -383,6 +383,64 @@ const headOnlyPaths = (head: EscapedFlatTree, index: GitIndex): ReadonlyArray<Fi
   return [...head.entries.keys()].filter((path) => !indexed.has(keyOfPath(path)));
 };
 
+const differsFromBase = (scope: SnapshotScope, entry: IndexEntry): boolean => {
+  if (scope.head === undefined) return false;
+  const base = scope.head.entries.get(escapedPathOf(entry));
+  return base?.id !== entry.id || base.mode !== entry.mode;
+};
+
+const isSameGitlinkInBase = (scope: SnapshotScope, entry: IndexEntry): boolean =>
+  isGitlink(entry.mode) && !differsFromBase(scope, entry);
+
+const isListedChange = (scope: SnapshotScope, { entry, state }: TrackedEntry): boolean =>
+  !isGitlink(entry.mode) && (state !== 'unchanged' || differsFromBase(scope, entry));
+
+/** The smallest path of git's work-tree diff, which never lists a gitlink of its own accord. */
+const firstListedPath = (
+  scope: SnapshotScope,
+  index: GitIndex,
+  tracked: ReadonlyArray<TrackedEntry>,
+): FilePath | undefined => {
+  const lost = scope.head === undefined ? [] : headOnlyPaths(scope.head, index);
+  const lostFiles = lost.filter((path) => {
+    const mode = scope.head?.entries.get(path)?.mode;
+    return mode !== undefined && !isGitlink(mode);
+  });
+  const listed = tracked
+    .filter((entry) => isListedChange(scope, entry))
+    .map(({ entry }) => entry.path);
+  return [...listed, ...lostFiles].sort(comparePaths)[0];
+};
+
+const OCCUPIED_STATES: ReadonlySet<SnapshotState> = new Set([
+  'modified',
+  'type-changed',
+  'mode-changed',
+]);
+
+/**
+ * git's `stash push` leaves a gitlink HEAD already holds, with a file or symlink standing in its
+ * place, out of the working-tree diff while it sorts before every other changed path; behind any
+ * such path the occupant is recorded (verified on git 2.55.0 and 2.56.0).
+ */
+const keepLeadingGitlinks = (
+  tracked: ReadonlyArray<TrackedEntry>,
+  scope: SnapshotScope,
+  index: GitIndex,
+): ReadonlyArray<TrackedEntry> => {
+  const lead = firstListedPath(scope, index, tracked);
+  const rides = (candidate: TrackedEntry): boolean =>
+    candidate.kind === 'indexed' &&
+    OCCUPIED_STATES.has(candidate.state) &&
+    isSameGitlinkInBase(scope, candidate.entry) &&
+    (lead === undefined || comparePaths(candidate.entry.path, lead) < 0);
+  return tracked.map((candidate) =>
+    candidate.kind === 'indexed' && rides(candidate)
+      ? { ...candidate, state: 'unchanged' as const }
+      : candidate,
+  );
+};
+
 /**
  * Compare every stage-0 entry with its work-tree file, without hashing anything for the stash,
  * then add the HEAD paths the index lost. The comparisons fan out through the `ioBound` bucket;
@@ -413,7 +471,8 @@ const classifyTracked = async (
       : await boundedMapFor(ctx, 'ioBound', headOnlyPaths(head, index), (path) =>
           classifyHeadOnly(ctx, path, head, scanner),
         );
-  return [...classified, ...headOnly].filter((tracked) => tracked !== undefined);
+  const tracked = [...classified, ...headOnly].filter((entry) => entry !== undefined);
+  return keepLeadingGitlinks(tracked, scope, index);
 };
 
 /**

@@ -951,6 +951,12 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
       rmSync(path.join(dir, 'sub'), { recursive: true, force: true });
       stand(dir);
     };
+  const standingAt =
+    (name: string, stand: (dir: string) => void) =>
+    (dir: string): void => {
+      rmSync(path.join(dir, name), { recursive: true, force: true });
+      stand(dir);
+    };
   const nestedCheckoutAtSub = (dir: string): void => {
     runGit(['-C', path.join(dir, 'sub'), 'init', '-q']);
   };
@@ -972,6 +978,32 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
     'a gitlink unmoved from HEAD with a symlink to a directory at its path': {
       seed: HEAD_ONLY_SEED,
       plant: standingAtSub(linkAt('sub', 'd')),
+    },
+    'a leading gitlink unmoved from HEAD with a regular file at its path': {
+      seed: [...SWAP_SEED, gitlink('a')],
+      plant: (dir) => {
+        standingAt('a', fileWith('a', 'precious\n'))(dir);
+        fileWith('0-untracked', 'u\n')(dir);
+      },
+    },
+    'a leading gitlink unmoved from HEAD with a symlink at its path': {
+      seed: [...SWAP_SEED, gitlink('a')],
+      plant: standingAt('a', linkAt('a', 'target')),
+    },
+    'two leading gitlinks unmoved from HEAD with files at their paths': {
+      seed: [...SWAP_SEED, gitlink('a'), gitlink('b')],
+      plant: (dir) => {
+        standingAt('a', fileWith('a', 'precious\n'))(dir);
+        standingAt('b', fileWith('b', 'precious\n'))(dir);
+      },
+    },
+    'two gitlinks unmoved from HEAD with files at their paths around an edited file': {
+      seed: [...SWAP_SEED, gitlink('a'), regular('b', 'b\n'), gitlink('c')],
+      plant: (dir) => {
+        standingAt('a', fileWith('a', 'precious\n'))(dir);
+        standingAt('c', fileWith('c', 'precious\n'))(dir);
+        fileWith('b', 'edited\n')(dir);
+      },
     },
     'a gitlink moved from HEAD with a regular file at its path': {
       seed: HEAD_ONLY_SEED,
@@ -1020,6 +1052,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
   );
 
   const ALONE_IS_NO_CHANGE = [
+    'a leading gitlink unmoved from HEAD with a regular file at its path',
     'a gitlink unmoved from HEAD with a regular file at its path',
     'a gitlink unmoved from HEAD with a symlink at its path',
     'a gitlink unmoved from HEAD with a symlink to a directory at its path',
