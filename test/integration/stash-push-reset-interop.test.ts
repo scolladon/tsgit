@@ -1080,7 +1080,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
   };
 
   describe.each(PUSH_FLAGS)(
-    'Given a gitlink newly staged with a regular file at its path and another file edited, when git and tsgit stash push $name',
+    'Given a gitlink newly staged with a regular file at its path and another file edited, When git and tsgit stash push $name',
     (push) => {
       it('Then both stash the same trees', async () => {
         // Arrange
