@@ -1005,6 +1005,43 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
         fileWith('b', 'edited\n')(dir);
       },
     },
+    'a deleted gitlink beside a leading gitlink unmoved from HEAD with a file at its path': {
+      seed: [...SWAP_SEED, gitlink('a'), gitlink('b')],
+      plant: (dir) => {
+        rmSync(path.join(dir, 'a'), { recursive: true, force: true });
+        standingAt('b', fileWith('b', 'precious\n'))(dir);
+      },
+    },
+    'a lost gitlink beside a leading gitlink unmoved from HEAD with a file at its path': {
+      seed: [...SWAP_SEED, gitlink('a'), gitlink('b')],
+      plant: (dir) => {
+        runGit(['-C', dir, 'rm', '-q', '--cached', 'a']);
+        rmSync(path.join(dir, 'a'), { recursive: true, force: true });
+        standingAt('b', fileWith('b', 'precious\n'))(dir);
+      },
+    },
+    'a gitlink unmoved from HEAD with a file at its path behind a file the index lost': {
+      seed: [...SWAP_SEED, regular('a0', 'a0\n'), gitlink('b')],
+      plant: (dir) => {
+        runGit(['-C', dir, 'rm', '-q', '--cached', 'a0']);
+        standingAt('b', fileWith('b', 'precious\n'))(dir);
+      },
+    },
+    'a gitlink unmoved from HEAD with a file at its path behind a staged-only change': {
+      seed: [...SWAP_SEED, regular('a0', 'a0\n'), gitlink('b')],
+      plant: (dir) => {
+        fileWith('a0', 'staged\n')(dir);
+        runGit(['-C', dir, 'add', 'a0']);
+        standingAt('b', fileWith('b', 'precious\n'))(dir);
+      },
+    },
+    'two leading gitlinks unmoved from HEAD with nothing at their paths': {
+      seed: [...SWAP_SEED, gitlink('a'), gitlink('b')],
+      plant: (dir) => {
+        rmSync(path.join(dir, 'a'), { recursive: true, force: true });
+        rmSync(path.join(dir, 'b'), { recursive: true, force: true });
+      },
+    },
     'a gitlink moved from HEAD with a regular file at its path': {
       seed: HEAD_ONLY_SEED,
       plant: (dir) => {

@@ -881,7 +881,11 @@ describe('stash push', () => {
 
         // Assert
         if (result.kind !== 'saved') throw new Error('expected saved');
-        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
+        expect(await workTreeEntryOf(ctx, result.stash, 'a')).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+        expect((await lstatOrUndefined(ctx, 'a'))?.isDirectory).toBe(true);
       });
     });
 
@@ -918,8 +922,10 @@ describe('stash push', () => {
 
         // Assert
         if (result.kind !== 'saved') throw new Error('expected saved');
-        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
-        expect(await modeAt(ctx, result.stash, 'b')).toBe(FILE_MODE.GITLINK);
+        const kept = { id: GITLINK_A, mode: FILE_MODE.GITLINK };
+        expect(await workTreeEntryOf(ctx, result.stash, 'a')).toEqual(kept);
+        expect(await workTreeEntryOf(ctx, result.stash, 'b')).toEqual(kept);
+        expect((await lstatOrUndefined(ctx, 'b'))?.isDirectory).toBe(true);
       });
     });
 
@@ -959,6 +965,149 @@ describe('stash push', () => {
         // Assert
         if (result.kind !== 'saved') throw new Error('expected saved');
         expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+
+  describe('Given a deleted gitlink beside a gitlink unmoved from HEAD with a file at its path', () => {
+    describe('When push runs beside an edited file', () => {
+      it('Then the deleted gitlink does not end the lead and the other keeps its index id', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
+        await occupy(ctx, 'b', 'file');
+        await write(ctx, 'z', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'b')).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+      });
+    });
+  });
+
+  describe('Given a gitlink the index lost beside a gitlink unmoved from HEAD with a file at its path', () => {
+    describe('When push runs beside an edited file', () => {
+      it('Then the lost gitlink does not end the lead and the other keeps its index id', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
+        await unstagePath(ctx, 'a');
+        await occupy(ctx, 'b', 'file');
+        await write(ctx, 'z', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'b')).toEqual({
+          id: GITLINK_A,
+          mode: FILE_MODE.GITLINK,
+        });
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and a file the index lost sorting before it', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['b'], ['a0']);
+        await unstagePath(ctx, 'a0');
+        await occupy(ctx, 'b', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'b')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and a staged-only change sorting before it', () => {
+    describe('When push runs', () => {
+      it('Then the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['b'], ['a0']);
+        await write(ctx, 'a0', 'staged\n');
+        await add(ctx, ['a0']);
+        await occupy(ctx, 'b', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'b')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given two gitlinks unmoved from HEAD with nothing at their paths', () => {
+    describe('When push runs beside an edited file', () => {
+      it('Then the W tree holds neither', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
+        await write(ctx, 'z', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await workTreeEntryOf(ctx, result.stash, 'a')).toBeUndefined();
+        expect(await workTreeEntryOf(ctx, result.stash, 'b')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and a lossy-named file edited', () => {
+    describe('When push runs', () => {
+      it('Then the lossy file leads in byte order and the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['\u00E9']);
+        const view = '\uFFFD';
+        await write(ctx, view, 'lossy\n');
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${view}`);
+        const tracked = await readIndex(ctx);
+        await replaceIndexEntries(ctx, [
+          ...tracked.entries,
+          {
+            ...indexEntryFromStat(
+              stat,
+              FILE_MODE.REGULAR,
+              await writeObject(ctx, {
+                type: 'blob',
+                id: '' as ObjectId,
+                content: new TextEncoder().encode('lossy\n'),
+              }),
+              view as FilePath,
+            ),
+            pathBytes: Uint8Array.of(0x80),
+          },
+        ]);
+        await commit(ctx, { message: 'add lossy', author });
+        await write(ctx, view, 'edited\n');
+        await occupy(ctx, '\u00E9', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, '\u00E9')).toBe(FILE_MODE.REGULAR);
       });
     });
   });

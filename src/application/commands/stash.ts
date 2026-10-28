@@ -23,7 +23,7 @@ import type { DiffChange } from '../../domain/diff/diff-change.js';
 import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { isGitlink } from '../../domain/diff/index.js';
 import { diffIndexAgainstTreeKeyed } from '../../domain/diff/index-diff.js';
-import { comparePaths, sortByPath } from '../../domain/diff/path-compare.js';
+import { sortByPath } from '../../domain/diff/path-compare.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
@@ -34,10 +34,11 @@ import {
   indexPathKey,
   indexPathOfEscaped,
   keyOfPath,
+  pathBytesOf,
 } from '../../domain/git-index/index-path-key.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import { hasEscapedBytes } from '../../domain/objects/encoding.js';
+import { compareBytes, encodeEscaped, hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
   type AuthorIdentity,
@@ -395,12 +396,12 @@ const isSameGitlinkInBase = (scope: SnapshotScope, entry: IndexEntry): boolean =
 const isListedChange = (scope: SnapshotScope, { entry, state }: TrackedEntry): boolean =>
   !isGitlink(entry.mode) && (state !== 'unchanged' || differsFromBase(scope, entry));
 
-/** The smallest path of git's work-tree diff, which never lists a gitlink of its own accord. */
+/** The smallest path of git's work-tree diff in index byte order; git never lists a gitlink of its own accord. */
 const firstListedPath = (
   scope: SnapshotScope,
   index: GitIndex,
   tracked: ReadonlyArray<TrackedEntry>,
-): FilePath | undefined => {
+): Uint8Array | undefined => {
   const lost = scope.head === undefined ? [] : headOnlyPaths(scope.head, index);
   const lostFiles = lost.filter((path) => {
     const mode = scope.head?.entries.get(path)?.mode;
@@ -408,8 +409,8 @@ const firstListedPath = (
   });
   const listed = tracked
     .filter((entry) => isListedChange(scope, entry))
-    .map(({ entry }) => entry.path);
-  return [...listed, ...lostFiles].sort(comparePaths)[0];
+    .map(({ entry }) => pathBytesOf(entry));
+  return [...listed, ...lostFiles.map(encodeEscaped)].sort(compareBytes)[0];
 };
 
 const OCCUPIED_STATES: ReadonlySet<SnapshotState> = new Set([
@@ -429,15 +430,13 @@ const keepLeadingGitlinks = (
   index: GitIndex,
 ): ReadonlyArray<TrackedEntry> => {
   const lead = firstListedPath(scope, index, tracked);
-  const rides = (candidate: TrackedEntry): boolean =>
+  const rides = (candidate: TrackedEntry): candidate is IndexedEntry =>
     candidate.kind === 'indexed' &&
     OCCUPIED_STATES.has(candidate.state) &&
     isSameGitlinkInBase(scope, candidate.entry) &&
-    (lead === undefined || comparePaths(candidate.entry.path, lead) < 0);
+    (lead === undefined || compareBytes(pathBytesOf(candidate.entry), lead) < 0);
   return tracked.map((candidate) =>
-    candidate.kind === 'indexed' && rides(candidate)
-      ? { ...candidate, state: 'unchanged' as const }
-      : candidate,
+    rides(candidate) ? { ...candidate, state: 'unchanged' as const } : candidate,
   );
 };
 
