@@ -997,6 +997,7 @@ describe('stash push', () => {
         // Arrange
         const ctx = await setupSameGitlinks(['a', 'b'], ['z']);
         await unstagePath(ctx, 'a');
+        await occupy(ctx, 'a', 'file');
         await occupy(ctx, 'b', 'file');
         await write(ctx, 'z', 'edited\n');
         const sut = stashPush;
@@ -1006,6 +1007,7 @@ describe('stash push', () => {
 
         // Assert
         if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a')).toBe(FILE_MODE.REGULAR);
         expect(await workTreeEntryOf(ctx, result.stash, 'b')).toEqual({
           id: GITLINK_A,
           mode: FILE_MODE.GITLINK,
@@ -1108,6 +1110,45 @@ describe('stash push', () => {
         // Assert
         if (result.kind !== 'saved') throw new Error('expected saved');
         expect(await modeAt(ctx, result.stash, '\u00E9')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a gitlink unmoved from HEAD with a file at its path and a file the index lost and the disk lost', () => {
+    describe('When push runs', () => {
+      it('Then the lost file still leads and the W tree records the file at the gitlink path', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['g'], ['a0']);
+        await unstagePath(ctx, 'a0');
+        await ctx.fs.rm(`${ctx.layout.workDir}/a0`);
+        await occupy(ctx, 'g', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'g')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+
+    describe('When push runs beside an edited file sorting after the gitlink', () => {
+      it('Then the smallest listed path decides, not the first one found', async () => {
+        // Arrange
+        const ctx = await setupSameGitlinks(['g'], ['a0', 'm']);
+        await unstagePath(ctx, 'a0');
+        await ctx.fs.rm(`${ctx.layout.workDir}/a0`);
+        await write(ctx, 'm', 'edited\n');
+        await occupy(ctx, 'g', 'file');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'g')).toBe(FILE_MODE.REGULAR);
       });
     });
   });

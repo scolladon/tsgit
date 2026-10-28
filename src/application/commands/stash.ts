@@ -434,6 +434,7 @@ const keepLeadingGitlinks = (
     candidate.kind === 'indexed' &&
     OCCUPIED_STATES.has(candidate.state) &&
     isSameGitlinkInBase(scope, candidate.entry) &&
+    // Stryker disable next-line EqualityOperator: equivalent — the lead is a non-gitlink or lost path, never the candidate's own, so the bytes never compare equal
     (lead === undefined || compareBytes(pathBytesOf(candidate.entry), lead) < 0);
   return tracked.map((candidate) =>
     rides(candidate) ? { ...candidate, state: 'unchanged' as const } : candidate,

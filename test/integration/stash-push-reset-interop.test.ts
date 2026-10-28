@@ -1035,6 +1035,23 @@ describe.skipIf(!GIT_AVAILABLE)('stash push include-untracked interop', () => {
         standingAt('b', fileWith('b', 'precious\n'))(dir);
       },
     },
+    'a gitlink unmoved from HEAD with a file at its path behind a staged mode change': {
+      seed: [...SWAP_SEED, regular('a0', 'a0\n'), gitlink('b')],
+      plant: (dir) => {
+        chmodSync(path.join(dir, 'a0'), 0o755);
+        runGit(['-C', dir, 'add', 'a0']);
+        standingAt('b', fileWith('b', 'precious\n'))(dir);
+      },
+    },
+    'a gitlink unmoved from HEAD with a file at its path behind a file lost from the index and the disk':
+      {
+        seed: [...SWAP_SEED, regular('a0', 'a0\n'), gitlink('b')],
+        plant: (dir) => {
+          runGit(['-C', dir, 'rm', '-q', '--cached', 'a0']);
+          rmSync(path.join(dir, 'a0'));
+          standingAt('b', fileWith('b', 'precious\n'))(dir);
+        },
+      },
     'two leading gitlinks unmoved from HEAD with nothing at their paths': {
       seed: [...SWAP_SEED, gitlink('a'), gitlink('b')],
       plant: (dir) => {
