@@ -10,10 +10,10 @@ phases:
   design:         { context: .claude/workflow/faithfulness.md }
   planning:       { context: .claude/workflow/surface-gates.md }
   implementation: { context: [.claude/workflow/surface-gates.md, .claude/workflow/faithfulness.md, .claude/workflow/code-navigation.md] }
-  refactoring:    { context: .claude/workflow/code-navigation.md }
-  review:         { context: .claude/workflow/surface-gates.md }
+  refactoring:    { context: [.claude/workflow/code-navigation.md, .claude/workflow/probes.md] }
+  review:         { context: [.claude/workflow/surface-gates.md, .claude/workflow/probes.md] }
   documentation:  { context: .claude/workflow/docs-drift.md }
-  validation:     { override: .claude/workflow/mutation.md }
+  validation:     { override: .claude/workflow/mutation.md, context: .claude/workflow/probes.md }
   integrate:      { context: .claude/workflow/docs-drift.md, merge-flags: "--admin", non-blocking-jobs: [mutation, benchmark-compare] }
 pr: { creator: session, pre-pr-gate: "npm outdated" }
 scripts: { pre-teardown: .claude/workflow/serena-prune.sh }
