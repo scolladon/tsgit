@@ -1,0 +1,32 @@
+name: Setup git
+description: Install git on Linux and fail the job when the runner's git is not the pinned major.minor
+
+inputs:
+  version:
+    description: Pinned git major.minor; the single constant every git-spawning job is held to
+    required: false
+    default: "2.56"
+
+runs:
+  using: composite
+  steps:
+    - name: Install git from the git-core PPA
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo add-apt-repository -y ppa:git-core/ppa
+        sudo apt-get update
+        sudo apt-get install -y git
+
+    - name: Assert pinned git version
+      shell: bash
+      env:
+        PINNED_VERSION: ${{ inputs.version }}
+      run: |
+        found="$(git --version)"
+        minor="$(printf '%s' "$found" | sed -E 's/^git version ([0-9]+\.[0-9]+).*/\1/')"
+        if [ "$minor" != "$PINNED_VERSION" ]; then
+          echo "::error::expected git ${PINNED_VERSION}.x, found ${found}"
+          exit 1
+        fi
+        echo "$found"

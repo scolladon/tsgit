@@ -382,6 +382,18 @@ genuinely demonstrating a lint violation.
 tooling/audit-test-pyramid.ts --report-only` to inspect findings without
 the gate triggering. Useful mid-fix; CI never uses the flag.
 
+### Pinned git for interop tests
+
+Interop tests compare against real `git`, so CI holds every git-spawning job
+(`integration`, `posix-integration`, `win-integration`) to one minor: **2.56**.
+Linux installs it from `ppa:git-core/ppa`; the macOS (`macos-26`) and Windows
+images ship it, so they only assert it. A runner whose `git --version` is not
+`2.56.x` fails the job with `expected git 2.56.x, found <version>`.
+
+The constant lives in one place: the `version` default of
+`.github/actions/setup-git/action.yml`. To bump it, change that default and
+re-pin the parity rows that move, in one PR. There is no second-minor lane.
+
 ### Write-surface interop audit (Phase 19.7)
 
 When you add a module under `src/` that emits Git-on-disk bytes (an
