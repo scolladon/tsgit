@@ -21,6 +21,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding, FsckOptions } from '../../src/application/commands/fsck.js';
 import { fsck } from '../../src/application/commands/fsck.js';
@@ -28,12 +29,13 @@ import { disposePackRegistry } from '../../src/application/primitives/read-objec
 import { TsgitError } from '../../src/domain/error.js';
 import { parseIndex, serializeIndex } from '../../src/domain/git-index/index.js';
 import type { Context } from '../../src/ports/context.js';
-
+import { buildSyntheticPack } from '../unit/application/primitives/pack-fixture.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   git,
   runGit,
+  runGitBytes,
   runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
@@ -1851,6 +1853,93 @@ describe.skipIf(!GIT_AVAILABLE)(
             expect(gitMissingLines(gitResult.stdout)).toEqual([`missing blob ${base}`]);
             expect(result.exitCode).toBe(3);
             expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
+          },
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+
+    /** How the crafted pack stores `f.txt`'s blob: whole, or as an offset delta of distance 0. */
+    type SelfBase = 'whole' | 'self';
+
+    /**
+     * One commit of `a.txt` and `f.txt`, its four objects hand-packed into a fresh repo:
+     * `a.txt` whole, then `f.txt` as `selfBase` says, then the tree and the commit.
+     */
+    const selfBaseRepo = async (
+      slug: string,
+      selfBase: SelfBase,
+    ): Promise<{ dir: string; blob: string }> => {
+      const src = path.join(baseRoot, `${slug}-src`);
+      runGit(['init', '-q', '-b', 'main', src]);
+      await writeFile(path.join(src, 'a.txt'), 'alpha\n');
+      await writeFile(path.join(src, 'f.txt'), 'hello\n');
+      commitSeed(src);
+      const rawOf = (type: string, rev: string): Uint8Array =>
+        runGitBytes(['-C', src, 'cat-file', type, rev]);
+      const blob = git(src, 'rev-parse', 'HEAD:f.txt').trim();
+      const fBlob = rawOf('blob', 'HEAD:f.txt');
+      const { packBytes, idxBytes } = await buildSyntheticPack(createMemoryContext(), [
+        { kind: 'base', type: 'blob', content: rawOf('blob', 'HEAD:a.txt') },
+        selfBase === 'whole'
+          ? { kind: 'base', type: 'blob', content: fBlob }
+          : { kind: 'ofs-delta', baseIndex: 0, targetContent: fBlob, distanceOverride: 0 },
+        { kind: 'base', type: 'tree', content: rawOf('tree', 'HEAD^{tree}') },
+        { kind: 'base', type: 'commit', content: rawOf('commit', 'HEAD') },
+      ]);
+      const dir = path.join(baseRoot, slug);
+      runGit(['init', '-q', '-b', 'main', dir]);
+      disableAutoMaintenance(dir);
+      await writePack(dir, 'crafted', packBytes, idxBytes);
+      git(dir, 'update-ref', 'refs/heads/main', git(src, 'rev-parse', 'HEAD').trim());
+      return { dir, blob };
+    };
+
+    describe('Given a hand-packed commit whose blobs are stored whole (control)', () => {
+      describe('When fsck runs', () => {
+        it(
+          'Then both exit 0',
+          async () => {
+            // Arrange
+            const { dir } = await selfBaseRepo('self-base-whole', 'whole');
+            const sut = fsck;
+
+            // Act
+            const gitResult = gitFsck(dir);
+            const result = await sut(trackedNodeContext(dir));
+
+            // Assert
+            expect(gitResult.exitCode).toBe(0);
+            expect(result.exitCode).toBe(gitResult.exitCode);
+          },
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+
+    describe('Given a hand-packed commit whose blob is an offset delta of distance 0, naming its own entry as base', () => {
+      describe('When fsck runs', () => {
+        it(
+          'Then both exit 1, git cannot unpack the blob, and neither calls it missing',
+          async () => {
+            // Arrange
+            const { dir, blob } = await selfBaseRepo('self-base-zero', 'self');
+            const sut = fsck;
+
+            // Act
+            const gitResult = gitFsck(dir);
+            const result = await sut(trackedNodeContext(dir));
+
+            // Assert
+            expect(gitResult.exitCode).toBe(1);
+            expect(gitResult.stderr).toContain('failed to validate delta base reference');
+            expect(gitResult.stderr).toContain(`cannot unpack ${blob}`);
+            expect(gitMissingLines(gitResult.stdout)).toEqual([]);
+            expect(result.exitCode).toBe(gitResult.exitCode);
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
+            expect(result.findings).toContainEqual(
+              expect.objectContaining({ type: 'pack-entry-unpackable', id: blob }),
+            );
           },
           SETUP_TIMEOUT,
         );

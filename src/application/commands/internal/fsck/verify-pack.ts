@@ -228,6 +228,8 @@ function baseNamedBy(
     const header = parsePackEntryHeader(entry.bytes, 0, ctx.hashConfig);
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) return header.baseId;
     if (header.type !== PACK_ENTRY_TYPE.OFS_DELTA) return undefined;
+    // git's get_delta_base names no base unless it starts strictly before the delta.
+    if (header.baseDistance === 0) return undefined;
     const rank = rankOfStart(layout.starts, entry.offset - header.baseDistance);
     return rank < 0 ? undefined : objectIdAt(index, layout.order[rank]!);
   } catch (error) {

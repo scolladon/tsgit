@@ -37,6 +37,8 @@ const DIGEST = 20;
 const IDX_CRC_TABLE = 8 + 1024;
 const PACK_HEADER = 12;
 const DONOR_OBJECTS = '/repo/donor/objects';
+/** Larger than any offset these small packs reach, so a base this far back would start before the pack. */
+const PAST_ANY_ENTRY_OFFSET = 1 << 20;
 
 const blobEntries = (...contents: ReadonlyArray<string>) =>
   contents.map((content) => ({
@@ -358,6 +360,51 @@ describe('Given a corrupt delta base whose child records a distance landing on n
         { kind: 'ofs-delta', baseIndex: 0, targetContent: childBytes('c'), distanceOverride: 3 },
       ]);
       await flipByte(ctx, packPathIn(primaryObjects(ctx), 'lost-base'), () => PACK_HEADER + 3);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-entry-unpackable')).toBe(true);
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given an OFS_DELTA that records a distance of 0, naming its own offset', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then the entry fails to unpack and names no base, not even itself', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'self-base', [
+        { kind: 'base', type: 'blob', content: baseBytes },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: childBytes('c'), distanceOverride: 0 },
+      ]);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-entry-unpackable')).toBe(true);
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given an OFS_DELTA that records a distance past its own offset', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then the entry fails to unpack and names no base', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'before-pack', [
+        { kind: 'base', type: 'blob', content: baseBytes },
+        {
+          kind: 'ofs-delta',
+          baseIndex: 0,
+          targetContent: childBytes('c'),
+          distanceOverride: PAST_ANY_ENTRY_OFFSET,
+        },
+      ]);
 
       // Act
       const result = await sut(ctx, FULL);
