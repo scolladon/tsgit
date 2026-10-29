@@ -35,8 +35,9 @@ import {
   getPackRegistry,
   readObject,
 } from '../../src/application/primitives/read-object.js';
+import { updateRef } from '../../src/application/primitives/update-ref.js';
 import { TsgitError } from '../../src/domain/error.js';
-import type { GitObject } from '../../src/domain/objects/index.js';
+import type { GitObject, ObjectId, RefName } from '../../src/domain/objects/index.js';
 import type { MultiPackIndex } from '../../src/domain/storage/index.js';
 import { lookupMultiPackIndex, parseMultiPackIndex } from '../../src/domain/storage/index.js';
 import type { Context } from '../../src/ports/context.js';
@@ -46,6 +47,7 @@ import {
   buildBaseFixture,
   buildChainFixture,
   buildDupFixture,
+  buildRefDeltaOwnerFixture,
   type ChainFixture,
   chainLayerPath,
   chunkTableRowOffset,
@@ -53,6 +55,7 @@ import {
   DIGEST_LENGTH,
   midxPaths,
   mutateMidxOrThrow,
+  smashPackHeader,
   writeMultiPackIndex,
 } from './midx-fixture-helpers.js';
 
@@ -188,6 +191,19 @@ async function expectBothRead(dir: string, ctx: Context, oid: string): Promise<v
   const gitPayload = catFileRaw(dir, oid);
   const object = await readObject(ctx, oid as never);
   expect(Buffer.compare(gitPayload, Buffer.from(blobContent(object)))).toBe(0);
+}
+
+/** git's `cat-file -t`/`-s`/`-p` and `update-ref` against tsgit's read and `updateRef`, for `oid`. */
+async function expectBothTypeSizeAndRef(dir: string, ctx: Context, oid: string): Promise<void> {
+  const object = await readObject(ctx, oid as never);
+  expect(git(dir, 'cat-file', '-t', oid).trim()).toBe(object.type);
+  expect(Number(git(dir, 'cat-file', '-s', oid).trim())).toBe(blobContent(object).length);
+  await expectBothRead(dir, ctx, oid);
+  git(dir, 'update-ref', `refs/tags/git-${oid}`, oid);
+  await updateRef(ctx, `refs/tags/tsgit-${oid}` as RefName, oid as ObjectId, {
+    reflogMessage: 'tag',
+  });
+  expect(git(dir, 'rev-parse', `refs/tags/tsgit-${oid}`).trim()).toBe(oid);
 }
 
 /** A Tier-A row must deny every read, loose included — asserts this
@@ -758,6 +774,35 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(gitResult.exitCode).toBe(0);
           expect(gitResult.stdout).toContain(`${dup.dupOid} blob`);
           await expectBothRead(dup.dir, sut, dup.dupOid);
+        });
+      });
+
+      describe('Given a REF_DELTA in the sibling pack whose base the healthy owner also holds (control), When both tools read, size and ref the delta', () => {
+        it('Then both read it through the owner', async () => {
+          // Arrange
+          const dir = await newRoot('h1r');
+          const fixture = await buildRefDeltaOwnerFixture(dir, 'repo');
+          const sut = trackedNodeContext(fixture.dir);
+
+          // Act + Assert
+          await expectBothTypeSizeAndRef(fixture.dir, sut, fixture.deltaOid);
+          expect(
+            (await (await getPackRegistry(sut)).lookup(fixture.deltaOid as never))?.pack.name,
+          ).toBe(fixture.ownerPack);
+        });
+      });
+
+      describe("Given the owner's header smashed and the sibling holding the delta as a REF_DELTA on a base the owner also names, When both tools read, size and ref the delta", () => {
+        it("Then both find the base in the delta's own pack and read the delta", async () => {
+          // Arrange
+          const dir = await newRoot('h1s');
+          const fixture = await buildRefDeltaOwnerFixture(dir, 'repo');
+          smashPackHeader(fixture.dir, fixture.ownerPack);
+          const sut = trackedNodeContext(fixture.dir);
+
+          // Act + Assert
+          await expectBothTypeSizeAndRef(fixture.dir, sut, fixture.deltaOid);
+          await expectBothTypeSizeAndRef(fixture.dir, sut, fixture.baseOid);
         });
       });
 

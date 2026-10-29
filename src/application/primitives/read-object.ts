@@ -4,6 +4,7 @@ import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js'
 import { parseHeader } from '../../domain/objects/header.js';
 import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
 import {
+  lookupPackIndex,
   type OfsPackEntryHeader,
   PACK_ENTRY_TYPE,
   type PackEntryHeader,
@@ -624,18 +625,7 @@ async function walkDeltaBaseType(
 
 /**
  * One hop down a delta chain by HEADER alone: OFS_DELTA stays in the same
- * pack at a computed offset; REF_DELTA looks its base up by id, which may
- * land in a different pack. git's own header-only type walk
- * (`packed_to_object_type` in `packfile.c`) resolves a REF_DELTA base with a
- * plain `find_pack_entry` lookup against the packs already known — it never
- * calls `reprepare_packed_git`; only the CONTENT-resolving path
- * (`oid_object_info_extended` / `do_oid_object_info_extended`) retries after
- * a re-scan, which `resolveBaseForRefDelta` (object-resolver.ts) already
- * gets via `resolveObjectContent`. A base the registry cannot find
- * here is a corrupt pack — this throws OBJECT_NOT_FOUND for the base id,
- * fail-loud like every other read here, and retried by the same
- * `withLazyFetchRetry` a missing REF_DELTA base already gets via
- * `resolveObject`/`readRawObject`.
+ * pack at a computed offset; REF_DELTA looks its base up by id.
  */
 async function nextDeltaHit(
   registry: PackRegistry,
@@ -647,7 +637,31 @@ async function nextDeltaHit(
     const baseOffset = ofsDeltaBaseOffset(targetId, hit.offset, header.baseDistance);
     return { pack: hit.pack, offset: baseOffset };
   }
-  const baseHit = await registry.lookup(header.baseId);
-  if (baseHit === undefined) throw objectNotFound(header.baseId);
+  return refBaseHit(registry, hit, header.baseId);
+}
+
+/**
+ * git's header-only type walk (`packed_to_object_type` → `get_delta_base` in
+ * `packfile.c`) finds a REF_DELTA base with `find_pack_entry_one(base, p)`:
+ * in the delta's OWN pack, whichever pack a multi-pack-index names as the
+ * base's owner. Every caller of this walk follows that order, not only the
+ * owner-unavailable recovery: a recovered delta's base is usually beside it,
+ * while the registry would route it to the very owner that could not be
+ * opened. The registry stays the fallback for a base held elsewhere (a
+ * thin-pack completion), and never re-scans — only the content-resolving
+ * path (`resolveBaseForRefDelta`, object-resolver.ts) retries after a
+ * rescan. A base found nowhere is a corrupt pack: OBJECT_NOT_FOUND for the
+ * base id, retried by the same `withLazyFetchRetry` a missing REF_DELTA base
+ * gets via `resolveObject`/`readRawObject`.
+ */
+async function refBaseHit(
+  registry: PackRegistry,
+  hit: PackLookupHit,
+  baseId: ObjectId,
+): Promise<PackLookupHit> {
+  const ownOffset = lookupPackIndex(await hit.pack.index(), baseId);
+  if (ownOffset !== undefined) return { pack: hit.pack, offset: ownOffset };
+  const baseHit = await registry.lookup(baseId);
+  if (baseHit === undefined) throw objectNotFound(baseId);
   return baseHit;
 }
