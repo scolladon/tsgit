@@ -35,14 +35,14 @@ table top-down and elects the first unblocked item.
 | # | cut | items | why here |
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
-| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · 32.18 · 32.19 · 32.26 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
+| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · 32.18 · 32.19 · 32.26 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 · 32.47 (spike) | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
 | 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · 32.32 · 32.33 · 32.40 · 32.41 · 32.44 · 32.1 rows A6, A21, A22, A23, D5, D15, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · 32.23 · 32.34 · 32.39 · 32.43 · 32.1 rows A2, A13, A20, B13, B17, C6, C22, D19 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 32.15 · 31.13 · 32.36 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
 | 7 | **subsystems** | 32.7 → 32.1 row B5 · 32.4 → 32.3 row A10 · 31.9 · 32.35 | low-frequency correctness, each its own `feat:`; 32.7 crosses the containment boundary (security review first) |
 | 8 | **magic + byte-path** | 32.11b magic pathspecs (`!` alias kept = `feat`, dropped = the one major) · 32.28 byte-path port (optional port methods = `feat`, required = major) · 32.9 | the only candidates for a 7.0.0; 32.9 needs editor, rerere and signature-verification capabilities first |
-| tail | **fold-ins** | 32.2 · 32.3 remaining rows · 32.37 · 32.42 · 29.5 + #282 → close both with an ADR recording the `compatObjectFormat` divergence | no cut of their own; folded into whichever PR touches the surface |
+| tail | **fold-ins** | 32.2 · 32.3 remaining rows · 32.37 · 32.42 · 32.45 · 32.46 · 29.5 + #282 → close both with an ADR recording the `compatObjectFormat` divergence | no cut of their own; folded into whichever PR touches the surface |
 
 Perf (cuts 5–6) sits ahead of the subsystems cut by the user decision of 2026-10-01 (31.5/31.6
 ranked above the 32.x subsystems; grafts, global config and `attr.tree` are rare in practice).
@@ -715,6 +715,44 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   # tsgit stash.apply       ⇒ applies, stages 100644 new
   ```
   Expected: the file left on disk after the push, and the apply refused as git refuses it. Not folded: the locus is the shared checkout engine, outside the stash change's perimeter; it ships with its own mutation run over `materialize-tree.ts` and a pass over the checkout and reset interop suites. Wrong-result.
+- [ ] **32.45** An unreadable submodule or worktree `commondir` gets an error code from which git's `failed to read` line cannot be rebuilt — with an absorbed module whose `.git/modules/sub/commondir` is zero bytes, a directory, or mode 000, git 2.56 `add -- .` exits 128 with `fatal: failed to read sub/../.git/modules/sub/commondir: <No such file or directory | Is a directory | Permission denied>`. tsgit `add` throws `GITFILE_NOT_A_REPOSITORY { path: 'sub/.git' }`, which rebuilds as `gitfile does not point to a valid repository: sub/.git` — git's line for a commondir naming a missing target, a different fault. `openRepository` on a zero-byte commondir throws a third code, `GITFILE_INVALID_FORMAT` (bare-repo-custom-gitdir-interop asserts only `toContain('failed to read')`). The refusal itself agrees (exit 128, index and objects untouched). Fix: one structured code (shape `{ code, path: <gitdir>/commondir, reason }`) raised by both the `add` gitlink probe and discovery; pin both rows to git's literal line rebuilt from the data; the `No such file or directory` git prints for an empty file is a stale errno — decide in the ADR whether `reason` models it. Message-only; needs an ADR (new public error code). _(found during the git 2.56 follow-up review; add-gitlink-interop.test.ts L1170)_
+  Not folded: needs its own decision.
+  ```
+  # git 2.56.0, scrubbed env; module absorbed into .git/modules/sub, then:
+  : > .git/modules/sub/commondir; touch untracked; git add -- .
+  fatal: failed to read sub/../.git/modules/sub/commondir: No such file or directory   (exit 128)
+  mkdir .git/modules/sub/commondir            -> fatal: failed to read sub/../.git/modules/sub/commondir: Is a directory (exit 128)
+  printf '.\n' > …/commondir; chmod 000 …     -> fatal: failed to read sub/../.git/modules/sub/commondir: Permission denied (exit 128)
+  printf 'nowhere\n' > …/commondir            -> fatal: gitfile does not point to a valid repository: sub/.git (exit 128)
+  # tsgit at 64c0bcd6: the "commondir file of zero bytes" row of add-gitlink-interop passes with
+  #   git 128 + the literal line above and tsgit { code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' }
+  ```
+- [ ] **32.46** `branch -d/-D` names a different worktree than git when two worktrees hold the branch — `worktreeBisecting` and `heldBranches` (src/application/commands/internal/checked-out-branches.ts L80–L125) walk `listWorktrees`, which sorts linked worktrees by path on purpose (list-worktrees.ts L205, for a stable `worktree.list`); git's `get_worktrees` walks `.git/worktrees` in readdir order, the bisect check returns the first match and the checkout map keeps the last registration. Two worktrees forced onto `sidecar` (`worktree add --force`), registered `zz` then `aa` (readdir: zz, aa): bisecting in both, git 2.56 `branch -D sidecar` names `…/zz … for bisect` and tsgit names `…/aa` (hold: bisect); with no bisect, git names `…/aa` and tsgit names `…/zz` (hold: checkout). Both tools refuse in every case with the same code and exit; only the `path` field differs, and reaching the state needs `--force`. Fix: give the hold checks an unsorted walk in the adapter's readdir order; `worktree.list` keeps its sort; pin both holds in branch-delete-worktree-interop with the names registered in the reverse of byte order. Data-only (the refusal's `path`). _(found during the git 2.56 follow-up review; checked-out-branches.ts L80)_
+  Not folded: needs its own decision.
+  ```
+  # git 2.56.0, scrubbed env
+  git init -q -b main r && cd r && for m in a b c; do git commit -q --allow-empty -m $m; done
+  git branch sidecar && git worktree add -q --force ../zz sidecar && git worktree add -q --force ../aa sidecar
+  # bisect variant: in ../zz then ../aa: git bisect start; git bisect bad HEAD; git bisect good HEAD~2
+  ls -f .git/worktrees   ->  . .. zz aa
+  git branch -D sidecar
+  bisect: error: cannot delete branch 'sidecar' used by worktree at '<tmp>/i2-bisect/zz' for bisect   (exit 1)
+  hold:   error: cannot delete branch 'sidecar' used by worktree at '<tmp>/i2-hold/aa'                (exit 1)
+  # tsgit branchDelete({ name: 'sidecar', force: true }) on the same repos, 64c0bcd6
+  bisect {"code":"BRANCH_CHECKED_OUT","branch":"refs/heads/sidecar","path":"<tmp>/i2-bisect/aa","hold":"bisect"}
+  hold   {"code":"BRANCH_CHECKED_OUT","branch":"refs/heads/sidecar","path":"<tmp>/i2-hold/zz","hold":"checkout"}
+  # with --detach worktrees git deletes the branch (exit 0), as tsgit does — no divergence there
+  ```
+- [ ] **32.47** Spike — `fsck` returns exit 3 (midx-unusable) for a Tier-A midx fault it reaches lazily, where git 2.56 dies 128 depending on which entry is poisoned — ADR-593 (ratified) says a Tier-A midx fault throws as git dies; two cases are instead recorded only as "contained by the child" in docs/design/midx-read-support.md (O12 numPacks understated, O28 LOFF out of range), with no ADR. midx-fsck-interop pins git 128 against tsgit 3 + one `midx-unusable` on HEAD's tree. Moving the LOFF fault to another entry gives: commit (HEAD) git 128, tree git 128, blob git **1** (verify child 128, parent survives); tsgit returns 3 on all three, so even the blob case differs in bit 2. Neither "always throw" nor "always contain" matches git. Question: which midx entries does git 2.56 fsck's parent walk re-read through the midx, by object kind, by reachability (HEAD, reflog-only, unreachable, tag) and by fault (per-entry LOFF vs midx-wide O12 numPacks)? Is that answer deterministic enough to replicate as "throw iff the walk re-reads the poisoned entry", or should an ADR amend ADR-593 to record the containment as a divergence? Refusal-surface (exit code). _(found during the git 2.56 follow-up review; src/application/commands/internal/fsck/pack-health.ts)_
+  Not folded: needs its own decision.
+  ```
+  npx vitest run --project integration test/integration/midx-fsck-interop.test.ts -t "understated|out of range"
+  Tests  2 passed | 58 skipped   (git fsck 128, verify 128; tsgit exit 3, one midx-unusable)
+  # throwaway variant: craftLoffMidx({ entry: <midx position of id>, row: 5, count: 1 }) on a fresh BASE fixture, 3 runs identical
+  HEAD        commit git=128 verify=128 tsgit=3  git stderr: fatal: multi-pack-index large offset out of bounds
+  HEAD:<blob> blob   git=1   verify=128 tsgit=3  findings=bad-object,midx-unusable,missing,unreachable,dangling,root
+  HEAD^{tree} tree   git=128 verify=128 tsgit=3
+  ```
 
 ---
 
