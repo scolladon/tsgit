@@ -8,7 +8,12 @@ supersedes:
 ---
 # 919 — fsck audits every object source
 
-- **Status:** accepted
+> Superseded by [ADR-1108](1108-fsck-full-false-audits-the-local-source-only.md) for auditing
+> non-local object sources when `full` is false: git 2.56 skips every non-local source under
+> `--no-full`, loose objects included. The every-source universe in default and
+> connectivity-only modes is carried forward.
+
+- **Status:** superseded by ADR-1108
 - **Date:** 2026-10-01
 - **Design:** docs/design/alternates-object-lookup.md (DC-6, DC-7) · **Supersedes/Refines:** supersedes ADR-412 (alternates out-of-scope bullet only)
 

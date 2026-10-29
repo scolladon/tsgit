@@ -24,7 +24,7 @@ import {
   type LooseBufferedRead,
 } from '../../../primitives/object-resolver.js';
 import { readObject } from '../../../primitives/read-object.js';
-import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH, EXIT_PACK } from './exit-codes.js';
+import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH } from './exit-codes.js';
 import { hasPackCopy, type PackedLocation, packedLocationOf } from './object-cache.js';
 import { type LooseCopy, looseCopiesOf } from './object-presence.js';
 import {
@@ -471,10 +471,10 @@ async function hashResult(id: ObjectId, raw: ReadableObject): Promise<ContentVal
   };
 }
 
-/** git's `verify_pack` verdict on one damaged entry: its own error, bit 4. */
+/** git's `verify_pack` verdict on one damaged entry: its own error, bit 1. */
 const packEntryResult = (
   finding: Extract<FsckFinding, { type: 'pack-entry-unpackable' | 'pack-entry-corrupt' }>,
-): ContentValidationResult => ({ findings: [finding], exitBit: EXIT_PACK });
+): ContentValidationResult => ({ findings: [finding], exitBit: EXIT_CORRUPT });
 
 /** `validateOneObject`'s own outcome, extending the plain findings/exitBit
  *  shape with the one extra fact `runContentValidationPass` folds into
@@ -586,8 +586,8 @@ async function unpackedEntry(
 /**
  * git's per-entry `verify_packfile` step: `cannot unpack`, else `packed … is
  * corrupt`, else `fsck_obj_buffer` — which clears `SEEN`, so every copy runs
- * the catalogue again. Its errors reach the exit code only through
- * `verify_pack`'s own return: bit 4, never bit 1.
+ * the catalogue again. Its errors reach the exit code through `verify_pack`'s
+ * own return, which is bit 1 like any other corrupt object.
  */
 export async function validatePackedEntry(
   ctx: Context,
@@ -604,8 +604,7 @@ export async function validatePackedEntry(
   if (hash.findings.length > 0) {
     return packEntryResult({ type: 'pack-entry-corrupt', pack, id, ...attribution });
   }
-  const catalogue = catalogueResult(ctx, id, raw, options);
-  return { findings: catalogue.findings, exitBit: catalogue.exitBit === 0 ? 0 : EXIT_PACK };
+  return catalogueResult(ctx, id, raw, options);
 }
 
 /** `runContentValidationPass`'s own result, `ContentValidationResult` plus
@@ -700,7 +699,7 @@ async function deferredCheck(
 /**
  * git's `fsck_finish`: every special blob a checked tree queued but no copy
  * met in place is read once through the store and checked — outside any
- * pack, so its errors carry bit 1, never bit 4. An absent blob a promisor
+ * pack, so its errors carry bit 1. An absent blob a promisor
  * pack promises (`promised`) is skipped, as git's `fsck_blobs` does.
  */
 export async function runDeferredSpecialBlobChecks(

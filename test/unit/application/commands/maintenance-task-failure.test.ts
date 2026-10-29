@@ -42,6 +42,33 @@ const repoWithLayersDirAsFile = async (): Promise<Context> => {
   return ctx;
 };
 
+const repoWithGcConfig = async (gcConfig: string): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'hello');
+  await add(ctx, ['a.txt']);
+  await commit(ctx, { message: 'seed', author: AUTHOR });
+  const configPath = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(configPath, `${await ctx.fs.readUtf8(configPath)}[gc]\n${gcConfig}`);
+  return ctx;
+};
+
+const captureError = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+};
+
+const BAD_AUTO_DATA = {
+  code: 'CONFIG_BAD_NUMERIC_VALUE',
+  key: 'gc.auto',
+  value: 'bogus',
+  reason: 'invalid unit',
+};
+
 describe('maintenance task failure', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -575,6 +602,149 @@ describe('maintenance task failure', () => {
             expect(result.tasksFailed[0]?.code).toBe('PERMISSION_DENIED');
           });
         });
+      });
+    });
+  });
+
+  describe('Given [gc] auto = bogus', () => {
+    describe('When only the commit-graph task runs', () => {
+      it('Then the graph is written and nothing fails', async () => {
+        // Arrange
+        const ctx = await repoWithGcConfig('\tauto = bogus\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(result.tasksFailed).toEqual([]);
+        expect(result.commitGraphWritten).toBe(true);
+      });
+    });
+
+    describe('When the gc task runs', () => {
+      it('Then the task is reported failed with the refusal', async () => {
+        // Arrange
+        const ctx = await repoWithGcConfig('\tauto = bogus\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksFailed).toEqual([
+          {
+            task: 'gc',
+            code: 'CONFIG_BAD_NUMERIC_VALUE',
+            data: { ...BAD_AUTO_DATA, source: `${ctx.layout.gitDir}/config` },
+          },
+        ]);
+        expect(result.tasksRun).toEqual([]);
+      });
+    });
+
+    describe('When the gc task runs with auto: false', () => {
+      it('Then the task is reported failed with the refusal, as git --no-auto does', async () => {
+        // Arrange
+        const ctx = await repoWithGcConfig('\tauto = bogus\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: false });
+
+        // Assert
+        expect(result.tasksFailed).toEqual([
+          {
+            task: 'gc',
+            code: 'CONFIG_BAD_NUMERIC_VALUE',
+            data: { ...BAD_AUTO_DATA, source: `${ctx.layout.gitDir}/config` },
+          },
+        ]);
+        expect(result.tasksRun).toEqual([]);
+      });
+    });
+
+    describe.each([
+      { order: ['gc', 'commit-graph'] as const },
+      { order: ['commit-graph', 'gc'] as const },
+    ])('When the tasks run as $order', ({ order }) => {
+      it('Then gc fails and the commit-graph is still written', async () => {
+        // Arrange
+        const ctx = await repoWithGcConfig('\tauto = bogus\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: order });
+
+        // Assert
+        expect(result.tasksFailed.map((failure) => failure.task)).toEqual(['gc']);
+        expect(result.tasksRun).toEqual(['commit-graph']);
+        expect(result.commitGraphWritten).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [gc] autoPackLimit = 3g and the auto flag', () => {
+    describe('When the gc task runs', () => {
+      it('Then the refusal is thrown, as git dies in the parent', async () => {
+        // Arrange
+        const ctx = await repoWithGcConfig('\tautoPackLimit = 3g\n');
+        const sut = maintenance;
+
+        // Act
+        const caught = await captureError(() => sut(ctx, { tasks: ['gc'], auto: true }));
+
+        // Assert
+        expect((caught as { data: unknown }).data).toEqual({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'gc.autopacklimit',
+          source: `${ctx.layout.gitDir}/config`,
+          value: '3g',
+          reason: 'out of range',
+        });
+      });
+    });
+  });
+
+  describe('Given [gc] bigPackThreshold = -0', () => {
+    describe('When the gc task runs under the auto flag on a tiny repo', () => {
+      it('Then the gate declines without error', async () => {
+        // Arrange
+        const ctx = await repoWithGcConfig('\tbigPackThreshold = -0\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: true });
+
+        // Assert
+        expect(result.tasksFailed).toEqual([]);
+        expect(result.tasksRun).toEqual([]);
+      });
+    });
+
+    describe('When the gc task runs without the auto flag', () => {
+      it('Then the pack step fails the task', async () => {
+        // Arrange
+        const ctx = await repoWithGcConfig('\tbigPackThreshold = -0\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksFailed).toEqual([
+          {
+            task: 'gc',
+            code: 'CONFIG_BAD_NUMERIC_VALUE',
+            data: {
+              code: 'CONFIG_BAD_NUMERIC_VALUE',
+              key: 'gc.bigpackthreshold',
+              source: `${ctx.layout.gitDir}/config`,
+              value: '-0',
+              reason: 'invalid unit',
+            },
+          },
+        ]);
       });
     });
   });

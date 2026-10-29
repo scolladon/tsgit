@@ -1,6 +1,8 @@
 import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
+import type { PackRegistry } from '../../../../src/application/primitives/pack-registry.js';
 import {
+  declaredTypeAtHit,
   getPackRegistry,
   peekDeclaredObjectHeader,
   readDeclaredObjectHeader,
@@ -1368,6 +1370,40 @@ describe('peekDeclaredObjectHeader', () => {
 
         // Assert
         expect({ result, fetches }).toEqual({ result: undefined, fetches: 0 });
+      });
+    });
+  });
+});
+
+describe('declaredTypeAtHit', () => {
+  describe('Given a REF_DELTA whose base sits in its own pack and a registry that finds nothing', () => {
+    describe('When declaredTypeAtHit walks to the base', () => {
+      it("Then the base is read from the delta's own pack and the registry is never asked", async () => {
+        // Arrange
+        const baseContent = ENC.encode('own-pack base');
+        const targetContent = ENC.encode('own-pack base, then a delta');
+        const ctx = await buildSeededContext();
+        const baseId = await syntheticBlobId(ctx, baseContent);
+        const ids = await writeSyntheticPack(ctx, 'own-pack-ref', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ref-delta', baseId, baseUncompressed: baseContent, targetContent },
+        ]);
+        const deltaId = ids[1] as ObjectId;
+        const registry = await getPackRegistry(ctx);
+        const hit = await registry.lookup(deltaId);
+        if (hit === undefined) throw new Error('fixture: the delta is not packed');
+        const lookup = vi.fn(async () => undefined);
+        const blind = { ...registry, lookup } as unknown as PackRegistry;
+        const sut = declaredTypeAtHit;
+
+        // Act
+        const result = await sut(ctx, blind, hit, deltaId);
+
+        // Assert
+        expect({ result, lookups: lookup.mock.calls.length }).toEqual({
+          result: 'blob',
+          lookups: 0,
+        });
       });
     });
   });

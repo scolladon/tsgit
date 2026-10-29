@@ -1,6 +1,7 @@
 import { applyGraft } from '../../../../domain/commit/graft.js';
 import { decompressFailed, TsgitError } from '../../../../domain/error.js';
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
+import { looseObjectCorrupt } from '../../../../domain/objects/error.js';
 import type {
   GitObject,
   ObjectId,
@@ -106,6 +107,17 @@ type DecodeError = TsgitError & {
   };
 };
 
+/** A loose copy git cannot read at all: it dies on it once the object needs typing. */
+type LooseCorruptError = TsgitError & {
+  readonly data: { readonly code: 'LOOSE_OBJECT_CORRUPT'; readonly id: ObjectId };
+};
+
+type UnrecoverableCause = DecodeError | LooseCorruptError;
+
+function isLooseCorrupt(cause: UnrecoverableCause): cause is LooseCorruptError {
+  return cause.data.code === 'LOOSE_OBJECT_CORRUPT';
+}
+
 function isRecoveryCandidate(err: unknown): err is DecodeError {
   return (
     err instanceof TsgitError &&
@@ -152,11 +164,12 @@ function isDecodeFault(err: unknown): boolean {
 // A deferred Tier-A multi-pack-index fault (`pack-int-id`/`large-offset`,
 // raised only when one specific entry is decoded) deliberately degrades here
 // like any other store fault: git's own parent is BIMODAL on that shape —
-// measured both dying at 128 and reporting at 32 on regenerated fixtures,
-// depending on whether its walk happens to route the poisoned oid through
-// the midx — while its verify child always contains it. tsgit sides with
-// the deterministic child shape: the midx-health pass reports the fault as
-// `midx-unusable` with exit bit 32 on every run.
+// measured both dying at 128 (git 2.56's parent, where measured) and
+// reporting the fault, depending on whether its walk happens to route the
+// poisoned oid through the midx — while its verify child always contains it.
+// tsgit sides with the deterministic child shape: the midx-health pass reports
+// the fault as `midx-unusable` with exit bit 1 on every run, except under
+// `connectivityOnly`, which skips that pass as git skips `verify_pack`.
 function isStoreFault(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code !== 'UNSUPPORTED_OPERATION';
 }
@@ -388,12 +401,6 @@ async function recoverStoredType(
   if (looseBytes === undefined) {
     return await packedStoredType(ctx, id);
   }
-  if (looseBytes.length === 0) {
-    // Git treats an empty file as one it could not read, not one whose type
-    // it failed to recover — the same reserved 'unknown' verdict the caller
-    // gives an unreadable object.
-    return { kind: 'untyped' };
-  }
   try {
     const { type } = await recoverHeader(ctx, looseBytes);
     return { kind: 'typed', objectType: type };
@@ -418,14 +425,14 @@ async function recoverStoredType(
 export interface ObjectCacheResult {
   readonly cache: ReadonlyMap<ObjectId, CachedGitObject>;
   /** oid → the fault that made its stored type unrecoverable. Empty unless 'classify'. */
-  readonly unrecoverable: ReadonlyMap<ObjectId, DecodeError>;
+  readonly unrecoverable: ReadonlyMap<ObjectId, UnrecoverableCause>;
   /** oid → the type its stored header declares, when the body would not parse. Empty unless 'classify'. */
   readonly recovered: ReadonlyMap<ObjectId, FsckObjectType>;
 }
 
 interface CacheAccumulator {
   readonly cache: Map<ObjectId, CachedGitObject>;
-  readonly unrecoverable: Map<ObjectId, DecodeError>;
+  readonly unrecoverable: Map<ObjectId, UnrecoverableCause>;
   readonly recovered: Map<ObjectId, FsckObjectType>;
 }
 
@@ -438,7 +445,7 @@ interface CacheAccumulator {
  */
 async function looseDecodeFault(ctx: Context, id: ObjectId): Promise<unknown> {
   const looseBytes = await looseBytesForRecovery(ctx, id);
-  if (looseBytes === undefined || looseBytes.length === 0) return undefined;
+  if (looseBytes === undefined) return undefined;
   try {
     await recoverHeader(ctx, looseBytes);
     return undefined;
@@ -471,6 +478,21 @@ async function warrantsRecovery(ctx: Context, id: ObjectId, err: unknown): Promi
 }
 
 /**
+ * Whether `id` has a loose copy that yields no bytes to inflate: an empty
+ * file, or one the store refuses to open. git's loose enumeration dies on
+ * such a file; a copy with bytes keeps the header-recovery classification.
+ */
+async function looseCopyYieldsNoBytes(ctx: Context, id: ObjectId): Promise<boolean> {
+  try {
+    const looseBytes = await looseBytesFromHolder(ctx, id);
+    return looseBytes?.length === 0;
+  } catch (err) {
+    if (!isStoreFault(err)) throw err;
+    return true;
+  }
+}
+
+/**
  * Records a universe object's unreadable slot and, in `'classify'` mode, runs
  * the header-recovery probe: its `typed` outcome upgrades `recovered`, its
  * `unrecoverable` outcome records the cause `fsck.ts` rejects on once
@@ -485,6 +507,10 @@ async function recordUnreadable(
 ): Promise<void> {
   acc.cache.set(id, null);
   if (unreadable !== 'classify' || !(await warrantsRecovery(ctx, id, err))) return;
+  if (await looseCopyYieldsNoBytes(ctx, id)) {
+    acc.unrecoverable.set(id, looseObjectCorrupt(id) as LooseCorruptError);
+    return;
+  }
   // A decode-shaped fault IS the original read failure `recoverStoredType`
   // gates its reject verdict on (the settled two-code test); a widened,
   // non-decode-shaped fault stands in for it with the shadow's OWN decode
@@ -618,11 +644,12 @@ function sanitizeReason(reason: string): string {
 export function assertTypesRecoverable(
   ctx: Context,
   unreachable: ReadonlyArray<ObjectId>,
-  unrecoverable: ReadonlyMap<ObjectId, DecodeError>,
+  unrecoverable: ReadonlyMap<ObjectId, UnrecoverableCause>,
 ): void {
   for (const id of unreachable) {
     const cause = unrecoverable.get(id);
     if (cause === undefined) continue;
+    if (isLooseCorrupt(cause)) throw cause;
     const reason = sanitizeReason(cause.data.reason);
     ctx.logger?.warn?.('fsck: object type unrecoverable', {
       objectId: id,

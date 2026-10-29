@@ -4,16 +4,25 @@ import type { CatalogueOptions } from '../../../../../../src/application/command
 import { createSpecialBlobLedger } from '../../../../../../src/application/commands/internal/fsck/special-blobs.js';
 import type { FsckOptions } from '../../../../../../src/application/commands/internal/fsck/types.js';
 import {
+  baseNamedBy,
   positionsByOffset,
+  rankOfStart,
   runVerifyPackPass,
+  unservedBases,
 } from '../../../../../../src/application/commands/internal/fsck/verify-pack.js';
 import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/primitives/internal/big-file-threshold.js';
 import { SHA1_CONFIG } from '../../../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
 import { hexToBytes } from '../../../../../../src/domain/objects/index.js';
 import { crc32 } from '../../../../../../src/domain/storage/crc32.js';
+import { entryOffsetsF64, parsePackIndex } from '../../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../../src/ports/context.js';
-import { writeSyntheticPack, writeSyntheticPackIn } from '../../../primitives/pack-fixture.js';
+import {
+  buildSyntheticPack,
+  syntheticBlobId,
+  writeSyntheticPack,
+  writeSyntheticPackIn,
+} from '../../../primitives/pack-fixture.js';
 
 const CATALOGUE: CatalogueOptions = {
   strict: false,
@@ -30,6 +39,8 @@ const DIGEST = 20;
 const IDX_CRC_TABLE = 8 + 1024;
 const PACK_HEADER = 12;
 const DONOR_OBJECTS = '/repo/donor/objects';
+/** Larger than any offset these small packs reach, so a base this far back would start before the pack. */
+const PAST_ANY_ENTRY_OFFSET = 1 << 20;
 
 const blobEntries = (...contents: ReadonlyArray<string>) =>
   contents.map((content) => ({
@@ -93,6 +104,7 @@ describe('Given a healthy pack', () => {
           { id: a, pack: 'pack-healthy' },
           { id: b, pack: 'pack-healthy' },
         ],
+        badBases: new Set(),
       });
     });
   });
@@ -117,7 +129,7 @@ describe('Given a healthy pack', () => {
 
 describe('Given a pack whose .idx trailer is corrupt', () => {
   describe('When the verify-pack pass runs', () => {
-    it('Then it reports the index checksum mismatch with bit 4', async () => {
+    it('Then it reports the index checksum mismatch with bit 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const [id] = await writeSyntheticPack(ctx, 'idx-trailer', blobEntries('a'));
@@ -129,8 +141,9 @@ describe('Given a pack whose .idx trailer is corrupt', () => {
       // Assert
       expect(result).toEqual({
         findings: [{ type: 'pack-index-checksum-mismatch', pack: 'pack-idx-trailer' }],
-        exitBit: 4,
+        exitBit: 1,
         copies: [{ id, pack: 'pack-idx-trailer' }],
+        badBases: new Set(),
       });
     });
   });
@@ -138,7 +151,7 @@ describe('Given a pack whose .idx trailer is corrupt', () => {
 
 describe('Given a pack whose .idx records a wrong CRC for one entry', () => {
   describe('When the verify-pack pass runs', () => {
-    it('Then it reports that entry by id and pack offset with bit 4', async () => {
+    it('Then it reports that entry by id and pack offset with bit 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const [id] = await writeSyntheticPack(ctx, 'crc', blobEntries('a'));
@@ -152,8 +165,9 @@ describe('Given a pack whose .idx records a wrong CRC for one entry', () => {
       // Assert
       expect(result).toEqual({
         findings: [{ type: 'pack-crc-mismatch', pack: 'pack-crc', id, offset: PACK_HEADER }],
-        exitBit: 4,
+        exitBit: 1,
         copies: [{ id, pack: 'pack-crc' }],
+        badBases: new Set(),
       });
     });
   });
@@ -182,8 +196,9 @@ describe('Given a pack whose entry body is corrupt but whose .idx CRC was recomp
           { type: 'pack-checksum-mismatch', pack: 'pack-body' },
           { type: 'pack-entry-unpackable', pack: 'pack-body', id: ids[0], offset: PACK_HEADER },
         ],
-        exitBit: 4,
+        exitBit: 1,
         copies: [{ id: ids[0], pack: 'pack-body' }],
+        badBases: new Set(),
       });
     });
   });
@@ -211,6 +226,255 @@ describe('Given a pack whose second entry body is corrupt', () => {
   });
 });
 
+const BASE_TEXT = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n');
+const baseBytes = enc.encode(BASE_TEXT);
+const childBytes = (tag: string) => enc.encode(BASE_TEXT.replace('line 7\n', `${tag}\n`));
+
+const deltaFamily = (children: ReadonlyArray<'ofs' | 'ref'>, baseId?: string) => [
+  { kind: 'base' as const, type: 'blob' as const, content: baseBytes },
+  ...children.map((kind, i) =>
+    kind === 'ofs'
+      ? {
+          kind: 'ofs-delta' as const,
+          baseIndex: 0,
+          targetContent: childBytes(`child ${i}`),
+        }
+      : {
+          kind: 'ref-delta' as const,
+          baseId: baseId!,
+          baseUncompressed: baseBytes,
+          targetContent: childBytes(`child ${i}`),
+        },
+  ),
+];
+
+describe('Given a corrupt delta base with two OFS_DELTA children', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then it names the base as a bad base', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const [baseId] = await writeSyntheticPack(ctx, 'bad-base', deltaFamily(['ofs', 'ofs']));
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'bad-base'), () => PACK_HEADER + 3);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.badBases).toEqual(new Set([baseId]));
+    });
+  });
+});
+
+describe('Given a corrupt OFS_DELTA child over a healthy base', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then no base is named bad', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'bad-child', deltaFamily(['ofs']));
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'bad-child'), (n) => n - DIGEST - 2);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-entry-unpackable')).toBe(true);
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given a corrupt OFS_DELTA child over a base whose .idx CRC alone is wrong', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then the base is reported for its CRC yet not named bad, as it still unpacks', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const [baseId, childId] = await writeSyntheticPack(ctx, 'crc-base', deltaFamily(['ofs']));
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'crc-base'), (n) => n - DIGEST - 2);
+      const basePosition = baseId! < childId! ? 0 : 1;
+      await rewriteIdx(ctx, idxPathIn(primaryObjects(ctx), 'crc-base'), (idx) =>
+        setCrc(idx, 2, basePosition, 0xdeadbeef),
+      );
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'pack-crc-mismatch',
+        pack: 'pack-crc-base',
+        id: baseId,
+        offset: PACK_HEADER,
+      });
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given a REF_DELTA child naming a base only another pack holds, corrupt there', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then no base is named bad, as the child never resolves a base outside its own pack', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const baseId = await syntheticBlobId(ctx, baseBytes);
+      await writeSyntheticPack(ctx, 'thin-child', [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseBytes,
+          targetContent: childBytes('child'),
+        },
+      ]);
+      await writeSyntheticPack(ctx, 'damaged-base', blobEntries(BASE_TEXT));
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'damaged-base'), (n) => n - DIGEST - 2);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      const unpackable = result.findings.filter((f) => f.type === 'pack-entry-unpackable');
+      expect(new Set(unpackable.map((f) => f.pack))).toEqual(
+        new Set(['pack-damaged-base', 'pack-thin-child']),
+      );
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given a corrupt delta base with a REF_DELTA child placed before it', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then it names the base by the id the child records', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const baseId = await syntheticBlobId(ctx, baseBytes);
+      const [, packedBaseId] = await writeSyntheticPack(ctx, 'ref-child', [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseBytes,
+          targetContent: childBytes('child'),
+        },
+        { kind: 'base', type: 'blob', content: baseBytes },
+      ]);
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'ref-child'), (n) => n - DIGEST - 2);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(packedBaseId).toBe(baseId);
+      expect(result.badBases).toEqual(new Set([baseId]));
+    });
+  });
+});
+
+describe('Given a corrupt delta base that a second pack holds intact', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then no base is named bad, as another pack still serves it', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'damaged', deltaFamily(['ofs', 'ofs']));
+      await writeSyntheticPack(ctx, 'intact', blobEntries(BASE_TEXT));
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'damaged'), () => PACK_HEADER + 3);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-entry-unpackable')).toBe(true);
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given a corrupt delta base whose child has an unreadable header', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then no base is named bad', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const entries = deltaFamily(['ofs']);
+      const { offsets } = await buildSyntheticPack(ctx, entries);
+      await writeSyntheticPack(ctx, 'bad-header', entries);
+      const path = packPathIn(primaryObjects(ctx), 'bad-header');
+      await flipByte(ctx, path, () => PACK_HEADER + 3);
+      const reservedType = await ctx.fs.read(path);
+      reservedType[offsets[1]!] = 0x50;
+      await ctx.fs.write(path, reservedType);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given a corrupt delta base whose child records a distance landing on no entry', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then no base is named bad', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'lost-base', [
+        { kind: 'base', type: 'blob', content: baseBytes },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: childBytes('c'), distanceOverride: 3 },
+      ]);
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'lost-base'), () => PACK_HEADER + 3);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-entry-unpackable')).toBe(true);
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given an OFS_DELTA that records a distance of 0, naming its own offset', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then the entry fails to unpack and names no base, not even itself', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'self-base', [
+        { kind: 'base', type: 'blob', content: baseBytes },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: childBytes('c'), distanceOverride: 0 },
+      ]);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-entry-unpackable')).toBe(true);
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given an OFS_DELTA that records a distance past its own offset', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then the entry fails to unpack and names no base', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'before-pack', [
+        { kind: 'base', type: 'blob', content: baseBytes },
+        {
+          kind: 'ofs-delta',
+          baseIndex: 0,
+          targetContent: childBytes('c'),
+          distanceOverride: PAST_ANY_ENTRY_OFFSET,
+        },
+      ]);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-entry-unpackable')).toBe(true);
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
 describe('Given a corrupt pack', () => {
   describe.each([
     { label: 'full: false', opts: { full: false } },
@@ -226,7 +490,7 @@ describe('Given a corrupt pack', () => {
       const result = await sut(ctx, opts);
 
       // Assert
-      expect(result).toEqual({ findings: [], exitBit: 0, copies: [] });
+      expect(result).toEqual({ findings: [], exitBit: 0, copies: [], badBases: new Set() });
     });
   });
 });
@@ -273,14 +537,14 @@ describe('Given the same blob in two packs, one copy with a damaged body', () =>
         offset: PACK_HEADER,
       });
       expect(result.findings.every((f) => 'pack' in f && f.pack === `pack-${damaged}`)).toBe(true);
-      expect(result.exitBit).toBe(4);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a packed blob whose bytes do not hash to its indexed id', () => {
   describe('When the verify-pack pass runs', () => {
-    it('Then it reports the packed entry corrupt with bit 4 and runs no catalogue', async () => {
+    it('Then it reports the packed entry corrupt with bit 1 and runs no catalogue', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const wrongId = '0000000000000000000000000000000000000002' as ObjectId;
@@ -294,8 +558,9 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       // Assert
       expect(result).toEqual({
         findings: [{ type: 'pack-entry-corrupt', pack: 'pack-lying', id: wrongId }],
-        exitBit: 4,
+        exitBit: 1,
         copies: [{ id: wrongId, pack: 'pack-lying' }],
+        badBases: new Set(),
       });
     });
   });
@@ -303,7 +568,7 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
 
 describe('Given a tree with duplicate entries stored in two intact packs', () => {
   describe('When the verify-pack pass runs', () => {
-    it('Then it reports the catalogue error once per copy with bit 4, as verify_pack does', async () => {
+    it('Then it reports the catalogue error once per copy with bit 1, as verify_pack does', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const entry = new Uint8Array([...enc.encode('100644 a\0'), ...new Uint8Array(DIGEST)]);
@@ -327,7 +592,7 @@ describe('Given a tree with duplicate entries stored in two intact packs', () =>
       expect(
         result.findings.filter((f) => f.type === 'bad-object' && f.msgId === 'duplicateEntries'),
       ).toEqual([duplicate, duplicate]);
-      expect(result.exitBit).toBe(4);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -399,6 +664,138 @@ describe('positionsByOffset', () => {
         // Assert
         expect(result).toEqual([1, 0]);
       });
+    });
+  });
+});
+
+describe('Given ascending entry start offsets', () => {
+  const starts = [12, 40, 97, 130, 512];
+
+  describe.each([
+    ['first', 12, 0],
+    ['middle', 97, 2],
+    ['last', 512, 4],
+  ])('When the offset sits at the %s position', (_label, offset, expected) => {
+    it('Then its rank is that position', () => {
+      // Arrange
+      const sut = rankOfStart;
+
+      // Act
+      const result = sut(starts, offset);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe.each([
+    ['before every start', 5],
+    ['between two starts', 98],
+    ['after every start', 900],
+  ])('When the offset is %s', (_label, offset) => {
+    it('Then it has no rank', () => {
+      // Arrange
+      const sut = rankOfStart;
+
+      // Act
+      const result = sut(starts, offset);
+
+      // Assert
+      expect(result).toBe(-1);
+    });
+  });
+
+  describe('When there is no start at all', () => {
+    it('Then it has no rank', () => {
+      // Arrange
+      const sut = rankOfStart;
+
+      // Act
+      const result = sut([], 12);
+
+      // Assert
+      expect(result).toBe(-1);
+    });
+  });
+});
+
+describe('Given a delta entry read under a context whose hash configuration fails with a fault that is no git error', () => {
+  describe('When the base the entry names is read', () => {
+    it('Then the fault propagates instead of naming no base', async () => {
+      // Arrange
+      const built = await buildSyntheticPack(createMemoryContext(), deltaFamily(['ofs']));
+      const index = parsePackIndex(built.idxBytes, DIGEST);
+      const trailerStart = built.packBytes.length - DIGEST;
+      const offsets = entryOffsetsF64(index);
+      const order = positionsByOffset(offsets, trailerStart);
+      const layout = { order, starts: order.map((position) => offsets[position]!), trailerStart };
+      const childOffset = built.offsets[1]!;
+      const entry = {
+        bytes: built.packBytes.subarray(childOffset, trailerStart),
+        offset: childOffset,
+      };
+      const fault = new RangeError('hash configuration fault');
+      const ctx: Context = {
+        ...createMemoryContext(),
+        get hashConfig(): never {
+          throw fault;
+        },
+      };
+      const sut = baseNamedBy;
+
+      // Act
+      let caught: unknown;
+      try {
+        sut(ctx, index, layout, entry);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBe(fault);
+    });
+  });
+});
+
+describe('Given no base that failed to unpack', () => {
+  describe('When the unserved bases are judged over the packed copies', () => {
+    it('Then none is unserved and the copies are not walked', () => {
+      // Arrange
+      const walked = vi.fn();
+      const copies = new Proxy([] as ReadonlyArray<{ readonly id: ObjectId }>, {
+        get: (target, key, receiver) => {
+          walked(key);
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      const sut = unservedBases;
+
+      // Act
+      const result = sut(new Set(), new Map(), copies);
+
+      // Assert
+      expect(result.size).toBe(0);
+      expect(walked).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Given a failed base that one pack still serves and another does not', () => {
+  const base = 'ab'.repeat(20) as ObjectId;
+
+  describe.each([
+    ['every packed copy failed', 2, [{ id: base }, { id: base }], [base]],
+    ['one packed copy is served', 1, [{ id: base }, { id: base }], []],
+  ])('When %s', (_label, failed, copies, expected) => {
+    it('Then the base is unserved only when no copy is left', () => {
+      // Arrange
+      const sut = unservedBases;
+
+      // Act
+      const result = sut(new Set([base]), new Map([[base, failed]]), copies);
+
+      // Assert
+      expect([...result]).toEqual(expected);
     });
   });
 });

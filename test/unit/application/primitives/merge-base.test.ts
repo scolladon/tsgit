@@ -978,9 +978,8 @@ describe('mergeBase', () => {
     // a date-ordered REDUCTION walk would pop C0 (topological level 1, below the
     // generation floor) right after C and stop before X hands C the second mark —
     // which pins `byGenerationThenDate` on the reduction under a topological-level
-    // graph, where git keeps its generation comparator. Measured against git
-    // 2.55.0: no graph -> `merge-base` R, `--all` R; a `generationVersion=1`
-    // graph -> C, R; a full (GDA2) graph -> R, R.
+    // graph. Measured against git 2.56.0: no graph -> `merge-base` R, `--all` R;
+    // a `generationVersion=1` graph -> R, R; a full (GDA2) graph -> R, R.
     const buildSkewedRedundantBase = async (
       ctx: Context,
     ): Promise<{ c: ObjectId; r: ObjectId; d: ObjectId; e: ObjectId; all: ObjectId[] }> => {
@@ -1011,11 +1010,11 @@ describe('mergeBase', () => {
       });
     });
 
-    describe('When a generationVersion=1 graph forces the date-only discovery walk', () => {
-      it('Then plain answers the redundant newest base C git prints, and all still reduces to R', async () => {
+    describe('When a generationVersion=1 graph orders the discovery walk by topological level', () => {
+      it('Then plain and all both answer R, as git does', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const { c, r, d, e, all } = await buildSkewedRedundantBase(ctx);
+        const { r, d, e, all } = await buildSkewedRedundantBase(ctx);
         await writeCommitGraph(ctx, [await asCommits(ctx, all)]);
         const topoLevels = vi
           .spyOn(readCommitGraphModule, 'correctedCommitDatesEnabled')
@@ -1026,7 +1025,7 @@ describe('mergeBase', () => {
         const every = await mergeBase(ctx, [d, e], { all: true });
 
         // Assert
-        expect(plain).toEqual([c]);
+        expect(plain).toEqual([r]);
         expect(every).toEqual([r]);
         topoLevels.mockRestore();
       });
@@ -1088,12 +1087,11 @@ describe('mergeBase', () => {
     });
 
     describe('When the graph covers every commit but serves topological levels', () => {
-      it('Then the discovery walk swaps in the date-only comparator and pops P first', async () => {
+      it('Then the discovery walk still orders by generation and pops Q first', async () => {
         // Arrange — one `commitGraph.generationVersion=1` layer anywhere in a
-        // chain demotes the whole chain to topological levels, and git then
-        // orders the discovery walk by committer date alone. The graph still
-        // serves Q the generation (1000) that outranks P's (900), so a walk
-        // that kept its generation comparator would answer Q instead.
+        // chain demotes the whole chain to topological levels; git 2.56 keeps
+        // the generation comparator regardless. The graph serves Q the
+        // generation (1000) that outranks P's (900), so Q pops first.
         const ctx = await buildSeededContext();
         const { p, q, d, e, all } = await buildGenerationVersusDate(ctx);
         await writeCommitGraph(ctx, [await asCommits(ctx, all)]);
@@ -1106,7 +1104,7 @@ describe('mergeBase', () => {
         const every = await mergeBase(ctx, [d, e], { all: true });
 
         // Assert
-        expect(plain).toEqual([p]);
+        expect(plain).toEqual([q]);
         expect(every).toEqual([p, q]);
         topoLevels.mockRestore();
       });
@@ -1125,6 +1123,184 @@ describe('mergeBase', () => {
         // Assert
         expect(plain).toEqual([p]);
         expect(octopus).toEqual([p]);
+      });
+    });
+  });
+
+  describe('Given a short side that the walk exhausts while the other side still has ancestry', () => {
+    describe('When mergeBase runs over a graph serving corrected commit dates', () => {
+      it('Then it stops without popping the remaining one-sided entries', async () => {
+        // Arrange — the lone P1 root outranks every P2 commit by generation, so
+        // it pops first and leaves P1 with nothing queued; git then quits
+        // before popping t3, so t2 is never read.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const s1 = await commitNamed(ctx, treeId, 5000, [], 's1');
+        const t0 = await commitNamed(ctx, treeId, 5, [], 't0');
+        const t1 = await commitNamed(ctx, treeId, 10, [t0], 't1');
+        const t2 = await commitNamed(ctx, treeId, 20, [t1], 't2');
+        const t3 = await commitNamed(ctx, treeId, 30, [t2], 't3');
+        await writeCommitGraph(ctx, [await asCommits(ctx, [s1, t0, t1, t2, t3])]);
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [s1, t3]);
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(consultedIds(consult)).toEqual(new Set([s1, t3]));
+      });
+    });
+  });
+
+  describe('Given a short PARENT2 side that the walk exhausts while the PARENT1 side still has ancestry', () => {
+    describe('When mergeBase runs over a graph serving corrected commit dates', () => {
+      it('Then it stops without popping the remaining one-sided entries', async () => {
+        // Arrange — the lone P2 root outranks every P1 commit by generation, so
+        // it pops first and leaves P2 with nothing queued; git then quits
+        // before popping t3, so t2 is never read.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const s1 = await commitNamed(ctx, treeId, 5000, [], 's1');
+        const t0 = await commitNamed(ctx, treeId, 5, [], 't0');
+        const t1 = await commitNamed(ctx, treeId, 10, [t0], 't1');
+        const t2 = await commitNamed(ctx, treeId, 20, [t1], 't2');
+        const t3 = await commitNamed(ctx, treeId, 30, [t2], 't3');
+        await writeCommitGraph(ctx, [await asCommits(ctx, [s1, t0, t1, t2, t3])]);
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [t3, s1]);
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(consultedIds(consult)).toEqual(new Set([s1, t3]));
+      });
+    });
+  });
+
+  describe('Given a skewed-date ancestor of the true base, both outside a graph serving corrected commit dates', () => {
+    describe('When mergeBase runs', () => {
+      it('Then the walk does not stop at the first base it pops and the true base is answered', async () => {
+        // Arrange — r is also a direct parent of both tips and dated newer than
+        // its child m, so it pops first; outside the graph its generation is
+        // the ceiling itself, which never ends a single-result walk.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const g = await commitNamed(ctx, treeId, 50, [], 'g');
+        await writeCommitGraph(ctx, [await asCommits(ctx, [g])]);
+        const r = await commitNamed(ctx, treeId, 300, [g], 'r');
+        const m = await commitNamed(ctx, treeId, 100, [r], 'm');
+        const a = await commitNamed(ctx, treeId, 400, [m, r], 'a');
+        const b = await commitNamed(ctx, treeId, 500, [m, r], 'b');
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [a, b]);
+
+        // Assert
+        expect(result).toEqual([m]);
+      });
+    });
+  });
+
+  describe('Given a base whose own parents are the only entries left in the queue', () => {
+    describe('When mergeBase({ all: true }) runs over a graph', () => {
+      it('Then it stops once both sides are empty and never reads past the stale parents', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const g = await commitNamed(ctx, treeId, 10, [], 'g');
+        const f = await commitNamed(ctx, treeId, 20, [g], 'f');
+        const m = await commitNamed(ctx, treeId, 30, [f], 'm');
+        const x = await commitNamed(ctx, treeId, 40, [m], 'x');
+        const y = await commitNamed(ctx, treeId, 50, [m], 'y');
+        await writeCommitGraph(ctx, [await asCommits(ctx, [g, f, m, x, y])]);
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [x, y], { all: true });
+
+        // Assert
+        expect(result).toEqual([m]);
+        expect(consultedIds(consult)).toEqual(new Set([x, y, m, f]));
+      });
+    });
+  });
+
+  describe('Given a queued entry reached first from one side and then from the other', () => {
+    describe('When mergeBase runs over a graph serving corrected commit dates', () => {
+      it('Then the re-marked entry counts as a candidate and is popped as the base', async () => {
+        // Arrange — m is queued PARENT1-only by `a`, then re-marked PARENT2 by
+        // `b` while still queued; judged on its stale PARENT1 bucket the walk
+        // would see one side exhausted and quit before popping it.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const m = await commitNamed(ctx, treeId, 10, [], 'm');
+        const a = await commitNamed(ctx, treeId, 30, [m], 'a');
+        const b = await commitNamed(ctx, treeId, 20, [m], 'b');
+        await writeCommitGraph(ctx, [await asCommits(ctx, [m, a, b])]);
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [a, b]);
+
+        // Assert
+        expect(result).toEqual([m]);
+      });
+    });
+  });
+
+  describe('Given two bases where the one popped first sits above the topological-level ceiling', () => {
+    // KP@1.2e9 <- Q@10 corrects Q to a generation above GENERATION_NUMBER_V1_MAX,
+    // so it pops before the independent root P@1.1e9; d and e merge both.
+    const buildAboveCeiling = async (
+      ctx: Context,
+    ): Promise<{ p: ObjectId; q: ObjectId; d: ObjectId; e: ObjectId }> => {
+      const treeId = await emptyTree(ctx);
+      const kp = await commitNamed(ctx, treeId, 1_200_000_000, [], 'kp');
+      const q = await commitNamed(ctx, treeId, 10, [kp], 'q');
+      const p = await commitNamed(ctx, treeId, 1_100_000_000, [], 'p');
+      const d = await commitNamed(ctx, treeId, 1_300_000_000, [p, q], 'd');
+      const e = await commitNamed(ctx, treeId, 1_300_000_000, [q, p], 'e');
+      await writeCommitGraph(ctx, [await asCommits(ctx, [kp, q, p, d, e])]);
+      return { p, q, d, e };
+    };
+
+    describe('When the chain serves topological levels', () => {
+      it('Then the single-result walk goes on past Q and the newest-dated base P wins', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { p, d, e } = await buildAboveCeiling(ctx);
+        const topoLevels = vi
+          .spyOn(readCommitGraphModule, 'correctedCommitDatesEnabled')
+          .mockResolvedValue(false);
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [d, e]);
+
+        // Assert
+        expect(result).toEqual([p]);
+        topoLevels.mockRestore();
+      });
+    });
+
+    describe('When the chain serves corrected commit dates', () => {
+      it('Then the single-result walk stops at Q, a finite generation', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { q, d, e } = await buildAboveCeiling(ctx);
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [d, e]);
+
+        // Assert
+        expect(result).toEqual([q]);
       });
     });
   });

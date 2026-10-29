@@ -40,6 +40,7 @@ import { maintenance } from '../../src/application/commands/maintenance.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
+import { gitMissingLines, missingLinesOf } from './fsck-line-helpers.js';
 import {
   disableAutoMaintenance,
   forgeOwnHash,
@@ -579,8 +580,6 @@ const gitDanglingLines = (stdout: string): ReadonlyArray<string> =>
 
 const donorPackDir = (donor: string): string => path.join(objectsOf(donor), 'pack');
 
-const MISSING_LINE = /^missing (\w+) ([0-9a-f]{40})$/;
-
 const POINTER_LINE = /^error: \S+: invalid (sha1 pointer|reflog entry) [0-9a-f]{40}$/;
 
 const gitLines = (output: string, line: RegExp): ReadonlyArray<string> =>
@@ -588,9 +587,6 @@ const gitLines = (output: string, line: RegExp): ReadonlyArray<string> =>
     .split('\n')
     .filter((text) => line.test(text))
     .sort();
-
-const missingLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
-  findings.flatMap((f) => (f.type === 'missing' ? [`missing ${f.objectType} ${f.id}`] : [])).sort();
 
 /** git's ref and reflog pointer errors, rebuilt from tsgit's structured findings. */
 const pointerLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
@@ -817,6 +813,51 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
     });
   });
 
+  describe('Given an index entry naming a donor loose blob whose bytes are garbage', () => {
+    const emptyTheIndex = (borrower: string): void => {
+      runGit(['-C', borrower, 'read-tree', '--empty']);
+    };
+    const keepTheTrackedFile = (_borrower: string): void => undefined;
+    const indexCorruptDonorBlob = (borrower: string, donor: string) => {
+      const oid = unreachableDonorBlob(donor);
+      runGit(['-C', borrower, 'update-index', '--add', '--cacheinfo', `100644,${oid},f.txt`]);
+      const file = looseFile(objectsOf(donor), oid);
+      rmSync(file);
+      writeFileSync(file, 'garbage');
+      return oid;
+    };
+
+    describe.each([
+      ['the only index entry', emptyTheIndex, 'index-only'],
+      ['beside a healthy tracked file', keepTheTrackedFile, 'index-beside'],
+    ])(
+      'When the entry is %s and the borrower fsck runs (no-full)',
+      (_shape, prepareIndex, slug) => {
+        it(
+          'Then both exit 2 with the blob missing and tsgit does not throw',
+          async () => {
+            // Arrange
+            const { donor, borrower } = borrowerOf(`f3-${slug}`, false);
+            prepareIndex(borrower);
+            const oid = indexCorruptDonorBlob(borrower, donor);
+            const sut = tsgitFsck;
+
+            // Act
+            const gitResult = gitFsck(borrower, '--no-full');
+            const result = await sut(borrower, { full: false });
+
+            // Assert
+            expect(gitResult.exitCode).toBe(2);
+            expect(gitMissingLines(gitResult.stdout)).toContain(`missing blob ${oid}`);
+            expect(result.exitCode).toBe(2);
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
+          },
+          ROW_TIMEOUT,
+        );
+      },
+    );
+  });
+
   describe('Given a donor loose file whose content hashes to a different oid', () => {
     const swapContent = (donor: string): string => {
       const oid = unreachableDonorBlob(donor);
@@ -828,21 +869,18 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       return oid;
     };
 
-    describe.each([
-      { label: 'default', flags: [] as string[], opts: {} },
-      { label: 'no-full', flags: ['--no-full'], opts: { full: false } },
-    ])('When the borrower fsck runs ($label)', ({ label, flags, opts }) => {
+    describe('When the borrower fsck runs (default)', () => {
       it(
         'Then both exit 1 and name the oid and the donor path',
         async () => {
           // Arrange
-          const { donor, borrower } = borrowerOf(`f3-${label}`, false);
+          const { donor, borrower } = borrowerOf('f3-default', false);
           const oid = swapContent(donor);
           const sut = tsgitFsck;
 
           // Act
-          const gitResult = gitFsck(borrower, ...flags);
-          const result = await sut(borrower, opts);
+          const gitResult = gitFsck(borrower);
+          const result = await sut(borrower, {});
 
           // Assert
           expect(gitResult.exitCode).toBe(1);
@@ -855,6 +893,31 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
           expect(gitResult.stderr).toContain(
             `error: ${actual}: hash-path mismatch, found at: ${found}`,
           );
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When the borrower fsck runs (no-full)', () => {
+      it(
+        'Then both exit 2 and report what the donor alone holds as missing, as the donor is not audited',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f3-no-full', false);
+          swapContent(donor);
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower, '--no-full');
+          const result = await sut(borrower, { full: false });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(2);
+          expect(result.exitCode).toBe(2);
+          expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
+          expect(
+            result.findings.some((f) => f.type === 'missing' && f.objectType === 'commit'),
+          ).toBe(true);
         },
         ROW_TIMEOUT,
       );
@@ -980,7 +1043,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe('When the pack trailer is corrupt', () => {
       it(
-        'Then both exit 14 on the donor and the borrower with the missing blobs and invalid pointers git names',
+        'Then both exit 11 on the donor and the borrower with the missing blobs and invalid pointers git names',
         async () => {
           // Arrange — tsgit's fsck verifies no commit-graph, so the donor's
           // is removed: git's `commit-graph verify` child would add bit 16.
@@ -997,12 +1060,12 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
             // Assert
             const gitPackDir = dir === donor ? '.git/objects/pack' : donorPackDir(donor);
-            expect(gitResult.exitCode).toBe(14);
+            expect(gitResult.exitCode).toBe(11);
             expect(result.exitCode).toBe(gitResult.exitCode);
             for (const line of verifyPackLines(result.findings, gitPackDir)) {
               expect(gitResult.stderr).toContain(line);
             }
-            expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
             expect(pointerLines(result.findings)).toEqual(gitLines(gitResult.stderr, POINTER_LINE));
           }
         },
@@ -1029,7 +1092,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe('When a second donor pack holds a damaged duplicate of a reachable blob', () => {
       it(
-        'Then both exit 4 on the donor and the borrower and report the damaged copy git reports',
+        'Then both exit 1 on the donor and the borrower and report the damaged copy git reports',
         async () => {
           // Arrange
           const { donor, borrower } = borrowerOf('v4dup', true);
@@ -1051,8 +1114,8 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
             // Assert
             const lines = verifyPackLines(result.findings, packDir);
             const gitPackDir = dir === donor ? '.git/objects/pack' : packDir;
-            expect(gitResult.exitCode).toBe(4);
-            expect(result.exitCode).toBe(4);
+            expect(gitResult.exitCode).toBe(1);
+            expect(result.exitCode).toBe(1);
             expect([...lines].sort()).toEqual(unpackLines(pack, oid, offset));
             for (const line of verifyPackLines(result.findings, gitPackDir)) {
               expect(gitResult.stderr).toContain(line);
@@ -1065,7 +1128,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe('When a loose copy shadows a damaged pack copy of a reachable blob', () => {
       it(
-        'Then both exit 4 on the donor and the borrower and report the hidden pack copy',
+        'Then both exit 1 on the donor and the borrower and report the hidden pack copy',
         async () => {
           // Arrange
           const donor = path.join(root, 'v4loose-donor');
@@ -1094,8 +1157,8 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
             // Assert
             const gitPackDir = dir === donor ? '.git/objects/pack' : packDir;
-            expect(gitResult.exitCode).toBe(4);
-            expect(result.exitCode).toBe(4);
+            expect(gitResult.exitCode).toBe(1);
+            expect(result.exitCode).toBe(1);
             expect([...verifyPackLines(result.findings, packDir)].sort()).toEqual(
               unpackLines(pack, oid, offset),
             );
@@ -1162,7 +1225,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe('When a separate pack holds only an unreachable object and is corrupt', () => {
       it(
-        'Then both exit 4 and every verify_pack line git prints is rebuilt from tsgit findings',
+        'Then both exit 1 and every verify_pack line git prints is rebuilt from tsgit findings',
         async () => {
           // Arrange
           const { donor, borrower } = borrowerOf('f4c', true);
@@ -1183,8 +1246,8 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
           // Assert
           const lines = verifyPackLines(result.findings, packDir);
-          expect(gitResult.exitCode).toBe(4);
-          expect(result.exitCode).toBe(4);
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
           expect([...lines].sort()).toEqual(
             [
               `error: ${packDir}/${added} pack checksum mismatch`,
@@ -1218,7 +1281,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
             expect(gitResult.exitCode).toBe(2);
             expect(result.exitCode).toBe(2);
             expect(pointerLines(result.findings)).toEqual(gitLines(gitResult.stderr, POINTER_LINE));
-            expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
           }
         },
         ROW_TIMEOUT,
@@ -1290,9 +1353,15 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc/fsck interop — loose-only enume
           };
           const file = path.relative(borrower, data.source);
           expect(git.exitCode).toBe(128);
-          expect(git.stderr).toBe(
-            `fatal: bad numeric config value '${data.value}' for '${data.key}' in file ${file}: ${data.reason}\n`,
-          );
+          const fatal = `fatal: bad numeric config value '${data.value}' for '${data.key}' in file ${file}: ${data.reason}`;
+          const gcCascade = [
+            fatal,
+            'error: failed to run pack-refs',
+            fatal,
+            'fatal: failed to run worktree',
+          ];
+          const stderrLines = run === 'gc' ? gcCascade : [fatal];
+          expect(git.stderr).toBe(`${stderrLines.join('\n')}\n`);
           expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
         },
         ROW_TIMEOUT,
@@ -1367,7 +1436,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
     {
       layout: 'two packs, the tree pack newer',
       prepare: (dir: string) => splitPacks(dir, OLDER_SECONDS, NEWER_SECONDS),
-      exitCode: 4,
+      exitCode: 1,
     },
     {
       layout: 'two packs, the blob pack newer',
@@ -1400,7 +1469,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
 
   describe('Given a loose tree naming an evil .gitmodules blob only a pack holds', () => {
     describe.each([
-      { flags: [] as ReadonlyArray<string>, opts: {}, exitCode: 4 },
+      { flags: [] as ReadonlyArray<string>, opts: {}, exitCode: 1 },
       { flags: ['--no-full'], opts: { full: false }, exitCode: 1 },
     ])('When git fsck $flags and tsgit fsck run', ({ flags, opts, exitCode }) => {
       it(
@@ -1435,7 +1504,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
   describe('Given a borrower whose own pack holds the tree and the donor pack the blob', () => {
     describe('When git fsck and tsgit fsck run on the borrower', () => {
       it(
-        'Then both meet the borrower pack first and report the donor blob with exit 4',
+        'Then both meet the borrower pack first and report the donor blob with exit 1',
         async () => {
           // Arrange
           const { donor, borrower } = borrowerOf('special-borrower', true);
@@ -1456,8 +1525,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
           const result = await sut(borrower);
 
           // Assert
-          expect(git.exitCode).toBe(4);
-          expect(result.exitCode).toBe(4);
+          expect(git.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
           expect(specialLines(result.findings)).toEqual(gitSpecialLines(git.stderr));
         },
         ROW_TIMEOUT,
@@ -1495,7 +1564,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
         stampPack(dir, blobPack, NEWER_SECONDS);
         stampPack(dir, restPack, OLDER_SECONDS);
       },
-      exitCode: 4,
+      exitCode: 1,
     },
     {
       layout: 'two multi-pack-index packs, the blob pack younger and first by pack-int-id',
@@ -1506,12 +1575,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
         stampPack(dir, blobPack, NEWER_SECONDS);
         stampPack(dir, restPack, OLDER_SECONDS);
       },
-      exitCode: 4,
+      exitCode: 1,
     },
     {
       layout: 'two scanned packs of one age',
       prepare: (dir: string) => splitPacks(dir, OLDER_SECONDS, OLDER_SECONDS),
-      exitCode: 4,
+      exitCode: 1,
     },
     {
       layout: 'two scanned packs of one age and a tag on the blob',
@@ -2005,7 +2074,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck/gc interop — index entries', () => {
           // Assert
           expect(git.exitCode).toBe(0);
           expect(result.exitCode).toBe(0);
-          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+          expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
         },
         ROW_TIMEOUT,
       );
@@ -2161,9 +2230,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — invalid cache-tree pointers', 
   };
 
   describe.each([
-    { label: 'a valid loose copy and the index', looseCopy: true, index: true, exitCode: 12 },
-    { label: 'a valid loose copy and no index', looseCopy: true, index: false, exitCode: 4 },
-    { label: 'no other copy and no index', looseCopy: false, index: false, exitCode: 4 },
+    { label: 'a valid loose copy and the index', looseCopy: true, index: true, exitCode: 9 },
+    { label: 'a valid loose copy and no index', looseCopy: true, index: false, exitCode: 1 },
+    { label: 'no other copy and no index', looseCopy: false, index: false, exitCode: 1 },
   ])(
     "Given a root tree packed under another tree's bytes, with $label",
     ({ looseCopy, index, exitCode }) => {
@@ -2733,7 +2802,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special f
           // Assert
           expect(result.exitCode).toBe(git.exitCode);
           expect(reportLines(result.findings)).toEqual(gitReportLines(git.stderr));
-          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+          expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
         },
         ROW_TIMEOUT,
       );
@@ -2824,7 +2893,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         opts: { connectivityOnly: true },
         exitCode: 2,
       },
-      { storage: 'packed', flag: '--full', opts: {}, exitCode: 6 },
+      { storage: 'packed', flag: '--full', opts: {}, exitCode: 3 },
       { storage: 'packed', flag: '--no-full', opts: { full: false }, exitCode: 2 },
       {
         storage: 'packed',
@@ -2963,7 +3032,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — a corrupt loose tip an alterna
 
 describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs and reflogs', () => {
   describe.each([
-    { mode: '--full', flags: [] as ReadonlyArray<string>, options: {}, gitExit: 4 },
+    { mode: '--full', flags: [] as ReadonlyArray<string>, options: {}, gitExit: 1 },
     { mode: '--no-full', flags: ['--no-full'], options: { full: false }, gitExit: 0 },
   ])(
     'Given a promisor pack whose first entry hashes to another id, before a commit naming an absent parent',
@@ -3017,7 +3086,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs
             // Assert
             expect(git.exitCode).toBe(gitExit);
             expect(result.exitCode).toBe(git.exitCode);
-            expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
             expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
           },
           ROW_TIMEOUT,
@@ -3068,8 +3137,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs
           // Assert
           expect(git.exitCode).toBe(2);
           expect(result.exitCode).toBe(2);
-          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
-          expect(gitLines(git.stdout, MISSING_LINE)).toEqual([`missing blob ${b}`]);
+          expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
+          expect(gitMissingLines(git.stdout)).toEqual([`missing blob ${b}`]);
         },
         ROW_TIMEOUT,
       );
@@ -3137,7 +3206,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs
             // Assert
             expect(result.exitCode).toBe(git.exitCode);
             expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
-            expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
           },
           ROW_TIMEOUT,
         );

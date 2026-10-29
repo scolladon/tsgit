@@ -11,7 +11,7 @@ evidence:
 source: { run: forced-checkout-same-commit, phase: review, date: 2026-10-26 }
 status: active
 supersedes: []
-last-verified: 2026-10-26
+last-verified: 2026-10-29
 ---
 # 018 — A "writes nothing" pin drifts a stat before comparing
 

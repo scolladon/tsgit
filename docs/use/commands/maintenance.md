@@ -347,14 +347,27 @@ await repo.maintenance({ tasks: ['bogus' as never] }); // throws INVALID_OPTION
 - `INVALID_OPTION` — `tasks` is empty, or names a task tsgit does not
   recognise.
 - `RESOURCE_LOCKED` — another writer holds `objects/info/commit-graph.lock`.
-- `CONFIG_BAD_NUMERIC_VALUE` — `gc.auto` fails git's integer grammar (only
-  checked under `auto: true`).
+- `CONFIG_BAD_NUMERIC_VALUE` — `gc.auto`, `gc.autoPackLimit` or
+  `gc.bigPackThreshold` fails git's integer grammar, under `auto: true`
+  (`gc.bigPackThreshold` only when the gate does not decline first). Outside
+  `auto`, these three are not thrown: see the lazy keys below.
 - `CONFIG_BAD_BOOLEAN_VALUE` — `gc.cruftPacks` fails git's boolean grammar.
 - `CONFIG_BAD_DATE_VALUE` — `gc.pruneExpire` fails the supported date
   grammar. `gc` writes nothing when this refusal fires.
 - `INVALID_CRUFT_MTIMES` — the existing cruft pack's `.mtimes` sidecar
   disagrees with its `.idx` on object count, or fails its self-checksum.
   `gc` writes nothing when this refusal fires.
+
+### Config validation
+
+Seven `gc.*` keys are validated: `gc.cruftPacks`, `gc.pruneExpire`,
+`gc.worktreePruneExpire` and `gc.logExpiry` are read eagerly and refuse before
+any task runs, whatever the task list. `gc.auto`, `gc.autoPackLimit` and
+`gc.bigPackThreshold` are read lazily, at the points where git 2.56 reads them.
+A malformed value of one of the three does not stop the run when only other
+tasks are selected. Inside the `gc` task it becomes a `tasksFailed` entry
+(`{ task: 'gc', code, data }`) and the remaining tasks still run; git exits 1
+with `error: task 'gc' failed`. Under `auto: true` the gate's refusal is thrown.
 
 ## See also
 

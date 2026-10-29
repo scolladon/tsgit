@@ -622,7 +622,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
           // Assert
           expect(pushed[1]).toBe(pushed[0]);
           if (row.git === 'refuses') {
-            expect(gitRun.exitCode).toBe(1);
+            expect(gitRun.exitCode).toBe(128);
             expect(lastLine(gitRun.stderr)).toBe(CONFLICTS_IN_INDEX);
             expect(outcome).toStrictEqual({
               kind: 'STASH_INDEX_CONFLICT',
@@ -632,7 +632,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
             expect(observed(pair.ours, inodes[1]).autoMerge).toBe(false);
             expect(existsSync(path.join(pair.ours, 'u'))).toBe(false);
           } else if (row.git === 'unclean') {
-            expect(gitRun.exitCode).toBe(1);
+            expect(gitRun.exitCode).toBe(128);
             expect(outcome.kind).toBe('STASH_APPLY_WOULD_OVERWRITE');
             const { localChanges, untracked } = outcome as UncleanOutcome;
             expect(untracked).toStrictEqual([]);
@@ -679,7 +679,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
           const outcome = await tsgitApply(pair.ours, { command });
 
           // Assert
-          expect(gitRun.exitCode).toBe(1);
+          expect(gitRun.exitCode).toBe(128);
           expect(lastLine(gitRun.stderr)).toBe(CONFLICTS_IN_INDEX);
           expect(outcome).toStrictEqual({
             kind: 'STASH_INDEX_CONFLICT',
@@ -716,7 +716,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply --index judge interop', () => {
           const outcome = await tsgitApply(pair.ours, { command });
 
           // Assert
-          expect(gitRun.exitCode).toBe(1);
+          expect(gitRun.exitCode).toBe(128);
           expect(outcome.kind).toBe('STASH_APPLY_WOULD_OVERWRITE');
           const { localChanges, untracked } = outcome as UncleanOutcome;
           expect(untracked).toStrictEqual([]);

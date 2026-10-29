@@ -2,10 +2,17 @@
 
 Best common ancestor(s) of one or more commits. Always returns an array, empty when the histories are disjoint; `{ all: true }` sorts the result by oid.
 
-By default it returns at most one base — the single result git's own walk pops
-first: the newest-dated common base when the repository has no commit-graph
-(or its chain serves no corrected commit dates), and the highest-generation
-one wherever a graph serves corrected commit dates along the whole chain. Two
+By default it returns at most one base — the single result git 2.56's paint
+walk yields. The walk's queue is always ordered by generation, then committer
+date, then insertion. It stops once no merge-base candidate is queued and either
+both sides are exhausted, or one side is exhausted and the popped generation is
+below the topological ceiling: `GENERATION_NUMBER_V1_MAX` when the chain serves
+no corrected commit dates, unbounded when it does. The single-result break fires
+only below that ceiling. Without a commit-graph, or with one serving corrected
+commit dates, the result is the same as git 2.55's; under a
+`commitGraph.generationVersion=1` graph it can be a higher-generation base where
+2.55 returned an older, newest-dated one
+([ADR-1114](../../adr/1114-merge-base-follows-git-2-56-s-paint-queue.md)). Two
 flags extend it:
 
 - `{ all: true }` — every best common ancestor (`git merge-base --all`). In criss-cross histories there can be more than one.

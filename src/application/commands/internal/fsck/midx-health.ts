@@ -2,8 +2,8 @@ import type { Context } from '../../../../ports/context.js';
 import type { MidxFault } from '../../../primitives/internal/midx-source.js';
 import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
 import { faultReason, type MidxHealth } from '../../../primitives/pack-registry.js';
-import { EXIT_MULTI_PACK_INDEX } from './exit-codes.js';
-import { attributeTo } from './source-attribution.js';
+import { EXIT_CORRUPT } from './exit-codes.js';
+import { attributeTo, auditedSources } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 // The only two `MidxCheck` members a load-time parse never settles: the
@@ -23,11 +23,9 @@ function isContainedMidxFault(fault: MidxFault): boolean {
 
 /**
  * Report the multi-pack-index's own accessibility and integrity, mirroring
- * `runPackHealthPass` structurally. **`opts` is taken for symmetry and this
- * pass ignores it**: bit 32 fires identically under default,
- * `connectivityOnly`, `full: false` and `strict` — the ungated shape bit 64
- * already has, not the gated shape bit 4 has. tsgit has no config key
- * equivalent to git's one gate on this pass, so it is unconditional.
+ * `runPackHealthPass` structurally. Git 2.56 sets the generic corruption bit
+ * for these findings, skips the pass under `connectivityOnly`, and audits the
+ * local source only under `full: false`.
  *
  * A load-time Tier-A multi-pack-index fault never reaches this pass at all:
  * `enumerateObjects` awaits the same generation before this pass runs, so
@@ -38,16 +36,17 @@ function isContainedMidxFault(fault: MidxFault): boolean {
  */
 export async function runMidxHealthPass(
   ctx: Context,
-  _opts: FsckOptions,
+  opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
+  if (opts.connectivityOnly === true) return { findings: [], exitBit: 0 };
   const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
   let exitBit = 0;
-  for (const source of store.sources) {
+  for (const source of auditedSources(store, opts)) {
     const attribution = attributeTo(store, source);
     const sourceFindings = await reportSourceMidx(source);
     for (const finding of sourceFindings) findings.push({ ...finding, ...attribution });
-    if (sourceFindings.length > 0) exitBit |= EXIT_MULTI_PACK_INDEX;
+    if (sourceFindings.length > 0) exitBit |= EXIT_CORRUPT;
   }
   return { findings, exitBit };
 }

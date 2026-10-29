@@ -477,8 +477,9 @@ compose instead of colliding:
 - **fsck exits 128 only when the *parent's own* object-store access hits Tier A first** — the
   parent enumerates objects before it reaches the midx pass, so a midx that dies *at load* kills
   the parent and the child never runs (stdout empty, no findings at all). A midx that dies only
-  when a *particular offset is decoded* (row O28) leaves the parent alive and is reported by the
-  child as bit 32.
+  when a *particular offset is decoded* (row O28) is reported by the child as bit 32; under git
+  2.56 the row targets HEAD's tree, so the parent dies too (128) when its connectivity walk re-reads
+  that tree through the midx.
 - The **only** gate is `core.multiPackIndex=false`. Mode is not a gate:
 
 | repo shape | `fsck` | `--connectivity-only` | `--no-full` | `--strict` |
@@ -534,7 +535,7 @@ Pin N makes it the *cause* of fsck's bit 32. Messages are the midx-related stder
 | O25 | a midx-named pack's **`.idx` deleted**, `.pack` kept | **110** | 1 | `error: packfile <p>.pack index unavailable` (many), `index not opened`, `unable to load rev-index`, **no** `failed to load pack in position`, but `failed to load pack entry for oid[i]` × 3 | staleness **+** pack layer |
 | O26 | **no midx** + the same pack deleted (differential control for O23) | **10** | 0 | connectivity fallout only — **no bit 32, no midx line** | control |
 | O27 | `LOFF` chunk appended, bit 31 set, row **in range** | **0** | 0 | — ; all objects still enumerate | accepted |
-| O28 | same, row **out of range** (row 5, `largeOffsetCount` = 1) | **32** | **128** | `fatal: multi-pack-index large offset out of bounds` | **A, contained by the child** |
+| O28 | same, row **out of range** (row 5, `largeOffsetCount` = 1) on HEAD's tree | **128** | **128** | `fatal: multi-pack-index large offset out of bounds` | **A** |
 
 **Rules, as pinned.**
 

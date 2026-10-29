@@ -5,6 +5,8 @@ subjects:
 ---
 # 1101 — `stash apply --index` refuses an index-side conflict before any write
 
+> Amended for git 2.56: see ADR-1109. git exits 128 on the index conflict; 1 is reserved for a work-tree merge conflict.
+
 - **Status:** accepted
 - **Date:** 2026-10-27
 - **Design:** docs/design/stash-apply-dir-file-replacement.md (review finding H2) · **Supersedes/Refines:** refines ADR-211, ADR-212, ADR-249
@@ -13,7 +15,7 @@ subjects:
 
 With `--index`, when the stashed index tree differs from both its base and the current index, git applies the
 base-to-index patch onto the current index (`apply --cached`) before the work-tree merge. When that patch does not
-apply, git prints `error: conflicts in index. Try without --index.`, exits 1, writes nothing beyond its opening
+apply, git prints `error: conflicts in index. Try without --index.`, exits 128 (git 2.56), writes nothing beyond its opening
 index refresh and keeps the stash. tsgit runs its index-side three-way merge (base, current index, stashed index)
 after the work-tree merge and, when it conflicts, skips the reinstatement without a word: the work-tree merge is
 already written, the result is `applied`, and `pop` drops the stash, so the staged state is lost. A review probe
@@ -46,5 +48,5 @@ with a three-way merge; the design pins the rows where both agree and records an
   regenerated `reports/api.json`.
 - The reinstatement's "not clean, return" branch has no caller and is removed; ADR-211's carve-out now reads: a
   conflicted staged state is refused before any write, never reinstated and never silently dropped.
-- Interop rows pin `apply --index` and `pop --index` on the conflicting shape: git exit 1, nothing written, stash
+- Interop rows pin `apply --index` and `pop --index` on the conflicting shape: git exit 128, nothing written, stash
   kept; tsgit `STASH_INDEX_CONFLICT`, same state.

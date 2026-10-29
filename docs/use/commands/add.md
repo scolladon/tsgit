@@ -103,7 +103,8 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 ## Throws
 
 - `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive pathspec, literal or glob, matched nothing; `pattern` is the first unmatched spelling and `patterns` holds it alone. Nothing is staged or written.
-- `NOT_A_REPOSITORY { path }` — a gitlink's `<path>/.git` leads to no repository; `path` is git's spelling (`sub/.git`, `sub/../.git/modules/sub`, or the absolute pointer). Nothing is staged.
+- `GITFILE_NOT_A_REPOSITORY { path }` — a gitlink's `.git` is a gitfile whose pointer leads to no repository; `path` is the gitfile, `<sub>/.git`. Nothing is staged.
+- `NOT_A_REPOSITORY { path }` — a gitlink's `<path>/.git` directory or symlink leads to no repository; `path` is git's spelling (`sub/.git`, `sub/../.git/modules/sub`, or the absolute pointer). Nothing is staged.
 - `NO_COMMIT_CHECKED_OUT { path }` — a selected untracked repository has no resolvable HEAD; `path` is git's spelling with a trailing slash (`sub/`). Nothing is staged or written.
 - `GITFILE_TOO_LARGE { path }` — a tracked gitlink's `.git` is a regular file over 1 MiB; `path` is `<sub>/.git`. Nothing is staged.
 - `PATHSPEC_BEYOND_SYMLINK` — a literal or glob pathspec whose leading directory is a symbolic link. Not raised in bulk (`all: true`) mode.

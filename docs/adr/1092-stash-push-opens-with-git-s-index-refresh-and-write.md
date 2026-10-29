@@ -4,6 +4,8 @@ subjects:
 ---
 # 1092 — `stash push` opens with git's index refresh-and-write step
 
+> Amended for git 2.56: see ADR-1109. git exits 128 on the unmerged-index refusal; 1 is reserved for a conflict.
+
 - **Status:** accepted
 - **Date:** 2026-10-26
 - **Design:** docs/design/forced-checkout-same-commit.md (DC5, F12, F13) · **Supersedes/Refines:** refines ADR-1091
@@ -12,7 +14,7 @@ subjects:
 
 git's `stash push` opens with `refresh_and_write_cache`. That step refreshes stat-dirty, content-clean entries and
 writes the index. On an unmerged index it first refreshes the stage-0 entries and rewrites the index, then fails: it prints
-`<path>: needs merge` and `error: could not write index` and exits 1. No object, ref or reflog is written. The F12
+`<path>: needs merge` and `error: could not write index` and exits 128. No object, ref or reflog is written. The F12
 refusal is that failure mode.
 
 ## Options considered

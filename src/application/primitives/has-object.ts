@@ -9,6 +9,7 @@ import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { probeLooseOid } from './internal/loose-oid-cache.js';
 import { retryOnceAfterRescan } from './internal/retry-after-rescan.js';
+import { ownerUnavailableHit } from './object-resolver.js';
 import {
   getObjectStore,
   looseCacheLocation,
@@ -52,7 +53,9 @@ export const hasObject = async (
   if (await probeOnce(ctx, store, id)) return true;
   if (options.mode === 'quick') return false;
   const retried = await retryOnceAfterRescan(ctx, store, id, async () =>
-    (await probeOnce(ctx, store, id)) ? true : undefined,
+    (await probeOnce(ctx, store, id)) || (await ownerUnavailableHit(store, id)) !== undefined
+      ? true
+      : undefined,
   );
   return retried ?? false;
 };

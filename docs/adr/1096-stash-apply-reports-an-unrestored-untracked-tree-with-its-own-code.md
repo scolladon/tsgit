@@ -5,6 +5,8 @@ subjects:
 ---
 # 1096 — `stash apply` reports an unrestored untracked tree with its own error code
 
+> Amended for git 2.56: see ADR-1109. git exits 128 on a stop that leaves an untracked path unwritten; 1 is reserved for a conflict.
+
 - **Status:** accepted
 - **Date:** 2026-10-27
 - **Design:** docs/design/stash-apply-dir-file-replacement.md (DC1, F4–F6) · **Supersedes/Refines:** refines ADR-212
@@ -14,7 +16,7 @@ subjects:
 git's `stash apply` merges the stashed work tree first and restores the stash's untracked files afterwards,
 through `checkout-index --all` without `--force`. When a path already exists it prints `<p> already exists, no
 checkout` and keeps going; when a leading component is a file or a symlink it dies `fatal: cannot create directory
-at '<dir>': File exists` and stops. Either way it exits 1 with the merge already written, and `pop` keeps the stash
+at '<dir>': File exists` and stops. Either way it exits 128 (git 2.56) with the merge already written, and `pop` keeps the stash
 (A.3 UP rows, A.1 LD × `-u`). tsgit refuses before the merge with `STASH_APPLY_WOULD_OVERWRITE`, a code ADR-212
 defines as atomic: nothing written. Once the restore moves after the merge, that code cannot describe a failure that
 follows a written merge.

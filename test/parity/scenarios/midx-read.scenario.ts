@@ -230,7 +230,7 @@ export const midxReadDegradedScenario: Scenario<MidxReadDegradedResult> = {
     staleRejectCode: 'OBJECT_NOT_FOUND',
     tierBReadSucceeded: true,
     tierBContent: CONTENT_A,
-    staleFsckExitCode: 32,
+    staleFsckExitCode: 1,
     staleFsckFindingTypes: [
       'dangling',
       'midx-entry-unresolved',

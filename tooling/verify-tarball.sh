@@ -430,7 +430,14 @@ done
 # walker's empty-directory report and prune entry, and the two new error codes —
 # runtime code shipped in every distribution form, none removable without dropping
 # the refusals git performs.
-SIZE_CAP=$((1496 * 1024))
+# Raised 1496 -> 1501 KiB by the git 2.56 follow-up: the measured pack landed at
+# 1 536 403 B, 4 499 B over the old cap, attributable to the fsck bit-1 collapse and
+# its gating, the midx owner-unavailable recovery (tri-state lookup, second-read
+# fallback, header-only typing), the gitfile and bisect-hold refusals, the lazy gc
+# keys, the merge-base paint queue, the per-entry CRC base attribution and the
+# own-pack REF_DELTA base lookup — runtime code shipped in every distribution form,
+# none removable without dropping the refusals and recoveries git performs.
+SIZE_CAP=$((1501 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

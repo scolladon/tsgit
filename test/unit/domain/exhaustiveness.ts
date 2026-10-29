@@ -93,6 +93,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'NOT_A_REPOSITORY':
     case 'NO_COMMIT_CHECKED_OUT':
     case 'GITFILE_TOO_LARGE':
+    case 'GITFILE_NOT_A_REPOSITORY':
     case 'DUBIOUS_OWNERSHIP':
     case 'IMPLICIT_BARE_REPOSITORY':
     case 'BARE_REPOSITORY':

@@ -168,7 +168,7 @@ describe('Given a pack whose bitmap has a flipped trailer AND is unreadable (per
   describe('When the bitmap health pass runs', () => {
     it('Then no finding is emitted and exitBit is 0 — the unreadable classification masks a real fault', async () => {
       // Arrange — the planted bitmap is genuinely corrupt, so a pass that
-      // read it would score bit 128; silence is only explainable by the
+      // read it would score bit 1; silence is only explainable by the
       // unreadable classification.
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'unreadable', onePackEntry('unreadable-content'));
@@ -241,12 +241,12 @@ describe('Given a pack bitmap exactly digestLength bytes long whose body is legi
 });
 
 // ---------------------------------------------------------------------------
-// MISMATCH — one bitmap-checksum-mismatch, exitBit 128
+// MISMATCH — one bitmap-checksum-mismatch, exitBit 1
 // ---------------------------------------------------------------------------
 
 describe('Given a pack whose bitmap trailer is flipped', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then one bitmap-checksum-mismatch is emitted naming the artefact, exitBit is 128', async () => {
+    it('Then one bitmap-checksum-mismatch is emitted naming the artefact, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'flipped-trailer', onePackEntry('flipped-trailer-content'));
@@ -262,14 +262,14 @@ describe('Given a pack whose bitmap trailer is flipped', () => {
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-flipped-trailer.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a pack whose bitmap magic is flipped but the trailer is left stale', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 128', async () => {
+    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'stale-magic', onePackEntry('stale-magic-content'));
@@ -286,14 +286,14 @@ describe('Given a pack whose bitmap magic is flipped but the trailer is left sta
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-stale-magic.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a pack whose bitmap version is 2 but the trailer is left stale', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 128', async () => {
+    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'stale-version', onePackEntry('stale-version-content'));
@@ -310,14 +310,14 @@ describe('Given a pack whose bitmap version is 2 but the trailer is left stale',
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-stale-version.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a pack whose bitmap entryCount is 99 but the trailer is left stale', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 128', async () => {
+    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'stale-entry-count', onePackEntry('stale-entry-count-content'));
@@ -334,14 +334,14 @@ describe('Given a pack whose bitmap entryCount is 99 but the trailer is left sta
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-stale-entry-count.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a pack bitmap truncated to exactly digestLength bytes', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 128', async () => {
+    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const digestLength = ctx.hashConfig.digestLength;
@@ -358,14 +358,14 @@ describe('Given a pack bitmap truncated to exactly digestLength bytes', () => {
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-trunc-exact.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a pack bitmap truncated to digestLength − 10 bytes', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then the length guard fires as a mismatch, never a negative subarray bound, exitBit is 128', async () => {
+    it('Then the length guard fires as a mismatch, never a negative subarray bound, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const digestLength = ctx.hashConfig.digestLength;
@@ -382,14 +382,14 @@ describe('Given a pack bitmap truncated to digestLength − 10 bytes', () => {
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-trunc-under.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a zero-length pack bitmap', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 128', async () => {
+    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const digestLength = ctx.hashConfig.digestLength;
@@ -406,14 +406,14 @@ describe('Given a zero-length pack bitmap', () => {
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-zero-length.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a pack bitmap whose embedded pack checksum is flipped but the trailer is left stale', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 128', async () => {
+    it('Then one bitmap-checksum-mismatch is emitted, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'stale-checksum', onePackEntry('stale-checksum-content'));
@@ -430,7 +430,7 @@ describe('Given a pack bitmap whose embedded pack checksum is flipped but the tr
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-stale-checksum.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -596,12 +596,12 @@ describe('Given a pack bitmap whose embedded pack checksum is flipped, restamped
 
 // ---------------------------------------------------------------------------
 // MIDX ARM — the in-use multi-pack-index's bitmap, composed from ITS OWN
-// STORED trailer bytes, unconditional in every mode
+// STORED trailer bytes, gated by mode
 // ---------------------------------------------------------------------------
 
 describe('Given the in-use midx bitmap trailer is flipped', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then one bitmap-checksum-mismatch is emitted naming the midx artefact, exitBit is 128', async () => {
+    it('Then one bitmap-checksum-mismatch is emitted naming the midx artefact, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const digestLength = ctx.hashConfig.digestLength;
@@ -617,7 +617,7 @@ describe('Given the in-use midx bitmap trailer is flipped', () => {
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe(`multi-pack-index-${hex}.bitmap`);
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -665,7 +665,7 @@ describe('Given a CORRUPT midx bitmap renamed to a different hash than the midx 
   describe('When the bitmap health pass runs', () => {
     it('Then no finding is emitted — the composed name matches no file on disk', async () => {
       // Arrange — the renamed file's own trailer is flipped, so a pass that
-      // composed this name instead would score bit 128.
+      // composed this name instead would score bit 1.
       const ctx = createMemoryContext();
       const digestLength = ctx.hashConfig.digestLength;
       await writeHealthyMidx(ctx);
@@ -717,7 +717,7 @@ describe('Given a midx whose own stored trailer is wrong, with a corrupt bitmap 
 
 describe('Given two packs, one with a healthy bitmap and one with a flipped trailer', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then exactly one bitmap-checksum-mismatch is emitted, exitBit is 128', async () => {
+    it('Then exactly one bitmap-checksum-mismatch is emitted, exitBit is 1', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const digestLength = ctx.hashConfig.digestLength;
@@ -742,14 +742,20 @@ describe('Given two packs, one with a healthy bitmap and one with a flipped trai
       const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.artefact).toBe('pack-two-broken.bitmap');
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 // ---------------------------------------------------------------------------
-// MODES — the pass is ungated: identical output in every fsck mode
+// MODES — skipped under connectivityOnly, set bit 1 otherwise
 // ---------------------------------------------------------------------------
+
+const REPORTING_MODES: ReadonlyArray<{ readonly label: string; readonly opts: FsckOptions }> = [
+  { label: 'default', opts: {} },
+  { label: 'full: false', opts: { full: false } },
+  { label: 'strict', opts: { strict: true } },
+];
 
 const ALL_MODES: ReadonlyArray<{ readonly label: string; readonly opts: FsckOptions }> = [
   { label: 'default', opts: {} },
@@ -760,8 +766,8 @@ const ALL_MODES: ReadonlyArray<{ readonly label: string; readonly opts: FsckOpti
 
 describe('Given a pack whose bitmap trailer is flipped', () => {
   describe('When the bitmap health pass runs under any fsck mode', () => {
-    it.each(ALL_MODES)(
-      'Then mode $label produces the same finding and bit as the default',
+    it.each(REPORTING_MODES)(
+      'Then mode $label reports the finding and sets bit 1',
       async ({ opts }) => {
         // Arrange
         const ctx = createMemoryContext();
@@ -780,7 +786,7 @@ describe('Given a pack whose bitmap trailer is flipped', () => {
         const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
         expect(mismatches).toHaveLength(1);
         expect(mismatches[0]!.artefact).toBe('pack-modes-mismatch.bitmap');
-        expect(result.exitBit).toBe(128);
+        expect(result.exitBit).toBe(1);
       },
     );
   });
@@ -811,8 +817,8 @@ describe('Given a pack bitmap with flipped magic, restamped', () => {
 
 describe('Given the in-use midx bitmap trailer is flipped', () => {
   describe('When the bitmap health pass runs under any fsck mode', () => {
-    it.each(ALL_MODES)(
-      'Then mode $label produces the same finding and bit as the default',
+    it.each(REPORTING_MODES)(
+      'Then mode $label reports the finding and sets bit 1',
       async ({ opts }) => {
         // Arrange
         const ctx = createMemoryContext();
@@ -833,9 +839,57 @@ describe('Given the in-use midx bitmap trailer is flipped', () => {
         const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
         expect(mismatches).toHaveLength(1);
         expect(mismatches[0]!.artefact).toBe(`multi-pack-index-${hex}.bitmap`);
-        expect(result.exitBit).toBe(128);
+        expect(result.exitBit).toBe(1);
       },
     );
+  });
+});
+
+describe('Given a pack whose bitmap trailer is flipped', () => {
+  describe('When the bitmap health pass runs under connectivityOnly', () => {
+    it('Then no finding is emitted and exitBit is 0', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'conn-only', onePackEntry('conn-only-content'));
+      await writeSyntheticBitmap(
+        ctx,
+        packBitmapPath(ctx, 'conn-only'),
+        buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength)),
+        { flipTrailer: true },
+      );
+
+      // Act
+      const result = await sut(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.findings).toEqual([]);
+      expect(result.exitBit).toBe(0);
+    });
+  });
+});
+
+describe('Given the in-use midx bitmap trailer is flipped', () => {
+  describe('When the bitmap health pass runs under connectivityOnly', () => {
+    it('Then no finding is emitted and exitBit is 0', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const digestLength = ctx.hashConfig.digestLength;
+      const midxBytes = await writeHealthyMidx(ctx);
+      const hex = storedTrailerHex(midxBytes, digestLength);
+      await writeSyntheticBitmap(
+        ctx,
+        midxBitmapPath(ctx, hex),
+        buildBitmap(healthyBitmapSpec(digestLength)),
+        { flipTrailer: true },
+      );
+
+      // Act
+      const result = await sut(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.findings).toEqual([]);
+      expect(result.exitBit).toBe(0);
+    });
   });
 });
 
@@ -886,7 +940,7 @@ describe('Given a donor midx bitmap and a primary pack bitmap, both corrupt', ()
         { type: 'bitmap-checksum-mismatch', artefact: midxArtefact, objectsDir: DONOR_OBJECTS },
         { type: 'bitmap-checksum-mismatch', artefact: 'pack-own-bm.bitmap' },
       ]);
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -915,7 +969,31 @@ describe('Given a donor pack whose bitmap trailer is flipped', () => {
           objectsDir: DONOR_OBJECTS,
         },
       ]);
-      expect(result.exitBit).toBe(128);
+      expect(result.exitBit).toBe(1);
+    });
+  });
+});
+
+describe('Given a donor pack and a donor midx bitmap, both corrupt', () => {
+  describe('When the bitmap health pass runs with full: false', () => {
+    it('Then no finding is emitted and exitBit is 0', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor-bm', onePackEntry('donor-bm'));
+      await writeSyntheticBitmap(
+        ctx,
+        `${DONOR_OBJECTS}/pack/pack-donor-bm.bitmap`,
+        buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength)),
+        { flipTrailer: true },
+      );
+      await writeDonorMidxBitmapFlipped(ctx);
+
+      // Act
+      const result = await sut(ctx, { full: false });
+
+      // Assert
+      expect(result.findings).toEqual([]);
+      expect(result.exitBit).toBe(0);
     });
   });
 });

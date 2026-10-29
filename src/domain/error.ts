@@ -444,6 +444,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `does not have a commit checked out: ${data.path}`;
     case 'GITFILE_TOO_LARGE':
       return `too large to be a .git file: '${data.path}'`;
+    case 'GITFILE_NOT_A_REPOSITORY':
+      return `gitfile does not point to a valid repository: ${data.path}`;
     case 'DUBIOUS_OWNERSHIP':
       return data.foreignPath === undefined
         ? `dubious ownership in repository at ${basename(data.path)}`

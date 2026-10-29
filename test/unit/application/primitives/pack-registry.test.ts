@@ -8031,4 +8031,291 @@ describe('PackRegistry.midxPacks — the packs the multi-pack-index covers', () 
       });
     });
   });
+
+  describe('PackRegistry.lookupOwnerUnavailable', () => {
+    const SHARED_CONTENT = new TextEncoder().encode('owner-unavailable-blob');
+
+    async function writeSharedBlobPack(ctx: Context, name: string): Promise<ObjectId> {
+      const ids = await writeSyntheticPack(ctx, name, [
+        { kind: 'base', type: 'blob', content: SHARED_CONTENT },
+      ]);
+      return ids[0] as ObjectId;
+    }
+
+    async function removePackFile(ctx: Context, name: string): Promise<void> {
+      await ctx.fs.rm(`${packsDirOf(ctx)}/pack-${name}.pack`);
+    }
+
+    describe('Given the midx assigns an object to a pack that cannot be opened, and another pack holds it', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it("Then it serves the other pack's copy", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'B');
+          await removePackFile(ctx, 'B');
+          await writeMidxBytes(
+            ctx,
+            buildMidx(
+              healthyMidxSpec({
+                packNames: ['pack-A.idx', 'pack-B.idx'],
+                entries: [{ id, packIndex: 1, offset: PACK_HEADER_SIZE }],
+              }),
+            ),
+          );
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result?.pack.name).toBe('pack-A');
+          expect(result?.offset).toBe(PACK_HEADER_SIZE);
+        });
+      });
+    });
+
+    describe('Given an unavailable owner, a next claimed copy whose header is broken and a healthy copy after it', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it('Then the broken copy is skipped and the healthy copy is served', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'B');
+          await writeSharedBlobPack(ctx, 'C');
+          await removePackFile(ctx, 'A');
+          await restampPackHeader(ctx, `${packsDirOf(ctx)}/pack-B.pack`, { version: 99 });
+          await writeMidxBytes(
+            ctx,
+            buildMidx(
+              healthyMidxSpec({
+                packNames: ['pack-A.idx', 'pack-B.idx', 'pack-C.idx'],
+                entries: [{ id, packIndex: 0, offset: PACK_HEADER_SIZE }],
+              }),
+            ),
+          );
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result?.pack.name).toBe('pack-C');
+          expect(result?.offset).toBe(PACK_HEADER_SIZE);
+        });
+      });
+    });
+
+    describe('Given the midx assigns an object to a healthy pack', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it('Then nothing is served because the owner is available', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'B');
+          await writeMidxBytes(
+            ctx,
+            buildMidx(
+              healthyMidxSpec({
+                packNames: ['pack-A.idx', 'pack-B.idx'],
+                entries: [{ id, packIndex: 1, offset: PACK_HEADER_SIZE }],
+              }),
+            ),
+          );
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the midx assigns an object to a pack whose header is broken, and another pack holds it', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it("Then it serves the other pack's copy", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'B');
+          await restampPackHeader(ctx, `${packsDirOf(ctx)}/pack-B.pack`, { version: 99 });
+          await writeMidxBytes(
+            ctx,
+            buildMidx(
+              healthyMidxSpec({
+                packNames: ['pack-A.idx', 'pack-B.idx'],
+                entries: [{ id, packIndex: 1, offset: PACK_HEADER_SIZE }],
+              }),
+            ),
+          );
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result?.pack.name).toBe('pack-A');
+        });
+      });
+    });
+
+    describe('Given a recovered read on an owner pack whose header is broken', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it('Then the skip warning is logged once for the owner', async () => {
+          // Arrange
+          const seeded = await buildSeededContext();
+          const warn = vi.fn();
+          const ctx: Context = { ...seeded, logger: { warn } };
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'B');
+          await restampPackHeader(ctx, `${packsDirOf(ctx)}/pack-A.pack`, { version: 99 });
+          await writeMidxBytes(
+            ctx,
+            buildMidx(
+              healthyMidxSpec({
+                packNames: ['pack-A.idx', 'pack-B.idx'],
+                entries: [{ id, packIndex: 0, offset: PACK_HEADER_SIZE }],
+              }),
+            ),
+          );
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result?.pack.name).toBe('pack-B');
+          const skipped = warn.mock.calls.filter(
+            ([message, fields]) =>
+              message === 'packRegistry: skipping unusable pack' && fields.pack === 'pack-A',
+          );
+          expect(skipped).toHaveLength(1);
+        });
+      });
+    });
+
+    describe('Given the midx has no entry for the object', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it('Then nothing is served', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-A.idx'] })));
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given no multi-pack-index', () => {
+      describe('When lookupOwnerUnavailable is called for a stored object', () => {
+        it('Then nothing is served', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a chain whose tip owner is unavailable and only the base layer holds another copy', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it('Then the base layer copy is served', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'B');
+          await removePackFile(ctx, 'B');
+          await writeMidxChain(ctx, [
+            { digest: '1'.repeat(40), spec: healthyMidxSpec({ packNames: ['pack-A.idx'] }) },
+            {
+              digest: '2'.repeat(40),
+              spec: healthyMidxSpec({
+                packNames: ['pack-B.idx'],
+                entries: [{ id, packIndex: 0, offset: PACK_HEADER_SIZE }],
+              }),
+            },
+          ]);
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result?.pack.name).toBe('pack-A');
+        });
+      });
+    });
+
+    describe('Given a chain holding the object in both layers and an unavailable tip owner', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it('Then the base layer copy is served before the tip layer copy', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'C');
+          await writeSharedBlobPack(ctx, 'B');
+          await removePackFile(ctx, 'B');
+          await writeMidxChain(ctx, [
+            { digest: '1'.repeat(40), spec: healthyMidxSpec({ packNames: ['pack-A.idx'] }) },
+            {
+              digest: '2'.repeat(40),
+              spec: healthyMidxSpec({
+                packNames: ['pack-B.idx', 'pack-C.idx'],
+                entries: [{ id, packIndex: 0, offset: PACK_HEADER_SIZE }],
+              }),
+            },
+          ]);
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result?.pack.name).toBe('pack-A');
+        });
+      });
+    });
+
+    describe('Given the midx assigns an object to an unavailable pack and a midx-claimed pack holds it', () => {
+      describe('When lookup is called for that object', () => {
+        it('Then it is missing because the first read keeps git false negative', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'B');
+          await removePackFile(ctx, 'B');
+          await writeMidxBytes(
+            ctx,
+            buildMidx(
+              healthyMidxSpec({
+                packNames: ['pack-A.idx', 'pack-B.idx'],
+                entries: [{ id, packIndex: 1, offset: PACK_HEADER_SIZE }],
+              }),
+            ),
+          );
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookup(id);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
 });

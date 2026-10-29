@@ -36,6 +36,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { findLastEntry } from '../primitives/config-read.js';
 import { hasReplaceRefs } from '../primitives/internal/commit-graph-compatible.js';
+import { assertValidGcAutoConfig } from '../primitives/internal/gc-config-guard.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { writeCommitGraph } from '../primitives/write-commit-graph.js';
 import { writeSplitCommitGraph } from '../primitives/write-split-commit-graph.js';
@@ -140,14 +141,16 @@ const runCommitGraphTask = async (
 };
 
 /** git's gc task: the parent's own object-store reads settle the repo settings
- *  first, dying on a malformed one; then a coded refusal from the gc child
- *  fails the task. */
+ *  first, dying on a malformed one; under `--auto` the parent also reads
+ *  `gc.auto` and `gc.autoPackLimit`, dying on a malformed one; then a coded
+ *  refusal from the gc child fails the task. */
 const runGcStep = async (
   ctx: Context,
   opts: MaintenanceOptions,
   settings: GcSettings,
 ): Promise<{ readonly ran: boolean; readonly result: GcResult } | MaintenanceTaskFailure> => {
   await assertRepoSettingsValid(ctx);
+  if (opts.auto === true) await assertValidGcAutoConfig(ctx);
   return failureOr('gc', () => runGcTask(ctx, { auto: opts.auto, settings }));
 };
 
@@ -194,7 +197,7 @@ function orderedUniqueTasks(tasks: ReadonlyArray<MaintenanceTask>): ReadonlyArra
 
 /**
  * Run each requested maintenance task once, in the order first requested.
- * Pinned against git 2.55.0 (`GIT_TRACE=1 git maintenance run --task=…
+ * Pinned against git 2.56.0 (`GIT_TRACE=1 git maintenance run --task=…
  * --task=…`, both orderings): `git maintenance run` executes requested tasks
  * in the order they were REQUESTED, not a fixed internal priority —
  * `--task=commit-graph --task=gc` runs commit-graph first;

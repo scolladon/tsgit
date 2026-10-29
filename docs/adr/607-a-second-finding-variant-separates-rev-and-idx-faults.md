@@ -1,5 +1,7 @@
 # 607 — A second finding variant separates a `.rev` fault from an `.idx` fault
 
+> Amended for git 2.56: see ADR-1107. Both variants now set bit 1 and run only outside `connectivityOnly`.
+
 - **Status:** accepted (adopted-as-recommended)
 - **Date:** 2026-08-09
 - **Design:** docs/design/rev-index-bitmap-read-support.md (DC-5) · **Refines:** ADR-583, ADR-586
@@ -7,7 +9,7 @@
 ## Context
 
 `fsck` today emits one variant, `pack-rev-index-unusable { pack, reason }`, and sets exit
-bit 64 — but only when the `.idx` itself could not be parsed. Its own doc-comment concedes
+bit 64 (today bit 1, see the amendment line) — but only when the `.idx` itself could not be parsed. Its own doc-comment concedes
 the gap: *"tsgit has no reverse-index reader … the name is a promise the code does not yet
 keep."* ADR-586 closed with the claim that the real reader would land *"with nothing to
 correct"*; that is falsified — tsgit exits 0 where git exits 64 on a corrupt `.rev`.
@@ -28,7 +30,7 @@ index it could not load.
 ## Decision
 
 Option 2. A second variant reports a fault in the `.rev` **file**, distinct from the
-existing variant reporting a `.rev` made unavailable by its `.idx`. Both set exit bit 64;
+existing variant reporting a `.rev` made unavailable by its `.idx`. Both set exit bit 1 and run only outside `connectivityOnly`;
 a consumer seeing which variant fired learns which layer failed, which a widened variant
 could not express.
 

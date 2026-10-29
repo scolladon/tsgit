@@ -227,7 +227,7 @@ describe.each([
   ['loose', 'full', {}, 3],
   ['loose', 'no-full', { full: false }, 3],
   ['loose', 'connectivity-only', { connectivityOnly: true }, 2],
-  ['packed', 'full', {}, 6],
+  ['packed', 'full', {}, 3],
   ['packed', 'no-full', { full: false }, 2],
   ['packed', 'connectivity-only', { connectivityOnly: true }, 2],
 ] as const)(

@@ -12,7 +12,7 @@ evidence:
 source: { run: pathspec-glob-dialect, phase: review, date: 2026-10-23 }
 status: active
 supersedes: []
-last-verified: 2026-10-24
+last-verified: 2026-10-29
 ---
 # 008 — A probe of nested-repository files reads only what git reads
 

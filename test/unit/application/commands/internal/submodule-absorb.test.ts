@@ -256,6 +256,23 @@ describe('gitfileCheckoutOf', () => {
     });
   });
 
+  describe('Given a .git file pointing at a module directory that does not exist', () => {
+    describe('When its checkout is asked for', () => {
+      it('Then it refuses as a gitfile that points to no valid repository', async () => {
+        // Arrange
+        const { ctx } = await withSubmodule();
+        await ctx.fs.writeUtf8(work(ctx, 'sub/.git'), 'gitdir: ../.git/modules/nowhere\n');
+        const sut = gitfileCheckoutOf;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'sub' as FilePath));
+
+        // Assert
+        expect(result).toEqual({ code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' });
+      });
+    });
+  });
+
   describe('Given a .git file that is not a pointer', () => {
     describe('When its checkout is asked for', () => {
       it('Then it refuses as a repository git cannot read', async () => {

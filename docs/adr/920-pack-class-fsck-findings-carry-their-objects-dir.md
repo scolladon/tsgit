@@ -2,7 +2,10 @@
 subjects:
   - src/application/commands/internal/fsck/types.ts
 ---
+
 # 920 — Pack-class fsck findings carry their objects dir
+
+> Amended for git 2.56: see ADR-1107. The pack-class findings these carry now set bit 1 (not 4, 32, 64 and 128).
 
 - **Status:** accepted
 - **Date:** 2026-10-01

@@ -122,7 +122,7 @@ describe('buildObjectTable', () => {
           { type: 'type-conflict', id: BLOB, objectType: 'tree', expectedType: 'blob' },
           { type: 'unparseable-object', id: BLOB, pack: 'pack-a', objectsDir: '/alt' },
         ]);
-        expect(result.exitBit).toBe(5);
+        expect(result.exitBit).toBe(1);
       });
     });
   });

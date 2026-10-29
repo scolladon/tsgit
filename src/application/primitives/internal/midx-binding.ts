@@ -113,14 +113,28 @@ export function bindMidx(
 }
 
 /**
+ * The three ways a midx lookup ends. `owner-unavailable` is a layer that
+ * holds the id whose owner pack never bound — distinct from `miss` because
+ * git's second read of an object (`reprepare_packed_git` retry) still finds
+ * the object in a sibling pack in that case, and in no other.
+ */
+export type MidxLookup =
+  | { readonly kind: 'hit'; readonly hit: PackLookupHit }
+  | { readonly kind: 'miss' }
+  | { readonly kind: 'owner-unavailable' };
+
+const MIDX_MISS: MidxLookup = { kind: 'miss' };
+const MIDX_OWNER_UNAVAILABLE: MidxLookup = { kind: 'owner-unavailable' };
+
+/**
  * Walk the midx's layers newest-first and resolve the first hit. A layer's
  * `lookupMultiPackIndex` can throw a deferred `pack-int-id` or
  * `large-offset` Tier-A fault — never caught here, so it propagates to
  * `lookup`'s caller unchanged. A hit whose pack never bound (an
- * unresolvable `PNAM` entry) and no hit in any layer both return
- * `undefined`: either way the caller falls through to the `.idx` loop.
+ * unresolvable `PNAM` entry) is `owner-unavailable`, no hit in any layer is
+ * a `miss`: either way the first read falls through to the `.idx` loop.
  */
-export function findMidxHit(midx: LoadedMidx, id: ObjectId): PackLookupHit | undefined {
+export function findMidxHit(midx: LoadedMidx, id: ObjectId): MidxLookup {
   const targetBytes = hexToBytes(id);
   for (let layerIndex = midx.set.layers.length - 1; layerIndex >= 0; layerIndex -= 1) {
     const entry = lookupMultiPackIndexBytes(midx.set.layers[layerIndex]!, targetBytes);
@@ -128,9 +142,10 @@ export function findMidxHit(midx: LoadedMidx, id: ObjectId): PackLookupHit | und
     // packsByLayer is built by mapping set.layers, so the layer index always
     // exists; only the pack binding itself can be undefined.
     const pack = midx.packsByLayer[layerIndex]![entry.packIndex];
-    return pack === undefined ? undefined : { pack, offset: entry.offset };
+    if (pack === undefined) return MIDX_OWNER_UNAVAILABLE;
+    return { kind: 'hit', hit: { pack, offset: entry.offset } };
   }
-  return undefined;
+  return MIDX_MISS;
 }
 
 // A hostile PNAM value can carry anything TextDecoder tolerates — C0/C1

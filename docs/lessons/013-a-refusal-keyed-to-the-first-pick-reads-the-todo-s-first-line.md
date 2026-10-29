@@ -11,7 +11,7 @@ evidence:
 source: { run: status-gitlink-parity, phase: validation, date: 2026-10-25 }
 status: active
 supersedes: []
-last-verified: 2026-10-25
+last-verified: 2026-10-29
 ---
 # 013 — A refusal keyed to the first pick reads the todo's first line
 

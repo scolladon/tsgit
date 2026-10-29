@@ -156,7 +156,7 @@ const assertBranchFree = async (
 ): Promise<void> => {
   if (force) return;
   const used = (await listWorktrees(ctx)).find((entry) => entry.branch === branchRef);
-  if (used !== undefined) throw branchCheckedOut(branchRef, used.path);
+  if (used !== undefined) throw branchCheckedOut(branchRef, used.path, 'checkout');
 };
 
 /** Allocate the admin id for the new worktree, deduplicated against existing ones. */

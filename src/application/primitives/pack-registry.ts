@@ -30,6 +30,7 @@ import {
   bindMidx,
   computeMidxHealth,
   findMidxHit,
+  type LoadedMidx,
   type MidxHealth,
 } from './internal/midx-binding.js';
 import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
@@ -253,6 +254,14 @@ export interface PackRegistry {
    */
   fileNames(): Promise<ReadonlySet<string>>;
   lookup(id: ObjectId): Promise<PackLookupHit | undefined>;
+  /**
+   * git's second-read `find_pack_entry` over the multi-pack-index's own
+   * packs: applies only when the current generation's midx names `id` in an
+   * owner pack that never bound or fails its header probe, and then serves
+   * the first other midx pack (base layer first, PNAM order) holding `id`.
+   * No teardown, no re-listing, no cache; any other case is `undefined`.
+   */
+  lookupOwnerUnavailable(id: ObjectId): Promise<PackLookupHit | undefined>;
   /**
    * Await the store gate — the multi-pack-index load alone — for its
    * rejection only, discarding the result. Canonical git dies during
@@ -1159,6 +1168,41 @@ export async function createPackRegistry(
     return lookupLazily(generation, id, (pack) => midx.claimedNames.has(`${pack.name}.idx`));
   };
 
+  // The packs already known unusable when the midx's owner cannot serve `id`
+  // (empty when the owner never bound), `undefined` when the owner is fine or
+  // the midx misses. The second read skips them: probing the owner again
+  // would fault and warn a second time for one recovered read.
+  const unusablePacksOfOwner = async (
+    midx: LoadedMidx,
+    id: ObjectId,
+  ): Promise<ReadonlySet<RegisteredPack> | undefined> => {
+    const found = findMidxHit(midx, id);
+    if (found.kind === 'miss') return undefined;
+    if (found.kind === 'owner-unavailable') return new Set();
+    if ((await probeHeader(found.hit.pack)) === undefined) return undefined;
+    return new Set([found.hit.pack]);
+  };
+
+  // git's second read walks `0 … num_packs + num_packs_in_base`: the base
+  // layer's packs first, each layer in PNAM order.
+  const lookupInMidxPacks = async (
+    generation: PackGeneration,
+    midx: LoadedMidx,
+    id: ObjectId,
+    unusable: ReadonlySet<RegisteredPack>,
+  ): Promise<PackLookupHit | undefined> => {
+    for (const pack of midx.packsByLayer.flat()) {
+      if (pack === undefined || unusable.has(pack)) continue;
+      const index = await unclaimedIndexOrSkip(pack, generation.warnedIdx);
+      if (index === undefined) continue;
+      const offset = lookupPackIndex(index, id);
+      if (offset === undefined) continue;
+      if ((await probeHeader(pack)) !== undefined) continue;
+      return { pack, offset };
+    }
+    return undefined;
+  };
+
   const computeHealth = async (): Promise<PackHealth> => {
     const generation = await currentGeneration();
     const { packs, indexFaults } = await generation.indexed.get();
@@ -1307,14 +1351,23 @@ export async function createPackRegistry(
       const generation = await currentGeneration();
       const midx = generation.midx;
       if (midx === undefined) return lookupViaIdxScan(generation, id);
-      const hit = findMidxHit(midx, id);
-      if (hit === undefined) return lookupViaIdxScan(generation, id);
+      const found = findMidxHit(midx, id);
+      if (found.kind !== 'hit') return lookupViaIdxScan(generation, id);
+      const { hit } = found;
       const fault = await probeHeader(hit.pack);
       // A midx hit on an unusable pack is a miss for every claimed pack, but
       // git still walks the packs the midx does NOT name (find_pack_entry's
       // !p->multi_pack_index loop) — the claimed-skipping scan is exactly
       // that loop, so a duplicate in an unclaimed pack is still served.
       return fault === undefined ? hit : lookupViaIdxScan(generation, id);
+    },
+    async lookupOwnerUnavailable(id: ObjectId): Promise<PackLookupHit | undefined> {
+      const generation = await currentGeneration();
+      const midx = generation.midx;
+      if (midx === undefined) return undefined;
+      const unusable = await unusablePacksOfOwner(midx, id);
+      if (unusable === undefined) return undefined;
+      return lookupInMidxPacks(generation, midx, id, unusable);
     },
     health(): Promise<PackHealth> {
       return healthMemo.get();

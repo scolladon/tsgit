@@ -340,8 +340,6 @@ const CONNECTIVITY_ROWS: ReadonlyArray<{
   },
 ];
 
-const looseRelativePath = (id: string): string => `.git/objects/${id.slice(0, 2)}/${id.slice(2)}`;
-
 const POINTER_LINES = {
   tree: (target: string, id: string) => `error: bad tree pointer ${target} in commit ${id}`,
   parent: (target: string, id: string) => `error: bad parent ${target} in commit ${id}`,
@@ -353,11 +351,7 @@ const errorLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string>
   findings.flatMap((f) => {
     if (f.type === 'type-conflict')
       return [`error: object ${f.id} is a ${f.objectType}, not a ${f.expectedType}`];
-    if (f.type === 'unparseable-object') {
-      return f.pack === undefined
-        ? [`error: ${f.id}: object could not be parsed: ${looseRelativePath(f.id)}`]
-        : [`error: ${f.id}: object corrupt or missing`];
-    }
+    if (f.type === 'unparseable-object') return [`error: ${f.id}: object corrupt or missing`];
     if (f.type === 'bad-pointer') return [POINTER_LINES[f.link](f.target, f.id)];
     if (f.type === 'broken-links') return [`error in ${f.objectType} ${f.id}: broken links`];
     if (f.type === 'unexpected-object-type')

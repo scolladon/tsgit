@@ -66,6 +66,7 @@ import {
   type ReferentMarks,
 } from './internal/fsck/unreachable-referents.js';
 import {
+  hasVerifiedLooseCopy,
   type ParseCheck,
   parseCheckOnce,
   unverifiedIds,
@@ -240,7 +241,13 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   const objectTable = await readAuditObjectTable(audit, store);
   const roots = await collectAuditRoots(audit, store.parses, objectTable.refused);
   const reachabilityCache = withUnreadableOverrides(audit.objects.cache, objectTable.refused);
-  const walk = await walkConnectivity(audit, roots, reachabilityCache, objectTable.table);
+  const walk = await walkConnectivity(
+    audit,
+    roots,
+    reachabilityCache,
+    objectTable.table,
+    store.verifyPack.badBases,
+  );
   const connectivity = await classifyConnectivity(
     audit,
     walk,
@@ -294,7 +301,7 @@ function auditViewOf(ctx: Context): Context {
  *  first object content it reads. */
 async function enumerateUniverse(ctx: Context, opts: FsckOptions): Promise<ReadonlySet<ObjectId>> {
   const allIds = await enumerateObjects(ctx, {
-    scope: 'all',
+    scope: opts.full === false ? 'local' : 'all',
     includePacks: opts.full !== false,
     accessiblePacksOnly: packAccessibilityReported(opts),
   });
@@ -365,8 +372,10 @@ async function runPackPasses(
 
 /**
  * The acceleration files, in git's order. A pack's own `.rev` is reported
- * when it exists, is readable and is wrong — ungated, like the rest of bit 64,
- * sharing the pack-health universe (`registry.all()`). git then parses every
+ * when it exists, is readable and is wrong, and sets bit 1 like every other
+ * pack fault. It is skipped under `connectivityOnly` and, under `full: false`,
+ * limited to the local source: git audits a pack only when its full check runs.
+ * It shares the pack-health universe (`registry.all()`). git then parses every
  * ref tip before it checks anything, dying on one whose only copy is a damaged
  * pack entry. The multi-pack-index pass runs after `enumerateObjects` already
  * succeeded, which is what lets a load-time midx fault reject the whole run
@@ -462,9 +471,10 @@ async function walkConnectivity(
   roots: RootsCollection,
   reachabilityCache: ReadonlyMap<ObjectId, CachedGitObject>,
   table: ObjectTable,
+  badBases: ReadonlySet<ObjectId>,
 ): Promise<WalkResult> {
   const { auditCtx, unreadable } = audit;
-  const packMemberIds = await unreadablePackMemberIds(audit, reachabilityCache);
+  const packMemberIds = await unreadablePackMemberIds(audit, reachabilityCache, badBases);
   const walk = buildReachableSet(
     audit.universe,
     roots.roots,
@@ -500,19 +510,35 @@ async function settleWalk(audit: AuditUniverse, walk: WalkResult): Promise<WalkR
  * Which of the (rare) unreadable ids are ALSO claimed by a pack — git's
  * `has_object_pack`: `buildReachableSet` must never report one of these
  * `missing`, since git's own `check_object` trusts the pack copy and never
- * learns the entry is corrupt. Skipped outside default mode: connectivityOnly
- * never consults this set (`isContentUnreadable` is gated on `unreadable`).
+ * learns the entry is corrupt. Except a delta base its children failed to read:
+ * resolving a child reads the base, so git learns it is corrupt and calls it
+ * missing. Skipped outside default mode: connectivityOnly never consults this
+ * set (`isContentUnreadable` is gated on `unreadable`).
  */
 async function unreadablePackMemberIds(
   audit: AuditUniverse,
   reachabilityCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  badBases: ReadonlySet<ObjectId>,
 ): Promise<ReadonlySet<ObjectId>> {
-  return (
+  const members =
     // Stryker disable next-line ConditionalExpression: equivalent — packMemberIds is only ever read by reachability.ts's isContentUnreadable, itself gated on the SAME `unreadable === 'skip'` check, so a 'classify'-mode populate is extra work with no observable effect.
     audit.unreadable === 'skip'
       ? await collectUnreadablePackMemberIds(audit.auditCtx, reachabilityCache)
-      : new Set<ObjectId>()
-  );
+      : new Set<ObjectId>();
+  const unserved = await basesWithoutLooseCopy(audit.auditCtx, badBases);
+  return new Set([...members].filter((id) => !unserved.has(id)));
+}
+
+/** A loose copy that verifies is what git falls back to when the pack entry will not unpack. */
+async function basesWithoutLooseCopy(
+  ctx: Context,
+  badBases: ReadonlySet<ObjectId>,
+): Promise<ReadonlySet<ObjectId>> {
+  const bare = new Set<ObjectId>();
+  for (const id of badBases) {
+    if (!(await hasVerifiedLooseCopy(ctx, id))) bare.add(id);
+  }
+  return bare;
 }
 
 /** The walk classified: what is unreachable or dangling, the root commits and
@@ -615,7 +641,7 @@ function connectivityFindings(
   const { walk, reachabilityCache, referents, classification } = outcome.connectivity;
   const resolution = {
     objectCache: reachabilityCache,
-    recovered: audit.objects.recovered,
+    recovered: new Map([...audit.objects.recovered, ...outcome.roots.outsideRootTypes]),
     unreadable: audit.unreadable,
     indexBlobs: outcome.roots.indexBlobIds,
   };

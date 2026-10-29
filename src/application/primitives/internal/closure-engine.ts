@@ -34,6 +34,7 @@ import {
 import { PACK_NAME_HASH_SEED, PACK_NAME_HASH_V1 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import { getObjectStore } from '../object-store.js';
+import type { PackRegistry } from '../pack-registry.js';
 import { readObject } from '../read-object.js';
 import { readTree } from '../read-tree.js';
 import { MAX_PUSH_OBJECTS, type WalkTreeOptions } from '../types.js';
@@ -636,34 +637,37 @@ function projectedRequest(request: ClosureRequest): BitmapClosureRequest {
 }
 
 /**
- * Artefact preference, exclusive and by artefact, not by tier: a usable midx
- * bitmap for the in-use midx generation answers alone — the pack-bitmap loop
- * below is never even reached — one arm below the walk fallback for a midx
- * bitmap declined on a fault (parse refusal or an out-of-range position),
- * which lands on the SAME pack-bitmap loop a missing/absent midx bitmap
- * would. Every registered pack's bitmap is then tried in turn, answering
- * from the first that loads and range-validates. `undefined` when nothing
- * does, the caller's signal to fall back to the walk with nothing surfaced.
+ * Sources are opened one at a time, in order, stopping at the first that
+ * answers — git's `open_bitmap` iteration. Within a source a usable midx
+ * bitmap for the in-use midx generation answers alone and outranks that
+ * source's pack bitmaps; a midx bitmap declined on a fault falls to the same
+ * source's pack bitmaps. A later source is neither asserted nor opened once
+ * an earlier one answered. Reaching a source's pack bitmaps prepares only that
+ * source, as git's `packfile_store_get_packs` does. `undefined` when no source
+ * answers, the caller's signal to fall back to the walk with nothing surfaced.
  */
 async function tryBitmapClosure(
   ctx: Context,
   request: ClosureRequest,
 ): Promise<ClosureObject[] | undefined> {
   const { sources } = await getObjectStore(ctx);
-  // Every source's midx is prepared (and may refuse) before any bitmap is
-  // opened, even when the first midx bitmap answers alone, and every midx
-  // bitmap outranks every pack bitmap — git's `open_midx_bitmap` order.
-  for (const { registry } of sources) await registry.assertLoadable();
   for (const { registry } of sources) {
-    const midxArtefact = await loadMidxBitmapArtefact(ctx, await registry.midxBitmap());
-    if (midxArtefact !== undefined) return closureFrom(ctx, midxArtefact, request);
+    await registry.assertLoadable();
+    const artefact = await loadSourceBitmapArtefact(ctx, registry);
+    if (artefact !== undefined) return closureFrom(ctx, artefact, request);
   }
+  return undefined;
+}
 
-  for (const { registry } of sources) {
-    for (const pack of await registry.all()) {
-      const artefact = await loadPackBitmapArtefact(ctx, pack);
-      if (artefact !== undefined) return closureFrom(ctx, artefact, request);
-    }
+async function loadSourceBitmapArtefact(
+  ctx: Context,
+  registry: PackRegistry,
+): Promise<LoadedBitmapArtefact | undefined> {
+  const midxArtefact = await loadMidxBitmapArtefact(ctx, await registry.midxBitmap());
+  if (midxArtefact !== undefined) return midxArtefact;
+  for (const pack of await registry.all()) {
+    const artefact = await loadPackBitmapArtefact(ctx, pack);
+    if (artefact !== undefined) return artefact;
   }
   return undefined;
 }

@@ -8,10 +8,11 @@ evidence:
   - test/perf/application/commands/archive.perf.test.ts
   - test/perf/domain/refs/reftable-seek.perf.test.ts
   - test/perf/domain/regex/extended-regex.perf.test.ts
+  - test/unit/application/commands/add.test.ts
 source: { run: lift-delta-chain-read-cap, phase: review, date: 2026-10-20 }
 status: active
 supersedes: []
-last-verified: 2026-10-21
+last-verified: 2026-10-29
 ---
 # 003 — Wall-clock budget tests fail under foreign load
 
@@ -44,3 +45,8 @@ Judge "quiet" by load and CPU %, never by a process name: an idle helper that ma
 `test/perf/application/commands/archive.perf.test.ts` and
 `test/perf/domain/refs/reftable-seek.perf.test.ts` — the two budget suites that alternated.
 `test/perf/domain/regex/extended-regex.perf.test.ts` — the `runs within 8 times RegExp` row at 8.29 under five foreign mutation jobs (load 20); 231 s later, at load 2.6, the cached retry passed.
+`test/unit/application/commands/add.test.ts` — the `exactly at the size cap` row timed out at 120 s under
+coverage (150 s) while two review agents ran interop suites beside `npm run validate` (load 24 / 54 / 43,
+Spotlight indexing and an orphaned vitest worker at 100 %); the same gate re-run alone passed 29 652 tests,
+and `test:perf` failed its archive (1037 vs 1000 ms) and reftable-seek (801 vs 800 ms) budgets in that run
+and passed 15/15 twice alone. A unit timeout under coverage is the same symptom as a budget miss.

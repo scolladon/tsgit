@@ -618,12 +618,10 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
   describe('Given a commit-graph written with commitGraph.generationVersion=1', () => {
     let history: PlumbedHistory;
 
-    // The graph stores CDAT topological levels and no GDA2 chunk at all, so its
-    // generations are not comparable with committer seconds — git answers by
-    // swapping in its date-only queue comparator. The fixture makes the two
-    // orders fight: deep@…103 sits at topological level 4 while the independent
-    // root shallow@…500 sits at level 1, so a level-ordered queue would pop the
-    // OLDER base first. git pops the newer-dated one.
+    // The graph stores CDAT topological levels and no GDA2 chunk at all. git
+    // 2.56 orders the queue by those levels regardless: deep@…103 sits at
+    // topological level 4 while the independent root shallow@…500 sits at
+    // level 1, so the level-ordered queue pops the OLDER base first.
     beforeAll(async () => {
       history = await plumbHistory('generation-version-1', (commit) => {
         const p0 = commit('p0', 1_700_000_100, []);
@@ -649,7 +647,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
     afterAll(async () => rm(history.dir, { recursive: true, force: true }));
 
     describe('When mergeBase runs over the two tips that share both bases', () => {
-      it('Then the topological levels never order the queue — git merge-base still wins', async () => {
+      it('Then the topological levels order the queue — git merge-base still wins', async () => {
         // Arrange
         const { dir, ctx, ids } = history;
         const d = ids.get('d')!;
@@ -661,7 +659,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
 
         // Assert
         expect(single).toEqual([git(dir, 'merge-base', d, e).trim()]);
-        expect(single).toEqual([ids.get('shallow')]);
+        expect(single).toEqual([ids.get('deep')]);
         expect(every).toEqual(git(dir, 'merge-base', '--all', d, e).trim().split('\n'));
       });
     });

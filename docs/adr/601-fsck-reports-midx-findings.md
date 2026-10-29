@@ -1,5 +1,7 @@
 # 601 — fsck reports midx findings
 
+> Amended for git 2.56: see ADR-1107. Midx findings now set bit 1 (not 32) and run only outside `connectivityOnly`.
+
 - **Status:** accepted (user-ratified, against the designer's recommendation)
 - **Date:** 2026-08-08
 - **Design:** docs/design/midx-read-support.md (DC-10) · **Refines:** the fsck pack

@@ -1,7 +1,11 @@
 import { TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
-import { gitfileTooLarge, notARepository } from '../../../domain/repository/error.js';
+import {
+  gitfileNotARepository,
+  gitfileTooLarge,
+  notARepository,
+} from '../../../domain/repository/error.js';
 import { parseCommondir, parseGitfilePointer } from '../../../domain/worktree/gitfile.js';
 import { resolveWorktreePath } from '../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../ports/context.js';
@@ -38,6 +42,9 @@ const NOT_A_DIRECTORY_CODES: ReadonlySet<string> = new Set([
 /** How `<path>/.git` reaches the repository: as the directory itself (a link to one included), or as a gitfile git reads. */
 export type CheckoutVia = 'directory' | 'gitfile';
 
+/** Why a checkout is broken: its `.git` is a directory, a gitfile that names no valid repository, or a gitfile git cannot parse. */
+export type BrokenVia = CheckoutVia | 'unparsed-gitfile';
+
 /** Where a checkout's repository lies on disk, how `.git` reaches it, the path git names it by when it is broken, and the filesystem that reaches it. */
 interface Located {
   readonly kind: 'located';
@@ -51,7 +58,7 @@ interface Located {
 export type GitlinkCheckout =
   | { readonly kind: 'none' }
   | { readonly kind: 'oversized'; readonly shown: FilePath }
-  | { readonly kind: 'broken'; readonly shown: FilePath }
+  | { readonly kind: 'broken'; readonly via: BrokenVia; readonly shown: FilePath }
   | {
       readonly kind: 'repository';
       readonly via: CheckoutVia;
@@ -59,10 +66,16 @@ export type GitlinkCheckout =
       readonly context: () => Promise<Context>;
     };
 
-type Broken = Extract<GitlinkCheckout, { readonly kind: 'broken' }>;
+export type Broken = Extract<GitlinkCheckout, { readonly kind: 'broken' }>;
 type Oversized = Extract<GitlinkCheckout, { readonly kind: 'oversized' }>;
 
-const broken = (shown: FilePath): Broken => ({ kind: 'broken', shown });
+const broken = (shown: FilePath, via: BrokenVia): Broken => ({ kind: 'broken', via, shown });
+
+/** git names a gitfile that leads to no valid repository apart from a `.git` it cannot recognise as one. */
+export const brokenCheckoutRefusal = (checkout: Broken): TsgitError =>
+  checkout.via === 'gitfile'
+    ? gitfileNotARepository(checkout.shown)
+    : notARepository(checkout.shown);
 
 /**
  * The commit checked out at a gitlink, read as git's `resolve_gitlink_ref` does:
@@ -76,7 +89,7 @@ export const gitlinkHeadOf = async (
   path: FilePath,
 ): Promise<ObjectId | undefined> => {
   const checkout = await probeGitlinkCheckout(ctx, path);
-  if (checkout.kind === 'broken') throw notARepository(checkout.shown);
+  if (checkout.kind === 'broken') throw brokenCheckoutRefusal(checkout);
   if (checkout.kind === 'oversized') throw gitfileTooLarge(checkout.shown);
   if (checkout.kind === 'none') return undefined;
   return checkout.head();
@@ -94,11 +107,11 @@ export const probeGitlinkCheckout = async (
   const { gitDir } = located;
   // HEAD is a plain file under either ref backend, so it is judged before the config is read.
   const { judged, resolved } = await boundedHeadFile(located.fs, gitDir);
-  if (!isUsableHead(judged)) return broken(located.shown);
+  if (!isUsableHead(judged)) return broken(located.shown, located.via);
   const reached = await reaching(ctx, located);
   if (reached.kind === 'broken') return reached;
   const { commonDir, fs } = reached;
-  if (!(await holdsObjectsAndRefs(fs, commonDir))) return broken(located.shown);
+  if (!(await holdsObjectsAndRefs(fs, commonDir))) return broken(located.shown, located.via);
   return repositoryCheckout(ctx, path, { gitDir, via: located.via, commonDir, fs, resolved });
 };
 
@@ -152,15 +165,15 @@ const resolveGitlinkHead = async (child: Context): Promise<ObjectId | undefined>
  */
 const reaching = async (
   ctx: Context,
-  { gitDir, fs, shown }: Located,
+  { gitDir, fs, shown, via }: Located,
 ): Promise<
   Broken | { readonly kind: 'reached'; readonly commonDir: string; readonly fs: FileSystem }
 > => {
   const declared = await commondirBytes(fs, `${gitDir}${SEPARATOR}${COMMONDIR_FILE}`);
   // git reads the file into a buffer and fails on a zero-byte one, unlike a bare newline.
-  if (declared?.length === 0) return broken(shown);
+  if (declared?.length === 0) return broken(shown, via);
   const value = declared === undefined ? undefined : commondirValue(declared);
-  if (value === 'unnameable') return broken(shown);
+  if (value === 'unnameable') return broken(shown, via);
   if (value?.kind !== 'ok') return { kind: 'reached', commonDir: gitDir, fs };
   const commonDir = resolveWorktreePath(gitDir, value.path);
   return { kind: 'reached', commonDir, fs: worktreeScopedFs(ctx, [gitDir, commonDir]) };
@@ -331,16 +344,13 @@ const gitfileCheckout = async (
 ): Promise<Located | Broken> => {
   const dotGit = dotGitShown(path);
   const pointer = parseGitfilePointer(await ctx.fs.readUtf8(`${checkout}${SEPARATOR}${DOT_GIT}`));
-  if (pointer.kind !== 'ok') return broken(dotGit);
-  const shown = pointer.path.startsWith(SEPARATOR)
-    ? pointer.path
-    : `${path}${SEPARATOR}${pointer.path}`;
+  if (pointer.kind !== 'ok') return broken(dotGit, 'unparsed-gitfile');
   const gitDir = resolveWorktreePath(checkout, pointer.path);
   return {
     kind: 'located',
     via: 'gitfile',
     gitDir,
-    shown: shown as FilePath,
+    shown: dotGit,
     fs: worktreeScopedFs(ctx, gitDir),
   };
 };

@@ -5,7 +5,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fsck } from '../../../../src/application/commands/fsck.js';
+import { looseObjectPath } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -80,6 +82,53 @@ describe('Given a tagged root commit', () => {
 
       // Assert
       expect(result.findings.filter((finding) => ROOT_OR_TAGGED.has(finding.type))).toEqual([]);
+    });
+  });
+});
+
+const unreferencedEmptyLooseBlob = async (): Promise<{ ctx: Context; id: ObjectId }> => {
+  const ctx = createMemoryContext();
+  const id = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode('orphan\n'),
+  });
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, id), new Uint8Array(0));
+  return { ctx, id };
+};
+
+describe('Given an unreferenced empty loose object', () => {
+  describe('When fsck runs connectivity-only', () => {
+    it('Then it refuses the loose object as corrupt, as git 2.56 does', async () => {
+      // Arrange
+      const { ctx, id } = await unreferencedEmptyLooseBlob();
+      const sut = fsck;
+
+      // Act
+      const outcome = await sut(ctx, { connectivityOnly: true }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      // Assert
+      expect(outcome).toBeInstanceOf(TsgitError);
+      expect((outcome as TsgitError).data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id });
+    });
+  });
+
+  describe('When fsck runs in default mode', () => {
+    it('Then it still reports the object and exits 1', async () => {
+      // Arrange
+      const { ctx, id } = await unreferencedEmptyLooseBlob();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(1);
+      expect(result.findings.some((finding) => 'id' in finding && finding.id === id)).toBe(true);
     });
   });
 });

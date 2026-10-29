@@ -27,6 +27,18 @@
 > verdict, no exit code and no public type. Its one previously unpinned leg — a **delta-stored**
 > packed entry — is **§Pin R13**. Nothing in this document is open.
 
+> **Re-pinned to git 2.56.0 (2026-10-29).** git 2.56 folds every pack-layer fault into exit bit 1:
+> `ERROR_PACK` (4), `ERROR_PACK_REV_INDEX` (64), the multi-pack-index bit (32) and the bitmap bit
+> (128) are gone, so an inaccessible pack exits 1, an unusable `.idx` exits 1 (not 68), and a
+> pack beside a missing object and a bad ref exits 11 (not 14). Mode gating on the exit axis is now:
+> v99 pack 1 / 0 / 0 (default, `--connectivity-only`, `--no-full`); corrupt `.idx` 1 / 0 / 1; both
+> with `--strict` unchanged. The reverse-index, bitmap and midx passes skip under
+> `--connectivity-only`. `--connectivity-only` over an unreachable loose object that is empty or
+> mode 000 now dies (`fatal: loose object <oid> (stored in <path>) is corrupt`, exit 128) instead of
+> printing `dangling unknown`; tsgit rejects with `LOOSE_OBJECT_CORRUPT`. The tables below keep the
+> 2.55 cells that explain the original divergences and mark each cell 2.56 changed; the exit
+> literals the interop suite pins are the 2.56 ones in this note.
+
 ## Context
 
 ### The divergences — pinned on **both** sides, not read off the code
@@ -41,10 +53,10 @@ is attributable to the pack alone.
 |---|---|---|---|
 | 1 | healthy pack (control) | **0**, no pack output | **0** |
 | 2 | pack version **3** (control) | **0** | **0** |
-| 3 | pack version **99** | **4** — one `cannot be accessed`, **zero object findings** | **1** — nine spurious `bad-object { msgId: 'badType' }`, 18 logger warns |
-| 4 | header/index `objectCount` disagreement | **4** — same shape | **1** — same nine spurious findings |
-| 5 | `.pack` unreadable (`chmod 000`) | **4** | **1** (same class) |
-| 6 | `.idx` corrupt or unreadable | **68** — `index not opened` + `unable to load rev-index` | **0** — completely silent |
+| 3 | pack version **99** | **4** (2.56: **1**) — one `cannot be accessed`, **zero object findings** | **1** — nine spurious `bad-object { msgId: 'badType' }`, 18 logger warns |
+| 4 | header/index `objectCount` disagreement | **4** (2.56: **1**) — same shape | **1** — same nine spurious findings |
+| 5 | `.pack` unreadable (`chmod 000`) | **4** (2.56: **1**) | **1** (same class) |
+| 6 | `.idx` corrupt or unreadable | **68** (2.56: **1**) — `index not opened` + `unable to load rev-index` | **0** — completely silent |
 | 7 | `.idx` with no `.pack` (orphan) | **0**, silent | **0**, silent — **already faithful** |
 
 **Four distinct divergences, not one.** The first three are the pack axis the brief names; the
@@ -237,14 +249,14 @@ repo — which is how the first run of this matrix produced five false "no diver
 | repo shape | `fsck` | `fsck --connectivity-only` | `fsck --no-full` | `fsck --strict` |
 |---|---|---|---|---|
 | healthy | 0 | 0 | 0 | 0 |
-| pack v99 | **4** | **0** | **0** | **4** |
-| `.idx` garbage | **68** | **64** | **64** | 68 |
+| pack v99 | **4** (2.56: **1**) | **0** | **0** | **4** (2.56: **1**) |
+| `.idx` garbage | **68** (2.56: **1**) | **64** (2.56: **0**) | **64** (2.56: **1**) | 68 (2.56: 1) |
 
 | # | isolation probe | result |
 |---|---|---|
-| K-a | `.idx` garbage with the `.rev` file **deleted first** | still **68** — bit 64 is emitted with **no reverse index on disk** |
-| K-b | `.rev` corrupt, index healthy (= J13) | **64** alone, no bit 4 |
-| K-c | pack v99, index healthy (= J3) | **4** alone, no bit 64 |
+| K-a | `.idx` garbage with the `.rev` file **deleted first** | still **68** (2.56: **1**) — bit 64 is emitted with **no reverse index on disk** |
+| K-b | `.rev` corrupt, index healthy (= J13) | **64** alone, no bit 4 (2.56: **1**) |
+| K-c | pack v99, index healthy (= J3) | **4** alone, no bit 64 (2.56: **1**) |
 
 **Rules, as pinned.**
 
@@ -263,11 +275,11 @@ repo — which is how the first run of this matrix produced five false "no diver
 |---|---|---|
 | ref containing a null sha, no pack fault | 10 | 2 \| 8 |
 | a reachable tree deleted, no pack fault | 10 | 2 \| 8 |
-| pack v99 **+** a reachable tree deleted | **14** | 2 \| 4 \| 8 |
-| pack v99 **+** a null-sha ref | **14** | 2 \| 4 \| 8 |
-| pack v99 alone | 4 | 4 |
-| **v99 pack holding every reachable object** (= Pin M5) | **14** | 2 \| 4 \| 8 |
-| **corrupt `.idx` holding every reachable object** (= Pin M6) | **78** | 2 \| 4 \| 8 \| 64 |
+| pack v99 **+** a reachable tree deleted | **14** (2.56: **11**) | 2 \| 4 \| 8 (2.56: 1 \| 2 \| 8) |
+| pack v99 **+** a null-sha ref | **14** (2.56: **11**) | 2 \| 4 \| 8 (2.56: 1 \| 2 \| 8) |
+| pack v99 alone | 4 (2.56: 1) | 4 (2.56: 1) |
+| **v99 pack holding every reachable object** (= Pin M5) | **14** (2.56: **11**) | 2 \| 4 \| 8 (2.56: 1 \| 2 \| 8) |
+| **corrupt `.idx` holding every reachable object** (= Pin M6) | **78** (2.56: **11**) | 2 \| 4 \| 8 \| 64 (2.56: 1 \| 2 \| 8) |
 
 Bit 4 composes by plain OR with every other bit and is neither absorbed by nor absorbing of them.
 tsgit already models bits 1, 2 and 8 (`internal/fsck/exit-codes.ts`); this change adds the fourth
@@ -573,12 +585,12 @@ Verifiable at ship time.
    differ (Pin J8–J10 versus J3–J7).
 3. **An orphaned `.idx`, and a `.pack` with no `.idx`, produce no finding and no exit bit.**
    Pin J11, J12. The existing ADR-580 warn stays; a warn is not a finding.
-4. **Exit bit 4 is set when and only when at least one finding from requirements 1 or 2 exists**,
+4. **Exit bit 1 (2.56; bit 4 in 2.55) is set when and only when at least one finding from requirements 1 or 2 exists**,
    and composes by OR with the existing bits 1, 2 and 8 without absorbing or being absorbed
    (Pin L).
-5. **Exit bit 64 is set when and only when at least one *index-layer* fault exists** (ADR-586), in
-   **every** mode — including `connectivityOnly` and `full: false`, where requirement 4's bit is
-   absent (Pin K) — and always alongside its own ungated finding variant.
+5. **Index-layer faults set exit bit 1 (2.56; bit 64 in 2.55)** and their finding variant is
+   skipped under `connectivityOnly`, as git 2.56 skips the reverse-index load there; `full: false`
+   still reports them.
 6. **Mode gating matches Pin K and Pin P.** Two *independent* gates, never one:
    - the pack pass and the universe narrowing of requirement 7 run only when `full !== false`
      **and** `connectivityOnly !== true` (Pin K); `strict` affects neither;
@@ -1965,26 +1977,26 @@ two interop suites drift on the one recipe that must stay identical.
 |---|---|---|---|
 | K-1 | healthy pack | exit 0, no `packfile` line | no pack finding; bit 4 absent |
 | K-2 | pack v3 | exit 0 | no pack finding |
-| K-3 | **pack v99** | exit **4**; the reconstructed verdict line occurs **once** | one pack finding; bit 4; **zero** object findings from that pack |
-| K-4 | header/index count disagreement | exit 4; cause `claims to have N objects while index indicates M objects` | one finding whose reason carries both counts |
-| K-5 | signature `PACX` | exit 4; cause `is not a GIT packfile` | one finding |
-| K-6 | pack truncated to 8 bytes | exit 4; cause `far too short to be a packfile` | one finding |
-| K-7 | `.pack` `chmod 000` | exit 4; **verdict only**, no cause (Pin J5) | one finding; node tier only (no `chmod` on the other adapters) |
-| K-8 | `.idx` same-length garbage | exit **68** | one index-layer finding; bits 4 \| 64 (ADR-586) |
-| K-9 | `.idx` truncated to 8 bytes | exit 68 | same |
-| K-10 | `.idx` `chmod 000` | exit 68; verdict lines only (Pin J10) | same; node tier only |
+| K-3 | **pack v99** | exit 1 (2.55: 4); the reconstructed verdict line occurs **once** | one pack finding; bit 1; **zero** object findings from that pack |
+| K-4 | header/index count disagreement | exit 1 (2.55: 4); cause `claims to have N objects while index indicates M objects` | one finding whose reason carries both counts |
+| K-5 | signature `PACX` | exit 1 (2.55: 4); cause `is not a GIT packfile` | one finding |
+| K-6 | pack truncated to 8 bytes | exit 1 (2.55: 4); cause `far too short to be a packfile` | one finding |
+| K-7 | `.pack` `chmod 000` | exit 1 (2.55: 4); **verdict only**, no cause (Pin J5) | one finding; node tier only (no `chmod` on the other adapters) |
+| K-8 | `.idx` same-length garbage | exit 1 (2.55: 68) | one index-layer finding; bit 1 |
+| K-9 | `.idx` truncated to 8 bytes | exit 1 (2.55: 68) | same |
+| K-10 | `.idx` `chmod 000` | exit 1 (2.55: 68); verdict lines only (Pin J10) | same; node tier only |
 | K-11 | **orphan `.idx`** | exit **0**, silent | **no finding**; `exitCode` 0 |
 | K-12 | **idx-less `.pack`** | exit 0, silent | no finding |
-| K-13 | two unusable packs | exit 4; the verdict line occurs **twice**, once per pack | two findings; bit 4 once |
-| K-14 | v99 **+** healthy twin (Pin M3) | exit 4 **and** the objects still reported | objects classified; pack reported |
-| K-15 | v99 **+** a deleted reachable tree | exit 14 | **differential**: the non-pack bits equal what the *same repo without the bad pack* produces, and bit 4 is the only added term |
-| K-16 | v99 **and** corrupt `.idx`, same pack (Pin J15) | exit 68; **no** version line | exactly one finding, index layer — the precedence row |
-| K-17 | mode gating, **exit axis** | `--connectivity-only` and `--no-full` on the v99 and corrupt-idx repos: 0 / 0 / 64 / 64 | `connectivityOnly` and `full: false` reproduce the same four exits |
-| K-18 | `--strict` | exit 4 unchanged | `strict: true` unchanged |
-| K-19 | **v99 pack holding every reachable object** (Pin M5) | exit 14 | **differential** as K-15 — bit 4 is the only term the bad pack adds; `missing` findings present (requirement 8, §D11.8) |
+| K-13 | two unusable packs | exit 1 (2.55: 4); the verdict line occurs **twice**, once per pack | two findings; bit 1 once |
+| K-14 | v99 **+** healthy twin (Pin M3) | exit 1 (2.55: 4) **and** the objects still reported | objects classified; pack reported |
+| K-15 | v99 **+** a deleted reachable tree | exit 11 (2.55: 14) | **differential**: the non-pack bits equal what the *same repo without the bad pack* produces, and bit 1 is the only added term |
+| K-16 | v99 **and** corrupt `.idx`, same pack (Pin J15) | exit 1 (2.55: 68); **no** version line | exactly one finding, index layer — the precedence row |
+| K-17 | mode gating, **exit axis** | `--connectivity-only` and `--no-full` on the v99 and corrupt-idx repos: 0 / 0 / 0 / 1 (2.55: 0 / 0 / 64 / 64) | `connectivityOnly` and `full: false` reproduce the same four exits |
+| K-18 | `--strict` | exit 1 (2.55: 4) unchanged | `strict: true` unchanged |
+| K-19 | **v99 pack holding every reachable object** (Pin M5) | exit 11 (2.55: 14) | **differential** as K-15 — bit 1 is the only term the bad pack adds; `missing` findings present (requirement 8, §D11.8) |
 | K-20 | **v99 pack, `--connectivity-only`, findings axis** (Pin M7 / Pin Q) | the `dangling unknown <oid>` lines are **exactly the pack's N oids**, no duplicates, exit 0 | the `dangling` findings with `objectType === 'unknown'` are the **same oid set**, compared as sets. **Fixture precondition: zero donor/target object overlap** (below) |
 | K-21 | **v99 pack, `--no-full`** (Pin M8) | exit 0, **no** `dangling` line at all | zero `dangling` / `unreachable` findings for the pack's oids — the row that separates the two reduced modes |
-| K-22 | **unreadable loose object, unreferenced, `--connectivity-only`** (Pin P2) | exit 0, `dangling unknown <oid>` once | one `dangling` finding, `objectType === 'unknown'`; node tier only (`chmod`) |
+| K-22 | **unreadable loose object, unreferenced, `--connectivity-only`** (Pin P2) | exit 128 (2.55: exit 0, `dangling unknown <oid>` once), `fatal: loose object <oid> (stored in <path>) is corrupt` | rejects `LOOSE_OBJECT_CORRUPT { id }`; node tier only (`chmod`) |
 | K-23 | **same fixture, default mode** (Pin P2, P-a) | exit 1, **no** `dangling` and **no** `unreachable` line even with `--dangling --unreachable` | no `dangling` / `unreachable` finding for that oid — git's side of this row is asserted *with the projection flags on*, because that is what makes it a computation difference rather than a print filter |
 | K-24 | **reachable unreadable object, `--connectivity-only`** (Pin P7) | exit 0, stdout empty | no finding for that oid; node tier only |
 | K-25 | **hash-path mismatch, `--connectivity-only`** (Pin P6) | exit 0, `dangling blob <oid>` | one `dangling` finding with `objectType === 'blob'` — the negative row for the widening |

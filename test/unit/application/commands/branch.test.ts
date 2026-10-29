@@ -403,6 +403,7 @@ describe('branch', () => {
           code: 'BRANCH_CHECKED_OUT',
           branch: 'refs/heads/main',
           path: ctx.layout.workDir,
+          hold: 'checkout',
         });
       });
     });
@@ -2085,6 +2086,130 @@ describe('branch — the start ref a create reads', () => {
         // Assert
         const reads = open.mock.calls.filter(([path]) => path === mainPath);
         expect(reads).toHaveLength(3);
+      });
+    });
+  });
+});
+
+describe('worktree holds on a branch', () => {
+  const SIDECAR_REF = 'refs/heads/sidecar';
+
+  /** Registers a linked worktree `id` whose HEAD names `headBranch`, bisecting
+   *  `bisecting` when one is given. */
+  const addLinkedWorktree = async (
+    ctx: Context,
+    id: string,
+    headBranch: string,
+    bisecting?: string,
+  ): Promise<void> => {
+    const adminDir = `${ctx.layout.gitDir}/worktrees/${id}`;
+    await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `ref: refs/heads/${headBranch}\n`);
+    await ctx.fs.writeUtf8(`${adminDir}/gitdir`, `${ctx.layout.workDir}/${id}/.git\n`);
+    if (bisecting === undefined) return;
+    await ctx.fs.writeUtf8(`${adminDir}/BISECT_LOG`, 'git bisect start\n');
+    await ctx.fs.writeUtf8(`${adminDir}/BISECT_START`, `${bisecting}\n`);
+  };
+
+  const seedSidecar = async (): Promise<Context> => {
+    const { ctx } = await seedWithCommit();
+    await branchCreate(ctx, { name: 'sidecar' });
+    return ctx;
+  };
+
+  const refusal = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  describe('Given a linked worktree bisecting the branch', () => {
+    describe('When branchDelete runs', () => {
+      it('Then it refuses with the bisect hold on that worktree', async () => {
+        // Arrange
+        const ctx = await seedSidecar();
+        await addLinkedWorktree(ctx, 'wt', 'sidecar', 'sidecar');
+        const sut = branchDelete;
+
+        // Act
+        const result = await refusal(() => sut(ctx, { name: 'sidecar' }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'BRANCH_CHECKED_OUT',
+          branch: SIDECAR_REF,
+          path: `${ctx.layout.workDir}/wt`,
+          hold: 'bisect',
+        });
+      });
+    });
+  });
+
+  describe('Given one worktree checking the branch out and a later one bisecting it', () => {
+    describe('When branchDelete runs', () => {
+      it('Then it reports the bisecting worktree with the bisect hold', async () => {
+        // Arrange
+        const ctx = await seedSidecar();
+        await addLinkedWorktree(ctx, 'wt-a', 'sidecar');
+        await addLinkedWorktree(ctx, 'wt-b', 'main', 'sidecar');
+        const sut = branchDelete;
+
+        // Act
+        const result = await refusal(() => sut(ctx, { name: 'sidecar' }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'BRANCH_CHECKED_OUT',
+          branch: SIDECAR_REF,
+          path: `${ctx.layout.workDir}/wt-b`,
+          hold: 'bisect',
+        });
+      });
+    });
+  });
+
+  describe('Given a linked worktree only checking the branch out', () => {
+    describe('When branchDelete runs', () => {
+      it('Then it refuses with the checkout hold', async () => {
+        // Arrange
+        const ctx = await seedSidecar();
+        await addLinkedWorktree(ctx, 'wt', 'sidecar');
+        const sut = branchDelete;
+
+        // Act
+        const result = await refusal(() => sut(ctx, { name: 'sidecar' }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'BRANCH_CHECKED_OUT',
+          branch: SIDECAR_REF,
+          path: `${ctx.layout.workDir}/wt`,
+          hold: 'checkout',
+        });
+      });
+    });
+  });
+
+  describe('Given a linked worktree bisecting the branch', () => {
+    describe('When a forced branchCreate rewrites it', () => {
+      it('Then it refuses with the checkout hold, never the bisect one', async () => {
+        // Arrange
+        const ctx = await seedSidecar();
+        await addLinkedWorktree(ctx, 'wt', 'main', 'sidecar');
+        const sut = branchCreate;
+
+        // Act
+        const result = await refusal(() => sut(ctx, { name: 'sidecar', force: true }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'BRANCH_CHECKED_OUT',
+          branch: SIDECAR_REF,
+          path: `${ctx.layout.workDir}/wt`,
+          hold: 'checkout',
+        });
       });
     });
   });

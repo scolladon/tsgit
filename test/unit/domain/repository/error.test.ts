@@ -6,6 +6,7 @@ import {
   alreadyInitialized,
   bareRepository,
   dubiousOwnership,
+  gitfileNotARepository,
   gitfileTooLarge,
   implicitBareRepository,
   noCommitCheckedOut,
@@ -53,6 +54,18 @@ describe('domain repository error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'GITFILE_TOO_LARGE', path: 'big/.git' });
+        });
+      });
+    });
+
+    describe('Given gitfileNotARepository("sub/.git")', () => {
+      describe('When checking data', () => {
+        it('Then code and path preserved', () => {
+          // Arrange & Act
+          const result = gitfileNotARepository('sub/.git' as FilePath);
+
+          // Assert
+          expect(result.data).toEqual({ code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' });
         });
       });
     });
@@ -243,6 +256,10 @@ describe('domain repository error', () => {
       [
         { code: 'GITFILE_TOO_LARGE', path: 'big/.git' as FilePath },
         "GITFILE_TOO_LARGE: too large to be a .git file: 'big/.git'",
+      ],
+      [
+        { code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' as FilePath },
+        'GITFILE_NOT_A_REPOSITORY: gitfile does not point to a valid repository: sub/.git',
       ],
       [
         { code: 'BARE_REPOSITORY', operation: 'add' },

@@ -1,5 +1,6 @@
 import { TsgitError } from '../../../../domain/error.js';
 import { errorDataCode } from '../../../../domain/error-data-code.js';
+import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
 import { parseResolveUndo } from '../../../../domain/git-index/resolve-undo.js';
@@ -10,11 +11,14 @@ import { isPerWorktreeRef } from '../../../../domain/refs/per-worktree-ref.js';
 import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
+import { listLooseObjectIds } from '../../../primitives/enumerate-objects.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
+import { getObjectStore } from '../../../primitives/object-store.js';
 import { commonGitDir, indexPath } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
+import { readObject } from '../../../primitives/read-object.js';
 import { listReflogs, readReflogLenient } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { objectIsPresent } from './object-presence.js';
@@ -423,6 +427,35 @@ export interface RootsCollection {
   readonly unparseableReflogRoots: ReadonlySet<ObjectId>;
   /** Every ref tip git's `snapshot_refs` parsed, typing it and its links. */
   readonly refTips: ReadonlySet<ObjectId>;
+  /** The type of each root the universe lacks, as git typed it when it parsed the tip. */
+  readonly outsideRootTypes: ReadonlyMap<ObjectId, FsckObjectType>;
+}
+
+async function typesOutside(
+  ctx: Context,
+  roots: ReadonlySet<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+  candidates: ReadonlySet<ObjectId>,
+  indexBlobIds: ReadonlySet<ObjectId>,
+): Promise<ReadonlyMap<ObjectId, FsckObjectType>> {
+  const types = new Map<ObjectId, FsckObjectType>();
+  for (const id of roots) {
+    // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — each arm only spares a read: an index blob resolves as 'blob' before any recovered type, and a universe root is cached or fsck dies before its type is read
+    if (!candidates.has(id) || universe.has(id) || indexBlobIds.has(id)) continue;
+    const type = await typeOfReadable(ctx, id);
+    if (type !== undefined) types.set(id, type);
+  }
+  return types;
+}
+
+/** An unreadable copy stays untyped: the walk reports it instead of fsck failing. */
+async function typeOfReadable(ctx: Context, id: ObjectId): Promise<FsckObjectType | undefined> {
+  try {
+    return (await readObject(ctx, id)).type;
+  } catch (error) {
+    if (error instanceof TsgitError) return undefined;
+    throw error;
+  }
 }
 
 /** The roots added since `before` that git's walk cannot parse. */
@@ -604,6 +637,27 @@ async function fsckEveryIndex(
 }
 
 /**
+ * The ids a root may name. Under `--no-full` an alternate's loose object is
+ * outside the universe yet parsed fine by git when a ref tip or the index
+ * names it: it roots the walk so the walk reports it missing, as git's
+ * `fsck_handle_ref` and `fsck_cache_tree` mark it without ever having
+ * recorded it. A pack-held one is excused by the walk afterwards.
+ */
+async function candidateRootIds(
+  ctx: Context,
+  opts: FsckOptions,
+  universe: ReadonlySet<ObjectId>,
+): Promise<ReadonlySet<ObjectId>> {
+  if (opts.full !== false) return universe;
+  const store = await getObjectStore(ctx);
+  const candidates = new Set(universe);
+  for (const source of store.sources.filter((own) => !own.local)) {
+    for (const id of await listLooseObjectIds(ctx, source)) candidates.add(id);
+  }
+  return candidates;
+}
+
+/**
  * Collect all oids that serve as reachability roots:
  * - Each resolved ref (HEAD + all refs/*)
  * - Reflog old/new oids (when reflogRoots !== false)
@@ -622,7 +676,12 @@ export async function collectRoots(
   parses: ParseCheck,
 ): Promise<RootsCollection> {
   const roots = new Set<ObjectId>();
-  const tips = await addTipRoots(ctx, roots, async (id) => universe.has(id) && (await parses(id)));
+  const candidates = await candidateRootIds(ctx, opts, universe);
+  const tips = await addTipRoots(
+    ctx,
+    roots,
+    async (id) => candidates.has(id) && (await parses(id)),
+  );
   const invalidReflogEntries =
     opts.reflogRoots !== false ? await addRecordedReflogRoots(ctx, roots, isRecorded) : [];
   const unparseableReflogRoots =
@@ -630,15 +689,17 @@ export async function collectRoots(
       ? await unparseableSince(roots, tips.refTips, parses)
       : new Set<ObjectId>();
   const index =
-    opts.indexRoot !== false ? await fsckEveryIndex(ctx, roots, universe) : NO_INDEX_FSCK;
+    opts.indexRoot !== false ? await fsckEveryIndex(ctx, roots, candidates) : NO_INDEX_FSCK;
+  const indexBlobIds = new Set(index.blobs);
   return {
     roots,
     ...tips,
     invalidIndexPointers: index.invalid,
     parsedIndexIds: index.parsed,
-    indexBlobIds: new Set(index.blobs),
+    indexBlobIds,
     invalidReflogEntries,
     unparseableReflogRoots,
+    outsideRootTypes: await typesOutside(ctx, roots, universe, candidates, indexBlobIds),
   };
 }
 

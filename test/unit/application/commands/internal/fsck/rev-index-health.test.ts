@@ -125,7 +125,7 @@ describe('Given a pack whose bad-magic .rev is present but unreadable (permissio
   describe('When the rev-index health pass runs', () => {
     it('Then no finding is emitted and exitBit is 0 — the unreadable classification masks a real fault', async () => {
       // Arrange — the planted `.rev` has a bad signature, so a pass that read
-      // it would score bit 64; silence is only explainable by the unreadable
+      // it would score bit 1; silence is only explainable by the unreadable
       // classification, the guard's other arm.
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'unreadable-rev', onePackEntry('unreadable-rev-content'));
@@ -191,7 +191,7 @@ describe('Given a pack whose .rev fails to load', () => {
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.pack).toBe('pack-bad-magic');
       expect(invalid[0]!.reason).toBe('invalid signature: expected 0x52494458, got 0x00000000');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
 
@@ -208,7 +208,7 @@ describe('Given a pack whose .rev fails to load', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('unsupported version: expected 1, got 2');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
 
@@ -225,7 +225,7 @@ describe('Given a pack whose .rev fails to load', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('unsupported version: expected 1, got 0');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
 
@@ -242,7 +242,7 @@ describe('Given a pack whose .rev fails to load', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('unsupported hash id: expected 1 or 2, got 0');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
 
@@ -259,7 +259,7 @@ describe('Given a pack whose .rev fails to load', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('reverse index is too small');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
 
@@ -276,7 +276,7 @@ describe('Given a pack whose .rev fails to load', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('reverse index is too small');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
 
@@ -293,7 +293,7 @@ describe('Given a pack whose .rev fails to load', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('reverse index is too small');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
 
@@ -310,7 +310,7 @@ describe('Given a pack whose .rev fails to load', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('reverse index is corrupt');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
 
@@ -327,7 +327,7 @@ describe('Given a pack whose .rev fails to load', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('reverse index is corrupt');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
       expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(0);
     });
   });
@@ -381,7 +381,7 @@ describe('Given a pack whose .rev embeds a flipped pack-checksum copy, trailer r
 
 describe('Given a pack whose .rev trailer digest is flipped', () => {
   describe('When the rev-index health pass runs', () => {
-    it("Then one pack-rev-index-invalid with reason 'invalid checksum' is emitted, bit 64 set", async () => {
+    it("Then one pack-rev-index-invalid with reason 'invalid checksum' is emitted, bit 1 set", async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'bad-checksum', onePackEntry('bad-checksum-content'));
@@ -394,7 +394,7 @@ describe('Given a pack whose .rev trailer digest is flipped', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect(invalid[0]!.reason).toBe('invalid checksum');
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -405,7 +405,7 @@ describe('Given a pack whose .rev trailer digest is flipped', () => {
 
 describe('Given a 4-object pack whose .rev body[0] is out of range, trailer restamped', () => {
   describe('When the rev-index health pass runs', () => {
-    it('Then one pack-rev-index-position-mismatch names position 0, bit 64 set', async () => {
+    it('Then one pack-rev-index-position-mismatch names position 0, bit 1 set', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'out-of-range', manyPackEntries(4, 'out-of-range'));
@@ -423,14 +423,14 @@ describe('Given a 4-object pack whose .rev body[0] is out of range, trailer rest
       expect(mismatches[0]!.position).toBe(0);
       expect(mismatches[0]!.expected).toBe(expected[0]);
       expect(mismatches[0]!.stored).toBe(999);
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a 4-object pack whose .rev has body[0] === body[1], trailer restamped', () => {
   describe('When the rev-index health pass runs', () => {
-    it('Then one pack-rev-index-position-mismatch names position 0 alone, bit 64 set', async () => {
+    it('Then one pack-rev-index-position-mismatch names position 0 alone, bit 1 set', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'duplicate', manyPackEntries(4, 'duplicate'));
@@ -448,14 +448,14 @@ describe('Given a 4-object pack whose .rev has body[0] === body[1], trailer rest
       expect(mismatches[0]!.position).toBe(0);
       expect(mismatches[0]!.expected).toBe(expected[0]);
       expect(mismatches[0]!.stored).toBe(expected[1]);
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a 4-object pack whose .rev has two wrong positions, trailer restamped', () => {
   describe('When the rev-index health pass runs', () => {
-    it('Then one pack-rev-index-position-mismatch is emitted per wrong position, bit 64 set once', async () => {
+    it('Then one pack-rev-index-position-mismatch is emitted per wrong position, bit 1 set once', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'two-wrong', manyPackEntries(4, 'two-wrong'));
@@ -477,14 +477,14 @@ describe('Given a 4-object pack whose .rev has two wrong positions, trailer rest
       expect(mismatches).toHaveLength(2);
       const positions = mismatches.map((m) => m.position).sort((a, b) => a - b);
       expect(positions).toEqual([0, 2]);
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
 
 describe('Given a 4-object pack whose .rev has only its last position wrong, trailer restamped', () => {
   describe('When the rev-index health pass runs', () => {
-    it('Then one pack-rev-index-position-mismatch names the last position, bit 64 set', async () => {
+    it('Then one pack-rev-index-position-mismatch names the last position, bit 1 set', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'last-wrong', manyPackEntries(4, 'last-wrong'));
@@ -502,7 +502,7 @@ describe('Given a 4-object pack whose .rev has only its last position wrong, tra
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.position).toBe(lastPosition);
       expect(mismatches[0]!.stored).toBe(999);
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -513,7 +513,7 @@ describe('Given a 4-object pack whose .rev has only its last position wrong, tra
 
 describe('Given a pack whose .rev has both a flipped trailer and a wrong body position', () => {
   describe('When the rev-index health pass runs', () => {
-    it('Then both the invalid and mismatch findings are emitted, bit 64 set once', async () => {
+    it('Then both the invalid and mismatch findings are emitted, bit 1 set once', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'both-wrong', manyPackEntries(2, 'both-wrong'));
@@ -534,7 +534,7 @@ describe('Given a pack whose .rev has both a flipped trailer and a wrong body po
       expect(mismatches).toHaveLength(1);
       expect(mismatches[0]!.position).toBe(0);
       expect(mismatches[0]!.stored).toBe(999);
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -563,19 +563,18 @@ describe('Given a pack whose .idx is corrupt, with a broken .rev beside it', () 
 });
 
 // ---------------------------------------------------------------------------
-// MODES — the pass is ungated: identical output in every fsck mode
+// MODES — the pass runs outside connectivityOnly; local sources are always audited
 // ---------------------------------------------------------------------------
 
-const ALL_MODES: ReadonlyArray<{ readonly label: string; readonly opts: FsckOptions }> = [
+const REPORTING_MODES: ReadonlyArray<{ readonly label: string; readonly opts: FsckOptions }> = [
   { label: 'default', opts: {} },
-  { label: 'connectivityOnly', opts: { connectivityOnly: true } },
   { label: 'full: false', opts: { full: false } },
   { label: 'strict', opts: { strict: true } },
 ];
 
 describe('Given a pack whose .rev fails to load', () => {
-  describe('When the rev-index health pass runs under any fsck mode', () => {
-    it.each(ALL_MODES)(
+  describe('When the rev-index health pass runs under any mode but connectivityOnly', () => {
+    it.each(REPORTING_MODES)(
       'Then mode $label produces the same finding and bit as the default',
       async ({ opts }) => {
         // Arrange
@@ -591,15 +590,15 @@ describe('Given a pack whose .rev fails to load', () => {
         expect(invalid).toHaveLength(1);
         expect(invalid[0]!.pack).toBe('pack-modes-load');
         expect(invalid[0]!.reason).toBe('invalid signature: expected 0x52494458, got 0x00000000');
-        expect(result.exitBit).toBe(64);
+        expect(result.exitBit).toBe(1);
       },
     );
   });
 });
 
 describe('Given a pack whose .rev trailer digest is flipped', () => {
-  describe('When the rev-index health pass runs under any fsck mode', () => {
-    it.each(ALL_MODES)(
+  describe('When the rev-index health pass runs under any mode but connectivityOnly', () => {
+    it.each(REPORTING_MODES)(
       'Then mode $label produces the same finding and bit as the default',
       async ({ opts }) => {
         // Arrange
@@ -614,15 +613,15 @@ describe('Given a pack whose .rev trailer digest is flipped', () => {
         const invalid = findingsOfType(result, 'pack-rev-index-invalid');
         expect(invalid).toHaveLength(1);
         expect(invalid[0]!.reason).toBe('invalid checksum');
-        expect(result.exitBit).toBe(64);
+        expect(result.exitBit).toBe(1);
       },
     );
   });
 });
 
 describe('Given a pack whose .rev has a wrong body position', () => {
-  describe('When the rev-index health pass runs under any fsck mode', () => {
-    it.each(ALL_MODES)(
+  describe('When the rev-index health pass runs under any mode but connectivityOnly', () => {
+    it.each(REPORTING_MODES)(
       'Then mode $label produces the same finding and bit as the default',
       async ({ opts }) => {
         // Arrange
@@ -643,7 +642,7 @@ describe('Given a pack whose .rev has a wrong body position', () => {
         expect(mismatches[0]!.position).toBe(0);
         expect(mismatches[0]!.expected).toBe(expected[0]);
         expect(mismatches[0]!.stored).toBe(999);
-        expect(result.exitBit).toBe(64);
+        expect(result.exitBit).toBe(1);
       },
     );
   });
@@ -655,7 +654,7 @@ describe('Given a pack whose .rev has a wrong body position', () => {
 
 describe('Given two packs each with a corrupt .rev', () => {
   describe('When the rev-index health pass runs', () => {
-    it('Then two pack-rev-index-invalid findings are emitted and bit 64 is set once', async () => {
+    it('Then two pack-rev-index-invalid findings are emitted and bit 1 is set once', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'two-a', onePackEntry('two-a-content'));
@@ -670,7 +669,7 @@ describe('Given two packs each with a corrupt .rev', () => {
       const invalid = findingsOfType(result, 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(2);
       expect(invalid.map((f) => f.pack).sort()).toEqual(['pack-two-a', 'pack-two-b']);
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -693,7 +692,7 @@ const moveRevToDonor = async (ctx: Context, name: string): Promise<void> => {
 
 describe('Given a donor pack whose .rev trailer is corrupt', () => {
   describe('When the rev-index health pass runs', () => {
-    it('Then the invalid finding carries the donor objects dir and bit 64 is set', async () => {
+    it('Then the invalid finding carries the donor objects dir and bit 1 is set', async () => {
       // Arrange
       const ctx = await borrowerContext();
       await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor-rev', onePackEntry('donor-rev'));
@@ -712,7 +711,7 @@ describe('Given a donor pack whose .rev trailer is corrupt', () => {
           objectsDir: DONOR_OBJECTS,
         },
       ]);
-      expect(result.exitBit).toBe(64);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -757,6 +756,58 @@ describe('Given a primary pack whose .rev trailer is corrupt while a donor exist
       // Assert
       expect(result.findings).toHaveLength(1);
       expect('objectsDir' in result.findings[0]!).toBe(false);
+    });
+  });
+});
+
+describe('Given a pack whose .rev trailer is corrupt', () => {
+  describe('When the rev-index health pass runs under connectivityOnly', () => {
+    it('Then no finding is emitted and the bit stays clear', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'gate-conn', onePackEntry('gate-conn'));
+      await writeSyntheticRevIndex(ctx, 'gate-conn', [0], { flipChecksum: true });
+
+      // Act
+      const result = await sut(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result).toEqual({ findings: [], exitBit: 0 });
+    });
+  });
+
+  describe('When the rev-index health pass runs in default mode', () => {
+    it('Then the generic corruption bit is set', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'gate-default', onePackEntry('gate-default'));
+      await writeSyntheticRevIndex(ctx, 'gate-default', [0], { flipChecksum: true });
+
+      // Act
+      const result = await sut(ctx, {});
+
+      // Assert
+      expect(result.exitBit).toBe(1);
+    });
+  });
+});
+
+describe('Given a clean local pack beside a donor pack whose .rev trailer is corrupt', () => {
+  describe('When the rev-index health pass runs with full: false', () => {
+    it('Then the donor is skipped and nothing is reported', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPack(ctx, 'own-clean', onePackEntry('own-clean'));
+      await writeSyntheticRevIndex(ctx, 'own-clean', await correctBody(ctx, 'own-clean'));
+      await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor-skip', onePackEntry('donor-skip'));
+      await writeSyntheticRevIndex(ctx, 'donor-skip', [0], { flipChecksum: true });
+      await moveRevToDonor(ctx, 'donor-skip');
+
+      // Act
+      const result = await sut(ctx, { full: false });
+
+      // Assert
+      expect(result).toEqual({ findings: [], exitBit: 0 });
     });
   });
 });

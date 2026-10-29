@@ -388,7 +388,12 @@ describe('hasSignatureInjectionChars', () => {
     describe('When hasSignatureInjectionChars', () => {
       it.each([
         { value: 'a\0b', expected: true, label: 'returns true for a value containing NUL' },
-        { value: 'a\rb', expected: true, label: 'returns true for a value containing CR' },
+        { value: 'a\rb', expected: false, label: 'returns false for a lone CR, which git stores' },
+        {
+          value: 'ef\r\ngh',
+          expected: false,
+          label: 'returns false for a CRLF pair, which git stores',
+        },
         {
           value: '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\n',
           expected: false,

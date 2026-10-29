@@ -11,7 +11,7 @@ evidence:
 source: { run: gc-size-lying-loose-blob, phase: implementation, date: 2026-10-21 }
 status: active
 supersedes: []
-last-verified: 2026-10-21
+last-verified: 2026-10-29
 ---
 # 007 — A dependency bump can ship without its platform binary
 

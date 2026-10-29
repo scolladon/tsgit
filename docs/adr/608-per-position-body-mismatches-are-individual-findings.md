@@ -1,5 +1,7 @@
 # 608 — Per-position body mismatches are individual findings
 
+> Amended for git 2.56: see ADR-1107. The summary line now sets bit 1 and runs only outside `connectivityOnly`.
+
 - **Status:** accepted (adopted-as-recommended)
 - **Date:** 2026-08-09
 - **Design:** docs/design/rev-index-bitmap-read-support.md (DC-6, Pin H N1) · **Refines:** ADR-249, ADR-584, ADR-601

@@ -19,7 +19,6 @@ import { writeSyntheticPack } from '../primitives/pack-fixture.js';
 
 const enc = new TextEncoder();
 const EXIT_CONTENT = 1;
-const EXIT_PACK = 4;
 const OLDER = Date.UTC(2020, 0, 1);
 const NEWER = Date.UTC(2021, 0, 1);
 const EVIL_GITMODULES = enc.encode('[submodule "x"]\n\tpath = x\n\turl = --upload-pack=evil\n');
@@ -103,7 +102,7 @@ describe('Given one pack holding the tree before the .gitmodules blob it names',
 
       // Assert
       expect(urlFindings(result.findings, blobId)).toHaveLength(1);
-      expect(result.exitCode).toBe(EXIT_PACK);
+      expect(result.exitCode).toBe(EXIT_CONTENT);
     });
   });
 });
@@ -124,7 +123,7 @@ describe('Given the .gitmodules blob and its tree in two packs', () => {
 
       // Assert
       expect(urlFindings(result.findings, blobId)).toHaveLength(1);
-      expect(result.exitCode).toBe(EXIT_PACK);
+      expect(result.exitCode).toBe(EXIT_CONTENT);
     });
   });
 
@@ -329,7 +328,7 @@ describe('Given a pack holding a .gitmodules tree, a .gitattributes tree, then t
         'gitmodulesUrl',
         'gitattributesLineLength',
       ]);
-      expect(result.exitCode).toBe(EXIT_PACK);
+      expect(result.exitCode).toBe(EXIT_CONTENT);
     });
   });
 });

@@ -693,7 +693,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     });
 
     describe('When the pack is installed in a repo and git fsck --strict runs', () => {
-      it('Then it exits 6 with pack-checksum / CRC / unpack findings on stderr', async () => {
+      it('Then it exits 3 with pack-checksum / CRC / unpack findings on stderr', async () => {
         // Arrange
         const deltaRow = verifyPackRows(tsgitGcDir, tsgitIdxPath).find((row) => row.isDelta);
         if (deltaRow === undefined) throw new Error('expected at least one delta row');
@@ -710,11 +710,10 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
         // Act
         const result = tryRunGitWithExit(['-C', corruptRepo, 'fsck', '--strict', '--no-progress']);
 
-        // Assert — the 50-byte delta floor shifts which delta this shared
-        // corpus emits first yet again, so the flipped byte now trips a
-        // different combination of fsck's internal error bits (6, not 4);
-        // every finding string below still fires unchanged.
-        expect(result.exitCode).toBe(6);
+        // Assert — git 2.56 folds every pack fault into bit 1 and reports the
+        // delta base it could not unpack as missing (bit 2), so 3; every
+        // finding string below fires as it did on earlier versions.
+        expect(result.exitCode).toBe(3);
         expect(result.stderr).toContain('pack checksum mismatch');
         expect(result.stderr).toContain('index CRC mismatch');
         expect(result.stderr).toContain('failed to unpack compressed delta');

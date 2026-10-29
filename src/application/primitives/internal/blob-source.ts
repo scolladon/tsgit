@@ -40,6 +40,7 @@ import {
   isBase,
   type LooseReadMode,
   looseCompressedBytes,
+  ownerUnavailableHit,
   readEntryHeaderWithChunk,
   resolvePackChain,
   verifyObjectContent,
@@ -53,6 +54,7 @@ import {
 } from '../object-store.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
 import {
+  declaredTypeAtHit,
   getPackRegistry,
   peekPackRegistry,
   readDeclaredObjectHeader,
@@ -130,6 +132,8 @@ export type LocatedBlob =
       readonly hit: PackLookupHit;
       readonly entry: PackEntryRead;
     });
+
+type LocatedPack = Extract<LocatedBlob, { readonly arm: 'pack' }>;
 
 interface BufferGate {
   readonly maxBufferedBytes: number;
@@ -219,7 +223,23 @@ async function locateWithRescan(
   // `resolveObjectContent`'s own retry — `retryOnceAfterRescan`
   // single-flights the re-scan across concurrent misses and honours an abort
   // raised during it.
-  return retryOnceAfterRescan(ctx, store, id, () => locate(ctx, store, id));
+  return retryOnceAfterRescan(
+    ctx,
+    store,
+    id,
+    async () => (await locate(ctx, store, id)) ?? locateViaOwnerUnavailable(ctx, store, id),
+  );
+}
+
+/** The second read's last resort, as git's `find_pack_entry` serves a midx owner it cannot open. */
+async function locateViaOwnerUnavailable(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+): Promise<LocatedBlob | undefined> {
+  const found = await ownerUnavailableHit(store, id);
+  if (found === undefined) return undefined;
+  return locatePackHit(ctx, store, found.source, found.hit, id);
 }
 
 /** The deltaCache fast path, gated at zero (`NEVER_BUFFER` skips it too — see
@@ -245,6 +265,16 @@ async function readPackEntry(
   checkAborted(ctx);
   const hit = await source.registry.lookup(id);
   if (hit === undefined) return undefined;
+  return locatePackHit(ctx, store, source, hit, id);
+}
+
+async function locatePackHit(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+  hit: PackLookupHit,
+  id: ObjectId,
+): Promise<LocatedPack> {
   const table = await hit.pack.offsetTable();
   const nextOffset = nextOffsetForEntry(table, hit.offset);
   const entry = await readEntryHeaderWithChunk(ctx, hit, nextOffset, table.packFileSize);
@@ -388,7 +418,23 @@ async function probeStoredType(ctx: Context, id: ObjectId): Promise<ObjectType |
   const first = await probe();
   if (first !== undefined) return first;
   const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
-  return retryOnceAfterRescan(ctx, store, id, probe);
+  return retryOnceAfterRescan(
+    ctx,
+    store,
+    id,
+    async () => (await probe()) ?? typeViaOwnerUnavailable(ctx, store, id),
+  );
+}
+
+/** A delta entry's type is its chain base's, read from headers without inflating the chain. */
+async function typeViaOwnerUnavailable(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+): Promise<ObjectType | undefined> {
+  const found = await ownerUnavailableHit(store, id);
+  if (found === undefined) return undefined;
+  return declaredTypeAtHit(ctx, found.source.registry, found.hit, id);
 }
 
 /**

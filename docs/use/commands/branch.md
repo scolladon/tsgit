@@ -79,7 +79,7 @@ await repo.branch.delete({ name: 'feature/y' });
 - `BRANCH_NOT_FULLY_MERGED` — an unforced `delete` whose tip is not reachable from its merge reference.
 - `COMMIT_PARSE_FAILED` — the safety valve, in a repository with no commit-graph, reached a parent that fails to parse (git exits 128 there). With a commit-graph git's depth-first reach logs the parent's line and skips it instead.
 - `UNEXPECTED_OBJECT_TYPE` — `create` whose (peeled) `startPoint` is not a commit, or a `delete` whose tip names no commit at all.
-- `BRANCH_CHECKED_OUT` — `delete`, or a forced `create`, on a branch some worktree's HEAD names; `path` carries that worktree.
+- `BRANCH_CHECKED_OUT` — `delete`, or a forced `create`, on a branch some worktree's HEAD names; `path` carries that worktree and `hold` is `'checkout'` (its HEAD names the branch) or `'bisect'` (it is bisecting from the branch, git's `... for bisect`). `delete` checks the bisect hold first, across every worktree, so a bisecting worktree is named ahead of an earlier one that has the branch checked out; `create` always reports `'checkout'`.
 - `CONFIG_BAD_NUMERIC_VALUE` — `delete` on a repository with a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class, checked right after the gate, before the worktree-holder / not-found checks); `create` reaches the same class through its own read of the start point's object, structurally, with no separate check. `list` and `rename` do **not** refuse on this class — git runs them without touching the object store.
 
 ## See also

@@ -60,7 +60,8 @@ import {
   WORK_TREE_SHAPES,
 } from './occupant-displacement-fixtures.js';
 
-const GIT_REFUSAL_EXIT = 1;
+const GIT_REFUSAL_EXIT = 128;
+const GIT_MERGE_CONFLICT_EXIT = 1;
 const COULD_NOT_WRITE_INDEX = 'error: could not write index\n';
 
 const looseObjectCount = (dir: string): number =>
@@ -177,7 +178,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash push opening step interop', () => {
           runGit(['-C', dir, 'update-ref', 'refs/heads/side', side]);
           runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
           const merged = tryRunGitWithExit(['-C', dir, 'merge', '-q', 'side'], { env: COMMIT_ENV });
-          expect(merged.exitCode).toBe(GIT_REFUSAL_EXIT);
+          expect(merged.exitCode).toBe(GIT_MERGE_CONFLICT_EXIT);
         }
         await open();
         const before = writtenState(pair.ours);

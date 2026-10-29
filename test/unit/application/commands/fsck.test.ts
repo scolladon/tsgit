@@ -13,6 +13,7 @@ import {
   objectsDir,
   packsDir,
 } from '../../../../src/application/primitives/path-layout.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import {
   disposePackRegistry,
   getPackRegistry,
@@ -3100,7 +3101,7 @@ const onePackEntry = (content: string) => [
 
 describe('Given a repo with one healthy pack and no unusable packs', () => {
   describe('When fsck runs', () => {
-    it('Then no pack finding is emitted and exit bit 4 is unset', async () => {
+    it('Then no pack finding is emitted and it exits clean', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'healthy', onePackEntry('healthy-content'));
@@ -3111,14 +3112,14 @@ describe('Given a repo with one healthy pack and no unusable packs', () => {
       // Assert
       const packFindings = result.findings.filter((f) => f.type.startsWith('pack-'));
       expect(packFindings).toHaveLength(0);
-      expect(result.exitCode & 4).toBe(0);
+      expect(result.exitCode).toBe(0);
     });
   });
 });
 
 describe('Given a v99-header pack whose objects exist nowhere else', () => {
   describe('When fsck runs', () => {
-    it("Then exactly one pack-inaccessible finding names the pack, bit 4 is set, and no finding carries the pack's object ids", async () => {
+    it("Then exactly one pack-inaccessible finding names the pack, bit 1 is set, and no finding carries the pack's object ids", async () => {
       // Arrange
       const ctx = await initBareCtx();
       const packIds = await writeSyntheticPack(ctx, 'refused', onePackEntry('refused-content'));
@@ -3131,7 +3132,7 @@ describe('Given a v99-header pack whose objects exist nowhere else', () => {
       const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
       expect(inaccessible).toHaveLength(1);
       expect((inaccessible[0] as { pack: string }).pack).toBe('pack-refused');
-      expect(result.exitCode & 4).toBe(4);
+      expect(result.exitCode & 1).toBe(1);
       const carriedIds = new Set(result.findings.flatMap((f) => findingIds(f)));
       for (const id of packIds) {
         expect(carriedIds.has(id as ObjectId)).toBe(false);
@@ -3160,7 +3161,7 @@ describe('Given a v99-header pack whose objects exist nowhere else', () => {
 
 describe('Given a pack whose header object count disagrees with its index', () => {
   describe('When fsck runs', () => {
-    it('Then one pack-inaccessible finding is emitted whose reason names both counts, and bit 4 is set', async () => {
+    it('Then one pack-inaccessible finding is emitted whose reason names both counts, and bit 1 is set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'count-mismatch', onePackEntry('count-mismatch-content'));
@@ -3175,14 +3176,14 @@ describe('Given a pack whose header object count disagrees with its index', () =
       expect((inaccessible[0] as { reason: string }).reason).toBe(
         'object count disagrees with index: pack 2, index 1',
       );
-      expect(result.exitCode & 4).toBe(4);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
 
 describe('Given a pack whose .idx is corrupt (magic mismatch)', () => {
   describe('When fsck runs', () => {
-    it('Then one pack-index-unusable and one pack-rev-index-unusable finding are emitted, and bits 4 and 64 are both set', async () => {
+    it('Then one pack-index-unusable and one pack-rev-index-unusable finding are emitted, and bit 1 is set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'corrupt-idx', onePackEntry('corrupt-idx-content'));
@@ -3198,8 +3199,7 @@ describe('Given a pack whose .idx is corrupt (magic mismatch)', () => {
       expect(revIndexUnusable).toHaveLength(1);
       expect((indexUnusable[0] as { pack: string }).pack).toBe('pack-corrupt-idx');
       expect((revIndexUnusable[0] as { pack: string }).pack).toBe('pack-corrupt-idx');
-      expect(result.exitCode & 4).toBe(4);
-      expect(result.exitCode & 64).toBe(64);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
@@ -3224,7 +3224,7 @@ describe('Given an orphan .idx with no sibling .pack file', () => {
 
 describe('Given two packs both header-refused', () => {
   describe('When fsck runs', () => {
-    it('Then two pack-inaccessible findings are emitted and bit 4 is set exactly once', async () => {
+    it('Then two pack-inaccessible findings are emitted and bit 1 is set exactly once', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'refused-a', onePackEntry('refused-a-content'));
@@ -3238,7 +3238,7 @@ describe('Given two packs both header-refused', () => {
       // Assert
       const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
       expect(inaccessible).toHaveLength(2);
-      expect(result.exitCode & 4).toBe(4);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
@@ -3275,7 +3275,7 @@ describe('Given a v99-refused pack and a healthy twin pack holding the same obje
 
 describe('Given a v99-refused pack holding the only reachable tree beneath a loose root commit', () => {
   describe('When fsck runs', () => {
-    it('Then a missing and a broken-link finding are emitted alongside the pack finding, with bits 2 and 4 both set', async () => {
+    it('Then a missing and a broken-link finding are emitted alongside the pack finding, with bits 1 and 2 both set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const emptyTreeBody = serializeTreeContent(makeTree([]), ctx.hashConfig);
@@ -3301,14 +3301,14 @@ describe('Given a v99-refused pack holding the only reachable tree beneath a loo
       expect(brokenLink).toHaveLength(1);
       expect(inaccessible).toHaveLength(1);
       expect(result.exitCode & 2).toBe(2);
-      expect(result.exitCode & 4).toBe(4);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
 
 describe('Given a header-refused pack', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then no pack-inaccessible finding is emitted and bit 4 is absent', async () => {
+    it('Then no pack-inaccessible finding is emitted and it exits clean', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'conn-only-refused', onePackEntry('conn-only-content'));
@@ -3319,12 +3319,12 @@ describe('Given a header-refused pack', () => {
 
       // Assert
       expect(result.findings.some((f) => f.type === 'pack-inaccessible')).toBe(false);
-      expect(result.exitCode & 4).toBe(0);
+      expect(result.exitCode).toBe(0);
     });
   });
 
   describe('When fsck runs with full: false', () => {
-    it('Then no pack-inaccessible finding is emitted and bit 4 is absent', async () => {
+    it('Then no pack-inaccessible finding is emitted and it exits clean', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'full-false-refused', onePackEntry('full-false-content'));
@@ -3335,12 +3335,12 @@ describe('Given a header-refused pack', () => {
 
       // Assert
       expect(result.findings.some((f) => f.type === 'pack-inaccessible')).toBe(false);
-      expect(result.exitCode & 4).toBe(0);
+      expect(result.exitCode).toBe(0);
     });
   });
 
   describe('When fsck runs with strict: true', () => {
-    it('Then bit 4 stays set for the refused pack, same as without strict', async () => {
+    it('Then bit 1 stays set for the refused pack, same as without strict', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'strict-refused', onePackEntry('strict-content'));
@@ -3351,15 +3351,15 @@ describe('Given a header-refused pack', () => {
       const withStrict = await fsck(ctx, { strict: true });
 
       // Assert
-      expect(withoutStrict.exitCode & 4).toBe(4);
-      expect(withStrict.exitCode & 4).toBe(4);
+      expect(withoutStrict.exitCode & 1).toBe(1);
+      expect(withStrict.exitCode & 1).toBe(1);
     });
   });
 });
 
 describe('Given a pack with a corrupt .idx', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then pack-rev-index-unusable is present, bit 64 is set, and bit 4 is absent', async () => {
+    it('Then no pack finding is emitted and the exit code is 0', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'conn-corrupt-idx', onePackEntry('conn-corrupt-idx-content'));
@@ -3369,18 +3369,15 @@ describe('Given a pack with a corrupt .idx', () => {
       const result = await fsck(ctx, { connectivityOnly: true });
 
       // Assert
-      const revIndexUnusable = result.findings.filter((f) => f.type === 'pack-rev-index-unusable');
-      expect(revIndexUnusable).toHaveLength(1);
-      expect(result.exitCode & 64).toBe(64);
-      expect(result.exitCode & 4).toBe(0);
-      expect(result.findings.some((f) => f.type === 'pack-index-unusable')).toBe(false);
+      expect(result.findings.filter((f) => f.type.startsWith('pack-'))).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
     });
   });
 });
 
 describe('Given a pack with a broken .rev', () => {
   describe('When fsck runs', () => {
-    it('Then fsck() folds a pack-rev-index-invalid finding into its result, bit 64 set', async () => {
+    it('Then fsck() folds a pack-rev-index-invalid finding into its result, bit 1 set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'broken-rev', onePackEntry('broken-rev-content'));
@@ -3393,14 +3390,14 @@ describe('Given a pack with a broken .rev', () => {
       const invalid = result.findings.filter((f) => f.type === 'pack-rev-index-invalid');
       expect(invalid).toHaveLength(1);
       expect((invalid[0] as { pack: string }).pack).toBe('pack-broken-rev');
-      expect(result.exitCode & 64).toBe(64);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
 
 describe('Given a pack with a broken .rev alongside an unrelated missing tree', () => {
   describe('When fsck runs', () => {
-    it('Then bits 2 and 64 both compose into the exit code by OR', async () => {
+    it('Then bits 1 and 2 both compose into the exit code by OR', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const commitId = await writeObject(ctx, makeCommit('a'.repeat(40) as ObjectId, []));
@@ -3413,18 +3410,18 @@ describe('Given a pack with a broken .rev alongside an unrelated missing tree', 
 
       // Assert
       expect(result.exitCode & 2).toBe(2);
-      expect(result.exitCode & 64).toBe(64);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
 
 // ---------------------------------------------------------------------------
-// BITMAP HEALTH PASS — composition with pre-existing exit bits (bit 128)
+// BITMAP HEALTH PASS — composition with pre-existing exit bits (bit 1)
 // ---------------------------------------------------------------------------
 
 describe('Given a pack with both a broken .rev and a broken bitmap', () => {
   describe('When fsck runs', () => {
-    it('Then bits 64 and 128 both compose into exit 192', async () => {
+    it('Then bit 1 is the one bit both set, exit 1', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'both-broken', onePackEntry('both-broken-content'));
@@ -3438,14 +3435,14 @@ describe('Given a pack with both a broken .rev and a broken bitmap', () => {
       const result = await fsck(ctx);
 
       // Assert
-      expect(result.exitCode).toBe(192);
+      expect(result.exitCode).toBe(1);
     });
   });
 });
 
 describe('Given a malformed ref (bits 2 and 8) beside a header-refused pack with a broken bitmap', () => {
   describe('When fsck runs by default', () => {
-    it('Then bits 2, 4, 8 and 128 all compose into exit 142', async () => {
+    it('Then bits 1, 2 and 8 compose into exit 11', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
@@ -3460,12 +3457,12 @@ describe('Given a malformed ref (bits 2 and 8) beside a header-refused pack with
       const result = await fsck(ctx);
 
       // Assert
-      expect(result.exitCode).toBe(142);
+      expect(result.exitCode).toBe(11);
     });
   });
 
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then bit 4 drops out and exit is 138', async () => {
+    it('Then the pack and bitmap faults drop out and exit is 10', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
@@ -3480,14 +3477,14 @@ describe('Given a malformed ref (bits 2 and 8) beside a header-refused pack with
       const result = await fsck(ctx, { connectivityOnly: true });
 
       // Assert
-      expect(result.exitCode).toBe(138);
+      expect(result.exitCode).toBe(10);
     });
   });
 });
 
 describe('Given an orphaned .idx with a bitmap beside it (no sibling .pack file)', () => {
   describe('When fsck runs', () => {
-    it('Then no bitmap-checksum-mismatch is emitted and bit 128 is absent — the pack is never registered', async () => {
+    it('Then no bitmap-checksum-mismatch is emitted and bit 1 is absent — the pack is never registered', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await ctx.fs.write(idxFilePath(ctx, 'orphan-with-bitmap'), new Uint8Array(8));
@@ -3501,7 +3498,7 @@ describe('Given an orphaned .idx with a bitmap beside it (no sibling .pack file)
 
       // Assert
       expect(result.findings.some((f) => f.type === 'bitmap-checksum-mismatch')).toBe(false);
-      expect(result.exitCode & 128).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
@@ -3626,7 +3623,7 @@ describe('Given the whole pack directory removed, main and the index both pointi
 
 describe("Given the sole pack's header version restamped to 99, main and the index both pointing into it", () => {
   describe('When fsck runs', () => {
-    it('Then exit is 14 (2|4|8) — the pack is unusable and nothing else resolves', async () => {
+    it('Then exit is 11 (1|2|8) — the pack is unusable and nothing else resolves', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
@@ -3638,7 +3635,7 @@ describe("Given the sole pack's header version restamped to 99, main and the ind
       const result = await fsck(ctx);
 
       // Assert
-      expect(result.exitCode).toBe(14);
+      expect(result.exitCode).toBe(11);
     });
   });
 });
@@ -4107,7 +4104,7 @@ describe('Given a cache-tree naming only an oid a multi-pack-index routes past i
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('pack index');
-      expect(result.exitCode).toBe(32);
+      expect(result.exitCode).toBe(1);
     });
   });
 });
@@ -4136,7 +4133,7 @@ describe('Given a resolve-undo stage naming only an oid a multi-pack-index route
       // Assert
       expect(result.findings.filter((f) => f.type === 'missing')).toEqual([]);
       expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
-      expect(result.exitCode).toBe(32);
+      expect(result.exitCode).toBe(1);
     });
   });
 });
@@ -4171,8 +4168,8 @@ describe('Given a packed cache-tree oid the multi-pack-index routes past its own
       expect(
         result.findings.filter((f) => f.type === 'unreachable' || f.type === 'dangling'),
       ).toEqual([]);
-      expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
-      expect(result.exitCode).toBe(32);
+      expect(result.findings.filter((f) => f.type === 'midx-unusable')).toEqual([]);
+      expect(result.exitCode).toBe(0);
     });
   });
 });
@@ -4203,7 +4200,7 @@ describe('Given a cache-tree oid whose multi-pack-index offset word points past 
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('large offset');
       expect(result.exitCode & 8).toBe(0);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
@@ -4339,9 +4336,19 @@ describe('Given a v99-header pack whose objects exist nowhere else, connectivity
   });
 });
 
+/** The data of the error a connectivity-only run refuses with, as git 2.56 dies on a loose object it cannot read. */
+const refusalOf = async (run: Promise<unknown>): Promise<unknown> => {
+  try {
+    await run;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
 describe('Given an unreferenced loose object whose read rejects with PERMISSION_DENIED', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then emits a dangling/unknown and an unreachable/unknown finding, and exit code is 0', async () => {
+    it('Then it refuses the loose object as corrupt', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const blobId = await writeObject(ctx, makeBlob('unopenable-content'));
@@ -4358,47 +4365,27 @@ describe('Given an unreferenced loose object whose read rejects with PERMISSION_
       };
 
       // Act
-      const result = await fsck(wrapped, { connectivityOnly: true });
+      const result = await refusalOf(fsck(wrapped, { connectivityOnly: true }));
 
       // Assert
-      const dangling = result.findings.find(
-        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === blobId,
-      );
-      const unreachable = result.findings.find(
-        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === blobId,
-      );
-      expect(dangling).toBeDefined();
-      expect((dangling as { objectType: string }).objectType).toBe('unknown');
-      expect(unreachable).toBeDefined();
-      expect((unreachable as { objectType: string }).objectType).toBe('unknown');
-      expect(result.exitCode).toBe(0);
+      expect(result).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: blobId });
     });
   });
 });
 
 describe('Given an unreferenced empty-file loose object (zero bytes)', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then emits a dangling/unknown and an unreachable/unknown finding, and exit code is 0', async () => {
+    it('Then it refuses the loose object as corrupt', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const emptyId = 'e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5' as ObjectId;
       await writeEmptyLooseObject(ctx, emptyId);
 
       // Act
-      const result = await fsck(ctx, { connectivityOnly: true });
+      const result = await refusalOf(fsck(ctx, { connectivityOnly: true }));
 
       // Assert
-      const dangling = result.findings.find(
-        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === emptyId,
-      );
-      const unreachable = result.findings.find(
-        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === emptyId,
-      );
-      expect(dangling).toBeDefined();
-      expect((dangling as { objectType: string }).objectType).toBe('unknown');
-      expect(unreachable).toBeDefined();
-      expect((unreachable as { objectType: string }).objectType).toBe('unknown');
-      expect(result.exitCode).toBe(0);
+      expect(result).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: emptyId });
     });
   });
 
@@ -4607,40 +4594,70 @@ describe('Given a loose object whose content hash does not match its path (hash-
   });
 });
 
-describe('Given two unreadable objects, one referenced by a readable object and one referenced by nobody', () => {
+describe('Given two unreadable objects, one referenced by a reachable tree and one referenced by nobody', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then the referenced one is unreachable only, and the unreferenced one is unreachable and dangling', async () => {
+    it('Then only the unreferenced one is refused, as git types only what it reports', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const referencedId = 'a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9' as ObjectId;
       const orphanId = 'b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9' as ObjectId;
       await writeEmptyLooseObject(ctx, referencedId);
       await writeEmptyLooseObject(ctx, orphanId);
-      await writeObject(ctx, makeTree([treeEntry(FILE_MODE.REGULAR, 'ref.bin', referencedId)]));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'ref.bin', referencedId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await fsck(ctx, { connectivityOnly: true });
+      const result = await refusalOf(fsck(ctx, { connectivityOnly: true }));
 
       // Assert
-      const referencedDangling = result.findings.some(
-        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === referencedId,
-      );
-      const referencedUnreachable = result.findings.some(
-        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === referencedId,
-      );
-      const orphanDangling = result.findings.some(
-        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === orphanId,
-      );
-      const orphanUnreachable = result.findings.some(
-        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === orphanId,
-      );
-      expect(referencedDangling).toBe(false);
-      expect(referencedUnreachable).toBe(true);
-      expect(orphanDangling).toBe(true);
-      expect(orphanUnreachable).toBe(true);
+      expect(result).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: orphanId });
     });
   });
 });
+
+describe.each([
+  [
+    'first',
+    [
+      '1919191919191919191919191919191919191919',
+      'a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9',
+      'b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9',
+    ],
+  ],
+  [
+    'last',
+    [
+      'b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9',
+      'a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9',
+      '1919191919191919191919191919191919191919',
+    ],
+  ],
+] as const)(
+  'Given three unreadable loose objects referenced by nobody, the lowest id seeded %s',
+  (_position, seedOrder) => {
+    describe('When fsck runs with connectivityOnly: true', () => {
+      it('Then the lowest id is the one refused, whatever the seed order', async () => {
+        // Arrange — git types unreachable objects in id order, so the refusal
+        // names the first id, not the first file written.
+        const ctx = await initBareCtx();
+        for (const id of seedOrder) await writeEmptyLooseObject(ctx, id as ObjectId);
+
+        // Act
+        const result = await refusalOf(fsck(ctx, { connectivityOnly: true }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'LOOSE_OBJECT_CORRUPT',
+          id: '1919191919191919191919191919191919191919',
+        });
+      });
+    });
+  },
+);
 
 describe('Given a healthy repo with no damage', () => {
   describe('When fsck runs (default mode)', () => {
@@ -5996,17 +6013,10 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
   });
 });
 
-// Kill: object-cache.ts looseDecodeFault (line 347) — the
-// `looseBytes.length === 0` disjunct folding to `false`. An EMPTY stale loose
-// shadow must short-circuit to `undefined` WITHOUT ever inflating it; the
-// fault-injected inflate below proves that guard actually fires.
 describe('Given a packed object whose entry reads reject with PERMISSION_DENIED, with an EMPTY stale loose file at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it("Then resolves with dangling/'unknown' without ever inflating the empty shadow", async () => {
-      // Arrange — an existing-but-empty loose file still counts as present
-      // for `probeLooseOid`'s membership check, widening recovery onto it;
-      // `looseDecodeFault`'s own empty-bytes guard must return early before
-      // ever calling `inflate` on it.
+    it('Then it refuses the empty loose file as corrupt, as git 2.56 does', async () => {
+      // Arrange
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(
         ctx,
@@ -6014,8 +6024,7 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
         onePackEntry('d13-empty-shadow-content'),
       );
       const id = blobId as ObjectId;
-      const loosePath = looseObjectPath(ctx.layout.gitDir, id);
-      await ctx.fs.write(loosePath, new Uint8Array(0));
+      await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, id), new Uint8Array(0));
       const packPath = packFilePath(ctx, 'd13-empty-shadow');
       const wrapped: Context = {
         ...ctx,
@@ -6026,27 +6035,13 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
             return ctx.fs.openWithNoFollow(path, mode);
           },
         },
-        compressor: {
-          ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            if (bytes.length === 0) {
-              throw unsupportedOperation('filesystem', 'simulated inflate-of-empty-bytes');
-            }
-            return ctx.compressor.inflate(bytes);
-          },
-        },
       };
 
       // Act
-      const result = await fsck(wrapped, { connectivityOnly: true });
+      const result = await refusalOf(fsck(wrapped, { connectivityOnly: true }));
 
       // Assert
-      const dangling = result.findings.find(
-        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
-      );
-      expect(dangling).toBeDefined();
-      expect((dangling as { objectType: string }).objectType).toBe('unknown');
-      expect(result.exitCode).toBe(0);
+      expect(result).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id });
     });
   });
 });
@@ -6595,7 +6590,7 @@ describe('Given a packed object whose header probe rejects with a non-skippable 
 
 describe('Given a corrupt-idx pack beside a pack whose header probe would reject, connectivity-only mode', () => {
   describe('When fsck runs', () => {
-    it('Then it resolves and still reports the rev-index finding — the ungated term never probes a header', async () => {
+    it('Then it resolves with no pack finding and exit 0 — connectivity-only never probes a header', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(
@@ -6624,15 +6619,13 @@ describe('Given a corrupt-idx pack beside a pack whose header probe would reject
         },
       };
 
-      // Act — health() would reject on the poisoned header; the ungated term
-      // must consume the scan-layer records alone and never reach it.
+      // Act — health() would reject on the poisoned header; connectivity-only
+      // mode must never open a pack.
       const result = await fsck(wrapped, { connectivityOnly: true });
 
       // Assert
-      const revIndex = result.findings.filter((f) => f.type === 'pack-rev-index-unusable');
-      expect(revIndex).toHaveLength(1);
-      expect((revIndex[0] as { pack: string }).pack).toBe('pack-d13-ungated-corrupt');
-      expect(result.exitCode & 64).toBe(64);
+      expect(result.findings.filter((f) => f.type.startsWith('pack-'))).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
     });
   });
 });
@@ -6794,7 +6787,7 @@ const isMidxFinding = (f: FsckFinding): boolean => f.type.startsWith('midx-');
 
 describe('Given a dropped incremental chain and no flat file', () => {
   describe('When fsck runs', () => {
-    it('Then a missing chain layer produces no finding and bit 32 is absent', async () => {
+    it('Then a missing chain layer produces no finding and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const dir = midxDir(ctx);
@@ -6805,10 +6798,10 @@ describe('Given a dropped incremental chain and no flat file', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
 
-    it('Then an unreadable chain layer produces no finding and bit 32 is absent', async () => {
+    it('Then an unreadable chain layer produces no finding and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeMidxChain(ctx, [midxBaseSpec()]);
@@ -6829,10 +6822,10 @@ describe('Given a dropped incremental chain and no flat file', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
 
-    it('Then a malformed chain digest line produces no finding and bit 32 is absent', async () => {
+    it('Then a malformed chain digest line produces no finding and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await ctx.fs.writeUtf8(multiPackIndexChainPath(midxDir(ctx)), 'not-a-valid-digest-line\n');
@@ -6842,10 +6835,10 @@ describe('Given a dropped incremental chain and no flat file', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
 
-    it('Then a Tier-B-corrupt chain layer produces no finding and bit 32 is absent', async () => {
+    it('Then a Tier-B-corrupt chain layer produces no finding and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const dir = midxDir(ctx);
@@ -6858,10 +6851,10 @@ describe('Given a dropped incremental chain and no flat file', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
 
-    it('Then a chain over the layer cap produces no finding and bit 32 is absent', async () => {
+    it('Then a chain over the layer cap produces no finding and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const digests = Array.from({ length: 1001 }, (_, i) =>
@@ -6874,14 +6867,14 @@ describe('Given a dropped incremental chain and no flat file', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
 
 describe('Given a Tier-B flat midx rescued by a loadable chain', () => {
   describe('When fsck runs', () => {
-    it('Then no finding is emitted and bit 32 is absent', async () => {
+    it('Then no finding is emitted and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), new Uint8Array(8));
@@ -6892,14 +6885,14 @@ describe('Given a Tier-B flat midx rescued by a loadable chain', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
 
 describe('Given a broken chain suppressed by a loadable flat midx', () => {
   describe('When fsck runs', () => {
-    it('Then no finding is emitted and bit 32 is absent', async () => {
+    it('Then no finding is emitted and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeFlatMidx(ctx, midxBaseSpec());
@@ -6913,7 +6906,7 @@ describe('Given a broken chain suppressed by a loadable flat midx', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
@@ -6924,7 +6917,7 @@ describe('Given a broken chain suppressed by a loadable flat midx', () => {
 
 describe('Given a healthy flat multi-pack-index', () => {
   describe('When fsck runs', () => {
-    it('Then no midx finding is emitted and bit 32 is absent', async () => {
+    it('Then no midx finding is emitted and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const { packNameIdx, id } = await writeMidxPack(ctx, 'midx-healthy', 'midx-healthy-content');
@@ -6938,14 +6931,14 @@ describe('Given a healthy flat multi-pack-index', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
 
 describe('Given no multi-pack-index at all', () => {
   describe('When fsck runs', () => {
-    it('Then no midx finding is emitted and bit 32 is absent', async () => {
+    it('Then no midx finding is emitted and bit 1 is absent', async () => {
       // Arrange
       const ctx = await initBareCtx();
 
@@ -6954,7 +6947,7 @@ describe('Given no multi-pack-index at all', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
@@ -6971,7 +6964,7 @@ describe('Given a midx shape git accepts and ignores', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
 
     it('Then a non-zero numBaseFiles produces no midx finding', async () => {
@@ -6984,7 +6977,7 @@ describe('Given a midx shape git accepts and ignores', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
 
     it('Then an in-range LOFF row produces no midx finding', async () => {
@@ -7004,7 +6997,7 @@ describe('Given a midx shape git accepts and ignores', () => {
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
@@ -7015,7 +7008,7 @@ describe('Given a midx shape git accepts and ignores', () => {
 
 describe('Given a Tier-B-corrupt flat midx with no rescuing chain', () => {
   describe('When fsck runs', () => {
-    it('Then a truncated (too-small) flat midx produces one midx-unusable finding naming the check, and bit 32 is set', async () => {
+    it('Then a truncated (too-small) flat midx produces one midx-unusable finding naming the check, and bit 1 is set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), new Uint8Array(8));
@@ -7028,10 +7021,10 @@ describe('Given a Tier-B-corrupt flat midx with no rescuing chain', () => {
       expect(findings).toHaveLength(1);
       expect((findings[0] as { artefact: string }).artefact).toBe('multi-pack-index');
       expect((findings[0] as { reason: string }).reason).toContain('too short for header');
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
 
-    it('Then a chunk table extending past end of file produces one midx-unusable finding, and bit 32 is set', async () => {
+    it('Then a chunk table extending past end of file produces one midx-unusable finding, and bit 1 is set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const bytes = setMidxNumChunks(buildMidx(midxBaseSpec()), 200);
@@ -7044,10 +7037,10 @@ describe('Given a Tier-B-corrupt flat midx with no rescuing chain', () => {
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('chunk table');
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
 
-    it('Then a chunk with the wrong declared length produces one midx-unusable finding, and bit 32 is set', async () => {
+    it('Then a chunk with the wrong declared length produces one midx-unusable finding, and bit 1 is set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const bytes = shrinkMidxChunkAfter(buildMidx(midxBaseSpec()), 'OIDF', -4);
@@ -7060,10 +7053,10 @@ describe('Given a Tier-B-corrupt flat midx with no rescuing chain', () => {
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('OIDF');
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
 
-    it('Then a hashVersion disagreeing with the repository hash produces one midx-unusable finding, and bit 32 is set', async () => {
+    it('Then a hashVersion disagreeing with the repository hash produces one midx-unusable finding, and bit 1 is set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const bytes = buildMidx(midxBaseSpec({ hashVersion: 2, digestLength: 32 }));
@@ -7076,14 +7069,14 @@ describe('Given a Tier-B-corrupt flat midx with no rescuing chain', () => {
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('hash version');
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
 
 describe('Given a permission-denied flat midx file', () => {
   describe('When fsck runs', () => {
-    it('Then one midx-unusable finding is emitted — flatFilePresent still holds via the stat gate — and bit 32 is set', async () => {
+    it('Then one midx-unusable finding is emitted — flatFilePresent still holds via the stat gate — and bit 1 is set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const flatPath = multiPackIndexPath(midxDir(ctx));
@@ -7105,14 +7098,14 @@ describe('Given a permission-denied flat midx file', () => {
       // Assert
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
       expect(findings).toHaveLength(1);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
 
 describe('Given a contained pack-int-id fault mid-walk with no PNAM entries at all', () => {
   describe('When fsck runs', () => {
-    it('Then one midx-unusable finding names the check and the correct artefact, and bit 32 is the entire exitCode', async () => {
+    it('Then one midx-unusable finding names the check and the correct artefact, and bit 1 is the entire exitCode', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeFlatMidx(
@@ -7128,14 +7121,14 @@ describe('Given a contained pack-int-id fault mid-walk with no PNAM entries at a
       expect(findings).toHaveLength(1);
       expect((findings[0] as { artefact: string }).artefact).toBe('multi-pack-index');
       expect((findings[0] as { reason: string }).reason).toContain('pack index');
-      expect(result.exitCode).toBe(32);
+      expect(result.exitCode).toBe(1);
     });
   });
 });
 
 describe('Given a PNAM entry unresolved with no midx entries referencing it', () => {
   describe('When fsck runs', () => {
-    it('Then one midx-pack-unresolved finding is emitted and bit 32 is the entire exitCode', async () => {
+    it('Then one midx-pack-unresolved finding is emitted and bit 1 is the entire exitCode', async () => {
       // Arrange — a pack listed in PNAM but never routed to by any oid: the
       // pack-level finding fires from the PNAM walk alone, with the
       // per-entry loop never running to also set the bit.
@@ -7148,7 +7141,7 @@ describe('Given a PNAM entry unresolved with no midx entries referencing it', ()
       // Assert
       const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
       expect(packUnresolved).toHaveLength(1);
-      expect(result.exitCode).toBe(32);
+      expect(result.exitCode).toBe(1);
     });
   });
 });
@@ -7159,7 +7152,7 @@ describe('Given a PNAM entry unresolved with no midx entries referencing it', ()
 
 describe('Given a multi-pack-index whose trailer digest disagrees with its bytes', () => {
   describe('When fsck runs', () => {
-    it('Then a flipped flat trailer produces one midx-checksum-mismatch finding and bit 32 is set', async () => {
+    it('Then a flipped flat trailer produces one midx-checksum-mismatch finding and bit 1 is set', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const good = await stampMidxTrailer(ctx, buildMidx(midxBaseSpec()));
@@ -7174,7 +7167,7 @@ describe('Given a multi-pack-index whose trailer digest disagrees with its bytes
       const findings = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
       expect(findings).toHaveLength(1);
       expect((findings[0] as { artefact: string }).artefact).toBe('multi-pack-index');
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
 
     it('Then a flipped chain-head trailer produces one midx-checksum-mismatch finding', async () => {
@@ -7193,7 +7186,7 @@ describe('Given a multi-pack-index whose trailer digest disagrees with its bytes
       // Assert
       const findings = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
       expect(findings).toHaveLength(1);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
 
     it('Then a flipped chain-base-layer trailer produces no finding — only the head is verified', async () => {
@@ -7211,7 +7204,7 @@ describe('Given a multi-pack-index whose trailer digest disagrees with its bytes
 
       // Assert
       expect(result.findings.some(isMidxFinding)).toBe(false);
-      expect(result.exitCode & 32).toBe(0);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
@@ -7222,7 +7215,7 @@ describe('Given a multi-pack-index whose trailer digest disagrees with its bytes
 
 describe('Given a PNAM entry that resolves to no pack this generation registered', () => {
   describe('When fsck runs', () => {
-    it('Then one midx-pack-unresolved and one midx-entry-unresolved per affected oid are emitted, and bit 32 is the entire exitCode', async () => {
+    it('Then one midx-pack-unresolved and one midx-entry-unresolved per affected oid are emitted, and bit 1 is the entire exitCode', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const ids = [midxOid('aa1'), midxOid('aa2'), midxOid('aa3')];
@@ -7248,9 +7241,9 @@ describe('Given a PNAM entry that resolves to no pack this generation registered
       expect(entryUnresolved).toHaveLength(3);
       const unresolvedIds = new Set(midxFindingIds(entryUnresolved));
       for (const id of ids) expect(unresolvedIds.has(id)).toBe(true);
-      // bit 32 appears once regardless of how many findings the pass produced,
+      // bit 1 appears once regardless of how many findings the pass produced,
       // and this scenario has no other pass contributing a bit.
-      expect(result.exitCode).toBe(32);
+      expect(result.exitCode).toBe(1);
     });
   });
 });
@@ -7280,7 +7273,7 @@ describe('Given a PNAM entry whose .idx is unregistered but whose sibling .pack 
       const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
       expect(packUnresolved).toHaveLength(0);
       expect(entryUnresolved).toHaveLength(2);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
@@ -7442,7 +7435,7 @@ describe("Given a two-layer chain with one layer's PNAM unresolvable", () => {
       const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
       expect(packUnresolved).toHaveLength(1);
       expect((packUnresolved[0] as { position: number }).position).toBe(0);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
 
     it('Then a newest-layer unresolvable PNAM reports chain-global position 1', async () => {
@@ -7470,14 +7463,14 @@ describe("Given a two-layer chain with one layer's PNAM unresolvable", () => {
       const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
       expect(packUnresolved).toHaveLength(1);
       expect((packUnresolved[0] as { position: number }).position).toBe(1);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
 
 describe('Given a midx-named pack fully deleted while a reachable commit points at its tree', () => {
   describe('When fsck runs', () => {
-    it('Then the pack-resolution findings and the ordinary connectivity findings both appear, with bit 32 alongside bit 2', async () => {
+    it('Then the pack-resolution findings and the ordinary connectivity findings both appear, with bit 1 alongside bit 2', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const emptyTreeBody = serializeTreeContent(makeTree([]), ctx.hashConfig);
@@ -7508,7 +7501,7 @@ describe('Given a midx-named pack fully deleted while a reachable commit points 
       expect(packUnresolved).toHaveLength(1);
       expect(entryUnresolved).toHaveLength(1);
       expect(missing).toHaveLength(1);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
       expect(result.exitCode & 2).toBe(2);
     });
   });
@@ -7516,7 +7509,7 @@ describe('Given a midx-named pack fully deleted while a reachable commit points 
 
 describe('Given a midx-named pack whose .idx is corrupt but whose .pack remains — the pack is bound but cannot serve', () => {
   describe('When fsck runs', () => {
-    it("Then midx-entry-unresolved fires without midx-pack-unresolved, alongside the pack pass's own findings, and bits 32, 4 and 64 are all set", async () => {
+    it("Then midx-entry-unresolved fires without midx-pack-unresolved, alongside the pack pass's own findings, and bit 1 are set", async () => {
       // Arrange
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(ctx, 'midx-o25', onePackEntry('midx-o25-content'));
@@ -7542,9 +7535,8 @@ describe('Given a midx-named pack whose .idx is corrupt but whose .pack remains 
       expect((entryUnresolved[0] as { id: ObjectId }).id).toBe(blobId);
       expect(result.findings.filter((f) => f.type === 'pack-index-unusable')).toHaveLength(1);
       expect(result.findings.filter((f) => f.type === 'pack-rev-index-unusable')).toHaveLength(1);
-      expect(result.exitCode & 32).toBe(32);
-      expect(result.exitCode & 4).toBe(4);
-      expect(result.exitCode & 64).toBe(64);
+      expect(result.exitCode & 1).toBe(1);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
@@ -7555,7 +7547,7 @@ describe('Given a midx-named pack whose .idx is corrupt but whose .pack remains 
 
 describe('Given a LOFF row index out of range for the largeOffsetCount', () => {
   describe('When fsck runs', () => {
-    it('Then one midx-unusable finding is emitted, bit 32 is set, and fsck resolves rather than rejecting', async () => {
+    it('Then one midx-unusable finding is emitted, bit 1 is set, and fsck resolves rather than rejecting', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const { packNameIdx, id } = await writeMidxPack(
@@ -7580,7 +7572,7 @@ describe('Given a LOFF row index out of range for the largeOffsetCount', () => {
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('large offset');
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
@@ -7677,7 +7669,7 @@ describe('Given a Tier-A-corrupt flat midx', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MODE IS UNGATED
+// MODE GATING — skipped under connectivityOnly, local source only under full: false
 // ---------------------------------------------------------------------------
 
 describe('Given a finding-producing midx shape and no rescuing chain', () => {
@@ -7707,7 +7699,7 @@ describe('Given a finding-producing midx shape and no rescuing chain', () => {
         },
       },
     ])(
-      'Then the midx finding set is identical across default, connectivityOnly, full:false and strict for $label',
+      'Then the midx finding set is identical across default, full:false and strict, and absent under connectivityOnly, for $label',
       async ({ arrange }) => {
         // Arrange
         const ctx = await initBareCtx();
@@ -7716,21 +7708,23 @@ describe('Given a finding-producing midx shape and no rescuing chain', () => {
         // Act
         const results = await Promise.all([
           fsck(ctx),
-          fsck(ctx, { connectivityOnly: true }),
           fsck(ctx, { full: false }),
           fsck(ctx, { strict: true }),
         ]);
+        const connectivityOnly = await fsck(ctx, { connectivityOnly: true });
 
         // Assert — the full finding arrays, not just counts: a mode that
         // dropped or reshaped one finding while keeping the count would slip
         // past a length check.
         const reference = results[0]!.findings.filter(isMidxFinding);
         expect(reference.length).toBeGreaterThan(0);
-        expect(results[0]!.exitCode & 32).toBe(32);
+        expect(results[0]!.exitCode & 1).toBe(1);
         for (const result of results.slice(1)) {
           expect(result.findings.filter(isMidxFinding)).toEqual(reference);
-          expect(result.exitCode & 32).toBe(32);
+          expect(result.exitCode & 1).toBe(1);
         }
+        expect(connectivityOnly.findings.filter(isMidxFinding)).toEqual([]);
+        expect(connectivityOnly.exitCode & 1).toBe(0);
       },
     );
   });
@@ -7742,7 +7736,7 @@ describe('Given a finding-producing midx shape and no rescuing chain', () => {
 
 describe('Given the same repository with and without its multi-pack-index', () => {
   describe('When fsck runs both ways', () => {
-    it('Then bit 32 is the only difference between the two exitCodes', async () => {
+    it('Then bit 1 is the only difference between the two exitCodes', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const emptyTreeBody = serializeTreeContent(makeTree([]), ctx.hashConfig);
@@ -7769,9 +7763,9 @@ describe('Given the same repository with and without its multi-pack-index', () =
       const withoutMidx = await fsck(reopened);
 
       // Assert
-      expect(withMidx.exitCode & 32).toBe(32);
-      expect(withoutMidx.exitCode & 32).toBe(0);
-      expect(withMidx.exitCode ^ withoutMidx.exitCode).toBe(32);
+      expect(withMidx.exitCode & 1).toBe(1);
+      expect(withoutMidx.exitCode & 1).toBe(0);
+      expect(withMidx.exitCode ^ withoutMidx.exitCode).toBe(1);
     });
   });
 });
@@ -7840,7 +7834,7 @@ describe('Given a ref target a healthy pack holds and a multi-pack-index routes 
       expect(result.findings.filter((f) => f.type === 'bad-ref')).toEqual([]);
       expect(result.exitCode & 2).toBe(0);
       expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
@@ -8847,6 +8841,146 @@ describe('Given a borrower whose reachable commit lives only in a donor', () => 
   });
 });
 
+describe('Given a borrower whose valid tip lives only as a donor loose object', () => {
+  describe('When fsck runs with full: false', () => {
+    it('Then the tip is missing and exit is 2', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      for (const id of [treeId, commitId]) await moveLooseToDonor(ctx, id);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { full: false });
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'missing')).toEqual([
+        expect.objectContaining({ type: 'missing', id: commitId, objectType: 'commit' }),
+      ]);
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given a borrower with a local loose object and a donor', () => {
+  describe('When fsck runs with full: false', () => {
+    it('Then the local loose fanout directory is listed no more often than under the default run', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const blobId = await writeObject(ctx, makeBlob('local loose'));
+      const localFanout = `${ctx.layout.gitDir}/objects/${blobId.slice(0, 2)}`;
+      const listings = vi.spyOn(ctx.fs, 'readdir');
+      const listingsOfLocalFanout = (): number =>
+        listings.mock.calls.filter(([path]) => path === localFanout).length;
+      const sut = fsck;
+      await sut(ctx);
+      const defaultListings = listingsOfLocalFanout();
+      listings.mockClear();
+
+      // Act
+      await sut(ctx, { full: false });
+
+      // Assert
+      expect(defaultListings).toBeGreaterThan(0);
+      expect(listingsOfLocalFanout()).toBeLessThanOrEqual(defaultListings);
+    });
+  });
+});
+
+describe('Given a borrower whose cache-tree names a tree the donor holds as garbage bytes', () => {
+  describe('When fsck runs with full: false', () => {
+    it('Then the unreadable root stays untyped and the readability refusal is what surfaces', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const blobId = await writeObject(ctx, makeBlob('tracked'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'f.txt', blobId)]),
+      );
+      await writeIndexWithEntry(ctx, blobId, 'f.txt', treeId);
+      await moveLooseToDonor(ctx, treeId);
+      await ctx.fs.write(
+        `${DONOR_OBJECTS}/${treeId.slice(0, 2)}/${treeId.slice(2)}`,
+        enc.encode('garbage'),
+      );
+      const sut = fsck;
+
+      // Act
+      const caught = await sut(ctx, { full: false }).catch((error: unknown) => error);
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_OBJECT_HEADER',
+        reason: `loose object ${treeId} (stored in ${DONOR_OBJECTS}/${treeId.slice(0, 2)}/${treeId.slice(2)}) is corrupt`,
+      });
+    });
+  });
+});
+
+describe('Given a borrower whose donor-held tip fails to read with a fault that is no git error', () => {
+  describe('When fsck runs with full: false', () => {
+    it('Then the fault propagates instead of leaving the tip untyped', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      for (const id of [treeId, commitId]) await moveLooseToDonor(ctx, id);
+      const fault = new RangeError('disk fault');
+      const realReadObject = readObjectMod.readObject;
+      // The audit view reads through its own delta cache; only the session's read types the tip.
+      const isSessionRead = (readCtx: Context): boolean => readCtx.deltaCache === ctx.deltaCache;
+      const readObject = vi
+        .spyOn(readObjectMod, 'readObject')
+        .mockImplementation((readCtx, id, options) =>
+          isSessionRead(readCtx) && id === commitId
+            ? Promise.reject(fault)
+            : realReadObject(readCtx, id, options),
+        );
+      const sut = fsck;
+
+      try {
+        // Act
+        const caught = await sut(ctx, { full: false }).catch((error: unknown) => error);
+
+        // Assert
+        expect(caught).toBe(fault);
+      } finally {
+        readObject.mockRestore();
+      }
+    });
+  });
+});
+
+describe('Given a borrower whose index names a blob the donor holds as garbage bytes', () => {
+  describe('When fsck runs with full: false', () => {
+    it('Then the blob is reported missing, exit is 2 and fsck does not reject', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const blobId = await writeObject(ctx, makeBlob('index blob'));
+      await writeIndexWithEntry(ctx, blobId, 'f.txt', undefined);
+      await moveLooseToDonor(ctx, blobId);
+      await ctx.fs.write(
+        `${DONOR_OBJECTS}/${blobId.slice(0, 2)}/${blobId.slice(2)}`,
+        enc.encode('garbage'),
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { full: false });
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'missing')).toEqual([
+        expect.objectContaining({ type: 'missing', id: blobId, objectType: 'blob' }),
+      ]);
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
 describe('Given a borrower whose donor holds a loose object stored under the wrong hash', () => {
   describe('When fsck runs', () => {
     it('Then it reports the hash-mismatch finding with the actual id', async () => {
@@ -8928,7 +9062,7 @@ describe('Given a borrower whose donor holds a pack that fails its header gate',
           objectsDir: DONOR_OBJECTS,
         },
       ]);
-      expect(result.exitCode & 4).toBe(4);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });
@@ -8955,7 +9089,7 @@ describe('Given a borrower whose own pack fails its header gate while it has a d
 
 describe('Given a borrower whose donor multi-pack-index trailer disagrees with its bytes', () => {
   describe('When fsck runs', () => {
-    it('Then the midx-checksum-mismatch finding carries the donor objects dir and bit 32 is set', async () => {
+    it('Then the midx-checksum-mismatch finding carries the donor objects dir and bit 1 is set', async () => {
       // Arrange
       const ctx = await borrowerContext();
       const good = await stampMidxTrailer(ctx, buildMidx(midxBaseSpec()));
@@ -8972,7 +9106,28 @@ describe('Given a borrower whose donor multi-pack-index trailer disagrees with i
       expect(mismatches).toEqual([
         { type: 'midx-checksum-mismatch', artefact: 'multi-pack-index', objectsDir: DONOR_OBJECTS },
       ]);
-      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a borrower whose donor multi-pack-index trailer disagrees with its bytes, with full: false', () => {
+  describe('When fsck runs', () => {
+    it('Then no midx finding is reported and bit 1 is clear', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const good = await stampMidxTrailer(ctx, buildMidx(midxBaseSpec()));
+      const flipped = good.slice();
+      flipped[flipped.length - 1] = (flipped[flipped.length - 1]! ^ 0xff) & 0xff;
+      await ctx.fs.write(multiPackIndexPath(`${DONOR_OBJECTS}/pack`), flipped);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { full: false });
+
+      // Assert
+      expect(result.findings.filter(isMidxFinding)).toEqual([]);
+      expect(result.exitCode & 1).toBe(0);
     });
   });
 });
@@ -9001,7 +9156,7 @@ describe('Given a borrower whose own multi-pack-index trailer is corrupt while a
 
 describe('Given a pack whose .idx trailer is corrupt', () => {
   describe('When fsck runs', () => {
-    it('Then it reports the index checksum mismatch and sets bit 4', async () => {
+    it('Then it reports the index checksum mismatch and sets bit 1', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'idx-trailer', onePackEntry('idx-trailer-content'));
@@ -9017,7 +9172,7 @@ describe('Given a pack whose .idx trailer is corrupt', () => {
         type: 'pack-index-checksum-mismatch',
         pack: 'pack-idx-trailer',
       });
-      expect(result.exitCode & 4).toBe(4);
+      expect(result.exitCode & 1).toBe(1);
     });
   });
 });

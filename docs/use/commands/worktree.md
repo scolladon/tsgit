@@ -113,7 +113,7 @@ await repo.worktree.remove('../feature-2', { force: true });
 
 - `WORKTREE_PATH_EXISTS` — the target (or move destination) exists and is not empty.
 - `BRANCH_EXISTS` — `add -b <branch>` where the branch already exists (no force).
-- `BRANCH_CHECKED_OUT` — the requested branch is already used by another worktree.
+- `BRANCH_CHECKED_OUT` — the requested branch is already used by another worktree; `path` carries that worktree and `hold` is always `'checkout'` here. The `'bisect'` hold is raised by [`branch`](branch.md#throws) `delete` only.
 - `WORKTREE_LOCKED` — `move`/`remove` on a locked worktree (no force).
 - `WORKTREE_DIRTY` — `remove` on a worktree with modified/untracked files (no force).
 - `NOT_A_WORKTREE` — `move`/`remove` on a path that is not a linked worktree.

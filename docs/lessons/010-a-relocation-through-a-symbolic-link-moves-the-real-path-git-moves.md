@@ -12,7 +12,7 @@ evidence:
 source: { run: status-gitlink-parity, phase: review, date: 2026-10-24 }
 status: active
 supersedes: []
-last-verified: 2026-10-24
+last-verified: 2026-10-29
 ---
 # 010 — A relocation through a symbolic link moves the real path git moves
 

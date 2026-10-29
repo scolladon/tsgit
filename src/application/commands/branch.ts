@@ -51,7 +51,7 @@ import {
   type TrackMode,
   trackableStartRef,
 } from './internal/branch-tracking.js';
-import { worktreeHolding } from './internal/checked-out-branches.js';
+import { worktreeBisecting, worktreeHolding } from './internal/checked-out-branches.js';
 import { interpretBranchName } from './internal/prior-checkout.js';
 import { buildRemoteTable } from './internal/remote-config.js';
 import {
@@ -183,9 +183,16 @@ const omittedStartPointLabel = async (ctx: Context): Promise<string> => {
  * run it before anything else they would refuse on, so an unresolvable start
  * point or an unmerged tip on a held branch still reports the worktree.
  */
-const assertNoWorktreeHolds = async (ctx: Context, name: RefName): Promise<void> => {
+const assertNoCheckoutHold = async (ctx: Context, name: RefName): Promise<void> => {
   const holder = await worktreeHolding(ctx, name);
-  if (holder !== undefined) throw branchCheckedOut(name, holder);
+  if (holder !== undefined) throw branchCheckedOut(name, holder, 'checkout');
+};
+
+/** Delete reports a bisect hold before any other, as git 2.56 words it. */
+const assertNoDeleteHold = async (ctx: Context, name: RefName): Promise<void> => {
+  const bisecting = await worktreeBisecting(ctx, name);
+  if (bisecting !== undefined) throw branchCheckedOut(name, bisecting, 'bisect');
+  await assertNoCheckoutHold(ctx, name);
 };
 
 /** When `create_branch` builds the remote table, relative to writing the branch. */
@@ -230,7 +237,7 @@ const claimBranch = async (ctx: Context, input: BranchCreateInput): Promise<Bran
   const force = input.force === true;
   const held = await refResolvesForReading(ctx, name);
   if (!force && held) throw branchExists(name);
-  if (force && held) await assertNoWorktreeHolds(ctx, name);
+  if (force && held) await assertNoCheckoutHold(ctx, name);
   return { branchName, name, force, held };
 };
 
@@ -304,7 +311,7 @@ export const branchDelete = async (
   await assertRepoSettingsValid(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${await interpretBranchName(ctx, input.name)}`);
   const valve = input.force === true ? undefined : await openMergeValve(ctx);
-  await assertNoWorktreeHolds(ctx, name);
+  await assertNoDeleteHold(ctx, name);
   const held = await getRefStore(ctx).resolveDirect(name);
   if (held.kind === 'missing') throw branchNotFound(name);
   if (valve === undefined) await lookUpForcedTip(ctx, held);

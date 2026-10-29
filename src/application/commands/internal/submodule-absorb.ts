@@ -9,7 +9,7 @@ import { dirname, permissionDenied, TsgitError } from '../../../domain/error.js'
 import type { IndexEntry } from '../../../domain/git-index/index.js';
 import { FILE_MODE } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
-import { gitfileTooLarge, notARepository } from '../../../domain/repository/error.js';
+import { gitfileTooLarge } from '../../../domain/repository/error.js';
 import {
   submoduleGitDirNested,
   submoduleNameNotFound,
@@ -21,6 +21,7 @@ import type { FileStat } from '../../../ports/file-system.js';
 import { checkedOutHead } from '../../primitives/compare-working-tree-entry.js';
 import { lstatIfReachable } from '../../primitives/internal/fs-probes.js';
 import {
+  brokenCheckoutRefusal,
   isGitDirectory,
   probeGitlinkCheckout,
   statOrUnreachable,
@@ -129,7 +130,7 @@ const readableCheckout = async (
   if (checkout.kind === 'oversized') throw gitfileTooLarge(checkout.shown);
   if (checkout.kind === 'repository') return checkout;
   if (checkout.kind === 'broken' && (await dotGitShapeOf(ctx, path)) === 'file') {
-    throw notARepository(checkout.shown);
+    throw brokenCheckoutRefusal(checkout);
   }
   return undefined;
 };

@@ -75,10 +75,8 @@ the short-body residual; ADR-854's cache value shape.
   - A referenced corrupt packed entry is never reported `missing`.
   - A tag whose target is present but unreadable still reports `tagged`.
   - A bad loose file shadowing a good packed copy leaves that object typed from the pack.
-- Known gap: git checks each packed entry's CRC against the `.idx` (`index CRC mismatch`,
-  `cannot unpack`) and sets ERROR_PACK (exit 4). tsgit's fsck has no per-entry CRC pass. It
-  reports such an entry through content validation (`bad-object`, exit 1). `EXIT_PACK` stays
-  wired only to whole-pack failures.
+- Known gap, closed: the per-entry CRC pass in verify-pack reports `index CRC mismatch` and
+  `cannot unpack` as bit 1. A delta base its children could not read is reported `missing`.
 - **Divergence: the padding bytes.** git's `unpack_loose_rest` pads an under-run through
   `xmallocz`, which is not zero-initialised. For the same fixture, the padding git hashes, and
   so the hash-path mismatch oid it reports, can differ from run to run (3 of 150 runs at claims

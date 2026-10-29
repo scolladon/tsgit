@@ -3,7 +3,10 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { worktreeHolding } from '../../../../../src/application/commands/internal/checked-out-branches.js';
+import {
+  worktreeBisecting,
+  worktreeHolding,
+} from '../../../../../src/application/commands/internal/checked-out-branches.js';
 import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
 import { writeSymbolicRef } from '../../../../../src/application/primitives/write-symbolic-ref.js';
 import { permissionDenied, type TsgitError } from '../../../../../src/domain/error.js';
@@ -260,6 +263,88 @@ describe('worktreeHolding', () => {
 
         // Assert
         expect(result).toBe(ctx.layout.workDir);
+      });
+    });
+  });
+});
+
+/** Registers a linked worktree `id` whose HEAD names main, bisecting `branch`
+ *  when one is given. */
+const addLinkedWorktree = async (ctx: Context, id: string, bisecting?: string): Promise<void> => {
+  const adminDir = `${ctx.layout.gitDir}/worktrees/${id}`;
+  await ctx.fs.writeUtf8(`${adminDir}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.writeUtf8(`${adminDir}/gitdir`, `${ctx.layout.workDir}/${id}/.git\n`);
+  if (bisecting === undefined) return;
+  await ctx.fs.writeUtf8(`${adminDir}/BISECT_LOG`, 'git bisect start\n');
+  await ctx.fs.writeUtf8(`${adminDir}/BISECT_START`, `${bisecting}\n`);
+};
+
+describe('worktreeBisecting', () => {
+  const sut = worktreeBisecting;
+
+  describe('Given two linked worktrees both bisecting the branch', () => {
+    describe('When the bisecting worktree is looked up', () => {
+      it('Then the first by sorted worktree path is returned, not the first git meets in its directory walk', async () => {
+        // Arrange
+        const ctx = await seedDetachedRepo();
+        await addLinkedWorktree(ctx, 'wt-b', 'sidecar');
+        await addLinkedWorktree(ctx, 'wt-a', 'sidecar');
+
+        // Act
+        const result = await sut(ctx, SIDECAR);
+
+        // Assert
+        expect(result).toBe(`${ctx.layout.workDir}/wt-a`);
+      });
+    });
+  });
+
+  describe('Given a bare main checkout carrying bisect state', () => {
+    describe('When the bisecting worktree is looked up', () => {
+      it('Then it is skipped', async () => {
+        // Arrange
+        const base = await seedDetachedRepo();
+        await writeState(base, 'BISECT_LOG', 'git bisect start\n');
+        await writeState(base, 'BISECT_START', 'sidecar\n');
+        const ctx: Context = { ...base, layout: { ...base.layout, bare: true } };
+
+        // Act
+        const result = await sut(ctx, SIDECAR);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a worktree whose BISECT_START stands without a BISECT_LOG', () => {
+    describe('When the bisecting worktree is looked up', () => {
+      it('Then it is skipped', async () => {
+        // Arrange
+        const ctx = await seedDetachedRepo();
+        await writeState(ctx, 'BISECT_START', 'sidecar\n');
+
+        // Act
+        const result = await sut(ctx, SIDECAR);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a worktree holding the branch only through its HEAD', () => {
+    describe('When the bisecting worktree is looked up', () => {
+      it('Then none is returned', async () => {
+        // Arrange
+        const ctx = await seedRepo().then((seeded) => seeded.ctx);
+        await writeSymbolicRef(ctx, 'HEAD' as RefName, SIDECAR);
+
+        // Act
+        const result = await sut(ctx, SIDECAR);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

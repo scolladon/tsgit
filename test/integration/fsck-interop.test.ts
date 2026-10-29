@@ -44,6 +44,7 @@ import { fsck } from '../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
+import { missingLine } from './fsck-line-helpers.js';
 import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
 
@@ -1704,7 +1705,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(result.exitCode).toBe(gitResult.exitCode);
 
           // Assert — git's own "missing blob <oid>" line, reconstructed
-          expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
+          expect(gitResult.stdout).toContain(missingLine('blob', sha));
           const missing = result.findings.find(
             (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === sha,
           );
@@ -1733,9 +1734,10 @@ describe.skipIf(!GIT_AVAILABLE)(
 // `check_object` (`has_object_pack`) trusts the pack's claim on the id and
 // never even attempts the read that would learn it is corrupt, so this gets
 // NO `missing` line at all: only the pack-scan's own corruption report.
-// Pinned live against git 2.55.0 (scrubbed env): a 20 KB blob, `repack -ad`,
+// Pinned live against git 2.56.0 (scrubbed env): a 20 KB blob, `repack -ad`,
 // `prune-packed`, then 40 bytes flipped inside the pack entry gives
-// `index CRC mismatch …` / `cannot unpack …`, no `missing`, exit 4.
+// `index CRC mismatch …` / `cannot unpack …`, no `missing`, exit 1. No delta
+// child marks the entry unreadable, so the missing-base report stays silent.
 // ---------------------------------------------------------------------------
 
 /** `git verify-pack -v <idx>`'s own row for `sha`: `<sha> <type> <size>
@@ -1810,7 +1812,7 @@ describe.skipIf(!GIT_AVAILABLE)(
   'Given a REFERENCED blob backed only by a corrupt PACKED entry',
   () => {
     describe('When fsck runs', () => {
-      it('Then never reports it missing, dangling, unreachable or broken-link, and both exit 4', async () => {
+      it('Then never reports it missing, dangling, unreachable or broken-link, and both exit 1', async () => {
         // Arrange
         const gitResult = gitFsck(referencedCorruptPackDir);
         const sha = referencedCorruptPackBlobSha;
@@ -1818,12 +1820,12 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Act
         const result = await fsck(referencedCorruptPackCtx);
 
-        // Assert — real git: no `missing` line, exit 4 (its own pack-scan bit)
+        // Assert — real git: no `missing` line, exit 1 (the pack-scan fault)
         expect(gitResult.stdout).not.toContain(`missing blob ${sha}`);
-        expect(gitResult.exitCode).toBe(4);
+        expect(gitResult.exitCode).toBe(1);
 
         // Assert — tsgit: never missing/dangling/unreachable/broken-link for
-        // this id; the damaged entry is verify_pack's, bit 4 alone.
+        // this id; the damaged entry is verify_pack's, exit 1 alone.
         const spuriousTypes = result.findings
           .filter(
             (f) =>
@@ -2019,7 +2021,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert — real git prints BOTH lines, exit 3
         expect(gitResult.stdout).toContain(reconstructTagged('blob', sha, 'tb', tagSha));
-        expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
+        expect(gitResult.stdout).toContain(missingLine('blob', sha));
         expect(gitResult.exitCode).toBe(3);
 
         // Assert — tsgit matches: tagged finding reconstructs git's own line
@@ -2422,10 +2424,6 @@ function reconstructBrokenLink(
   return `broken link from${fromType.padStart(8)} ${fromId}`;
 }
 
-function reconstructMissing(objectType: string, id: string): string {
-  return `missing ${objectType} ${id}`;
-}
-
 // --- Connectivity scenario: tree → missing blob ----------------------------
 
 let connTreeBlobDir = '';
@@ -2802,7 +2800,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(missing).toMatchObject({ objectType: toType });
 
           if (missing !== undefined) {
-            expect(gitResult.stdout).toContain(reconstructMissing(toType, toId));
+            expect(gitResult.stdout).toContain(missingLine(toType, toId));
           }
         },
       );

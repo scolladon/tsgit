@@ -1355,7 +1355,7 @@ const settleCleanIndex = async (
   await lock.commit(entries, 'replace', { restagedPaths });
 };
 
-/** Leaving a stashed path unwritten is a failure, as git exits 1 there. */
+/** Leaving a stashed path unwritten is a failure: git exits 128 there, 1 being reserved for a conflict. A conflict that also left an untracked path unwritten is returned with `untrackedNotRestored`, which is git's 128 case. */
 const reportApply = (
   settled: SettledApply,
   restore: UntrackedNotRestored,

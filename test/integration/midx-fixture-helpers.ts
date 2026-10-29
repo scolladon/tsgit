@@ -33,6 +33,7 @@ export const DIGEST_LENGTH = 20;
 
 const HEADER_SIZE = 12;
 const CHUNK_ROW_SIZE = 12;
+const OOFF_ROW_SIZE = 8;
 
 function sha1(bytes: Uint8Array): Buffer {
   return createHash('sha1').update(bytes).digest();
@@ -178,17 +179,17 @@ export function mutateMidxOrThrow(filePath: string, op: MidxMutation): void {
 
 /**
  * Rebuilds a valid flat midx with a fifth `LOFF` chunk of `count` 8-byte
- * entries, and OOFF entry 0's offset word replaced by an indirection into
- * `row` of that chunk (`0x80000000 | row`). `row < count` produces a VALID,
- * round-trippable large-offset indirection (object 0's true small offset is
- * preserved in `LOFF[row]`); `row >= count` produces an out-of-range
+ * entries, and OOFF entry `entry`'s offset word replaced by an indirection
+ * into `row` of that chunk (`0x80000000 | row`). `row < count` produces a
+ * VALID, round-trippable large-offset indirection (that object's true small
+ * offset is preserved in `LOFF[row]`); `row >= count` produces an out-of-range
  * indirection. Everything before the old trailer that is not the chunk
  * table or OOFF's mutated entry is copied byte-for-byte, so the only thing
  * different from the input is exactly what the caller asked for.
  */
 export function craftLoffMidx(
   bytes: Buffer,
-  opts: { readonly row: number; readonly count: number },
+  opts: { readonly entry: number; readonly row: number; readonly count: number },
 ): Buffer {
   const parsed = parseMultiPackIndex(bytes, DIGEST_LENGTH);
   const oldNumChunks = bytes.readUInt8(6);
@@ -225,7 +226,7 @@ export function craftLoffMidx(
   body.copy(out, newTableEnd);
 
   const newOoffStart = parsed.objectOffsetsOffset + shift;
-  const entryOffsetField = newOoffStart + 4;
+  const entryOffsetField = newOoffStart + opts.entry * OOFF_ROW_SIZE + 4;
   const trueOffset = out.readUInt32BE(entryOffsetField);
   if (opts.row < opts.count) writeUint64BE(out, loffStart + opts.row * 8, trueOffset);
   out.writeUInt32BE((0x80000000 | opts.row) >>> 0, entryOffsetField);
@@ -415,4 +416,82 @@ export async function buildChainFixture(baseDir: string, slug: string): Promise<
     layerDigests: [layer1Digest, layer2Digest],
     looseOid,
   };
+}
+
+export interface RefDeltaOwnerFixture {
+  readonly dir: string;
+  /** Held whole by both packs; the delta's base in the sibling. */
+  readonly baseOid: string;
+  /** Whole in the preferred pack, a REF_DELTA on `baseOid` in the sibling. */
+  readonly deltaOid: string;
+  /** The preferred pack, which the midx names as both objects' owner. */
+  readonly ownerPack: string;
+}
+
+/** A line count large enough that git deltifies the shorter text against the longer. */
+const REF_DELTA_LINES = 3000;
+
+const NUMBERED_LINES = Array.from({ length: REF_DELTA_LINES }, (_, i) => `${i + 1}\n`).join('');
+
+/** A pack's signature, version and object count: overwriting them fails its header gate. */
+const PACK_HEADER_BYTES = 12;
+const PACK_HEADER_SMASH = 'Z'.repeat(PACK_HEADER_BYTES);
+
+/** `git verify-pack -v` names a delta with its depth and base after the offset. */
+function isRefDeltaOn(verifyPackOutput: string, deltaOid: string, baseOid: string): boolean {
+  return verifyPackOutput
+    .split('\n')
+    .some((line) => line.startsWith(`${deltaOid} `) && line.endsWith(` ${baseOid}`));
+}
+
+function packObjectsInto(
+  srcDir: string,
+  packBase: string,
+  oids: ReadonlyArray<string>,
+  extra: ReadonlyArray<string>,
+): string {
+  return runGit(['-C', srcDir, 'pack-objects', '--quiet', ...extra, packBase], {
+    input: `${oids.join('\n')}\n`,
+  }).trim();
+}
+
+/**
+ * `REF-OWNER` — two midx-covered packs holding the same two blobs. The
+ * preferred pack holds both whole, so the midx names it the owner of both;
+ * the sibling, written without `--delta-base-offset`, holds the shorter blob
+ * as a REF_DELTA on the longer. `smashOwner` overwrites the owner's header.
+ */
+export async function buildRefDeltaOwnerFixture(
+  baseDir: string,
+  slug: string,
+): Promise<RefDeltaOwnerFixture> {
+  const src = await freshRepo(baseDir, `${slug}-src`);
+  const dir = await freshRepo(baseDir, slug);
+  const hashObject = (content: string): string =>
+    runGit(['-C', src, 'hash-object', '-w', '--stdin'], { input: content }).trim();
+  const deltaOid = hashObject(NUMBERED_LINES);
+  const baseOid = hashObject(`${NUMBERED_LINES}extra\n`);
+  const packBase = path.join(dir, '.git', 'objects', 'pack', 'pack');
+  const oids = [deltaOid, baseOid];
+  const ownerPack = `pack-${packObjectsInto(src, packBase, oids, ['--window=0'])}`;
+  const siblingPack = `pack-${packObjectsInto(src, packBase, oids, [])}`;
+  const verified = git(
+    dir,
+    'verify-pack',
+    '-v',
+    `${packBase.slice(0, -'pack'.length)}${siblingPack}.idx`,
+  );
+  if (!isRefDeltaOn(verified, deltaOid, baseOid)) {
+    throw new Error('buildRefDeltaOwnerFixture: the sibling pack holds no REF_DELTA on the base');
+  }
+  git(dir, 'multi-pack-index', 'write', `--preferred-pack=${ownerPack}.pack`);
+  return { dir, baseOid, deltaOid, ownerPack };
+}
+
+export function smashPackHeader(dir: string, packName: string): void {
+  const packPath = path.join(dir, '.git', 'objects', 'pack', `${packName}.pack`);
+  const bytes = readFileSync(packPath);
+  bytes.write(PACK_HEADER_SMASH, 0, 'ascii');
+  chmodSync(packPath, 0o644);
+  writeFileSync(packPath, bytes);
 }

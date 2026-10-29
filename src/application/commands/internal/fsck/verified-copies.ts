@@ -75,6 +75,12 @@ async function firstVerifiedLooseCopy(
   return null;
 }
 
+/** Whether a loose copy of `id` passes git's checks: a fallback for a pack entry git cannot unpack. */
+export async function hasVerifiedLooseCopy(ctx: Context, id: ObjectId): Promise<boolean> {
+  const copy = await firstVerifiedLooseCopy(ctx, id, await loadShallowSet(ctx));
+  return copy !== null;
+}
+
 /**
  * For each id whose served copy is a mis-hashed pack entry, the copy git's
  * `fsck_obj` verified instead: the first loose copy that passes its hash,

@@ -26,6 +26,7 @@ import {
   parseLayer,
 } from '../../../primitives/internal/commit-graph-chain.js';
 import { commitGraphEnabled } from '../../../primitives/internal/read-commit-graph.js';
+import { GENERATION_NUMBER_V1_MAX } from '../../../primitives/internal/read-commit-meta.js';
 import {
   getObjectStore,
   type ObjectSource,
@@ -36,8 +37,6 @@ import { readObject } from '../../../primitives/read-object.js';
 import { EXIT_COMMIT_GRAPH } from './exit-codes.js';
 import { attributeTo } from './source-attribution.js';
 import type { FsckFinding } from './types.js';
-
-const GENERATION_NUMBER_V1_MAX = 0x3fffffff;
 
 interface PassResult {
   readonly findings: ReadonlyArray<FsckFinding>;
