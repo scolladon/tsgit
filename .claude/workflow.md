@@ -45,13 +45,10 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   test runner — the last vitest/Stryker mis-pairing cost a whole PR to diagnose, and the
   mutation phase gates every feature PR here, so a runner major landing inside one makes a
   surviving mutant ambiguous between the feature and the bump. Unpin in its own PR, where a
-  mutation regression is attributable to the bump alone. **`jscpd` is pinned to
-  5.0.16**: release 5.1.0 declares all seven of its optional platform packages at version
-  `5.0.16`, but `jscpd-windows-arm64-msvc` was only ever published at `5.1.0` — so
-  `npm install` silently skips an unresolvable optional dep while `npm ci` computes it as
-  required and fails with `Missing: jscpd-windows-arm64-msvc@ from lock file`. A local
-  `npm run validate` cannot catch this, because local `node_modules` is already correct;
-  only `npm ci` sees it. Unpin when a release ships coherent optional-dependency versions.
+  mutation regression is attributable to the bump alone. `jscpd` was held at 5.0.16 while
+  its 5.1.0 release declared optional platform packages at versions never published (`npm ci`
+  failed on `jscpd-windows-arm64-msvc`); 5.4.2 ships coherent versions, so the hold is lifted —
+  re-hold if a release's optional-dependency versions disagree with its own again.
   **`@cloudflare/workers-types` is skipped**: it publishes a date-versioned release
   (`5.<date>.<n>`) every day, so bumping it makes `deps` green for exactly one day and red
   again the next morning — a treadmill, not a freshness signal. Dependabot's weekly npm PR
@@ -65,12 +62,13 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   green on the previous build; Chromium and Firefox unaffected; 1.64.1 fails the same way,
   twice on PR #330). Unpin once a later release passes the WebKit e2e job — read this block
   before every `npm outdated` remediation, a bump of a held row costs a CI round.
-  **`@biomejs/biome` is held at 2.5.15**: release 2.6.0 declares every platform package at
-  `2.6.0`, but `@biomejs/cli-darwin-arm64` is published only up to `2.5.15`, so `npm install`
-  silently skips the unresolvable optional dependency and every `biome` invocation on an Apple
-  Silicon machine dies with `Cannot find module '@biomejs/cli-darwin-arm64/biome'` (reproduced
-  2026-10-21; the Linux CI runners would not see it). Same class as the `jscpd` hold above. Unpin
-  once the darwin-arm64 package is published at the release's version.
+  `@biomejs/biome` was held at 2.5.15 while 2.6.0's `@biomejs/cli-darwin-arm64` was unpublished
+  (every `biome` call on Apple Silicon died with `Cannot find module`); 2.6.4 publishes it, so the
+  hold is lifted — before any biome bump, `npm view @biomejs/cli-darwin-arm64 versions` must list
+  the release's version. 2.6 also enables the Playwright domain because `@playwright/test` is a
+  devDependency; its `usePlaywrightValidDescribeCallback` rule reads tsgit's own `describe`
+  command (`describe(ctx, commitId, { … })`) as a test block, so that one rule is `off` in
+  `biome.json` — not a code suppression.
   **`@types/node` is skipped**: DefinitelyTyped publishes one stream per Node major and
   points the `latest` dist-tag at the LTS line, which is `22.20.2`, while this repo tracks
   the TypeScript-aligned `ts6.0` tag at `26.5.1` — correct for TypeScript 6.x and Node 26.

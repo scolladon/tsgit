@@ -840,7 +840,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^jscpd \" | grep -v \"^vitest \" | grep -v \"^@vitest/coverage-v8 \" | grep -v \"^@cloudflare/workers-types \" | grep -v \"^@playwright/test \" | grep -v \"^@types/node \" | grep -v \"^@biomejs/biome \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^vitest \" | grep -v \"^@vitest/coverage-v8 \" | grep -v \"^@cloudflare/workers-types \" | grep -v \"^@playwright/test \" | grep -v \"^@types/node \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -1361,7 +1361,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
-    "@biomejs/biome": "2.5.15",
+    "@biomejs/biome": "2.6.4",
     "@cloudflare/vitest-pool-workers": "0.23.0",
     "@cloudflare/workers-types": "5.20261029.1",
     "@commitlint/cli": "21.2.4",
@@ -1382,7 +1382,7 @@
     "fast-check": "4.10.2",
     "husky": "9.1.7",
     "isomorphic-git": "1.44.8",
-    "jscpd": "5.0.16",
+    "jscpd": "5.4.2",
     "knip": "6.33.0",
     "lint-staged": "17.6.0",
     "minimatch": "11.0.3",
