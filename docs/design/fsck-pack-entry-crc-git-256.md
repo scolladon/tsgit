@@ -280,7 +280,7 @@ tolerates only 1 (L624), and 4 compare against `toBe(1)`.
 | apply/pop: merge conflict **and** untracked occupant | **128** | 1 | same two lines (the merge is written and `f` holds conflict markers; pop keeps the stash) |
 | push on an unmerged index | **128** | 1 | `error: could not write index` |
 | push: tracked path beyond a symlink | **128** | 1 | `error: 'd/x' is beyond a symbolic link` / `fatal: Unable to process path d/x` / `Cannot save the current worktree state` |
-| push: `core.safecrlf=true` lossy file | **128** | 1 | `fatal: CRLF would be replaced by LF in f` / `Cannot save the current worktree state` |
+| push: `core.safecrlf=true` lossy file | 1 (**128** with `includeUntracked`) | 1 | `fatal: CRLF would be replaced by LF in f` / `Cannot save the current worktree state` — a refused save reports with 1, not a die; pinned at `stash-interop.test.ts` `GIT_SAVE_REFUSED_EXIT` |
 | `stash branch <existing>` | **128** | 1 | `fatal: a branch named 'exists' already exists` |
 | `apply stash@{3}` with no such entry | **128** | 1 | `error: stash@{3} is not a valid reference` |
 | `drop` / `show` with no entries | **128** | 1 | `No stash entries found.` |
