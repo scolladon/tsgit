@@ -34,7 +34,8 @@ import type { FsckFinding, FsckOptions } from '../../src/application/commands/fs
 import { fsck } from '../../src/application/commands/fsck.js';
 import { disposePackRegistry } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
-import { parseMultiPackIndex } from '../../src/domain/storage/index.js';
+import type { ObjectId } from '../../src/domain/objects/index.js';
+import { lookupMidxPosition, parseMultiPackIndex } from '../../src/domain/storage/index.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, tryRunGitWithExit } from './interop-helpers.js';
 import {
@@ -126,6 +127,19 @@ async function expectFsckRejects(ctx: Context, check: string): Promise<void> {
  */
 function expectVerifyInvariant(fsckExit: number, verifyExit: number): void {
   expect((fsckExit & 1) !== 0).toBe(verifyExit !== 0);
+}
+
+/** The midx position of `id`, which the fixture must carry. */
+function midxEntryOf(bytes: Buffer, id: ObjectId): number {
+  const entry = lookupMidxPosition(parseMultiPackIndex(bytes, DIGEST_LENGTH), id);
+  if (entry === undefined) throw new Error(`the midx does not carry ${id}`);
+  return entry;
+}
+
+/** HEAD's root tree: the one object git's connectivity walk is sure to
+ *  re-read through the midx, its buffer freed by the pack pass before. */
+function headTreeOf(dir: string): ObjectId {
+  return tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD^{tree}']).stdout.trim() as ObjectId;
 }
 
 /** Pokes one `OIDF` fanout entry directly, breaking monotonicity at `index`. */
@@ -336,8 +350,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         // poisoned oid through the midx, as its verify child always does.
         // tsgit contains the deferred fault instead: the midx-health pass
         // reports midx-unusable (bit 1) and the walk reports the reflog
-        // entries it can no longer resolve (bit 2), every run — a documented
-        // containment divergence, not a flaky pin.
+        // entries it can no longer resolve (bit 2), every run — a containment
+        // git does not share, pinned as tsgit's current behaviour.
         const fixture = await freshBase('o12');
         mutateMidxOrThrow(midxPaths(fixture.dir).flat, (bytes) => {
           bytes.writeUInt32BE(1, 8);
@@ -751,7 +765,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const fixture = await freshBase('o27');
         const flat = midxPaths(fixture.dir).flat;
         const before = readFileSync(flat);
-        const crafted = craftLoffMidx(Buffer.from(before), { row: 0, count: 1 });
+        const crafted = craftLoffMidx(Buffer.from(before), { entry: 0, row: 0, count: 1 });
         writeFileSync(flat, crafted);
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
@@ -773,17 +787,20 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
 
     describe('Given a LOFF chunk with the target row out of range, When fsck runs', () => {
       it('Then git dies on the out-of-range large offset while tsgit contains it as midx-unusable with exit 3', async () => {
-        // Arrange — the crafted row targets midx entry 0. git 2.56's parent
-        // dies (128) with the large-offset fatal once its walk routes that
-        // oid through the midx, as its verify child always does. tsgit
-        // contains the deferred fault instead: the midx-health pass's own
-        // entry walk reaches it and reports midx-unusable (bit 1), and the
-        // walk reports the reflog entries it can no longer resolve (bit 2),
-        // every run — a documented containment divergence, not a flaky pin.
+        // Arrange — the crafted indirection sits on HEAD's tree. git 2.56's
+        // parent frees every tree buffer during its pack pass and re-reads
+        // the tree through the midx when its connectivity walk descends into
+        // it, so it dies (128) on the large-offset fatal every run, as its
+        // verify child always does. tsgit contains the deferred fault
+        // instead: the midx-health pass's own entry walk reaches it and
+        // reports midx-unusable (bit 1), and the walk reports the reflog
+        // entries it can no longer resolve (bit 2) — a containment git does
+        // not share, pinned as tsgit's current behaviour.
         const fixture = await freshBase('o28');
         const flat = midxPaths(fixture.dir).flat;
         const before = readFileSync(flat);
-        const crafted = craftLoffMidx(Buffer.from(before), { row: 5, count: 1 });
+        const entry = midxEntryOf(before, headTreeOf(fixture.dir));
+        const crafted = craftLoffMidx(Buffer.from(before), { entry, row: 5, count: 1 });
         writeFileSync(flat, crafted);
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);

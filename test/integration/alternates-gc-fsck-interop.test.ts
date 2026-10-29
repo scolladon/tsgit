@@ -818,9 +818,12 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
   });
 
   describe('Given an index entry naming a donor loose blob whose bytes are garbage', () => {
-    const indexCorruptDonorBlob = (borrower: string, donor: string, emptyIndexFirst: boolean) => {
+    const emptyTheIndex = (borrower: string): void => {
+      runGit(['-C', borrower, 'read-tree', '--empty']);
+    };
+    const keepTheTrackedFile = (_borrower: string): void => undefined;
+    const indexCorruptDonorBlob = (borrower: string, donor: string) => {
       const oid = unreachableDonorBlob(donor);
-      if (emptyIndexFirst) runGit(['-C', borrower, 'read-tree', '--empty']);
       runGit(['-C', borrower, 'update-index', '--add', '--cacheinfo', `100644,${oid},f.txt`]);
       const file = looseFile(objectsOf(donor), oid);
       rmSync(file);
@@ -829,30 +832,34 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
     };
 
     describe.each([
-      ['the only index entry', true, 'index-only'],
-      ['beside a healthy tracked file', false, 'index-beside'],
-    ])('When the entry is %s and the borrower fsck runs (no-full)', (_shape, emptyFirst, slug) => {
-      it(
-        'Then both exit 2 with the blob missing and tsgit does not throw',
-        async () => {
-          // Arrange
-          const { donor, borrower } = borrowerOf(`f3-${slug}`, false);
-          const oid = indexCorruptDonorBlob(borrower, donor, emptyFirst);
-          const sut = tsgitFsck;
+      ['the only index entry', emptyTheIndex, 'index-only'],
+      ['beside a healthy tracked file', keepTheTrackedFile, 'index-beside'],
+    ])(
+      'When the entry is %s and the borrower fsck runs (no-full)',
+      (_shape, prepareIndex, slug) => {
+        it(
+          'Then both exit 2 with the blob missing and tsgit does not throw',
+          async () => {
+            // Arrange
+            const { donor, borrower } = borrowerOf(`f3-${slug}`, false);
+            prepareIndex(borrower);
+            const oid = indexCorruptDonorBlob(borrower, donor);
+            const sut = tsgitFsck;
 
-          // Act
-          const gitResult = gitFsck(borrower, '--no-full');
-          const result = await sut(borrower, { full: false });
+            // Act
+            const gitResult = gitFsck(borrower, '--no-full');
+            const result = await sut(borrower, { full: false });
 
-          // Assert
-          expect(gitResult.exitCode).toBe(2);
-          expect(gitLines(gitResult.stdout, MISSING_LINE)).toContain(`missing blob ${oid}`);
-          expect(result.exitCode).toBe(2);
-          expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
-        },
-        ROW_TIMEOUT,
-      );
-    });
+            // Assert
+            expect(gitResult.exitCode).toBe(2);
+            expect(gitLines(gitResult.stdout, MISSING_LINE)).toContain(`missing blob ${oid}`);
+            expect(result.exitCode).toBe(2);
+            expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+          },
+          ROW_TIMEOUT,
+        );
+      },
+    );
   });
 
   describe('Given a donor loose file whose content hashes to a different oid', () => {

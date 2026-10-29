@@ -380,7 +380,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           const dir = await newRoot('f1');
           const fixture = await buildBaseFixture(dir, 'repo');
           const flatPath = midxPaths(fixture.dir).flat;
-          const crafted = craftLoffMidx(readFileSync(flatPath), { row: 0, count: 1 });
+          const crafted = craftLoffMidx(readFileSync(flatPath), { entry: 0, row: 0, count: 1 });
           chmodSync(flatPath, 0o644);
           writeFileSync(flatPath, crafted);
           const sut = trackedNodeContext(fixture.dir);

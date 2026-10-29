@@ -33,6 +33,7 @@ export const DIGEST_LENGTH = 20;
 
 const HEADER_SIZE = 12;
 const CHUNK_ROW_SIZE = 12;
+const OOFF_ROW_SIZE = 8;
 
 function sha1(bytes: Uint8Array): Buffer {
   return createHash('sha1').update(bytes).digest();
@@ -178,17 +179,17 @@ export function mutateMidxOrThrow(filePath: string, op: MidxMutation): void {
 
 /**
  * Rebuilds a valid flat midx with a fifth `LOFF` chunk of `count` 8-byte
- * entries, and OOFF entry 0's offset word replaced by an indirection into
- * `row` of that chunk (`0x80000000 | row`). `row < count` produces a VALID,
- * round-trippable large-offset indirection (object 0's true small offset is
- * preserved in `LOFF[row]`); `row >= count` produces an out-of-range
+ * entries, and OOFF entry `entry`'s offset word replaced by an indirection
+ * into `row` of that chunk (`0x80000000 | row`). `row < count` produces a
+ * VALID, round-trippable large-offset indirection (that object's true small
+ * offset is preserved in `LOFF[row]`); `row >= count` produces an out-of-range
  * indirection. Everything before the old trailer that is not the chunk
  * table or OOFF's mutated entry is copied byte-for-byte, so the only thing
  * different from the input is exactly what the caller asked for.
  */
 export function craftLoffMidx(
   bytes: Buffer,
-  opts: { readonly row: number; readonly count: number },
+  opts: { readonly entry: number; readonly row: number; readonly count: number },
 ): Buffer {
   const parsed = parseMultiPackIndex(bytes, DIGEST_LENGTH);
   const oldNumChunks = bytes.readUInt8(6);
@@ -225,7 +226,7 @@ export function craftLoffMidx(
   body.copy(out, newTableEnd);
 
   const newOoffStart = parsed.objectOffsetsOffset + shift;
-  const entryOffsetField = newOoffStart + 4;
+  const entryOffsetField = newOoffStart + opts.entry * OOFF_ROW_SIZE + 4;
   const trueOffset = out.readUInt32BE(entryOffsetField);
   if (opts.row < opts.count) writeUint64BE(out, loffStart + opts.row * 8, trueOffset);
   out.writeUInt32BE((0x80000000 | opts.row) >>> 0, entryOffsetField);

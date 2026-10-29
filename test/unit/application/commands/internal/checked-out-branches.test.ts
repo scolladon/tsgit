@@ -284,7 +284,7 @@ describe('worktreeBisecting', () => {
 
   describe('Given two linked worktrees both bisecting the branch', () => {
     describe('When the bisecting worktree is looked up', () => {
-      it('Then the first one in listing order is returned', async () => {
+      it('Then the first by sorted worktree path is returned, not the first git meets in its directory walk', async () => {
         // Arrange
         const ctx = await seedDetachedRepo();
         await addLinkedWorktree(ctx, 'wt-b', 'sidecar');

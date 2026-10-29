@@ -1712,10 +1712,10 @@ describe.skipIf(!GIT_AVAILABLE)(
       await rm(baseRoot, { recursive: true, force: true });
     });
 
-    /** Three commits of one 500-line file: the newest blob is stored whole, the two older ones as REF_DELTAs on it. */
     /** How the children name their base: `ref` (REF_DELTA, movable) or `offset` (OFS_DELTA). */
     type DeltaBase = 'ref' | 'offset';
 
+    /** Three commits of one 500-line file: the newest blob is stored whole, the two older ones as deltas on it, named per `deltaBase`. */
     const threeVersionRepo = async (slug: string, deltaBase: DeltaBase): Promise<string> => {
       const dir = path.join(baseRoot, slug);
       runGit(['init', '-q', '-b', 'main', dir]);

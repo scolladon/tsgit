@@ -614,7 +614,7 @@ describe('Given ascending entry start offsets', () => {
 });
 
 describe('Given no base that failed to unpack', () => {
-  describe('When the unserved bases are judged over many packed copies', () => {
+  describe('When the unserved bases are judged over the packed copies', () => {
     it('Then none is unserved and the copies are not walked', () => {
       // Arrange
       const walked = vi.fn();
