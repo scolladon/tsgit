@@ -477,8 +477,9 @@ compose instead of colliding:
 - **fsck exits 128 only when the *parent's own* object-store access hits Tier A first** — the
   parent enumerates objects before it reaches the midx pass, so a midx that dies *at load* kills
   the parent and the child never runs (stdout empty, no findings at all). A midx that dies only
-  when a *particular offset is decoded* (row O28) leaves the parent alive and is reported by the
-  child as bit 32.
+  when a *particular offset is decoded* (row O28) is reported by the child as bit 32; under git
+  2.56 the row targets HEAD's tree, so the parent dies too (128) when its connectivity walk re-reads
+  that tree through the midx.
 - The **only** gate is `core.multiPackIndex=false`. Mode is not a gate:
 
 | repo shape | `fsck` | `--connectivity-only` | `--no-full` | `--strict` |

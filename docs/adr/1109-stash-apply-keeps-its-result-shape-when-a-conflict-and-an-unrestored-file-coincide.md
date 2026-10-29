@@ -14,8 +14,9 @@ subjects:
 git 2.56's 786fc39 ("stash: reserve exit status 1 for conflicts") maps every negative return of
 a stash subcommand to 128 and leaves 1 for a merge conflict alone. Pinned on 2.56.0: a refused
 apply, an index conflict under `--index`, an untracked occupant, a push on an unmerged index, a
-beyond-symlink push, a `safecrlf` refusal, `stash branch` on an existing name, a missing entry and
-`drop` with no entries all exit 128 (2.55.0: 1), with identical stderr. One shape moved class: an
+beyond-symlink push, a `safecrlf` refusal under `-u`, `stash branch` on an existing name, a missing
+entry and `drop` with no entries all exit 128 (2.55.0: 1), with identical stderr. A plain `push`
+refused by `safecrlf` on a tracked edit (`Cannot save the current worktree state`) still exits 1. One shape moved class: an
 apply or pop whose merge conflicted and whose untracked restore also failed now exits 128, a
 failure, where 2.55.0 exited 1, a conflict. tsgit carries no exit status; `reportApply` returns
 `{ kind: 'conflict', untrackedNotRestored }` for that shape (ADR-1097).
@@ -40,6 +41,7 @@ property of git's CLI layer, not of the library's data (ADR-249).
 
 ## Consequences
 
-- Every stash interop constant that pinned a refusal at 1 moves to 128; conflict rows stay at 1.
+- Every stash interop constant that pinned a refusal at 1 moves to 128, except the plain `push`
+  `safecrlf` refusal on a tracked edit; conflict rows stay at 1.
 - The `reportApply` comment that cites git's exit 1 is corrected, and the stash docs page states
   git's split.

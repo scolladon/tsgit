@@ -34,7 +34,7 @@ interface AuthorIdentity {
 | `committer` | `AuthorIdentity` | `author` | Committer identity. |
 | `noVerify` | `boolean` | `false` | Skip `pre-commit` and `commit-msg` hooks (git's `--no-verify`). |
 | `breakStaleLockMs` | `number` | (none) | Break a stale `.git/index.lock` older than this many ms. |
-| `sign` | `boolean` | `commit.gpgsign` | GPG-sign the commit (git's `-S`). The armored signature is inserted as the `gpgsig` header, so the commit oid changes. Requires a signing program (`gpg`, or `ssh-keygen` when `gpg.format=ssh`) via the command runner — off-node this throws `SIGNING_FAILED`. |
+| `sign` | `boolean` | `commit.gpgsign` | GPG-sign the commit (git's `-S`). The armored signature is inserted as the `gpgsig` header, so the commit oid changes. Requires a signing program (`gpg`, or `ssh-keygen` when `gpg.format=ssh`) via the command runner — off-node this throws `SIGNING_FAILED`. A carriage return in the signer's armor is dropped only when a line feed follows it, as git 2.56's `strip_cr_before_lf` does: a lone CR is stored, and `\r\r\n` keeps one CR. The only byte the stored signature refuses is NUL (`INVALID_COMMIT`, reason `gpgSignature contains header-boundary chars`). |
 | `signKey` | `string` | `user.signingkey` | Signing-key selector. Falls back to `user.signingkey`, then the committer identity. |
 
 ## Behaviour
