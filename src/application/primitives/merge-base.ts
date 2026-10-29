@@ -313,6 +313,7 @@ const walkIsOver = (counts: PaintCounts, generation: number, topoCeiling: number
 };
 
 interface PaintState {
+  readonly read: ReadCommit;
   readonly flags: Map<ObjectId, number>;
   readonly queued: Set<ObjectId>;
   readonly counts: PaintCounts;
@@ -320,13 +321,8 @@ interface PaintState {
   insertions: number;
 }
 
-const markPainted = async (
-  state: PaintState,
-  read: ReadCommit,
-  id: ObjectId,
-  bits: number,
-): Promise<void> => {
-  const { flags, queued, counts, heap } = state;
+const markPainted = async (state: PaintState, id: ObjectId, bits: number): Promise<void> => {
+  const { flags, queued, counts } = state;
   const before = flags.get(id) ?? 0;
   const after = before | bits;
   flags.set(id, after);
@@ -338,9 +334,15 @@ const markPainted = async (
     countBucket(counts, after, 1);
     return;
   }
-  queued.add(id);
-  const meta = await read(id);
-  heap.push({
+  await enqueuePainted(state, id);
+  countBucket(counts, after, 1);
+};
+
+/** Holds the id as queued before its read, so the queue never carries it twice. */
+const enqueuePainted = async (state: PaintState, id: ObjectId): Promise<void> => {
+  state.queued.add(id);
+  const meta = await state.read(id);
+  state.heap.push({
     oid: id,
     date: meta.committerDate,
     generation: meta.generation,
@@ -348,7 +350,6 @@ const markPainted = async (
     parents: meta.parents,
     value: undefined,
   });
-  countBucket(counts, after, 1);
 };
 
 const popPainted = (state: PaintState, topoCeiling: number): PaintEntry | undefined => {
@@ -364,6 +365,7 @@ const popPainted = (state: PaintState, topoCeiling: number): PaintEntry | undefi
  *  holds each id at most once. */
 const makePaintQueue = (read: ReadCommit, precedes: Precedes, topoCeiling: number): PaintQueue => {
   const state: PaintState = {
+    read,
     flags: new Map<ObjectId, number>(),
     queued: new Set<ObjectId>(),
     counts: { parent1: 0, parent2: 0, candidates: 0 },
@@ -372,7 +374,7 @@ const makePaintQueue = (read: ReadCommit, precedes: Precedes, topoCeiling: numbe
   };
   return {
     flags: state.flags,
-    mark: (id, bits) => markPainted(state, read, id, bits),
+    mark: (id, bits) => markPainted(state, id, bits),
     pop: () => popPainted(state, topoCeiling),
   };
 };
