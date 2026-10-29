@@ -8075,6 +8075,37 @@ describe('PackRegistry.midxPacks — the packs the multi-pack-index covers', () 
       });
     });
 
+    describe('Given an unavailable owner, a next claimed copy whose header is broken and a healthy copy after it', () => {
+      describe('When lookupOwnerUnavailable is called for that object', () => {
+        it('Then the broken copy is skipped and the healthy copy is served', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeSharedBlobPack(ctx, 'A');
+          await writeSharedBlobPack(ctx, 'B');
+          await writeSharedBlobPack(ctx, 'C');
+          await removePackFile(ctx, 'A');
+          await restampPackHeader(ctx, `${packsDirOf(ctx)}/pack-B.pack`, { version: 99 });
+          await writeMidxBytes(
+            ctx,
+            buildMidx(
+              healthyMidxSpec({
+                packNames: ['pack-A.idx', 'pack-B.idx', 'pack-C.idx'],
+                entries: [{ id, packIndex: 0, offset: PACK_HEADER_SIZE }],
+              }),
+            ),
+          );
+          const sut = await createPackRegistry(ctx);
+
+          // Act
+          const result = await sut.lookupOwnerUnavailable(id);
+
+          // Assert
+          expect(result?.pack.name).toBe('pack-C');
+          expect(result?.offset).toBe(PACK_HEADER_SIZE);
+        });
+      });
+    });
+
     describe('Given the midx assigns an object to a healthy pack', () => {
       describe('When lookupOwnerUnavailable is called for that object', () => {
         it('Then nothing is served because the owner is available', async () => {
