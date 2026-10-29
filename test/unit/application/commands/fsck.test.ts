@@ -13,6 +13,7 @@ import {
   objectsDir,
   packsDir,
 } from '../../../../src/application/primitives/path-layout.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import {
   disposePackRegistry,
   getPackRegistry,
@@ -8915,6 +8916,41 @@ describe('Given a borrower whose cache-tree names a tree the donor holds as garb
         code: 'INVALID_OBJECT_HEADER',
         reason: `loose object ${treeId} (stored in ${DONOR_OBJECTS}/${treeId.slice(0, 2)}/${treeId.slice(2)}) is corrupt`,
       });
+    });
+  });
+});
+
+describe('Given a borrower whose donor-held tip fails to read with a fault that is no git error', () => {
+  describe('When fsck runs with full: false', () => {
+    it('Then the fault propagates instead of leaving the tip untyped', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      for (const id of [treeId, commitId]) await moveLooseToDonor(ctx, id);
+      const fault = new RangeError('disk fault');
+      const realReadObject = readObjectMod.readObject;
+      // The audit view reads through its own delta cache; only the session's read types the tip.
+      const isSessionRead = (readCtx: Context): boolean => readCtx.deltaCache === ctx.deltaCache;
+      const readObject = vi
+        .spyOn(readObjectMod, 'readObject')
+        .mockImplementation((readCtx, id, options) =>
+          isSessionRead(readCtx) && id === commitId
+            ? Promise.reject(fault)
+            : realReadObject(readCtx, id, options),
+        );
+      const sut = fsck;
+
+      try {
+        // Act
+        const caught = await sut(ctx, { full: false }).catch((error: unknown) => error);
+
+        // Assert
+        expect(caught).toBe(fault);
+      } finally {
+        readObject.mockRestore();
+      }
     });
   });
 });

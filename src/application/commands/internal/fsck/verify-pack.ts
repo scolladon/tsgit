@@ -228,7 +228,7 @@ function failedBasesOf(unpackable: ReadonlyArray<UnpackableEntry>): ReadonlySet<
  * The base a delta entry names, read from its header; undefined for a whole
  * object, or for a header too damaged to read, which names no base to blame.
  */
-function baseNamedBy(
+export function baseNamedBy(
   ctx: Context,
   index: PackIndex,
   layout: EntryLayout,
@@ -251,6 +251,7 @@ function baseNamedBy(
 /** The position of `offset` in the ascending `starts`, or -1 when no entry starts there. */
 export function rankOfStart(starts: ReadonlyArray<number>, offset: number): number {
   let low = 0;
+  // Stryker disable next-line ArithmeticOperator: equivalent — a slot past the end reads undefined, which neither equals nor precedes any offset, so the search steps left as from the true end
   let high = starts.length - 1;
   while (low <= high) {
     const middle = (low + high) >>> 1;

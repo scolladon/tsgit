@@ -440,6 +440,7 @@ async function typesOutside(
 ): Promise<ReadonlyMap<ObjectId, FsckObjectType>> {
   const types = new Map<ObjectId, FsckObjectType>();
   for (const id of roots) {
+    // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — each arm only spares a read: an index blob resolves as 'blob' before any recovered type, and a universe root is cached or fsck dies before its type is read
     if (!candidates.has(id) || universe.has(id) || indexBlobIds.has(id)) continue;
     const type = await typeOfReadable(ctx, id);
     if (type !== undefined) types.set(id, type);

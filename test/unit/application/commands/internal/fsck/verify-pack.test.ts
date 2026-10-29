@@ -4,6 +4,7 @@ import type { CatalogueOptions } from '../../../../../../src/application/command
 import { createSpecialBlobLedger } from '../../../../../../src/application/commands/internal/fsck/special-blobs.js';
 import type { FsckOptions } from '../../../../../../src/application/commands/internal/fsck/types.js';
 import {
+  baseNamedBy,
   positionsByOffset,
   rankOfStart,
   runVerifyPackPass,
@@ -14,6 +15,7 @@ import { SHA1_CONFIG } from '../../../../../../src/domain/objects/hash-config.js
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
 import { hexToBytes } from '../../../../../../src/domain/objects/index.js';
 import { crc32 } from '../../../../../../src/domain/storage/crc32.js';
+import { entryOffsetsF64, parsePackIndex } from '../../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../../src/ports/context.js';
 import {
   buildSyntheticPack,
@@ -276,6 +278,63 @@ describe('Given a corrupt OFS_DELTA child over a healthy base', () => {
 
       // Assert
       expect(result.findings.some((f) => f.type === 'pack-entry-unpackable')).toBe(true);
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given a corrupt OFS_DELTA child over a base whose .idx CRC alone is wrong', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then the base is reported for its CRC yet not named bad, as it still unpacks', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const [baseId, childId] = await writeSyntheticPack(ctx, 'crc-base', deltaFamily(['ofs']));
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'crc-base'), (n) => n - DIGEST - 2);
+      const basePosition = baseId! < childId! ? 0 : 1;
+      await rewriteIdx(ctx, idxPathIn(primaryObjects(ctx), 'crc-base'), (idx) =>
+        setCrc(idx, 2, basePosition, 0xdeadbeef),
+      );
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'pack-crc-mismatch',
+        pack: 'pack-crc-base',
+        id: baseId,
+        offset: PACK_HEADER,
+      });
+      expect(result.badBases).toEqual(new Set());
+    });
+  });
+});
+
+describe('Given a REF_DELTA child naming a base only another pack holds, corrupt there', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then no base is named bad, as the child never resolves a base outside its own pack', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const baseId = await syntheticBlobId(ctx, baseBytes);
+      await writeSyntheticPack(ctx, 'thin-child', [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseBytes,
+          targetContent: childBytes('child'),
+        },
+      ]);
+      await writeSyntheticPack(ctx, 'damaged-base', blobEntries(BASE_TEXT));
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), 'damaged-base'), (n) => n - DIGEST - 2);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      const unpackable = result.findings.filter((f) => f.type === 'pack-entry-unpackable');
+      expect(new Set(unpackable.map((f) => f.pack))).toEqual(
+        new Set(['pack-damaged-base', 'pack-thin-child']),
+      );
       expect(result.badBases).toEqual(new Set());
     });
   });
@@ -656,6 +715,44 @@ describe('Given ascending entry start offsets', () => {
 
       // Assert
       expect(result).toBe(-1);
+    });
+  });
+});
+
+describe('Given a delta entry read under a context whose hash configuration fails with a fault that is no git error', () => {
+  describe('When the base the entry names is read', () => {
+    it('Then the fault propagates instead of naming no base', async () => {
+      // Arrange
+      const built = await buildSyntheticPack(createMemoryContext(), deltaFamily(['ofs']));
+      const index = parsePackIndex(built.idxBytes, DIGEST);
+      const trailerStart = built.packBytes.length - DIGEST;
+      const offsets = entryOffsetsF64(index);
+      const order = positionsByOffset(offsets, trailerStart);
+      const layout = { order, starts: order.map((position) => offsets[position]!), trailerStart };
+      const childOffset = built.offsets[1]!;
+      const entry = {
+        bytes: built.packBytes.subarray(childOffset, trailerStart),
+        offset: childOffset,
+      };
+      const fault = new RangeError('hash configuration fault');
+      const ctx: Context = {
+        ...createMemoryContext(),
+        get hashConfig(): never {
+          throw fault;
+        },
+      };
+      const sut = baseNamedBy;
+
+      // Act
+      let caught: unknown;
+      try {
+        sut(ctx, index, layout, entry);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBe(fault);
     });
   });
 });
