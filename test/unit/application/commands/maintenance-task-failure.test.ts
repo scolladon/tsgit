@@ -643,6 +643,27 @@ describe('maintenance task failure', () => {
       });
     });
 
+    describe('When the gc task runs with auto: false', () => {
+      it('Then the task is reported failed with the refusal, as git --no-auto does', async () => {
+        // Arrange
+        const ctx = await repoWithGcConfig('\tauto = bogus\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: false });
+
+        // Assert
+        expect(result.tasksFailed).toEqual([
+          {
+            task: 'gc',
+            code: 'CONFIG_BAD_NUMERIC_VALUE',
+            data: { ...BAD_AUTO_DATA, source: `${ctx.layout.gitDir}/config` },
+          },
+        ]);
+        expect(result.tasksRun).toEqual([]);
+      });
+    });
+
     describe.each([
       { order: ['gc', 'commit-graph'] as const },
       { order: ['commit-graph', 'gc'] as const },
