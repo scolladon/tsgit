@@ -379,8 +379,8 @@ const REFUSALS: ReadonlyArray<Refusal> = [
   {
     title: 'a gitfile naming a missing module directory',
     setup: writtenDotGit('gitdir: ../.git/modules/nowhere\n'),
-    gitMessage: 'not a git repository: sub/../.git/modules/nowhere',
-    data: { code: 'NOT_A_REPOSITORY', path: 'sub/../.git/modules/nowhere' },
+    gitMessage: 'gitfile does not point to a valid repository: sub/.git',
+    data: { code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' },
   },
   {
     title: 'a gitfile that is not a pointer',
@@ -391,14 +391,14 @@ const REFUSALS: ReadonlyArray<Refusal> = [
   {
     title: 'a module HEAD that is garbage',
     setup: moduleHeadGarbage,
-    gitMessage: 'not a git repository: sub/../.git/modules/sub',
-    data: { code: 'NOT_A_REPOSITORY', path: 'sub/../.git/modules/sub' },
+    gitMessage: 'gitfile does not point to a valid repository: sub/.git',
+    data: { code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' },
   },
   {
     title: 'a module without its objects directory',
     setup: moduleObjectsRemoved,
-    gitMessage: 'not a git repository: sub/../.git/modules/sub',
-    data: { code: 'NOT_A_REPOSITORY', path: 'sub/../.git/modules/sub' },
+    gitMessage: 'gitfile does not point to a valid repository: sub/.git',
+    data: { code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' },
   },
   {
     title: 'a committed .gitmodules untracked and an oversized gitfile',
@@ -1252,10 +1252,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               .finally(() => release.close());
 
             // Assert
-            expect(outcome).toEqual({
-              code: 'NOT_A_REPOSITORY',
-              path: 'sub/../.git/modules/sub',
-            });
+            expect(outcome).toEqual({ code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' });
           },
           NON_BLOCKING_TIMEOUT_MS,
         );

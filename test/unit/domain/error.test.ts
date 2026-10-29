@@ -1309,6 +1309,7 @@ describe('domain error — AdapterError', () => {
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/feature',
             path: 'wt/feature',
+            hold: 'checkout',
           });
 
           // Assert — its own message, never the WORKTREE_LOCKED case it precedes.

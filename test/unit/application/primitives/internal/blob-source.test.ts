@@ -23,11 +23,14 @@ import type { Blob, Commit, ObjectId, Tag } from '../../../../../src/domain/obje
 import { EMPTY_TREE_OID, serializeHeader } from '../../../../../src/domain/objects/index.js';
 import { parseAcceptanceVerdict } from '../../../../../src/domain/objects/parse-acceptance.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
+import { PACK_HEADER_SIZE } from '../../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { buildMidx } from '../../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from '../fixtures.js';
 import {
   buildSyntheticPack,
   corruptIdxOffset,
+  type EntrySpec,
   writeSyntheticPack,
   writeSyntheticPackIn,
 } from '../pack-fixture.js';
@@ -37,7 +40,11 @@ vi.mock('../../../../../src/application/primitives/object-resolver.js', async (i
     await importOriginal<
       typeof import('../../../../../src/application/primitives/object-resolver.js')
     >();
-  return { ...actual, readEntryHeaderWithChunk: vi.fn(actual.readEntryHeaderWithChunk) };
+  return {
+    ...actual,
+    readEntryHeaderWithChunk: vi.fn(actual.readEntryHeaderWithChunk),
+    resolvePackChain: vi.fn(actual.resolvePackChain),
+  };
 });
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
@@ -2614,6 +2621,98 @@ describe('openBlobSource in in-core order through a corrupt alternate', () => {
 
         // Assert
         expect(result).toMatchObject(ALT_REACHED);
+      });
+    });
+  });
+});
+
+describe('blob source when the midx owner pack is gone', () => {
+  const SHARED = new TextEncoder().encode('owner-gone-blob');
+
+  async function midxAssigningSharedBlobToDeletedOwner(
+    ctx: Context,
+    packA: ReadonlyArray<EntrySpec> = [{ kind: 'base', type: 'blob', content: SHARED }],
+  ): Promise<ObjectId> {
+    const ids = await writeSyntheticPack(ctx, 'A', packA);
+    const id = ids[ids.length - 1];
+    await writeSyntheticPack(ctx, 'B', [
+      { kind: 'base', type: 'blob', content: SHARED },
+      { kind: 'base', type: 'blob', content: new TextEncoder().encode('other') },
+    ]);
+    await ctx.fs.rm(`${ctx.layout.gitDir}/objects/pack/pack-B.pack`);
+    await ctx.fs.write(
+      `${ctx.layout.gitDir}/objects/pack/multi-pack-index`,
+      buildMidx({
+        version: 1,
+        hashVersion: 1,
+        digestLength: 20,
+        numBaseFiles: 0,
+        packNames: ['pack-A.idx', 'pack-B.idx'],
+        entries: [{ id: id as ObjectId, packIndex: 1, offset: PACK_HEADER_SIZE }],
+      }),
+    );
+    return id as ObjectId;
+  }
+
+  describe.each([
+    ['stream', streamOrder],
+    ['in-core', inCoreOrder],
+  ] as const)(
+    'Given another pack holds the object the midx assigns to a deleted pack, in %s order',
+    (_label, options) => {
+      describe('When locateBlob', () => {
+        it("Then it locates the other pack's copy", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await midxAssigningSharedBlobToDeletedOwner(ctx);
+
+          // Act
+          const sut = locateBlob;
+          const result = await sut(ctx, id, options);
+
+          // Assert
+          expect(result).toMatchObject({ arm: 'pack', hit: { pack: { name: 'pack-A' } } });
+        });
+      });
+    },
+  );
+
+  describe('Given the other pack stores the object as a delta, and the header probe cannot open the owner', () => {
+    describe('When verifyStoredObject', () => {
+      it("Then it types the object by its chain's base", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await midxAssigningSharedBlobToDeletedOwner(ctx, [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('owner-gone-base') },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: SHARED },
+        ]);
+        vi.mocked(objectResolver.resolvePackChain).mockClear();
+
+        // Act
+        const sut = verifyStoredObject;
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        // only the verifying read resolves the chain; the typing probe reads headers
+        expect(objectResolver.resolvePackChain).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given the header probe cannot open the midx owner pack', () => {
+    describe('When verifyStoredObject', () => {
+      it("Then it types the other pack's copy", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await midxAssigningSharedBlobToDeletedOwner(ctx);
+
+        // Act
+        const sut = verifyStoredObject;
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
       });
     });
   });

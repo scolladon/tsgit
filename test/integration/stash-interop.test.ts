@@ -52,13 +52,17 @@ import {
   MERGE_FAMILY_ROWS,
   OK,
   type Outcome,
+  outcomeOfGitStderr,
   regular,
-  runGitOutcome,
   staleEntries,
   touchedAt,
 } from './occupant-displacement-fixtures.js';
 import { type AbortRow, STASH_PUSH_ROWS, type Variant } from './stopped-state-fixtures.js';
 import { STASH_PUSH_PINS } from './stopped-state-pins.js';
+
+const GIT_FAILURE_EXIT = 128;
+/** `stash push` reports a failed save (`Cannot save the current worktree state`) with 1, not a die. */
+const GIT_SAVE_REFUSED_EXIT = 1;
 
 const AUTHOR = {
   name: 'Ada',
@@ -334,7 +338,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
           );
 
           // Assert
-          expect(peerResult.exitCode).toBe(1);
+          expect(peerResult.exitCode).toBe(GIT_SAVE_REFUSED_EXIT);
           expect(error?.data).toEqual({
             code: 'EOL_ROUND_TRIP_UNSAFE',
             path: 'a.txt',
@@ -361,21 +365,24 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
         title: 'a lossy tracked edit',
         pushArgs: ['stash'],
         input: {},
+        exit: GIT_SAVE_REFUSED_EXIT,
         files: { 'a.txt': 'a\nb\nc\nd\n' },
       },
       {
         title: 'a lossy tracked edit and an untracked file under -u',
         pushArgs: ['stash', 'push', '-u'],
         input: { includeUntracked: true },
+        exit: GIT_FAILURE_EXIT,
         files: { 'a.txt': 'a\nb\nc\nd\n', 'u.txt': 'u\r\n' },
       },
       {
         title: 'a lossy untracked file with a clean tracked tree under -u',
         pushArgs: ['stash', 'push', '-u'],
         input: { includeUntracked: true },
+        exit: GIT_FAILURE_EXIT,
         files: { 'u.txt': 'u\n' },
       },
-    ])('Given core.safecrlf true and $title', ({ pushArgs, input, files }) => {
+    ])('Given core.safecrlf true and $title', ({ pushArgs, input, exit, files }) => {
       describe('When stash push refuses in each', () => {
         it('Then both leave the same loose objects by type, tree and parent count', async () => {
           // Arrange
@@ -394,7 +401,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
           );
 
           // Assert
-          expect(peerResult.exitCode).toBe(1);
+          expect(peerResult.exitCode).toBe(exit);
           expect(error?.data.code).toBe('EOL_ROUND_TRIP_UNSAFE');
           const peerWritten = looseShape(pair.peer).filter((o) => !peerBefore.includes(o));
           const oursWritten = looseShape(pair.ours).filter((o) => !oursBefore.includes(o));
@@ -423,7 +430,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
           );
 
           // Assert
-          expect(peerResult.exitCode).toBe(1);
+          expect(peerResult.exitCode).toBe(GIT_FAILURE_EXIT);
           expect(peerResult.stderr).toContain(
             "bad boolean config value 'foo' for 'filter.u.required'",
           );
@@ -558,10 +565,12 @@ describe.skipIf(!GIT_AVAILABLE)(
               repo = await openRepository({ cwd: pair.ours });
 
               // Act
-              const expected = runGitOutcome(pair.peer, command.split(' '), 1);
+              const gitRun = tryRunGitWithExit(['-C', pair.peer, ...command.split(' ')]);
+              const expected = gitRun.exitCode === 0 ? OK : outcomeOfGitStderr(gitRun.stderr);
               const result = await runTsgitStash(repo, command);
 
               // Assert
+              expect(gitRun.exitCode).toBe(row.git.refused ? GIT_FAILURE_EXIT : 0);
               expect(pathsOf(expected)).toEqual(pathsOf(row.git));
               expect(result).toEqual(pathsOf(expected));
               expect(listing(pair.ours)).toEqual(listing(pair.peer));
@@ -621,7 +630,8 @@ describe.skipIf(!GIT_AVAILABLE)(
     const gitPushVerdict = (dir: string): string => {
       const run = tryRunGitWithExit(['-C', dir, 'stash', 'push']);
       if (run.exitCode === 0) return 'ok';
-      const beyondSymlink = run.exitCode === 1 && /beyond a symbolic link/.test(run.stderr);
+      const beyondSymlink =
+        run.exitCode === GIT_FAILURE_EXIT && /beyond a symbolic link/.test(run.stderr);
       if (!beyondSymlink) throw new Error(`unexpected exit ${run.exitCode}: ${run.stderr}`);
       return 'beyond-symlink';
     };
@@ -668,7 +678,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           const paths = (refusal as TsgitError).data as { code: string; paths: string[] };
           expect(paths).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['f'] });
-          expect(gitRun.exitCode).toBe(1);
+          expect(gitRun.exitCode).toBe(GIT_FAILURE_EXIT);
           expect(gitRun.stdout).toBe(paths.paths.map((p) => `${p}: needs merge\n`).join(''));
           expect(gitRun.stderr).toBe('error: could not write index\n');
           expect(staleEntries(pair.ours)).toEqual(staleEntries(pair.peer));

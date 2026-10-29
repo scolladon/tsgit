@@ -3,7 +3,8 @@
  * adapters alike:
  *   1. a corrupt `.idx` (fails the v2 magic check) with a sibling `.pack` —
  *      skipped by the scan layer's domain-level refusal, and reported by
- *      fsck as an unusable pack index (exit 4 | 64, git's 68);
+ *      fsck as an unusable pack index (exit 1, as git 2.56 folds every pack
+ *      and rev-index fault into its generic error bit);
  *   2. an orphaned `.idx` (no sibling `.pack` by name) — excluded before its
  *      bytes are ever parsed;
  *   3. a registered pack whose `.pack` vanishes after the scan — the header
@@ -56,7 +57,7 @@ export const packDegradedIdxScenario: Scenario<PackDegradedIdxResult> = {
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     readBackType: 'commit',
-    fsckExitCode: 68,
+    fsckExitCode: 1,
     fsckMissingCount: 0,
     fsckRootCount: 1,
     packsRegisteredBeforeVanish: 1,

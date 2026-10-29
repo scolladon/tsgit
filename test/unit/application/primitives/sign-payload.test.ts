@@ -4,6 +4,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import {
   resolveSigningSelector,
   signPayload,
+  stripCrBeforeLf,
 } from '../../../../src/application/primitives/sign-payload.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { CommandRequest } from '../../../../src/ports/command-runner.js';
@@ -740,7 +741,7 @@ describe('signPayload', () => {
 
   describe('Given an openpgp signer writing its armor with carriage returns', () => {
     describe('When signPayload runs', () => {
-      it('Then every carriage return is dropped from the armor', async () => {
+      it('Then only a carriage return before a line feed is dropped from the armor', async () => {
         // Arrange
         const runner = stubCommandRunner({
           exitCode: 0,
@@ -756,14 +757,14 @@ describe('signPayload', () => {
         const result = await sut(ctx, enc('payload'), { format: 'openpgp', selector: 'K' });
 
         // Assert
-        expect(result).toEqual({ ok: true, armor: pgpArmor('abcd') });
+        expect(result).toEqual({ ok: true, armor: pgpArmor('ab\rcd') });
       });
     });
   });
 
   describe('Given an ssh signer writing its armor with carriage returns', () => {
     describe('When signPayload runs', () => {
-      it('Then every carriage return is dropped from the armor', async () => {
+      it('Then only a carriage return before a line feed is dropped from the armor', async () => {
         // Arrange
         let ctx!: Context;
         const runner = stubCommandRunner({
@@ -782,7 +783,54 @@ describe('signPayload', () => {
         const result = await sut(ctx, enc('payload'), { format: 'ssh', selector: '/k' });
 
         // Assert
-        expect(result).toEqual({ ok: true, armor: sshArmor('abcd') });
+        expect(result).toEqual({ ok: true, armor: sshArmor('ab\rcd') });
+      });
+    });
+  });
+});
+
+describe('stripCrBeforeLf', () => {
+  describe('Given a lone carriage return inside a line', () => {
+    describe('When stripCrBeforeLf runs', () => {
+      it('Then the carriage return is kept', () => {
+        // Arrange
+        const sut = stripCrBeforeLf;
+
+        // Act
+        const result = sut('ab\rcd');
+
+        // Assert
+        expect(result).toBe('ab\rcd');
+      });
+    });
+  });
+
+  describe('Given two carriage returns before a line feed', () => {
+    describe('When stripCrBeforeLf runs', () => {
+      it('Then only the one preceding the line feed is removed', () => {
+        // Arrange
+        const sut = stripCrBeforeLf;
+
+        // Act
+        const result = sut('ef\r\r\n');
+
+        // Assert
+        expect(result).toBe('ef\r\n');
+      });
+    });
+  });
+
+  describe('Given a carriage return ending the text', () => {
+    describe('When stripCrBeforeLf runs', () => {
+      it('Then the trailing carriage return is kept', () => {
+        // Arrange
+        const sut = stripCrBeforeLf;
+
+        // Act
+        const result = sut('x\r');
+
+        // Assert
+        expect(result).toBe('x\r');
       });
     });
   });

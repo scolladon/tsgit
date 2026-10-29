@@ -26,15 +26,16 @@ describe('worktree errors', () => {
 
   describe('Given branchCheckedOut', () => {
     describe('When constructed', () => {
-      it('Then carries the code, branch and path', () => {
+      it('Then carries the code, branch, path and hold', () => {
         // Arrange + Act
-        const result = branchCheckedOut('refs/heads/main', '/abs/wt');
+        const result = branchCheckedOut('refs/heads/main', '/abs/wt', 'bisect');
 
         // Assert
         expect(result.data).toEqual({
           code: 'BRANCH_CHECKED_OUT',
           branch: 'refs/heads/main',
           path: '/abs/wt',
+          hold: 'bisect',
         });
       });
     });

@@ -23,6 +23,7 @@ import {
   type PackRegistry,
   type RegisteredPack,
 } from '../../../../src/application/primitives/pack-registry.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { decompressFailed, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import * as gitObjectMod from '../../../../src/domain/objects/index.js';
@@ -279,6 +280,7 @@ async function stubRegistry(
     refresh: () => undefined,
     reprepare: async () => {},
     settleRefresh: async () => {},
+    lookupOwnerUnavailable: async () => undefined,
     lookup,
     dispose: noopDispose,
     health: async () => ({ accessible: [], unusable: [] }),
@@ -3492,6 +3494,7 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             reprepare: async () => {},
             settleRefresh: async () => {},
+            lookupOwnerUnavailable: async () => undefined,
             lookup: async (lookupId) =>
               lookupId === id ? { pack, offset: entryOffset } : undefined,
             dispose: noopDispose,
@@ -3568,6 +3571,7 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             reprepare: async () => {},
             settleRefresh: async () => {},
+            lookupOwnerUnavailable: async () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
@@ -3649,6 +3653,7 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             reprepare: async () => {},
             settleRefresh: async () => {},
+            lookupOwnerUnavailable: async () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
@@ -3726,6 +3731,7 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             reprepare: async () => {},
             settleRefresh: async () => {},
+            lookupOwnerUnavailable: async () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
@@ -5011,6 +5017,48 @@ describe('resolveObject through a primary and an alternate', () => {
 
         // Assert
         expect(read.mock.calls.map(([path]) => path)).not.toContain(primaryPath);
+      });
+    });
+  });
+});
+
+describe('resolveObjectContent when the midx owner pack is gone', () => {
+  const SHARED = new TextEncoder().encode('owner-gone-blob');
+
+  async function midxAssigningSharedBlobToDeletedOwner(ctx: Context): Promise<ObjectId> {
+    const [id] = await writeSyntheticPack(ctx, 'A', [
+      { kind: 'base', type: 'blob', content: SHARED },
+    ]);
+    await writeSyntheticPack(ctx, 'B', [
+      { kind: 'base', type: 'blob', content: SHARED },
+      { kind: 'base', type: 'blob', content: new TextEncoder().encode('other') },
+    ]);
+    await ctx.fs.rm(`${ctx.layout.gitDir}/objects/pack/pack-B.pack`);
+    await writeMidxBytes(
+      ctx,
+      buildMidx(
+        healthyMidxSpec({
+          packNames: ['pack-A.idx', 'pack-B.idx'],
+          entries: [{ id: id as ObjectId, packIndex: 1, offset: 12 }],
+        }),
+      ),
+    );
+    return id as ObjectId;
+  }
+
+  describe('Given another pack holds the object the midx assigns to a deleted pack', () => {
+    describe('When readObject', () => {
+      it("Then it resolves the other pack's copy", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await midxAssigningSharedBlobToDeletedOwner(ctx);
+
+        // Act
+        const sut = readObject;
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toMatchObject({ type: 'blob', content: SHARED });
       });
     });
   });

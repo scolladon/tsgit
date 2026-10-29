@@ -1,17 +1,16 @@
 import type { Context } from '../../../../ports/context.js';
 import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
 import { faultReason, type UnusablePack } from '../../../primitives/pack-registry.js';
-import { EXIT_PACK, EXIT_PACK_REV_INDEX } from './exit-codes.js';
-import { attributeTo } from './source-attribution.js';
+import { EXIT_CORRUPT } from './exit-codes.js';
+import { attributeTo, auditedSources } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 /**
- * Whether the pack-ACCESSIBILITY half reports: bit 4, its two finding
+ * Whether the pack-ACCESSIBILITY half reports: its two finding
  * variants, and the universe narrowing that rides on it (via
  * `enumerateObjects`'s `accessiblePacksOnly` knob). Full mode only: in
  * `connectivityOnly` mode git still enumerates a refused pack's ids under a
- * different classification, so the universe must not be narrowed there. The
- * pass itself always runs — the rev-index term is ungated.
+ * different classification, so the universe must not be narrowed there.
  */
 export function packAccessibilityReported(opts: FsckOptions): boolean {
   return opts.full !== false && opts.connectivityOnly !== true;
@@ -19,23 +18,21 @@ export function packAccessibilityReported(opts: FsckOptions): boolean {
 
 /**
  * Report packs the registry could not open (pack-open header gate) or index
- * (`.idx` parse). Takes the full `opts`, not a precomputed boolean, because
- * bit 64 — and its `pack-rev-index-unusable` finding — is **ungated**: an
- * unusable index reports at that layer in every mode, including
- * `connectivityOnly` and `full: false`, while bit 4 and its findings stay
- * behind `packAccessibilityReported`. The ungated term consumes only the
- * scan layer's skip records, so the header probe behind `health()` runs only
- * when the bit-4 report can consume it — `connectivityOnly` / `full: false`
- * never open a pack.
+ * (`.idx` parse), as git 2.56 does: both findings set the generic corruption
+ * bit. `connectivityOnly` skips the pass; `full: false` audits the local
+ * source only. The `pack-rev-index-unusable` term consumes only the scan
+ * layer's skip records, so the header probe behind `health()` runs only when
+ * the accessibility report can consume it.
  */
 export async function runPackHealthPass(
   ctx: Context,
   opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
+  if (opts.connectivityOnly === true) return { findings: [], exitBit: 0 };
   const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
   let exitBit = 0;
-  for (const source of store.sources) {
+  for (const source of auditedSources(store, opts)) {
     const attribution = attributeTo(store, source);
     exitBit |= await reportSourcePacks(source, opts, attribution, findings);
   }
@@ -75,11 +72,11 @@ function reportUnusablePack(entry: UnusablePack, report: UnusablePackReport): nu
       reason,
       ...attribution,
     });
-    exitBit |= EXIT_PACK;
+    exitBit |= EXIT_CORRUPT;
   }
   if (entry.layer === 'index') {
     findings.push({ type: 'pack-rev-index-unusable', pack: entry.name, reason, ...attribution });
-    exitBit |= EXIT_PACK_REV_INDEX;
+    exitBit |= EXIT_CORRUPT;
   }
   return exitBit;
 }

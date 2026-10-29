@@ -504,7 +504,7 @@ const NO_COMMIT_ROWS: ReadonlyArray<Row> = [
     label: 'a tracked gitlink with a broken checkout beside a repository with no commit',
     setup: together(unborn('a'), trackedGitlinkToNowhere),
     spec: ['.'],
-    refusal: { code: 'NOT_A_REPOSITORY', path: 'tail/../.git/modules/nowhere' },
+    refusal: { code: 'GITFILE_NOT_A_REPOSITORY', path: 'tail/.git' },
   },
   ...[['.'], ['sub']].map((spec) => ({
     label: `a tracked file replaced by a repository with no commit, added by ${spec[0]}`,

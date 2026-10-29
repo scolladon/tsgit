@@ -183,6 +183,9 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   written, and `pop` keeps the stash. On a conflict the `conflict` result carries the
   report as `untrackedNotRestored`; on a refusal it rides on
   `STASH_APPLY_WOULD_OVERWRITE`.
+- **Exit statuses (git 2.56).** git exits 1 only for a merge conflict and 128 for
+  every other failure, refusals included. tsgit's data shape is unchanged: a
+  `conflict` result that carries `untrackedNotRestored` is a git exit 128, not 1.
 - **Untracked entries are name-validated before the first one is restored.**
   `apply`/`pop` of a stash saved with `includeUntracked` checks every path in
   the untracked tree against git's index-entry name rules before writing the

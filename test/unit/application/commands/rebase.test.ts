@@ -1677,6 +1677,39 @@ describe('rebase edge cases', () => {
     });
   });
 
+  describe('Given a dropped empty pick followed by a pick refused by an untracked file', () => {
+    describe('When rebased', () => {
+      it('Then the dropped pick is not recorded as rewritten', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        await writeAddCommit(ctx, 'x.txt', 'v\n', 'add x');
+        await writeAddCommit(ctx, 'collide.txt', 'from-topic\n', 'add collide');
+        await ctx.fs.rm(work(ctx, 'collide.txt'));
+        await add(ctx, [], { all: true });
+        await commit(ctx, { message: 'remove collide', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'x.txt'), 'v\n');
+        await ctx.fs.writeUtf8(work(ctx, 'y.txt'), 'w\n');
+        await add(ctx, ['x.txt', 'y.txt']);
+        await commit(ctx, { message: 'add x and y', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'topic' });
+        await ctx.fs.writeUtf8(work(ctx, 'collide.txt'), 'untracked collide\n');
+
+        // Act
+        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'main' }));
+
+        // Assert
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/rewritten-list`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given --onto a base that does not contain the fork point', () => {
     describe('When rebased', () => {
       it('Then only upstream..HEAD is replayed — the merge-base commit is excluded', async () => {
@@ -4549,7 +4582,7 @@ describe('rebase over a line an untracked occupant refuses', () => {
 
   describe('Given a fast-forward pick the occupant refuses', () => {
     describe('When a flat rebase --onto runs', () => {
-      it('Then HEAD stays and the dropped pick is recorded as rewritten to itself', async () => {
+      it('Then HEAD stays and the dropped pick is not recorded as rewritten', async () => {
         // Arrange
         const { ctx, w, x } = await seedOccupied();
         const base = (await readCommit(ctx, w)).parents[0] as ObjectId;
@@ -4561,7 +4594,7 @@ describe('rebase over a line an untracked occupant refuses', () => {
         // Assert
         expect(data).toEqual(OCCUPIED);
         expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(w);
-        expect(await readMerge(ctx, 'rewritten-list')).toBe(`${w} ${w}\n`);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/rewritten-list`)).toBe(false);
         expect(await readMerge(ctx, 'done')).toBe(`pick ${w} # w\npick ${x} # x\n`);
         expect(await ctx.fs.readUtf8(work(ctx, 'n'))).toBe('occ\n');
       });

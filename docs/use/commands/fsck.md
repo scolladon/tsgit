@@ -155,16 +155,16 @@ findings.filter(f => f.type === 'tagged')
 | `bad-ref` | `ref`, `msgId`, `severity`, `target?`, `path?`, `reason?` | Refs-verify pass finding: malformed ref content (`badRefContent` — exit bit 8) or ref pointing at an absent/zero OID (`badRefOid` / *invalid sha1 pointer* — exit bit 2). `target` is present when the ref had a syntactically-valid OID target. A ref file that could not be read (an unreadable linked-worktree `HEAD`) reports `msgId: 'cannotReadRef'` with `path` and `reason: 'PERMISSION_DENIED'` and sets exit bit 8. |
 | `root` | `id` | Root commit (no parents). Emitted when the caller filters for `type === 'root'`. Exit 0. |
 | `tagged` | `id`, `objectType`, `tagName`, `tag` | Tag target: `id` is the tagged object, `tag` is the tag object OID. Emitted when the caller filters for `type === 'tagged'`. Exit 0. |
-| `pack-inaccessible` | `pack`, `reason` | A pack failed the header gate — bad version, bad signature, truncated file, a header/index object-count disagreement, or a `.pack` that could not be opened. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 4. |
-| `pack-index-unusable` | `pack`, `reason` | A pack's `.idx` could not be read or parsed. Full mode only; always accompanied by a `pack-rev-index-unusable` finding for the same pack. Exit bit 4. |
-| `pack-rev-index-unusable` | `pack`, `reason` | A pack's index is unusable, so no reverse index can be derived from it either. Emitted in **every** mode, including `connectivityOnly` and `full: false` — unlike the other two pack findings, this one is not mode-gated. Exit bit 64. |
-| `pack-rev-index-invalid` | `pack`, `reason` | A pack's `.rev` file exists and is readable, but is itself wrong — a malformed header (bad signature/version/hash-id), a size that disagrees with the pack's own object count, or a trailer checksum (verified with the repository's own hash algorithm, never the file's declared `hashId`) that disagrees with its content. Never emitted for a pack `pack-rev-index-unusable` already covers — an unusable `.idx` masks its `.rev` entirely. Emitted in every mode. Exit bit 64. |
-| `pack-rev-index-position-mismatch` | `pack`, `position`, `expected`, `stored` | A `.rev` file parses and its checksum is valid, but body entry `position` disagrees with the index position the pack's own `.idx` implies (`expected`) — `stored` is the value the file actually has there. One finding per wrong position. Emitted in every mode. Exit bit 64. |
-| `midx-unusable` | `artefact`, `reason` | The multi-pack-index (or a chain layer) actually in use was discarded — too small, unreadable, a chunk offset outside the file, a hash-version mismatch, with no usable fallback layer — or the entry-resolution walk hit a structural fault reached only inside this pass. `artefact` names the file; `reason` is tsgit's own wording, not reconstructed from git's stderr. A dropped chain that still leaves a usable layer, or a discarded flat file rescued by a loadable chain, produces no finding. Reported in every mode. Exit bit 32. |
-| `midx-checksum-mismatch` | `artefact` | The in-use artefact's trailer digest disagrees with its declared content — checked once per `fsck` run, on the flat file or the chain head only (never a base layer), and never on the ordinary read path. Reported in every mode. Exit bit 32. |
-| `midx-pack-unresolved` | `artefact`, `position`, `pack` | A `PNAM` entry — `position` is its chain-global index — names a pack that could not be resolved this scan, and whose `.pack` file is also gone. Reported in every mode. Exit bit 32. |
-| `midx-entry-unresolved` | `artefact`, `id` | An object the midx routes to a pack that cannot serve it — fires even when the pack itself resolved (its `.pack` is on disk but its `.idx` is not), independently of `midx-pack-unresolved`. Reported in every mode. Exit bit 32. |
-| `bitmap-checksum-mismatch` | `artefact` | A pack's `.bitmap`, or the in-use multi-pack-index's bitmap, is present and readable but its trailing digest disagrees with the bytes that precede it — the checksum is this artefact's entire obligation, so this is the only bitmap fault tsgit reports. `artefact` is `<base>.bitmap` for a pack, or `multi-pack-index-<hex>.bitmap` (composed from the in-use midx's own stored trailer bytes) for the midx. Absent, unreadable, or a structurally corrupt bitmap whose checksum still matches all produce no finding. Reported in every mode, and the midx arm is unconditional (not gated by `core.multiPackIndex`). Exit bit 128. |
+| `pack-inaccessible` | `pack`, `reason` | A pack failed the header gate — bad version, bad signature, truncated file, a header/index object-count disagreement, or a `.pack` that could not be opened. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 1. |
+| `pack-index-unusable` | `pack`, `reason` | A pack's `.idx` could not be read or parsed. Full mode only; always accompanied by a `pack-rev-index-unusable` finding for the same pack. Exit bit 1. |
+| `pack-rev-index-unusable` | `pack`, `reason` | A pack's index is unusable, so no reverse index can be derived from it either. Full mode only, like the other pack findings: `connectivityOnly` and `full: false` skip it, as git 2.56 does. Exit bit 1. |
+| `pack-rev-index-invalid` | `pack`, `reason` | A pack's `.rev` file exists and is readable, but is itself wrong — a malformed header (bad signature/version/hash-id), a size that disagrees with the pack's own object count, or a trailer checksum (verified with the repository's own hash algorithm, never the file's declared `hashId`) that disagrees with its content. Never emitted for a pack `pack-rev-index-unusable` already covers — an unusable `.idx` masks its `.rev` entirely. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 1. |
+| `pack-rev-index-position-mismatch` | `pack`, `position`, `expected`, `stored` | A `.rev` file parses and its checksum is valid, but body entry `position` disagrees with the index position the pack's own `.idx` implies (`expected`) — `stored` is the value the file actually has there. One finding per wrong position. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 1. |
+| `midx-unusable` | `artefact`, `reason` | The multi-pack-index (or a chain layer) actually in use was discarded — too small, unreadable, a chunk offset outside the file, a hash-version mismatch, with no usable fallback layer — or the entry-resolution walk hit a structural fault reached only inside this pass. `artefact` names the file; `reason` is tsgit's own wording, not reconstructed from git's stderr. A dropped chain that still leaves a usable layer, or a discarded flat file rescued by a loadable chain, produces no finding. Not reported under `connectivityOnly`. Exit bit 1. |
+| `midx-checksum-mismatch` | `artefact` | The in-use artefact's trailer digest disagrees with its declared content — checked once per `fsck` run, on the flat file or the chain head only (never a base layer), and never on the ordinary read path. Not reported under `connectivityOnly`. Exit bit 1. |
+| `midx-pack-unresolved` | `artefact`, `position`, `pack` | A `PNAM` entry — `position` is its chain-global index — names a pack that could not be resolved this scan, and whose `.pack` file is also gone. Not reported under `connectivityOnly`. Exit bit 1. |
+| `midx-entry-unresolved` | `artefact`, `id` | An object the midx routes to a pack that cannot serve it — fires even when the pack itself resolved (its `.pack` is on disk but its `.idx` is not), independently of `midx-pack-unresolved`. Not reported under `connectivityOnly`. Exit bit 1. |
+| `bitmap-checksum-mismatch` | `artefact` | A pack's `.bitmap`, or the in-use multi-pack-index's bitmap, is present and readable but its trailing digest disagrees with the bytes that precede it — the checksum is this artefact's entire obligation, so this is the only bitmap fault tsgit reports. `artefact` is `<base>.bitmap` for a pack, or `multi-pack-index-<hex>.bitmap` (composed from the in-use midx's own stored trailer bytes) for the midx. Absent, unreadable, or a structurally corrupt bitmap whose checksum still matches all produce no finding. Not reported under `connectivityOnly`; the midx arm is not gated by `core.multiPackIndex`. Exit bit 1. |
 | `invalid-reflog-entry` | `ref`, `id` | A reflog side names an object the run never recorded (git's `invalid reflog entry`); one finding per side, so a line can yield two. |
 | `invalid-cache-tree-pointer` | `id`, `index` | A cache-tree entry names an object no store holds (git's `invalid sha1 pointer in cache-tree`); `index` is the index file naming it, one finding per worktree index. Exit bit 8. |
 | `invalid-resolve-undo-pointer` | `id`, `index` | A regular-file resolve-undo stage names an object no store holds (git's `invalid sha1 pointer in resolve-undo`). Exit bit 8. |
@@ -172,13 +172,13 @@ findings.filter(f => f.type === 'tagged')
 | `unknown-object-type` | `id` | `connectivityOnly`: a reflog-reached object whose served copy hashes to another id and that no earlier link typed (git's `Unknown object type for`): reached, never walked. No exit bit. |
 | `unexpected-object-type` | `id`, `expectedType` | `connectivityOnly`: an object a link typed as `expectedType` whose served copy is another type (git's `Object <id> not a <type>`): reached, never walked. No exit bit. |
 | `type-conflict` | `id`, `objectType`, `expectedType` | A lookup asked for `expectedType` of an object an earlier lookup typed `objectType` (git's `object <id> is a <objectType>, not a <expectedType>`); the asking parse or walk gets no object. No exit bit. |
-| `unparseable-object` | `id`, `pack?` | An object whose own parse failed on a type conflict (git's `object could not be parsed` for a loose copy, `object corrupt or missing` for a pack entry): never checked, never recorded as present. Exit bit 1, plus bit 4 when `pack` names the pack. |
+| `unparseable-object` | `id`, `pack?` | An object whose own parse failed on a type conflict (git's `object corrupt or missing`, for a loose copy and a pack entry alike): never checked, never recorded as present. Exit bit 1. |
 | `bad-pointer` | `id`, `link`, `target` | A commit (`link: 'tree'` or `'parent'`) or tag (`'tag'`) whose link names `target` under a type conflict (git's `bad tree pointer`, `bad parent`, `bad tag pointer to`). No exit bit of its own. |
 | `broken-links` | `id`, `objectType` | An object whose check could not look up one of its links (git's `error in <type> <id>: broken links`). Exit bit 1. |
 | `unresolved-link` | `fromId`, `fromType`, `toType` | A link the reachability walk could not look up as `toType` (git's `broken link from <type> <id>`). Exit bit 2. |
-| `pack-index-checksum-mismatch` | `pack` | A pack's `.idx` trailing checksum disagrees with its bytes. Full mode. Exit bit 4. |
-| `pack-checksum-mismatch` | `pack` | A pack's trailing checksum disagrees with the bytes before it. Full mode. Exit bit 4. |
-| `pack-crc-mismatch` | `pack`, `id`, `offset` | A pack entry's raw bytes disagree with the CRC-32 its `.idx` records; `offset` is the entry's byte offset. Full mode. Exit bit 4. |
+| `pack-index-checksum-mismatch` | `pack` | A pack's `.idx` trailing checksum disagrees with its bytes. Full mode. Exit bit 1. |
+| `pack-checksum-mismatch` | `pack` | A pack's trailing checksum disagrees with the bytes before it. Full mode. Exit bit 1. |
+| `pack-crc-mismatch` | `pack`, `id`, `offset` | A pack entry's raw bytes disagree with the CRC-32 its `.idx` records; `offset` is the entry's byte offset. Full mode. Exit bit 1. |
 | `pack-entry-unpackable` | `pack`, `id`, `offset` | A packed entry that cannot be unpacked (git's `cannot unpack`). Full mode. A `REF_DELTA` cycle and a zero-distance `OFS_DELTA` base are reported this way. |
 | `pack-entry-corrupt` | `pack`, `id` | A packed entry whose content does not hash to its indexed id. Full mode. |
 | `commit-graph-invalid` | `artefact`, plus the verdict's `check` and its fields | `git commit-graph verify` over each object source's commit-graph file (or its chain) reported a disagreement while `core.commitGraph` is on. `check` names it: `checksum`, `load-failure`, `oid-order`, `fanout`, `graph-unparsable`, `extra-edges-out-of-bounds`, `invalid-parent-position`, `odb-unparsable`, `root-tree`, `parent`, `parents-too-long`, `parents-terminate-early`, `generation`, `commit-date`, `mixed-generations`, `chain-unopenable`, `layer-load-failure`, `chain-line-not-hash`, `chain-too-small`, `chain-no-base-chunk`, `chain-base-chunk-too-small`, `chain-mismatch`, `chain-layer-missing`, `chain-incomplete` or `chain-unloaded`. Exit bit 16. |
@@ -208,8 +208,8 @@ reconstructed from git's stderr text.
   `TsgitError` is classified to a finding by its `.data.code`, and fsck
   survives the worst repo state. The first exception is `connectivityOnly:
   true` against an unreachable object whose stored header cannot be recovered
-  at all: there git itself aborts (`die()`, exit 128), and tsgit rejects
-  instead of resolving. The second is a malformed `remote.<n>.promisor` value
+  at all, or whose loose file is empty or unopenable: there git itself aborts
+  (`die()`, exit 128), and tsgit rejects instead of resolving. The second is a malformed `remote.<n>.promisor` value
   — checked once, only when the run has at least one root or an
   absent-ref-target fault to walk, exactly where git's own promisor-config
   load happens (see [Throws](#throws)). A pack window read landing past the
@@ -218,13 +218,12 @@ reconstructed from git's stderr text.
   error; the entry-header parse then fails in the ordinary structured way
   (`INVALID_PACK_ENTRY`), which this classification degrades to a
   `dangling`/`'unknown'` finding (warned as `pack entry unreadable`) exactly
-  like any other corrupt entry, never an abort. Known gap: git additionally
-  verifies each packed entry's CRC against its `.idx` (`index CRC mismatch`,
-  `cannot unpack`) and sets `ERROR_PACK` (exit bit 4) on a mismatch; tsgit
-  has no per-entry CRC pass, so a CRC-lying-but-otherwise-parseable entry
-  surfaces only through this same content-validation degrade, never bit 4 —
-  that bit stays wired to whole-pack failures (`pack-inaccessible` /
-  `pack-index-unusable`) only.
+  like any other corrupt entry, never an abort. A full run also verifies each packed
+  entry's CRC against its `.idx` (`pack-crc-mismatch`, `index CRC mismatch`) and unpacks it
+  (`pack-entry-unpackable`, `cannot unpack`); both set bit 1 under git 2.56. A corrupt entry
+  stays pack-held and is never reported `missing`, with one exception: a delta base that
+  fails to unpack and that a delta child in the same pack could not read as its base is
+  reported `missing`, as git does, unless a loose copy or another pack still serves it.
 - **A loose object `read_loose_object` refuses, or whose hash disagrees with
   its path, is never typed — unless a pack holds a copy.** Matching git's
   `fsck_loose`, which returns before `parse_object_buffer` ever runs: an
@@ -254,22 +253,13 @@ reconstructed from git's stderr text.
   | Value | Meaning |
   |---|---|
   | `0` | Clean (or only dangling/unreachable/INFO-WARN content findings). |
-  | `1` | Content ERROR, `--strict`-upgraded WARN, corrupt object, or hash-mismatch (bit 1). |
+  | `1` | Content ERROR, `--strict`-upgraded WARN, corrupt object, hash-mismatch, or any pack, pack-index, reverse-index, bitmap, multi-pack-index or packed-entry fault (bit 1). git 2.56 folds all of them into bit 1; the bits 4, 32, 64 and 128 of earlier gits no longer exist. |
   | `2` | Missing object, broken link, or ref→absent OID (bit 2). |
   | `3` | Bits 1 and 2 combined (e.g. corrupt object whose absence also breaks a link). |
-  | `4` | A pack failed the header gate or `.idx` parse (bit 4, `pack-inaccessible` / `pack-index-unusable`). Full mode only — suppressed by `full: false` or `connectivityOnly: true`. |
-  | `6` | Bits 2 and 4 combined (e.g. a missing object alongside an unrelated pack accessibility fault). |
   | `8` | Malformed ref content (`badRefContent`, a `bad-ref` finding) **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
   | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID, or a broken cache-tree alongside an unrelated missing object). |
-  | `14` | Bits 2, 4 and 8 combined. |
+  | `11` | Bits 1, 2 and 8 combined (e.g. an inaccessible pack beside a missing object and a bad ref). |
   | `16` | `git commit-graph verify` reported a disagreement for some object source's commit-graph file or chain (bit 16, `commit-graph-invalid`). |
-  | `32` | The in-use multi-pack-index or chain layer was discarded, its trailer checksum disagreed, or it routes to a pack or entry it cannot resolve (bit 32, the four `midx-*` findings). Set in **every** mode, including `connectivityOnly` and `full: false` — ungated like bit 64, unlike bit 4. |
-  | `42` | Bits 2, 8 and 32 combined (e.g. a midx-named pack fully deleted: missing objects, invalid ref pointers, and the midx's own pack-resolution failure, with no unrelated pack-accessibility fault). |
-  | `64` | A pack's reverse index is unusable, no other error — either its pack index could not be loaded at all (`pack-rev-index-unusable`), or a `.rev` file exists, is readable, and is itself wrong (`pack-rev-index-invalid` / `pack-rev-index-position-mismatch`); the two causes never double-report for the same pack. Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |
-  | `68` | Bits 4 and 64 combined — an unusable `.idx` in full mode sets both, matching git's `index not opened` **and** `unable to load rev-index` for the same pack. |
-  | `110` | Bits 2, 4, 8, 32 and 64 combined — a midx-named pack's `.idx` gone sets the pack pass's bits (4 and 64) alongside the midx pass's (32), plus the ordinary connectivity fallout (2 and 8). |
-  | `128` | A pack's or the in-use multi-pack-index's bitmap trailer checksum disagrees with its bytes (bit 128, `bitmap-checksum-mismatch`) — the only bitmap fault this pass reports; a structurally corrupt bitmap whose checksum still matches never sets it. Set in **every** mode, and the midx arm is unconditional — ungated like bit 64, unlike bit 4. |
-  | `192` | Bits 64 and 128 combined (e.g. a pack with both a broken `.rev` and a broken `.bitmap`). |
 
   Combinations follow bitwise OR. Caller passes `result.exitCode` to
   `process.exit` to reproduce git's exit behaviour.
@@ -408,6 +398,16 @@ process.exit(result.exitCode);
   non-numeric size). Not triggered by a header that parses but disagrees with
   the body's actual size — that object still resolves normally, as a
   `dangling` / `unreachable` finding carrying its real type.
+- `LOOSE_OBJECT_CORRUPT` — `connectivityOnly: true` only, and only for an
+  unreachable object whose loose file yields no bytes to inflate: an empty
+  file, or one the store refuses to open (mode 000). git 2.56 dies on it
+  (`fatal: loose object <oid> (stored in <path>) is corrupt`, exit 128) where
+  git 2.55 printed `dangling unknown`; the promise rejects with `.data.id`
+  naming the object. git prints that one fatal for all three loose faults
+  under `connectivityOnly`; tsgit keeps one code per cause: this one for an
+  empty or unopenable file, `DECOMPRESS_FAILED` for bytes that do not
+  inflate, `INVALID_OBJECT_HEADER` for a header that does not parse. A reachable unreadable loose object stays silent, and the
+  default mode keeps reporting it as a `bad-object` finding with exit bit 1.
 - `CONFIG_BAD_BOOLEAN_VALUE` — a `remote.<n>.promisor` entry holds a value
   git's boolean grammar refuses. Checked once per run, only when there is at
   least one root or an absent-ref-target fault to walk — a run with nothing

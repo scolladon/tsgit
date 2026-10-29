@@ -80,6 +80,7 @@ describe('branchCreate — the worktree guard', () => {
           code: 'BRANCH_CHECKED_OUT',
           branch: MAIN,
           path: ctx.layout.workDir,
+          hold: 'checkout',
         });
         expect(await getRefStore(ctx).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: root });
       });

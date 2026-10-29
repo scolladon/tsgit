@@ -726,7 +726,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('the midx is authoritative for the packs it names', () => {
+    describe('the midx owner of a duplicated object is unavailable', () => {
       /** Overwrites `packBaseName`'s own PNAM slot with same-length garbage no
        *  on-disk file matches. */
       function corruptPnamEntryFor(bytes: Buffer, packBaseName: string): Buffer {
@@ -762,7 +762,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
 
       describe('Given the assigned pack fully deleted (.pack + .idx + .rev), When both tools look up the duplicated blob', () => {
-        it('Then both report it missing — the sibling pack is never consulted', async () => {
+        it('Then both read it from the sibling pack', async () => {
           // Arrange
           const dir = await newRoot('h2');
           const dup = await buildDupFixture(dir, 'repo');
@@ -776,13 +776,13 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
-          expect(gitResult.stdout).toContain(`${dup.dupOid} missing`);
-          await expectObjectMissing(sut, dup.dupOid);
+          expect(gitResult.stdout).toContain(`${dup.dupOid} blob`);
+          await expectBothRead(dup.dir, sut, dup.dupOid);
         });
       });
 
       describe("Given the assigned pack's .pack deleted but its .idx kept, When both tools look up the duplicated blob", () => {
-        it('Then both report it missing', async () => {
+        it('Then both read it', async () => {
           // Arrange
           const dir = await newRoot('h3');
           const dup = await buildDupFixture(dir, 'repo');
@@ -794,13 +794,13 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
-          expect(gitResult.stdout).toContain(`${dup.dupOid} missing`);
-          await expectObjectMissing(sut, dup.dupOid);
+          expect(gitResult.stdout).toContain(`${dup.dupOid} blob`);
+          await expectBothRead(dup.dir, sut, dup.dupOid);
         });
       });
 
       describe("Given the assigned pack's .pack made unreadable via chmod 000, When both tools look up the duplicated blob (node tier only)", () => {
-        it('Then both report it missing', async () => {
+        it('Then both read it', async () => {
           // Arrange
           const dir = await newRoot('h4');
           const dup = await buildDupFixture(dir, 'repo');
@@ -812,30 +812,27 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
-          expect(gitResult.stdout).toContain(`${dup.dupOid} missing`);
-          await expectObjectMissing(sut, dup.dupOid);
+          expect(gitResult.stdout).toContain(`${dup.dupOid} blob`);
+          await expectBothRead(dup.dir, sut, dup.dupOid);
         });
       });
 
-      describe('Given the assigned pack deleted, When git reads with core.multiPackIndex=false but tsgit reads with no such config', () => {
-        it("Then git's config hatch falls back to the sibling pack and reads it, while tsgit — with no config to disable authority — still reports it missing (documented divergence, out of scope)", async () => {
+      describe('Given the assigned pack and its .idx deleted, When both tools look up the duplicated blob on the default path', () => {
+        it('Then both read it from the sibling pack', async () => {
           // Arrange
           const dir = await newRoot('h5');
           const dup = await buildDupFixture(dir, 'repo');
           await rm(packFile(dup.dir, dup.assignedPack, 'pack'), { force: true });
           await rm(packFile(dup.dir, dup.assignedPack, 'idx'), { force: true });
-          git(dup.dir, 'config', 'core.multiPackIndex', 'false');
           const sut = trackedNodeContext(dup.dir);
 
           // Act
           const gitResult = batchCheck(dup.dir, dup.dupOid);
 
-          // Assert — git: the config hatch restores the sibling pack's answer
+          // Assert
           expect(gitResult.exitCode).toBe(0);
           expect(gitResult.stdout).toContain(`${dup.dupOid} blob`);
-
-          // Assert — tsgit: no config exists; the midx's authority still hides it
-          await expectObjectMissing(sut, dup.dupOid);
+          await expectBothRead(dup.dir, sut, dup.dupOid);
         });
       });
 
@@ -1264,7 +1261,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
 
       describe('Given an unparseable (Tier-B, too-small) flat midx alongside an intact chain whose layer-1 pack was deleted, When both tools look up the duplicated blob', () => {
-        it('Then git errors on the flat file, then reports the object missing — the chain IS read and its own authority applies', async () => {
+        it('Then git errors on the flat file, then reads the object — the chain is read and the unopenable owner is recovered', async () => {
           // Arrange
           const dir = await newRoot('j5');
           const fixture = await buildChainFixture(dir, 'repo');
@@ -1282,8 +1279,8 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           expect(gitResult.exitCode).toBe(0);
           expect(gitResult.stderr).toContain('is too small');
-          expect(gitResult.stdout).toContain(`${fixture.dupOid} missing`);
-          await expectObjectMissing(sut, fixture.dupOid);
+          expect(gitResult.stdout).toContain(`${fixture.dupOid} blob`);
+          await expectBothRead(fixture.dir, sut, fixture.dupOid);
         });
       });
 

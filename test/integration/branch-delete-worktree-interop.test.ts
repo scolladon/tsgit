@@ -43,8 +43,12 @@ import {
 const ROW_TIMEOUT = 60_000;
 
 /** git's `error: cannot delete branch '<name>' used by worktree at '<path>'`. */
-const heldLine = (branch: string, worktree: string): string =>
-  `error: cannot delete branch '${branch}' used by worktree at '${worktree}'\n`;
+const heldLine = (
+  branch: string,
+  worktree: string,
+  hold: 'checkout' | 'bisect' = 'checkout',
+): string =>
+  `error: cannot delete branch '${branch}' used by worktree at '${worktree}'${hold === 'bisect' ? ' for bisect' : ''}\n`;
 
 /** git's unforced refusal, with `advice.forceDeleteBranch` off so the two
  *  hint lines it would otherwise append never enter the comparison. */
@@ -155,6 +159,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/main',
             path: dir,
+            hold: 'checkout',
           });
         },
         ROW_TIMEOUT,
@@ -186,6 +191,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/sidecar',
             path: linked,
+            hold: 'checkout',
           });
         },
         ROW_TIMEOUT,
@@ -231,6 +237,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/sidecar',
             path: linked,
+            hold: 'checkout',
           });
           expect(branchSurvives(dir, 'sidecar')).toBe(true);
         },
@@ -270,11 +277,59 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
 
           // Assert
           expect(gitResult.exitCode).toBe(1);
-          expect(gitResult.stderr).toBe(heldLine('sidecar', peerLinked));
+          expect(gitResult.stderr).toBe(heldLine('sidecar', peerLinked, 'bisect'));
           expect(err?.data).toEqual({
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/sidecar',
             path: linked,
+            hold: 'bisect',
+          });
+          expect(branchSurvives(dir, 'sidecar')).toBe(true);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  /** `sidecar` checked out in a worktree registered first, then a later one
+   *  bisecting from it — the registration order the bisect hold must outrank. */
+  const seedCheckoutThenBisectingWorktrees = (dir: string): string => {
+    const holder = path.join(dir, '..', 'holder');
+    const bisecting = path.join(dir, '..', 'bisecting');
+    git(dir, 'worktree', 'add', '-q', holder, '-b', 'sidecar');
+    for (const message of ['b1', 'b2', 'b3']) {
+      git(holder, 'commit', '-q', '--allow-empty', '-m', message);
+    }
+    git(dir, 'worktree', 'add', '-q', '--force', bisecting, 'sidecar');
+    git(bisecting, 'bisect', 'start');
+    git(bisecting, 'bisect', 'bad', 'HEAD');
+    git(bisecting, 'bisect', 'good', 'HEAD~2');
+    return bisecting;
+  };
+
+  describe('Given one worktree on the branch and a later one bisecting from it', () => {
+    describe('When git branch -D and tsgit branchDelete both target that branch', () => {
+      it(
+        'Then both name the bisecting worktree, not the earlier checkout holder',
+        async () => {
+          // Arrange
+          const peer = await caseRepo('checkout-then-bisect-peer');
+          const peerBisecting = seedCheckoutThenBisectingWorktrees(peer);
+          const dir = await caseRepo('checkout-then-bisect');
+          const bisecting = seedCheckoutThenBisectingWorktrees(dir);
+
+          // Act
+          const gitResult = quietDelete(peer, '-D', 'sidecar');
+          const err = await deleteWithTsgit(dir, 'sidecar');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toBe(heldLine('sidecar', peerBisecting, 'bisect'));
+          expect(err?.data).toEqual({
+            code: 'BRANCH_CHECKED_OUT',
+            branch: 'refs/heads/sidecar',
+            path: bisecting,
+            hold: 'bisect',
           });
           expect(branchSurvives(dir, 'sidecar')).toBe(true);
         },
@@ -309,6 +364,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/sidecar',
             path: linked,
+            hold: 'checkout',
           });
         },
         ROW_TIMEOUT,
@@ -443,6 +499,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/main',
             path: linked,
+            hold: 'checkout',
           });
         },
         ROW_TIMEOUT,
@@ -476,6 +533,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/sidecar',
             path: linked,
+            hold: 'checkout',
           });
         },
         ROW_TIMEOUT,

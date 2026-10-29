@@ -357,7 +357,7 @@ describe('probeGitlinkCheckout', () => {
         const checkout = await sut(ctx, SUB);
 
         // Assert
-        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
+        expect(checkout).toEqual({ kind: 'broken', via: 'unparsed-gitfile', shown: 'sub/.git' });
       });
     });
   });
@@ -376,14 +376,14 @@ describe('probeGitlinkCheckout', () => {
         const checkout = await sut(ctx, SUB);
 
         // Assert
-        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
+        expect(checkout).toEqual({ kind: 'broken', via: 'directory', shown: 'sub/.git' });
       });
     });
   });
 
   describe('Given a gitfile to an admin dir whose commondir holds zero bytes', () => {
     describe('When the checkout is probed', () => {
-      it('Then it is broken, shown as the gitfile names the directory', async () => {
+      it('Then it is broken, shown as the gitfile path', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const { gitDir, workDir } = ctx.layout;
@@ -396,7 +396,7 @@ describe('probeGitlinkCheckout', () => {
         const checkout = await sut(ctx, SUB);
 
         // Assert
-        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/../.git/modules/sub' });
+        expect(checkout).toEqual({ kind: 'broken', via: 'gitfile', shown: 'sub/.git' });
       });
     });
   });
@@ -415,7 +415,7 @@ describe('probeGitlinkCheckout', () => {
         const checkout = await sut(ctx, SUB);
 
         // Assert
-        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
+        expect(checkout).toEqual({ kind: 'broken', via: 'directory', shown: 'sub/.git' });
       });
     });
   });
@@ -631,7 +631,7 @@ describe('a nested repository whose commondir and HEAD git reads in bounded buff
         const checkout = await sut(ctx, SUB);
 
         // Assert
-        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/../.git/admin' });
+        expect(checkout).toEqual({ kind: 'broken', via: 'gitfile', shown: 'sub/.git' });
       });
     });
   });
@@ -703,7 +703,7 @@ describe('a nested repository whose commondir and HEAD git reads in bounded buff
         const checkout = await sut(ctx, SUB);
 
         // Assert
-        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/../.git/admin' });
+        expect(checkout).toEqual({ kind: 'broken', via: 'gitfile', shown: 'sub/.git' });
       });
     });
   });
@@ -768,7 +768,7 @@ describe('a nested repository whose commondir and HEAD git reads in bounded buff
         const checkout = await sut(ctx, SUB);
 
         // Assert
-        expect(checkout).toEqual({ kind: 'broken', shown: 'sub/.git' });
+        expect(checkout).toEqual({ kind: 'broken', via: 'directory', shown: 'sub/.git' });
       });
     });
   });
@@ -858,6 +858,147 @@ describe('a nested repository whose HEAD is a symlink', () => {
 
         // Assert
         expect(checkout.kind === 'repository' && (await checkout.head())).toBe(HEAD_COMMIT);
+      });
+    });
+  });
+});
+
+describe('a gitlink whose .git leads to no valid repository', () => {
+  const MAX_PATH_BYTES = 4096;
+  const GITFILE_REFUSAL = { code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' };
+  const DIRECTORY_REFUSAL = { code: 'NOT_A_REPOSITORY', path: 'sub/.git' };
+
+  const refusalOf = async (ctx: Context): Promise<unknown> => {
+    const sut = gitlinkHeadOf;
+    const err = await sut(ctx, SUB).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TsgitError);
+    return (err as TsgitError).data;
+  };
+
+  const pointAtModule = async (ctx: Context): Promise<string> => {
+    const { gitDir, workDir } = ctx.layout;
+    await ctx.fs.writeUtf8(`${workDir}/sub/.git`, 'gitdir: ../.git/modules/sub\n');
+    return `${gitDir}/modules/sub`;
+  };
+
+  describe('Given a gitfile whose target is missing', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then it refuses naming the gitfile', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await pointAtModule(ctx);
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual(GITFILE_REFUSAL);
+      });
+    });
+  });
+
+  describe('Given a gitfile to a module whose HEAD is garbage', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then it refuses naming the gitfile', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const module = await pointAtModule(ctx);
+        await layOutRepository(ctx, module, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${module}/HEAD`, 'garbage\n');
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual(GITFILE_REFUSAL);
+      });
+    });
+  });
+
+  describe('Given a gitfile to a module without an objects directory', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then it refuses naming the gitfile', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const module = await pointAtModule(ctx);
+        await ctx.fs.writeUtf8(`${module}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.mkdir(`${module}/refs`);
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual(GITFILE_REFUSAL);
+      });
+    });
+  });
+
+  describe('Given a gitfile to a module whose commondir holds zero bytes', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then it refuses naming the gitfile', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const module = await pointAtModule(ctx);
+        await layOutRepository(ctx, module, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${module}/commondir`, '');
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual(GITFILE_REFUSAL);
+      });
+    });
+  });
+
+  describe('Given a gitfile to a module whose commondir is too long to name a path', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then it refuses naming the gitfile', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const module = await pointAtModule(ctx);
+        await layOutRepository(ctx, module, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${module}/commondir`, 'x'.repeat(MAX_PATH_BYTES + 1));
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual(GITFILE_REFUSAL);
+      });
+    });
+  });
+
+  describe('Given a .git directory whose HEAD is garbage', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then it refuses as no repository, naming the directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dotGit = `${ctx.layout.workDir}/sub/.git`;
+        await layOutRepository(ctx, dotGit, HEAD_COMMIT);
+        await ctx.fs.writeUtf8(`${dotGit}/HEAD`, 'garbage\n');
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual(DIRECTORY_REFUSAL);
+      });
+    });
+  });
+
+  describe('Given a gitfile that does not parse', () => {
+    describe('When the gitlink head is asked', () => {
+      it('Then it refuses as no repository, naming the gitfile', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.git`, 'garbage\n');
+
+        // Act
+        const data = await refusalOf(ctx);
+
+        // Assert
+        expect(data).toEqual(DIRECTORY_REFUSAL);
       });
     });
   });

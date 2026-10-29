@@ -2,8 +2,8 @@ import { bytesEqual } from '../../../../domain/objects/encoding.js';
 import type { Context } from '../../../../ports/context.js';
 import type { ArtefactLoad } from '../../../primitives/internal/pack-artefact-source.js';
 import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
-import { EXIT_BITMAP } from './exit-codes.js';
-import { attributeTo } from './source-attribution.js';
+import { EXIT_CORRUPT } from './exit-codes.js';
+import { attributeTo, auditedSources } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 /**
@@ -74,20 +74,23 @@ async function packBitmapFindings(
  * Follows git's `verify_bitmap_files` order: every source's midx bitmap,
  * then every source's pack bitmaps.
  *
- * `opts` is taken for symmetry and ignored: bit 128 fires identically in
- * every mode, and the midx arm below is unconditional — tsgit declines
- * git's `core.multiPackIndex` gate on this pass as a deliberate divergence.
+ * Git 2.56 sets the generic corruption bit for either bitmap and skips the
+ * whole pass under `connectivityOnly`; `full: false` audits the local source
+ * only. tsgit declines git's `core.multiPackIndex` gate on the midx arm as a
+ * deliberate divergence.
  */
 export async function runBitmapHealthPass(
   ctx: Context,
-  _opts: FsckOptions,
+  opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
+  if (opts.connectivityOnly === true) return { findings: [], exitBit: 0 };
   const store = await getObjectStore(ctx);
+  const sources = auditedSources(store, opts);
   const findings: FsckFinding[] = [];
   for (const arm of [midxBitmapFindings, packBitmapFindings]) {
-    for (const source of store.sources) {
+    for (const source of sources) {
       findings.push(...(await arm(ctx, source, attributeTo(store, source))));
     }
   }
-  return { findings, exitBit: findings.length > 0 ? EXIT_BITMAP : 0 };
+  return { findings, exitBit: findings.length > 0 ? EXIT_CORRUPT : 0 };
 }

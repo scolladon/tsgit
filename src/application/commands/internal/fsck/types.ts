@@ -339,10 +339,9 @@ export interface FsckResult {
   readonly findings: ReadonlyArray<FsckFinding>;
   /**
    * Composite exit bitmask, bits compose by OR: 0=clean, 1=content error
-   * (corrupt/hash-mismatch/strict-upgraded warn), 2=missing/broken-link,
-   * 4=pack inaccessible or index not opened, 8=refs-verify content failure,
-   * 32=multi-pack-index verification failure, 64=pack reverse-index unusable,
-   * 128=a pack's or the in-use multi-pack-index's bitmap checksum mismatch.
+   * (corrupt/hash-mismatch/strict-upgraded warn) and every pack, pack-index,
+   * reverse-index, bitmap and multi-pack-index fault, 2=missing/broken-link,
+   * 8=refs-verify content failure, 16=commit-graph verification failure.
    */
   readonly exitCode: number;
 }

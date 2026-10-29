@@ -288,6 +288,9 @@ const continueRebase: Step = {
 
 const REFUSED_EXIT_STATUS = 1;
 
+/** git dies (128) on a stash push it refuses; 1 is reserved for a conflict. */
+const STASH_REFUSED_EXIT_STATUS = 128;
+
 const exitStatusOf = (run: () => void): number => {
   try {
     run();
@@ -1725,7 +1728,10 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               const tsgitRefusal = await tsgitStashRefusal(tsgitTwin, args);
 
               // Assert
-              expect(gitRefusal).toEqual({ status: 1, stderr: BEYOND_SYMLINK_STDERR });
+              expect(gitRefusal).toEqual({
+                status: STASH_REFUSED_EXIT_STATUS,
+                stderr: BEYOND_SYMLINK_STDERR,
+              });
               expect(tsgitRefusal).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'd/f' });
               expect(untouched.list).toBe('');
               expect(untouched.status).toMatch(

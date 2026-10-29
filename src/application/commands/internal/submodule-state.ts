@@ -6,7 +6,7 @@ import {
 import type { IndexEntry } from '../../../domain/git-index/index.js';
 import { FILE_MODE, type FileMode } from '../../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
-import { gitfileTooLarge, notARepository } from '../../../domain/repository/error.js';
+import { gitfileTooLarge } from '../../../domain/repository/error.js';
 import { submodulePathIsSymlink } from '../../../domain/submodule/error.js';
 import type { Context } from '../../../ports/context.js';
 import type { WorkingTreeDelta } from '../../primitives/compare-working-tree-entry.js';
@@ -16,6 +16,7 @@ import {
   type LocatedConfigEntry,
 } from '../../primitives/config-read.js';
 import {
+  brokenCheckoutRefusal,
   type GitlinkCheckout,
   probeGitlinkCheckout,
 } from '../../primitives/internal/gitlink-head.js';
@@ -70,7 +71,7 @@ export const populatedCheckout = async (
 ): Promise<RepositoryCheckout | undefined> => {
   const checkout = await probeGitlinkCheckout(ctx, path);
   if (checkout.kind === 'oversized') throw gitfileTooLarge(checkout.shown);
-  if (checkout.kind === 'broken') throw notARepository(checkout.shown);
+  if (checkout.kind === 'broken') throw brokenCheckoutRefusal(checkout);
   return checkout.kind === 'none' ? undefined : checkout;
 };
 

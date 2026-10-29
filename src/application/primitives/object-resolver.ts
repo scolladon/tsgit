@@ -315,11 +315,62 @@ export async function resolveObjectContent(
   // `git repack`, a lazy fetch outside this session) may have changed the
   // store since the last scan. `retryOnceAfterRescan` single-flights the
   // re-scan across concurrent misses and honours an abort raised during it.
-  const retried = await retryOnceAfterRescan(ctx, store, id, () =>
-    tryResolveViaSources(ctx, store, id, verifyHash, maxBytes, mode, refBases),
+  const retried = await retryOnceAfterRescan(
+    ctx,
+    store,
+    id,
+    async () =>
+      (await tryResolveViaSources(ctx, store, id, verifyHash, maxBytes, mode, refBases)) ??
+      (await tryResolveViaOwnerUnavailable(ctx, store, id, verifyHash, maxBytes, refBases)),
   );
   if (retried !== undefined) return retried;
   throw objectNotFound(id);
+}
+
+/** A pack source that holds `id` while the midx assigns it to an owner pack that cannot be opened. */
+export interface OwnerUnavailableHit {
+  readonly source: ObjectSource;
+  readonly hit: PackLookupHit;
+}
+
+/**
+ * git's `find_pack_entry` falls back to the packs the midx names when the
+ * owner of an object is unusable. Only a second-read attempt asks: the first
+ * read keeps the miss, and a quick presence probe never reaches it. Each
+ * source's registry decides on its own whether its midx owner is unavailable,
+ * so a source without that condition costs one generation read and no I/O.
+ */
+export async function ownerUnavailableHit(
+  store: ObjectStore,
+  id: ObjectId,
+): Promise<OwnerUnavailableHit | undefined> {
+  for (const source of store.sources) {
+    const hit = await source.registry.lookupOwnerUnavailable(id);
+    if (hit !== undefined) return { source, hit };
+  }
+  return undefined;
+}
+
+async function tryResolveViaOwnerUnavailable(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes: number | undefined,
+  refBases: Set<ObjectId> | undefined,
+): Promise<(ObjectContent & { declaredSize: number }) | undefined> {
+  const found = await ownerUnavailableHit(store, id);
+  if (found === undefined) return undefined;
+  return resolveFromPackHit(
+    ctx,
+    store,
+    found.source,
+    found.hit,
+    id,
+    verifyHash,
+    maxBytes,
+    refBases,
+  );
 }
 
 /** The deltaCache fast path: neither hop walks a delta chain. Extracted so
@@ -391,6 +442,19 @@ async function tryResolveViaSource(
   if (hit === undefined) {
     return resolveLooseArm(ctx, looseCacheLocation(store, source), id, maxBytes, verifyHash, mode);
   }
+  return resolveFromPackHit(ctx, store, source, hit, id, verifyHash, maxBytes, refBases);
+}
+
+async function resolveFromPackHit(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+  hit: PackLookupHit,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes: number | undefined,
+  refBases: Set<ObjectId> | undefined,
+): Promise<ObjectContent & { declaredSize: number }> {
   checkAborted(ctx);
   const resolved = await resolvePackChain(ctx, store, source, hit, id, maxBytes, refBases);
   checkAborted(ctx);

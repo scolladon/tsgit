@@ -55,9 +55,10 @@ function assertCommitInput(ctx: Context, input: CreateCommitInput): void {
   if (exceedsMaxCommitMessageBytes(input.message)) {
     throw invalidCommit(REASON_MESSAGE_EXCEEDS_MAX);
   }
-  // gpgSignature uses the narrower predicate (NUL/CR only) — a genuine armor
-  // block legitimately contains a blank line and a trailing LF. extraHeaders
-  // values keep the broader guard since they have no such structural exception.
+  // gpgSignature uses the narrower predicate (NUL only) — git stores lone CRs
+  // left in the armor, and a genuine armor block legitimately contains a blank
+  // line and a trailing LF. extraHeaders values keep the broader guard since
+  // they have no such structural exception.
   if (input.gpgSignature !== undefined && hasSignatureInjectionChars(input.gpgSignature)) {
     throw invalidCommit(REASON_GPG_SIGNATURE_INJECTION);
   }

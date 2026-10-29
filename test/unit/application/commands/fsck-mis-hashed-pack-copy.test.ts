@@ -20,7 +20,6 @@ import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { writeSyntheticPack } from '../primitives/pack-fixture.js';
 
-const EXIT_PACK = 4;
 const EXIT_REFS_CONTENT = 8;
 const AUTHOR = {
   name: 'Ada',
@@ -132,7 +131,7 @@ describe('Given a tree whose packed copy hashes to another tree beside a valid l
 
       // Assert
       expect(danglingIds(result.findings)).toEqual([]);
-      expect(result.exitCode).toBe(EXIT_PACK);
+      expect(result.exitCode).toBe(1);
     });
   });
 
@@ -155,7 +154,7 @@ describe('Given a tree whose packed copy hashes to another tree beside a valid l
         },
       ]);
       expect(danglingIds(result.findings)).toEqual([]);
-      expect(result.exitCode).toBe(EXIT_PACK | EXIT_REFS_CONTENT);
+      expect(result.exitCode).toBe(1 | EXIT_REFS_CONTENT);
     });
   });
 });
@@ -173,7 +172,7 @@ describe('Given a tree whose only copy is packed and hashes to another tree', ()
 
       // Assert
       expect(danglingIds(result.findings).sort()).toEqual([repo.b, repo.subtree].sort());
-      expect(result.exitCode).toBe(EXIT_PACK);
+      expect(result.exitCode).toBe(1);
     });
   });
 });

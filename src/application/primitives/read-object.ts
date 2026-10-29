@@ -566,6 +566,22 @@ async function readPackedMetadata(
   return { type, uncompressedSize: readDeltaTargetSize(instructions) };
 }
 
+/**
+ * The type a pack entry declares, from entry headers alone: a base names its
+ * own, a delta takes its chain base's. Nothing is inflated, so recovering a
+ * type is bounded by the chain length, not by the object size.
+ */
+export async function declaredTypeAtHit(
+  ctx: Context,
+  registry: PackRegistry,
+  hit: PackLookupHit,
+  id: ObjectId,
+): Promise<ObjectType> {
+  const { header } = await readEntryHeaderAt(ctx, hit);
+  if (!isDeltaHeader(header)) return packEntryTypeToObjectType(header.type);
+  return walkDeltaBaseType(ctx, registry, hit, header, id);
+}
+
 async function readEntryHeaderAt(
   ctx: Context,
   hit: PackLookupHit,

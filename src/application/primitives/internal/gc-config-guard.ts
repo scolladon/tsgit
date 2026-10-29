@@ -35,13 +35,21 @@ const assertValidGcBooleanConfig = async (ctx: Context, key: string): Promise<vo
 
 /** The `gc_config` keys git reads before `gc.pruneExpire`, in git's order. */
 export const assertValidLeadingGcConfig = async (ctx: Context): Promise<void> => {
-  await assertValidGcNumberConfig(ctx, 'auto', 'int');
-  await assertValidGcNumberConfig(ctx, 'autoPackLimit', 'int');
   await assertValidGcBooleanConfig(ctx, 'cruftPacks');
 };
 
 /** The `gc_config` keys git reads after `gc.worktreePruneExpire`, in git's order. */
 export const assertValidTrailingGcConfig = async (ctx: Context): Promise<void> => {
   await readLastGcExpiry(ctx, 'logExpiry');
+};
+
+/** The keys git reads only when it consults the auto gate: `gc.auto`, then `gc.autoPackLimit`. */
+export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
+  await assertValidGcNumberConfig(ctx, 'auto', 'int');
+  await assertValidGcNumberConfig(ctx, 'autoPackLimit', 'int');
+};
+
+/** The key git reads only when it repacks. */
+export const assertValidBigPackThreshold = async (ctx: Context): Promise<void> => {
   await assertValidGcNumberConfig(ctx, 'bigPackThreshold', 'ulong');
 };

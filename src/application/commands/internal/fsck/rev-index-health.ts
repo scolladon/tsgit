@@ -4,8 +4,8 @@ import type { Context } from '../../../../ports/context.js';
 import { packPositionMap } from '../../../primitives/internal/pack-positions.js';
 import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
 import { faultReason, type RegisteredPack } from '../../../primitives/pack-registry.js';
-import { EXIT_PACK_REV_INDEX } from './exit-codes.js';
-import { attributeTo } from './source-attribution.js';
+import { EXIT_CORRUPT } from './exit-codes.js';
+import { attributeTo, auditedSources } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 const REASON_REV_INDEX_CHECKSUM = 'invalid checksum';
@@ -96,18 +96,19 @@ async function checkOnePack(
  * pack whose `.idx` never loaded is never a member of that set, so its
  * `.rev` — usable or not — is never inspected here: canonical git never
  * derives a reverse index from an index it could not load either, which is
- * exactly why the two causes of bit 64 never double-report for one pack.
- * `opts` is taken for symmetry with the other health passes and ignored:
- * this term is ungated, running identically in every mode.
+ * exactly why the two causes of bit 1 never double-report for one pack.
+ * Gated as git 2.56 does: `connectivityOnly` skips the pass, and `full: false`
+ * checks the local source only.
  */
 export async function runRevIndexHealthPass(
   ctx: Context,
-  _opts: FsckOptions,
+  opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
+  if (opts.connectivityOnly === true) return { findings: [], exitBit: 0 };
   const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
   let exitBit = 0;
-  for (const source of store.sources) {
+  for (const source of auditedSources(store, opts)) {
     const sourceFindings: FsckFinding[] = [];
     exitBit |= await checkSourcePacks(ctx, source, sourceFindings);
     const attribution = attributeTo(store, source);
@@ -124,7 +125,7 @@ async function checkSourcePacks(
   let exitBit = 0;
   for (const pack of await source.registry.all()) {
     if (!pack.hasRevIndex) continue;
-    if (await checkOnePack(ctx, findings, pack)) exitBit = EXIT_PACK_REV_INDEX;
+    if (await checkOnePack(ctx, findings, pack)) exitBit = EXIT_CORRUPT;
   }
   return exitBit;
 }

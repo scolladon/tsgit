@@ -127,7 +127,7 @@ describe('submoduleState', () => {
 
   describe('Given a gitlink whose gitfile points at a missing module directory', () => {
     describe('When the state is asked', () => {
-      it('Then it refuses with NOT_A_REPOSITORY at the pointed path as written', async () => {
+      it('Then it refuses with GITFILE_NOT_A_REPOSITORY at the gitfile', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(dotGitOf(ctx), 'gitdir: ../.git/modules/nowhere\n');
@@ -137,10 +137,7 @@ describe('submoduleState', () => {
         const result = await refusalOf(() => sut(ctx, gitlinkEntry, directory, deps));
 
         // Assert
-        expect(result).toEqual({
-          code: 'NOT_A_REPOSITORY',
-          path: 'sub/../.git/modules/nowhere',
-        });
+        expect(result).toEqual({ code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' });
       });
     });
   });

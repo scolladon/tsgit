@@ -428,7 +428,7 @@ async function buildHealthyRepo(content: string): Promise<Context> {
 
 describe('Given an arbitrary healthy repo plus one unusable pack', () => {
   describe('When fsck runs in default mode', () => {
-    it('Then exactly one gated pack finding is added, bit 4 is set, and the non-pack findings are unchanged', async () => {
+    it('Then exactly one gated pack finding is added, bit 1 is set, and the non-pack findings are unchanged', async () => {
       await fc.assert(
         fc.asyncProperty(
           arbBlobContent(),
@@ -457,7 +457,7 @@ describe('Given an arbitrary healthy repo plus one unusable pack', () => {
 
             return (
               gated.length === 1 &&
-              (result.exitCode & 4) === 4 &&
+              (result.exitCode & 1) === 1 &&
               sameFindingSet(nonPack, baselineNonPack)
             );
           },
@@ -470,7 +470,7 @@ describe('Given an arbitrary healthy repo plus one unusable pack', () => {
 
 describe('Given an arbitrary healthy repo plus N unusable packs', () => {
   describe('When fsck runs in default mode', () => {
-    it('Then exactly N gated pack findings are added and bit 4 is set exactly once', async () => {
+    it('Then exactly N gated pack findings are added and bit 1 is set exactly once', async () => {
       await fc.assert(
         fc.asyncProperty(
           arbBlobContent(),
@@ -495,7 +495,7 @@ describe('Given an arbitrary healthy repo plus N unusable packs', () => {
 
             // Assert
             const gated = result.findings.filter(isGatedPackFinding);
-            return gated.length === packCount && (result.exitCode & 4) === 4;
+            return gated.length === packCount && (result.exitCode & 1) === 1;
           },
         ),
         { numRuns: 50 },

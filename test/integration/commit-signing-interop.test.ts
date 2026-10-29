@@ -443,7 +443,7 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('commit signing interop', () =
   describe('Given both tools wired to a signer that writes its armor with carriage returns', () => {
     describe('When each commits the same tree with signing on', () => {
       it.each(['openpgp', 'ssh'] as const)(
-        'Then the %s signature is stored without them and both commits share one OID',
+        'Then the %s signature is stored with only CR before LF removed and both commits share one OID',
         async (format) => {
           // Arrange
           const signer = await writeCrlfSigner(format);
@@ -466,7 +466,7 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('commit signing interop', () =
           const stored = await readObject(tsCtx, result.id);
           if (stored.type !== 'commit') throw new Error('expected a commit object');
           expect(stored.data.gpgSignature).toBe(
-            CRLF_ARMOR_LINES[format].join('\n').replace(SHELL_CR, ''),
+            CRLF_ARMOR_LINES[format].join('\n').replace(SHELL_CR, '\r'),
           );
           expect(result.id).toBe(gitOid);
         },

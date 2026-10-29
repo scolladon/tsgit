@@ -784,6 +784,40 @@ describe('commit', () => {
       });
     });
 
+    describe('Given a commit whose signature keeps a lone CR and a CRLF pair', () => {
+      describe('When serializing then parsing', () => {
+        it('Then every line feed is continued and the signature round-trips unchanged', () => {
+          // Arrange
+          const gpgSignature =
+            '-----BEGIN PGP SIGNATURE-----\n\nab\rcd\nef\r\n-----END PGP SIGNATURE-----\n';
+          const ident = { name: 'A', email: 'a@a.com', timestamp: 0, timezoneOffset: '+0000' };
+          const commit: Commit = {
+            type: 'commit',
+            id: DUMMY_ID,
+            data: {
+              tree: TREE_ID,
+              parents: [],
+              author: ident,
+              committer: ident,
+              message: 'msg',
+              gpgSignature,
+              extraHeaders: [],
+            },
+          };
+
+          // Act
+          const bytes = serializeCommitContent(commit);
+          const result = parseCommitContent(DUMMY_ID, bytes);
+
+          // Assert
+          expect(new TextDecoder().decode(bytes)).toContain(
+            'gpgsig -----BEGIN PGP SIGNATURE-----\n \n ab\rcd\n ef\r\n -----END PGP SIGNATURE-----\n \n',
+          );
+          expect(result.data.gpgSignature).toBe(gpgSignature);
+        });
+      });
+    });
+
     describe('Given a GPG-signed commit from real git', () => {
       describe('When roundtripping', () => {
         it('Then bytes are identical', () => {

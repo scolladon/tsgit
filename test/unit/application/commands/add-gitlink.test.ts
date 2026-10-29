@@ -766,7 +766,7 @@ const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
 describe('add over a gitlink whose checkout leads to no repository', () => {
   describe('Given a pointer to a gitdir that does not exist and an untracked file', () => {
     describe('When the whole tree is added', () => {
-      it('Then it refuses with the pointer as typed and writes no blob', async () => {
+      it('Then it refuses naming the gitfile and writes no blob', async () => {
         // Arrange
         const ctx = await superproject({
           gitfile: 'gitdir: ../.git/modules/nowhere\n',
@@ -779,10 +779,7 @@ describe('add over a gitlink whose checkout leads to no repository', () => {
         const refusal = await refusalOf(() => sut(ctx, ['.']));
 
         // Assert
-        expect(refusal).toEqual({
-          code: 'NOT_A_REPOSITORY',
-          path: 'sub/../.git/modules/nowhere',
-        });
+        expect(refusal).toEqual({ code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' });
         expect((await readIndex(ctx)).entries.map(({ path, id }) => `${path}:${id}`)).toEqual(
           before,
         );
@@ -797,32 +794,36 @@ describe('add over a gitlink whose checkout is broken', () => {
     {
       label: 'a module whose HEAD is garbage',
       setup: { head: 'garbage\n' },
-      path: 'sub/../.git/modules/sub',
+      code: 'GITFILE_NOT_A_REPOSITORY',
     },
-    { label: 'a gitfile that does not parse', setup: { gitfile: 'garbage\n' }, path: 'sub/.git' },
+    {
+      label: 'a gitfile that does not parse',
+      setup: { gitfile: 'garbage\n' },
+      code: 'NOT_A_REPOSITORY',
+    },
     {
       label: 'an empty .git directory',
       setup: { checkout: 'embedded' as const, head: null },
-      path: 'sub/.git',
+      code: 'NOT_A_REPOSITORY',
     },
     {
       label: 'a .git directory whose HEAD is garbage',
       setup: { checkout: 'embedded' as const, head: 'garbage\n' },
-      path: 'sub/.git',
+      code: 'NOT_A_REPOSITORY',
     },
     {
       label: 'a .git symlink to a directory holding no HEAD',
       setup: { checkout: 'linked' as const, head: null },
-      path: 'sub/.git',
+      code: 'NOT_A_REPOSITORY',
     },
     {
       label: 'an absolute pointer to nothing',
       setup: { gitfile: 'gitdir: /nowhere/at/all\n' },
-      path: '/nowhere/at/all',
+      code: 'GITFILE_NOT_A_REPOSITORY',
     },
-  ])('Given $label and an untracked file', ({ setup, path }) => {
+  ])('Given $label and an untracked file', ({ setup, code }) => {
     describe('When the whole tree is added', () => {
-      it('Then it refuses with the path git names and stages nothing', async () => {
+      it('Then it refuses with the matching code and stages nothing', async () => {
         // Arrange
         const ctx = await superproject({ ...setup, tree: { n: 'untracked\n' } });
         const before = (await readIndex(ctx)).entries.map(({ id }) => id);
@@ -832,7 +833,7 @@ describe('add over a gitlink whose checkout is broken', () => {
         const refusal = await refusalOf(() => sut(ctx, ['.']));
 
         // Assert
-        expect(refusal).toEqual({ code: 'NOT_A_REPOSITORY', path });
+        expect(refusal).toEqual({ code, path: 'sub/.git' });
         expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
         expect(await blobExists(ctx, 'untracked\n')).toBe(false);
       });
@@ -893,8 +894,6 @@ describe('add over a gitlink whose repository fails the format gate', () => {
 });
 
 describe('add over a gitlink whose repository lacks objects or refs', () => {
-  const ADMIN_POINTER = 'sub/../.git/admin';
-
   describe.each([
     {
       label: 'a commondir naming nothing',
@@ -953,7 +952,7 @@ describe('add over a gitlink whose repository lacks objects or refs', () => {
     },
   ])('Given $label and an untracked file', ({ arrange }) => {
     describe('When the whole tree is added', () => {
-      it('Then it refuses with the pointer as typed and stages nothing', async () => {
+      it('Then it refuses naming the gitfile and stages nothing', async () => {
         // Arrange
         const ctx = await superproject({ checkout: 'worktree-admin', tree: { n: 'untracked\n' } });
         await arrange(ctx);
@@ -964,7 +963,7 @@ describe('add over a gitlink whose repository lacks objects or refs', () => {
         const refusal = await refusalOf(() => sut(ctx, ['.']));
 
         // Assert
-        expect(refusal).toEqual({ code: 'NOT_A_REPOSITORY', path: ADMIN_POINTER });
+        expect(refusal).toEqual({ code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' });
         expect((await readIndex(ctx)).entries.map(({ id }) => id)).toEqual(before);
         expect(await blobExists(ctx, 'untracked\n')).toBe(false);
       });

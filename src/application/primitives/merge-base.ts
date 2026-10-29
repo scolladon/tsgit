@@ -25,6 +25,7 @@ import {
 import {
   type CommitMeta,
   GENERATION_INFINITY,
+  GENERATION_NUMBER_V1_MAX,
   readCommitMeta,
 } from './internal/read-commit-meta.js';
 
@@ -170,11 +171,6 @@ const readMetaOrMissing: ReadMeta<CommitMeta | undefined> = async (ctx, id) => {
   return meta === ABSENT ? undefined : meta;
 };
 
-const hasNonStale = (
-  queue: readonly QueueEntry<undefined>[],
-  flags: ReadonlyMap<ObjectId, number>,
-): boolean => queue.some((entry) => ((flags.get(entry.oid) ?? 0) & STALE) === 0);
-
 interface PaintEntry extends QueueEntry<undefined> {
   readonly generation: number;
   /** Git's `prio_queue` insertion counter: among entries with equal keys, the
@@ -207,9 +203,14 @@ interface PaintOptions {
   readonly minGeneration: number;
   /** Git's `MERGE_BASE_FIND_ALL`: collect every base instead of stopping at the first. */
   readonly findAll: boolean;
-  /** Git's chain-wide `corrected_commit_dates_enabled` verdict. */
-  readonly correctedCommitDates: boolean;
+  /** Generations at or above this are not strictly topological: Git's
+   *  `topo_ceiling`, past which the early exits no longer hold. */
+  readonly topoCeiling: number;
 }
+
+/** Git's chain-wide `corrected_commit_dates_enabled` verdict as a ceiling. */
+const topoCeilingFor = (correctedCommitDates: boolean): number =>
+  correctedCommitDates ? GENERATION_INFINITY : GENERATION_NUMBER_V1_MAX;
 
 interface PaintOutcome {
   readonly flags: ReadonlyMap<ObjectId, number>;
@@ -228,13 +229,12 @@ interface PaintOutcome {
  * from a graph-absent one — see the design's soundness note).
  *
  * Pop order is Git's: generation first, then newer date, then its `prio_queue`
- * FIFO counter — EXCEPT on a discovery walk (`minGeneration` 0) of a repository
- * whose commit-graph serves no corrected commit dates, where Git swaps in the
- * date-only comparator because topological levels and corrected commit dates
- * are not comparable quantities.
+ * FIFO counter. The walk also stops, as Git's does, once one side has no
+ * queued entry left and no candidate is waiting, while the head is below
+ * `topoCeiling`.
  *
  * Without `findAll` the walk stops at the FIRST base it pops, provided that
- * base has a finite generation: that base is the single line `git merge-base`
+ * base lies below `topoCeiling`: that base is the single line `git merge-base`
  * prints, and it is not in general the newest-dated one.
  *
  * Returns the per-call flag map and result list; isolated state, so no
@@ -246,7 +246,7 @@ const paint = async (
   twos: readonly ObjectId[],
   options: PaintOptions,
 ): Promise<PaintOutcome> => {
-  const queue = makePaintQueue(read, comparatorFor(options));
+  const queue = makePaintQueue(read, byGenerationThenDate, options.topoCeiling);
   const results: ObjectId[] = [];
   await queue.mark(one, PARENT1);
   // Git's `if (!n)` exit: with nothing to paint against, `one` is trivially its
@@ -271,60 +271,109 @@ const paint = async (
   return { flags: queue.flags, results };
 };
 
-/** Git swaps its generation-aware comparator for the date-only one on a
- *  discovery walk whose graph serves no corrected commit dates: a topological
- *  level and a committer second are not comparable quantities. */
-const comparatorFor = (options: PaintOptions): Precedes =>
-  options.minGeneration === 0 && !options.correctedCommitDates ? byDate : byGenerationThenDate;
-
 interface PaintQueue {
   readonly flags: Map<ObjectId, number>;
   readonly mark: (id: ObjectId, bits: number) => Promise<void>;
-  /** The next non-stale commit, or `undefined` once every waiting entry is
-   *  stale (Git's `while (queue.max_nonstale)`). */
+  /** The next commit worth painting, or `undefined` once Git's
+   *  `paint_queue_get` would stop: only stale entries remain, or one side ran
+   *  dry inside the ordered region with no candidate left to pop. */
   readonly pop: () => PaintEntry | undefined;
 }
 
-/** Git's `nonstale_queue`: the per-walk flag map plus an ordered queue that
+/** Git's `paint_state` counters: each queued non-stale entry sits in exactly
+ *  one bucket — PARENT1-only, PARENT2-only, or both (a pending base). */
+interface PaintCounts {
+  parent1: number;
+  parent2: number;
+  candidates: number;
+}
+
+/** Git's `paint_count_update`. */
+const countBucket = (counts: PaintCounts, bits: number, delta: number): void => {
+  switch (bits & (BOTH | STALE)) {
+    case PARENT1:
+      counts.parent1 += delta;
+      return;
+    case PARENT2:
+      counts.parent2 += delta;
+      return;
+    case BOTH:
+      counts.candidates += delta;
+      return;
+  }
+};
+
+/** Git's exit conditions in `paint_queue_get`, judged while the head is still
+ *  counted, so the last non-stale entry is still handed out. */
+const walkIsOver = (counts: PaintCounts, generation: number, topoCeiling: number): boolean => {
+  if (counts.candidates !== 0) return false;
+  if (counts.parent1 === 0 && counts.parent2 === 0) return true;
+  const oneSideDry = counts.parent1 === 0 || counts.parent2 === 0;
+  return oneSideDry && generation < topoCeiling;
+};
+
+interface PaintState {
+  readonly flags: Map<ObjectId, number>;
+  readonly queued: Set<ObjectId>;
+  readonly counts: PaintCounts;
+  readonly heap: BinaryHeap<PaintEntry>;
+  insertions: number;
+}
+
+const markPainted = async (
+  state: PaintState,
+  read: ReadCommit,
+  id: ObjectId,
+  bits: number,
+): Promise<void> => {
+  const { flags, queued, counts, heap } = state;
+  const before = flags.get(id) ?? 0;
+  const after = before | bits;
+  flags.set(id, after);
+  // Git's ENQUEUED bit: an id waits in the queue at most once, so re-reaching
+  // it only merges flags into the entry already queued — and moves it to the
+  // bucket those flags now put it in (`paint_queue_put`).
+  if (queued.has(id)) {
+    countBucket(counts, before, -1);
+    countBucket(counts, after, 1);
+    return;
+  }
+  queued.add(id);
+  const meta = await read(id);
+  heap.push({
+    oid: id,
+    date: meta.committerDate,
+    generation: meta.generation,
+    ins: state.insertions++,
+    parents: meta.parents,
+    value: undefined,
+  });
+  countBucket(counts, after, 1);
+};
+
+const popPainted = (state: PaintState, topoCeiling: number): PaintEntry | undefined => {
+  const entry = state.heap.pop();
+  if (entry === undefined) return undefined;
+  state.queued.delete(entry.oid);
+  if (walkIsOver(state.counts, entry.generation, topoCeiling)) return undefined;
+  countBucket(state.counts, state.flags.get(entry.oid) ?? 0, -1);
+  return entry;
+};
+
+/** Git's `paint_state` queue: the per-walk flag map plus an ordered queue that
  *  holds each id at most once. */
-const makePaintQueue = (read: ReadCommit, precedes: Precedes): PaintQueue => {
-  const flags = new Map<ObjectId, number>();
-  const queued = new Set<ObjectId>();
-  const heap = new BinaryHeap<PaintEntry>(precedes);
-  let insertions = 0;
+const makePaintQueue = (read: ReadCommit, precedes: Precedes, topoCeiling: number): PaintQueue => {
+  const state: PaintState = {
+    flags: new Map<ObjectId, number>(),
+    queued: new Set<ObjectId>(),
+    counts: { parent1: 0, parent2: 0, candidates: 0 },
+    heap: new BinaryHeap<PaintEntry>(precedes),
+    insertions: 0,
+  };
   return {
-    flags,
-    mark: async (id, bits) => {
-      flags.set(id, (flags.get(id) ?? 0) | bits);
-      // Git's ENQUEUED bit: an id waits in the queue at most once, so re-reaching
-      // it only merges flags into the entry already queued.
-      // Stryker disable next-line ConditionalExpression: equivalent — a duplicate entry
-      // carries the same id, hence the same generation and date, so it can only pop
-      // AFTER its twin; by then the twin has already recorded the base (`visit`'s
-      // RESULT guard skips the re-record) and propagated STALE, and re-propagating
-      // the same bits to the same parents is idempotent. A twin that popped carrying
-      // STALE leaves the duplicate popping with STALE too, so `visit` never records
-      // it and its parents already carry STALE — the bits it adds land only on STALE
-      // commits, which neither the result filter nor `removeRedundant` reads.
-      // Queueing twice costs pops, never a different flag map or result list.
-      if (queued.has(id)) return;
-      queued.add(id);
-      const meta = await read(id);
-      heap.push({
-        oid: id,
-        date: meta.committerDate,
-        generation: meta.generation,
-        ins: insertions++,
-        parents: meta.parents,
-        value: undefined,
-      });
-    },
-    pop: () => {
-      if (!hasNonStale(heap.entries(), flags)) return undefined;
-      const entry = heap.pop()!;
-      queued.delete(entry.oid);
-      return entry;
-    },
+    flags: state.flags,
+    mark: (id, bits) => markPainted(state, read, id, bits),
+    pop: () => popPainted(state, topoCeiling),
   };
 };
 
@@ -351,7 +400,7 @@ const visit = (
   if (((flags.get(entry.oid) ?? 0) & RESULT) === 0) {
     flags.set(entry.oid, (flags.get(entry.oid) ?? 0) | RESULT);
     results.push(entry.oid);
-    if (!options.findAll && entry.generation < GENERATION_INFINITY) return carried | DONE;
+    if (!options.findAll && entry.generation < options.topoCeiling) return carried | DONE;
   }
   return carried | STALE;
 };
@@ -391,7 +440,7 @@ const lowestGeneration = async (
 const removeRedundant = async (
   read: ReadCommit,
   commits: readonly ObjectId[],
-  correctedCommitDates: boolean,
+  topoCeiling: number,
 ): Promise<ObjectId[]> => {
   const unique = [...new Set(commits)];
   const redundant = new Set<ObjectId>();
@@ -402,7 +451,7 @@ const removeRedundant = async (
     const { flags } = await paint(read, candidate, others, {
       minGeneration,
       findAll: true,
-      correctedCommitDates,
+      topoCeiling,
     });
     if (((flags.get(candidate) ?? 0) & PARENT2) !== 0) redundant.add(candidate);
     for (const other of others) {
@@ -421,7 +470,7 @@ const mergeBasesMany = async (
   read: ReadCommit,
   one: ObjectId,
   twos: readonly ObjectId[],
-  options: { readonly findAll: boolean; readonly correctedCommitDates: boolean },
+  options: { readonly findAll: boolean; readonly topoCeiling: number },
 ): Promise<ObjectId[]> => {
   // Git's own shortcut: a commit compared against itself is its own base, and
   // is deliberately left unflagged so nothing has to be cleaned up afterwards.
@@ -434,7 +483,7 @@ const mergeBasesMany = async (
   const alive = results.filter((id) => ((flags.get(id) ?? 0) & STALE) === 0);
   const sorted = await byDateDescending(read, alive);
   if (sorted.length <= 1) return sorted;
-  return byDateDescending(read, await removeRedundant(read, sorted, options.correctedCommitDates));
+  return byDateDescending(read, await removeRedundant(read, sorted, options.topoCeiling));
 };
 
 /**
@@ -446,7 +495,7 @@ const mergeBasesMany = async (
 const octopusMergeBases = async (
   read: ReadCommit,
   commits: readonly ObjectId[],
-  correctedCommitDates: boolean,
+  topoCeiling: number,
 ): Promise<ObjectId[]> => {
   let bases: ObjectId[] = [commits[0]!];
   for (const commit of commits.slice(1)) {
@@ -454,13 +503,13 @@ const octopusMergeBases = async (
     for (const base of bases) {
       const folded = await mergeBasesMany(read, commit, [base], {
         findAll: true,
-        correctedCommitDates,
+        topoCeiling,
       });
       for (const id of folded) next.push(id);
     }
     bases = next;
   }
-  return removeRedundant(read, bases, correctedCommitDates);
+  return removeRedundant(read, bases, topoCeiling);
 };
 
 /**
@@ -540,7 +589,7 @@ const reachesByPaint = async (
   const { flags } = await paint(read, target.id, [from.id], {
     minGeneration: target.meta.generation,
     findAll: true,
-    correctedCommitDates: await correctedCommitDatesEnabled(ctx),
+    topoCeiling: topoCeilingFor(await correctedCommitDatesEnabled(ctx)),
   });
   return ((flags.get(target.id) ?? 0) & PARENT2) !== 0;
 };
@@ -674,13 +723,13 @@ export const mergeBasesOf = async (
 ): Promise<readonly ObjectId[]> => {
   const read = makeReadCommit(ctx, table);
   const findAll = options?.all === true;
-  const correctedCommitDates = await correctedCommitDatesEnabled(ctx);
+  const topoCeiling = topoCeilingFor(await correctedCommitDatesEnabled(ctx));
   const bases =
     options?.octopus === true
-      ? await octopusMergeBases(read, commits, correctedCommitDates)
+      ? await octopusMergeBases(read, commits, topoCeiling)
       : await mergeBasesMany(read, commits[0]!, commits.slice(1), {
           findAll,
-          correctedCommitDates,
+          topoCeiling,
         });
   return findAll ? bases : bases.slice(0, 1);
 };
@@ -694,7 +743,7 @@ export const reduceHeads = async (
   commits: readonly ObjectId[],
 ): Promise<readonly ObjectId[]> => {
   const read = makeReadCommit(ctx, createObjectTypeTable());
-  return removeRedundant(read, commits, await correctedCommitDatesEnabled(ctx));
+  return removeRedundant(read, commits, topoCeilingFor(await correctedCommitDatesEnabled(ctx)));
 };
 
 const COMMIT_PARSE_FAILED = 'COMMIT_PARSE_FAILED';

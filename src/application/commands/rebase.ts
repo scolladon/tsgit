@@ -771,10 +771,9 @@ const advanceFlat = async (
     case 'moved':
       flat.cur = outcome.head;
       return undefined;
-    // git's dropped empty pick takes its AUTO_MERGE with it, and is recorded as rewritten to HEAD.
+    // git's dropped empty pick takes its AUTO_MERGE with it and is not recorded as rewritten.
     case 'empty':
       await removeAutoMerge(ctx);
-      flat.rewritten.push([(rc.todo[index] as PlannedPick).oid, flat.cur]);
       return undefined;
     case 'conflict':
       return stopOnConflict(ctx, rc, { index, cur: flat.cur }, outcome.conflicts, flat.rewritten);

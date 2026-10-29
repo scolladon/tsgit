@@ -33,6 +33,8 @@ import {
   writeCruftPack,
 } from '../../primitives/internal/cruft-pack-lifecycle.js';
 import {
+  assertValidBigPackThreshold,
+  assertValidGcAutoConfig,
   assertValidLeadingGcConfig,
   assertValidTrailingGcConfig,
   readGcExpiryCutoff,
@@ -114,7 +116,6 @@ function shouldDeclineForAuto(
 
 /** The gc settings git's `gc_config` resolves. */
 export interface GcSettings {
-  readonly autoThreshold: number;
   readonly cruftPacks: boolean;
   readonly pruneCutoff: number;
   readonly worktreePruneCutoff: number;
@@ -122,10 +123,11 @@ export interface GcSettings {
 
 /**
  * git's `gc_config`: `git gc` and `git maintenance run` read — and refuse a
- * malformed — `gc.auto`, `gc.autoPackLimit`, `gc.cruftPacks`,
- * `gc.pruneExpire`, `gc.worktreePruneExpire`, `gc.logExpiry` and
- * `gc.bigPackThreshold` before any task runs or any `--auto` gate declines,
- * in that order, each from its last entry.
+ * malformed — `gc.cruftPacks`, `gc.pruneExpire`, `gc.worktreePruneExpire` and
+ * `gc.logExpiry` before any task runs or any `--auto` gate declines, in that
+ * order, each from its last entry. `gc.auto` and `gc.autoPackLimit` are read
+ * only when the auto gate is consulted and `gc.bigPackThreshold` only when it
+ * repacks (git 2.56), so they are validated at those points instead.
  */
 export async function readGcSettings(ctx: Context): Promise<GcSettings> {
   await assertValidLeadingGcConfig(ctx);
@@ -138,7 +140,6 @@ export async function readGcSettings(ctx: Context): Promise<GcSettings> {
   await assertValidTrailingGcConfig(ctx);
   const { gc } = await readConfig(ctx);
   return {
-    autoThreshold: gc?.auto ?? DEFAULT_GC_AUTO_THRESHOLD,
     cruftPacks: gc?.cruftPacks ?? true,
     pruneCutoff,
     worktreePruneCutoff,
@@ -1048,7 +1049,10 @@ export async function runGcTask(
   refreshPackRegistry(ctx);
   const census = await takeStoreCensus(ctx);
   const { settings } = opts;
-  if (shouldDeclineForAuto(opts.auto, settings.autoThreshold, census.looseObjectsBefore)) {
+  if (opts.auto !== true) await assertValidGcAutoConfig(ctx);
+  const { gc } = await readConfig(ctx);
+  const threshold = gc?.auto ?? DEFAULT_GC_AUTO_THRESHOLD;
+  if (shouldDeclineForAuto(opts.auto, threshold, census.looseObjectsBefore)) {
     return { ran: false, result: declinedResult(census) };
   }
   // git's repack loads the promisor remotes before pack-objects reads `[pack]`.
@@ -1060,6 +1064,7 @@ export async function runGcTask(
 /** Steps 1b to 11: classify, plan, write, retire, prune, tidy, then measure what is left. */
 async function repack(run: GcRun): Promise<GcResult> {
   const { ctx, census } = run;
+  await assertValidBigPackThreshold(ctx);
   const existing = await readExistingPacks(run);
   const plan = await planRepack(run, existing);
   const outputs = await writeRepack(run, plan, existing);

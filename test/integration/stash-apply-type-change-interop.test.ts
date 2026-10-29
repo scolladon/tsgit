@@ -161,7 +161,7 @@ const STAGED_SHAPES: ReadonlyArray<ShapeName> = ['DFa', 'DFna', 'FDa', 'LDa', 'L
 const MERGED = { git: { exit: 0, autoMerge: true } };
 const UNCHANGED = { git: { exit: 0, autoMerge: false } };
 const NO_STASH = {
-  git: { exit: 1, autoMerge: false },
+  git: { exit: 128, autoMerge: false },
   refusal: 'STASH_NOT_FOUND',
   pushRefusal: 'PATHSPEC_BEYOND_SYMLINK',
 };
@@ -185,7 +185,7 @@ const UNTRACKED_POSTS: Readonly<Record<string, Occupant>> = {
 };
 
 const UNTRACKED_NOT_RESTORED = 'STASH_UNTRACKED_NOT_RESTORED';
-const RESTORE_STOPPED = { git: { exit: 1, autoMerge: true }, refusal: UNTRACKED_NOT_RESTORED };
+const RESTORE_STOPPED = { git: { exit: 128, autoMerge: true }, refusal: UNTRACKED_NOT_RESTORED };
 const blockedAt = (component: string) => ({
   ...RESTORE_STOPPED,
   restore: { existing: [], blockedAt: component },
@@ -207,10 +207,14 @@ const M_POSTS: Readonly<Record<string, Occupant>> = {
 };
 
 const WOULD_OVERWRITE = 'STASH_APPLY_WOULD_OVERWRITE';
-const REFUSED = { git: { exit: 1, autoMerge: false }, refusal: WOULD_OVERWRITE };
+const REFUSED = { git: { exit: 128, autoMerge: false }, refusal: WOULD_OVERWRITE };
 const CONFLICTED = { git: { exit: 1, autoMerge: true }, refusal: 'conflict' };
 const refusedWith = (...paths: string[]) => ({ ...REFUSED, restore: { existing: paths } });
-const conflictedWith = (...paths: string[]) => ({ ...CONFLICTED, restore: { existing: paths } });
+const conflictedWith = (...paths: string[]) => ({
+  ...CONFLICTED,
+  git: { exit: 128, autoMerge: true },
+  restore: { existing: paths },
+});
 
 const committed =
   (plant: Occupant): Occupant =>
@@ -251,12 +255,12 @@ const ROWS: ReadonlyArray<Row> = [
   ...afterPosts('UP', '-u', M_POSTS, blockedAt('m')),
   ...afterPosts('UP', '-u', { 'a file at m and a recreated u': bothPlanted }, blockedAt('m')),
   ...expand(['FD'], ['-u'], {
-    git: { exit: 1, autoMerge: false },
+    git: { exit: 128, autoMerge: false },
     refusal: UNTRACKED_NOT_RESTORED,
     restore: { existing: [], blockedAt: 'f' },
   }),
   ...expand(['LD'], ['-u'], {
-    git: { exit: 1, autoMerge: false },
+    git: { exit: 128, autoMerge: false },
     refusal: UNTRACKED_NOT_RESTORED,
     restore: { existing: [], blockedAt: 'l' },
   }),

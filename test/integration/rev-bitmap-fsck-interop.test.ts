@@ -119,11 +119,19 @@ const MODES: ReadonlyArray<{
   readonly label: 'default' | 'connectivityOnly' | 'no-full' | 'strict';
   readonly flags: readonly string[];
   readonly opts: FsckOptions;
+  /** The exit a pack, rev-index, bitmap or midx fault scores in this mode:
+   *  `--connectivity-only` skips those checks, every other mode scores 1. */
+  readonly localPackFaultExit: 0 | 1;
 }> = [
-  { label: 'default', flags: [], opts: {} },
-  { label: 'connectivityOnly', flags: ['--connectivity-only'], opts: { connectivityOnly: true } },
-  { label: 'no-full', flags: ['--no-full'], opts: { full: false } },
-  { label: 'strict', flags: ['--strict'], opts: { strict: true } },
+  { label: 'default', flags: [], opts: {}, localPackFaultExit: 1 },
+  {
+    label: 'connectivityOnly',
+    flags: ['--connectivity-only'],
+    opts: { connectivityOnly: true },
+    localPackFaultExit: 0,
+  },
+  { label: 'no-full', flags: ['--no-full'], opts: { full: false }, localPackFaultExit: 1 },
+  { label: 'strict', flags: ['--strict'], opts: { strict: true }, localPackFaultExit: 1 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -238,7 +246,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     describe.each(LOAD_FAULT_ROWS)(
       'Given a BASE repo with $label, When fsck runs',
       ({ label, reasonContains, mutate }) => {
-        it(`Then both tools score bit 64, and tsgit reports one pack-rev-index-invalid finding whose reason mentions "${reasonContains}"`, async () => {
+        it(`Then both tools score 1, and tsgit reports one pack-rev-index-invalid finding whose reason mentions "${reasonContains}"`, async () => {
           // Arrange
           const slug = label.split(' ')[0]?.toLowerCase() ?? 'row';
           const fixture = await freshBase(slug);
@@ -250,8 +258,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
           const result = await fsck(sut);
 
           // Assert
-          expect(gitResult.exitCode & 64).toBe(64);
-          expect(result.exitCode & 64).toBe(64);
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
           const findings = findingsOfType(result.findings, 'pack-rev-index-invalid');
           expect(findings).toHaveLength(1);
           expect(findings[0]?.reason.toLowerCase()).toContain(reasonContains);
@@ -260,7 +268,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     );
 
     describe('Given a BASE repo with R9b own digest flipped, When fsck runs', () => {
-      it('Then both tools score bit 64, and tsgit reports one pack-rev-index-invalid finding for an invalid checksum', async () => {
+      it('Then both tools score 1, and tsgit reports one pack-rev-index-invalid finding for an invalid checksum', async () => {
         // Arrange
         const fixture = await freshBase('r9b');
         mutateOrThrowRev(fixture, flipLastByte);
@@ -271,8 +279,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 64).toBe(64);
-        expect(result.exitCode & 64).toBe(64);
+        expect(gitResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
         const findings = findingsOfType(result.findings, 'pack-rev-index-invalid');
         expect(findings).toHaveLength(1);
         expect(findings[0]?.reason).toBe('invalid checksum');
@@ -328,7 +336,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     }
 
     describe('Given a BASE repo with body[0] set out of range, RESTAMPED, When fsck runs', () => {
-      it('Then both tools score bit 64 with exactly one position-mismatch finding at position 0, without pinning the fixture-dependent expected value', async () => {
+      it('Then both tools score 1 with exactly one position-mismatch finding at position 0, without pinning the fixture-dependent expected value', async () => {
         // Arrange
         const fixture = await freshBase('r14');
         mutateOrThrowRev(fixture, (bytes) => {
@@ -342,8 +350,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 64).toBe(64);
-        expect(result.exitCode & 64).toBe(64);
+        expect(gitResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
         const mismatches = findingsOfType(result.findings, 'pack-rev-index-position-mismatch');
         expect(mismatches).toHaveLength(1);
         expect(mismatches[0]?.position).toBe(0);
@@ -354,7 +362,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     });
 
     describe('Given a BASE repo with body[0] set to body[1] (non-permutation), RESTAMPED, When fsck runs', () => {
-      it('Then both tools score bit 64 with exactly one position-mismatch finding at position 0', async () => {
+      it('Then both tools score 1 with exactly one position-mismatch finding at position 0', async () => {
         // Arrange
         const fixture = await freshBase('r15');
         mutateOrThrowRev(fixture, (bytes) => {
@@ -369,17 +377,26 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 64).toBe(64);
-        expect(result.exitCode & 64).toBe(64);
+        expect(gitResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
         const mismatches = findingsOfType(result.findings, 'pack-rev-index-position-mismatch');
         expect(mismatches).toHaveLength(1);
         expect(mismatches[0]?.position).toBe(0);
       });
     });
 
+    // --no-full also scores 2: the swapped .rev breaks the packed lookup that
+    // validates the fixture's reflog entries, which only that mode audits.
+    const SWAP_EXIT_BY_MODE: Readonly<Record<string, number>> = {
+      default: 1,
+      connectivityOnly: 0,
+      'no-full': 3,
+      strict: 1,
+    };
+
     describe.each(MODES)(
       'Given a BASE repo whose .rev swaps its first two positions, RESTAMPED, When fsck runs ($label)',
-      ({ flags, opts }) => {
+      ({ label: modeLabel, flags, opts }) => {
         it('Then both tools exit alike and tsgit reads every entry, as git bounds none by its .rev', async () => {
           // Arrange
           const fixture = await freshBase('r15swap');
@@ -396,14 +413,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
           const result = await fsck(sut, opts);
 
           // Assert
-          expect(gitResult.exitCode & 64).toBe(64);
+          expect(gitResult.exitCode).toBe(exitForMode(SWAP_EXIT_BY_MODE, modeLabel));
           expect(result.exitCode).toBe(gitResult.exitCode);
         });
       },
     );
 
     describe('Given a BASE repo with N1 two body positions wrong, RESTAMPED, When fsck runs', () => {
-      it('Then git reports two invalid-rev-index-position lines under one bit-64 verdict, and tsgit reports exactly two position-mismatch findings', async () => {
+      it('Then git reports two invalid-rev-index-position lines under one exit-1 verdict, and tsgit reports exactly two position-mismatch findings', async () => {
         // Arrange
         const fixture = await freshBase('n1');
         mutateOrThrowRev(fixture, (bytes) => {
@@ -421,9 +438,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 64).toBe(64);
+        expect(gitResult.exitCode).toBe(1);
         expect(positionLines).toHaveLength(2);
-        expect(result.exitCode & 64).toBe(64);
+        expect(result.exitCode).toBe(1);
         const mismatches = findingsOfType(result.findings, 'pack-rev-index-position-mismatch');
         expect(mismatches).toHaveLength(2);
         expect(mismatches.map((mismatch) => mismatch.position).sort()).toEqual([0, 1]);
@@ -448,7 +465,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     });
 
     describe('Given a BASE repo with a BAD-SIGNATURE .rev made unreadable via chmod 000 (node tier only), When fsck runs', () => {
-      it('Then both tools exit 0, silently — the unreadable classification masks a fault that would otherwise score bit 64', async () => {
+      it('Then both tools exit 0, silently — the unreadable classification masks a fault that would otherwise score 1', async () => {
         // Arrange — corrupt FIRST, then make it unreadable: a healthy-but-
         // unreadable artefact is byte-identical to the control, so exit 0
         // would prove nothing about the chmod having taken effect.
@@ -491,7 +508,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     // the fixture's own refs point directly into that pack. Real git's
     // ref-checker classifies a ref whose target it cannot resolve as an
     // "invalid sha1 pointer" and folds that into EXIT_REFS_CONTENT (bit 8)
-    // ALONGSIDE the plain "missing" bit (2) — a distinct code path from the
+    // ALONGSIDE the plain "missing" bit (2) and the pack-fault bit (1), for 11
+    // in all — a distinct code path from the
     // "ref points to an oid that plainly doesn't exist anywhere" case
     // (`fsck-interop.test.ts` pins that one: bit 2 only).
     describe('Given a BASE repo with C1 .idx corrupted (truncated to 8 bytes), .rev intact, When fsck runs', () => {
@@ -506,7 +524,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode).toBe(78);
+        expect(gitResult.exitCode).toBe(11);
         expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'pack-rev-index-unusable')).toHaveLength(1);
@@ -528,7 +546,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode).toBe(78);
+        expect(gitResult.exitCode).toBe(11);
         expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'pack-rev-index-unusable')).toHaveLength(1);
@@ -537,7 +555,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     });
 
     describe("Given a two-pack repo where both packs' .rev have a bad signature, When fsck runs", () => {
-      it('Then git prints two unknown-signature lines under one bit-64 verdict, and tsgit reports two pack-rev-index-invalid findings', async () => {
+      it('Then git prints two unknown-signature lines under one exit-1 verdict, and tsgit reports two pack-rev-index-invalid findings', async () => {
         // Arrange
         const fixture = await freshTwoPack('composition');
         for (const name of fixture.packNames) {
@@ -550,8 +568,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode).toBe(64);
-        expect(result.exitCode).toBe(64);
+        expect(gitResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
         const invalid = findingsOfType(result.findings, 'pack-rev-index-invalid');
         expect(invalid).toHaveLength(2);
         // Both packs, each named once — a loop reporting ONE pack twice would
@@ -598,14 +616,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
 
     interface ModeMutationRow {
       readonly label: string;
-      readonly bitDelta: 0 | 64;
+      readonly exitDelta: 0 | 1;
       readonly build: (slug: string) => Promise<{ readonly dir: string }>;
     }
 
     const MUTATION_ROWS: ReadonlyArray<ModeMutationRow> = [
       {
         label: 'M1 bad signature',
-        bitDelta: 64,
+        exitDelta: 1,
         build: async (slug) => {
           const fixture = await freshBase(slug);
           mutateOrThrowRev(fixture, flipSignatureByte);
@@ -614,7 +632,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       },
       {
         label: 'M2 own digest flipped',
-        bitDelta: 64,
+        exitDelta: 1,
         build: async (slug) => {
           const fixture = await freshBase(slug);
           mutateOrThrowRev(fixture, flipLastByte);
@@ -623,7 +641,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       },
       {
         label: 'M3 body out of range',
-        bitDelta: 64,
+        exitDelta: 1,
         build: async (slug) => {
           const fixture = await freshBase(slug);
           mutateOrThrowRev(fixture, (bytes) => {
@@ -635,7 +653,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       },
       {
         label: 'M4 .rev deleted',
-        bitDelta: 0,
+        exitDelta: 0,
         build: async (slug) => {
           const fixture = await freshBase(slug);
           await rm(packArtefactPaths(fixture.dir).rev, { force: true });
@@ -645,9 +663,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       {
         // Corrupt FIRST, then chmod: an unreadable HEALTHY `.rev` scores the
         // control exit whether or not the chmod took effect, so the mutation
-        // has to be one that would otherwise flip bit 64.
+        // has to be one that would otherwise flip the exit.
         label: 'M5 .rev bad signature then chmod 000 (node tier only)',
-        bitDelta: 0,
+        exitDelta: 0,
         build: async (slug) => {
           const fixture = await freshBase(slug);
           mutateOrThrowRev(fixture, flipSignatureByte);
@@ -657,7 +675,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       },
       {
         label: 'M7 bad signature, .bitmap removed',
-        bitDelta: 64,
+        exitDelta: 1,
         build: async (slug) => {
           const fixture = await freshBitmap(slug);
           await rm(packArtefactPaths(fixture.dir).bitmap, { force: true });
@@ -667,7 +685,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       },
       {
         label: 'M8 bad signature, midx present',
-        bitDelta: 64,
+        exitDelta: 1,
         build: async (slug) => {
           const fixture = await freshBase(slug);
           git(fixture.dir, 'multi-pack-index', 'write');
@@ -679,10 +697,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
 
     describe.each(MUTATION_ROWS)(
       'Given a BASE repo with $label, When fsck runs across modes',
-      ({ label, bitDelta, build }) => {
+      ({ label, exitDelta, build }) => {
         it.each(MODES)(
-          'Then mode "$label" scores exactly the per-mode control XOR the mutation\'s own bit',
-          async ({ label: modeLabel, flags, opts }) => {
+          'Then mode "$label" scores exactly the per-mode control XOR the mutation\'s own exit',
+          async ({ label: modeLabel, flags, opts, localPackFaultExit }) => {
             // Arrange
             const slug = `${label.split(' ')[0]?.toLowerCase()}-${modeLabel}`;
             const fixture = await build(slug);
@@ -693,15 +711,20 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
             const result = await fsck(sut, opts);
 
             // Assert — bit-wise against the per-mode control, never a literal
-            expect(gitResult.exitCode ^ exitForMode(controlGitExit, modeLabel)).toBe(bitDelta);
-            expect(result.exitCode ^ exitForMode(controlTsgitExit, modeLabel)).toBe(bitDelta);
+            const expectedDelta = exitDelta & localPackFaultExit;
+            expect(gitResult.exitCode ^ exitForMode(controlGitExit, modeLabel)).toBe(expectedDelta);
+            expect(result.exitCode ^ exitForMode(controlTsgitExit, modeLabel)).toBe(expectedDelta);
           },
         );
       },
     );
 
+    // Per MODES order. --no-full also scores 2: the unreadable .rev breaks the
+    // packed lookup that validates the fixture's reflog entries.
+    const X9_EXIT_BY_MODE: readonly number[] = [1, 0, 3, 1];
+
     describe("Given a midx+bitmap fixture with X9 one pack's .rev bad signature, When fsck runs", () => {
-      it("Then bit 64 is ungated by mode for git and by every one of tsgit's own modes (documented divergence: no core.multiPackIndex equivalent)", async () => {
+      it("Then git and every one of tsgit's own modes score 1 (3 under --no-full, 0 under --connectivity-only); core.multiPackIndex does not gate it", async () => {
         // Arrange
         const fixture = await freshMidxBitmap('x9');
         mutateOrThrow(
@@ -719,14 +742,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         );
 
         // Assert — git
-        expect(fullResult.exitCode & 64).toBe(64);
-        expect(connResult.exitCode & 64).toBe(64);
-        expect(noFullResult.exitCode & 64).toBe(64);
-        expect(gateResult.exitCode & 64).toBe(64);
-        // Assert — tsgit: ungated in every one of its own modes
-        for (const result of tsgitResults) {
-          expect(result.exitCode & 64).toBe(64);
-        }
+        expect(fullResult.exitCode).toBe(1);
+        expect(connResult.exitCode).toBe(0);
+        expect(noFullResult.exitCode).toBe(3);
+        expect(gateResult.exitCode).toBe(1);
+        // Assert — tsgit: the same gating in each of its own modes
+        tsgitResults.forEach((result, index) => {
+          expect(result.exitCode).toBe(X9_EXIT_BY_MODE[index]);
+        });
       });
     });
   });
@@ -805,7 +828,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     describe.each(CHECKSUM_MISMATCH_ROWS)(
       'Given a bitmap fixture with $label, When fsck runs',
       ({ label, mutate }) => {
-        it('Then both tools score bit 128 with one bitmap-checksum-mismatch finding', async () => {
+        it('Then both tools score 1 with one bitmap-checksum-mismatch finding', async () => {
           // Arrange
           const slug = label.split(' ')[0]?.toLowerCase() ?? 'row';
           const fixture = await freshBitmap(slug);
@@ -817,8 +840,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
           const result = await fsck(sut);
 
           // Assert
-          expect(gitResult.exitCode & 128).toBe(128);
-          expect(result.exitCode & 128).toBe(128);
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
           const findings = findingsOfType(result.findings, 'bitmap-checksum-mismatch');
           expect(findings).toHaveLength(1);
           // The exact pack bitmap's own base name — `/\.bitmap$/` would admit
@@ -829,7 +852,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     );
 
     describe('Given a bitmap fixture with B12 a MAGIC-FLIPPED .bitmap made unreadable via chmod 000 (node tier only), When fsck runs', () => {
-      it('Then both tools exit 0, silently — the unreadable classification masks a fault that would otherwise score bit 128', async () => {
+      it('Then both tools exit 0, silently — the unreadable classification masks a fault that would otherwise score 1', async () => {
         // Arrange — corrupt FIRST, then make it unreadable: a healthy-but-
         // unreadable bitmap is byte-identical to the B0 control, so exit 0
         // would prove nothing about the chmod having taken effect.
@@ -851,7 +874,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     describe('Given a bitmap fixture with B23 an extra CORRUPT .bitmap naming no pack (orphan), When fsck runs', () => {
       it('Then both tools exit 0 — a .bitmap with no corresponding .idx is never inspected', async () => {
         // Arrange — the orphan copy's own trailer is flipped after the copy,
-        // so inspecting it would score bit 128; exit 0 proves it was skipped
+        // so inspecting it would score 1; exit 0 proves it was skipped
         // rather than merely found healthy.
         const fixture = await freshBitmap('b23');
         const artefacts = packArtefactPaths(fixture.dir);
@@ -918,7 +941,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     );
 
     describe('Given a bitmap fixture with B24 BOTH .rev and .bitmap corrupt, When fsck runs', () => {
-      it('Then both tools score bits 64 AND 128 together (192), one finding each', async () => {
+      it('Then both tools score 1, one finding each', async () => {
         // Arrange
         const fixture = await freshBitmap('b24');
         mutateOrThrowRev(fixture, flipSignatureByte);
@@ -930,8 +953,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode).toBe(192);
-        expect(result.exitCode).toBe(192);
+        expect(gitResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
         expect(findingsOfType(result.findings, 'pack-rev-index-invalid')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'bitmap-checksum-mismatch')).toHaveLength(1);
       });
@@ -955,8 +978,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 128).toBe(0);
-        expect(result.exitCode & 128).toBe(0);
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
       });
     });
 
@@ -976,15 +999,15 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         // Assert
         expect(fullResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(connResult.exitCode & 128).toBe(0);
-        expect(strictResult.exitCode & 128).toBe(0);
+        expect(connResult.exitCode).toBe(0);
+        expect(strictResult.exitCode).toBe(0);
         expect(result.exitCode).toBe(0);
         expect(findingsOfType(result.findings, 'bitmap-checksum-mismatch')).toHaveLength(0);
       });
     });
 
     describe('Given a midx+bitmap fixture with X1 midx bitmap magic flipped, When fsck runs', () => {
-      it('Then both tools score bit 128, ungated by mode, with one bitmap-checksum-mismatch finding for the midx artefact', async () => {
+      it('Then both tools score 1 (0 under --connectivity-only, 3 under --no-full), with one bitmap-checksum-mismatch finding for the midx artefact', async () => {
         // Arrange
         const fixture = await freshMidxBitmap('x1');
         mutateOrThrow(fixture.midxBitmapPath, flipSignatureByte);
@@ -999,13 +1022,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(fullResult.exitCode & 128).toBe(128);
-        expect(connResult.exitCode & 128).toBe(128);
-        expect(noFullResult.exitCode & 128).toBe(128);
+        expect(fullResult.exitCode).toBe(1);
+        expect(connResult.exitCode).toBe(0);
+        expect(noFullResult.exitCode).toBe(3);
         expect(verifyResult.exitCode).toBe(0);
         // The midx bitmap check IS gated by core.multiPackIndex (unlike X8's pack bitmap)
-        expect(gateResult.exitCode & 128).toBe(0);
-        expect(result.exitCode & 128).toBe(128);
+        expect(gateResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(1);
         const allFindings = findingsOfType(result.findings, 'bitmap-checksum-mismatch');
         // The unfiltered count too: filtering to the midx artefact alone
         // leaves the number of PACK-bitmap findings unbounded.
@@ -1029,14 +1052,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 128).toBe(0);
-        expect(result.exitCode & 128).toBe(0);
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
         expect(findingsOfType(result.findings, 'bitmap-checksum-mismatch')).toHaveLength(0);
       });
     });
 
     describe('Given a midx+bitmap fixture with X4 midx bitmap own trailer flipped, When fsck runs', () => {
-      it('Then both tools score bit 128 with one bitmap-checksum-mismatch finding for the midx artefact', async () => {
+      it('Then both tools score 1 with one bitmap-checksum-mismatch finding for the midx artefact', async () => {
         // Arrange
         const fixture = await freshMidxBitmap('x4');
         mutateOrThrow(fixture.midxBitmapPath, flipLastByte);
@@ -1047,8 +1070,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 128).toBe(128);
-        expect(result.exitCode & 128).toBe(128);
+        expect(gitResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
         const allFindings = findingsOfType(result.findings, 'bitmap-checksum-mismatch');
         // The unfiltered count too: filtering to the midx artefact alone
         // leaves the number of PACK-bitmap findings unbounded.
@@ -1072,15 +1095,15 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 128).toBe(0);
-        expect(result.exitCode & 128).toBe(0);
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
       });
     });
 
     describe('Given a midx+bitmap fixture with X7 a CORRUPT midx bitmap renamed to a different hash, When fsck runs', () => {
       it('Then both tools show no bitmap bit — discovery is by the STORED trailer, and nothing composes this new name', async () => {
         // Arrange — the renamed file's own trailer is flipped after the
-        // rename, so a tool composing this name instead would score bit 128;
+        // rename, so a tool composing this name instead would score 1;
         // no bitmap bit proves the file was never opened.
         const fixture = await freshMidxBitmap('x7');
         const renamedPath = path.join(
@@ -1096,13 +1119,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode & 128).toBe(0);
-        expect(result.exitCode & 128).toBe(0);
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
       });
     });
 
     describe("Given a midx+bitmap fixture with X8 the PACK bitmap's own trailer flipped (midx present), When fsck runs", () => {
-      it('Then both tools score bit 128, ungated by core.multiPackIndex (unlike X1), with one finding for the pack artefact', async () => {
+      it('Then both tools score 1 (0 under --connectivity-only, 3 under --no-full), ungated by core.multiPackIndex (unlike X1), with one finding for the pack artefact', async () => {
         // Arrange
         const fixture = await freshMidxBitmap('x8');
         const packBitmapPath = packArtefactPathsNamed(fixture.dir, fixture.bitmapPackName).bitmap;
@@ -1117,11 +1140,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(fullResult.exitCode & 128).toBe(128);
-        expect(connResult.exitCode & 128).toBe(128);
-        expect(noFullResult.exitCode & 128).toBe(128);
-        expect(gateResult.exitCode & 128).toBe(128);
-        expect(result.exitCode & 128).toBe(128);
+        expect(fullResult.exitCode).toBe(1);
+        expect(connResult.exitCode).toBe(0);
+        expect(noFullResult.exitCode).toBe(3);
+        expect(gateResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
         const findings = findingsOfType(result.findings, 'bitmap-checksum-mismatch');
         expect(findings).toHaveLength(1);
         expect(findings[0]?.artefact).toBe(`${fixture.bitmapPackName}.bitmap`);
@@ -1129,7 +1152,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     });
 
     describe("Given a midx+bitmap fixture with X10 the midx's OWN trailer flipped AND its midx bitmap magic flipped, When fsck runs", () => {
-      it('Then git and tsgit both exit EXACTLY 32, never 32|128 — the wrong trailer composes a name naming no file, hiding the corrupt bitmap entirely', async () => {
+      it('Then git and tsgit both exit EXACTLY 1 with a single finding — the wrong trailer composes a name naming no file, hiding the corrupt bitmap entirely', async () => {
         // Arrange
         const fixture = await freshMidxBitmap('x10');
         mutateOrThrow(fixture.flatMidxPath, flipLastByte);
@@ -1141,8 +1164,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode).toBe(32);
-        expect(result.exitCode).toBe(32);
+        expect(gitResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
         expect(findingsOfType(result.findings, 'midx-checksum-mismatch')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'bitmap-checksum-mismatch')).toHaveLength(0);
       });
@@ -1178,7 +1201,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
        *  never a separately-tracked value of its own (see the row's own
        *  `arrange`: a target whose housing pack the scan cannot fully
        *  account for scores bit 8 alongside bit 2, mode-independently, the
-       *  same as bit 4/64/128 already did). */
+       *  same as bit 1 already did). */
       readonly gitExit: Readonly<Record<string, number>>;
       readonly arrange: (dir: string) => void;
     }
@@ -1186,17 +1209,17 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     const COMPOSITION_ROWS: ReadonlyArray<CompositionRow> = [
       {
         label: 'Y1 .bitmap trailer flipped',
-        gitExit: { default: 128, connectivityOnly: 128, 'no-full': 130, strict: 128 },
+        gitExit: { default: 1, connectivityOnly: 0, 'no-full': 3, strict: 1 },
         arrange: (dir) => mutateOrThrow(packArtefactPaths(dir).bitmap, flipLastByte),
       },
       {
         label: 'Y3 .pack chmod 000 (header-gate refusal), artefacts intact (node tier only)',
-        gitExit: { default: 14, connectivityOnly: 10, 'no-full': 10, strict: 14 },
+        gitExit: { default: 11, connectivityOnly: 10, 'no-full': 10, strict: 11 },
         arrange: (dir) => chmodSync(packArtefactPaths(dir).pack, 0o000),
       },
       {
         label: 'Y2 .bitmap trailer flipped + .pack chmod 000 (node tier only)',
-        gitExit: { default: 142, connectivityOnly: 138, 'no-full': 138, strict: 142 },
+        gitExit: { default: 11, connectivityOnly: 10, 'no-full': 11, strict: 11 },
         arrange: (dir) => {
           mutateOrThrow(packArtefactPaths(dir).bitmap, flipLastByte);
           chmodSync(packArtefactPaths(dir).pack, 0o000);
@@ -1204,7 +1227,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       },
       {
         label: 'Y5 .rev bad signature + .pack chmod 000 (node tier only)',
-        gitExit: { default: 78, connectivityOnly: 74, 'no-full': 74, strict: 78 },
+        gitExit: { default: 11, connectivityOnly: 10, 'no-full': 11, strict: 11 },
         arrange: (dir) => {
           mutateOrThrow(packArtefactPaths(dir).rev, flipSignatureByte);
           chmodSync(packArtefactPaths(dir).pack, 0o000);

@@ -903,7 +903,6 @@ describe('maintenance', () => {
   });
 
   describe.each([
-    { key: 'gc.auto', config: 'auto = bogus', code: 'CONFIG_BAD_NUMERIC_VALUE' },
     { key: 'gc.cruftPacks', config: 'cruftPacks = maybe', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
     { key: 'gc.pruneExpire', config: 'pruneExpire = all', code: 'CONFIG_BAD_DATE_VALUE' },
     {
@@ -919,27 +918,6 @@ describe('maintenance', () => {
     },
     { key: 'gc.logExpiry', config: 'logExpiry = garbage', code: 'CONFIG_BAD_DATE_VALUE' },
     { key: 'valueless gc.logExpiry', config: 'logExpiry', code: 'CONFIG_MISSING_VALUE' },
-    { key: 'gc.autoPackLimit', config: 'autoPackLimit = abc', code: 'CONFIG_BAD_NUMERIC_VALUE' },
-    {
-      key: 'gc.autoPackLimit beyond a C int',
-      config: 'autoPackLimit = 3g',
-      code: 'CONFIG_BAD_NUMERIC_VALUE',
-    },
-    {
-      key: 'gc.bigPackThreshold',
-      config: 'bigPackThreshold = abc',
-      code: 'CONFIG_BAD_NUMERIC_VALUE',
-    },
-    {
-      key: 'signed gc.bigPackThreshold',
-      config: 'bigPackThreshold = -0',
-      code: 'CONFIG_BAD_NUMERIC_VALUE',
-    },
-    {
-      key: 'valueless gc.bigPackThreshold',
-      config: 'bigPackThreshold',
-      code: 'CONFIG_BAD_NUMERIC_VALUE',
-    },
     {
       key: 'gc.pruneExpire whose last entry is valueless',
       config: 'pruneExpire = 2.weeks.ago\n\tpruneExpire',
@@ -1026,12 +1004,12 @@ describe('maintenance', () => {
 
   describe.each([
     {
-      label: 'a malformed gc.cruftPacks before a malformed gc.autoPackLimit',
-      config: 'cruftPacks = maybe\n\tautoPackLimit = abc',
-      expected: { code: 'CONFIG_BAD_NUMERIC_VALUE', key: 'gc.autopacklimit', value: 'abc' },
+      label: 'a malformed gc.cruftPacks before a malformed gc.pruneExpire',
+      config: 'cruftPacks = maybe\n\tpruneExpire = all',
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'gc.cruftpacks', value: 'maybe' },
     },
     {
-      label: 'a malformed gc.bigPackThreshold before a malformed gc.logExpiry',
+      label: 'a malformed gc.bigPackThreshold beside a malformed gc.logExpiry',
       config: 'bigPackThreshold = abc\n\tlogExpiry = garbage',
       expected: { code: 'CONFIG_BAD_DATE_VALUE', value: 'garbage' },
     },

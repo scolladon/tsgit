@@ -111,3 +111,15 @@ export const heldBranches = async (ctx: Context): Promise<ReadonlyMap<RefName, F
 /** The worktree holding `name`, or `undefined` when none does. */
 export const worktreeHolding = async (ctx: Context, name: RefName): Promise<FilePath | undefined> =>
   (await heldBranches(ctx)).get(name);
+
+/** The first worktree, in listing order, whose bisect started from `name`. */
+export const worktreeBisecting = async (
+  ctx: Context,
+  name: RefName,
+): Promise<FilePath | undefined> => {
+  for (const worktree of await listWorktrees(ctx)) {
+    if (worktree.bare) continue;
+    if ((await bisectingBranch(ctx, adminDirOf(ctx, worktree))) === name) return worktree.path;
+  }
+  return undefined;
+};

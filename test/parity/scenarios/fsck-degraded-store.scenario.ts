@@ -126,16 +126,17 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
   unsupportedRuntimes: ['workers', 'deno', 'bun', 'browser'],
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
-    // git 2.55 exits 68 on this store: arm 3's dead body is `verify_pack`'s
-    // `cannot unpack <oid> from <pack> at offset 12` (bit 4), never an
-    // object error (bit 1).
-    defaultExitCode: 68,
+    // git 2.56 exits 1 on this store: arm 3's dead body is `verify_pack`'s
+    // `cannot unpack <oid> from <pack> at offset 12`, and every pack-class
+    // fault now sets the generic error bit.
+    defaultExitCode: 1,
     packInaccessibleCount: 1,
     packIndexUnusableCount: 1,
     packEntryUnpackableCount: 1,
-    // The corrupt-idx pack's rev-index-unusable finding is ungated — bit 64
-    // reports in every mode, including connectivityOnly (unlike bit 4).
-    connectivityExitCode: 64,
+    // Under connectivityOnly git 2.56 runs no pack, rev-index, bitmap or midx
+    // verification at all, so the corrupt-idx pack reports nothing and the
+    // exit is 0.
+    connectivityExitCode: 0,
     // Each faulty oid carries both an 'unreachable' and a 'dangling' finding
     // (dangling is unreachable's in-edge-free subset) — the census is a
     // multiset over both finding types, not a deduplicated set.
@@ -150,9 +151,10 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
     // Default mode after the undecodable loose object lands: the content
     // pass reports it as the one bad-object (arm 3's corrupt entry stays a
     // pack finding) — the loose reject class stays a content error outside
-    // connectivityOnly, adding bit 1 as git 2.55's exit 69 does.
+    // connectivityOnly, and shares bit 1 with the pack faults as git 2.56
+    // does (2.55 read 69 here, 68 plus the loose object's own bit).
     defaultAfterBadObjectCount: 1,
-    defaultAfterExitCode: 69,
+    defaultAfterExitCode: 1,
   },
   run: async (repo, inputs) => {
     // Arrange — seed a healthy root commit so the reachable graph is

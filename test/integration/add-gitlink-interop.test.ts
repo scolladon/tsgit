@@ -287,7 +287,8 @@ const dotGitMadeBy = (make: (dotGit: string) => Promise<unknown> | unknown) =>
     await make(dotGit);
   });
 
-const notARepository = (shown: string): string => `fatal: not a git repository: ${shown}\n`;
+const gitfileNotValid = (shown: string): string =>
+  `fatal: gitfile does not point to a valid repository: ${shown}\n`;
 const invalidGitfile = (shown: string): string => `fatal: invalid gitfile format: ${shown}\n`;
 const notRecognized = (shown: string): string =>
   `fatal: '${shown}' not recognized as a git repository\n`;
@@ -800,24 +801,28 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       {
         label: 'a pointer to a gitdir that does not exist',
         setup: pointAt(() => '../.git/modules/nowhere'),
-        line: notARepository,
+        line: gitfileNotValid,
+        code: 'GITFILE_NOT_A_REPOSITORY',
       },
       {
         label: 'a module whose HEAD is garbage',
         setup: brokenBy((repo) =>
           writeFile(path.join(repo, '.git', 'modules', 'sub', 'HEAD'), 'garbage\n'),
         ),
-        line: notARepository,
+        line: gitfileNotValid,
+        code: 'GITFILE_NOT_A_REPOSITORY',
       },
       {
         label: 'a gitfile that does not parse',
         setup: brokenBy((repo) => writeFile(path.join(repo, 'sub', '.git'), 'garbage\n')),
         line: invalidGitfile,
+        code: 'NOT_A_REPOSITORY',
       },
       {
         label: 'an empty .git directory',
         setup: brokenBy((repo) => replaceDotGit(repo, (dotGit) => mkdir(dotGit))),
         line: notRecognized,
+        code: 'NOT_A_REPOSITORY',
       },
       {
         label: 'a .git directory whose HEAD is garbage',
@@ -828,6 +833,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           }),
         ),
         line: notRecognized,
+        code: 'NOT_A_REPOSITORY',
       },
       {
         label: 'a .git symlink to a directory holding no HEAD',
@@ -839,13 +845,15 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           }),
         ),
         line: notRecognized,
+        code: 'NOT_A_REPOSITORY',
       },
       {
         label: 'an absolute pointer to nothing',
         setup: pointAt((repo) => `${repo}-nowhere`),
-        line: notARepository,
+        line: gitfileNotValid,
+        code: 'GITFILE_NOT_A_REPOSITORY',
       },
-    ])('Given $label and an untracked file', ({ setup, line }) => {
+    ])('Given $label and an untracked file', ({ setup, line, code }) => {
       describe('When git and tsgit add the whole tree', () => {
         it('Then both refuse, name the same path and leave the index alone', async () => {
           // Arrange
@@ -863,7 +871,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
           // Assert
           expect(gitRun.exitCode).toBe(128);
-          expect(refusal).toMatchObject({ code: 'NOT_A_REPOSITORY' });
+          expect(refusal).toMatchObject({ code });
           expect(gitRun.stderr).toBe(
             line((refusal as { path: string }).path.replace(tsgitRepo, gitRepo)),
           );
@@ -1135,7 +1143,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       },
     ])('Given $label and an untracked file', ({ setup }) => {
       describe('When git and tsgit add the whole tree', () => {
-        it('Then both refuse with the pointer as typed and leave the index and objects alone', async () => {
+        it('Then both refuse naming the gitfile and leave the index and objects alone', async () => {
           // Arrange
           const { gitRepo, tsgitRepo } = await twins(setup);
           const before = indexOf(gitRepo);
@@ -1151,8 +1159,8 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
           // Assert
           expect(gitRun.exitCode).toBe(128);
-          expect(gitRun.stderr).toBe(notARepository(MODULE_POINTER));
-          expect(thrown).toEqual({ code: 'NOT_A_REPOSITORY', path: MODULE_POINTER });
+          expect(gitRun.stderr).toBe(gitfileNotValid((thrown as { path: string }).path));
+          expect(thrown).toEqual({ code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' });
           expect(indexOf(tsgitRepo)).toBe(before);
           expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
         });
@@ -1180,7 +1188,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           expect(gitRun.stderr).toBe(
             `fatal: failed to read ${MODULE_POINTER}/commondir: No such file or directory\n`,
           );
-          expect(thrown).toEqual({ code: 'NOT_A_REPOSITORY', path: MODULE_POINTER });
+          expect(thrown).toEqual({ code: 'GITFILE_NOT_A_REPOSITORY', path: 'sub/.git' });
           expect(indexOf(tsgitRepo)).toBe(before);
           expect(await looseCountOf(tsgitRepo)).toBe(looseBefore);
         });

@@ -5,8 +5,10 @@ import { getPackRegistry } from '../../../../src/application/primitives/read-obj
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { serializeHeader, serializeObject } from '../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
+import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
+import { buildMidx } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
@@ -299,6 +301,65 @@ describe('hasObject through alternates', () => {
 
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+});
+
+describe('hasObject when the midx owner pack is gone', () => {
+  const SHARED = new TextEncoder().encode('owner-gone-blob');
+
+  async function midxAssigningSharedBlobToDeletedOwner(ctx: Context): Promise<ObjectId> {
+    const [id] = await writeSyntheticPack(ctx, 'A', [
+      { kind: 'base', type: 'blob', content: SHARED },
+    ]);
+    await writeSyntheticPack(ctx, 'B', [
+      { kind: 'base', type: 'blob', content: SHARED },
+      { kind: 'base', type: 'blob', content: new TextEncoder().encode('other') },
+    ]);
+    await ctx.fs.rm(`${ctx.layout.gitDir}/objects/pack/pack-B.pack`);
+    await ctx.fs.write(
+      `${ctx.layout.gitDir}/objects/pack/multi-pack-index`,
+      buildMidx({
+        version: 1,
+        hashVersion: 1,
+        digestLength: 20,
+        numBaseFiles: 0,
+        packNames: ['pack-A.idx', 'pack-B.idx'],
+        entries: [{ id: id as ObjectId, packIndex: 1, offset: PACK_HEADER_SIZE }],
+      }),
+    );
+    return id as ObjectId;
+  }
+
+  describe('Given another pack holds the object the midx assigns to a deleted pack', () => {
+    describe('When probing hasObject in recheck mode', () => {
+      it('Then it returns true', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await midxAssigningSharedBlobToDeletedOwner(ctx);
+
+        // Act
+        const sut = hasObject;
+        const result = await sut(ctx, id, { mode: 'recheck' });
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When probing hasObject in quick mode', () => {
+      it('Then it keeps the false negative, as git has_object does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await midxAssigningSharedBlobToDeletedOwner(ctx);
+
+        // Act
+        const sut = hasObject;
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });

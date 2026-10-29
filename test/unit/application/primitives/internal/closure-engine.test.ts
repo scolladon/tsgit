@@ -2929,9 +2929,9 @@ describe('computeClosure — bitmap search across object sources', () => {
 
   describe('Given a pack bitmap in the primary and a midx bitmap in the donor', () => {
     describe('When a bitmap-tier closure is requested', () => {
-      it('Then the donor midx bitmap answers and no pack bitmap is loaded', async () => {
+      it('Then the primary pack bitmap answers and the donor midx bitmap is never loaded', async () => {
         // Arrange
-        const { ctx, id, donorSource } = await twoSources(PACK_FLAVOUR, MIDX_FLAVOUR);
+        const { ctx, id, primarySource } = await twoSources(PACK_FLAVOUR, MIDX_FLAVOUR);
         const midxSpy = vi.spyOn(midxBitmapBindingModule, 'loadMidxBitmapArtefact');
         const packSpy = vi.spyOn(packBitmapBindingModule, 'loadPackBitmapArtefact');
         const sut = computeClosure;
@@ -2941,9 +2941,9 @@ describe('computeClosure — bitmap search across object sources', () => {
 
         // Assert
         expect(result.tier).toBe('bitmap');
-        expect(midxSpy.mock.calls).toHaveLength(2);
-        expect(midxSpy.mock.calls[1]?.[1]).toBe(await donorSource.registry.midxBitmap());
-        expect(packSpy).not.toHaveBeenCalled();
+        expect(midxSpy.mock.calls).toHaveLength(1);
+        expect(midxSpy.mock.calls[0]?.[1]).toBe(await primarySource.registry.midxBitmap());
+        expect(packsLoaded(packSpy)).toEqual(['pack-primary']);
         midxSpy.mockRestore();
         packSpy.mockRestore();
       });
@@ -2972,20 +2972,20 @@ describe('computeClosure — bitmap search across object sources', () => {
 
   describe('Given a midx bitmap in the primary and a donor whose midx refuses to load', () => {
     describe('When a bitmap-tier closure is requested', () => {
-      it('Then the donor refusal surfaces before any midx bitmap is opened', async () => {
+      it('Then the primary midx bitmap answers before the donor is asserted', async () => {
         // Arrange
         const { ctx, id, donorSource } = await twoSources(MIDX_FLAVOUR, PACK_FLAVOUR);
-        const refusal = new Error('donor midx refused');
-        vi.spyOn(donorSource.registry, 'assertLoadable').mockRejectedValue(refusal);
-        const midxSpy = vi.spyOn(midxBitmapBindingModule, 'loadMidxBitmapArtefact');
+        const donorAssert = vi
+          .spyOn(donorSource.registry, 'assertLoadable')
+          .mockRejectedValue(new Error('donor midx refused'));
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, request(id)).catch((error: unknown) => error);
+        const result = await sut(ctx, request(id));
 
         // Assert
-        expect(result).toBe(refusal);
-        expect(midxSpy).not.toHaveBeenCalled();
+        expect(result.tier).toBe('bitmap');
+        expect(donorAssert).not.toHaveBeenCalled();
       });
     });
   });
@@ -3040,29 +3040,52 @@ describe('computeClosure — bitmap search across object sources', () => {
     });
   });
 
-  describe('Given a donor multi-pack-index with a smashed signature and a primary pack bitmap', () => {
+  describe('Given a donor multi-pack-index that refuses to load and a primary pack bitmap', () => {
     describe('When a bitmap-tier closure is requested', () => {
-      it('Then it throws INVALID_MULTI_PACK_INDEX with check signature', async () => {
+      it('Then the primary pack bitmap answers and the donor is never asserted', async () => {
         // Arrange
-        const { ctx, id } = await twoSources(PACK_FLAVOUR, PACK_FLAVOUR);
-        const badMidx = new Uint8Array(16);
-        badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
-        await ctx.fs.write(`${DONOR_OBJECTS}/pack/multi-pack-index`, badMidx);
+        const { ctx, id, donorSource } = await twoSources(PACK_FLAVOUR, PACK_FLAVOUR);
+        const donorAssert = vi
+          .spyOn(donorSource.registry, 'assertLoadable')
+          .mockRejectedValue(new Error('donor midx refused'));
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(donorAssert).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a donor multi-pack-index that refuses to load and a primary without a bitmap', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the donor refusal propagates', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const [id] = await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'primary', [
+          { kind: 'base', type: 'blob', content: ENC.encode(SHARED_CONTENT) },
+        ]);
+        await packWithBitmapIn(ctx, DONOR_OBJECTS, 'donor');
+        const { primary, sources } = await getObjectStore(ctx);
+        const donorSource = sources.find((source) => source !== primary);
+        if (donorSource === undefined) throw new Error('expected a donor source');
+        const refusal = new Error('donor midx refused');
+        vi.spyOn(donorSource.registry, 'assertLoadable').mockRejectedValue(refusal);
         const sut = computeClosure;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, request(id));
+          await sut(ctx, request(id as ObjectId));
         } catch (error) {
           caught = error;
         }
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
-        if (data.code === 'INVALID_MULTI_PACK_INDEX') expect(data.check).toBe('signature');
+        expect(caught).toBe(refusal);
       });
     });
   });

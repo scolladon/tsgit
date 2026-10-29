@@ -373,7 +373,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   });
 
   describe('Given a pack restamped to header version 99, When fsck runs', () => {
-    it('Then both refuse it: git exits 4 with the verdict once, and fsck reports one finding with zero object findings from that pack', async () => {
+    it('Then both refuse it: git exits 1 with the verdict once, and fsck reports one finding with zero object findings from that pack', async () => {
       // Arrange
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
@@ -385,13 +385,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git
-      expect(gitResult.exitCode).toBe(4);
+      expect(gitResult.exitCode).toBe(1);
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit: one pack finding and git's no-default-references
       // notice, nothing else (the bad pack's own objects never entered the universe)
       expect(gitResult.stderr).toContain(NO_DEFAULT_REFERENCES_NOTICE);
-      expect(result.exitCode).toBe(4);
+      expect(result.exitCode).toBe(1);
       expect(result.findings).toHaveLength(2);
       expect(findingsOfType(result.findings, 'pack-inaccessible')).toHaveLength(1);
       expect(findingsOfType(result.findings, 'no-default-references')).toHaveLength(1);
@@ -415,14 +415,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git
-      expect(gitResult.exitCode).toBe(4);
+      expect(gitResult.exitCode).toBe(1);
       expect(gitResult.stderr).toContain(
         `claims to have ${objectCount + 1} objects while index indicates ${objectCount} objects`,
       );
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit
-      expect(result.exitCode).toBe(4);
+      expect(result.exitCode).toBe(1);
       const findings = findingsOfType(result.findings, 'pack-inaccessible');
       expect(findings).toHaveLength(1);
       expect(findings[0]?.reason).toBe(
@@ -443,12 +443,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git
-      expect(gitResult.exitCode).toBe(4);
+      expect(gitResult.exitCode).toBe(1);
       expect(gitResult.stderr).toContain('is not a GIT packfile');
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit
-      expect(result.exitCode).toBe(4);
+      expect(result.exitCode).toBe(1);
       const findings = findingsOfType(result.findings, 'pack-inaccessible');
       expect(findings).toHaveLength(1);
       expect(findings[0]?.reason).toBe('invalid magic: expected 0x5041434b, got 0x50414358');
@@ -467,12 +467,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git
-      expect(gitResult.exitCode).toBe(4);
+      expect(gitResult.exitCode).toBe(1);
       expect(gitResult.stderr).toContain('far too short to be a packfile');
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit
-      expect(result.exitCode).toBe(4);
+      expect(result.exitCode).toBe(1);
       const findings = findingsOfType(result.findings, 'pack-inaccessible');
       expect(findings).toHaveLength(1);
       expect(findings[0]?.reason).toBe('truncated: pack header requires 12 bytes');
@@ -491,13 +491,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git: exactly one error line (the verdict), no cause line
-      expect(gitResult.exitCode).toBe(4);
+      expect(gitResult.exitCode).toBe(1);
       const errorLines = gitResult.stderr.split('\n').filter((line) => line.startsWith('error:'));
       expect(errorLines).toHaveLength(1);
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit
-      expect(result.exitCode).toBe(4);
+      expect(result.exitCode).toBe(1);
       const findings = findingsOfType(result.findings, 'pack-inaccessible');
       expect(findings).toHaveLength(1);
       expect(findings[0]?.reason).toBe('PERMISSION_DENIED');
@@ -505,7 +505,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   });
 
   describe('Given an .idx corrupted to a same-length deterministic garbage stream, When fsck runs', () => {
-    it('Then git exits 68 with both verdicts once, and fsck reports both index-layer findings', async () => {
+    it('Then git exits 1 with both verdicts once, and fsck reports both index-layer findings', async () => {
       // Arrange
       const dir = await bareTargetWithPack(
         'idx-garbage',
@@ -520,12 +520,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git
-      expect(gitResult.exitCode).toBe(68);
+      expect(gitResult.exitCode).toBe(1);
       expect(occurrences(gitResult.stderr, packIndexNotOpenedVerdict('pack-bad'))).toBe(1);
       expect(occurrences(gitResult.stderr, revIndexUnusableVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit
-      expect(result.exitCode).toBe(68);
+      expect(result.exitCode).toBe(1);
       expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(1);
       expect(findingsOfType(result.findings, 'pack-rev-index-unusable')).toHaveLength(1);
       expect(findingsOfType(result.findings, 'pack-inaccessible')).toHaveLength(0);
@@ -533,7 +533,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   });
 
   describe('Given an .idx truncated to 8 bytes, When fsck runs', () => {
-    it('Then git exits 68 with both verdicts once, and fsck reports both index-layer findings', async () => {
+    it('Then git exits 1 with both verdicts once, and fsck reports both index-layer findings', async () => {
       // Arrange
       const dir = await bareTargetWithPack(
         'idx-truncated',
@@ -548,12 +548,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git
-      expect(gitResult.exitCode).toBe(68);
+      expect(gitResult.exitCode).toBe(1);
       expect(occurrences(gitResult.stderr, packIndexNotOpenedVerdict('pack-bad'))).toBe(1);
       expect(occurrences(gitResult.stderr, revIndexUnusableVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit
-      expect(result.exitCode).toBe(68);
+      expect(result.exitCode).toBe(1);
       expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(1);
       expect(findingsOfType(result.findings, 'pack-rev-index-unusable')).toHaveLength(1);
     });
@@ -571,14 +571,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git: exactly two error lines (both verdicts), no cause line
-      expect(gitResult.exitCode).toBe(68);
+      expect(gitResult.exitCode).toBe(1);
       const errorLines = gitResult.stderr.split('\n').filter((line) => line.startsWith('error:'));
       expect(errorLines).toHaveLength(2);
       expect(occurrences(gitResult.stderr, packIndexNotOpenedVerdict('pack-bad'))).toBe(1);
       expect(occurrences(gitResult.stderr, revIndexUnusableVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit
-      expect(result.exitCode).toBe(68);
+      expect(result.exitCode).toBe(1);
       const indexUnusable = findingsOfType(result.findings, 'pack-index-unusable');
       const revIndexUnusable = findingsOfType(result.findings, 'pack-rev-index-unusable');
       expect(indexUnusable).toHaveLength(1);
@@ -629,7 +629,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   });
 
   describe('Given two independently-unusable packs in the same repo, When fsck runs', () => {
-    it('Then git reports each pack once and fsck reports two findings with bit 4 set once', async () => {
+    it('Then git reports each pack once and fsck reports two findings with bit 1 set once', async () => {
       // Arrange
       const dir = await freshRepo('two-unusable-packs');
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
@@ -644,12 +644,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git: each pack's own verdict occurs exactly once
-      expect(gitResult.exitCode).toBe(4);
+      expect(gitResult.exitCode).toBe(1);
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-aaa'))).toBe(1);
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-bbb'))).toBe(1);
 
-      // Assert — tsgit: two findings, bit 4 set once (composed via OR)
-      expect(result.exitCode).toBe(4);
+      // Assert — tsgit: two findings, bit 1 set once (composed via OR)
+      expect(result.exitCode).toBe(1);
       expect(findingsOfType(result.findings, 'pack-inaccessible')).toHaveLength(2);
     });
   });
@@ -669,19 +669,19 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git
-      expect(gitResult.exitCode).toBe(4);
+      expect(gitResult.exitCode).toBe(1);
       expect(gitResult.stdout).toContain('dangling commit');
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-bad'))).toBe(1);
 
       // Assert — tsgit: the objects are still classified AND the bad pack is reported
-      expect(result.exitCode).toBe(4);
+      expect(result.exitCode).toBe(1);
       expect(findingsOfType(result.findings, 'pack-inaccessible')).toHaveLength(1);
       expect(findingsOfType(result.findings, 'dangling').length).toBeGreaterThan(0);
     });
   });
 
   describe('Given a reachable tree deleted with and without an added foreign v99 pack, When fsck runs on each independently', () => {
-    it('Then bit 4 is the only term the bad pack adds, on both tools independently', async () => {
+    it('Then bit 1 is the only term the bad pack adds, on both tools independently', async () => {
       // Arrange
       const baselineDir = await buildDeletedTreeRepo('deleted-tree-baseline');
       const withPackDir = await buildDeletedTreeRepo('deleted-tree-with-pack');
@@ -697,13 +697,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const resultBaseline = await fsck(sutBaseline);
       const resultWithPack = await fsck(sutWithPack);
 
-      // Assert — git: pinned absolute values (2|8 baseline, 2|4|8 with the pack)
+      // Assert — git: pinned absolute values (2|8 baseline, 1|2|8 with the pack)
       expect(gitBaseline.exitCode).toBe(10);
-      expect(gitWithPack.exitCode).toBe(14);
+      expect(gitWithPack.exitCode).toBe(11);
 
-      // Assert — tsgit: differential — bit 4 is the only added term, every
+      // Assert — tsgit: differential — bit 1 is the only added term, every
       // non-pack finding is unchanged, and the connectivity fault is present
-      expect(resultWithPack.exitCode).toBe(resultBaseline.exitCode | 4);
+      expect(resultWithPack.exitCode).toBe(resultBaseline.exitCode | 1);
       expect(findingsOfType(resultBaseline.findings, 'missing').length).toBeGreaterThan(0);
       expect(findingsOfType(resultBaseline.findings, 'broken-link').length).toBeGreaterThan(0);
       expect(nonPackFindings(resultWithPack.findings)).toEqual(
@@ -714,7 +714,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   });
 
   describe("Given a v99 pack holding every one of the repo's own reachable objects with and without the fault, When fsck runs on each independently ()", () => {
-    it('Then both tools exit 10 baseline and 14 with the bad pack — tsgit matches git absolutely, not just by the bit-4 delta', async () => {
+    it('Then both tools exit 10 baseline and 11 with the bad pack — tsgit matches git absolutely, not just by the bit-1 delta', async () => {
       // Arrange — baseline: the sole pack removed entirely, so every reachable
       // object is simply absent; with-pack: the same pack, corrupted in place
       const baselineDir = await buildFullyPackedRepo('fully-packed-baseline');
@@ -730,13 +730,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const resultBaseline = await fsck(sutBaseline);
       const resultWithPack = await fsck(sutWithPack);
 
-      // Assert — git: pinned absolute values (2|8 baseline, 2|4|8 with the pack)
+      // Assert — git: pinned absolute values (2|8 baseline, 1|2|8 with the pack)
       expect(gitBaseline.exitCode).toBe(10);
-      expect(gitWithPack.exitCode).toBe(14);
+      expect(gitWithPack.exitCode).toBe(11);
 
       // Assert — tsgit matches git's own absolute exit on both sides (no
       // object resolves anywhere in either repo, so the missing-entry-point
-      // bit fires on both; bit 4 is the only additional term the bad pack
+      // bit fires on both; bit 1 is the only additional term the bad pack
       // itself adds), and missing findings are present on both
       expect(resultBaseline.exitCode).toBe(gitBaseline.exitCode);
       expect(resultWithPack.exitCode).toBe(gitWithPack.exitCode);
@@ -822,12 +822,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut);
 
       // Assert — git: the index layer masks the pack-open fault entirely
-      expect(gitResult.exitCode).toBe(68);
+      expect(gitResult.exitCode).toBe(1);
       expect(gitResult.stderr).not.toContain('is version 99');
 
       // Assert — tsgit: the precedence row — no pack-inaccessible finding
       // surfaces alongside the index-layer pair, despite both faults on one pack
-      expect(result.exitCode).toBe(68);
+      expect(result.exitCode).toBe(1);
       expect(findingsOfType(result.findings, 'pack-inaccessible')).toHaveLength(0);
       expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(1);
       expect(findingsOfType(result.findings, 'pack-rev-index-unusable')).toHaveLength(1);
@@ -847,7 +847,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
         repoShape: 'v99',
         gitFlags: [],
         fsckOptions: {},
-        expectedExit: 4,
+        expectedExit: 1,
       },
       {
         label: 'v99 pack, --connectivity-only',
@@ -868,21 +868,21 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
         repoShape: 'corrupt-idx',
         gitFlags: [],
         fsckOptions: {},
-        expectedExit: 68,
+        expectedExit: 1,
       },
       {
         label: 'corrupt idx, --connectivity-only',
         repoShape: 'corrupt-idx',
         gitFlags: ['--connectivity-only'],
         fsckOptions: { connectivityOnly: true },
-        expectedExit: 64,
+        expectedExit: 0,
       },
       {
         label: 'corrupt idx, --no-full',
         repoShape: 'corrupt-idx',
         gitFlags: ['--no-full'],
         fsckOptions: { full: false },
-        expectedExit: 64,
+        expectedExit: 1,
       },
     ];
 
@@ -918,7 +918,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   });
 
   describe('Given a v99 pack, When fsck runs with --strict', () => {
-    it('Then bit 4 is unchanged on both tools', async () => {
+    it('Then bit 1 is unchanged on both tools', async () => {
       // Arrange
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
@@ -930,8 +930,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const result = await fsck(sut, { strict: true });
 
       // Assert
-      expect(gitResult.exitCode).toBe(4);
-      expect(result.exitCode).toBe(4);
+      expect(gitResult.exitCode).toBe(1);
+      expect(result.exitCode).toBe(1);
     });
   });
 
@@ -1011,6 +1011,14 @@ const PACK_HEADER_SIZE = 12;
 
 /** Bytes that can never be a valid zlib stream: 0xff's top nibble (0xf) is not the deflate CMF value (8), so every adapter's inflate rejects it on the first byte. */
 const NON_ZLIB_GARBAGE = Buffer.alloc(64, 0xff);
+
+function looseCorruptFatal(oid: string): string {
+  return `fatal: loose object ${oid} (stored in ${looseRelativePath(oid)}) is corrupt`;
+}
+
+function looseRelativePath(oid: string): string {
+  return `.git/objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
+}
 
 function looseObjectPath(dir: string, oid: string): string {
   return path.join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2));
@@ -1114,7 +1122,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given a chmod-000 loose object, unreferenced, When fsck runs with connectivityOnly (node tier only)', () => {
-      it('Then git exits 0 with dangling unknown once, and fsck reports one dangling finding typed unknown', async () => {
+      it('Then both refuse: git dies 128 on the corrupt loose object, and fsck rejects with LOOSE_OBJECT_CORRUPT', async () => {
         // Arrange
         const dir = await freshRepo('unreferenced-unreadable');
         const oid = hashObjectW(dir, 'unreadable-unreferenced\n');
@@ -1123,15 +1131,18 @@ describe.skipIf(!GIT_AVAILABLE)(
         const sut = trackedNodeContext(dir);
 
         // Act
-        const result = await fsck(sut, { connectivityOnly: true });
+        const error = await catchFsckRejection(sut, { connectivityOnly: true });
 
         // Assert
-        expect(gitResult.exitCode).toBe(0);
-        expect(occurrences(gitResult.stdout, `dangling unknown ${oid}`)).toBe(1);
-        expect(result.exitCode).toBe(0);
-        const danglingFindings = findingsOfType(result.findings, 'dangling');
-        expect(danglingFindings).toHaveLength(1);
-        expect(danglingFindings[0]?.objectType).toBe('unknown');
+        expect(gitResult.exitCode).toBe(128);
+        expect(
+          occurrences(
+            gitResult.stderr,
+            `error: unable to open loose object ${oid}: Permission denied`,
+          ),
+        ).toBe(3);
+        expect(occurrences(gitResult.stderr, looseCorruptFatal(oid))).toBe(1);
+        expect(error.data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: oid });
       });
     });
 
@@ -1310,7 +1321,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given an empty loose object, dangling, When fsck runs with connectivityOnly', () => {
-      it('Then both resolve: git exits 0 with dangling unknown, and fsck reports one dangling finding typed unknown', async () => {
+      it('Then both refuse: git dies 128 on the empty loose object, and fsck rejects with LOOSE_OBJECT_CORRUPT', async () => {
         // Arrange
         const dir = await freshRepo('empty-dangling');
         const oid = hashObjectW(dir, 'empty-loose-dangling\n');
@@ -1320,15 +1331,15 @@ describe.skipIf(!GIT_AVAILABLE)(
         const sut = trackedNodeContext(dir);
 
         // Act
-        const result = await fsck(sut, { connectivityOnly: true });
+        const error = await catchFsckRejection(sut, { connectivityOnly: true });
 
         // Assert
-        expect(gitResult.exitCode).toBe(0);
-        expect(occurrences(gitResult.stdout, `dangling unknown ${oid}`)).toBe(1);
-        expect(result.exitCode).toBe(0);
-        const danglingFindings = findingsOfType(result.findings, 'dangling');
-        expect(danglingFindings).toHaveLength(1);
-        expect(danglingFindings[0]?.objectType).toBe('unknown');
+        expect(gitResult.exitCode).toBe(128);
+        expect(
+          occurrences(gitResult.stderr, `error: object file ${looseRelativePath(oid)} is empty`),
+        ).toBe(3);
+        expect(occurrences(gitResult.stderr, looseCorruptFatal(oid))).toBe(1);
+        expect(error.data).toEqual({ code: 'LOOSE_OBJECT_CORRUPT', id: oid });
       });
     });
 
@@ -1620,7 +1631,7 @@ describe.skipIf(!GIT_AVAILABLE)('verify_pack interop — a plain repository', ()
   describe('Given the pack trailer is corrupt', () => {
     describe('When fsck runs', () => {
       it(
-        'Then both exit 14 and tsgit names the inaccessible pack git names',
+        'Then both exit 11 and tsgit names the inaccessible pack git names',
         async () => {
           // Arrange
           const dir = await packedRepo('trailer');
@@ -1632,8 +1643,8 @@ describe.skipIf(!GIT_AVAILABLE)('verify_pack interop — a plain repository', ()
           const result = await sut(trackedNodeContext(dir));
 
           // Assert
-          expect(gitResult.exitCode).toBe(14);
-          expect(result.exitCode).toBe(14);
+          expect(gitResult.exitCode).toBe(11);
+          expect(result.exitCode).toBe(11);
           const lines = verifyPackLines(result.findings);
           expect(lines).toHaveLength(1);
           expect(gitResult.stderr).toContain(lines[0]);
@@ -1646,7 +1657,7 @@ describe.skipIf(!GIT_AVAILABLE)('verify_pack interop — a plain repository', ()
   describe('Given a separate pack holding only an unreachable blob, with its body corrupt', () => {
     describe('When fsck runs', () => {
       it(
-        'Then both exit 4 and every verify_pack line git prints is rebuilt from tsgit findings',
+        'Then both exit 1 and every verify_pack line git prints is rebuilt from tsgit findings',
         async () => {
           // Arrange
           const dir = await packedRepo('unreachable');
@@ -1668,8 +1679,8 @@ describe.skipIf(!GIT_AVAILABLE)('verify_pack interop — a plain repository', ()
 
           // Assert
           const packPath = `${PACK_DIR}/${added}`;
-          expect(gitResult.exitCode).toBe(4);
-          expect(result.exitCode).toBe(4);
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
           expect([...verifyPackLines(result.findings)].sort()).toEqual(
             [
               `error: ${packPath} pack checksum mismatch`,
@@ -1686,3 +1697,164 @@ describe.skipIf(!GIT_AVAILABLE)('verify_pack interop — a plain repository', ()
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'delta-base interop — a corrupt base with two delta children',
+  () => {
+    const ENTRY_HEADER_BYTES = 5;
+    let baseRoot: string;
+
+    beforeAll(async () => {
+      baseRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-delta-base-'));
+    });
+
+    afterAll(async () => {
+      await rm(baseRoot, { recursive: true, force: true });
+    });
+
+    /** Three commits of one 500-line file: the newest blob is stored whole, the two older ones as REF_DELTAs on it. */
+    /** How the children name their base: `ref` (REF_DELTA, movable) or `offset` (OFS_DELTA). */
+    type DeltaBase = 'ref' | 'offset';
+
+    const threeVersionRepo = async (slug: string, deltaBase: DeltaBase): Promise<string> => {
+      const dir = path.join(baseRoot, slug);
+      runGit(['init', '-q', '-b', 'main', dir]);
+      disableAutoMaintenance(dir);
+      for (const n of [1, 2, 3]) {
+        const lines = Array.from({ length: 500 }, (_, i) =>
+          i === 6 ? `version ${n}` : `line ${i}`,
+        );
+        await writeFile(path.join(dir, 'f.txt'), `${lines.join('\n')}\n`);
+        commitSeed(dir);
+      }
+      runGit(['-C', dir, 'reflog', 'expire', '--expire=now', '--all']);
+      const useOffset = `repack.useDeltaBaseOffset=${deltaBase === 'offset'}`;
+      runGit(['-C', dir, '-c', useOffset, 'repack', '-adq']);
+      runGit(['-C', dir, 'prune-packed']);
+      return dir;
+    };
+
+    const MISSING_PREFIX = 'missing ';
+
+    /** git's `missing <type> <oid>` stdout lines, rebuilt from tsgit's findings and from git's output. */
+    const missingLinesOf = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+      findings
+        .flatMap((f) => (f.type === 'missing' ? [`${MISSING_PREFIX}${f.objectType} ${f.id}`] : []))
+        .sort();
+    const gitMissingLines = (stdout: string): ReadonlyArray<string> =>
+      stdout
+        .split('\n')
+        .filter((line) => line.startsWith(MISSING_PREFIX))
+        .sort();
+
+    const solePack = async (dir: string): Promise<string> => {
+      const packDir = path.join(dir, PACK_DIR);
+      const name = (await readdir(packDir)).find((entry) => entry.endsWith('.pack'))!;
+      return path.join(packDir, name);
+    };
+
+    /** Moves the base's byte span behind its children, then lets git rebuild the `.idx`. */
+    const placeBaseLast = async (dir: string, base: string): Promise<void> => {
+      const packPath = await solePack(dir);
+      const stem = packPath.slice(0, -'.pack'.length);
+      const row = verifyPackRows(dir, `${stem}.idx`).find((r) => r.oid === base)!;
+      const bytes = await readFile(packPath);
+      const body = bytes.subarray(0, bytes.length - DIGEST_LENGTH);
+      const end = row.offset + row.sizeInPackfile;
+      const moved = Buffer.concat([
+        body.subarray(0, row.offset),
+        body.subarray(end),
+        body.subarray(row.offset, end),
+      ]);
+      await rm(`${stem}.idx`, { force: true });
+      await rm(`${stem}.rev`, { force: true });
+      await chmod(packPath, 0o644);
+      await writeFile(packPath, Buffer.concat([moved, sha1(moved)]));
+      runGit(['-C', dir, 'index-pack', '-o', `${stem}.idx`, packPath]);
+    };
+
+    const corruptBaseBody = async (
+      dir: string,
+      base: string,
+    ): Promise<{ readonly baseOffset: number; readonly childOffset: number }> => {
+      const packPath = await solePack(dir);
+      const idxPath = `${packPath.slice(0, -'.pack'.length)}.idx`;
+      const rows = verifyPackRows(dir, idxPath);
+      const row = rows.find((r) => r.oid === base)!;
+      const bytes = await readFile(packPath);
+      for (
+        let at = row.offset + ENTRY_HEADER_BYTES;
+        at < row.offset + row.sizeInPackfile;
+        at += 1
+      ) {
+        bytes[at] = bytes[at]! ^ 0xff;
+      }
+      await chmod(packPath, 0o644);
+      await writeFile(packPath, bytes);
+      const children = rows.filter((r) => r.isDelta);
+      return { baseOffset: row.offset, childOffset: Math.min(...children.map((r) => r.offset)) };
+    };
+
+    describe.each([
+      ['first', false],
+      ['last', true],
+    ] as const)(
+      'Given a corrupt ref-delta base with two delta children, the base %s in pack order',
+      (position, placeLast) => {
+        describe('When fsck runs', () => {
+          it(
+            'Then both exit 3 and report the same single missing line, the base',
+            async () => {
+              // Arrange
+              const dir = await threeVersionRepo(`base-${position}`, 'ref');
+              const base = git(dir, 'rev-parse', 'HEAD:f.txt').trim();
+              if (placeLast) await placeBaseLast(dir, base);
+              const { baseOffset, childOffset } = await corruptBaseBody(dir, base);
+              const sut = fsck;
+
+              // Act
+              const gitResult = gitFsck(dir);
+              const result = await sut(trackedNodeContext(dir));
+
+              // Assert
+              expect(baseOffset > childOffset).toBe(placeLast);
+              expect(gitResult.exitCode).toBe(3);
+              expect(gitMissingLines(gitResult.stdout)).toEqual([`missing blob ${base}`]);
+              expect(result.exitCode).toBe(3);
+              expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
+            },
+            SETUP_TIMEOUT,
+          );
+        });
+      },
+    );
+
+    describe('Given a corrupt offset-delta base with two delta children, the base first in pack order', () => {
+      describe('When fsck runs', () => {
+        it(
+          'Then both exit 3 and report the same single missing line, the base',
+          async () => {
+            // Arrange — an offset delta always sits after its base, so this is
+            // the one position the OFS arm can take.
+            const dir = await threeVersionRepo('base-first-ofs', 'offset');
+            const base = git(dir, 'rev-parse', 'HEAD:f.txt').trim();
+            const { baseOffset, childOffset } = await corruptBaseBody(dir, base);
+            const sut = fsck;
+
+            // Act
+            const gitResult = gitFsck(dir);
+            const result = await sut(trackedNodeContext(dir));
+
+            // Assert
+            expect(baseOffset < childOffset).toBe(true);
+            expect(gitResult.exitCode).toBe(3);
+            expect(gitMissingLines(gitResult.stdout)).toEqual([`missing blob ${base}`]);
+            expect(result.exitCode).toBe(3);
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
+          },
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+  },
+);

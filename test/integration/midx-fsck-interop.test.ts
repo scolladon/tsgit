@@ -2,9 +2,9 @@
  * Cross-tool interop — `fsck`'s multi-pack-index pass, pinned against real
  * git. `git fsck` never verifies a midx inline: it spawns
  * `git multi-pack-index verify --object-dir <dir> --no-progress` as a child
- * and folds a non-zero child exit into bit 32. Every row records both
+ * and folds a non-zero child exit into bit 1. Every row records both
  * commands' exit codes and asserts the invariant that connects them
- * (`verify` non-zero iff `fsck` gains bit 32, whenever the parent survives),
+ * (`verify` non-zero iff `fsck` sets bit 1, whenever the parent survives),
  * plus tsgit's structured `FsckResult` from the identical on-disk state.
  *
  * Chain layers are git-written `0444`; layer mutations go through
@@ -77,6 +77,12 @@ function gitVerify(dir: string): ReturnType<typeof tryRunGitWithExit> {
 // Every context a row builds is disposed after the row — packed reads open
 // persistent FileHandles, and an undisposed registry surfaces as the
 // GC-close warning the handle-lifecycle work treats as its leak oracle.
+/**
+ * Git's exit when the deleted pack is PNAM[0]: 3 (corrupt + missing), or 11 when the
+ * regenerated fixture ties that pack to a ref (the refs bit joins in).
+ */
+const PACK_GONE_EXITS: ReadonlyArray<number> = [3, 11];
+
 const liveContexts: Context[] = [];
 function trackedNodeContext(workDir: string): Context {
   const ctx = createNodeContext({ workDir });
@@ -115,11 +121,11 @@ async function expectFsckRejects(ctx: Context, check: string): Promise<void> {
 
 /**
  * The exit-bit mapping, asserted on every non-reject row: a non-zero `verify`
- * exit sets bit 32 on `fsck`'s exit, and only that — proven by masking every
+ * exit sets bit 1 on `fsck`'s exit — proven by masking every
  * other bit out of both sides before comparing.
  */
 function expectVerifyInvariant(fsckExit: number, verifyExit: number): void {
-  expect((fsckExit & 32) !== 0).toBe(verifyExit !== 0);
+  expect((fsckExit & 1) !== 0).toBe(verifyExit !== 0);
 }
 
 /** Pokes one `OIDF` fanout entry directly, breaking monotonicity at `index`. */
@@ -166,15 +172,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const fixture = await freshBase('o1');
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -189,14 +196,15 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const fixture = await freshBase('o2');
         await rm(midxPaths(fixture.dir).flat, { force: true });
         const gitResult = gitFsck(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -213,15 +221,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expectVerifyInvariant(result.exitCode, verifyResult.exitCode);
         expectVerifyInvariant(gitResult.exitCode, verifyResult.exitCode);
       });
@@ -304,12 +313,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
           mutateMidxOrThrow(midxPaths(fixture.dir).flat, mutate);
           const gitResult = gitFsck(fixture.dir);
           const verifyResult = gitVerify(fixture.dir);
-          const sut = trackedNodeContext(fixture.dir);
+          const ctx = trackedNodeContext(fixture.dir);
 
           // Act + Assert
           expect(gitResult.exitCode).toBe(128);
           expect(verifyResult.exitCode).toBe(128);
-          await expectFsckRejects(sut, check);
+          await expectFsckRejects(ctx, check);
         });
       },
     );
@@ -322,12 +331,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     // inside the health pass's own walk of every entry the midx lists — the
     // same contained shape a bad large-offset row reaches (below).
     describe('Given a BASE repo with numPacks understated below a referenced pack index, When fsck runs', () => {
-      it("Then git's verify child dies while its parent is topology-bimodal, and tsgit deterministically contains the fault as midx-unusable with bit 32", async () => {
-        // Arrange — git's parent exits 128 only when its own walk happens to
-        // route a poisoned oid through the midx (delta-topology-dependent;
-        // measured both 128 and 32 across regenerated fixtures); its verify
-        // child, which decodes every entry, always dies. tsgit sides with
-        // the deterministic child shape.
+      it('Then git dies on the understated pack count while tsgit contains it as midx-unusable with exit 3', async () => {
+        // Arrange — git 2.56's parent dies (128) once its walk routes a
+        // poisoned oid through the midx, as its verify child always does.
+        // tsgit contains the deferred fault instead: the midx-health pass
+        // reports midx-unusable (bit 1) and the walk reports the reflog
+        // entries it can no longer resolve (bit 2), every run — a documented
+        // containment divergence, not a flaky pin.
         const fixture = await freshBase('o12');
         mutateMidxOrThrow(midxPaths(fixture.dir).flat, (bytes) => {
           bytes.writeUInt32BE(1, 8);
@@ -335,15 +345,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect([32, 128]).toContain(gitResult.exitCode);
+        expect(gitResult.exitCode).toBe(128);
         expect(verifyResult.exitCode).toBe(128);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(3);
         expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
       });
     });
@@ -381,22 +392,23 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     describe.each(MIDX_UNUSABLE_ROWS)(
       'Given a BASE repo with $label, When fsck runs',
       ({ label, mutate }) => {
-        it('Then git verify exits non-zero, fsck gains bit 32, and tsgit reports one midx-unusable finding', async () => {
+        it('Then git verify exits non-zero, fsck exits 1, and tsgit reports one midx-unusable finding', async () => {
           // Arrange
           const slug = label.split(' ')[0]?.toLowerCase() ?? 'row';
           const fixture = await freshBase(slug);
           mutateMidxOrThrow(midxPaths(fixture.dir).flat, mutate);
           const gitResult = gitFsck(fixture.dir);
           const verifyResult = gitVerify(fixture.dir);
-          const sut = trackedNodeContext(fixture.dir);
+          const ctx = trackedNodeContext(fixture.dir);
+          const sut = fsck;
 
           // Act
-          const result = await fsck(sut);
+          const result = await sut(ctx);
 
           // Assert
-          expect(gitResult.exitCode & 32).toBe(32);
+          expect(gitResult.exitCode).toBe(1);
           expect(verifyResult.exitCode).not.toBe(0);
-          expect(result.exitCode & 32).toBe(32);
+          expect(result.exitCode).toBe(1);
           expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
           expectVerifyInvariant(result.exitCode, verifyResult.exitCode);
           expectVerifyInvariant(gitResult.exitCode, verifyResult.exitCode);
@@ -405,41 +417,43 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     );
 
     describe('Given a BASE repo with the flat midx truncated to 8 bytes, When fsck runs', () => {
-      it('Then git verify exits non-zero, fsck gains bit 32, and tsgit reports one midx-unusable finding', async () => {
+      it('Then git verify exits non-zero, fsck exits 1, and tsgit reports one midx-unusable finding', async () => {
         // Arrange
         const fixture = await freshBase('o8');
         mutateMidxOrThrow(midxPaths(fixture.dir).flat, (bytes) => bytes.subarray(0, 8));
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(gitResult.exitCode).toBe(1);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(1);
         expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
       });
     });
 
     describe('Given a BASE repo with the flat midx made unreadable via chmod 000 (node tier only), When fsck runs', () => {
-      it('Then git verify exits non-zero, fsck gains bit 32, and tsgit reports one midx-unusable finding', async () => {
+      it('Then git verify exits non-zero, fsck exits 1, and tsgit reports one midx-unusable finding', async () => {
         // Arrange
         const fixture = await freshBase('o18');
         chmodSync(midxPaths(fixture.dir).flat, 0o000);
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(gitResult.exitCode).toBe(1);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(1);
         expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
       });
     });
@@ -460,19 +474,19 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
           'fsck',
         ]);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
 
         // Act + Assert — git's own gate hides the fault entirely
         expect(gitResult.exitCode).toBe(0);
         // Assert — verify run by hand (no config hatch of its own) still dies
         expect(verifyResult.exitCode).toBe(128);
         // Assert — tsgit has no equivalent config key, so it still rejects
-        await expectFsckRejects(sut, 'signature');
+        await expectFsckRejects(ctx, 'signature');
       });
     });
 
     describe('Given a BASE repo with the trailer digest flipped, When fsck runs', () => {
-      it('Then git verify reports incorrect checksum, fsck gains bit 32, and tsgit reports one midx-checksum-mismatch finding', async () => {
+      it('Then git verify reports incorrect checksum, fsck exits 1, and tsgit reports one midx-checksum-mismatch finding', async () => {
         // Arrange
         const fixture = await freshBase('o10');
         const flat = midxPaths(fixture.dir).flat;
@@ -483,15 +497,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
         expect(verifyResult.stderr).toContain('incorrect checksum');
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(gitResult.exitCode).toBe(1);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(1);
         expect(findingsOfType(result.findings, 'midx-checksum-mismatch')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(0);
       });
@@ -507,15 +522,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -540,15 +556,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         await rm(path.join(packDir, `${targetName}.rev`), { force: true });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(PACK_GONE_EXITS).toContain(gitResult.exitCode);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'midx-pack-unresolved')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'midx-entry-unresolved').length).toBeGreaterThan(0);
       });
@@ -576,15 +593,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(gitResult.exitCode).toBe(1);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(1);
         expect(findingsOfType(result.findings, 'midx-pack-unresolved')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'midx-pack-unresolved')[0]?.position).toBe(0);
         expect(findingsOfType(result.findings, 'midx-entry-unresolved').length).toBeGreaterThan(0);
@@ -605,15 +623,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         await rm(path.join(packDir, `${targetName}.rev`), { force: true });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(PACK_GONE_EXITS).toContain(gitResult.exitCode);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'midx-pack-unresolved')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'midx-entry-unresolved').length).toBeGreaterThan(0);
         expect(
@@ -636,15 +655,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         await rm(path.join(packDir, `${targetName}.pack`), { force: true });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(PACK_GONE_EXITS).toContain(gitResult.exitCode);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'midx-pack-unresolved')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'midx-entry-unresolved').length).toBeGreaterThan(0);
       });
@@ -662,10 +682,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         await rm(path.join(packDir, `${targetName}.idx`), { force: true });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert — git's exact integer varies with repack's delta topology
         // (the missing-object bit comes and goes); the midx bit is stable.
@@ -675,9 +696,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         // pass — the same accepted divergence family as the pack-health
         // suite's own .idx-less rows.
         expect(verifyResult.stderr).toContain('index unavailable');
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(PACK_GONE_EXITS).toContain(gitResult.exitCode);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'midx-pack-unresolved')).toHaveLength(0);
         expect(findingsOfType(result.findings, 'midx-entry-unresolved').length).toBeGreaterThan(0);
         expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(0);
@@ -686,7 +707,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     });
 
     describe('Given the SAME O23 repo with the midx removed instead (differential control), When fsck runs', () => {
-      it("Then bit 32 and both midx findings vanish — the difference isolates the midx's own contribution", async () => {
+      it("Then bit 1 and both midx findings vanish — the difference isolates the midx's own contribution", async () => {
         // Arrange — one repository, run twice: with the midx (O23 shape) and
         // with it removed, the pack deletion held constant
         const fixture = await freshBase('o26');
@@ -709,12 +730,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         // Act
         const withoutMidxResult = await fsck(withoutMidxCtx);
 
-        // Assert — the midx-removed repo loses exactly bit 32 and both midx findings
-        expect(withMidxGit.exitCode & 32).toBe(32);
-        expect(withoutMidxGit.exitCode & 32).toBe(0);
-        expect(withMidxResult.exitCode & 32).toBe(32);
-        expect(withoutMidxResult.exitCode & 32).toBe(0);
-        expect(withoutMidxResult.exitCode).toBe(withMidxResult.exitCode & ~32);
+        // Assert — the midx-removed repo loses exactly bit 1 and both midx findings
+        expect(PACK_GONE_EXITS).toContain(withMidxGit.exitCode);
+        expect(withoutMidxGit.exitCode & 1).toBe(0);
+        expect(withMidxResult.exitCode).toBe(withMidxGit.exitCode);
+        expect(withoutMidxResult.exitCode).toBe(withoutMidxGit.exitCode);
+        expect(withoutMidxResult.exitCode).toBe(withMidxResult.exitCode & ~1);
         expect(
           withoutMidxResult.findings.filter((finding) => finding.type.startsWith('midx-')),
         ).toHaveLength(0);
@@ -734,15 +755,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         writeFileSync(flat, crafted);
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -750,15 +772,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     });
 
     describe('Given a LOFF chunk with the target row out of range, When fsck runs', () => {
-      it("Then git's verify child dies while its parent is topology-bimodal, and tsgit deterministically contains the fault as midx-unusable with bit 32", async () => {
-        // Arrange — the crafted row targets midx entry 0. Whether git's
-        // PARENT also dies (128) depends on its own walk routing that oid
-        // through the midx, which varies with the fixture's delta topology
-        // (measured both 128 and 32 across regenerated fixtures); the verify
-        // child, which decodes every entry, always dies with the
-        // large-offset fatal. tsgit sides with the deterministic child
-        // shape: the midx-health pass's own entry walk reaches the fault and
-        // reports it as midx-unusable with bit 32, every run.
+      it('Then git dies on the out-of-range large offset while tsgit contains it as midx-unusable with exit 3', async () => {
+        // Arrange — the crafted row targets midx entry 0. git 2.56's parent
+        // dies (128) with the large-offset fatal once its walk routes that
+        // oid through the midx, as its verify child always does. tsgit
+        // contains the deferred fault instead: the midx-health pass's own
+        // entry walk reaches it and reports midx-unusable (bit 1), and the
+        // walk reports the reflog entries it can no longer resolve (bit 2),
+        // every run — a documented containment divergence, not a flaky pin.
         const fixture = await freshBase('o28');
         const flat = midxPaths(fixture.dir).flat;
         const before = readFileSync(flat);
@@ -767,59 +788,70 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
         expect(verifyResult.stderr).toContain('multi-pack-index large offset out of bounds');
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect([32, 128]).toContain(gitResult.exitCode);
+        expect(gitResult.exitCode).toBe(128);
         expect(verifyResult.exitCode).toBe(128);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(3);
         expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
       });
     });
   });
 
   // -------------------------------------------------------------------------
-  // the mode table: bit 32 is ungated
+  // the mode table: only connectivityOnly skips the pass
   // -------------------------------------------------------------------------
 
-  describe('mode is not a gate for the multi-pack-index pass', () => {
-    const MODES: ReadonlyArray<{ readonly label: string; readonly opts: FsckOptions }> = [
-      { label: 'default', opts: {} },
-      { label: 'connectivityOnly', opts: { connectivityOnly: true } },
-      { label: 'full:false', opts: { full: false } },
-      { label: 'strict', opts: { strict: true } },
+  describe('only connectivityOnly gates the multi-pack-index pass', () => {
+    const MODES: ReadonlyArray<{
+      readonly label: string;
+      readonly opts: FsckOptions;
+      readonly exitCode: number;
+      readonly midxFindings: number;
+    }> = [
+      { label: 'default', opts: {}, exitCode: 1, midxFindings: 1 },
+      { label: 'connectivityOnly', opts: { connectivityOnly: true }, exitCode: 0, midxFindings: 0 },
+      { label: 'full:false', opts: { full: false }, exitCode: 3, midxFindings: 1 },
+      { label: 'strict', opts: { strict: true }, exitCode: 1, midxFindings: 1 },
     ];
 
     describe('Given a Tier-B flat midx (truncated), When fsck runs across modes', () => {
-      it.each(MODES)('Then mode "$label" still reports bit 32', async ({ opts }) => {
-        // Arrange
-        const fixture = await freshBase('n-tier-b');
-        mutateMidxOrThrow(midxPaths(fixture.dir).flat, (bytes) => bytes.subarray(0, 8));
-        const sut = trackedNodeContext(fixture.dir);
+      it.each(MODES)(
+        'Then mode "$label" exits $exitCode with $midxFindings midx-unusable finding(s)',
+        async ({ opts, exitCode, midxFindings }) => {
+          // Arrange
+          const fixture = await freshBase('n-tier-b');
+          mutateMidxOrThrow(midxPaths(fixture.dir).flat, (bytes) => bytes.subarray(0, 8));
+          const ctx = trackedNodeContext(fixture.dir);
+          const sut = fsck;
 
-        // Act
-        const result = await fsck(sut, opts);
+          // Act
+          const result = await sut(ctx, opts);
 
-        // Assert
-        expect(result.exitCode & 32).toBe(32);
-        expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
-      });
+          // Assert
+          expect(result.exitCode).toBe(exitCode);
+          expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(midxFindings);
+        },
+      );
     });
 
     describe('Given a healthy BASE repo, When fsck runs across modes', () => {
       it.each(MODES)('Then mode "$label" reports no midx bit', async ({ opts }) => {
         // Arrange
         const fixture = await freshBase('n-healthy');
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut, opts);
+        const result = await sut(ctx, opts);
 
         // Assert
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
       });
     });
 
@@ -832,10 +864,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
           bytes[3] = (bytes[3] ?? 0) ^ 0xff;
           return bytes;
         });
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
 
         // Act + Assert
-        await expectFsckRejects(sut, 'signature');
+        await expectFsckRejects(ctx, 'signature');
       });
     });
   });
@@ -851,15 +883,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const fixture = await freshChain('p1');
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -923,14 +956,15 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
           const fixture = await freshChain('p2-p7');
           await arrange(fixture);
           const gitResult = gitFsck(fixture.dir);
-          const sut = trackedNodeContext(fixture.dir);
+          const ctx = trackedNodeContext(fixture.dir);
+          const sut = fsck;
 
           // Act
-          const result = await fsck(sut);
+          const result = await sut(ctx);
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
-          expect(result.exitCode & 32).toBe(0);
+          expect(result.exitCode & 1).toBe(0);
           expect(
             result.findings.filter((finding) => finding.type.startsWith('midx-')),
           ).toHaveLength(0);
@@ -947,15 +981,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         );
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert — an error: line with no exit bit at all (git's own quirk)
         expect(gitResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -1009,12 +1044,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
           mutateMidxOrThrow(chainLayerPath(fixture.dir, digest), mutate);
           const gitResult = gitFsck(fixture.dir);
           const verifyResult = gitVerify(fixture.dir);
-          const sut = trackedNodeContext(fixture.dir);
+          const ctx = trackedNodeContext(fixture.dir);
 
           // Act + Assert
           expect(gitResult.exitCode).toBe(128);
           expect(verifyResult.exitCode).toBe(128);
-          await expectFsckRejects(sut, check);
+          await expectFsckRejects(ctx, check);
         },
       );
     });
@@ -1036,15 +1071,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
         expect(verifyResult.stderr).not.toContain('incorrect checksum');
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -1052,7 +1088,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     });
 
     describe('Given the newest layer trailer flipped (checksum-mismatch), When fsck runs', () => {
-      it('Then the chain head IS verified — one midx-checksum-mismatch finding, bit 32', async () => {
+      it('Then the chain head IS verified — one midx-checksum-mismatch finding, exit 1', async () => {
         // Arrange
         const fixture = await freshChain('p13');
         const headPath = chainLayerPath(fixture.dir, fixture.layerDigests[1]);
@@ -1063,15 +1099,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
         expect(verifyResult.stderr).toContain('incorrect checksum');
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(gitResult.exitCode).toBe(1);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(1);
         expect(findingsOfType(result.findings, 'midx-checksum-mismatch')).toHaveLength(1);
       });
     });
@@ -1098,15 +1135,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(gitResult.exitCode).toBe(1);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(1);
         const unresolved = findingsOfType(result.findings, 'midx-pack-unresolved');
         expect(unresolved).toHaveLength(1);
         expect(unresolved[0]?.position).toBe(expectedPosition);
@@ -1133,15 +1171,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(gitResult.exitCode).toBe(1);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(1);
         const unresolved = findingsOfType(result.findings, 'midx-pack-unresolved');
         expect(unresolved).toHaveLength(1);
         expect(unresolved[0]?.position).toBe(0);
@@ -1162,15 +1201,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         await rm(path.join(packDir, `${targetName}.rev`), { force: true });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(32);
+        expect(PACK_GONE_EXITS).toContain(gitResult.exitCode);
         expect(verifyResult.exitCode).not.toBe(0);
-        expect(result.exitCode & 32).toBe(32);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'midx-pack-unresolved')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'midx-entry-unresolved').length).toBeGreaterThan(0);
       });
@@ -1184,14 +1224,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const flat = midxPaths(fixture.dir).flat;
         writeFileSync(flat, Buffer.alloc(8));
         const gitResult = gitFsck(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert — the chain is the usable midx; the flat fault is not a finding
-        expect(gitResult.exitCode & 32).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -1209,12 +1249,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         writeFileSync(flat, flatBytes);
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
 
         // Act + Assert
         expect(gitResult.exitCode).toBe(128);
         expect(verifyResult.exitCode).toBe(128);
-        await expectFsckRejects(sut, 'signature');
+        await expectFsckRejects(ctx, 'signature');
       });
     });
 
@@ -1229,14 +1269,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const headBytes = readFileSync(chainLayerPath(fixture.dir, fixture.layerDigests[1]));
         writeFileSync(flat, headBytes);
         const gitResult = gitFsck(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -1251,14 +1291,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
           bytes.subarray(0, 8),
         );
         const gitResult = gitFsck(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
-        expect(gitResult.exitCode & 32).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );
@@ -1286,15 +1326,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         });
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        const sut = trackedNodeContext(fixture.dir);
+        const ctx = trackedNodeContext(fixture.dir);
+        const sut = fsck;
 
         // Act
-        const result = await fsck(sut);
+        const result = await sut(ctx);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(verifyResult.exitCode).toBe(0);
-        expect(result.exitCode & 32).toBe(0);
+        expect(result.exitCode & 1).toBe(0);
         expect(result.findings.filter((finding) => finding.type.startsWith('midx-'))).toHaveLength(
           0,
         );

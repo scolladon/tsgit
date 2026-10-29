@@ -17,6 +17,10 @@ import { loadShallowSet } from './shallow-set.js';
  *  young. */
 export const GENERATION_INFINITY = Number.POSITIVE_INFINITY;
 
+/** git's `GENERATION_NUMBER_V1_MAX`: the largest topological level a v1
+ *  commit-graph stores, and the ceiling of the ordered region on such a chain. */
+export const GENERATION_NUMBER_V1_MAX = 0x3fffffff;
+
 export interface CommitMeta {
   readonly parents: ReadonlyArray<ObjectId>;
   /** The commit's own root tree: the graph's stored `rootTree` on a hit, the

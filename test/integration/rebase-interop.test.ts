@@ -1624,7 +1624,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
     });
 
     describe('When a fast-forward pick is the refused line', () => {
-      it('Then HEAD stays and the dropped pick is recorded as git records it', async () => {
+      it('Then HEAD stays and the dropped pick is not recorded as rewritten', async () => {
         // Arrange
         for (const dir of [pair.peer, pair.ours]) {
           buildOccupied(dir, false);
@@ -1650,7 +1650,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
     });
 
     describe('When the refused line is interactive', () => {
-      type Verb = 'pick' | 'edit' | 'reword' | 'squash' | 'fixup';
+      type Verb = 'pick' | 'edit' | 'reword' | 'squash' | 'fixup' | 'drop';
       const TITLES = ['W', 'X', 'Z'] as const;
 
       const gitRebaseI = (dir: string, upstream: string, verbs: ReadonlyArray<Verb>) => {
@@ -1709,6 +1709,24 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
           expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
         },
       );
+
+      it('Then a dropped line before the refused line is not recorded as rewritten', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          buildOccupied(dir, false);
+          plantOccupant(dir);
+        }
+        const verbs = ['drop', 'pick', 'pick'] as const;
+
+        // Act
+        const peer = gitRebaseI(pair.peer, 'u', verbs);
+        const ours = await tsgitRebaseI(pair.ours, 'u', verbs);
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(ours).toEqual(REFUSED);
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
 
       it.each(['squash', 'fixup'] as const)(
         'Then %s refused again by the kept occupant leaves the state git leaves',

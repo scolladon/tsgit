@@ -59,7 +59,7 @@ async function writePackedTree(content: Uint8Array): Promise<{
 
 describe('Given a packed blob whose bytes do not hash to its indexed id', () => {
   describe('When validatePackedEntry validates that entry', () => {
-    it('Then reports the packed entry corrupt with bit 4, as verify_pack does, and runs no catalogue', async () => {
+    it('Then reports the packed entry corrupt with bit 1, as verify_pack does, and runs no catalogue', async () => {
       // Arrange — readRawObject with verifyHash:false succeeds regardless of
       // the hash, so the mismatch is caught by the pass's own hash check.
       const content = ENCODER.encode('mismatched content');
@@ -77,7 +77,7 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       expect(result.findings).toEqual([
         { type: 'pack-entry-corrupt', pack: 'pack-p2', id: blobId },
       ]);
-      expect(result.exitBit).toBe(4);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -107,7 +107,7 @@ describe('Given a packed tree with a hash disagreement and a duplicate entry nam
 
 describe('Given a packed blob whose compressed body is damaged', () => {
   describe('When validatePackedEntry validates that entry', () => {
-    it('Then reports the entry unpackable by pack and offset with bit 4, as verify_pack does', async () => {
+    it('Then reports the entry unpackable by pack and offset with bit 1, as verify_pack does', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const [blobId] = await writeSyntheticPack(ctx, 'p4', [
@@ -125,7 +125,7 @@ describe('Given a packed blob whose compressed body is damaged', () => {
       expect(result.findings).toEqual([
         { type: 'pack-entry-unpackable', pack: 'pack-p4', id: blobId, offset: 12 },
       ]);
-      expect(result.exitBit).toBe(4);
+      expect(result.exitBit).toBe(1);
     });
   });
 });
@@ -213,7 +213,7 @@ describe('Given a packed tree with a duplicate entry name', () => {
       expect(msgIds).not.toContain('badType');
     });
 
-    it('Then its error carries bit 4 alone, as verify_pack reports it', async () => {
+    it('Then its error carries bit 1, as verify_pack reports it', async () => {
       // Arrange
       const treeBody = buildTree(
         buildTreeEntry('100644', 'a.txt', BLOB_SHA_A),
@@ -225,7 +225,7 @@ describe('Given a packed tree with a duplicate entry name', () => {
       const result = await sut(ctx, await packedEntryOf(ctx, treeId), CATALOGUE);
 
       // Assert
-      expect(result.exitBit).toBe(4);
+      expect(result.exitBit).toBe(1);
     });
   });
 });

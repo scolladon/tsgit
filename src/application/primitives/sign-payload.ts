@@ -54,13 +54,15 @@ export interface ResolveSigningSelectorInput {
 export const resolveSigningSelector = (input: ResolveSigningSelectorInput): string =>
   input.keyOverride ?? input.signingKey ?? input.fallbackIdent;
 
-const CARRIAGE_RETURNS = /\r/g;
+const CARRIAGE_RETURN_BEFORE_LINE_FEED = /\r(?=\n)/g;
 
 const isWellFormedArmor = (text: string): boolean => ARMOR_PATTERN.test(text);
 
-/** git's `remove_cr_after`: every CR the signer wrote is dropped, not only those ending a line. */
-const signatureText = (bytes: Uint8Array): string =>
-  DECODER.decode(bytes).replace(CARRIAGE_RETURNS, '');
+/** git's `strip_cr_before_lf`: a CR survives unless the very next byte is LF, so `\r\r\n` keeps one. */
+export const stripCrBeforeLf = (text: string): string =>
+  text.replace(CARRIAGE_RETURN_BEFORE_LINE_FEED, '');
+
+const signatureText = (bytes: Uint8Array): string => stripCrBeforeLf(DECODER.decode(bytes));
 
 /** git's `sign_buffer_gpg` test: a `SIG_CREATED` line opening the status or following a newline. */
 const reportsSignatureCreated = (status: string): boolean =>
@@ -149,7 +151,7 @@ const signWithSsh = async (
  * `SIG_CREATED` status line; anything else is a typed `signer-failed` refusal
  * carrying the signer's stderr — never a partial or silent result. As in git,
  * the signer's stderr is captured: hidden on success, returned on refusal,
- * and every carriage return in the armor is dropped.
+ * and a carriage return in the armor is dropped only when a line feed follows it.
  */
 export const signPayload = async (
   ctx: Context,

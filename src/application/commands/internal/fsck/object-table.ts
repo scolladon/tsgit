@@ -4,7 +4,7 @@ import type { ObjectId } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { listLooseObjectIds } from '../../../primitives/enumerate-objects.js';
 import { getObjectStore } from '../../../primitives/object-store.js';
-import { EXIT_CORRUPT, EXIT_PACK } from './exit-codes.js';
+import { EXIT_CORRUPT } from './exit-codes.js';
 import type { CachedGitObject, ProjectedGitObject } from './object-cache.js';
 import { snapshotTips } from './pack-verify-order.js';
 import { attributeTo } from './source-attribution.js';
@@ -150,7 +150,7 @@ function readCopy(state: TableState, copy: ReadCopy, obj: ProjectedGitObject): v
 const findingExitBit = (finding: TableFinding): number => {
   if (finding.type === 'broken-links') return EXIT_CORRUPT;
   if (finding.type !== 'unparseable-object') return 0;
-  return finding.pack === undefined ? EXIT_CORRUPT : EXIT_CORRUPT | EXIT_PACK;
+  return EXIT_CORRUPT;
 };
 
 /**

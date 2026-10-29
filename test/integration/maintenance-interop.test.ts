@@ -835,29 +835,48 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
   });
 
   describe.each([
-    { kv: 'gc.auto=bogus', code: 'CONFIG_BAD_NUMERIC_VALUE' },
-    { kv: 'gc.cruftPacks=maybe', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
-    { kv: 'gc.pruneExpire=all', code: 'CONFIG_BAD_DATE_VALUE' },
-    { kv: 'gc.worktreePruneExpire=2099-01-01', code: 'CONFIG_BAD_DATE_VALUE' },
-    { kv: 'gc.autoPackLimit=3g', code: 'CONFIG_BAD_NUMERIC_VALUE' },
-    { kv: 'gc.logExpiry=garbage', code: 'CONFIG_BAD_DATE_VALUE' },
-    { kv: 'gc.bigPackThreshold=-0', code: 'CONFIG_BAD_NUMERIC_VALUE' },
-  ])('Given a malformed $kv', ({ kv, code }) => {
+    { kv: 'gc.auto=bogus', code: 'CONFIG_BAD_NUMERIC_VALUE', lazy: true, declines: false },
+    { kv: 'gc.cruftPacks=maybe', code: 'CONFIG_BAD_BOOLEAN_VALUE', lazy: false, declines: false },
+    { kv: 'gc.pruneExpire=all', code: 'CONFIG_BAD_DATE_VALUE', lazy: false, declines: false },
+    {
+      kv: 'gc.worktreePruneExpire=2099-01-01',
+      code: 'CONFIG_BAD_DATE_VALUE',
+      lazy: false,
+      declines: false,
+    },
+    { kv: 'gc.autoPackLimit=3g', code: 'CONFIG_BAD_NUMERIC_VALUE', lazy: true, declines: false },
+    { kv: 'gc.logExpiry=garbage', code: 'CONFIG_BAD_DATE_VALUE', lazy: false, declines: false },
+    { kv: 'gc.bigPackThreshold=-0', code: 'CONFIG_BAD_NUMERIC_VALUE', lazy: true, declines: true },
+  ])('Given a malformed $kv', ({ kv, code, lazy, declines }) => {
     describe.each([
       {
         run: 'gc --auto under a declining gate',
         gitArgs: ['gc', '--auto'],
         opts: { tasks: ['gc'] as ReadonlyArray<MaintenanceTask>, auto: true },
+        gitExit: declines ? 0 : 128,
+        tsgitRefuses: !declines,
+        taskFailed: false,
       },
       {
         run: 'the commit-graph maintenance task alone',
         gitArgs: ['maintenance', 'run', '--task=commit-graph'],
         opts: { tasks: ['commit-graph'] as ReadonlyArray<MaintenanceTask>, auto: false },
+        gitExit: lazy ? 0 : 128,
+        tsgitRefuses: !lazy,
+        taskFailed: false,
       },
-    ])('When both tools run $run', ({ gitArgs, opts }) => {
-      it('Then both refuse before any task', async () => {
+      {
+        run: 'the gc maintenance task alone',
+        gitArgs: ['maintenance', 'run', '--task=gc'],
+        opts: { tasks: ['gc'] as ReadonlyArray<MaintenanceTask>, auto: false },
+        gitExit: lazy ? 1 : 128,
+        tsgitRefuses: !lazy,
+        taskFailed: lazy,
+      },
+    ])('When both tools run $run', ({ gitArgs, opts, gitExit, tsgitRefuses, taskFailed }) => {
+      it('Then they agree on refusing before any task, declining, or failing the gc task', async () => {
         // Arrange
-        const slug = `gc-config-first-${kv.replace(/\W+/g, '-')}-${gitArgs.length}`;
+        const slug = `gc-config-first-${kv.replace(/\W+/g, '-')}-${gitArgs.join('-').replace(/\W+/g, '-')}`;
         const baseDir = await initRepo(slug);
         await addCommit(baseDir, 'c0');
         const twin = await makeTwin(baseDir, slug);
@@ -868,8 +887,9 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
 
         // Act
         let caught: unknown;
+        let result: Awaited<ReturnType<typeof maintenance>> | undefined;
         try {
-          await sut(trackedNodeContext(twin.oursDir, 'sha1'), {
+          result = await sut(trackedNodeContext(twin.oursDir, 'sha1'), {
             tasks: opts.tasks,
             auto: opts.auto,
           });
@@ -878,8 +898,67 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         }
 
         // Assert
-        expect(peer.exitCode).toBe(128);
-        expect((caught as TsgitError).data.code).toBe(code);
+        expect(peer.exitCode).toBe(gitExit);
+        if (tsgitRefuses) {
+          expect((caught as TsgitError).data.code).toBe(code);
+        } else {
+          expect(caught).toBeUndefined();
+        }
+        if (taskFailed) {
+          expect(peer.stderr.endsWith("error: task 'gc' failed\n")).toBe(true);
+          expect(result?.tasksFailed[0]?.task).toBe('gc');
+          expect(result?.tasksFailed[0]?.data.code).toBe(code);
+        }
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given a malformed gc.auto=bogus', () => {
+    describe.each([
+      { order: 'gc then commit-graph', tasks: ['gc', 'commit-graph'] as const },
+      { order: 'commit-graph then gc', tasks: ['commit-graph', 'gc'] as const },
+    ])('When both tools run the tasks in the order $order', ({ order, tasks }) => {
+      it('Then gc fails, git exits 1 and both write the commit-graph chain', async () => {
+        // Arrange
+        const slug = `gc-lazy-order-${order.replace(/\W+/g, '-')}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        const peer = tryRunGitWithExit([
+          '-C',
+          twin.peerDir,
+          '-c',
+          'gc.auto=bogus',
+          'maintenance',
+          'run',
+          ...tasks.map((task) => `--task=${task}`),
+        ]);
+        await setOursGcConfig(twin.oursDir, ['gc.auto=bogus']);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(trackedNodeContext(twin.oursDir, 'sha1'), {
+          tasks,
+          auto: false,
+        });
+
+        // Assert
+        expect(peer.exitCode).toBe(1);
+        expect(result.tasksFailed.map(({ task }) => task)).toEqual(['gc']);
+        expect(result.tasksRun).toEqual(['commit-graph']);
+        for (const dir of [twin.peerDir, twin.oursDir]) {
+          const chain = path.join(
+            dir,
+            '.git',
+            'objects',
+            'info',
+            'commit-graphs',
+            'commit-graph-chain',
+          );
+          expect((await readFile(chain, 'utf8')).trim()).toMatch(/^[0-9a-f]{40}$/);
+        }
         await disposeTwin(twin);
       });
     });
@@ -2324,7 +2403,7 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a history git c
           data.code === 'BAD_TREE_OBJECT' ? `fatal: bad tree object ${data.id}\n` : data.code,
         );
         expect(peer.stderr).toBe(
-          `${logLines}${fatalLines.join('')}fatal: failed to run repack\nerror: task 'gc' failed\n`,
+          `${logLines}${fatalLines.join('')}error: failed to run (null)\nerror: task 'gc' failed\n`,
         );
         expect(fatalLines).toEqual([`fatal: bad tree object ${blob}\n`]);
         expect(result.tasksRun).toEqual(['commit-graph']);
@@ -2424,7 +2503,7 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying lo
         expect(result.tasksRun).not.toContain('gc');
         expect(peer.exitCode).toBe(1);
         expect(peer.stderr).toBe(
-          `${corruptLines(liarId)}fatal: failed to run repack\nerror: task 'gc' failed\n`,
+          `${corruptLines(liarId)}error: failed to run (null)\nerror: task 'gc' failed\n`,
         );
         await assertStoreUntouched(twin.peerDir, baseDir, liarId, countBefore);
         await assertStoreUntouched(twin.oursDir, baseDir, liarId, countBefore);
@@ -2444,7 +2523,7 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying lo
 
         // Assert
         expect(result.exitCode).toBe(128);
-        expect(result.stderr).toBe(`${corruptLines(liarId)}fatal: failed to run repack\n`);
+        expect(result.stderr).toBe(`${corruptLines(liarId)}error: failed to run (null)\n`);
       });
     });
   });
@@ -2537,7 +2616,7 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a size-lying lo
             code: 'ENOENT',
           });
           const fsck = tryRunGitWithExit(['-C', dir, 'fsck']);
-          expect(fsck.exitCode).toBe(4);
+          expect(fsck.exitCode).toBe(1);
           expect(fsck.stderr).toContain(`error: packed ${liarId} from `);
           expect(await mtimesSidecars(dir)).toHaveLength(reachable ? 0 : 1);
         }
