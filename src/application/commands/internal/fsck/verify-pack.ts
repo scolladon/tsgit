@@ -129,7 +129,7 @@ async function scanEntries(
   const layout = await entryLayoutOf(pack, index);
   const hasher = ctx.hash.createHasher();
   hasher.update(await pack.readSlice(0, layout.starts[0] ?? layout.trailerStart));
-  const entries = await verifyEntriesInOrder(ctx, target, index, layout, hasher);
+  const entries = await verifyEntriesInOrder({ ctx, target, index, layout, hasher });
   const trailer = await pack.readSlice(layout.trailerStart, index.digestLength);
   return {
     checksumHolds: bytesEqual(await hasher.digest(), trailer),
@@ -153,35 +153,26 @@ async function entryLayoutOf(pack: RegisteredPack, index: PackIndex): Promise<En
   return { order, starts: order.map((position) => offsets[position]!), trailerStart };
 }
 
+/** One pass over a pack's entries: what it reads, and the hasher the bytes feed. */
+interface EntryWalk {
+  readonly ctx: Context;
+  readonly target: PackUnderVerification;
+  readonly index: PackIndex;
+  readonly layout: EntryLayout;
+  readonly hasher: Hasher;
+}
+
 /** Every entry in offset order — hashed for the trailer check, CRC'd against
  *  the `.idx` and unpacked on the way. */
-async function verifyEntriesInOrder(
-  ctx: Context,
-  target: PackUnderVerification,
-  index: PackIndex,
-  layout: EntryLayout,
-  hasher: Hasher,
-): Promise<EntriesResult> {
-  const { order, starts, trailerStart } = layout;
+async function verifyEntriesInOrder(walk: EntryWalk): Promise<EntriesResult> {
   const findings: FsckFinding[] = [];
   const unpackable: UnpackableEntry[] = [];
   let exitBit = 0;
-  for (const [rank, position] of order.entries()) {
-    const offset = starts[rank]!;
-    const bytes = await target.pack.readSlice(offset, (starts[rank + 1] ?? trailerStart) - offset);
-    hasher.update(bytes);
-    const id = objectIdAt(index, position);
-    const own = await verifyEntry(ctx, target, bytes, {
-      id,
-      offset,
-      crc: recordedEntryCrc(index, position),
-    });
-    findings.push(...own.findings);
-    exitBit |= own.exitBit;
-    recordUnpackable(unpackable, own.findings, {
-      id,
-      base: () => baseNamedBy(ctx, index, layout, { bytes, offset }),
-    });
+  for (const [rank, position] of walk.layout.order.entries()) {
+    const step = await verifyEntryAt(walk, rank, position);
+    findings.push(...step.findings);
+    exitBit |= step.exitBit;
+    recordUnpackable(unpackable, step.findings, step);
   }
   return {
     findings,
@@ -189,6 +180,25 @@ async function verifyEntriesInOrder(
     unpackable: unpackable.map((entry) => entry.id),
     badBases: failedBasesOf(unpackable),
   };
+}
+
+/** What one entry reported, and how to name the base it leans on. */
+interface EntryStep extends ContentValidationResult {
+  readonly id: ObjectId;
+  readonly base: () => ObjectId | undefined;
+}
+
+/** The entry at `rank` in offset order: its bytes fed to the hasher, then verified. */
+async function verifyEntryAt(walk: EntryWalk, rank: number, position: number): Promise<EntryStep> {
+  const { ctx, target, index, layout, hasher } = walk;
+  const offset = layout.starts[rank]!;
+  const end = layout.starts[rank + 1] ?? layout.trailerStart;
+  const bytes = await target.pack.readSlice(offset, end - offset);
+  hasher.update(bytes);
+  const id = objectIdAt(index, position);
+  const crc = recordedEntryCrc(index, position);
+  const own = await verifyEntry(ctx, target, bytes, { id, offset, crc });
+  return { ...own, id, base: () => baseNamedBy(ctx, index, layout, { bytes, offset }) };
 }
 
 /** The base is resolved lazily: only an entry that failed to unpack needs it. */
