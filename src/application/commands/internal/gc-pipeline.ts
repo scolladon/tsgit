@@ -1049,7 +1049,7 @@ export async function runGcTask(
   refreshPackRegistry(ctx);
   const census = await takeStoreCensus(ctx);
   const { settings } = opts;
-  if (opts.auto !== true) await assertValidGcAutoConfig(ctx);
+  await assertValidGcAutoConfig(ctx);
   const { gc } = await readConfig(ctx);
   const threshold = gc?.auto ?? DEFAULT_GC_AUTO_THRESHOLD;
   if (shouldDeclineForAuto(opts.auto, threshold, census.looseObjectsBefore)) {
