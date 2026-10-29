@@ -1,5 +1,7 @@
 # 603 — Full read support for both pack auxiliary artefacts
 
+> Amended for git 2.56: see ADR-1107. The `.rev` and `.bitmap` passes now set bit 1 (not 64 and 128) and run only outside `connectivityOnly`.
+
 - **Status:** accepted (ratified — deviates from the design's recommendation)
 - **Date:** 2026-08-09
 - **Design:** docs/design/rev-index-bitmap-read-support.md (DC-1) · **Refines:** ADR-572, ADR-586

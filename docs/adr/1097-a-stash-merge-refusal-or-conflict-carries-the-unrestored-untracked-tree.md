@@ -5,6 +5,8 @@ subjects:
 ---
 # 1097 — A stash merge refusal or conflict carries the unrestored untracked tree
 
+> Amended for git 2.56: see ADR-1109. git exits 128 on a refusal or a conflict that also leaves an untracked path unwritten; 1 is reserved for a conflict alone.
+
 - **Status:** accepted
 - **Date:** 2026-10-27
 - **Design:** docs/design/stash-apply-dir-file-replacement.md (DC2, F3, F4) · **Supersedes/Refines:** refines ADR-212, ADR-1096
@@ -13,7 +15,7 @@ subjects:
 
 git restores the stash's untracked files whatever the merge's outcome. When the merge refuses ("Your local changes
 … would be overwritten") or conflicts, and the untracked restore then also leaves something unwritten, git prints
-both the merge outcome and the restore's errors and exits 1 (A.3 FU dirty-f-untr-u, conflict-f-untr-u). tsgit has
+both the merge outcome and the restore's errors and exits 128 in git 2.56 (A.3 FU dirty-f-untr-u, conflict-f-untr-u). tsgit has
 to carry two outcomes in one structured result: the refusal is a thrown `STASH_APPLY_WOULD_OVERWRITE`, the conflict
 is a `{ kind: 'conflict' }` result (ADR-212), and ADR-1096 defines the restore's own data shape.
 

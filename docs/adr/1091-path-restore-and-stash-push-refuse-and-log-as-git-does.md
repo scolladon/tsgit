@@ -5,6 +5,8 @@ subjects:
 ---
 # 1091 — Path restore and `stash push` refuse and log as git does
 
+> Amended for git 2.56: see ADR-1109. git exits 128 on `stash push` over an unmerged index (F12); 1 is reserved for a conflict.
+
 - **Status:** accepted
 - **Date:** 2026-10-26
 - **Design:** docs/design/forced-checkout-same-commit.md (DC5, F10–F12) · **Supersedes/Refines:** refines ADR-226
@@ -16,7 +18,7 @@ The matrix proved three more gaps on call sites this change edits:
 - F10: `checkout -- f` on an unmerged `f`. git exits 1 with `error: path 'f' is unmerged` and keeps the index.
   tsgit succeeds and drops the stages.
 - F11: `stash push` writes no HEAD `reset: moving to HEAD` reflog entry.
-- F12: `stash push` on an unmerged index. git exits 1 with `error: could not write index` and stashes nothing.
+- F12: `stash push` on an unmerged index. git exits 128 with `error: could not write index` and stashes nothing.
   tsgit stashes and resets.
 
 ## Options considered

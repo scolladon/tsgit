@@ -1,6 +1,15 @@
+---
+subjects:
+  - src/application/commands/internal/fsck
+---
 # 586 — Exit bit 64 is modeled, with an ungated finding
 
-- **Status:** accepted (user-ratified)
+> Superseded by [ADR-1107](1107-fsck-sets-bit-1-for-pack-rev-index-bitmap-and-midx-faults-as-git-2-56-does.md)
+> for exit bit 64 as a distinct value and its evaluation in every mode: git 2.56 folds every
+> pack, rev-index, bitmap and midx fault into bit 1 and runs those checks only outside
+> `--connectivity-only`. The `pack-rev-index-unusable` finding variant is carried forward.
+
+- **Status:** superseded by ADR-1107
 - **Date:** 2026-08-07
 - **Design:** docs/design/fsck-pack-accessibility-reporting.md (DC-6) · **Refines:** ADR-575
 

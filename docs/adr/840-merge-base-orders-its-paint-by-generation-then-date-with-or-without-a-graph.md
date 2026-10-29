@@ -4,7 +4,13 @@ subjects:
 ---
 # 840 — merge-base orders its paint by generation then date, with or without a graph
 
-- **Status:** accepted
+> Superseded by [ADR-1114](1114-merge-base-follows-git-2-56-s-paint-queue.md) for the date-only
+> comparator when `min_generation` is 0 without corrected commit dates: git 2.56 always orders
+> its paint by generation, then date, then insertion, and terminates on side exhaustion. The
+> `ENQUEUED` dedup, the insertion tie-break and the reduction's minimum-generation paint are
+> carried forward.
+
+- **Status:** superseded by ADR-1114
 - **Date:** 2026-09-10
 - **Design:** docs/design/closure-history-walks.md (DC-5) · **Supersedes/Refines:** refines ADR-190
 

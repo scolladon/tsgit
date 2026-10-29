@@ -221,6 +221,23 @@ from` + 2 spaces + `<type> <sha>\n`; line 2 = 14 spaces + `to` + 2 spaces + `<ty
   contributes bit 2. Pinned against real git 2.54.0: `9a` exit **2**, `9b` exit
   **10**, isolated `zeroPaddedFilemode` default exit **0** / `--strict` exit **1**.
 
+  **git 2.56 exit bits.** Only bits 1 (content / corrupt / hash, and every pack,
+  `.idx`, `.rev`, bitmap and midx fault), 2 (missing / unresolved link), 8 (refs) and
+  16 (commit-graph) exist; the pack-scan bits 4, 32, 64 and 128 are gone (ADR-1107).
+  Pack, rev-index, bitmap and midx verification runs per mode:
+
+  | corruption (local source) | default | `--connectivity-only` | `--no-full` |
+  |---|---|---|---|
+  | none | 0 | 0 | 0 |
+  | `.idx` CRC | 1 | 0 | 0 |
+  | `.pack` body | 3 | 0 | 0 |
+  | `.rev` | 1 | 0 | 1 |
+  | pack `.bitmap` | 1 | 0 | 1 |
+  | midx checksum or midx `.bitmap` | 1 | 0 | 1 |
+
+  `--no-full` skips `verify_pack` but still checks rev-index, bitmap and midx;
+  `--connectivity-only` skips all four.
+
 **Flag classification — three classes (ADR-411 D4 fixed):** **projection** (the
 maximal taxonomy is always computed; the flag is a caller-side filter of the
 returned `findings`, so it is **not** a library option), **data-scope option**

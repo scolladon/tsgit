@@ -1,6 +1,16 @@
+---
+subjects:
+  - src/application/primitives/pack-registry.ts
+  - src/application/primitives/internal/midx-binding.ts
+---
 # 592 — The midx is authoritative for the packs it names
 
-- **Status:** accepted (user-ratified)
+> Superseded by [ADR-1113](1113-a-midx-owner-pack-that-cannot-be-opened-is-recovered-on-the-second-read.md)
+> for the owner-unavailable branch only: git 2.56 recovers an object whose midx-named owner pack
+> cannot be opened by scanning the midx's packs on the second read. The midx-first lookup, the
+> filtered `.idx` loop and the dropped unresolved `PNAM` entry are carried forward.
+
+- **Status:** superseded by ADR-1113
 - **Date:** 2026-08-08
 - **Design:** docs/design/midx-read-support.md (DC-1, Pin H)
 
