@@ -136,8 +136,9 @@ function midxEntryOf(bytes: Buffer, id: ObjectId): number {
   return entry;
 }
 
-/** HEAD's root tree: the one object git's connectivity walk is sure to
- *  re-read through the midx, its buffer freed by the pack pass before. */
+/** HEAD's root tree: git frees every tree buffer in its pack pass and re-reads
+ *  any reachable tree through the midx in its connectivity walk; HEAD's root is
+ *  the one every fixture carries. */
 function headTreeOf(dir: string): ObjectId {
   return tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD^{tree}']).stdout.trim() as ObjectId;
 }

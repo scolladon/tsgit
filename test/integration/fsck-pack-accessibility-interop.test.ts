@@ -1701,7 +1701,7 @@ describe.skipIf(!GIT_AVAILABLE)('verify_pack interop — a plain repository', ()
 });
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'delta-base interop — a corrupt base with two delta children',
+  'delta-base interop — a corrupt base with two delta children, and a base naming its own entry',
   () => {
     const ENTRY_HEADER_BYTES = 5;
     let baseRoot: string;
