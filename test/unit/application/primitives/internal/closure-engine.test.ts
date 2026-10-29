@@ -3014,6 +3014,30 @@ describe('computeClosure — bitmap search across object sources', () => {
     });
   });
 
+  describe('Given a primary whose first pack carries no bitmap and whose second pack carries one', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it("Then the second pack's bitmap answers", async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const primaryObjects = `${ctx.layout.gitDir}/objects`;
+        await writeSyntheticPackIn(ctx, primaryObjects, 'a-plain', [
+          { kind: 'base', type: 'blob', content: ENC.encode('plain-pack-content') },
+        ]);
+        const id = await packWithBitmapIn(ctx, primaryObjects, 'b-with-bitmap');
+        const packSpy = vi.spyOn(packBitmapBindingModule, 'loadPackBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(packsLoaded(packSpy)).toEqual(['pack-a-plain', 'pack-b-with-bitmap']);
+        packSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given a corrupt donor pack bitmap as the only bitmap', () => {
     describe('When a bitmap-tier closure is requested', () => {
       it('Then it falls back to the walk', async () => {
