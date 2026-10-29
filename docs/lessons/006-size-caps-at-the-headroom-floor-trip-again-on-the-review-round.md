@@ -13,7 +13,7 @@ evidence:
 source: { run: gc-size-lying-loose-blob, phase: review, date: 2026-10-21 }
 status: active
 supersedes: []
-last-verified: 2026-10-23
+last-verified: 2026-10-29
 ---
 # 006 — Size caps at the headroom floor trip again on the review round
 
@@ -47,3 +47,7 @@ Record each raise in the design's raise section and the tarball cap's comment, w
 `docs/design/bundle-size-optimization.md` — the two raise blocks of the gc size-lying change.
 `tooling/verify-tarball.sh` — the cap block's attribution lines.
 `docs/design/bundle-size-optimization.md` — the pathspec-glob-dialect raises: a plan part raised the caps before the review round, and the review fixes crossed three rows again by 26–47 B ("Size-limit raise — the embedded-repository review fixes").
+`.size-limit.json` — on the git 2.56 follow-up, `check:size` inside an incremental `npm run validate` reported
+`Full library` over by 231 kB and `Chunks: primitives` over by 112 kB: the previous build's chunk files were
+still in `dist/` beside the new ones and the chunk globs summed both. `rm -rf dist .wireit` then measured the
+true rows (1.4 kB and 670 B over) and the caps were raised once, after the review round, from those numbers.

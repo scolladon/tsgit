@@ -13,7 +13,7 @@ evidence:
 source: { run: stash-apply-dir-file-replacement, phase: review, date: 2026-10-27 }
 status: active
 supersedes: []
-last-verified: 2026-10-27
+last-verified: 2026-10-29
 ---
 # 021 — `stash apply --index` applies a patch, it does not merge
 

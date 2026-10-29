@@ -14,7 +14,7 @@ evidence:
 source: { run: gc-size-lying-loose-blob, phase: implementation, date: 2026-10-21 }
 status: active
 supersedes: []
-last-verified: 2026-10-21
+last-verified: 2026-10-29
 ---
 # 005 — A pinned row the design expects to pass is a probe, not a GUARD
 

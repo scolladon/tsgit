@@ -13,7 +13,7 @@ evidence:
 source: { run: stash-apply-dir-file-replacement, phase: validation, date: 2026-10-27 }
 status: active
 supersedes: []
-last-verified: 2026-10-27
+last-verified: 2026-10-29
 ---
 # 020 — an index clash guard is judged over hostile trees
 

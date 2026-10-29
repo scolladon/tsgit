@@ -13,7 +13,7 @@ evidence:
 source: { run: stash-apply-dir-file-replacement, phase: review, date: 2026-10-28 }
 status: active
 supersedes: []
-last-verified: 2026-10-28
+last-verified: 2026-10-29
 ---
 # 022 — a fixture's sort position can hide a position-dependent git behaviour
 
