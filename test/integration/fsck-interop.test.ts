@@ -44,6 +44,7 @@ import { fsck } from '../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
+import { missingLine } from './fsck-line-helpers.js';
 import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
 
@@ -1704,7 +1705,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(result.exitCode).toBe(gitResult.exitCode);
 
           // Assert — git's own "missing blob <oid>" line, reconstructed
-          expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
+          expect(gitResult.stdout).toContain(missingLine('blob', sha));
           const missing = result.findings.find(
             (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === sha,
           );
@@ -2020,7 +2021,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert — real git prints BOTH lines, exit 3
         expect(gitResult.stdout).toContain(reconstructTagged('blob', sha, 'tb', tagSha));
-        expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
+        expect(gitResult.stdout).toContain(missingLine('blob', sha));
         expect(gitResult.exitCode).toBe(3);
 
         // Assert — tsgit matches: tagged finding reconstructs git's own line
@@ -2423,10 +2424,6 @@ function reconstructBrokenLink(
   return `broken link from${fromType.padStart(8)} ${fromId}`;
 }
 
-function reconstructMissing(objectType: string, id: string): string {
-  return `missing ${objectType} ${id}`;
-}
-
 // --- Connectivity scenario: tree → missing blob ----------------------------
 
 let connTreeBlobDir = '';
@@ -2803,7 +2800,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(missing).toMatchObject({ objectType: toType });
 
           if (missing !== undefined) {
-            expect(gitResult.stdout).toContain(reconstructMissing(toType, toId));
+            expect(gitResult.stdout).toContain(missingLine(toType, toId));
           }
         },
       );

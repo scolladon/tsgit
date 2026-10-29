@@ -30,6 +30,7 @@ import { TsgitError } from '../../src/domain/error.js';
 import { parseIndex, serializeIndex } from '../../src/domain/git-index/index.js';
 import type { Context } from '../../src/ports/context.js';
 import { buildSyntheticPack } from '../unit/application/primitives/pack-fixture.js';
+import { gitMissingLines, missingLinesOf } from './fsck-line-helpers.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -1735,19 +1736,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       runGit(['-C', dir, 'prune-packed']);
       return dir;
     };
-
-    const MISSING_PREFIX = 'missing ';
-
-    /** git's `missing <type> <oid>` stdout lines, rebuilt from tsgit's findings and from git's output. */
-    const missingLinesOf = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
-      findings
-        .flatMap((f) => (f.type === 'missing' ? [`${MISSING_PREFIX}${f.objectType} ${f.id}`] : []))
-        .sort();
-    const gitMissingLines = (stdout: string): ReadonlyArray<string> =>
-      stdout
-        .split('\n')
-        .filter((line) => line.startsWith(MISSING_PREFIX))
-        .sort();
 
     const solePack = async (dir: string): Promise<string> => {
       const packDir = path.join(dir, PACK_DIR);

@@ -40,6 +40,7 @@ import { maintenance } from '../../src/application/commands/maintenance.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
+import { gitMissingLines, missingLinesOf } from './fsck-line-helpers.js';
 import {
   disableAutoMaintenance,
   forgeOwnHash,
@@ -579,8 +580,6 @@ const gitDanglingLines = (stdout: string): ReadonlyArray<string> =>
 
 const donorPackDir = (donor: string): string => path.join(objectsOf(donor), 'pack');
 
-const MISSING_LINE = /^missing (\w+) ([0-9a-f]{40})$/;
-
 const POINTER_LINE = /^error: \S+: invalid (sha1 pointer|reflog entry) [0-9a-f]{40}$/;
 
 const gitLines = (output: string, line: RegExp): ReadonlyArray<string> =>
@@ -588,9 +587,6 @@ const gitLines = (output: string, line: RegExp): ReadonlyArray<string> =>
     .split('\n')
     .filter((text) => line.test(text))
     .sort();
-
-const missingLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
-  findings.flatMap((f) => (f.type === 'missing' ? [`missing ${f.objectType} ${f.id}`] : [])).sort();
 
 /** git's ref and reflog pointer errors, rebuilt from tsgit's structured findings. */
 const pointerLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
@@ -852,9 +848,9 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
             // Assert
             expect(gitResult.exitCode).toBe(2);
-            expect(gitLines(gitResult.stdout, MISSING_LINE)).toContain(`missing blob ${oid}`);
+            expect(gitMissingLines(gitResult.stdout)).toContain(`missing blob ${oid}`);
             expect(result.exitCode).toBe(2);
-            expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
           },
           ROW_TIMEOUT,
         );
@@ -918,7 +914,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
           // Assert
           expect(gitResult.exitCode).toBe(2);
           expect(result.exitCode).toBe(2);
-          expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+          expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
           expect(
             result.findings.some((f) => f.type === 'missing' && f.objectType === 'commit'),
           ).toBe(true);
@@ -1069,7 +1065,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
             for (const line of verifyPackLines(result.findings, gitPackDir)) {
               expect(gitResult.stderr).toContain(line);
             }
-            expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
             expect(pointerLines(result.findings)).toEqual(gitLines(gitResult.stderr, POINTER_LINE));
           }
         },
@@ -1285,7 +1281,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
             expect(gitResult.exitCode).toBe(2);
             expect(result.exitCode).toBe(2);
             expect(pointerLines(result.findings)).toEqual(gitLines(gitResult.stderr, POINTER_LINE));
-            expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(gitResult.stdout));
           }
         },
         ROW_TIMEOUT,
@@ -2078,7 +2074,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck/gc interop — index entries', () => {
           // Assert
           expect(git.exitCode).toBe(0);
           expect(result.exitCode).toBe(0);
-          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+          expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
         },
         ROW_TIMEOUT,
       );
@@ -2806,7 +2802,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special f
           // Assert
           expect(result.exitCode).toBe(git.exitCode);
           expect(reportLines(result.findings)).toEqual(gitReportLines(git.stderr));
-          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+          expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
         },
         ROW_TIMEOUT,
       );
@@ -3090,7 +3086,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs
             // Assert
             expect(git.exitCode).toBe(gitExit);
             expect(result.exitCode).toBe(git.exitCode);
-            expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
             expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
           },
           ROW_TIMEOUT,
@@ -3141,8 +3137,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs
           // Assert
           expect(git.exitCode).toBe(2);
           expect(result.exitCode).toBe(2);
-          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
-          expect(gitLines(git.stdout, MISSING_LINE)).toEqual([`missing blob ${b}`]);
+          expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
+          expect(gitMissingLines(git.stdout)).toEqual([`missing blob ${b}`]);
         },
         ROW_TIMEOUT,
       );
@@ -3210,7 +3206,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs
             // Assert
             expect(result.exitCode).toBe(git.exitCode);
             expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
-            expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+            expect(missingLinesOf(result.findings)).toEqual(gitMissingLines(git.stdout));
           },
           ROW_TIMEOUT,
         );
