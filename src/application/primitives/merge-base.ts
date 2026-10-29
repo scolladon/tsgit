@@ -292,12 +292,15 @@ interface PaintCounts {
 const countBucket = (counts: PaintCounts, bits: number, delta: number): void => {
   switch (bits & (BOTH | STALE)) {
     case PARENT1:
+      // Stryker disable next-line AssignmentOperator: equivalent — every update of the parent1 bucket runs through this line, so a flipped sign keeps it at minus the true count, and walkIsOver only ever compares it to 0.
       counts.parent1 += delta;
       return;
     case PARENT2:
+      // Stryker disable next-line AssignmentOperator: equivalent — every update of the parent2 bucket runs through this line, so a flipped sign keeps it at minus the true count, and walkIsOver only ever compares it to 0.
       counts.parent2 += delta;
       return;
     case BOTH:
+      // Stryker disable next-line AssignmentOperator: equivalent — every update of the candidates bucket runs through this line, so a flipped sign keeps it at minus the true count, and walkIsOver only ever compares it to 0.
       counts.candidates += delta;
       return;
   }

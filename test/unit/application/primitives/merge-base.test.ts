@@ -1154,6 +1154,58 @@ describe('mergeBase', () => {
     });
   });
 
+  describe('Given a short PARENT2 side that the walk exhausts while the PARENT1 side still has ancestry', () => {
+    describe('When mergeBase runs over a graph serving corrected commit dates', () => {
+      it('Then it stops without popping the remaining one-sided entries', async () => {
+        // Arrange — the lone P2 root outranks every P1 commit by generation, so
+        // it pops first and leaves P2 with nothing queued; git then quits
+        // before popping t3, so t2 is never read.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const s1 = await commitNamed(ctx, treeId, 5000, [], 's1');
+        const t0 = await commitNamed(ctx, treeId, 5, [], 't0');
+        const t1 = await commitNamed(ctx, treeId, 10, [t0], 't1');
+        const t2 = await commitNamed(ctx, treeId, 20, [t1], 't2');
+        const t3 = await commitNamed(ctx, treeId, 30, [t2], 't3');
+        await writeCommitGraph(ctx, [await asCommits(ctx, [s1, t0, t1, t2, t3])]);
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [t3, s1]);
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(consultedIds(consult)).toEqual(new Set([s1, t3]));
+      });
+    });
+  });
+
+  describe('Given a skewed-date ancestor of the true base, both outside a graph serving corrected commit dates', () => {
+    describe('When mergeBase runs', () => {
+      it('Then the walk does not stop at the first base it pops and the true base is answered', async () => {
+        // Arrange — r is also a direct parent of both tips and dated newer than
+        // its child m, so it pops first; outside the graph its generation is
+        // the ceiling itself, which never ends a single-result walk.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const g = await commitNamed(ctx, treeId, 50, [], 'g');
+        await writeCommitGraph(ctx, [await asCommits(ctx, [g])]);
+        const r = await commitNamed(ctx, treeId, 300, [g], 'r');
+        const m = await commitNamed(ctx, treeId, 100, [r], 'm');
+        const a = await commitNamed(ctx, treeId, 400, [m, r], 'a');
+        const b = await commitNamed(ctx, treeId, 500, [m, r], 'b');
+
+        // Act
+        const sut = mergeBase;
+        const result = await sut(ctx, [a, b]);
+
+        // Assert
+        expect(result).toEqual([m]);
+      });
+    });
+  });
+
   describe('Given a base whose own parents are the only entries left in the queue', () => {
     describe('When mergeBase({ all: true }) runs over a graph', () => {
       it('Then it stops once both sides are empty and never reads past the stale parents', async () => {
