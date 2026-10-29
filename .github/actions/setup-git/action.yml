@@ -5,7 +5,7 @@ inputs:
   version:
     description: Pinned git major.minor; the single constant every git-spawning job is held to
     required: false
-    default: "2.56"
+    default: "2.57"
 
 runs:
   using: composite
