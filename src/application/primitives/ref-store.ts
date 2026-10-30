@@ -56,10 +56,12 @@ import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
 import type { DirEntry, FileStat, FileSystem } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef, withLockFile } from './atomic-write.js';
+import type { RealpathOutcome } from './internal/alternate-chain.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
 import { lstatIfPresent, lstatIfReachable } from './internal/fs-probes.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
+import { realPathOutcomeOf } from './internal/real-path.js';
 import {
   isCheckedWhenAbsent,
   isRefChanging,
@@ -235,6 +237,13 @@ export interface RefEntry {
   readonly value: ResolveDirectResult;
 }
 
+/** Why git's realpath of a symlinked ref died: the fault its `Invalid path` line names. */
+export type RefsVerifyEndReason =
+  | 'FILE_NOT_FOUND'
+  | 'NOT_A_DIRECTORY'
+  | 'PERMISSION_DENIED'
+  | 'SYMLINK_LOOP';
+
 export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
@@ -251,6 +260,12 @@ export type RefIntegrityFinding =
       readonly referent: string;
     }
   | { readonly ref: RefName; readonly msgId: 'refMissingNewline' }
+  | {
+      readonly ref: RefName;
+      readonly msgId: 'refsVerifyEnded';
+      readonly path: string;
+      readonly reason: RefsVerifyEndReason;
+    }
   | { readonly ref: RefName; readonly msgId: 'trailingRefContent'; readonly trailing?: string }
   | {
       readonly msgId: 'unreadableRefPath';
@@ -631,6 +646,25 @@ const byPackedRefName = (a: PackedRefEntry, b: PackedRefEntry): number =>
 /** Backend dispatcher: `ctx.layout.refStorage` picks the files or reftable
  *  implementation. `getRefStore`'s `Context`-keyed memo (below) is what
  *  keeps this a one-shot decision per Context. */
+/** One `verifyIntegrity` pass: what it found, whether git's walk died, the memoised real gitdir. */
+interface IntegrityRun {
+  readonly findings: RefIntegrityFinding[];
+  ended: boolean;
+  gitDirReal?: Promise<string>;
+}
+
+/** The realpath relative to the gitdir; absolute when it lies outside. */
+const referentOf = (real: string, gitDirReal: string): string =>
+  real.startsWith(`${gitDirReal}/`) ? real.slice(gitDirReal.length + 1) : real;
+
+/** A rootless link target (Windows path syntax only) is git's missing-component death. */
+const endOf = (
+  failed: Extract<RealpathOutcome, { readonly kind: 'failed' }>,
+): { readonly path: string; readonly reason: RefsVerifyEndReason } => ({
+  path: failed.path,
+  reason: failed.reason === 'ROOTLESS' ? 'FILE_NOT_FOUND' : failed.reason,
+});
+
 export function createRefStore(ctx: Context): RefStore {
   if (ctx.layout.refStorage !== 'reftable') return createFilesRefStore(ctx);
   return withPseudoRefFiles(createReftableRefStore(ctx), createFilesRefStore(ctx));
@@ -1177,26 +1211,46 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /** git's ref-store check walks `refs/**` by dirent type and never follows a
-   *  link: a link reports itself and nothing beneath it, whatever it resolves
-   *  to. */
-  async function walkIntegrity(
-    dir: string,
-    prefix: string,
-    findings: RefIntegrityFinding[],
-  ): Promise<void> {
-    const entries = await readdirForIntegrity(dir, findings);
+   *  link: a link reports itself and its realpath's referent, nothing beneath it;
+   *  a link whose realpath fails ends the whole check. */
+  async function walkIntegrity(dir: string, prefix: string, run: IntegrityRun): Promise<void> {
+    const entries = await readdirForIntegrity(dir, run.findings);
     for (const entry of entries) {
+      if (run.ended) return;
       const name = `${prefix}/${entry.name}` as RefName;
       if (entry.isSymbolicLink) {
-        findings.push({ ref: name, msgId: 'symlinkRef' });
+        run.findings.push({ ref: name, msgId: 'symlinkRef' });
+        await linkReferentFindings(run, name, `${dir}/${entry.name}`);
         continue;
       }
       if (entry.isDirectory) {
-        await walkIntegrity(`${dir}/${entry.name}`, name, findings);
+        await walkIntegrity(`${dir}/${entry.name}`, name, run);
         continue;
       }
-      findings.push(...(await looseBodyFindings(name)));
+      run.findings.push(...(await looseBodyFindings(name)));
     }
+  }
+
+  /** The link's facts come from its realpath, not its text: the referent is the realpath
+   *  relative to the gitdir, or the absolute realpath outside it. */
+  async function linkReferentFindings(
+    run: IntegrityRun,
+    ref: RefName,
+    linkPath: string,
+  ): Promise<void> {
+    const outcome = await realPathOutcomeOf(ctx, linkPath);
+    if (outcome.kind === 'failed') {
+      run.ended = true;
+      run.findings.push({ ref, msgId: 'refsVerifyEnded', ...endOf(outcome) });
+      return;
+    }
+    run.gitDirReal ??= realGitDir();
+    run.findings.push(...referentFindings(ref, referentOf(outcome.path, await run.gitDirReal)));
+  }
+
+  async function realGitDir(): Promise<string> {
+    const outcome = await realPathOutcomeOf(ctx, ctx.layout.gitDir);
+    return outcome.kind === 'resolved' ? outcome.path : ctx.layout.gitDir;
   }
 
   /** git warns `error opening directory` for a directory the permissions refuse and
@@ -1288,12 +1342,13 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
-    const findings: RefIntegrityFinding[] = [];
+    const run: IntegrityRun = { findings: [], ended: false };
     for (const root of refsWalkRoots()) {
-      if (await isDirectoryPath(root)) await walkIntegrity(root, REFS_DIR, findings);
+      if (run.ended) break;
+      if (await isDirectoryPath(root)) await walkIntegrity(root, REFS_DIR, run);
     }
-    findings.push(...(await rootRefFindings()));
-    return findings;
+    if (!run.ended) run.findings.push(...(await rootRefFindings()));
+    return run.findings;
   }
 
   /** git checks every root ref after the `refs/` walk, in the gitdir's listing order. */

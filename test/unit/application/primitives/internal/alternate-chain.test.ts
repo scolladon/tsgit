@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   type AlternateChainIo,
   realpathAllowingMissingLeaf,
+  realpathOutcome,
   resolveObjectSources,
 } from '../../../../../src/application/primitives/internal/alternate-chain.js';
 import {
@@ -1129,6 +1130,196 @@ describe('resolveObjectSources on a Windows filesystem', () => {
 
         // Assert
         expect(result.diagnostics.map((d) => d.reason)).toEqual(['unresolvable']);
+      });
+    });
+  });
+});
+
+describe('realpathOutcome', () => {
+  describe('Given a path through a symlinked directory', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it is resolved to the real path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir('/repo/real/objects');
+        await ctx.fs.symlink('/repo/real', '/repo/link');
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/link/objects', CWD, 'darwin');
+
+        // Assert
+        expect(result).toEqual({ kind: 'resolved', path: '/repo/real/objects' });
+      });
+    });
+  });
+
+  describe('Given a path whose last component is missing', () => {
+    describe('When realpathOutcome', () => {
+      it('Then the missing last component is kept', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/ghost', CWD, 'darwin');
+
+        // Assert
+        expect(result).toEqual({ kind: 'resolved', path: '/repo/d/ghost' });
+      });
+    });
+  });
+
+  describe('Given a path whose middle component is missing', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed FILE_NOT_FOUND at the resolved prefix and the missing name', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/missing/x', CWD, 'darwin');
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'FILE_NOT_FOUND',
+          path: '/repo/d/missing',
+        });
+      });
+    });
+  });
+
+  describe('Given a path under a file', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed NOT_A_DIRECTORY at the file and the next name', async () => {
+        // Arrange
+        const probe = {
+          ...createMemoryContext().fs,
+          lstat: async (probed: string) => {
+            if (probed === '/repo' || probed === '/repo/file') return statOf(false);
+            throw notADirectory(probed);
+          },
+        } satisfies AlternatePathProbe;
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, probe, '/repo/file/x/y', CWD, 'darwin');
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'NOT_A_DIRECTORY',
+          path: '/repo/file/x',
+        });
+      });
+    });
+  });
+
+  describe('Given a component the permissions refuse', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed PERMISSION_DENIED at that component', async () => {
+        // Arrange
+        const fault = permissionDenied('/repo/d000');
+        const probe = {
+          ...createMemoryContext().fs,
+          lstat: async (probed: string) => {
+            if (probed === '/repo') return statOf(false);
+            throw fault;
+          },
+        } satisfies AlternatePathProbe;
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, probe, '/repo/d000/x', CWD, 'darwin');
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'PERMISSION_DENIED',
+          path: '/repo/d000',
+          cause: fault,
+        });
+      });
+    });
+  });
+
+  describe('Given a lookup failing with a codeless error', () => {
+    describe('When realpathOutcome', () => {
+      it('Then the error propagates', async () => {
+        // Arrange
+        const fault = new Error('boom');
+        const probe = { ...createMemoryContext().fs, lstat: async () => Promise.reject(fault) };
+        const sut = realpathOutcome;
+
+        // Act
+        const result = sut(posixGitPathSyntax, probe, '/repo/x', CWD, 'darwin');
+
+        // Assert
+        await expect(result).rejects.toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a symlink loop', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed SYMLINK_LOOP at the input path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('/repo/b', '/repo/a');
+        await ctx.fs.symlink('/repo/a', '/repo/b');
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/a/objects', CWD, 'darwin');
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'SYMLINK_LOOP',
+          path: '/repo/a/objects',
+        });
+      });
+    });
+  });
+
+  describe('Given a rootless path from a rootless cwd', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed ROOTLESS at the input path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(windowsGitPathSyntax, ctx.fs, '\\\\server', 'repo', 'win32');
+
+        // Assert
+        expect(result).toEqual({ kind: 'failed', reason: 'ROOTLESS', path: '\\\\server' });
+      });
+    });
+  });
+
+  describe.each([
+    { platform: 'linux', links: 21, kind: 'resolved' },
+    { platform: 'linux', links: 22, kind: 'failed' },
+    { platform: 'darwin', links: 22, kind: 'resolved' },
+    { platform: 'darwin', links: 33, kind: 'resolved' },
+    { platform: 'darwin', links: 34, kind: 'failed' },
+  ])('Given a chain of $links links', ({ platform, links, kind }) => {
+    describe('When realpathOutcome runs for $platform', () => {
+      it('Then it is $kind', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/end': new Uint8Array() } });
+        for (let hop = 1; hop <= links; hop++) {
+          await ctx.fs.symlink(hop === links ? '/repo/end' : `/repo/l${hop + 1}`, `/repo/l${hop}`);
+        }
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/l1', CWD, platform);
+
+        // Assert
+        expect(result.kind).toBe(kind);
       });
     });
   });

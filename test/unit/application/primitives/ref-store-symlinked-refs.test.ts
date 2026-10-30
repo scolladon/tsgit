@@ -458,3 +458,138 @@ describe('ref-store — packing a repository holding a read-through link', () =>
     });
   });
 });
+
+describe('ref-store — the referent of a symbolic link as a loose ref', () => {
+  describe('Given a link to a path outside the repository', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the referent is that real path in a badReferentName', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir('/repo/outside');
+        await ctx.fs.symlink('/repo/outside/place', gitPath(ctx, LINK));
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { ref: LINK, msgId: 'symlinkRef' },
+          { ref: LINK, msgId: 'badReferentName', referent: '/repo/outside/place' },
+          { ref: LINK, msgId: 'symrefTargetIsNotARef', referent: '/repo/outside/place' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a link to a sibling name inside the gitdir', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then only the symlinkRef is reported', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('side', gitPath(ctx, LINK));
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ ref: LINK, msgId: 'symlinkRef' }]);
+      });
+    });
+  });
+
+  describe('Given a link into a gitdir directory outside refs', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the referent is the gitdir-relative path of a non-ref target only', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(gitPath(ctx, 'foo'));
+        await ctx.fs.symlink('../../foo/bar', gitPath(ctx, LINK));
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { ref: LINK, msgId: 'symlinkRef' },
+          { ref: LINK, msgId: 'symrefTargetIsNotARef', referent: 'foo/bar' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a link whose realpath dies on a missing middle component', () => {
+    describe('When verifyIntegrity is called in the memory order of files, links, then directories', () => {
+      it('Then the walk ends: the later directory entry and the root refs are lost', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(gitPath(ctx, 'refs/heads/a'), 'garbage\n');
+        await ctx.fs.writeUtf8(gitPath(ctx, 'BAR_HEAD'), 'garbage\n');
+        await ctx.fs.symlink('missing/x', gitPath(ctx, LINK));
+        await ctx.fs.symlink('../a', gitPath(ctx, 'refs/heads/sub/a'));
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { ref: 'refs/heads/a', msgId: 'badRefContent' },
+          { ref: LINK, msgId: 'symlinkRef' },
+          {
+            ref: LINK,
+            msgId: 'refsVerifyEnded',
+            path: gitPath(ctx, 'refs/heads/missing'),
+            reason: 'FILE_NOT_FOUND',
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a link looping on itself', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then it ends with SYMLINK_LOOP at the link path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('z', gitPath(ctx, LINK));
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({
+          ref: LINK,
+          msgId: 'refsVerifyEnded',
+          path: gitPath(ctx, LINK),
+          reason: 'SYMLINK_LOOP',
+        });
+      });
+    });
+  });
+
+  describe('Given a link whose target is a rootless Windows path', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the walk ends with FILE_NOT_FOUND', async () => {
+        // Arrange
+        const ctx = { ...createMemoryContext(), windowsPathSyntax: true };
+        await ctx.fs.symlink('\\\\server', gitPath(ctx, LINK));
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({
+          ref: LINK,
+          msgId: 'refsVerifyEnded',
+          path: gitPath(ctx, LINK),
+          reason: 'FILE_NOT_FOUND',
+        });
+      });
+    });
+  });
+});

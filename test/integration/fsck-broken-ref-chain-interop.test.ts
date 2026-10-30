@@ -49,6 +49,12 @@ interface Row {
   readonly commit?: boolean;
   /** Loose symbolic links by name under `refs/heads/`, to the link text. */
   readonly links?: Readonly<Record<string, string>>;
+  /** Files by path relative to the repository's top, beside `.git`. */
+  readonly beside?: Readonly<Record<string, string>>;
+  /** Directories by path relative to the repository's top, made unreadable once seeded. */
+  readonly besideRefused?: ReadonlyArray<string>;
+  /** Symbolic links by path relative to the repository's top, to the link text. */
+  readonly besideLinks?: Readonly<Record<string, string>>;
   /** Loose ref files by name under `refs/tags/`. */
   readonly tags?: Readonly<Record<string, string>>;
   /** Gitdir-relative paths whose mode is 000 once seeded. */
@@ -714,6 +720,90 @@ const referentRows: ReadonlyArray<Row> = [
   ...bodyRows,
 ];
 
+const OUTSIDE = '{dir}/outside';
+const OUTSIDE_FILE = { outside: SHA };
+const MAIN_REF = '{dir}/.git/refs/heads/main';
+
+/** A link at the first and last name of the walk, to `text`, beside a healthy `main`. */
+const linkRows = (
+  title: string,
+  text: string,
+  extra: Omit<Row, 'title' | 'refs' | 'links'> = {},
+): ReadonlyArray<Row> =>
+  sortedBothEnds(title, (name) => ({
+    refs: { main: SHA },
+    commit: true,
+    links: { [name]: text },
+    ...extra,
+  }));
+
+const linkedRefRows: ReadonlyArray<Row> = [
+  ...linkRows('L-REL, a link to a sibling', 'main'),
+  ...linkRows('a link through a parent directory', '../heads/main'),
+  ...linkRows('L-ABS-own, an absolute link to the own repository', MAIN_REF),
+  ...linkRows(
+    'L-ABS-other, an absolute link to another repository',
+    '{dir}/REL/.git/refs/heads/main',
+    {
+      beside: { 'REL/.git/refs/heads/main': SHA },
+    },
+  ),
+  ...linkRows('L-DANG, a link to an absent sibling', 'ghost'),
+  ...linkRows('L-DANG-abs, an absolute link to an absent path', '{dir}/nowhere'),
+  ...linkRows('L-OUT, a link to a file outside', OUTSIDE, { beside: OUTSIDE_FILE }),
+  ...linkRows('a link to a file outside holding a dots referent', '{dir}/outside-dots', {
+    beside: { 'outside-dots': 'ref: x..y\n' },
+  }),
+  ...linkRows('a link into a gitdir directory beside refs', '../../foo/bar', {
+    files: { 'foo/bar': SHA },
+  }),
+  ...linkRows('a link to a dots name in the gitdir', '../../x..y'),
+  ...linkRows('L-ROOT, a link to a root ref name in the gitdir', '../../ORIG_HEAD_X'),
+  ...linkRows('L-WARN, a link outside with badReferentName warned', OUTSIDE, {
+    beside: { outside: 'x\n' },
+    config: { [BAD_REFERENT]: 'warn' },
+  }),
+  ...linkRows('L-CHAIN, a link to a link to the own repository', '{dir}/hop', {
+    besideLinks: { hop: MAIN_REF },
+  }),
+  {
+    title: 'L-ORDER, two links to the same file outside',
+    refs: { main: SHA },
+    commit: true,
+    links: { a: OUTSIDE, z: OUTSIDE },
+    beside: OUTSIDE_FILE,
+  },
+  ...linkRows('a link to an unreadable file outside', '{dir}/out000', {
+    beside: { out000: SHA },
+    unreadable: ['../out000'],
+  }),
+  ...linkRows('a link to an unreadable file outside, references not checked', '{dir}/out000', {
+    beside: { out000: SHA },
+    unreadable: ['../out000'],
+    ...NO_REFERENCES,
+  }),
+  ...sortedBothEnds('L-U000, a link to an unreadable sibling', (name) => ({
+    refs: { main: SHA, c: SHA },
+    commit: true,
+    links: { [name]: 'c' },
+    unreadable: ['refs/heads/c'],
+  })),
+  ...sortedBothEnds('L-U000, references not checked', (name) => ({
+    refs: { main: SHA, c: SHA },
+    commit: true,
+    links: { [name]: 'c' },
+    unreadable: ['refs/heads/c'],
+    ...NO_REFERENCES,
+  })),
+  ...linkRows('DIR-LINK, a link to an unreadable directory outside', '{dir}/outdir', {
+    besideRefused: ['outdir'],
+  }),
+  ...linkRows('DIR-LINK, references not checked', '{dir}/outdir', {
+    besideRefused: ['outdir'],
+    ...NO_REFERENCES,
+  }),
+];
+
 const roots: string[] = [];
 const refusedPaths: string[] = [];
 
@@ -730,10 +820,26 @@ const commitOf = (dir: string): string => {
   return git(dir, 'commit-tree', tree, '-m', 'c').trim();
 };
 
+const seedBeside = async (dir: string, row: Row, fill: Fill): Promise<void> => {
+  for (const [relative, body] of Object.entries(row.beside ?? {})) {
+    await mkdir(path.dirname(path.join(dir, relative)), { recursive: true });
+    await writeFile(path.join(dir, relative), fill(body));
+  }
+  for (const relative of row.besideRefused ?? []) {
+    await mkdir(path.join(dir, relative), { recursive: true });
+    refusedPaths.unshift(path.join(dir, relative));
+    await chmod(path.join(dir, relative), REFUSED);
+  }
+  for (const [relative, target] of Object.entries(row.besideLinks ?? {})) {
+    await symlink(fill(target), path.join(dir, relative));
+  }
+};
+
 const seedExtras = async (dir: string, row: Row, fill: Fill): Promise<void> => {
   const gitDir = path.join(dir, '.git');
+  await seedBeside(dir, row, fill);
   for (const [name, target] of Object.entries(row.links ?? {})) {
-    await symlink(target, path.join(gitDir, 'refs', 'heads', name));
+    await symlink(fill(target), path.join(gitDir, 'refs', 'heads', name));
   }
   await mkdir(path.join(gitDir, 'refs', 'tags'), { recursive: true });
   for (const [name, body] of Object.entries(row.tags ?? {})) {
@@ -767,6 +873,7 @@ const seed = async (row: Row): Promise<{ readonly dir: string; readonly fill: Fi
   const commit = row.commit === true ? commitOf(dir) : '';
   const fill: Fill = (text) =>
     text
+      .replaceAll('{dir}', dir)
       .replaceAll('{commit}', commit)
       .replaceAll('{COMMIT}', commit.toUpperCase())
       .replaceAll(
@@ -958,6 +1065,21 @@ describe.skipIf(!GIT_AVAILABLE)(
   'Given a repository with a loose ref git judges by its body',
   () => {
     describe.each(referentRows)('$title', (row) => {
+      describe('When fsck runs', () => {
+        it(
+          'Then tsgit reports git’s lines and exit code',
+          async () => expectGitsLines(row),
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
+  'Given a repository with a symbolic link as a loose ref',
+  () => {
+    describe.each(linkedRefRows)('$title', (row) => {
       describe('When fsck runs', () => {
         it(
           'Then tsgit reports git’s lines and exit code',
