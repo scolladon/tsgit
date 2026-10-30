@@ -73,7 +73,7 @@ interface Row {
   /** A linked worktree, its admin dir `worktrees/wt`. */
   readonly linked?: boolean;
   /** Where the command runs from: a sub-directory, or an explicit `--git-dir`. */
-  readonly via?: 'sub' | 'gitdir';
+  readonly via?: 'sub' | 'gitdir' | 'linked';
 }
 
 const GARBAGE = 'garbage\n';
@@ -1151,16 +1151,22 @@ const pointersOf = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
 const othersOf = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
   lines.filter((line) => !POINTER_LINE.test(line)).sort();
 
+const cwdOf = (dir: string, row: Row): string => {
+  if (row.via === 'sub') return path.join(dir, 'sub');
+  return row.via === 'linked' ? path.join(dir, LINKED_ID) : dir;
+};
+
 const gitArgs = (dir: string, row: Row): ReadonlyArray<string> => {
   const flags = row.flags ?? [];
   if (row.via === 'gitdir') return [`--git-dir=${path.join(dir, '.git')}`, 'fsck', ...flags];
-  const cwd = row.via === 'sub' ? path.join(dir, 'sub') : dir;
-  return ['-C', cwd, 'fsck', ...flags];
+  return ['-C', cwdOf(dir, row), 'fsck', ...flags];
 };
 
 const runTsgit = async (dir: string, row: Row): Promise<FsckResult> => {
-  if (row.via !== 'sub') return fsck(createNodeContext({ workDir: dir }), row.options);
-  const repo = await openRepository({ cwd: path.join(dir, 'sub') });
+  if (row.via === undefined || row.via === 'gitdir') {
+    return fsck(createNodeContext({ workDir: dir }), row.options);
+  }
+  const repo = await openRepository({ cwd: cwdOf(dir, row) });
   return repo.fsck(row.options);
 };
 
@@ -1278,6 +1284,41 @@ describe.skipIf(!GIT_AVAILABLE || !POSIX)(
           SETUP_TIMEOUT,
         );
       });
+    });
+  },
+);
+
+/** A name under a linked worktree's admin `refs/` that is not per-worktree: git's snapshot never lists it. */
+const strayAdminRef: Row = {
+  title: 'a stray name in the linked worktree admin refs',
+  refs: { main: SHA },
+  files: { [`worktrees/${LINKED_ID}/refs/bisect-x`]: GARBAGE },
+  commit: true,
+  linked: true,
+  via: 'linked',
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a linked worktree whose admin refs hold a non-per-worktree name',
+  () => {
+    describe('When fsck runs from the linked worktree', () => {
+      it(
+        'Then tsgit gives that name no pointer, as git does',
+        async () => {
+          // Arrange
+          const arranged = await arrangeRow(strayAdminRef);
+          const sut = runTsgit;
+
+          // Act
+          const result = await sut(arranged.dir, strayAdminRef);
+
+          // Assert
+          const { gitLines, ourLines } = reportLinesOf(arranged, result, strayAdminRef);
+          expect(pointersOf(gitLines)).toEqual([]);
+          expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
+        },
+        SETUP_TIMEOUT,
+      );
     });
   },
 );

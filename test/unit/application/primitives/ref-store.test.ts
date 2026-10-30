@@ -4604,6 +4604,30 @@ describe('ref-store — what a loose miss costs', () => {
   });
 });
 
+describe('ref-store — names of a linked worktree', () => {
+  describe('Given a name under the worktree gitdir that is not per-worktree, and one that is', () => {
+    describe('When listRefNames is called', () => {
+      it('Then only the per-worktree name is listed from the worktree gitdir', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ctx: Context = {
+          ...base,
+          layout: { ...base.layout, gitDir: '/repo/wt', commonDir: base.layout.gitDir },
+        };
+        await ctx.fs.writeUtf8('/repo/wt/refs/bisect-x', 'garbage\n');
+        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/bad', 'garbage\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames('refs/' as RefName);
+
+        // Assert
+        expect(result).toEqual(['refs/bisect/bad']);
+      });
+    });
+  });
+});
+
 describe('ref-store — an adapter with tryLstat alone', () => {
   describe('Given a name with no loose file, read through the browser-shaped probe set', () => {
     describe('When resolveDirect reads it', () => {

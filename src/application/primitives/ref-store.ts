@@ -1131,7 +1131,9 @@ function createFilesRefStore(ctx: Context): RefStore {
    * when they're the same directory), pushed down to {@link refsWalkRoot}'s
    * subdirectory rather than always walking the whole tree and filtering
    * every name afterward — `branchList`/`tagList`'s own single-level
-   * `readdir` shape, generalised to an arbitrary prefix depth.
+   * `readdir` shape, generalised to an arbitrary prefix depth. A name found
+   * under a root other than the one {@link refDir} serves it from is no ref
+   * of this worktree and is dropped.
    */
   async function walkAllLooseRefNames(
     prefix: RefName | undefined,
@@ -1147,7 +1149,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       // counts (~10^5), which a large unpacked ref space (a mirror's
       // `refs/pull/*`, a fetch not yet followed by `pack-refs`) can exceed.
       for (const name of await walkRefsRoot(walkRoot, root.relative, prefix)) {
-        names.push(name);
+        if (walkRoot === `${refDir(name)}/${root.relative}`) names.push(name);
       }
     }
     return names;
