@@ -267,7 +267,7 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a set update', () => {
+  describe('Given a set update whose lock file is observed at rename time', () => {
     describe('When applyRefUpdates is called', () => {
       it('Then it writes through the ref lock (transient .lock, then gone)', async () => {
         // Arrange — kills a mutant that swaps `atomicWriteRef` for a plain
@@ -1560,7 +1560,7 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a set update', () => {
+  describe('Given a set update of a ref that has no loose file yet', () => {
     describe('When applyRefUpdates is called', () => {
       it('Then the loose file was created (applySet body is not empty)', async () => {
         // Arrange
@@ -2537,7 +2537,7 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a repository with a loose ref, a packed ref and a nested loose ref', () => {
+  describe('Given a loose ref, a packed ref and a nested loose ref listed by name only', () => {
     describe('When listRefNames runs with no prefix', () => {
       it('Then it returns the exact same names listRefs resolves', async () => {
         // Arrange
@@ -2651,9 +2651,7 @@ describe('ref-store', () => {
         expect(entries.map((entry) => entry.name)).not.toContain('refs/heads/garbage');
       });
     });
-  });
 
-  describe('Given a loose ref whose body is neither an oid nor a symbolic ref', () => {
     describe('When verifyIntegrity is called', () => {
       it('Then a badRefContent finding is returned, marked as reachable without a link', async () => {
         // Arrange
@@ -3119,7 +3117,7 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a ref with no reflog', () => {
+  describe('Given a ref name that has no reflog file at all', () => {
     describe('When hasReflog is called on the store', () => {
       it('Then it returns false', async () => {
         // Arrange
@@ -3153,9 +3151,7 @@ describe('ref-store', () => {
         expect(result).toBe(false);
       });
     });
-  });
 
-  describe('Given a reflog path that is a directory because a sibling ref nests under it', () => {
     describe('When readReflogLenient is called on the store', () => {
       it('Then it answers no-reflog with an empty array, never a raw EISDIR', async () => {
         // Arrange — same D/F shape hasReflog handles; the read path must
@@ -3193,9 +3189,7 @@ describe('ref-store', () => {
         await expect(sut.readReflog('refs/heads/main' as RefName)).rejects.toBe(fault);
       });
     });
-  });
 
-  describe('Given a reflog stat fails for a reason other than FILE_NOT_FOUND', () => {
     describe('When hasReflog is called on the store', () => {
       it('Then the fault propagates rather than reading as no reflog', async () => {
         // Arrange
@@ -3372,7 +3366,7 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a files-backed reflog containing a malformed line', () => {
+  describe('Given a files-backed reflog with a malformed line between two valid ones', () => {
     describe('When copyReflog copies it to a new ref name', () => {
       it('Then the destination text is byte-identical to the source AND the source survives untouched', async () => {
         // Arrange
