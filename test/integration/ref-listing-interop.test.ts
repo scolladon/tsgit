@@ -434,6 +434,102 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
       });
     });
 
+    const gitFailureStatus = (dir: string, ...args: ReadonlyArray<string>): number => {
+      try {
+        git(dir, ...args);
+        return 0;
+      } catch (err) {
+        return (err as { status: number }).status;
+      }
+    };
+
+    const refusalCodeOf = async (attempt: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await attempt();
+        return undefined;
+      } catch (err) {
+        return (err as { data?: { code?: string } }).data?.code;
+      }
+    };
+
+    describe.each([
+      { label: 'a nested directory', refs: ['d/e/x', 'd/f'], dir: 'd/e/x', root: 'heads' },
+      { label: 'a directory under refs/tags', refs: ['d/x'], dir: 'd/x', root: 'tags' },
+      { label: 'the only directory under refs/heads', refs: ['d/x'], dir: 'd/x', root: 'heads' },
+      {
+        label: 'a directory that is searchable but not readable',
+        refs: ['d/x'],
+        dir: 'd/x',
+        root: 'heads',
+        mode: 0o300,
+      },
+    ])('Given $label is unreadable', (row) => {
+      describe('When both tools list the refs', () => {
+        it('Then tsgit names what for-each-ref names', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          for (const name of row.refs) git(dir, 'update-ref', `refs/${row.root}/${name}`, commit);
+          if (row.label.includes('only')) git(dir, 'update-ref', '-d', 'refs/heads/main');
+          const target = path.join(dir, '.git', 'refs', row.root, path.dirname(row.dir));
+          chmodSync(target, row.mode ?? UNREADABLE);
+          restorers.push(() => chmodSync(target, RESTORED));
+          const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
+          const sut = getListRefs(ctx);
+
+          // Act
+          const result = await sut();
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+      });
+    });
+
+    describe('Given refs/heads/d/ is readable but not searchable', () => {
+      describe('When both tools walk every ref', () => {
+        it('Then git dies on rev-list --all and tsgit revList refuses, while listings agree', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          withDirAt(dir, commit, READABLE_NOT_SEARCHABLE);
+          const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
+          const sut = revList;
+
+          // Act
+          const gitStatus = gitFailureStatus(dir, 'rev-list', '--all');
+          const code = await refusalCodeOf(() => sut(ctx, { all: true }));
+          const listed = await getListRefs(ctx)();
+
+          // Assert
+          expect(gitStatus).toBe(128);
+          expect(code).toBeDefined();
+          expect(listed).toEqual(expected);
+        });
+      });
+    });
+
+    describe('Given d/x is packed while refs/heads/d/ is unreadable', () => {
+      describe('When both tools resolve refs/heads/d/x', () => {
+        it('Then git dies and tsgit refuses with PERMISSION_DENIED', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          git(dir, 'update-ref', 'refs/heads/d/x', commit);
+          git(dir, 'pack-refs', '--all');
+          mkdirSync(path.join(heads(dir), 'd'), { recursive: true });
+          chmodSync(path.join(heads(dir), 'd'), UNREADABLE);
+          restorers.push(() => chmodSync(path.join(heads(dir), 'd'), RESTORED));
+          const sut = resolveRef;
+
+          // Act
+          const gitStatus = gitFailureStatus(dir, 'rev-parse', 'refs/heads/d/x');
+          const code = await refusalCodeOf(() => sut(ctx, 'refs/heads/d/x' as RefName));
+
+          // Assert
+          expect(gitStatus).toBe(128);
+          expect(code).toBe('PERMISSION_DENIED');
+        });
+      });
+    });
+
     describe('Given an unreferenced commit named only by a ref in an unreadable directory', () => {
       const orphan = async (mode: number): Promise<{ dir: string; ctx: Context; id: string }> => {
         const repo = await newRepo();
