@@ -1112,136 +1112,85 @@ const runTsgit = async (dir: string, row: Row): Promise<FsckResult> => {
   return repo.fsck(row.options);
 };
 
-const expectGitsLines = async (row: Row): Promise<void> => {
-  // Arrange
+interface Arranged {
+  readonly dir: string;
+  readonly fill: Fill;
+  readonly expected: ReturnType<typeof tryRunGitWithExit>;
+}
+
+const arrangeRow = async (row: Row): Promise<Arranged> => {
   const { dir, fill } = await seed(row);
-  const expected = tryRunGitWithExit(gitArgs(dir, row));
-  const sut = runTsgit;
-
-  // Act
-  const result = await sut(dir, row);
-
-  // Assert
-  const comparable = (line: string): boolean =>
-    REPORT_LINE.test(line) && (DARWIN || !LOOP_TEXT.test(line));
-  const gitLines = gitReportLines(expected.stderr).filter(comparable);
-  const ourLines = rebuiltLines(result, row, dir, fill)
-    .flatMap((line) => line.split('\n'))
-    .filter(comparable);
-  expect(result.exitCode).toBe(expected.exitCode);
-  expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
-  expect(othersOf(ourLines)).toEqual(othersOf(gitLines));
+  return { dir, fill, expected: tryRunGitWithExit(gitArgs(dir, row)) };
 };
 
-const expectGitsLinesInSequence = async (row: Row): Promise<void> => {
-  // Arrange
-  const { dir, fill } = await seed(row);
-  const expected = tryRunGitWithExit(gitArgs(dir, row));
-  const sut = runTsgit;
+interface ReportLines {
+  readonly gitLines: ReadonlyArray<string>;
+  readonly ourLines: ReadonlyArray<string>;
+}
 
-  // Act
-  const result = await sut(dir, row);
-
-  // Assert
+const reportLinesOf = (arranged: Arranged, result: FsckResult, row: Row): ReportLines => {
   const comparable = (line: string): boolean =>
     REPORT_LINE.test(line) && (DARWIN || !LOOP_TEXT.test(line));
-  const gitLines = gitReportLines(expected.stderr).filter(comparable);
-  const ourLines = rebuiltLines(result, row, dir, fill)
-    .flatMap((line) => line.split('\n'))
-    .filter(comparable);
-  expect(result.exitCode).toBe(expected.exitCode);
-  expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
-  expect(ourLines.filter((line) => !POINTER_LINE.test(line))).toEqual(
-    gitLines.filter((line) => !POINTER_LINE.test(line)),
-  );
+  return {
+    gitLines: gitReportLines(arranged.expected.stderr).filter(comparable),
+    ourLines: rebuiltLines(result, row, arranged.dir, arranged.fill)
+      .flatMap((line) => line.split('\n'))
+      .filter(comparable),
+  };
 };
 
-describe.skipIf(!GIT_AVAILABLE)('Given a repository with a broken ref chain', () => {
-  describe.each(rows)('$title', (row) => {
+const nonPointers = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
+  lines.filter((line) => !POINTER_LINE.test(line));
+
+const rowFamilies = [
+  { given: 'a broken ref chain', rows, enabled: GIT_AVAILABLE },
+  {
+    given: 'a ref file the permissions refuse',
+    rows: refusedRows,
+    enabled: GIT_AVAILABLE && UNPRIVILEGED,
+  },
+  {
+    given: 'a ref directory the permissions refuse',
+    rows: dirRows,
+    enabled: GIT_AVAILABLE && UNPRIVILEGED,
+  },
+  { given: 'a loose ref git judges by its body', rows: referentRows, enabled: GIT_AVAILABLE },
+  {
+    given: 'a symbolic link as a loose ref',
+    rows: linkedRefRows,
+    enabled: GIT_AVAILABLE && UNPRIVILEGED,
+  },
+  {
+    given: 'a symbolic link whose realpath dies',
+    rows: dyingLinkRows,
+    enabled: GIT_AVAILABLE && UNPRIVILEGED,
+  },
+] as const;
+
+describe.each(rowFamilies)('Given a repository with $given', ({ rows: familyRows, enabled }) => {
+  describe.skipIf(!enabled).each(familyRows)('$title', (row) => {
     describe('When fsck runs', () => {
       it(
         'Then tsgit reports git’s lines and exit code',
-        async () => expectGitsLines(row),
+        async () => {
+          // Arrange
+          const arranged = await arrangeRow(row);
+          const sut = runTsgit;
+
+          // Act
+          const result = await sut(arranged.dir, row);
+
+          // Assert
+          const { gitLines, ourLines } = reportLinesOf(arranged, result, row);
+          expect(result.exitCode).toBe(arranged.expected.exitCode);
+          expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
+          expect(othersOf(ourLines)).toEqual(othersOf(gitLines));
+        },
         SETUP_TIMEOUT,
       );
     });
   });
 });
-
-describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
-  'Given a repository with a ref file the permissions refuse',
-  () => {
-    describe.each(refusedRows)('$title', (row) => {
-      describe('When fsck runs', () => {
-        it(
-          'Then tsgit reports git’s lines and exit code',
-          async () => expectGitsLines(row),
-          SETUP_TIMEOUT,
-        );
-      });
-    });
-  },
-);
-
-describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
-  'Given a repository with a ref directory the permissions refuse',
-  () => {
-    describe.each(dirRows)('$title', (row) => {
-      describe('When fsck runs', () => {
-        it(
-          'Then tsgit reports git’s lines and exit code',
-          async () => expectGitsLines(row),
-          SETUP_TIMEOUT,
-        );
-      });
-    });
-  },
-);
-
-describe.skipIf(!GIT_AVAILABLE)(
-  'Given a repository with a loose ref git judges by its body',
-  () => {
-    describe.each(referentRows)('$title', (row) => {
-      describe('When fsck runs', () => {
-        it(
-          'Then tsgit reports git’s lines and exit code',
-          async () => expectGitsLines(row),
-          SETUP_TIMEOUT,
-        );
-      });
-    });
-  },
-);
-
-describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
-  'Given a repository with a symbolic link as a loose ref',
-  () => {
-    describe.each(linkedRefRows)('$title', (row) => {
-      describe('When fsck runs', () => {
-        it(
-          'Then tsgit reports git’s lines and exit code',
-          async () => expectGitsLines(row),
-          SETUP_TIMEOUT,
-        );
-      });
-    });
-  },
-);
-
-describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
-  'Given a repository with a symbolic link whose realpath dies',
-  () => {
-    describe.each(dyingLinkRows)('$title', (row) => {
-      describe('When fsck runs', () => {
-        it(
-          'Then tsgit reports git’s lines and exit code',
-          async () => expectGitsLines(row),
-          SETUP_TIMEOUT,
-        );
-      });
-    });
-  },
-);
 
 describe.skipIf(!GIT_AVAILABLE || !POSIX)(
   'Given a repository whose directories the operating system lists in its own order',
@@ -1250,7 +1199,20 @@ describe.skipIf(!GIT_AVAILABLE || !POSIX)(
       describe('When fsck runs', () => {
         it.each([1, 2, 3])(
           'Then tsgit reports git’s lines in git’s sequence, run %i',
-          async () => expectGitsLinesInSequence(row),
+          async () => {
+            // Arrange
+            const arranged = await arrangeRow(row);
+            const sut = runTsgit;
+
+            // Act
+            const result = await sut(arranged.dir, row);
+
+            // Assert
+            const { gitLines, ourLines } = reportLinesOf(arranged, result, row);
+            expect(result.exitCode).toBe(arranged.expected.exitCode);
+            expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
+            expect(nonPointers(ourLines)).toEqual(nonPointers(gitLines));
+          },
           SETUP_TIMEOUT,
         );
       });

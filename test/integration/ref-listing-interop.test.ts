@@ -200,7 +200,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — ref listing parity with canonic
   });
 });
 
-const getListRefs = (ctx: Context) => async (): Promise<ReadonlyArray<string>> =>
+const listRefNamesOf = async (ctx: Context): Promise<ReadonlyArray<string>> =>
   (await getRefStore(ctx).listRefs('refs/' as RefName)).map((entry) => entry.name as string).sort();
 
 const UNREADABLE = 0o000;
@@ -258,10 +258,10 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
           const { dir, ctx, commit } = await newRepo();
           withDirAt(dir, commit, UNREADABLE);
           const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
-          const sut = getListRefs(ctx);
+          const sut = listRefNamesOf;
 
           // Act
-          const result = await sut();
+          const result = await sut(ctx);
 
           // Assert
           expect(result).toEqual(expected);
@@ -361,10 +361,10 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
           git(dir, 'update-ref', 'refs/heads/z/x', commit);
           withDirAt(dir, commit, UNREADABLE, row.dir);
           const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
-          const sut = getListRefs(ctx);
+          const sut = listRefNamesOf;
 
           // Act
-          const result = await sut();
+          const result = await sut(ctx);
 
           // Assert
           expect(result).toEqual(expected);
@@ -381,10 +381,10 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
           chmodSync(heads(dir), UNREADABLE);
           restorers.push(() => chmodSync(heads(dir), RESTORED));
           const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
-          const sut = getListRefs(ctx);
+          const sut = listRefNamesOf;
 
           // Act
-          const result = await sut();
+          const result = await sut(ctx);
 
           // Assert
           expect(result).toEqual(expected);
@@ -403,10 +403,10 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
           chmodSync(path.join(heads(dir), 'd'), UNREADABLE);
           restorers.push(() => chmodSync(path.join(heads(dir), 'd'), RESTORED));
           const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
-          const sut = getListRefs(ctx);
+          const sut = listRefNamesOf;
 
           // Act
-          const result = await sut();
+          const result = await sut(ctx);
 
           // Assert
           expect(result).toEqual(expected);
@@ -423,10 +423,10 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
           withDirAt(dir, commit, UNREADABLE);
           symlinkSync(path.join(heads(dir), 'd'), path.join(heads(dir), 'link'));
           const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
-          const sut = getListRefs(ctx);
+          const sut = listRefNamesOf;
 
           // Act
-          const result = await sut();
+          const result = await sut(ctx);
 
           // Assert
           expect(result).toEqual(expected);
@@ -474,10 +474,10 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
           chmodSync(target, row.mode ?? UNREADABLE);
           restorers.push(() => chmodSync(target, RESTORED));
           const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
-          const sut = getListRefs(ctx);
+          const sut = listRefNamesOf;
 
           // Act
-          const result = await sut();
+          const result = await sut(ctx);
 
           // Assert
           expect(result).toEqual(expected);
@@ -497,7 +497,7 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
           // Act
           const gitStatus = gitFailureStatus(dir, 'rev-list', '--all');
           const code = await refusalCodeOf(() => sut(ctx, { all: true }));
-          const listed = await getListRefs(ctx)();
+          const listed = await listRefNamesOf(ctx);
 
           // Assert
           expect(gitStatus).toBe(128);
