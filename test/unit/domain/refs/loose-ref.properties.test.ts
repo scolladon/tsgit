@@ -5,6 +5,7 @@
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   readLooseBody,
   serializeDirectRef,
@@ -15,6 +16,7 @@ import { arbRefName } from './arbitraries.js';
 
 const ROUND_TRIP_NUM_RUNS = 200;
 const GRAMMAR_NUM_RUNS = 100;
+const HEX_LENGTHS = [40, 64] as const;
 const WHITESPACE_BYTES = [' ', '\t', '\r', '\n'] as const;
 
 const arbWhitespaceRun = (minLength: number): fc.Arbitrary<string> =>
@@ -24,6 +26,16 @@ const arbWhitespaceRun = (minLength: number): fc.Arbitrary<string> =>
 
 const arbNonWhitespaceByte = (): fc.Arbitrary<string> =>
   fc.constantFrom('g', 'z', '0', '-', '\v', '\f', 'é');
+
+interface IdOfLength {
+  readonly hexLength: 40 | 64;
+  readonly id: ObjectId;
+}
+
+const arbIdOfLength = (): fc.Arbitrary<IdOfLength> =>
+  fc
+    .constantFrom(...HEX_LENGTHS)
+    .chain((hexLength) => arbObjectId(hexLength).map((id): IdOfLength => ({ hexLength, id })));
 
 const arbCaseMix = (text: string): fc.Arbitrary<string> =>
   fc
@@ -35,12 +47,12 @@ describe('readLooseBody properties', () => {
     describe('When read back', () => {
       it('Then a direct ref returns its id with no flag', () => {
         fc.assert(
-          fc.property(arbObjectId(40), (id) => {
+          fc.property(arbIdOfLength(), ({ hexLength, id }) => {
             // Arrange
             const content = serializeDirectRef(id);
 
             // Act
-            const result = readLooseBody(content, 40);
+            const result = readLooseBody(content, hexLength);
 
             // Assert
             expect(result).toEqual({ kind: 'direct', id, missingNewline: false });
@@ -97,13 +109,13 @@ describe('readLooseBody properties', () => {
       it('Then the id is lower case', () => {
         fc.assert(
           fc.property(
-            arbObjectId(40).chain((id) => fc.tuple(fc.constant(id), arbCaseMix(id))),
-            ([id, mixed]) => {
+            arbIdOfLength().chain((sized) => fc.tuple(fc.constant(sized), arbCaseMix(sized.id))),
+            ([{ hexLength, id }, mixed]) => {
               // Arrange
               const content = `${mixed}\n`;
 
               // Act
-              const result = readLooseBody(content, 40);
+              const result = readLooseBody(content, hexLength);
 
               // Assert
               expect(result).toEqual({ kind: 'direct', id, missingNewline: false });
@@ -119,19 +131,24 @@ describe('readLooseBody properties', () => {
     describe('When the trailer starts with whitespace', () => {
       it('Then the id is kept and the trailer is reported unless it is one LF', () => {
         fc.assert(
-          fc.property(arbObjectId(40), arbWhitespaceRun(1), fc.string(), (id, lead, rest) => {
-            // Arrange
-            const trailer = `${lead}${rest}`;
+          fc.property(
+            arbIdOfLength(),
+            arbWhitespaceRun(1),
+            fc.string(),
+            ({ hexLength, id }, lead, rest) => {
+              // Arrange
+              const trailer = `${lead}${rest}`;
 
-            // Act
-            const result = readLooseBody(`${id}${trailer}`, 40);
+              // Act
+              const result = readLooseBody(`${id}${trailer}`, hexLength);
 
-            // Assert
-            expect(result).toMatchObject({ kind: 'direct', id });
-            expect('trailing' in result ? result.trailing : undefined).toBe(
-              trailer === '\n' ? undefined : trailer,
-            );
-          }),
+              // Assert
+              expect(result).toMatchObject({ kind: 'direct', id });
+              expect('trailing' in result ? result.trailing : undefined).toBe(
+                trailer === '\n' ? undefined : trailer,
+              );
+            },
+          ),
           { numRuns: GRAMMAR_NUM_RUNS },
         );
       });
@@ -140,16 +157,21 @@ describe('readLooseBody properties', () => {
     describe('When the trailer starts with any other byte', () => {
       it('Then the body is unparseable', () => {
         fc.assert(
-          fc.property(arbObjectId(40), arbNonWhitespaceByte(), fc.string(), (id, first, rest) => {
-            // Arrange
-            const content = `${id}${first}${rest}`;
+          fc.property(
+            arbIdOfLength(),
+            arbNonWhitespaceByte(),
+            fc.string(),
+            ({ hexLength, id }, first, rest) => {
+              // Arrange
+              const content = `${id}${first}${rest}`;
 
-            // Act
-            const result = readLooseBody(content, 40);
+              // Act
+              const result = readLooseBody(content, hexLength);
 
-            // Assert
-            expect(result).toEqual({ kind: 'unparseable' });
-          }),
+              // Assert
+              expect(result).toEqual({ kind: 'unparseable' });
+            },
+          ),
           { numRuns: GRAMMAR_NUM_RUNS },
         );
       });
@@ -176,12 +198,12 @@ describe('readLooseBody properties', () => {
 
       it('Then a direct body misses its newline exactly when nothing follows the oid', () => {
         fc.assert(
-          fc.property(arbObjectId(40), fc.constantFrom('', '\n'), (id, end) => {
+          fc.property(arbIdOfLength(), fc.constantFrom('', '\n'), ({ hexLength, id }, end) => {
             // Arrange
             const content = `${id}${end}`;
 
             // Act
-            const result = readLooseBody(content, 40);
+            const result = readLooseBody(content, hexLength);
 
             // Assert
             expect(result).toMatchObject({ missingNewline: end === '' });

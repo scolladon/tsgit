@@ -20,9 +20,10 @@ describe('readLooseBody', () => {
       it('Then it is direct with the lower-case id', () => {
         // Arrange
         const content = `${'A'.repeat(40)}\n`;
+        const sut = readLooseBody;
 
         // Act
-        const result = readLooseBody(content, 40);
+        const result = sut(content, 40);
 
         // Assert
         expect(result).toEqual({ kind: 'direct', id: SHA1, missingNewline: false });
@@ -43,8 +44,11 @@ describe('readLooseBody (grammar classes)', () => {
         { content: `${SHA}\r\n`, trailing: '\r\n', missingNewline: false },
         { content: `${SHA} garbage`, trailing: ' garbage', missingNewline: false },
       ])('Then it keeps the id and reports the trailer of $content', (row) => {
-        // Arrange & Act
-        const result = readLooseBody(row.content, 40);
+        // Arrange
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(row.content, 40);
 
         // Assert
         expect(result).toEqual({
@@ -60,8 +64,11 @@ describe('readLooseBody (grammar classes)', () => {
   describe('Given a direct oid with no trailer', () => {
     describe('When read', () => {
       it('Then it is direct, misses its newline and carries no trailer', () => {
-        // Arrange & Act
-        const result = readLooseBody(SHA, 40);
+        // Arrange
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(SHA, 40);
 
         // Assert
         expect(result).toEqual({ kind: 'direct', id: SHA1, missingNewline: true });
@@ -79,8 +86,11 @@ describe('readLooseBody (grammar classes)', () => {
         { label: 'a vertical tab after the oid', content: `${SHA}\v\n` },
         { label: 'empty content', content: '' },
       ])('Then $label is unparseable', ({ content }) => {
-        // Arrange & Act
-        const result = readLooseBody(content, 40);
+        // Arrange
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(content, 40);
 
         // Assert
         expect(result).toEqual({ kind: 'unparseable' });
@@ -114,8 +124,11 @@ describe('readLooseBody (grammar classes)', () => {
           tw: false,
         },
       ])('Then $content reads as a symref', (row) => {
-        // Arrange & Act
-        const result = readLooseBody(row.content, 40);
+        // Arrange
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(row.content, 40);
 
         // Assert
         expect(result).toEqual({
@@ -147,8 +160,11 @@ describe('parseLooseRef', () => {
           label: 'handles a missing trailing newline gracefully',
         },
       ])('Then $label', ({ content, target, hexLength }) => {
-        // Arrange & Act
-        const result = parseLooseRef(content, hexLength ?? 40);
+        // Arrange
+        const sut = parseLooseRef;
+
+        // Act
+        const result = sut(content, hexLength ?? 40);
 
         // Assert
         expect(result).toEqual({ type: 'direct', target });
@@ -159,16 +175,22 @@ describe('parseLooseRef', () => {
   describe('Given git-lenient loose-ref content', () => {
     describe('When parsing at hexLength 40', () => {
       it('Then a symref without a space after the keyword is symbolic', () => {
-        // Arrange & Act
-        const result = parseLooseRef('ref:refs/heads/main\n', 40);
+        // Arrange
+        const sut = parseLooseRef;
+
+        // Act
+        const result = sut('ref:refs/heads/main\n', 40);
 
         // Assert
         expect(result).toEqual({ type: 'symbolic', target: 'refs/heads/main' });
       });
 
       it('Then an upper-case oid is direct with the lower-case id', () => {
-        // Arrange & Act
-        const result = parseLooseRef(`${'A'.repeat(40)}\n`, 40);
+        // Arrange
+        const sut = parseLooseRef;
+
+        // Act
+        const result = sut(`${'A'.repeat(40)}\n`, 40);
 
         // Assert
         expect(result).toEqual({ type: 'direct', target: SHA1 });
@@ -176,13 +198,18 @@ describe('parseLooseRef', () => {
 
       it('Then a 64-digit oid is refused with INVALID_OBJECT_ID', () => {
         // Arrange
+        const sut = parseLooseRef;
+        let thrown: unknown;
+
+        // Act
         try {
-          parseLooseRef(`${'a'.repeat(64)}\n`, 40);
-          // Assert
-          expect.fail('should have thrown');
+          sut(`${'a'.repeat(64)}\n`, 40);
         } catch (e) {
-          expect((e as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
+          thrown = e;
         }
+
+        // Assert
+        expect((thrown as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
       });
     });
   });
