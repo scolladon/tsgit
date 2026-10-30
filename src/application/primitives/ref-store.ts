@@ -144,7 +144,8 @@ export interface RefStore {
    * table that fails a structural check, naming the table and the check.
    * The files backend also reports every loose ref that is a symbolic link
    * (`symlinkRef`), whatever its text names and whether or not it resolves —
-   * git's deprecation notice, which never fails the audit.
+   * git's deprecation notice, which never fails the audit. The walk never
+   * reads through a link, and checks `HEAD` after `refs/**`, as git does.
    * Independent of any external reachability scope.
    */
   verifyIntegrity(): Promise<readonly RefIntegrityFinding[]>;
@@ -229,19 +230,7 @@ export interface RefEntry {
 }
 
 export type RefIntegrityFinding =
-  | {
-      readonly ref: RefName;
-      readonly msgId: 'badRefContent';
-      /**
-       * The name was only reachable by reading THROUGH a symbolic link — the
-       * link itself, or something beneath a linked directory. git's ref-store
-       * content check walks `refs/**` with `lstat` and stops at every link, so
-       * it never grades such a name's content; its ref ITERATOR does read
-       * through, so the zero pointer the broken body stands for is still
-       * reported under the linked name.
-       */
-      readonly throughSymlink: boolean;
-    }
+  | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
   | {
@@ -1166,31 +1155,27 @@ function createFilesRefStore(ctx: Context): RefStore {
     return [...(await collectCandidateNames(prefix))].sort(compareRefNames);
   }
 
-  /** git's ref-store check walks `refs/**` with `lstat` and never follows a
-   *  link, so a link to a directory of refs reports itself and nothing under
-   *  it, and one that resolves nowhere reports all the same. */
-  async function walkLinkedRefNames(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
-    const names: RefName[] = [];
+  /** git's ref-store check walks `refs/**` by dirent type and never follows a
+   *  link: a link reports itself and nothing beneath it, whatever it resolves
+   *  to. */
+  async function walkIntegrity(
+    dir: string,
+    prefix: string,
+    findings: RefIntegrityFinding[],
+  ): Promise<void> {
     for (const entry of await ctx.fs.readdir(dir)) {
-      const rel = `${prefix}/${entry.name}` as RefName;
+      const name = `${prefix}/${entry.name}` as RefName;
       if (entry.isSymbolicLink) {
-        names.push(rel);
+        findings.push({ ref: name, msgId: 'symlinkRef' });
         continue;
       }
-      if (!entry.isDirectory) continue;
-      for (const name of await walkLinkedRefNames(`${dir}/${entry.name}`, rel)) names.push(name);
+      if (entry.isDirectory) {
+        await walkIntegrity(`${dir}/${entry.name}`, name, findings);
+        continue;
+      }
+      const finding = await looseBodyFinding(name);
+      if (finding !== undefined) findings.push(finding);
     }
-    return names;
-  }
-
-  /** Every loose ref that is a symbolic link, across both `refs/**` roots. */
-  async function linkedRefNames(): Promise<ReadonlyArray<RefName>> {
-    const names: RefName[] = [];
-    for (const root of refsWalkRoots()) {
-      if (!(await isDirectoryPath(root))) continue;
-      for (const name of await walkLinkedRefNames(root, REFS_DIR)) names.push(name);
-    }
-    return names;
   }
 
   /** `name`'s loose-body verdict: a `ref:` line is healthy, anything that is
@@ -1200,33 +1185,24 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  grammar check — fsck's refs-verify pass runs its own OID-presence check
    *  against its scan-scoped universe once no `badRefContent` finding has
    *  already flagged this ref. */
-  async function looseBodyFinding(
-    name: RefName,
-    throughSymlink: boolean,
-  ): Promise<RefIntegrityFinding | undefined> {
+  async function looseBodyFinding(name: RefName): Promise<RefIntegrityFinding | undefined> {
     const raw = await readLooseContent(name);
     if (raw === undefined) return undefined;
     const content = raw.replace(/[\r\n]+$/, '');
     if (content.startsWith(SYMBOLIC_PREFIX)) return undefined;
-    if (!LOOSE_OID_RE.test(content)) return { ref: name, msgId: 'badRefContent', throughSymlink };
+    if (!LOOSE_OID_RE.test(content)) return { ref: name, msgId: 'badRefContent' };
     const oid = content as ObjectId;
     if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), oid))) return undefined;
     return { ref: name, msgId: 'badRefOid', target: oid };
   }
 
-  /** Whether `name` is a symbolic link, or sits under one — the two shapes the
-   *  content walk cannot reach without reading through a link. */
-  const readThroughLink = (name: RefName, linked: ReadonlySet<RefName>): boolean =>
-    linked.has(name) || [...linked].some((link) => name.startsWith(`${link}/`));
-
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
     const findings: RefIntegrityFinding[] = [];
-    const linked = new Set(await linkedRefNames());
-    for (const ref of linked) findings.push({ ref, msgId: 'symlinkRef' });
-    for (const name of await walkAllLooseRefNames(undefined)) {
-      const finding = await looseBodyFinding(name, readThroughLink(name, linked));
-      if (finding !== undefined) findings.push(finding);
+    for (const root of refsWalkRoots()) {
+      if (await isDirectoryPath(root)) await walkIntegrity(root, REFS_DIR, findings);
     }
+    const head = await looseBodyFinding(HEAD_NAME);
+    if (head !== undefined) findings.push(head);
     return findings;
   }
 

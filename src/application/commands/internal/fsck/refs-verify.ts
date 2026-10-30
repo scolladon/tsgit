@@ -86,10 +86,6 @@ function collectSymlinkNotices(
  * `checkContentFormat`, with a severity `fsck.<msg-id>` can re-type. The zero
  * pointer git reports for it is not synthesised here: the snapshot carries one
  * for every ref the store lists by name and cannot resolve.
- *
- * git's ref-store content check stops at every symbolic link, so a name read
- * through one carries no content notice; its pointer still stands under the
- * linked name.
  */
 function collectBadContentNotices(
   integrityFindings: ReadonlyArray<RefIntegrityFinding>,
@@ -102,11 +98,10 @@ function collectBadContentNotices(
   let exitBit = 0;
   for (const finding of integrityFindings) {
     if (finding.msgId !== 'badRefContent') continue;
-    const gradeContent = reportContent && !finding.throughSymlink;
-    if (gradeContent) {
+    if (reportContent) {
       findings.push({ type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity });
     }
-    if (gradeContent && severity === 'error') exitBit |= EXIT_REFS_CONTENT;
+    if (reportContent && severity === 'error') exitBit |= EXIT_REFS_CONTENT;
   }
   return { findings, exitBit };
 }

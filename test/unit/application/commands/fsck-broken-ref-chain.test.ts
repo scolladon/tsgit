@@ -180,3 +180,26 @@ describe('Given a loose ref holding garbage that shadows a packed ref of the sam
     });
   });
 });
+
+describe('Given a symbolic link onto a ref holding garbage', () => {
+  describe.each([
+    { shape: 'the link sorts first', link: 'a', expected: ['a', 'm'] },
+    { shape: 'the link sorts last', link: 'z', expected: ['m', 'z'] },
+  ])('$shape', ({ link, expected }) => {
+    describe('When fsck runs', () => {
+      it('Then the link gets its zero pointer under its own name', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plant(ctx, 'm', 'garbage\n');
+        await ctx.fs.symlink('m', `${ctx.layout.gitDir}/refs/heads/${link}`);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(pointersOf(result)).toEqual(pointers(...expected));
+      });
+    });
+  });
+});

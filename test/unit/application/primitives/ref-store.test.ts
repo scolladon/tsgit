@@ -2653,7 +2653,7 @@ describe('ref-store', () => {
     });
 
     describe('When verifyIntegrity is called', () => {
-      it('Then a badRefContent finding is returned, marked as reachable without a link', async () => {
+      it('Then a badRefContent finding is returned', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-a-valid-sha\n');
@@ -2663,63 +2663,83 @@ describe('ref-store', () => {
         const result = await sut.verifyIntegrity();
 
         // Assert
-        expect(result).toContainEqual({
-          ref: 'refs/heads/garbage',
-          msgId: 'badRefContent',
-          throughSymlink: false,
+        expect(result).toContainEqual({ ref: 'refs/heads/garbage', msgId: 'badRefContent' });
+      });
+    });
+  });
+
+  describe('Given a HEAD and a ref under refs/ both holding garbage', () => {
+    describe.each([
+      { shape: 'the ref sorts first', name: 'a' },
+      { shape: 'the ref sorts last', name: 'z' },
+    ])('$shape', ({ name }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then the ref finding precedes the HEAD finding', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8('/repo/.git/HEAD', 'not-a-valid-sha\n');
+          await ctx.fs.writeUtf8(`/repo/.git/refs/heads/${name}`, 'not-a-valid-sha\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            { ref: `refs/heads/${name}`, msgId: 'badRefContent' },
+            { ref: 'HEAD', msgId: 'badRefContent' },
+          ]);
         });
       });
     });
   });
 
   describe('Given a link onto a ref whose body is neither an oid nor a symbolic ref', () => {
-    describe('When verifyIntegrity is called', () => {
-      it('Then the linked name is marked as read through a link, the real name is not', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-a-valid-sha\n');
-        await ctx.fs.symlink('garbage', '/repo/.git/refs/heads/link');
-        const sut = createRefStore(ctx);
+    describe.each([
+      { shape: 'the link sorts first', link: 'a', target: 'm' },
+      { shape: 'the link sorts last', link: 'z', target: 'm' },
+    ])('$shape', ({ link, target }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then the link is a symlinkRef and only the real name is a badRefContent', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8(`/repo/.git/refs/heads/${target}`, 'not-a-valid-sha\n');
+          await ctx.fs.symlink(target, `/repo/.git/refs/heads/${link}`);
+          const sut = createRefStore(ctx);
 
-        // Act
-        const result = await sut.verifyIntegrity();
+          // Act
+          const result = await sut.verifyIntegrity();
 
-        // Assert
-        expect(
-          result
-            .filter((f) => 'msgId' in f && f.msgId === 'badRefContent')
-            .slice()
-            .sort((a, b) => ('ref' in a && 'ref' in b && a.ref < b.ref ? -1 : 1)),
-        ).toEqual([
-          { ref: 'refs/heads/garbage', msgId: 'badRefContent', throughSymlink: false },
-          { ref: 'refs/heads/link', msgId: 'badRefContent', throughSymlink: true },
-        ]);
+          // Assert
+          expect(result).toHaveLength(2);
+          expect(result).toContainEqual({ ref: `refs/heads/${link}`, msgId: 'symlinkRef' });
+          expect(result).toContainEqual({ ref: `refs/heads/${target}`, msgId: 'badRefContent' });
+        });
       });
     });
   });
 
   describe('Given a link onto a directory holding a ref with an unreadable body', () => {
-    describe('When verifyIntegrity is called', () => {
-      it('Then the name beneath the link is marked as read through a link', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        await ctx.fs.writeUtf8('/repo/.git/refs/other/garbage', 'not-a-valid-sha\n');
-        await ctx.fs.symlink('../other', '/repo/.git/refs/heads/dl');
-        const sut = createRefStore(ctx);
+    describe.each([
+      { shape: 'the link sorts first', link: 'a' },
+      { shape: 'the link sorts last', link: 'z' },
+    ])('$shape', ({ link }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then only the link is reported, nothing beneath it', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8('/repo/.git/refs/other/garbage', 'not-a-valid-sha\n');
+          await ctx.fs.symlink('../other', `/repo/.git/refs/heads/${link}`);
+          const sut = createRefStore(ctx);
 
-        // Act
-        const result = await sut.verifyIntegrity();
+          // Act
+          const result = await sut.verifyIntegrity();
 
-        // Assert
-        expect(
-          result
-            .filter((f) => 'msgId' in f && f.msgId === 'badRefContent')
-            .slice()
-            .sort((a, b) => ('ref' in a && 'ref' in b && a.ref < b.ref ? -1 : 1)),
-        ).toEqual([
-          { ref: 'refs/heads/dl/garbage', msgId: 'badRefContent', throughSymlink: true },
-          { ref: 'refs/other/garbage', msgId: 'badRefContent', throughSymlink: false },
-        ]);
+          // Assert
+          expect(result).toHaveLength(2);
+          expect(result).toContainEqual({ ref: `refs/heads/${link}`, msgId: 'symlinkRef' });
+          expect(result).toContainEqual({ ref: 'refs/other/garbage', msgId: 'badRefContent' });
+        });
       });
     });
   });
