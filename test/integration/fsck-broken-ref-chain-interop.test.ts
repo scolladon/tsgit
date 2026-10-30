@@ -895,6 +895,14 @@ const dyingLinkRows: ReadonlyArray<Row> = [
 /** Rows whose lines depend on the order the operating system lists a directory in. */
 const osOrderRows: ReadonlyArray<Row> = [
   {
+    title: 'two links whose referents git rejects, read from a linked worktree',
+    refs: { main: SHA },
+    commit: true,
+    links: { abs: MAIN_REF, l: 'main' },
+    linked: true,
+    via: 'linked',
+  },
+  {
     title: 'two root refs holding garbage, ZED_HEAD and BAR_HEAD',
     refs: {},
     root: { ZED_HEAD: GARBAGE, BAR_HEAD: GARBAGE },
@@ -1154,8 +1162,6 @@ const displayed = (text: string): string =>
 
 const pointersOf = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
   lines.filter((line) => POINTER_LINE.test(line));
-const othersOf = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
-  lines.filter((line) => !POINTER_LINE.test(line)).sort();
 
 const cwdOf = (dir: string, row: Row): string => {
   if (row.via === 'sub') return path.join(dir, 'sub');
@@ -1258,7 +1264,7 @@ describe.each(rowFamilies)('Given a repository with $given', ({ rows: familyRows
           const { gitLines, ourLines } = reportLinesOf(arranged, result, row);
           expect(result.exitCode).toBe(arranged.expected.exitCode);
           expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
-          expect(othersOf(ourLines)).toEqual(othersOf(gitLines));
+          expect(nonPointers(ourLines)).toEqual(nonPointers(gitLines));
         },
         SETUP_TIMEOUT,
       );

@@ -59,33 +59,6 @@ interface PassResult {
   readonly exitBit: number;
 }
 
-/**
- * git's deprecation notice for a symbolic link standing in for a symref:
- * one notice per link under `refs/`, defaulting to a warning that
- * contributes no exit bit — and re-typed, like every catalogue message, by
- * the repository's own `fsck.<msg-id>` table.
- */
-function collectSymlinkNotices(
-  integrityFindings: ReadonlyArray<RefIntegrityFinding>,
-  checkContentFormat: boolean,
-  severities: FsckSeverityTable,
-): PassResult {
-  const severity = retypeSeverity(severities, 'symlinkRef', 'warning');
-  if (!checkContentFormat || severity === 'ignore') return { findings: [], exitBit: 0 };
-  const findings = integrityFindings
-    .filter((finding) => finding.msgId === 'symlinkRef')
-    .map(
-      (finding): BadRefFinding => ({
-        type: 'bad-ref',
-        ref: finding.ref,
-        msgId: 'symlinkRef',
-        severity,
-      }),
-    );
-  const exitBit = severity === 'error' && findings.length > 0 ? EXIT_REFS_CONTENT : 0;
-  return { findings, exitBit };
-}
-
 const REFS_PREFIX = 'refs/';
 
 type ContentFinding = Extract<
@@ -219,10 +192,23 @@ const refsWithInvalidReferent = (
     ),
   );
 
+/** The notices of the walk that are not content verdicts: a refused path, and git's
+ *  deprecation notice for a symbolic link standing in for a symref — re-typed, like every
+ *  catalogue message, by the repository's own `fsck.<msg-id>` table. */
+const walkNoticeOf = (
+  finding: RefIntegrityFinding,
+  symlinkGrade: FsckConfiguredSeverity,
+): BadRefFinding | UnreadablePathFinding | undefined => {
+  if (finding.msgId === 'unreadableRefPath') return unreadablePathFinding(finding);
+  if (finding.msgId !== 'symlinkRef' || symlinkGrade === 'ignore') return undefined;
+  return { type: 'bad-ref', ref: finding.ref, msgId: 'symlinkRef', severity: symlinkGrade };
+};
+
 /**
- * A ref whose content is not an object name, or whose file the permissions refuse: the
- * content notice, gated by `checkContentFormat`. The zero pointer git reports for either is
- * not synthesised here: the snapshot carries one for every ref the store lists by name and
+ * Every notice of git's ref-store walk, in the walk's order — a link's deprecation notice
+ * ahead of the referent verdicts that follow it. A ref whose content is not an object name,
+ * or whose file the permissions refuse: the content notice, gated by `checkContentFormat`.
+ * The zero pointer git reports for either is not synthesised here: the snapshot carries one for every ref the store lists by name and
  * cannot resolve. git's root-ref check (the files beside `refs/`) ends at its first
  * error-severity finding, an unreadable file included.
  */
@@ -232,12 +218,14 @@ function collectContentNotices(
   severities: FsckSeverityTable,
 ): PassResult {
   const grades = gradesOf(severities);
+  const symlinkGrade = retypeSeverity(severities, 'symlinkRef', 'warning');
   const shadowed = refsWithInvalidReferent(integrityFindings);
   const findings: Array<BadRefFinding | UnreadablePathFinding> = [];
   let rootCheckEnded = false;
   for (const finding of integrityFindings) {
     if (!checkContentFormat) continue;
-    if (finding.msgId === 'unreadableRefPath') findings.push(unreadablePathFinding(finding));
+    const walkNotice = walkNoticeOf(finding, symlinkGrade);
+    if (walkNotice !== undefined) findings.push(walkNotice);
     if (!isContentFinding(finding)) continue;
     const severity = contentSeverity(finding, grades, shadowed);
     if (severity === undefined) continue;
@@ -389,7 +377,6 @@ export async function runRefsVerifyPass(
     refStore.verifyIntegrity(),
   ]);
 
-  const symlinks = collectSymlinkNotices(integrityFindings, checkContentFormat, severities);
   const badContent = collectContentNotices(integrityFindings, checkContentFormat, severities);
   const walkEnd = collectWalkEnd(integrityFindings, checkContentFormat);
   const absent = await collectAbsentTargets(
@@ -404,12 +391,7 @@ export async function runRefsVerifyPass(
   );
 
   return {
-    findings: [
-      ...symlinks.findings,
-      ...badContent.findings,
-      ...walkEnd.findings,
-      ...absent.findings,
-    ],
-    exitBit: symlinks.exitBit | badContent.exitBit | walkEnd.exitBit | absent.exitBit,
+    findings: [...badContent.findings, ...walkEnd.findings, ...absent.findings],
+    exitBit: badContent.exitBit | walkEnd.exitBit | absent.exitBit,
   };
 }

@@ -254,6 +254,39 @@ describe('fsck — a loose ref that is a symbolic link', () => {
   });
 });
 
+describe('fsck — two loose ref links whose referents git rejects', () => {
+  describe.each(ADAPTERS)('$adapter adapter', ({ build }) => {
+    describe('Given links a and b to files outside the refs namespace', () => {
+      describe('When fsck audits them', () => {
+        it('Then each link reports its notice and its verdict together, link by link', async () => {
+          // Arrange
+          const ctx = await seedRepository(build);
+          await ctx.fs.writeUtf8(gitPath(ctx, 'outside'), 'x\n');
+          await ctx.fs.symlink('../../outside', gitPath(ctx, 'refs/heads/a'));
+          await ctx.fs.symlink('../../outside', gitPath(ctx, 'refs/heads/b'));
+          const sut = fsck;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          const reported = result.findings.flatMap((finding) =>
+            finding.type === 'bad-ref' && finding.msgId !== 'badRefOid'
+              ? [`${finding.ref} ${finding.msgId}`]
+              : [],
+          );
+          expect(reported).toEqual([
+            'refs/heads/a symlinkRef',
+            'refs/heads/a badReferentName',
+            'refs/heads/b symlinkRef',
+            'refs/heads/b badReferentName',
+          ]);
+        });
+      });
+    });
+  });
+});
+
 describe('fsck — a loose ref link beside a .git that is itself a link', () => {
   describe('Given a store linked as .git and a ref link to a sibling', () => {
     describe('When the store reports its integrity', () => {
