@@ -33,6 +33,8 @@ interface Row {
   readonly refs: Readonly<Record<string, string>>;
   readonly packed?: Readonly<Record<string, string>>;
   readonly head?: string;
+  /** Files directly under the gitdir, by name. */
+  readonly root?: Readonly<Record<string, string>>;
   readonly config?: Readonly<Record<string, string>>;
   readonly flags?: ReadonlyArray<string>;
   readonly options?: FsckOptions;
@@ -43,6 +45,22 @@ const GARBAGE = 'garbage\n';
 const toB = 'ref: refs/heads/b\n';
 
 const rows: ReadonlyArray<Row> = [
+  { title: 'root ref BAR_HEAD holding garbage', refs: {}, root: { BAR_HEAD: GARBAGE } },
+  {
+    title: 'root-ref order, refs/ findings come before root refs',
+    refs: { a: GARBAGE },
+    root: { BAR_HEAD: GARBAGE },
+  },
+  {
+    title: 'root ref ZED_HEAD, a root ref sorting last holding garbage',
+    refs: { z: GARBAGE },
+    root: { ZED_HEAD: GARBAGE },
+  },
+  {
+    title: 'FETCH-PSEUDO, FETCH_HEAD is not a root ref',
+    refs: {},
+    root: { FETCH_HEAD: GARBAGE },
+  },
   { title: 'A-garbage, symbolic ref first', refs: { a: toB, b: GARBAGE } },
   { title: 'A-garbage, symbolic ref last', refs: { z: toB, b: GARBAGE } },
   { title: 'A-abc, symbolic ref first', refs: { a: toB, b: 'abc\n' } },
@@ -178,6 +196,9 @@ const seed = async (row: Row): Promise<string> => {
       `# pack-refs with: peeled sorted \n${lines.join('')}`,
     );
   }
+  for (const [name, body] of Object.entries(row.root ?? {})) {
+    await writeFile(path.join(dir, '.git', name), body);
+  }
   if (row.head !== undefined) await writeFile(path.join(dir, '.git', 'HEAD'), row.head);
   for (const [key, value] of Object.entries(row.config ?? {})) git(dir, 'config', key, value);
   return dir;
@@ -196,7 +217,7 @@ const rebuiltLines = (result: FsckResult, row: Row): ReadonlyArray<string> =>
     if (finding.msgId === 'badRefOid') {
       return [`error: ${finding.ref}: invalid sha1 pointer ${finding.target}`];
     }
-    const body = row.refs[finding.ref.replace('refs/heads/', '')] ?? '';
+    const body = row.root?.[finding.ref] ?? row.refs[finding.ref.replace('refs/heads/', '')] ?? '';
     return [`${label}: ${finding.ref}: ${finding.msgId}: ${body.replace(TRAILING_BYTES, '')}`];
   });
 

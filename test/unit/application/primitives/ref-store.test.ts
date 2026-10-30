@@ -2694,6 +2694,95 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a root ref other than HEAD and a ref under refs/ both holding garbage', () => {
+    describe.each([
+      { shape: 'the root ref sorts first', root: 'A_HEAD', ref: 'z' },
+      { shape: 'the root ref sorts last', root: 'ZED_HEAD', ref: 'a' },
+    ])('$shape', ({ root, ref }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then the ref finding precedes the root ref finding', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8(`/repo/.git/${root}`, 'not-a-valid-sha\n');
+          await ctx.fs.writeUtf8(`/repo/.git/refs/heads/${ref}`, 'not-a-valid-sha\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            { ref: `refs/heads/${ref}`, msgId: 'badRefContent' },
+            { ref: root, msgId: 'badRefContent' },
+          ]);
+        });
+      });
+    });
+  });
+
+  describe('Given HEAD and a root ref both holding garbage', () => {
+    describe.each([
+      { shape: 'HEAD is listed first', first: 'HEAD', second: 'BAR_HEAD' },
+      { shape: 'HEAD is listed last', first: 'BAR_HEAD', second: 'HEAD' },
+    ])('$shape', ({ first, second }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then the findings follow the gitdir listing order', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8(`/repo/.git/${first}`, 'not-a-valid-sha\n');
+          await ctx.fs.writeUtf8(`/repo/.git/${second}`, 'not-a-valid-sha\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            { ref: first, msgId: 'badRefContent' },
+            { ref: second, msgId: 'badRefContent' },
+          ]);
+        });
+      });
+    });
+  });
+
+  describe.each(['FETCH_HEAD', 'MERGE_HEAD', 'FOO1_HEAD', 'config'])(
+    'Given %s holding garbage in the gitdir',
+    (name) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then no finding is returned for it', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8(`/repo/.git/${name}`, 'not-a-valid-sha\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+      });
+    },
+  );
+
+  describe('Given a directory named like a root ref in the gitdir', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then no finding is returned for it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/DIR_HEAD/inner', 'not-a-valid-sha\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a link onto a ref whose body is neither an oid nor a symbolic ref', () => {
     describe.each([
       { shape: 'the link sorts first', link: 'a', target: 'm' },

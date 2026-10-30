@@ -81,11 +81,14 @@ function collectSymlinkNotices(
   return { findings, exitBit };
 }
 
+const REFS_PREFIX = 'refs/';
+
 /**
  * A ref whose content is not an object name: the content notice, gated by
  * `checkContentFormat`, with a severity `fsck.<msg-id>` can re-type. The zero
  * pointer git reports for it is not synthesised here: the snapshot carries one
- * for every ref the store lists by name and cannot resolve.
+ * for every ref the store lists by name and cannot resolve. git's root-ref check
+ * (the files beside `refs/`) ends at its first error-severity finding.
  */
 function collectBadContentNotices(
   integrityFindings: ReadonlyArray<RefIntegrityFinding>,
@@ -95,14 +98,15 @@ function collectBadContentNotices(
   const severity = retypeSeverity(severities, 'badRefContent', 'error');
   const reportContent = checkContentFormat && severity !== 'ignore';
   const findings: BadRefFinding[] = [];
-  let exitBit = 0;
+  let rootCheckEnded = false;
   for (const finding of integrityFindings) {
-    if (finding.msgId !== 'badRefContent') continue;
-    if (reportContent) {
-      findings.push({ type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity });
-    }
-    if (reportContent && severity === 'error') exitBit |= EXIT_REFS_CONTENT;
+    if (finding.msgId !== 'badRefContent' || !reportContent) continue;
+    const isRootRef = !finding.ref.startsWith(REFS_PREFIX);
+    if (isRootRef && rootCheckEnded) continue;
+    findings.push({ type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity });
+    rootCheckEnded ||= isRootRef && severity === 'error';
   }
+  const exitBit = severity === 'error' && findings.length > 0 ? EXIT_REFS_CONTENT : 0;
   return { findings, exitBit };
 }
 

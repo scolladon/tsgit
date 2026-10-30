@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fsck } from '../../../../src/application/commands/fsck.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const ZERO_POINTER = '0'.repeat(40);
@@ -200,6 +201,78 @@ describe('Given a symbolic link onto a ref holding garbage', () => {
         // Assert
         expect(pointersOf(result)).toEqual(pointers(...expected));
       });
+    });
+  });
+});
+
+const GARBAGE = 'garbage\n';
+
+const badContentRefs = (result: Awaited<ReturnType<typeof fsck>>): ReadonlyArray<string> =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.msgId === 'badRefContent' ? [finding.ref] : [],
+  );
+
+const plantRoot = (ctx: Context, name: string, body: string): Promise<void> =>
+  ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, body);
+
+describe('Given two root refs holding garbage', () => {
+  describe.each([
+    { shape: 'the gitdir lists the lower name first', first: 'AAA_HEAD', second: 'ZED_HEAD' },
+    { shape: 'the gitdir lists the higher name first', first: 'ZED_HEAD', second: 'AAA_HEAD' },
+  ])('$shape', ({ first, second }) => {
+    describe('When fsck runs', () => {
+      it('Then only the first root ref is reported, as git stops at its first error', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plantRoot(ctx, first, GARBAGE);
+        await plantRoot(ctx, second, GARBAGE);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(badContentRefs(result)).toEqual([first]);
+      });
+    });
+  });
+});
+
+describe('Given a ref under refs/ and two root refs holding garbage', () => {
+  describe('When fsck runs', () => {
+    it('Then the refs/ finding and the first root finding are reported', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'a', GARBAGE);
+      await plantRoot(ctx, 'BAR_HEAD', GARBAGE);
+      await plantRoot(ctx, 'ZED_HEAD', GARBAGE);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badContentRefs(result)).toEqual(['refs/heads/a', 'BAR_HEAD']);
+    });
+  });
+});
+
+describe('Given two root refs holding garbage and badRefContent re-typed as a warning', () => {
+  describe('When fsck runs', () => {
+    it('Then both are reported, as no error ended the root-ref check', async () => {
+      // Arrange
+      __resetConfigCacheForTests();
+      const ctx = await repository();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tbadRefContent = warn\n');
+      await plantRoot(ctx, 'AAA_HEAD', GARBAGE);
+      await plantRoot(ctx, 'ZED_HEAD', GARBAGE);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badContentRefs(result)).toEqual(['AAA_HEAD', 'ZED_HEAD']);
     });
   });
 });

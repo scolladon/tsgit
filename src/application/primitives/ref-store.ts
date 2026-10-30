@@ -45,6 +45,7 @@ import {
   refNamePrefixes,
   type TransactionNames,
 } from '../../domain/refs/ref-name-conflict.js';
+import { isRootRefName } from '../../domain/refs/symref-referent.js';
 import { type TakenNameIndex, takenNameIndex } from '../../domain/refs/taken-name-index.js';
 import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
@@ -1201,8 +1202,18 @@ function createFilesRefStore(ctx: Context): RefStore {
     for (const root of refsWalkRoots()) {
       if (await isDirectoryPath(root)) await walkIntegrity(root, REFS_DIR, findings);
     }
-    const head = await looseBodyFinding(HEAD_NAME);
-    if (head !== undefined) findings.push(head);
+    findings.push(...(await rootRefFindings()));
+    return findings;
+  }
+
+  /** git checks every root ref after the `refs/` walk, in the gitdir's listing order. */
+  async function rootRefFindings(): Promise<readonly RefIntegrityFinding[]> {
+    const findings: RefIntegrityFinding[] = [];
+    for (const entry of await ctx.fs.readdir(ctx.layout.gitDir)) {
+      if (entry.isDirectory || !isRootRefName(entry.name)) continue;
+      const finding = await looseBodyFinding(entry.name as RefName);
+      if (finding !== undefined) findings.push(finding);
+    }
     return findings;
   }
 
