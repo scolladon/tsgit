@@ -975,6 +975,55 @@ REFACTOR: none.
 ### Commit
 `fix(fsck): walk ref directories in the operating system's order as git does`
 
+## Part 15 — A bootstrap layout over an unsearchable gitdir is not a repository for read commands
+
+### Context
+Inserted during implementation (ADR-1136, user decision on Part 3's deferred observation). Runs
+right after Part 4; independent of Parts 5–14.
+
+- Proof (git 2.56.0, scrubbed): standalone repo, `chmod 000 .git/refs` (and 0400): `git status`
+  exits 128 `fatal: not a git repository (or any of the parent directories): .git`. tsgit:
+  `openRepository({ cwd })` succeeds through the found-nothing bootstrap, then `status()` and
+  `log()` throw `PERMISSION_DENIED` (`data.path` `<repo>/.git/refs/heads/main`). A plain directory
+  with no repository already throws `NOT_A_REPOSITORY` from both.
+- `src/repository/resolve-layout.ts` — `syntheticFallbackLayout(gitDir, defaultWorkDir, cwd,
+  overrides, pathPolicy): RepositoryLayoutInput` (L239) builds the bootstrap layout; it carries no
+  marker today.
+- `src/application/primitives/internal/repo-state.ts` — `assertRepository` (L~109),
+  `assertUsableHeadAndOpenEpoch` (L~400) and `hasUsableHead` (L142) are the guard every read
+  command runs; they throw `notARepository((ctx.layout.workDir ?? ctx.layout.gitDir))`.
+- The searchability check: the guard reaches the `FileSystem` port through `ctx.fs`, not the
+  layout probe. Choose the smallest route that (a) adds no I/O on a discovered layout, (b) keeps
+  memory and browser adapters unchanged, (c) adds no required port member. If the only route
+  needs a public type change, say so and run `npm run docs:json`.
+- Tests: `test/unit/application/primitives/internal/repo-state.test.ts` (or the suite that
+  covers `assertRepository`; locate it), and a new interop row family in
+  `test/integration/discovery-unsearchable-shared-dir-interop.test.ts`: REFS-000 and
+  REFS-0400 standalone (`git status` 128 ↔ tsgit `status()` and `log()` throw
+  `NOT_A_REPOSITORY`), OBJ-000 standalone, and GUARD rows: REFS-0300 standalone opens and
+  `status()` succeeds in both tools; a plain directory still refuses `NOT_A_REPOSITORY`;
+  `init()` in a fresh empty directory still bootstraps.
+
+Read-only: src/repository/find-layout.ts (the `located === undefined` branch that reaches the
+bootstrap), src/repository/fixed-entry-layout.ts (its bootstrap, L120–L131) and src/index.node.ts
+(Part 3's Node `isSearchable`, the only searchability primitive today). A separate part from
+Part 3 because the guard lives in the application layer and runs per command, not in discovery.
+
+### TDD steps
+1. RED interop REFS-000 standalone: `status()` throws `PERMISSION_DENIED` today, expected
+   `NOT_A_REPOSITORY`. Then REFS-0400 and OBJ-000 the same way.
+2. RED unit: the guard refuses a bootstrap-marked layout whose `refs/` is unsearchable; an
+   isolated test for `objects/`; GUARD: a discovered layout is never re-checked (assert no
+   searchability call); GUARD: bootstrap with searchable dirs passes.
+3. GREEN: the marker on the bootstrap layout and the guard check.
+4. GUARD interop: REFS-0300 standalone, plain directory, `init()` bootstrap.
+
+### Gate
+`npx vitest run <touched unit suites> && npx vitest run --project integration discovery-unsearchable linked-worktree-discovery bare-repo-custom-gitdir repository-format-acceptance init && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling`
+
+### Commit
+`fix(repository): refuse a read command over an unsearchable bootstrap gitdir as git does`
+
 ## Mutation buckets (validation phase)
 
 Narrowed eponymous buckets (.claude/workflow/mutation.md):
@@ -990,6 +1039,7 @@ Narrowed eponymous buckets (.claude/workflow/mutation.md):
   fsck-symbolic-ref-fault.test.ts + fsck-symlinked-ref.test.ts + fsck-worktree-heads.test.ts
 - src/application/commands/internal/fsck/roots.ts (`headOf`) ← fsck-worktree-heads.test.ts
 - src/repository/find-layout.ts (shared-dir check) ← find-layout.test.ts
+- src/application/primitives/internal/repo-state.ts (bootstrap searchability guard) ← its eponymous suite
 - src/adapters/node/node-file-system.ts (`readdirInOsOrder`) ← node-file-system.test.ts
 `targetOf`'s removed `isTolerableRefFault` branch must not reappear as an equivalent survivor.
 
