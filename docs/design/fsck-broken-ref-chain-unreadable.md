@@ -629,12 +629,11 @@ These two findings sit in the same verify pass and walk the parts already rewrit
   ref name the root-ref syntax admits (P1's predicate), in git's order; D8's terminal finding ends
   these checks too.
 - **F2 — a loose path across an unreadable directory reads as missing** (P2). git treats the name as
-  missing and ignores its packed value. Pin: packed `refs/heads/d/x` with loose `refs/heads/d/` at mode
+  missing and ignores its packed value; tsgit's refusal already gives git's outcome on every row. Pin: packed `refs/heads/d/x` with loose `refs/heads/d/` at mode
   000, `git rev-parse refs/heads/d/x` exits 128 `unknown revision`; at mode 0400, `git rev-list --all`
   dies `fatal: bad object refs/heads/d/x` (128). tsgit on `main`: `resolveRef` and `revList({ all })`
-  throw `PERMISSION_DENIED`. `resolveDirect` maps a `PERMISSION_DENIED` on a leading directory to
-  absent without the packed fallback; the 0400 shape keeps git's `bad object` death on the listing
-  path, so the planner pins both modes.
+  throw `PERMISSION_DENIED`. `resolveDirect` keeps refusing `PERMISSION_DENIED` and never takes the packed value
+  (ADR-1131); the 0400 shape keeps git's `bad object` death on the listing path. Both modes are pinned.
 
 Unproven, not folded: whether `openRepository` refuses a repo whose `.git/refs` is mode 000 as git
 does (exit 128). The planner pins it with one probe first; a red twin joins F2.
