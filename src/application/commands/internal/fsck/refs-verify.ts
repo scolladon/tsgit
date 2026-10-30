@@ -14,7 +14,10 @@ import type { FsckFinding } from './types.js';
 import type { ParseCheck } from './verified-copies.js';
 
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
-type RefFinding = FsckFinding & { readonly type: 'bad-ref' | 'no-default-references' };
+type UnreadablePathFinding = FsckFinding & { readonly type: 'unreadable-ref-path' };
+type RefFinding = FsckFinding & {
+  readonly type: 'bad-ref' | 'no-default-references' | 'unreadable-ref-path';
+};
 
 const NO_DEFAULT_REFERENCES: RefFinding = { type: 'no-default-references' };
 
@@ -89,6 +92,19 @@ type ContentFinding = Extract<
   { readonly msgId: 'badRefContent' | 'cannotReadRef' }
 >;
 
+const unreadablePathFinding = ({
+  path,
+  operation,
+}: Extract<
+  RefIntegrityFinding,
+  { readonly msgId: 'unreadableRefPath' }
+>): UnreadablePathFinding => ({
+  type: 'unreadable-ref-path',
+  path,
+  operation,
+  reason: 'PERMISSION_DENIED',
+});
+
 const isContentFinding = (finding: RefIntegrityFinding): finding is ContentFinding =>
   finding.msgId === 'badRefContent' || finding.msgId === 'cannotReadRef';
 
@@ -129,10 +145,12 @@ function collectContentNotices(
   severities: FsckSeverityTable,
 ): PassResult {
   const badContentSeverity = retypeSeverity(severities, 'badRefContent', 'error');
-  const findings: BadRefFinding[] = [];
+  const findings: Array<BadRefFinding | UnreadablePathFinding> = [];
   let rootCheckEnded = false;
   for (const finding of integrityFindings) {
-    if (!checkContentFormat || !isContentFinding(finding)) continue;
+    if (!checkContentFormat) continue;
+    if (finding.msgId === 'unreadableRefPath') findings.push(unreadablePathFinding(finding));
+    if (!isContentFinding(finding)) continue;
     const severity = contentSeverity(finding, badContentSeverity);
     if (severity === undefined) continue;
     const isRootRef = !finding.ref.startsWith(REFS_PREFIX);
@@ -140,7 +158,9 @@ function collectContentNotices(
     findings.push(contentFinding(finding, severity));
     rootCheckEnded ||= isRootRef && severity === 'error';
   }
-  const exitBit = findings.some((found) => found.severity === 'error') ? EXIT_REFS_CONTENT : 0;
+  const exitBit = findings.some((found) => found.type === 'bad-ref' && found.severity === 'error')
+    ? EXIT_REFS_CONTENT
+    : 0;
   return { findings, exitBit };
 }
 

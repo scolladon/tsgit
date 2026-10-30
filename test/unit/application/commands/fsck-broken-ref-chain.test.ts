@@ -488,3 +488,90 @@ describe('Given a symbolic link under refs/ and references are not checked', () 
     });
   });
 });
+
+const unreadablePaths = (result: Awaited<ReturnType<typeof fsck>>) =>
+  result.findings.filter((finding) => finding.type === 'unreadable-ref-path');
+
+const refuseListingAt = (ctx: Context, dirs: ReadonlyArray<string>): void => {
+  const readdir = ctx.fs.readdir.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+    if (dirs.includes(path)) throw permissionDenied(path);
+    return readdir(path);
+  });
+};
+
+const refuseStatAt = (ctx: Context, path: string): void => {
+  const lstat = ctx.fs.lstat.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (target: string) => {
+    if (target === path) throw permissionDenied(path);
+    return lstat(target);
+  });
+};
+
+const seedUnreadableDirectory = async (): Promise<{ ctx: Context; dir: string }> => {
+  const ctx = await repository();
+  const dir = `${ctx.layout.gitDir}/refs/heads/d`;
+  await ctx.fs.writeUtf8(`${dir}/x`, `${'1'.repeat(40)}\n`);
+  refuseListingAt(ctx, [dir]);
+  return { ctx, dir };
+};
+
+describe('Given a directory under refs/ the permissions refuse', () => {
+  describe('When fsck runs', () => {
+    it('Then one unreadable-ref-path warning names it, with no exit bit', async () => {
+      // Arrange
+      const { ctx, dir } = await seedUnreadableDirectory();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(unreadablePaths(result)).toEqual([
+        {
+          type: 'unreadable-ref-path',
+          path: dir,
+          operation: 'open-directory',
+          reason: 'PERMISSION_DENIED',
+        },
+      ]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When fsck runs without checking references', () => {
+    it('Then the warning is dropped', async () => {
+      // Arrange
+      const { ctx } = await seedUnreadableDirectory();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(unreadablePaths(result)).toEqual([]);
+    });
+  });
+});
+
+describe('Given a ref file whose read and whose stat the permissions refuse', () => {
+  describe('When fsck runs', () => {
+    it('Then one unreadable-ref-path warning with the stat operation is reported', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', `${'1'.repeat(40)}\n`);
+      const [path] = refuseRead(ctx, ['b']);
+      refuseStatAt(ctx, path as string);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(unreadablePaths(result)).toEqual([
+        { type: 'unreadable-ref-path', path, operation: 'stat', reason: 'PERMISSION_DENIED' },
+      ]);
+      expect(cannotRead(result)).toEqual([]);
+    });
+  });
+});

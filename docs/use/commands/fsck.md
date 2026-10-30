@@ -34,6 +34,9 @@ type FsckFinding =
       readonly ref: RefName; readonly msgId: string;
       readonly severity: FsckSeverity; readonly target?: ObjectId;
       readonly path?: string; readonly reason?: 'PERMISSION_DENIED' }
+  | { readonly type: 'unreadable-ref-path';
+      readonly path: string; readonly operation: 'open-directory' | 'stat';
+      readonly reason: 'PERMISSION_DENIED' }
   | { readonly type: 'root'; readonly id: ObjectId }
   | { readonly type: 'tagged';
       readonly id: ObjectId; readonly objectType: FsckObjectType;
@@ -168,6 +171,7 @@ findings.filter(f => f.type === 'tagged')
 | `invalid-reflog-entry` | `ref`, `id` | A reflog side names an object the run never recorded (git's `invalid reflog entry`); one finding per side, so a line can yield two. |
 | `invalid-cache-tree-pointer` | `id`, `index` | A cache-tree entry names an object no store holds (git's `invalid sha1 pointer in cache-tree`); `index` is the index file naming it, one finding per worktree index. Exit bit 8. |
 | `invalid-resolve-undo-pointer` | `id`, `index` | A regular-file resolve-undo stage names an object no store holds (git's `invalid sha1 pointer in resolve-undo`). Exit bit 8. |
+| `unreadable-ref-path` | `path`, `operation`, `reason` | A path git's refs walk could not open or stat: a directory under `refs/` the permissions refuse to list (`operation: 'open-directory'`, git's `error opening directory`) or an entry it lists but cannot `lstat` (`operation: 'stat'`, git's `failed to stat`). `path` is absolute, as opened; `reason` is `'PERMISSION_DENIED'`. A warning: no exit bit, no `fsck.<msg-id>` setting or `--strict` re-types it, and `checkReferences: false` drops it. The walk carries on with the siblings; the refs below a directory it cannot list are skipped everywhere else, as in git. |
 | `no-default-references` | _none_ | No ref names an object git could parse (git's `No default references` notice); no `unreachable` object is reported after it. No exit bit. |
 | `unknown-object-type` | `id` | `connectivityOnly`: a reflog-reached object whose served copy hashes to another id and that no earlier link typed (git's `Unknown object type for`): reached, never walked. No exit bit. |
 | `unexpected-object-type` | `id`, `expectedType` | `connectivityOnly`: an object a link typed as `expectedType` whose served copy is another type (git's `Object <id> not a <type>`): reached, never walked. No exit bit. |

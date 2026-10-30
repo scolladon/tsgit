@@ -241,6 +241,11 @@ export type RefIntegrityFinding =
     }
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
   | {
+      readonly msgId: 'unreadableRefPath';
+      readonly operation: 'open-directory' | 'stat';
+      readonly path: string;
+    }
+  | {
       readonly table: string;
       readonly msgId: 'badReftableTable';
       readonly check: ReftableCheck;
@@ -1170,7 +1175,8 @@ function createFilesRefStore(ctx: Context): RefStore {
     prefix: string,
     findings: RefIntegrityFinding[],
   ): Promise<void> {
-    for (const entry of await ctx.fs.readdir(dir)) {
+    const entries = await readdirForIntegrity(dir, findings);
+    for (const entry of entries) {
       const name = `${prefix}/${entry.name}` as RefName;
       if (entry.isSymbolicLink) {
         findings.push({ ref: name, msgId: 'symlinkRef' });
@@ -1185,9 +1191,25 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /** git warns `error opening directory` for a directory the permissions refuse and
+   *  carries on with its siblings. */
+  async function readdirForIntegrity(
+    dir: string,
+    findings: RefIntegrityFinding[],
+  ): Promise<ReadonlyArray<DirEntry>> {
+    try {
+      return await ctx.fs.readdir(dir);
+    } catch (err) {
+      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
+      findings.push({ msgId: 'unreadableRefPath', operation: 'open-directory', path: dir });
+      return [];
+    }
+  }
+
   /** git's `cannot read ref file`: a file whose open the permissions refuse is a finding
    *  and the walk carries on; the `lstat` proves the entry exists, as the open's refusal
-   *  alone cannot tell a denied file from a denied directory above it. */
+   *  alone cannot tell a denied file from a denied directory above it; an `lstat` the
+   *  permissions refuse too is git's `failed to stat`. */
   async function readLooseContentOrRefusal(
     name: RefName,
   ): Promise<string | undefined | RefIntegrityFinding> {
@@ -1199,7 +1221,8 @@ function createFilesRefStore(ctx: Context): RefStore {
       try {
         await ctx.fs.lstat(path);
       } catch (statErr) {
-        throw errorCodeOf(statErr) === 'PERMISSION_DENIED' ? err : statErr;
+        if (errorCodeOf(statErr) !== PERMISSION_DENIED_CODE) throw statErr;
+        return { msgId: 'unreadableRefPath', operation: 'stat', path };
       }
       return { ref: name, msgId: 'cannotReadRef', path, reason: 'PERMISSION_DENIED' };
     }

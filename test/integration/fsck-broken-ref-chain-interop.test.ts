@@ -30,7 +30,7 @@ const TRAILING_BYTES = /[ \t\r\n]+$/;
 const POSIX = process.platform !== 'win32';
 const UNPRIVILEGED = POSIX && process.getuid?.() !== 0;
 const REFUSED = 0o000;
-const READABLE = 0o644;
+const RESTORED = 0o755;
 const LINKED_ID = 'wt';
 
 interface Row {
@@ -51,6 +51,10 @@ interface Row {
   readonly tags?: Readonly<Record<string, string>>;
   /** Gitdir-relative paths whose mode is 000 once seeded. */
   readonly unreadable?: ReadonlyArray<string>;
+  /** Files by gitdir-relative path, their directories created. */
+  readonly files?: Readonly<Record<string, string>>;
+  /** Gitdir-relative paths given a specific mode once seeded. */
+  readonly restricted?: Readonly<Record<string, number>>;
   /** A linked worktree, its admin dir `worktrees/wt`. */
   readonly linked?: boolean;
   /** Where the command runs from: a sub-directory, or an explicit `--git-dir`. */
@@ -311,12 +315,119 @@ const refusedRows: ReadonlyArray<Row> = [
   },
 ];
 
+const DIR_MODE_LISTABLE_ONLY = 0o400;
+const DIR_MODE_SEARCHABLE_ONLY = 0o300;
+const STRICT = { flags: ['--strict'], options: { strict: true } } as const;
+const CONNECTIVITY = {
+  flags: ['--connectivity-only'],
+  options: { connectivityOnly: true },
+} as const;
+
+/** A refused directory holding refs, beside a healthy `main`. */
+const refusedDir = (
+  name: string,
+  extra: Omit<Row, 'title' | 'refs'> = {},
+  refs = {},
+): Omit<Row, 'title'> => ({
+  refs: { main: SHA, [`${name}/x`]: SHA, ...refs },
+  restricted: { [heads(name)]: REFUSED },
+  commit: true,
+  ...extra,
+});
+
+const dirRows: ReadonlyArray<Row> = [
+  ...sortedBothEnds('DIR, an unreadable directory', (name) => refusedDir(name)),
+  ...sortedBothEnds('DIR-strict, strict mode', (name) => refusedDir(name, STRICT)),
+  ...sortedBothEnds('DIR-co, connectivity only', (name) => refusedDir(name, CONNECTIVITY)),
+  ...sortedBothEnds('DIR-nr, references not checked', (name) => refusedDir(name, NO_REFERENCES)),
+  {
+    title: 'DIR-AZ, two unreadable directories',
+    ...refusedDir('a', {}, { 'z/x': SHA }),
+    restricted: { [heads('a')]: REFUSED, [heads('z')]: REFUSED },
+  },
+  ...sortedBothEnds('DIR-N, a nested unreadable directory', (name) => ({
+    refs: { main: SHA, [`${name}/y`]: SHA, [`${name}/e/x`]: SHA },
+    restricted: { [heads(`${name}/e`)]: REFUSED },
+    commit: true,
+  })),
+  {
+    title: 'DIR-T, unreadable tag and remote directories',
+    refs: { main: SHA },
+    files: { 'refs/tags/td/x': SHA, 'refs/remotes/o/x': SHA },
+    restricted: { 'refs/tags/td': REFUSED, 'refs/remotes/o': REFUSED },
+    commit: true,
+  },
+  ...sortedBothEnds('DIR-ONLY, the only ref sits in an unreadable directory', (name) => ({
+    refs: { [`${name}/x`]: SHA },
+    restricted: { [heads(name)]: REFUSED },
+    commit: true,
+  })),
+  ...sortedBothEnds('DIR-ONLY-nr, references not checked', (name) => ({
+    refs: { [`${name}/x`]: SHA },
+    restricted: { [heads(name)]: REFUSED },
+    commit: true,
+    ...NO_REFERENCES,
+  })),
+  {
+    title: 'DIR-HEADS, refs/heads itself is unreadable, HEAD detached',
+    refs: { main: SHA },
+    head: SHA,
+    restricted: { 'refs/heads': REFUSED },
+    commit: true,
+  },
+  {
+    title: 'DIR-HEADS-nr, refs/heads itself is unreadable, HEAD detached, references not checked',
+    refs: { main: SHA },
+    head: SHA,
+    restricted: { 'refs/heads': REFUSED },
+    commit: true,
+    ...NO_REFERENCES,
+  },
+  ...sortedBothEnds('DIR-PK, a packed ref under an unreadable loose directory', (name) => ({
+    refs: { main: SHA, [`${name}/y`]: SHA },
+    packed: { [`${name}/x`]: '{commit}' },
+    restricted: { [heads(name)]: REFUSED },
+    commit: true,
+  })),
+  ...sortedBothEnds('DIR-CH, a link onto a ref in an unreadable directory', (name) => ({
+    refs: { main: SHA, [name]: HEAD_ON('d/x'), 'd/x': SHA },
+    restricted: { [heads('d')]: REFUSED },
+    commit: true,
+  })),
+  ...sortedBothEnds('DIR-CH-nr, references not checked', (name) => ({
+    refs: { main: SHA, [name]: HEAD_ON('d/x'), 'd/x': SHA },
+    restricted: { [heads('d')]: REFUSED },
+    commit: true,
+    ...NO_REFERENCES,
+  })),
+  ...sortedBothEnds('DIR-SRCH, a listable directory that cannot be searched', (name) => ({
+    refs: { main: SHA, [`${name}/x`]: SHA },
+    restricted: { [heads(name)]: DIR_MODE_LISTABLE_ONLY },
+    commit: true,
+  })),
+  ...sortedBothEnds('DIR-SRCH-nr, references not checked', (name) => ({
+    refs: { main: SHA, [`${name}/x`]: SHA },
+    restricted: { [heads(name)]: DIR_MODE_LISTABLE_ONLY },
+    commit: true,
+    ...NO_REFERENCES,
+  })),
+  ...sortedBothEnds('DIR-300, a searchable directory that cannot be listed', (name) =>
+    refusedDir(name, { restricted: { [heads(name)]: DIR_MODE_SEARCHABLE_ONLY } }),
+  ),
+  ...sortedBothEnds('DIR-LINK-in, a link beside an unreadable directory', (name) => ({
+    refs: { main: SHA, 'real/x': SHA },
+    links: { [name]: 'real' },
+    restricted: { [heads('real')]: REFUSED },
+    commit: true,
+  })),
+];
+
 const roots: string[] = [];
 const refusedPaths: string[] = [];
 
 afterEach(async () => {
   __resetConfigCacheForTests();
-  await Promise.all(refusedPaths.splice(0).map((file) => chmod(file, READABLE)));
+  await Promise.all(refusedPaths.splice(0).map((file) => chmod(file, RESTORED)));
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -339,10 +450,18 @@ const seedExtras = async (dir: string, row: Row, fill: (text: string) => string)
   await mkdir(path.join(dir, 'sub'), { recursive: true });
   if (row.linked === true)
     git(dir, 'worktree', 'add', '-q', '--detach', path.join(dir, LINKED_ID), fill('{commit}'));
-  for (const relative of row.unreadable ?? []) {
+  for (const [relative, body] of Object.entries(row.files ?? {})) {
+    await mkdir(path.dirname(path.join(gitDir, relative)), { recursive: true });
+    await writeFile(path.join(gitDir, relative), fill(body));
+  }
+  const modes = [
+    ...(row.unreadable ?? []).map((relative): [string, number] => [relative, REFUSED]),
+    ...Object.entries(row.restricted ?? {}),
+  ];
+  for (const [relative, mode] of modes) {
     const file = path.join(gitDir, relative);
-    await chmod(file, REFUSED);
-    refusedPaths.push(file);
+    refusedPaths.unshift(file);
+    await chmod(file, mode);
   }
 };
 
@@ -355,6 +474,7 @@ const seed = async (row: Row): Promise<string> => {
   const heads = path.join(dir, '.git', 'refs', 'heads');
   await mkdir(heads, { recursive: true });
   for (const [name, body] of Object.entries(row.refs)) {
+    await mkdir(path.dirname(path.join(heads, name)), { recursive: true });
     await writeFile(path.join(heads, name), fill(body));
   }
   if (row.packed !== undefined) {
@@ -367,7 +487,7 @@ const seed = async (row: Row): Promise<string> => {
   for (const [name, body] of Object.entries(row.root ?? {})) {
     await writeFile(path.join(dir, '.git', name), fill(body));
   }
-  if (row.head !== undefined) await writeFile(path.join(dir, '.git', 'HEAD'), row.head);
+  if (row.head !== undefined) await writeFile(path.join(dir, '.git', 'HEAD'), fill(row.head));
   for (const [key, value] of Object.entries(row.config ?? {})) git(dir, 'config', key, value);
   await seedExtras(dir, row, fill);
   return dir;
@@ -388,6 +508,12 @@ const printedPath = (dir: string, file: string, row: Row): string =>
 const rebuiltLines = (result: FsckResult, row: Row, dir: string): ReadonlyArray<string> =>
   result.findings.flatMap((finding) => {
     if (finding.type === 'no-default-references') return ['notice: No default references'];
+    if (finding.type === 'unreadable-ref-path') {
+      const shown = printedPath(dir, finding.path, row);
+      return finding.operation === 'open-directory'
+        ? [`warning: error opening directory '${shown}${path.sep}': Permission denied`]
+        : [`warning: failed to stat '${shown}': Permission denied`];
+    }
     if (finding.type !== 'bad-ref') return [];
     const label = finding.severity === 'error' ? 'error' : 'warning';
     if (finding.msgId === 'badRefOid') {
@@ -455,6 +581,21 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
   'Given a repository with a ref file the permissions refuse',
   () => {
     describe.each(refusedRows)('$title', (row) => {
+      describe('When fsck runs', () => {
+        it(
+          'Then tsgit reports git’s lines and exit code',
+          async () => expectGitsLines(row),
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
+  'Given a repository with a ref directory the permissions refuse',
+  () => {
+    describe.each(dirRows)('$title', (row) => {
       describe('When fsck runs', () => {
         it(
           'Then tsgit reports git’s lines and exit code',

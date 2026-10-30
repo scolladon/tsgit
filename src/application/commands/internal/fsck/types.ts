@@ -58,6 +58,15 @@ export type FsckFinding =
       readonly reason?: 'PERMISSION_DENIED';
     }
   | {
+      /** A path git's refs walk could not open or stat — `error opening directory` /
+       *  `failed to stat`. A warning: no exit bit, gated by `checkReferences`, never re-typed. */
+      readonly type: 'unreadable-ref-path';
+      /** Absolute, as opened. */
+      readonly path: string;
+      readonly operation: 'open-directory' | 'stat';
+      readonly reason: 'PERMISSION_DENIED';
+    }
+  | {
       /** A reflog side naming an object the run never recorded — git's
        *  `invalid reflog entry`; one per side, so a line can yield two. */
       readonly type: 'invalid-reflog-entry';

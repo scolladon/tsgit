@@ -29,6 +29,15 @@ import {
 import { buildSeededContext, instrumentedContext, writeForgedTag } from './fixtures.js';
 import { commonReftableDir, withReftableStorage, writeReftableFiles } from './reftable-fixtures.js';
 
+/** Makes listing the given directories fail as the permissions do. */
+function refuseListing(ctx: Context, dirs: ReadonlyArray<string>): void {
+  const readdir = ctx.fs.readdir.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (p: string) => {
+    if (dirs.includes(p)) throw permissionDenied(p);
+    return readdir(p);
+  });
+}
+
 /** A single-record ref-block table naming `refName -> id`. */
 function buildSingleRefTable(refName: string, id: Uint8Array): Uint8Array {
   const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
@@ -2727,15 +2736,14 @@ describe('ref-store', () => {
 
   describe('Given a loose ref file whose read and whose lstat are both refused', () => {
     describe('When verifyIntegrity is called', () => {
-      it('Then the read fault propagates', async () => {
+      it('Then an unreadableRefPath finding with the stat operation is returned', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
         await ctx.fs.writeUtf8(refPath, `${'1'.repeat(40)}\n`);
-        const readFault = permissionDenied(refPath);
         const read = ctx.fs.readUtf8.bind(ctx.fs);
         vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (p: string) => {
-          if (p === refPath) throw readFault;
+          if (p === refPath) throw permissionDenied(p);
           return read(p);
         });
         const lstat = ctx.fs.lstat.bind(ctx.fs);
@@ -2746,10 +2754,94 @@ describe('ref-store', () => {
         const sut = createRefStore(ctx);
 
         // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({
+          msgId: 'unreadableRefPath',
+          operation: 'stat',
+          path: refPath,
+        });
+      });
+    });
+  });
+
+  describe('Given a directory under refs/ whose listing is refused for permission', () => {
+    describe.each([
+      { shape: 'the directory sorts first', refused: 'a', sibling: 'z' },
+      { shape: 'the directory sorts last', refused: 'z', sibling: 'a' },
+    ])('$shape', ({ refused, sibling }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then an unreadableRefPath finding names it and the walk reaches the sibling', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const heads = `${ctx.layout.gitDir}/refs/heads`;
+          await ctx.fs.writeUtf8(`${heads}/${refused}/x`, `${'1'.repeat(40)}\n`);
+          await ctx.fs.writeUtf8(`${heads}/${sibling}`, 'garbage\n');
+          refuseListing(ctx, [`${heads}/${refused}`]);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({
+            msgId: 'unreadableRefPath',
+            operation: 'open-directory',
+            path: `${heads}/${refused}`,
+          });
+          expect(result).toContainEqual({ ref: `refs/heads/${sibling}`, msgId: 'badRefContent' });
+        });
+      });
+    });
+  });
+
+  describe('Given a nested directory and the refs/heads root whose listing is refused', () => {
+    describe.each([
+      { shape: 'nested', relative: 'refs/heads/d/e' },
+      { shape: 'root', relative: 'refs/heads' },
+    ])('$shape', ({ relative }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then it is the one finding and nothing is thrown', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = `${ctx.layout.gitDir}/${relative}`;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/d/e/x`, `${'1'.repeat(40)}\n`);
+          refuseListing(ctx, [dir]);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            { msgId: 'unreadableRefPath', operation: 'open-directory', path: dir },
+          ]);
+        });
+      });
+    });
+  });
+
+  describe('Given a directory under refs/ whose listing faults for another reason', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then that fault propagates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const dir = `${ctx.layout.gitDir}/refs/heads/d`;
+        await ctx.fs.writeUtf8(`${dir}/x`, `${'1'.repeat(40)}\n`);
+        const fault = new Error('EIO');
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (p: string) => {
+          if (p === dir) throw fault;
+          return readdir(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
         const result = await sut.verifyIntegrity().catch((e: unknown) => e);
 
         // Assert
-        expect(result).toBe(readFault);
+        expect(result).toBe(fault);
       });
     });
   });
