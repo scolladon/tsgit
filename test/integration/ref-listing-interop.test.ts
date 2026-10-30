@@ -285,16 +285,31 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
         it('Then show-ref and rev-list --all agree with tsgit', async () => {
           // Arrange
           const { dir, ctx, commit } = await newRepo();
-          withDirAt(dir, commit, UNREADABLE);
+          const hiddenCommit = git(
+            dir,
+            'commit-tree',
+            `${commit}^{tree}`,
+            '-p',
+            commit,
+            '-m',
+            'd',
+          ).trim();
+          withDirAt(dir, hiddenCommit, UNREADABLE);
+          const expectedRefs = lines(git(dir, 'show-ref'));
           const expectedCount = Number(git(dir, 'rev-list', '--all', '--count').trim());
           const sut = revList;
 
           // Act
           const result = await sut(ctx, { all: true, count: true });
+          const listed = (await getRefStore(ctx).listRefs('refs/' as RefName)).map(
+            (entry) => `${entry.value.kind === 'direct' ? entry.value.id : ''} ${entry.name}`,
+          );
 
           // Assert
           expect(result.count).toBe(expectedCount);
-          expect(lines(git(dir, 'show-ref')).length).toBe(1);
+          expect([...listed].sort()).toEqual(expectedRefs);
+          expect(expectedRefs).toEqual([`${commit} refs/heads/main`]);
+          expect(expectedCount).toBe(1);
         });
       });
 
