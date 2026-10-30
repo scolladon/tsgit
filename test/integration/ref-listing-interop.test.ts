@@ -12,13 +12,19 @@
  *   unique:         branch and tag listings drop a chain git's own iterator drops
  *   interopSurface: branchList
  */
+import { chmodSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchList } from '../../src/application/commands/branch.js';
+import { maintenance } from '../../src/application/commands/maintenance.js';
+import { packRefs } from '../../src/application/commands/pack-refs.js';
+import { revList } from '../../src/application/commands/rev-list.js';
 import { tagList } from '../../src/application/commands/tag.js';
+import { getRefStore } from '../../src/application/primitives/ref-store.js';
+import { resolveRef } from '../../src/application/primitives/resolve-ref.js';
 import type { RefName } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
 import { disableAutoMaintenance, GIT_AVAILABLE, git, runGit } from './interop-helpers.js';
@@ -193,3 +199,311 @@ describe.skipIf(!GIT_AVAILABLE)('integration — ref listing parity with canonic
     });
   });
 });
+
+const getListRefs = (ctx: Context) => async (): Promise<ReadonlyArray<string>> =>
+  (await getRefStore(ctx).listRefs('refs/' as RefName)).map((entry) => entry.name as string).sort();
+
+const UNREADABLE = 0o000;
+const READABLE_NOT_SEARCHABLE = 0o400;
+const RESTORED = 0o755;
+const PERMISSION_BITS_ENFORCED = process.platform !== 'win32' && process.getuid?.() !== 0;
+
+describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
+  'integration — an unreadable loose-ref directory, as canonical git treats it',
+  () => {
+    const roots: string[] = [];
+    const restorers: Array<() => void> = [];
+
+    afterAll(async () => {
+      for (const restore of restorers) restore();
+      for (const root of roots) await rm(root, { recursive: true, force: true });
+    });
+
+    const newRepo = async (): Promise<{ dir: string; ctx: Context; commit: string }> => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-unreadable-dir-'));
+      roots.push(dir);
+      runGit(['init', '-q', '-b', 'main', dir]);
+      git(dir, 'config', 'user.name', 'A');
+      git(dir, 'config', 'user.email', 'a@x');
+      git(dir, 'config', 'commit.gpgsign', 'false');
+      disableAutoMaintenance(dir);
+      await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+      git(dir, 'add', '-A');
+      git(dir, 'commit', '-q', '-m', 'c1');
+      const commit = git(dir, 'rev-parse', 'HEAD').trim();
+      return { dir, ctx: createNodeContext({ workDir: dir }), commit };
+    };
+
+    const heads = (dir: string): string => path.join(dir, '.git', 'refs', 'heads');
+
+    /** A ref `refs/heads/d/x` whose directory `d/` then gets `mode`. */
+    const withDirAt = (dir: string, commit: string, mode: number, extra = 'd/x'): void => {
+      const target = path.join(heads(dir), path.dirname(extra));
+      mkdirSync(target, { recursive: true });
+      git(dir, 'update-ref', `refs/heads/${extra}`, commit);
+      chmodSync(target, mode);
+      restorers.push(() => chmodSync(target, RESTORED));
+    };
+
+    const lines = (out: string): ReadonlyArray<string> =>
+      out
+        .split('\n')
+        .filter((line) => line.length > 0)
+        .sort();
+
+    describe('Given refs/heads/d/ is unreadable', () => {
+      describe('When both tools list the refs', () => {
+        it('Then tsgit names what for-each-ref names', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          withDirAt(dir, commit, UNREADABLE);
+          const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
+          const sut = getListRefs(ctx);
+
+          // Act
+          const result = await sut();
+
+          // Assert
+          expect(result).toEqual(expected);
+          expect(expected).toEqual(['refs/heads/main']);
+        });
+
+        it('Then branchList names what branch -a names', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          withDirAt(dir, commit, UNREADABLE);
+          const expected = lines(git(dir, 'branch', '-a', '--format=%(refname)'));
+          const sut = branchList;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.branches.map((branch) => branch.name as string).sort()).toEqual(expected);
+        });
+
+        it('Then show-ref and rev-list --all agree with tsgit', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          withDirAt(dir, commit, UNREADABLE);
+          const expectedCount = Number(git(dir, 'rev-list', '--all', '--count').trim());
+          const sut = revList;
+
+          // Act
+          const result = await sut(ctx, { all: true, count: true });
+
+          // Assert
+          expect(result.count).toBe(expectedCount);
+          expect(lines(git(dir, 'show-ref')).length).toBe(1);
+        });
+      });
+
+      describe('When both tools pack refs', () => {
+        it('Then packed-refs is byte-identical', async () => {
+          // Arrange
+          const git1 = await newRepo();
+          const tsgit = await newRepo();
+          withDirAt(git1.dir, git1.commit, UNREADABLE);
+          withDirAt(tsgit.dir, tsgit.commit, UNREADABLE);
+          const sut = packRefs;
+
+          // Act
+          git(git1.dir, 'pack-refs', '--all');
+          await sut(tsgit.ctx);
+
+          // Assert
+          const read = (dir: string): string =>
+            readFileSync(path.join(dir, '.git', 'packed-refs'), 'utf8').replace(
+              /^[0-9a-f]{40}/gm,
+              'OID',
+            );
+          expect(read(tsgit.dir)).toBe(read(git1.dir));
+        });
+      });
+
+      describe('When both tools resolve the ref inside it', () => {
+        it('Then git dies and tsgit refuses with PERMISSION_DENIED', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          withDirAt(dir, commit, UNREADABLE);
+          const sut = resolveRef;
+
+          // Act
+          let gitStatus = 0;
+          try {
+            git(dir, 'rev-parse', '--verify', '-q', 'refs/heads/d/x');
+          } catch (err) {
+            gitStatus = (err as { status: number }).status;
+          }
+          let code: unknown;
+          try {
+            await sut(ctx, 'refs/heads/d/x' as RefName);
+          } catch (err) {
+            code = (err as { data?: { code?: string } }).data?.code;
+          }
+
+          // Assert
+          expect(gitStatus).not.toBe(0);
+          expect(code).toBe('PERMISSION_DENIED');
+        });
+      });
+    });
+
+    describe('Given refs/heads/a/ and refs/heads/z/ bracket a readable ref', () => {
+      describe.each([
+        { label: 'first', dir: 'a/x' },
+        { label: 'last', dir: 'z/x' },
+      ])('When the $label directory is unreadable', (row) => {
+        it('Then tsgit names what for-each-ref names', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          git(dir, 'update-ref', 'refs/heads/a/x', commit);
+          git(dir, 'update-ref', 'refs/heads/z/x', commit);
+          withDirAt(dir, commit, UNREADABLE, row.dir);
+          const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
+          const sut = getListRefs(ctx);
+
+          // Act
+          const result = await sut();
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+      });
+    });
+
+    describe('Given refs/heads is itself unreadable', () => {
+      describe('When both tools list the refs', () => {
+        it('Then tsgit names what for-each-ref names', async () => {
+          // Arrange
+          const { dir, ctx } = await newRepo();
+          git(dir, 'update-ref', 'refs/tags/t', 'HEAD');
+          chmodSync(heads(dir), UNREADABLE);
+          restorers.push(() => chmodSync(heads(dir), RESTORED));
+          const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
+          const sut = getListRefs(ctx);
+
+          // Act
+          const result = await sut();
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+      });
+    });
+
+    describe('Given d/x is also packed while refs/heads/d/ is unreadable', () => {
+      describe('When both tools list the refs', () => {
+        it('Then the packed ref is still named', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          git(dir, 'update-ref', 'refs/heads/d/x', commit);
+          git(dir, 'pack-refs', '--all');
+          mkdirSync(path.join(heads(dir), 'd'), { recursive: true });
+          chmodSync(path.join(heads(dir), 'd'), UNREADABLE);
+          restorers.push(() => chmodSync(path.join(heads(dir), 'd'), RESTORED));
+          const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
+          const sut = getListRefs(ctx);
+
+          // Act
+          const result = await sut();
+
+          // Assert
+          expect(result).toEqual(expected);
+          expect(expected).toContain('refs/heads/d/x');
+        });
+      });
+    });
+
+    describe('Given a symlink to an unreadable directory under refs/heads', () => {
+      describe('When both tools list the refs', () => {
+        it('Then tsgit names what for-each-ref names', async () => {
+          // Arrange
+          const { dir, ctx, commit } = await newRepo();
+          withDirAt(dir, commit, UNREADABLE);
+          symlinkSync(path.join(heads(dir), 'd'), path.join(heads(dir), 'link'));
+          const expected = lines(git(dir, 'for-each-ref', '--format=%(refname)'));
+          const sut = getListRefs(ctx);
+
+          // Act
+          const result = await sut();
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+      });
+    });
+
+    describe('Given an unreferenced commit named only by a ref in an unreadable directory', () => {
+      const orphan = async (mode: number): Promise<{ dir: string; ctx: Context; id: string }> => {
+        const repo = await newRepo();
+        git(repo.dir, 'config', 'gc.pruneExpire', 'now');
+        const tree = git(repo.dir, 'rev-parse', 'HEAD^{tree}').trim();
+        const id = git(repo.dir, 'commit-tree', tree, '-m', 'orphan').trim();
+        git(repo.dir, '-c', 'core.logAllRefUpdates=false', 'update-ref', 'refs/heads/d/x', id);
+        git(repo.dir, 'update-ref', '-d', 'HEAD');
+        const target = path.join(heads(repo.dir), 'd');
+        chmodSync(target, mode);
+        restorers.push(() => chmodSync(target, RESTORED));
+        return { ...repo, id };
+      };
+      const exists = (dir: string, id: string): boolean => {
+        try {
+          git(dir, 'cat-file', '-t', id);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      describe('When gc prunes at mode 000', () => {
+        it('Then git and tsgit both complete and the object is gone', async () => {
+          // Arrange
+          const g = await orphan(UNREADABLE);
+          const t = await orphan(UNREADABLE);
+          const sut = maintenance;
+
+          // Act
+          git(g.dir, 'gc', '-q');
+          const result = await sut(t.ctx, { tasks: ['gc'] });
+
+          // Assert
+          expect(result.tasksFailed).toEqual([]);
+          chmodSync(path.join(heads(g.dir), 'd'), RESTORED);
+          chmodSync(path.join(heads(t.dir), 'd'), RESTORED);
+          expect(exists(g.dir, g.id)).toBe(false);
+          expect(exists(t.dir, t.id)).toBe(false);
+        });
+      });
+
+      describe('When gc prunes at mode 0400', () => {
+        it('Then git dies and tsgit does not complete, keeping the object', async () => {
+          // Arrange
+          const g = await orphan(READABLE_NOT_SEARCHABLE);
+          const t = await orphan(READABLE_NOT_SEARCHABLE);
+          const sut = maintenance;
+
+          // Act
+          let gitStatus = 0;
+          try {
+            git(g.dir, 'gc', '-q');
+          } catch (err) {
+            gitStatus = (err as { status: number }).status;
+          }
+          const outcome = await sut(t.ctx, { tasks: ['gc'] }).then(
+            (result) => result.tasksFailed.length > 0,
+            () => true,
+          );
+
+          // Assert
+          chmodSync(path.join(heads(g.dir), 'd'), RESTORED);
+          chmodSync(path.join(heads(t.dir), 'd'), RESTORED);
+          expect(gitStatus).toBe(128);
+          expect(outcome).toBe(true);
+          expect(exists(g.dir, g.id)).toBe(true);
+          expect(exists(t.dir, t.id)).toBe(true);
+        });
+      });
+    });
+  },
+);

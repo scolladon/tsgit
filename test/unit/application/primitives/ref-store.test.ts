@@ -4208,3 +4208,123 @@ describe('ref-store — a loose miss under a Windows-shaped file system', () => 
     });
   });
 });
+
+describe('Given loose ref directories one of which cannot be read', () => {
+  const ID = 'a'.repeat(40) as ObjectId;
+  const deniedDirs = async (
+    dirs: ReadonlyArray<string>,
+    refs: ReadonlyArray<string>,
+    packedRefs: ReadonlyArray<string> = [],
+  ): Promise<Context> => {
+    const base = await buildSeededContext({
+      refs: refs.map((name) => ({ name: name as RefName, id: ID })),
+      packedRefs: packedRefs.map((name) => ({ name: name as RefName, id: ID })),
+    });
+    return {
+      ...base,
+      fs: {
+        ...base.fs,
+        readdir: async (path: string) => {
+          if (dirs.includes(path)) throw permissionDenied(path);
+          return base.fs.readdir(path);
+        },
+      },
+    };
+  };
+
+  describe.each([
+    { label: 'first', dir: 'a', refs: ['a/x', 'b/y', 'z/w'], expected: ['b/y', 'z/w'] },
+    { label: 'last', dir: 'z', refs: ['a/x', 'b/y', 'z/w'], expected: ['a/x', 'b/y'] },
+    { label: 'nested', dir: 'd/e', refs: ['d/e/x', 'd/f'], expected: ['d/f'] },
+  ])('When listing names with the $label directory unreadable', (row) => {
+    it('Then its refs are absent and the rest listed', async () => {
+      // Arrange
+      const ctx = await deniedDirs(
+        [`/repo/.git/refs/heads/${row.dir}`],
+        row.refs.map((name) => `refs/heads/${name}`),
+      );
+      const sut = createRefStore(ctx);
+
+      // Act
+      const result = await sut.listRefNames();
+
+      // Assert
+      expect(result).toEqual(row.expected.map((name) => `refs/heads/${name}`));
+    });
+  });
+
+  describe('When listing names with refs/heads itself unreadable', () => {
+    it('Then the other roots are still listed', async () => {
+      // Arrange
+      const ctx = await deniedDirs(['/repo/.git/refs/heads'], ['refs/heads/a', 'refs/tags/t']);
+      const sut = createRefStore(ctx);
+
+      // Act
+      const result = await sut.listRefNames();
+
+      // Assert
+      expect(result).toEqual(['refs/tags/t']);
+    });
+  });
+
+  describe('When listing with a packed ref under the unreadable directory', () => {
+    it('Then the packed ref is returned and the loose sibling is not', async () => {
+      // Arrange
+      const ctx = await deniedDirs(
+        ['/repo/.git/refs/heads/d'],
+        ['refs/heads/d/y'],
+        ['refs/heads/d/x'],
+      );
+      const sut = createRefStore(ctx);
+
+      // Act
+      const result = await sut.listRefs();
+
+      // Assert
+      expect(result.map((entry) => entry.name)).toEqual(['refs/heads/d/x']);
+    });
+  });
+
+  describe('When listing names through a symlinked directory that cannot be read', () => {
+    it('Then the link contributes nothing and the rest listed', async () => {
+      // Arrange
+      const ctx = await deniedDirs(['/repo/.git/refs/heads/d'], ['refs/heads/a']);
+      await ctx.fs.mkdir('/repo/.git/refs/heads/d');
+      await ctx.fs.symlink('/repo/.git/refs/heads/d', '/repo/.git/refs/heads/link');
+      const sut = createRefStore(ctx);
+
+      // Act
+      const result = await sut.listRefNames();
+
+      // Assert
+      expect(result).toEqual(['refs/heads/a']);
+    });
+  });
+
+  describe('When a directory read fails for any other reason', () => {
+    it('Then that failure propagates unchanged', async () => {
+      // Arrange
+      const fault = new Error('EIO');
+      const base = await buildSeededContext({
+        refs: [{ name: 'refs/heads/a' as RefName, id: ID }],
+      });
+      const ctx: Context = {
+        ...base,
+        fs: {
+          ...base.fs,
+          readdir: async (path: string) => {
+            if (path === '/repo/.git/refs/heads') throw fault;
+            return base.fs.readdir(path);
+          },
+        },
+      };
+      const sut = createRefStore(ctx);
+
+      // Act
+      const outcome = sut.listRefNames();
+
+      // Assert
+      await expect(outcome).rejects.toBe(fault);
+    });
+  });
+});

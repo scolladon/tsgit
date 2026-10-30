@@ -105,8 +105,9 @@ export interface RefStore {
   /**
    * Every ref this backend knows, merged across the per-worktree and common
    * scopes, deduplicated, sorted by name. An optional `prefix` restricts the
-   * result to names starting with it (e.g. `refs/heads/`). A loose ref whose
-   * content fails to parse is silently excluded — {@link verifyIntegrity}
+   * result to names starting with it (e.g. `refs/heads/`). A loose directory
+   * that cannot be read is skipped, its refs absent, as git's iterator does. A
+   * loose ref whose content fails to parse is silently excluded — {@link verifyIntegrity}
    * reports it instead.
    */
   listRefs(prefix?: RefName): Promise<readonly RefEntry[]>;
@@ -114,7 +115,8 @@ export interface RefStore {
    * Every ref NAME this backend knows, merged across scopes, deduplicated,
    * sorted — {@link listRefs} without resolving a single one, for a caller
    * that only ever reads `.name` off the result. Deliberately unfiltered,
-   * unlike `listRefs`: a loose ref whose content fails to parse still
+   * unlike `listRefs` (and, like it, skipping a loose directory that cannot be
+   * read): a loose ref whose content fails to parse still
    * contributes its name here, because the files backend never opens the
    * file to find out.
    *
@@ -353,6 +355,8 @@ const HEAD_NAME: RefName = 'HEAD' as RefName;
  *  membership tests share, so a code-less failure misses every one of them. */
 // Stryker disable next-line StringLiteral: equivalent — no code set in this module contains the empty string, so any other sentinel is a non-member in exactly the same way.
 const errorCodeOf = (err: unknown): string => errorDataCode(err) ?? '';
+
+const PERMISSION_DENIED_CODE = 'PERMISSION_DENIED';
 
 /** The stat failures that mean "no directory here": the path, or a
  *  component above it, is absent or a regular file. */
@@ -974,9 +978,19 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   const entryKind = (entry: DirEntry): ListedKind => (entry.isDirectory ? 'directory' : 'ref');
 
+  /** git's loose iterator drops a directory it cannot open and carries on. */
+  async function readdirOrSkip(dir: string): Promise<ReadonlyArray<DirEntry>> {
+    try {
+      return await ctx.fs.readdir(dir);
+    } catch (err) {
+      if (errorCodeOf(err) === PERMISSION_DENIED_CODE) return [];
+      throw err;
+    }
+  }
+
   /** Recursively walk one `refs/**` root, composing slash-joined ref names as it descends. */
   async function walkRefDir(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
-    const entries = await ctx.fs.readdir(dir);
+    const entries = await readdirOrSkip(dir);
     const names: RefName[] = [];
     for (const entry of entries) {
       const path = `${dir}/${entry.name}`;
