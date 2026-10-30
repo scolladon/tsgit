@@ -8,6 +8,7 @@ const ROOT_REF_CHARS = /^[A-Z_-]+$/;
 const HEAD_NAME = 'HEAD';
 const HEAD_SUFFIX = '_HEAD';
 const REFS_PREFIX = 'refs/';
+const WORKTREES_PREFIX = 'worktrees/';
 
 /** Root refs whose names do not follow the `_HEAD` convention. */
 const IRREGULAR_ROOT_REFS: ReadonlySet<string> = new Set([
@@ -32,6 +33,8 @@ export const isRootRefName = (name: string): boolean =>
 export const isValidSymrefReferent = (referent: string): boolean =>
   isRootRefName(referent) || (referent.includes('/') && isSafeRefName(referent));
 
-/** True when `referent` is neither a root ref nor under `refs/`. */
+/** True when `referent` is neither a root ref nor under `refs/` or `worktrees/`. */
 export const isOutsideRefsNamespace = (referent: string): boolean =>
-  !isRootRefName(referent) && !referent.startsWith(REFS_PREFIX);
+  !isRootRefName(referent) &&
+  !referent.startsWith(REFS_PREFIX) &&
+  !referent.startsWith(WORKTREES_PREFIX);

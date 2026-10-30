@@ -48,7 +48,7 @@ describe('Given any root-ref characters ending in _HEAD that is not a pseudoref'
 
 describe('Given any referent', () => {
   describe('When isOutsideRefsNamespace runs', () => {
-    it('Then it holds exactly when the referent is neither a root ref nor under refs/', () => {
+    it('Then it holds exactly when the referent is neither a root ref nor under refs/ or worktrees/', () => {
       // Arrange
       const sut = isOutsideRefsNamespace;
 
@@ -59,9 +59,12 @@ describe('Given any referent', () => {
             fc.string(),
             ROOT_CHARS,
             COMPONENT.map((c) => `refs/${c}`),
+            COMPONENT.map((c) => `worktrees/${c}`),
           ),
           (r) => {
-            expect(sut(r)).toBe(!isRootRefName(r) && !r.startsWith('refs/'));
+            expect(sut(r)).toBe(
+              !isRootRefName(r) && !r.startsWith('refs/') && !r.startsWith('worktrees/'),
+            );
           },
         ),
         { numRuns: 100 },

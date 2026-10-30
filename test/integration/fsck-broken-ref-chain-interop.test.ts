@@ -643,6 +643,12 @@ const referentRows: ReadonlyArray<Row> = [
     config: { [NOT_A_REF]: 'error' },
     ...NO_REFERENCES,
   })),
+  ...['worktrees/foo/bar', 'worktrees/HEAD'].flatMap((referent) =>
+    sortedBothEnds(`symrefTargetIsNotARef as an error on ${referent}`, (name) => ({
+      refs: { [name]: `ref: ${referent}\n` },
+      config: { [NOT_A_REF]: 'error' },
+    })),
+  ),
   ...sortedBothEnds('symrefTargetIsNotARef under strict', (name) => ({
     refs: { [name]: 'ref: foo/bar\n' },
     ...STRICT,

@@ -129,25 +129,10 @@ describe('isValidSymrefReferent', () => {
 });
 
 describe('isOutsideRefsNamespace', () => {
-  describe('Given a referent that is neither a root ref nor under refs/', () => {
+  describe('Given a referent that is neither a root ref nor under refs/ or worktrees/', () => {
     describe('When isOutsideRefsNamespace runs', () => {
-      it.each(['foo/bar', 'main', 'FETCH_HEAD', 'FOO1_HEAD', ''])('Then "%s" is outside', (r) => {
-        // Arrange
-        const sut = isOutsideRefsNamespace;
-
-        // Act
-        const result = sut(r);
-
-        // Assert
-        expect(result).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a root ref or a refs/ path', () => {
-    describe('When isOutsideRefsNamespace runs', () => {
-      it.each(['HEAD', 'ORIG_HEAD', 'AUTO_MERGE', 'refs/foo', 'refs/heads/main'])(
-        'Then %s is inside',
+      it.each(['foo/bar', 'main', 'FETCH_HEAD', 'FOO1_HEAD', 'main-worktree/foo', 'worktrees', ''])(
+        'Then "%s" is outside',
         (r) => {
           // Arrange
           const sut = isOutsideRefsNamespace;
@@ -156,9 +141,32 @@ describe('isOutsideRefsNamespace', () => {
           const result = sut(r);
 
           // Assert
-          expect(result).toBe(false);
+          expect(result).toBe(true);
         },
       );
+    });
+  });
+
+  describe('Given a root ref, a refs/ path or a worktrees/ path', () => {
+    describe('When isOutsideRefsNamespace runs', () => {
+      it.each([
+        'HEAD',
+        'ORIG_HEAD',
+        'AUTO_MERGE',
+        'refs/foo',
+        'refs/heads/main',
+        'worktrees/foo/bar',
+        'worktrees/HEAD',
+      ])('Then %s is inside', (r) => {
+        // Arrange
+        const sut = isOutsideRefsNamespace;
+
+        // Act
+        const result = sut(r);
+
+        // Assert
+        expect(result).toBe(false);
+      });
     });
   });
 });
