@@ -1146,7 +1146,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/link/objects', CWD, 'darwin');
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/link/objects', CWD);
 
         // Assert
         expect(result).toEqual({ kind: 'resolved', path: '/repo/real/objects' });
@@ -1162,7 +1162,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/ghost', CWD, 'darwin');
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/ghost', CWD);
 
         // Assert
         expect(result).toEqual({ kind: 'resolved', path: '/repo/d/ghost' });
@@ -1178,7 +1178,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/missing/x', CWD, 'darwin');
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/missing/x', CWD);
 
         // Assert
         expect(result).toEqual({
@@ -1204,7 +1204,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = await sut(posixGitPathSyntax, probe, '/repo/file/x/y', CWD, 'darwin');
+        const result = await sut(posixGitPathSyntax, probe, '/repo/file/x/y', CWD);
 
         // Assert
         expect(result).toEqual({
@@ -1231,7 +1231,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = await sut(posixGitPathSyntax, probe, '/repo/d000/x', CWD, 'darwin');
+        const result = await sut(posixGitPathSyntax, probe, '/repo/d000/x', CWD);
 
         // Assert
         expect(result).toEqual({
@@ -1253,7 +1253,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = sut(posixGitPathSyntax, probe, '/repo/x', CWD, 'darwin');
+        const result = sut(posixGitPathSyntax, probe, '/repo/x', CWD);
 
         // Assert
         await expect(result).rejects.toBe(fault);
@@ -1271,7 +1271,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/a/objects', CWD, 'darwin');
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/a/objects', CWD);
 
         // Assert
         expect(result).toEqual({
@@ -1291,7 +1291,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = await sut(windowsGitPathSyntax, ctx.fs, '\\\\server', 'repo', 'win32');
+        const result = await sut(windowsGitPathSyntax, ctx.fs, '\\\\server', 'repo');
 
         // Assert
         expect(result).toEqual({ kind: 'failed', reason: 'ROOTLESS', path: '\\\\server' });
@@ -1300,13 +1300,28 @@ describe('realpathOutcome', () => {
   });
 
   describe.each([
-    { platform: 'linux', links: 21, kind: 'resolved' },
-    { platform: 'linux', links: 22, kind: 'failed' },
-    { platform: 'darwin', links: 22, kind: 'resolved' },
-    { platform: 'darwin', links: 33, kind: 'resolved' },
-    { platform: 'darwin', links: 34, kind: 'failed' },
-  ])('Given a chain of $links links', ({ platform, links, kind }) => {
-    describe('When realpathOutcome runs for $platform', () => {
+    { hopLimit: 20 as number | undefined, host: 'a limit of 20', links: 21, kind: 'resolved' },
+    { hopLimit: 20 as number | undefined, host: 'a limit of 20', links: 22, kind: 'failed' },
+    {
+      hopLimit: undefined as number | undefined,
+      host: 'no declared limit',
+      links: 22,
+      kind: 'resolved',
+    },
+    {
+      hopLimit: undefined as number | undefined,
+      host: 'no declared limit',
+      links: 33,
+      kind: 'resolved',
+    },
+    {
+      hopLimit: undefined as number | undefined,
+      host: 'no declared limit',
+      links: 34,
+      kind: 'failed',
+    },
+  ])('Given a chain of $links links', ({ hopLimit, links, kind }) => {
+    describe('When realpathOutcome runs with $host', () => {
       it('Then it is $kind', async () => {
         // Arrange
         const ctx = createMemoryContext({ files: { '/repo/end': new Uint8Array() } });
@@ -1316,7 +1331,7 @@ describe('realpathOutcome', () => {
         const sut = realpathOutcome;
 
         // Act
-        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/l1', CWD, platform);
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/l1', CWD, hopLimit);
 
         // Assert
         expect(result.kind).toBe(kind);

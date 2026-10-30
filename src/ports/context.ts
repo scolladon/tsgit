@@ -368,6 +368,11 @@ export interface Context {
    * Absent ⇒ `lf`.
    */
   readonly nativeEol?: 'lf' | 'crlf';
+  /**
+   * How many nested symlinks the host's `realpath` follows before it gives up (git's symlink-limit
+   * macro), supplied by the platform adapter. Absent ⇒ git's non-Linux fallback of 32.
+   */
+  readonly symlinkHopLimit?: number;
 }
 
 export interface CreateContextParts {
@@ -383,6 +388,7 @@ export interface CreateContextParts {
   readonly deltaCache: LruCache<ObjectContent>;
   readonly concurrency?: ConcurrencyLimits;
   readonly nativeEol?: 'lf' | 'crlf';
+  readonly symlinkHopLimit?: number;
   readonly cacheBudgets?: CacheBudgets;
   readonly config?: RepositoryConfig;
   readonly logger?: Logger;

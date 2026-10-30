@@ -292,6 +292,8 @@ export interface RuntimeFallback {
   readonly concurrency?: ConcurrencyLimits;
   /** The host's native line ending; absent on runtimes whose native ending is `lf`. */
   readonly nativeEol?: Context['nativeEol'];
+  /** The host's symlink hop limit; absent on runtimes that take git's non-Linux default. */
+  readonly symlinkHopLimit?: Context['symlinkHopLimit'];
   /**
    * Optional explicit overrides for the derived object caches' budgets,
    * built by the entry point from its own option surface. Absent when the
@@ -518,6 +520,7 @@ interface OptionalCtxInputs {
   readonly ssh: SshTransport | undefined;
   readonly concurrency: ConcurrencyLimits | undefined;
   readonly nativeEol: Context['nativeEol'];
+  readonly symlinkHopLimit: Context['symlinkHopLimit'];
   readonly cacheBudgets: Context['cacheBudgets'];
   readonly windowsPathSyntax: boolean | undefined;
   readonly windowsIndexPaths: boolean | undefined;
@@ -539,6 +542,7 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
   ...(inputs.concurrency !== undefined ? { concurrency: inputs.concurrency } : {}),
   ...(inputs.nativeEol !== undefined ? { nativeEol: inputs.nativeEol } : {}),
+  ...(inputs.symlinkHopLimit !== undefined ? { symlinkHopLimit: inputs.symlinkHopLimit } : {}),
   ...(inputs.cacheBudgets !== undefined ? { cacheBudgets: inputs.cacheBudgets } : {}),
   ...(inputs.windowsPathSyntax !== undefined
     ? { windowsPathSyntax: inputs.windowsPathSyntax }
@@ -746,6 +750,7 @@ export const openRepository = async (
       ssh: fallback.ssh,
       concurrency: fallback.concurrency,
       nativeEol: fallback.nativeEol,
+      symlinkHopLimit: fallback.symlinkHopLimit,
       cacheBudgets: fallback.cacheBudgets,
       windowsPathSyntax: hostHooks.windowsPathSyntax,
       windowsIndexPaths: fallback.windowsIndexPaths,

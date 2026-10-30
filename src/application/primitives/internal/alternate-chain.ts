@@ -13,23 +13,14 @@ import type { GitPathSyntax } from './git-path-syntax.js';
 /**
  * git's nested-symlink limit is the platform header's symlink-limit macro — glibc and musl say 20, git
  * falls back to 32 elsewhere; its post-increment check lets one more link through than the limit.
+ * The adapter supplies its host's value; this is git's fallback for a host that declares none.
  */
-const SYMLINK_LIMIT_LINUX = 20;
-const SYMLINK_LIMIT_DEFAULT = 32;
-const LINUX = 'linux';
-const NO_PLATFORM = '';
+export const DEFAULT_SYMLINK_HOP_LIMIT = 32;
 const FILE_NOT_FOUND = 'FILE_NOT_FOUND';
 const NOT_A_DIRECTORY = 'NOT_A_DIRECTORY';
 const PERMISSION_DENIED = 'PERMISSION_DENIED';
 const SYMLINK_LOOP = 'SYMLINK_LOOP';
 const ROOTLESS = 'ROOTLESS';
-
-const symlinkLimitOf = (platform: string): number =>
-  platform === LINUX ? SYMLINK_LIMIT_LINUX : SYMLINK_LIMIT_DEFAULT;
-
-/** The platform the library runs on; none where there is no `process` (a browser). */
-export const hostPlatform = (): string =>
-  typeof process === 'undefined' ? NO_PLATFORM : process.platform;
 
 export type RealpathFailureReason =
   | typeof FILE_NOT_FOUND
@@ -160,13 +151,13 @@ export const realpathOutcome = async (
   probe: AlternatePathProbe,
   path: string,
   cwd: string,
-  platform: string = hostPlatform(),
+  hopLimit: number = DEFAULT_SYMLINK_HOP_LIMIT,
 ): Promise<RealpathOutcome> => {
   // Stryker disable next-line StringLiteral: equivalent — startAt sets root through restartAt before any read, else returns undefined
   const walk: Walk = {
     syntax,
     input: path,
-    limit: symlinkLimitOf(platform),
+    limit: hopLimit,
     root: '',
     names: [],
     pending: [],
@@ -189,9 +180,9 @@ export const realpathAllowingMissingLeaf = async (
   probe: AlternatePathProbe,
   path: string,
   cwd: string,
-  platform: string = hostPlatform(),
+  hopLimit: number = DEFAULT_SYMLINK_HOP_LIMIT,
 ): Promise<string | undefined> => {
-  const outcome = await realpathOutcome(syntax, probe, path, cwd, platform);
+  const outcome = await realpathOutcome(syntax, probe, path, cwd, hopLimit);
   if (outcome.kind === 'resolved') return outcome.path;
   if (outcome.reason === PERMISSION_DENIED) throw outcome.cause;
   return undefined;
@@ -437,9 +428,10 @@ const primaryRealpath = async (
   io: AlternateChainIo,
   raw: string,
   cwd: string,
+  hopLimit: number | undefined,
 ): Promise<string | undefined> => {
   try {
-    return await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw, cwd);
+    return await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw, cwd, hopLimit);
   } catch (error) {
     if (errorDataCode(error) === undefined) throw error;
     return undefined;
@@ -470,7 +462,7 @@ export const resolveObjectSources = async (
 }> => {
   const raw = `${commonGitDir(ctx)}/objects`;
   const cwd = ctx.layout.workDir ?? ctx.cwd;
-  const primary = (await primaryRealpath(io, raw, cwd)) ?? raw;
+  const primary = (await primaryRealpath(io, raw, cwd, ctx.symlinkHopLimit)) ?? raw;
   const key = (await readIgnoreCase(ctx)) ? asciiLower : (path: string) => path;
   const resolution = startResolution({ ctx, io, key, cwd }, primary, options);
   const entries =

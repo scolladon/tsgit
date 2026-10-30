@@ -12,7 +12,7 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { nativeLineEndingFor } from '../../src/adapters/node/node-adapter.js';
+import { nativeLineEndingFor, symlinkHopLimitFor } from '../../src/adapters/node/node-adapter.js';
 import { NodeSshTransport } from '../../src/adapters/node/node-ssh-transport.js';
 import { parsedObjectMemoFor } from '../../src/application/primitives/internal/object-caches.js';
 import { TsgitError } from '../../src/domain/index.js';
@@ -728,6 +728,24 @@ describe('Given a directory whose HEAD is a dangling symlink into refs/', () => 
       } finally {
         await rm(tmp, { recursive: true, force: true });
       }
+    });
+  });
+});
+
+describe('Node shim — symlink hop limit', () => {
+  describe('Given a repository opened through the node entry', () => {
+    describe('When reading ctx.symlinkHopLimit', () => {
+      it('Then it equals symlinkHopLimitFor(process.platform)', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ cwd: tmpdir });
+
+        try {
+          // Assert
+          expect(sut.ctx.symlinkHopLimit).toBe(symlinkHopLimitFor(process.platform));
+        } finally {
+          await sut.dispose();
+        }
+      });
     });
   });
 });

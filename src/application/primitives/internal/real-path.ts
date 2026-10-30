@@ -16,8 +16,20 @@ const probeOf = (ctx: Context, absolute: string) =>
  * chain cannot be resolved (a loop, a link into nowhere, a component under a file).
  */
 export const realPathOf = (ctx: Context, absolute: string): Promise<string | undefined> =>
-  realpathAllowingMissingLeaf(gitPathSyntaxOf(ctx), probeOf(ctx, absolute), absolute, absolute);
+  realpathAllowingMissingLeaf(
+    gitPathSyntaxOf(ctx),
+    probeOf(ctx, absolute),
+    absolute,
+    absolute,
+    ctx.symlinkHopLimit,
+  );
 
 /** {@link realPathOf} that says where and why the chain stopped. */
 export const realPathOutcomeOf = (ctx: Context, absolute: string): Promise<RealpathOutcome> =>
-  realpathOutcome(gitPathSyntaxOf(ctx), probeOf(ctx, absolute), absolute, absolute);
+  realpathOutcome(
+    gitPathSyntaxOf(ctx),
+    probeOf(ctx, absolute),
+    absolute,
+    absolute,
+    ctx.symlinkHopLimit,
+  );
