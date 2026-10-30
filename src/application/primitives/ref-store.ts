@@ -386,6 +386,14 @@ const errorCodeOf = (err: unknown): string => errorDataCode(err) ?? '';
 
 const PERMISSION_DENIED_CODE = 'PERMISSION_DENIED';
 
+/** What reading one loose ref file for the integrity walk met. */
+type LooseReadOutcome =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'read'; readonly raw: string }
+  | { readonly kind: 'refused'; readonly finding: RefIntegrityFinding };
+
+const ABSENT_READ: LooseReadOutcome = { kind: 'absent' };
+
 /** The stat failures that mean "no directory here": the path, or a
  *  component above it, is absent or a regular file. */
 const NOT_A_DIRECTORY_PATH_CODES: ReadonlySet<string> = new Set([
@@ -1302,21 +1310,26 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  and the walk carries on; the `lstat` proves the entry exists, as the open's refusal
    *  alone cannot tell a denied file from a denied directory above it; an `lstat` the
    *  permissions refuse too is git's `failed to stat`. */
-  async function readLooseContentOrRefusal(
-    name: RefName,
-  ): Promise<string | undefined | RefIntegrityFinding> {
+  async function readLooseContentOrRefusal(name: RefName): Promise<LooseReadOutcome> {
     try {
-      return await readLooseContent(name);
+      const raw = await readLooseContent(name);
+      return raw === undefined ? ABSENT_READ : { kind: 'read', raw };
     } catch (err) {
-      if (errorCodeOf(err) !== 'PERMISSION_DENIED') throw err;
+      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
       const path = looseRefPath(refDir(name), name);
       try {
         await ctx.fs.lstat(path);
       } catch (statErr) {
         if (errorCodeOf(statErr) !== PERMISSION_DENIED_CODE) throw statErr;
-        return { msgId: 'unreadableRefPath', operation: 'stat', path };
+        return {
+          kind: 'refused',
+          finding: { msgId: 'unreadableRefPath', operation: 'stat', path },
+        };
       }
-      return { ref: name, msgId: 'cannotReadRef', path, reason: 'PERMISSION_DENIED' };
+      return {
+        kind: 'refused',
+        finding: { ref: name, msgId: 'cannotReadRef', path, reason: PERMISSION_DENIED_CODE },
+      };
     }
   }
 
@@ -1328,10 +1341,10 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  against its scan-scoped universe once no `badRefContent` finding has
    *  already flagged this ref. */
   async function looseBodyFindings(name: RefName): Promise<readonly RefIntegrityFinding[]> {
-    const raw = await readLooseContentOrRefusal(name);
-    if (typeof raw === 'object') return [raw];
-    if (raw === undefined) return [];
-    const body = readLooseBody(raw, ctx.hashConfig.hexLength);
+    const outcome = await readLooseContentOrRefusal(name);
+    if (outcome.kind === 'refused') return [outcome.finding];
+    if (outcome.kind === 'absent') return [];
+    const body = readLooseBody(outcome.raw, ctx.hashConfig.hexLength);
     if (body.kind === 'unparseable') return [{ ref: name, msgId: 'badRefContent' }];
     if (body.kind === 'symbolic') {
       return [...symbolicBodyNotices(name, body), ...referentFindings(name, body.referent)];
@@ -1385,7 +1398,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function rootRefFindings(): Promise<readonly RefIntegrityFinding[]> {
     const findings: RefIntegrityFinding[] = [];
     for (const entry of await readdirInOsOrder(ctx.layout.gitDir)) {
-      if (entry.isDirectory || !isRootRefName(entry.name)) continue;
+      if (!isRootRefName(entry.name)) continue;
       findings.push(...(await looseBodyFindings(entry.name as RefName)));
     }
     return findings;

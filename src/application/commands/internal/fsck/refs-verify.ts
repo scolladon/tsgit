@@ -315,6 +315,15 @@ const unreadableHeadFinding = ({ ref, path }: UnreadableHead): BadRefFinding => 
   reason: 'PERMISSION_DENIED',
 });
 
+/** How the snapshot's targets are judged present, and whether the unreadable HEADs count. */
+interface PresenceCheck {
+  readonly universe: ReadonlySet<ObjectId>;
+  readonly check: RefTargetCheck;
+  readonly promised: ReadonlySet<ObjectId>;
+  readonly parses: ParseCheck;
+  readonly checkContentFormat: boolean;
+}
+
 /** Every ref — symbolic ones through their chain, every worktree's HEAD
  *  included — naming an object the universe does not hold and no promisor
  *  pack promises: git's `invalid sha1 pointer`. When every snapshotted ref
@@ -323,12 +332,9 @@ async function collectAbsentTargets(
   ctx: Context,
   entries: RefEntries,
   names: ReadonlyArray<RefName>,
-  universe: ReadonlySet<ObjectId>,
-  check: RefTargetCheck,
-  promised: ReadonlySet<ObjectId>,
-  parses: ParseCheck,
-  checkContentFormat: boolean,
+  presence: PresenceCheck,
 ): Promise<PassResult> {
+  const { universe, check, promised, parses, checkContentFormat } = presence;
   const { targets, unreadable: snapshotUnreadable } = await snapshotTargets(ctx, entries, names);
   const unreadable = checkContentFormat ? snapshotUnreadable : [];
   const unreadableFindings = unreadable.map(unreadableHeadFinding);
@@ -379,16 +385,13 @@ export async function runRefsVerifyPass(
 
   const badContent = collectContentNotices(integrityFindings, checkContentFormat, severities);
   const walkEnd = collectWalkEnd(integrityFindings, checkContentFormat);
-  const absent = await collectAbsentTargets(
-    ctx,
-    entries,
-    names,
+  const absent = await collectAbsentTargets(ctx, entries, names, {
     universe,
     check,
     promised,
     parses,
     checkContentFormat,
-  );
+  });
 
   return {
     findings: [...badContent.findings, ...walkEnd.findings, ...absent.findings],
