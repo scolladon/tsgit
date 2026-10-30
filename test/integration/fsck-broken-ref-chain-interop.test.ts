@@ -16,7 +16,7 @@ import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { createNodeContext, symlinkHopLimitFor } from '../../src/adapters/node/node-adapter.js';
 import { type FsckOptions, type FsckResult, fsck } from '../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import { openRepository } from '../../src/index.node.js';
@@ -32,9 +32,7 @@ const UNPRIVILEGED = POSIX && process.getuid?.() !== 0;
 const REFUSED = 0o000;
 const RESTORED = 0o755;
 const LINKED_ID = 'wt';
-const DARWIN = process.platform === 'darwin';
-const LOOP_TEXT = /^fatal: .*nested symlinks|^fatal: .*Too many levels/;
-const HOP_CAP = 32;
+const HOP_CAP = symlinkHopLimitFor(process.platform);
 
 type Fill = (text: string) => string;
 
@@ -861,6 +859,19 @@ const listableOnlyRows: ReadonlyArray<Row> = [
 ];
 
 /** Links whose realpath dies: git's `refs verify` child ends there, whatever follows. */
+const CHAIN_LENGTH = 25;
+
+/** A chain of links that resolves under a cap of 32 hops and dies under a cap of 20. */
+const hopChain = (length: number): Pick<Row, 'links' | 'besideLinks'> => ({
+  links: { z: '{dir}/hop1' },
+  besideLinks: Object.fromEntries(
+    Array.from({ length }, (_, index) => [
+      `hop${index + 1}`,
+      index + 1 === length ? MAIN_REF : `{dir}/hop${index + 2}`,
+    ]),
+  ),
+});
+
 const dyingLinkRows: ReadonlyArray<Row> = [
   ...linkRows('L-DIE-mid, a link through an absent directory of the gitdir', 'absent-dir/x'),
   ...linkRows('L-DIE-abs, an absolute link through an absent directory', '{dir}/absent-dir/x'),
@@ -874,6 +885,18 @@ const dyingLinkRows: ReadonlyArray<Row> = [
     refs: { main: SHA },
     commit: true,
     links: { b: 'b' },
+  },
+  {
+    title: 'a chain of links longer than the platform hop limit of some systems',
+    refs: { main: SHA },
+    commit: true,
+    ...hopChain(CHAIN_LENGTH),
+  },
+  {
+    title: 'a chain of links longer than every platform hop limit',
+    refs: { main: SHA },
+    commit: true,
+    ...hopChain(HOP_CAP + 3),
   },
   {
     title: 'L-DIE-refs-nr, a dying link with references not checked',
@@ -1199,8 +1222,7 @@ interface ReportLines {
 }
 
 const reportLinesOf = (arranged: Arranged, result: FsckResult, row: Row): ReportLines => {
-  const comparable = (line: string): boolean =>
-    REPORT_LINE.test(line) && (DARWIN || !LOOP_TEXT.test(line));
+  const comparable = (line: string): boolean => REPORT_LINE.test(line);
   return {
     gitLines: gitReportLines(arranged.expected.stderr).filter(comparable),
     ourLines: rebuiltLines(result, row, arranged.dir, arranged.fill)
