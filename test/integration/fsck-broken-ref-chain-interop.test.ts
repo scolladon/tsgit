@@ -25,13 +25,16 @@ import { GIT_AVAILABLE, runGit, tryRunGitWithExit } from './interop-helpers.js';
 const SETUP_TIMEOUT = 60_000;
 const ABSENT_OID = '1'.repeat(40);
 const POINTER_LINE = /^error: .*: invalid sha1 pointer /;
-const REPORT_LINE = /^(error|warning|notice): /;
+const REPORT_LINE = /^(error|warning|notice|fatal): /;
 const TRAILING_BYTES = /[ \t\r\n]+$/;
 const POSIX = process.platform !== 'win32';
 const UNPRIVILEGED = POSIX && process.getuid?.() !== 0;
 const REFUSED = 0o000;
 const RESTORED = 0o755;
 const LINKED_ID = 'wt';
+const DARWIN = process.platform === 'darwin';
+const LOOP_TEXT = /^fatal: .*nested symlinks|^fatal: .*Too many levels/;
+const HOP_CAP = 32;
 
 type Fill = (text: string) => string;
 
@@ -55,6 +58,8 @@ interface Row {
   readonly besideRefused?: ReadonlyArray<string>;
   /** Symbolic links by path relative to the repository's top, to the link text. */
   readonly besideLinks?: Readonly<Record<string, string>>;
+  /** Loose symbolic links by name under `refs/tags/`, to the link text. */
+  readonly tagLinks?: Readonly<Record<string, string>>;
   /** Loose ref files by name under `refs/tags/`. */
   readonly tags?: Readonly<Record<string, string>>;
   /** Gitdir-relative paths whose mode is 000 once seeded. */
@@ -804,6 +809,40 @@ const linkedRefRows: ReadonlyArray<Row> = [
   }),
 ];
 
+const UNSEARCHABLE_DIR = 'd000';
+
+/** Links whose realpath dies: git's `refs verify` child ends there, whatever follows. */
+const dyingLinkRows: ReadonlyArray<Row> = [
+  ...linkRows('L-DIE-mid, a link through an absent directory of the gitdir', 'absent-dir/x'),
+  ...linkRows('L-DIE-abs, an absolute link through an absent directory', '{dir}/absent-dir/x'),
+  ...linkRows('L-DIE-refs, a link carrying a symref text', 'refs/heads/main'),
+  ...linkRows('a link through a ref file', 'main/x'),
+  ...linkRows('a link through an unsearchable directory', `{dir}/${UNSEARCHABLE_DIR}/x`, {
+    besideRefused: [UNSEARCHABLE_DIR],
+  }),
+  {
+    title: 'L-LOOP, a link to itself',
+    refs: { main: SHA },
+    commit: true,
+    links: { b: 'b' },
+  },
+  {
+    title: 'L-DIE-refs-nr, a dying link with references not checked',
+    refs: { main: SHA },
+    commit: true,
+    links: { z: 'absent-dir/x' },
+    ...NO_REFERENCES,
+  },
+  {
+    title: 'a dying tag link loses both root-ref notices',
+    refs: { main: SHA },
+    commit: true,
+    tagLinks: { z: '../heads/absent-dir/x' },
+    head: 'ref: refs/heads/main',
+    root: { BAR_HEAD: GARBAGE },
+  },
+];
+
 const roots: string[] = [];
 const refusedPaths: string[] = [];
 
@@ -842,6 +881,9 @@ const seedExtras = async (dir: string, row: Row, fill: Fill): Promise<void> => {
     await symlink(fill(target), path.join(gitDir, 'refs', 'heads', name));
   }
   await mkdir(path.join(gitDir, 'refs', 'tags'), { recursive: true });
+  for (const [name, target] of Object.entries(row.tagLinks ?? {})) {
+    await symlink(fill(target), path.join(gitDir, 'refs', 'tags', name));
+  }
   for (const [name, body] of Object.entries(row.tags ?? {})) {
     await writeFile(path.join(gitDir, 'refs', 'tags', name), fill(body));
   }
@@ -914,6 +956,21 @@ const LINKED_ADMIN = `${path.sep}.git${path.sep}worktrees${path.sep}`;
 const printedPath = (dir: string, file: string, row: Row): string =>
   row.via === 'gitdir' || file.includes(LINKED_ADMIN) ? file : path.relative(dir, file);
 
+const END_TEXT = {
+  FILE_NOT_FOUND: 'No such file or directory',
+  NOT_A_DIRECTORY: 'Not a directory',
+  PERMISSION_DENIED: 'Permission denied',
+} as const;
+
+/** git's last words when the realpath of a link fails; the loop text names git's own hop cap. */
+const endedLine = (
+  finding: Extract<FsckResult['findings'][number], { readonly type: 'refs-verify-ended' }>,
+  dir: string,
+): string =>
+  finding.reason === 'SYMLINK_LOOP'
+    ? `fatal: More than ${HOP_CAP} nested symlinks on path '${path.relative(dir, finding.path)}'`
+    : `fatal: Invalid path '${finding.path}': ${END_TEXT[finding.reason]}`;
+
 /** The same lines rebuilt from tsgit's findings; the seeded bodies stand for the content. */
 const rebuiltLines = (
   result: FsckResult,
@@ -929,6 +986,7 @@ const rebuiltLines = (
         ? [`warning: error opening directory '${shown}${path.sep}': Permission denied`]
         : [`warning: failed to stat '${shown}': Permission denied`];
     }
+    if (finding.type === 'refs-verify-ended') return [endedLine(finding, dir)];
     if (finding.type !== 'bad-ref') return [];
     const label = finding.severity === 'error' ? 'error' : 'warning';
     if (finding.msgId === 'badRefOid') {
@@ -1010,10 +1068,12 @@ const expectGitsLines = async (row: Row): Promise<void> => {
   const result = await sut(dir, row);
 
   // Assert
-  const gitLines = gitReportLines(expected.stderr);
+  const comparable = (line: string): boolean =>
+    REPORT_LINE.test(line) && (DARWIN || !LOOP_TEXT.test(line));
+  const gitLines = gitReportLines(expected.stderr).filter(comparable);
   const ourLines = rebuiltLines(result, row, dir, fill)
     .flatMap((line) => line.split('\n'))
-    .filter((line) => REPORT_LINE.test(line));
+    .filter(comparable);
   expect(result.exitCode).toBe(expected.exitCode);
   expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
   expect(othersOf(ourLines)).toEqual(othersOf(gitLines));
@@ -1080,6 +1140,21 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
   'Given a repository with a symbolic link as a loose ref',
   () => {
     describe.each(linkedRefRows)('$title', (row) => {
+      describe('When fsck runs', () => {
+        it(
+          'Then tsgit reports git’s lines and exit code',
+          async () => expectGitsLines(row),
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
+  'Given a repository with a symbolic link whose realpath dies',
+  () => {
+    describe.each(dyingLinkRows)('$title', (row) => {
       describe('When fsck runs', () => {
         it(
           'Then tsgit reports git’s lines and exit code',

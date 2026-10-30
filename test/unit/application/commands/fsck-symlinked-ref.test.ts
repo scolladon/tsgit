@@ -27,6 +27,8 @@ const AUTHOR: AuthorIdentity = {
 
 const SIDE = 'refs/heads/side' as RefName;
 const EXIT_CLEAN = 0;
+const EXIT_REFS_CONTENT = 8;
+const DYING = 'refs/heads/dying' as RefName;
 
 const tempRoots: string[] = [];
 
@@ -171,7 +173,7 @@ describe('fsck — a loose ref that is a symbolic link', () => {
         it('Then the audit warns about the link and still exits clean', async () => {
           // Arrange
           const ctx = await seedRepository(build);
-          await ctx.fs.symlink(SIDE, gitPath(ctx, 'refs/heads/sym'));
+          await ctx.fs.symlink('side', gitPath(ctx, 'refs/heads/sym'));
           const sut = fsck;
 
           // Act
@@ -185,6 +187,67 @@ describe('fsck — a loose ref that is a symbolic link', () => {
             severity: 'warning',
           });
           expect(result.exitCode).toBe(EXIT_CLEAN);
+        });
+      });
+    });
+
+    describe('Given a link whose realpath dies in an absent directory', () => {
+      describe('When fsck audits it', () => {
+        it('Then the end of the refs walk is reported and the exit carries the refs bit', async () => {
+          // Arrange
+          const ctx = await seedRepository(build);
+          await ctx.fs.symlink('absent-dir/x', gitPath(ctx, 'refs/heads/dying'));
+          const sut = fsck;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.findings).toContainEqual({
+            type: 'refs-verify-ended',
+            ref: DYING,
+            path: expect.stringMatching(/\/\.git\/refs\/heads\/absent-dir$/),
+            reason: 'FILE_NOT_FOUND',
+          });
+          expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+        });
+      });
+
+      describe('When fsck audits it without checking references', () => {
+        it('Then neither the end of the walk nor its exit bit is reported', async () => {
+          // Arrange
+          const ctx = await seedRepository(build);
+          await ctx.fs.symlink('absent-dir/x', gitPath(ctx, 'refs/heads/dying'));
+          const sut = fsck;
+
+          // Act
+          const result = await sut(ctx, { checkReferences: false });
+
+          // Assert
+          expect(result.findings.map((finding) => finding.type)).not.toContain('refs-verify-ended');
+          expect(result.exitCode).toBe(EXIT_CLEAN);
+        });
+      });
+
+      describe('When fsck audits it beside a ref naming an absent object', () => {
+        it('Then the pointer finding of that ref still stands', async () => {
+          // Arrange
+          const ctx = await seedRepository(build);
+          await ctx.fs.symlink('absent-dir/x', gitPath(ctx, 'refs/heads/dying'));
+          await ctx.fs.writeUtf8(gitPath(ctx, 'refs/heads/ghost'), `${'1'.repeat(40)}\n`);
+          const sut = fsck;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.findings).toContainEqual({
+            type: 'bad-ref',
+            ref: 'refs/heads/ghost',
+            msgId: 'badRefOid',
+            severity: 'error',
+            target: '1'.repeat(40),
+          });
         });
       });
     });

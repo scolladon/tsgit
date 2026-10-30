@@ -4,7 +4,8 @@
 //           and every pack, rev-index, bitmap and multi-pack-index fault
 // bit 2   = missing / broken-link / ref→absent-sha
 // bit 8   = refs-verify failure: an error-graded `bad-ref` content finding, or a loose ref
-//           file the permissions refuse (`cannotReadRef`); OR'd with the missing-entry-point
+//           file the permissions refuse (`cannotReadRef`), or the end of git's refs-verify
+//           walk on a symlinked ref it cannot resolve; OR'd with the missing-entry-point
 //           condition (no ref and no index entry resolves to a readable
 //           object anywhere in the repository — a whole-repository check,
 //           not a per-ref one)

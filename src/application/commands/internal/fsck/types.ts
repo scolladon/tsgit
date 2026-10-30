@@ -72,6 +72,15 @@ export type FsckFinding =
       readonly reason: 'PERMISSION_DENIED';
     }
   | {
+      /** git's `refs verify` child died on this symlinked ref: every content check after
+       *  it is lost, pointers stand. Gated by `checkReferences`; exit bit 8. */
+      readonly type: 'refs-verify-ended';
+      readonly ref: RefName;
+      /** Absolute, where the chain stopped. */
+      readonly path: string;
+      readonly reason: 'FILE_NOT_FOUND' | 'NOT_A_DIRECTORY' | 'PERMISSION_DENIED' | 'SYMLINK_LOOP';
+    }
+  | {
       /** A reflog side naming an object the run never recorded — git's
        *  `invalid reflog entry`; one per side, so a line can yield two. */
       readonly type: 'invalid-reflog-entry';

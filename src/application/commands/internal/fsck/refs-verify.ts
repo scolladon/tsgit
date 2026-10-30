@@ -15,8 +15,9 @@ import type { ParseCheck } from './verified-copies.js';
 
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
 type UnreadablePathFinding = FsckFinding & { readonly type: 'unreadable-ref-path' };
+type RefsVerifyEndedFinding = FsckFinding & { readonly type: 'refs-verify-ended' };
 type RefFinding = FsckFinding & {
-  readonly type: 'bad-ref' | 'no-default-references' | 'unreadable-ref-path';
+  readonly type: 'bad-ref' | 'no-default-references' | 'unreadable-ref-path' | 'refs-verify-ended';
 };
 
 const NO_DEFAULT_REFERENCES: RefFinding = { type: 'no-default-references' };
@@ -130,6 +131,20 @@ const unreadablePathFinding = ({
   reason: 'PERMISSION_DENIED',
 });
 
+const refsVerifyEndedFinding = ({
+  ref,
+  path,
+  reason,
+}: Extract<
+  RefIntegrityFinding,
+  { readonly msgId: 'refsVerifyEnded' }
+>): RefsVerifyEndedFinding => ({
+  type: 'refs-verify-ended',
+  ref,
+  path,
+  reason,
+});
+
 const CONTENT_MSG_IDS: ReadonlySet<string> = new Set([
   'badRefContent',
   'cannotReadRef',
@@ -235,6 +250,19 @@ function collectContentNotices(
     ? EXIT_REFS_CONTENT
     : 0;
   return { findings, exitBit };
+}
+
+/** The end of git's refs-verify walk on a link it cannot resolve: reported whatever the
+ *  findings before it, and it fails the verify. */
+function collectWalkEnd(
+  integrityFindings: ReadonlyArray<RefIntegrityFinding>,
+  checkContentFormat: boolean,
+): PassResult {
+  if (!checkContentFormat) return { findings: [], exitBit: 0 };
+  const findings = integrityFindings.flatMap((finding) =>
+    finding.msgId === 'refsVerifyEnded' ? [refsVerifyEndedFinding(finding)] : [],
+  );
+  return { findings, exitBit: findings.length > 0 ? EXIT_REFS_CONTENT : 0 };
 }
 
 const HEAD = 'HEAD' as RefName;
@@ -363,6 +391,7 @@ export async function runRefsVerifyPass(
 
   const symlinks = collectSymlinkNotices(integrityFindings, checkContentFormat, severities);
   const badContent = collectContentNotices(integrityFindings, checkContentFormat, severities);
+  const walkEnd = collectWalkEnd(integrityFindings, checkContentFormat);
   const absent = await collectAbsentTargets(
     ctx,
     entries,
@@ -375,7 +404,12 @@ export async function runRefsVerifyPass(
   );
 
   return {
-    findings: [...symlinks.findings, ...badContent.findings, ...absent.findings],
-    exitBit: symlinks.exitBit | badContent.exitBit | absent.exitBit,
+    findings: [
+      ...symlinks.findings,
+      ...badContent.findings,
+      ...walkEnd.findings,
+      ...absent.findings,
+    ],
+    exitBit: symlinks.exitBit | badContent.exitBit | walkEnd.exitBit | absent.exitBit,
   };
 }
