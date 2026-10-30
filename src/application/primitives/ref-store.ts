@@ -920,7 +920,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     // stop a followed link's absent target makes). Only the WRITE side turns
     // it into `'<p>' exists; cannot create '<n>'`.
     if (code === 'NOT_A_DIRECTORY') return BLOCKED_LEAF;
-    if (code === 'PERMISSION_DENIED' && (await ctx.fs.lstat(path)).isSymbolicLink) {
+    if (code === PERMISSION_DENIED_CODE && (await ctx.fs.lstat(path)).isSymbolicLink) {
       return SYMLINK_LEAF;
     }
     if (!PLAIN_READER_CODES.has(code)) throw err;
@@ -1744,7 +1744,8 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       await rename();
     } catch (err) {
-      if (errorDataCode(err) !== 'PERMISSION_DENIED' || !(await isDirectoryPath(path))) throw err;
+      if (errorDataCode(err) !== PERMISSION_DENIED_CODE || !(await isDirectoryPath(path)))
+        throw err;
       await clearDirectory(name, path);
       await rename();
     }
