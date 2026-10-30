@@ -113,6 +113,7 @@ export const fakeSyncFsOps = (overrides: Partial<SyncFsOperations> = {}): SyncFs
     statSync: vi.fn(throwEnoentSync),
     lstatSync: vi.fn(throwEnoentSync),
     readlinkSync: vi.fn(throwEnoentSync),
+    accessSync: vi.fn(throwEnoentSync),
     openSync: vi.fn(throwEnoentSync),
     fstatSync: vi.fn(throwEnoentSync),
     readSync: vi.fn(throwEnoentSync),

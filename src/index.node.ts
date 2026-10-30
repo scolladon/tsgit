@@ -284,16 +284,20 @@ const lstatFirstStat = async (
 /** Errnos meaning "git's `access(X_OK)` would say no": denied, absent, or a non-directory on the way. */
 const NOT_SEARCHABLE_ERRNOS: ReadonlySet<string> = new Set(['EACCES', 'ENOENT', 'ENOTDIR']);
 
-/** git's `access(path, X_OK)`; any errno outside the "no" set is a real fault and rethrows. */
-const searchable = async (p: string): Promise<boolean> => {
-  try {
-    await access(p, constants.X_OK);
-    return true;
-  } catch (err) {
-    if (NOT_SEARCHABLE_ERRNOS.has((err as NodeJS.ErrnoException).code ?? '')) return false;
-    throw err;
-  }
+/** An `access` refusal read as git reads it: "no" for the listed errnos, a real fault otherwise. */
+const refusalAsVerdict = (err: unknown): false => {
+  if (NOT_SEARCHABLE_ERRNOS.has((err as NodeJS.ErrnoException).code ?? '')) return false;
+  throw err;
 };
+
+/** git's `access(path, X_OK)`, on the sync fast path unless the repository opted out of it. */
+const searchable = (syncIo: SyncIoPolicy | undefined, p: string): Promise<boolean> =>
+  syncIo === undefined
+    ? access(p, constants.X_OK).then(() => true, refusalAsVerdict)
+    : runWithinBudget(syncIo.budget, () => syncIo.ops.accessSync(p, constants.X_OK)).then(
+        () => true,
+        refusalAsVerdict,
+      );
 
 /**
  * Builds the raw `node:fs/promises`- or sync-`fs`-backed `LayoutProbe`, plus
@@ -323,7 +327,7 @@ const createNodeLayoutProbe = (
           : runWithinBudget(syncIo.budget, () => syncIo.ops.readlinkSync(p, 'utf8')).catch(
               () => undefined,
             ),
-      isSearchable: searchable,
+      isSearchable: (p) => searchable(syncIo, p),
       isOwnedByCaller: ownedByCallerPredicate({
         // Effective uid, matching the port contract and git's own `geteuid()`.
         callerUid: () => process.geteuid?.() ?? process.getuid?.(),
