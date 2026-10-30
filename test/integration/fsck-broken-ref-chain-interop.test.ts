@@ -918,6 +918,13 @@ const dyingLinkRows: ReadonlyArray<Row> = [
 /** Rows whose lines depend on the order the operating system lists a directory in. */
 const osOrderRows: ReadonlyArray<Row> = [
   {
+    title: 'the same two links read from the main worktree',
+    refs: { main: SHA },
+    commit: true,
+    links: { abs: MAIN_REF, l: 'main' },
+    linked: true,
+  },
+  {
     title: 'two links whose referents git rejects, read from a linked worktree',
     refs: { main: SHA },
     commit: true,
