@@ -238,8 +238,10 @@ async function collectAbsentTargets(
   check: RefTargetCheck,
   promised: ReadonlySet<ObjectId>,
   parses: ParseCheck,
+  checkContentFormat: boolean,
 ): Promise<PassResult> {
-  const { targets, unreadable } = await snapshotTargets(ctx, entries, names);
+  const { targets, unreadable: snapshotUnreadable } = await snapshotTargets(ctx, entries, names);
+  const unreadable = checkContentFormat ? snapshotUnreadable : [];
   const unreadableFindings = unreadable.map(unreadableHeadFinding);
   const findings: RefFinding[] = [];
   for (const { ref, id } of targets) {
@@ -288,7 +290,16 @@ export async function runRefsVerifyPass(
 
   const symlinks = collectSymlinkNotices(integrityFindings, checkContentFormat, severities);
   const badContent = collectContentNotices(integrityFindings, checkContentFormat, severities);
-  const absent = await collectAbsentTargets(ctx, entries, names, universe, check, promised, parses);
+  const absent = await collectAbsentTargets(
+    ctx,
+    entries,
+    names,
+    universe,
+    check,
+    promised,
+    parses,
+    checkContentFormat,
+  );
 
   return {
     findings: [...symlinks.findings, ...badContent.findings, ...absent.findings],

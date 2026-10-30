@@ -313,6 +313,42 @@ const refusedRows: ReadonlyArray<Row> = [
     unreadable: ['ZED_HEAD'],
     commit: true,
   },
+  {
+    title: 'U-only, the only ref is unreadable',
+    refs: { main: SHA },
+    unreadable: [heads('main')],
+    commit: true,
+  },
+  {
+    title: 'HU, HEAD on an unreadable branch beside a healthy one',
+    refs: { main: SHA, keep: SHA },
+    head: HEAD_ON('main'),
+    unreadable: [heads('main')],
+    commit: true,
+  },
+  {
+    title: 'HU-nr, HEAD on an unreadable branch, references not checked',
+    refs: { main: SHA, keep: SHA },
+    head: HEAD_ON('main'),
+    unreadable: [heads('main')],
+    commit: true,
+    ...NO_REFERENCES,
+  },
+  {
+    title: 'W, a linked worktree HEAD is unreadable',
+    refs: { main: SHA },
+    unreadable: [`worktrees/${LINKED_ID}/HEAD`],
+    commit: true,
+    linked: true,
+  },
+  {
+    title: 'W-nr, a linked worktree HEAD is unreadable, references not checked',
+    refs: { main: SHA },
+    unreadable: [`worktrees/${LINKED_ID}/HEAD`],
+    commit: true,
+    linked: true,
+    ...NO_REFERENCES,
+  },
 ];
 
 const DIR_MODE_LISTABLE_ONLY = 0o400;
@@ -383,6 +419,21 @@ const dirRows: ReadonlyArray<Row> = [
     commit: true,
     ...NO_REFERENCES,
   },
+  {
+    title: 'DIR-HEADS, refs/heads itself is unreadable, HEAD symbolic',
+    refs: { main: SHA },
+    head: HEAD_ON('main'),
+    restricted: { 'refs/heads': REFUSED },
+    commit: true,
+  },
+  {
+    title: 'DIR-HEADS-nr, refs/heads itself is unreadable, HEAD symbolic, references not checked',
+    refs: { main: SHA },
+    head: HEAD_ON('main'),
+    restricted: { 'refs/heads': REFUSED },
+    commit: true,
+    ...NO_REFERENCES,
+  },
   ...sortedBothEnds('DIR-PK, a packed ref under an unreadable loose directory', (name) => ({
     refs: { main: SHA, [`${name}/y`]: SHA },
     packed: { [`${name}/x`]: '{commit}' },
@@ -400,12 +451,12 @@ const dirRows: ReadonlyArray<Row> = [
     commit: true,
     ...NO_REFERENCES,
   })),
-  ...sortedBothEnds('DIR-SRCH, a listable directory that cannot be searched', (name) => ({
+  ...sortedBothEnds('DIR-SEARCH, a listable directory that cannot be searched', (name) => ({
     refs: { main: SHA, [`${name}/x`]: SHA },
     restricted: { [heads(name)]: DIR_MODE_LISTABLE_ONLY },
     commit: true,
   })),
-  ...sortedBothEnds('DIR-SRCH-nr, references not checked', (name) => ({
+  ...sortedBothEnds('DIR-SEARCH-nr, references not checked', (name) => ({
     refs: { main: SHA, [`${name}/x`]: SHA },
     restricted: { [heads(name)]: DIR_MODE_LISTABLE_ONLY },
     commit: true,
