@@ -156,5 +156,92 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
         });
       },
     );
+
+    const commandOutcome = async (cwd: string, command: 'status' | 'log'): Promise<string> => {
+      try {
+        const repo = await openTrackedRepository({ cwd });
+        await (command === 'status' ? repo.status() : repo.log());
+        return 'OK';
+      } catch (err) {
+        return (err as { data?: { code?: string } }).data?.code ?? 'UNKNOWN';
+      }
+    };
+
+    const standalone = async (slug: string): Promise<string> => {
+      const dir = path.join(root, `standalone-${slug}`);
+      runGit(['init', '-q', '-b', 'main', dir]);
+      return dir;
+    };
+
+    describe.each(REFUSED_ROWS)('When a standalone repository has %s', (slug, shared, mode) => {
+      it.each(['status', 'log'] as const)(
+        'Then git exits 128 and tsgit %s refuses with NOT_A_REPOSITORY',
+        async (command) => {
+          // Arrange
+          const dir = await standalone(`${slug}-${command}`);
+          const sut = commandOutcome;
+
+          // Act
+          const result = await withMode(path.join(dir, '.git'), shared, mode, async () => ({
+            gitExit: tryRunGitWithExit(['-C', dir, 'status']).exitCode,
+            outcome: await sut(dir, command),
+          }));
+
+          // Assert
+          expect(result).toEqual({ gitExit: GIT_REFUSED, outcome: 'NOT_A_REPOSITORY' });
+        },
+      );
+    });
+
+    describe.each(ACCEPTED_ROWS.filter(([slug]) => slug === 'refs-0300'))(
+      'When a standalone repository has %s',
+      (slug, shared, mode) => {
+        it('Then git status exits 0 and tsgit status opens and succeeds', async () => {
+          // Arrange
+          const dir = await standalone(`${slug}-accepted`);
+          const sut = commandOutcome;
+
+          // Act
+          const result = await withMode(path.join(dir, '.git'), shared, mode, async () => ({
+            gitExit: tryRunGitWithExit(['-C', dir, 'status']).exitCode,
+            outcome: await sut(dir, 'status'),
+          }));
+
+          // Assert
+          expect(result).toEqual({ gitExit: GIT_ACCEPTED, outcome: 'OK' });
+        });
+      },
+    );
+
+    describe('When the directory holds no repository', () => {
+      it('Then tsgit status refuses with NOT_A_REPOSITORY', async () => {
+        // Arrange
+        const dir = path.join(root, 'plain-directory');
+        await mkdir(dir);
+        const sut = commandOutcome;
+
+        // Act
+        const result = await sut(dir, 'status');
+
+        // Assert
+        expect(result).toBe('NOT_A_REPOSITORY');
+      });
+    });
+
+    describe('When init runs in a fresh empty directory', () => {
+      it('Then it bootstraps a repository whose status succeeds', async () => {
+        // Arrange
+        const dir = path.join(root, 'fresh-init');
+        await mkdir(dir);
+        const repo = await openTrackedRepository({ cwd: dir });
+
+        // Act
+        await repo.init();
+        const result = await commandOutcome(dir, 'status');
+
+        // Assert
+        expect(result).toBe('OK');
+      });
+    });
   },
 );

@@ -108,10 +108,19 @@ const assertDiscoveryBooleansValid = async (ctx: Context): Promise<void> => {
  * gitDir IS the root).
  */
 export const assertRepository = async (ctx: Context): Promise<FilePath> => {
-  if (!(await hasUsableHead(ctx))) {
+  await assertGitDirUsable(ctx);
+  return await assertDiscoveryAndRoot(ctx);
+};
+
+/**
+ * The up-front `not a git repository` refusal: a bootstrap layout over an
+ * unsearchable gitdir (marked at open time, so a discovered layout pays no
+ * extra I/O) or a gitdir without a usable `HEAD`.
+ */
+const assertGitDirUsable = async (ctx: Context): Promise<void> => {
+  if (ctx.layout.unsearchableGitDir === true || !(await hasUsableHead(ctx))) {
     throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
-  return await assertDiscoveryAndRoot(ctx);
 };
 
 /**
@@ -398,9 +407,7 @@ export const assertOperationalRepository = async (ctx: Context): Promise<FilePat
 };
 
 const assertUsableHeadAndOpenEpoch = async (ctx: Context): Promise<void> => {
-  if (!(await hasUsableHead(ctx))) {
-    throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
-  }
+  await assertGitDirUsable(ctx);
   await openConfigEpoch(ctx);
 };
 

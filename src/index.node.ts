@@ -38,6 +38,7 @@ import type { RepositoryLayoutInput } from './repository/layout-input.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import {
   type ExplicitLayoutOptions,
+  markUnsearchableGitDir,
   resolveLayout,
   syntheticFallbackLayout,
 } from './repository/resolve-layout.js';
@@ -480,7 +481,11 @@ const resolveNodeLayout = async (
   if (resolved === undefined) {
     const gitDir = nodePath.join(cwd, '.git');
     return {
-      layout: syntheticFallbackLayout(gitDir, cwd, cwd, explicit, nativePolicy),
+      layout: await markUnsearchableGitDir(
+        syntheticFallbackLayout(gitDir, cwd, cwd, explicit, nativePolicy),
+        probe,
+        nativePolicy,
+      ),
       canonical: false,
     };
   }

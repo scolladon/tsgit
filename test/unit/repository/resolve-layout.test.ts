@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { posixPolicy, windowsPolicy } from '../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../src/domain/error.js';
+import type { LayoutProbe } from '../../../src/ports/layout-probe.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
-import { resolveLayout, syntheticFallbackLayout } from '../../../src/repository/resolve-layout.js';
+import {
+  markUnsearchableGitDir,
+  resolveLayout,
+  syntheticFallbackLayout,
+} from '../../../src/repository/resolve-layout.js';
 
 // `resolveLayout` composes the walk (`findLayout`) with the config-driven
 // work-tree precedence (Stage 3) and the bareness formula (Stage 4), plus
@@ -1577,6 +1582,88 @@ describe('resolveLayout', () => {
             refStorage: 'files',
           });
         });
+      });
+    });
+  });
+});
+
+describe('markUnsearchableGitDir', () => {
+  const layout = { gitDir: '/w/.git', workDir: '/w', bare: false, refStorage: 'files' } as const;
+  const DIR = { isDirectory: true, isFile: false, size: 0 };
+
+  /** A probe where `present` paths are directories and `locked` ones fail `isSearchable`. */
+  const probeOf = (present: ReadonlyArray<string>, locked: ReadonlyArray<string>): LayoutProbe => ({
+    stat: async (p) => (present.includes(p) ? DIR : undefined),
+    readUtf8: async () => undefined,
+    isSearchable: async (p) => !locked.includes(p),
+  });
+
+  describe.each(['refs', 'objects'])(
+    'Given an existing %s directory that is not searchable',
+    (shared) => {
+      describe('When the layout is marked', () => {
+        it('Then it carries unsearchableGitDir', async () => {
+          // Arrange
+          const sut = markUnsearchableGitDir;
+          const probe = probeOf(['/w/.git/refs', '/w/.git/objects'], [`/w/.git/${shared}`]);
+
+          // Act
+          const result = await sut(layout, probe, posixPolicy);
+
+          // Assert
+          expect(result).toEqual({ ...layout, unsearchableGitDir: true });
+        });
+      });
+    },
+  );
+
+  describe('Given searchable refs and objects directories', () => {
+    describe('When the layout is marked', () => {
+      it('Then it is returned unchanged', async () => {
+        // Arrange
+        const sut = markUnsearchableGitDir;
+        const probe = probeOf(['/w/.git/refs', '/w/.git/objects'], []);
+
+        // Act
+        const result = await sut(layout, probe, posixPolicy);
+
+        // Assert
+        expect(result).toBe(layout);
+      });
+    });
+  });
+
+  describe('Given refs and objects directories that do not exist', () => {
+    describe('When the layout is marked', () => {
+      it('Then it is returned unchanged so init and clone can bootstrap', async () => {
+        // Arrange
+        const sut = markUnsearchableGitDir;
+        const probe = probeOf([], ['/w/.git/refs', '/w/.git/objects']);
+
+        // Act
+        const result = await sut(layout, probe, posixPolicy);
+
+        // Assert
+        expect(result).toBe(layout);
+      });
+    });
+  });
+
+  describe('Given a probe without a searchability capability', () => {
+    describe('When the layout is marked', () => {
+      it('Then it is returned unchanged', async () => {
+        // Arrange
+        const sut = markUnsearchableGitDir;
+        const probe: LayoutProbe = {
+          stat: async () => DIR,
+          readUtf8: async () => undefined,
+        };
+
+        // Act
+        const result = await sut(layout, probe, posixPolicy);
+
+        // Assert
+        expect(result).toBe(layout);
       });
     });
   });

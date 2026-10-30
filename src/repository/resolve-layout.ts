@@ -261,6 +261,32 @@ export const syntheticFallbackLayout = (
   };
 };
 
+const SHARED_DIRECTORIES: ReadonlyArray<string> = ['objects', 'refs'];
+
+const isPresentButUnsearchable = async (probe: LayoutProbe, dir: string): Promise<boolean> =>
+  (await probe.stat(dir))?.isDirectory === true && (await probe.isSearchable?.(dir)) === false;
+
+/**
+ * Marks a found-nothing bootstrap layout whose `.git` holds an existing but
+ * unsearchable `objects/` or `refs/`: git's `is_git_directory` rejects such a
+ * gitdir, so read commands refuse it while `openRepository`, `init` and
+ * `clone` still bootstrap. An absent directory is not marked, so a fresh
+ * `init` target can still bootstrap. Called on the bootstrap path only, so a
+ * discovered layout pays no extra I/O.
+ */
+export const markUnsearchableGitDir = async (
+  layout: RepositoryLayoutInput,
+  probe: LayoutProbe,
+  pathPolicy: PathPolicy,
+): Promise<RepositoryLayoutInput> => {
+  for (const name of SHARED_DIRECTORIES) {
+    if (await isPresentButUnsearchable(probe, pathPolicy.join(layout.gitDir, name))) {
+      return { ...layout, unsearchableGitDir: true };
+    }
+  }
+  return layout;
+};
+
 /**
  * Stages 2–4 of layout resolution, given a structural `WalkOutcome` (from the
  * walk, the explicit route, or a fixed-entry shim that has no walk at all):
