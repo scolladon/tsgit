@@ -555,8 +555,8 @@ function isFileNotFound(err: unknown): boolean {
 
 /** The `parseLooseRef` mapping shared by every loose-content reader: `HEAD`'s file arm,
  *  `HEAD`'s read-through arm, and every other ref's loose file. */
-const fromLooseContent = (content: string): ResolveDirectResult => {
-  const parsed = parseLooseRef(content);
+const fromLooseContent = (content: string, hexLength: 40 | 64): ResolveDirectResult => {
+  const parsed = parseLooseRef(content, hexLength);
   return parsed.type === 'symbolic'
     ? { kind: 'symbolic', target: parsed.target }
     : { kind: 'direct', id: parsed.target };
@@ -584,17 +584,21 @@ const unparseableLooseContent = (name: RefName): TsgitError => invalidRef(`${nam
 const fromNamedContent = (
   name: RefName,
   content: string,
+  hexLength: 40 | 64,
   refusal: (name: RefName) => TsgitError,
 ): ResolveDirectResult => {
   try {
-    return fromLooseContent(content);
+    return fromLooseContent(content, hexLength);
   } catch {
     throw refusal(name);
   }
 };
 
-const fromFollowedContent = (name: RefName, content: string): ResolveDirectResult =>
-  fromNamedContent(name, content, unparseableFollowedContent);
+const fromFollowedContent = (
+  name: RefName,
+  content: string,
+  hexLength: 40 | 64,
+): ResolveDirectResult => fromNamedContent(name, content, hexLength, unparseableFollowedContent);
 
 /** Byte-wise total order over ref names, matching git's own ref ordering (never `localeCompare`). */
 const compareRefNames = (a: RefName, b: RefName): number => {
@@ -781,7 +785,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (head.kind === 'symlink') {
       return resolveSymlinkedRef(HEAD_NAME, `${ctx.layout.gitDir}/HEAD`, head.linkText);
     }
-    if (head.kind === 'file') return fromLooseContent(head.content);
+    if (head.kind === 'file') return fromLooseContent(head.content, ctx.hashConfig.hexLength);
     if (isFileNotFound(head.cause)) return MISSING;
     throw head.cause;
   }
@@ -810,7 +814,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function resolveFollowed(name: RefName, path: string): Promise<ResolveDirectResult> {
     try {
       if ((await ctx.fs.stat(path)).isDirectory) return MISSING;
-      return fromFollowedContent(name, await ctx.fs.readUtf8(path));
+      return fromFollowedContent(name, await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
     } catch (err) {
       if (isFileNotFound(err)) return MISSING;
       throw err;
@@ -945,7 +949,12 @@ function createFilesRefStore(ctx: Context): RefStore {
       return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
     }
     if (leaf.kind === 'content') {
-      return fromNamedContent(name, leaf.content, unparseableLooseContent);
+      return fromNamedContent(
+        name,
+        leaf.content,
+        ctx.hashConfig.hexLength,
+        unparseableLooseContent,
+      );
     }
     if (leaf.kind === 'blocked') return MISSING;
     return resolvePacked(name);

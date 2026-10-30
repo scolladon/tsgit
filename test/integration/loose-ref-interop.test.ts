@@ -12,14 +12,15 @@
  *                    the unrelated write succeeds and logs/HEAD is unchanged
  *   interopSurface: looseRef
  */
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { resolveRef } from '../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 /** Pinned author/committer date so two independently-initialised repos that
  *  each commit `--allow-empty` compute the SAME oid — required now that
@@ -120,6 +121,118 @@ describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
         expect(oursRefBytes).toEqual(peerRefBytes);
         expect(await readFile(path.join(peer, '.git/logs/HEAD'))).toEqual(logsHeadBefore.get(peer));
         expect(await readFile(path.join(ours, '.git/logs/HEAD'))).toEqual(logsHeadBefore.get(ours));
+      });
+    });
+  });
+});
+
+type BodyBuilder = (sha: string) => string;
+
+const BODY_ROWS: ReadonlyArray<readonly [string, BodyBuilder]> = [
+  ['UP', (sha) => `${sha.toUpperCase()}\n`],
+  ['MIX', (sha) => `${sha.slice(0, 20).toUpperCase()}${sha.slice(20)}\n`],
+  ['upper oid then garbage', (sha) => `${sha.toUpperCase()} garbage\n`],
+  ['GARB', (sha) => `${sha}garbage\n`],
+  ['SPG', (sha) => `${sha} garbage\n`],
+  ['oid tab garbage', (sha) => `${sha}\tgarbage\n`],
+  ['SP2', (sha) => `${sha}  \n`],
+  ['SPN', (sha) => `${sha} \n`],
+  ['CRLF', (sha) => `${sha}\r\n`],
+  ['NN', (sha) => `${sha}\n\n`],
+  ['TWO', (sha) => `${sha}\n${sha}\n`],
+  ['H39', (sha) => `${sha.slice(0, 39)}\n`],
+  ['H41', (sha) => `${sha}0\n`],
+  ['W64', (sha) => `${sha}${sha.slice(0, 24)}\n`],
+  ['VT', (sha) => `${sha}\v\n`],
+  ['oid without newline', (sha) => sha],
+  ['upper oid without newline', (sha) => sha.toUpperCase()],
+  ['oid garbage without newline', (sha) => `${sha} garbage`],
+  ['EMPTY', () => ''],
+  ['symref without newline', () => 'ref: refs/heads/main'],
+  ['symref trailing space', () => 'ref: refs/heads/main \n'],
+  ['symref CRLF', () => 'ref: refs/heads/main\r\n'],
+  ['symref double newline', () => 'ref: refs/heads/main\n\n'],
+  ['symref trailing space without newline', () => 'ref: refs/heads/main '],
+  ['symref referent garbage', () => 'ref: refs/heads/main garbage\n'],
+  ['R1', () => 'ref:refs/heads/main\n'],
+  ['R2', () => 'ref:  refs/heads/main\n'],
+  ['R3', () => 'ref:\trefs/heads/main\n'],
+  ['R4', () => 'ref: refs/heads/main \n'],
+  ['R5', () => 'ref: refs/heads/main\r\n'],
+  ['R6', () => 'ref: refs/heads/main\nextra\n'],
+  ['V1', () => 'ref:\vrefs/heads/main\n'],
+  ['V3', () => 'ref: refs/heads/main\v\n'],
+];
+
+const HEAD_ROWS: ReadonlyArray<readonly [string, BodyBuilder]> = [
+  ['HEAD oid then garbage', (sha) => `${sha} garbage\n`],
+  ['HEAD referent then 5000 spaces', () => `ref: refs/heads/main${' '.repeat(5000)}\n`],
+  ['HEAD symref without newline', () => 'ref: refs/heads/main'],
+];
+
+const verifyWithGit = (dir: string, name: string): string | undefined => {
+  const result = tryRunGitWithExit(['-C', dir, 'rev-parse', '--verify', '-q', name], {
+    env: runGitEnv(),
+  });
+  return result.exitCode === 0 ? result.stdout.trim() : undefined;
+};
+
+const verifyWithTsgit = async (dir: string, name: string): Promise<string | undefined> => {
+  const sut = createNodeContext({ workDir: dir });
+  try {
+    return await resolveRef(sut, name as RefName, { peel: false });
+  } catch {
+    return undefined;
+  }
+};
+
+describe.skipIf(!GIT_AVAILABLE)('loose-ref body grammar interop', () => {
+  let root: string;
+  let sha: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-loose-body-'));
+    runGit(['init', '-q', '-b', 'main', root]);
+    runGit(['-C', root, 'config', 'user.name', 'Ada']);
+    runGit(['-C', root, 'config', 'user.email', 'ada@example.com']);
+    runGit(['-C', root, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: PINNED_DATES });
+    sha = runGit(['-C', root, 'rev-parse', 'HEAD']).trim();
+    await mkdir(path.join(root, '.git/refs/heads'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  describe.each(BODY_ROWS)('Given the loose body row %s', (_row, body) => {
+    describe.each(['a', 'z'])('When resolving refs/heads/%s', (leaf) => {
+      it('Then tsgit resolves it exactly as git does', async () => {
+        // Arrange
+        const name = `refs/heads/${leaf}`;
+        await writeFile(path.join(root, '.git', name), body(sha));
+        const expected = verifyWithGit(root, name);
+
+        // Act
+        const result = await verifyWithTsgit(root, name);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe.each(HEAD_ROWS)('Given the HEAD body row %s', (_row, body) => {
+    describe('When resolving HEAD', () => {
+      it('Then tsgit resolves it exactly as git does', async () => {
+        // Arrange
+        await writeFile(path.join(root, '.git/HEAD'), body(sha));
+        const expected = verifyWithGit(root, 'HEAD');
+
+        // Act
+        const result = await verifyWithTsgit(root, 'HEAD');
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
