@@ -11,6 +11,7 @@
 > Status: revised against ADRs 1121–1126 → self-reviewed ×3 → open candidates
 > D7–D10 go back to the decisions flow before planning (ADR-1126).
 
+<!-- cspell:ignore SRCH NOLF nodir UOUT ROOTORD GITFOO TABG SYMSP HEADTRAIL UPSPG UPNOLF SYMTABLF SYMSPNOLF SYMNOLF SYMNN SYMG SYMCRLF SPNOLF SPGNOLF RELUP rebuilders OUTDOTS HEADNOLF GITDOTS chdirs -->
 ## Context
 
 - **Prime directive** (CLAUDE.md, ADR-226): match git's data, refusal conditions and exit
@@ -616,6 +617,28 @@ a zero pointer and exit 2 (the fault is synthetic, the file readable, so no
   own gitdir; P3 uses `ctx.layout.gitDir`, which is that dir. No row exercises a symlinked
   per-worktree ref.
 
+### 6. Folded findings from the revision pass
+
+These two findings sit in the same verify pass and walk the parts already rewrite, so they fold here
+(ADR-1126 Consequences). Each joins the part named and the interop matrix.
+
+- **F1 — every root ref is body-checked** (P3). git 2.56 checks every root ref the walk reaches, not
+  only `HEAD`. Pin: `.git/ORIG_HEAD` = `<sha>` with no LF and `.git/BAR_HEAD` = `garbage\n` print
+  `warning: ORIG_HEAD: refMissingNewline: misses LF at the end` and `error: BAR_HEAD: badRefContent:
+  garbage`, exit 8. tsgit on `main`: exit 0, no `bad-ref` finding. `verifyIntegrity` reads every root
+  ref name the root-ref syntax admits (P1's predicate), in git's order; D8's terminal finding ends
+  these checks too.
+- **F2 — a loose path across an unreadable directory reads as missing** (P2). git treats the name as
+  missing and ignores its packed value. Pin: packed `refs/heads/d/x` with loose `refs/heads/d/` at mode
+  000, `git rev-parse refs/heads/d/x` exits 128 `unknown revision`; at mode 0400, `git rev-list --all`
+  dies `fatal: bad object refs/heads/d/x` (128). tsgit on `main`: `resolveRef` and `revList({ all })`
+  throw `PERMISSION_DENIED`. `resolveDirect` maps a `PERMISSION_DENIED` on a leading directory to
+  absent without the packed fallback; the 0400 shape keeps git's `bad object` death on the listing
+  path, so the planner pins both modes.
+
+Unproven, not folded: whether `openRepository` refuses a repo whose `.git/refs` is mode 000 as git
+does (exit 128). The planner pins it with one probe first; a red twin joins F2.
+
 ## Decision candidates
 
 | # | Choice | Status / alternatives (≤3) | Recommendation | Why |
@@ -625,11 +648,11 @@ a zero pointer and exit 2 (the fault is synthetic, the file readable, so no
 | D3 | Broken names for the snapshot | decided — ADR-1123 (needs P2's skip) | — | — |
 | D4 | `symrefTargetIsNotARef` | decided — ADR-1124 | — | — |
 | D5 | Loose-body grammar | decided — ADR-1125 (direct arm per ADR-1126) | — | — |
-| D6 | Fold the five gaps | decided — ADR-1126. **Its §2 wording needs amending**: the pins (L-OUT, L-ABS-other, L-GITFOO, L-DIE-refs) show git's referent is the link's realpath relative to the gitdir, not the link text; this design follows the pins. | — | — |
-| D7 | Shape of git's two walk warnings (`error opening directory '<dir>/'`, `failed to stat '<path>'`); neither is a msg-id, git exits 0 | (a) a new `FsckFinding` arm `{ type: 'unreadable-ref-path'; path: string; operation: 'open-directory' \| 'stat'; reason: 'PERMISSION_DENIED' }`, no exit bit, gated by `checkReferences`. (b) the `bad-ref` arm with a tsgit-invented msgId (`cannotOpenRefDir`/`cannotStatRef`), `ref` = the directory's ref-path name, severity `'warning'`. (c) reuse `cannotReadRef` at `'warning'` with an `operation` discriminant. | (a) | (b) puts non-catalogue ids beside git's in a field every consumer filters as git's msgId, lets `fsck.<id>` config appear to re-type them, and needs a `RefName` for a directory. (c) overloads a fixed-error git message with a warning that has different text and no bit. (a) follows the path-keyed arms' precedent (`pack-inaccessible`) and keeps `bad-ref` git's catalogue. Either way DIR-SRCH refines ADR-1122: a read fault whose `lstat` also fails is git's `failed to stat`, not `cannotReadRef`. Exit bit: none in every option (git exits 0). |
-| D8 | git's `refs verify` child dies on a link whose realpath fails (L-DIE-*, L-LOOP): fsck gets bit 8 and loses every check after it, root refs included | (a) faithful: one terminal finding `{ type: 'refs-verify-ended'; ref; path; reason: 'FILE_NOT_FOUND' \| 'SYMLINK_LOOP' }`, gated, bit 8, and the integrity walk stops there (later content findings dropped, pointers kept). (b) the same finding, but the walk carries on: an ADR diverges on the lost lines. (c) no finding: `symlinkRef` alone, exit 0, under an ADR that diverges. | (a) | git's lost lines follow readdir order, and tsgit's walk uses the same `readdir` order on the same filesystem, so (a) reproduces them (L-DIE-lost, ROOTORD). (b) and (c) need a divergence ADR for a reachable shape (ADR-874's own `refs/…` link text dies: L-DIE-refs). Lesson 017 is not engaged: the parent process does not crash, it reports and exits 8. |
-| D9 | How the store computes git's realpath referent | (a) a userland resolver in `src/application/primitives/internal/` over `lstat` + `readlink`: per component, at most 32 hops, a missing final component kept, a missing earlier one → `FILE_NOT_FOUND`; the gitdir resolved by the same function. (b) an optional `realpath` on the `FileSystem` port (node: `fs.promises.realpath`; memory/browser: absent → no referent check). (c) lexical normalisation of the link text against the link's directory. | (a) | (b) widens the port and leaves memory/browser without the check, and Node's `realpath` refuses a missing final component that git keeps (L-DANG). (c) misreads every path with a linked component (`/var` → `/private/var` on macOS: L-OUT, L-ABS-own) and never sees L-CHAIN's hops. (a) runs on every adapter with `readlink` and costs nothing on a repo with no symlinked refs. |
-| D10 | Carrying `trailingRefContent`'s trailer | (a) `trailing?: string` on the `bad-ref` arm, present on the direct-body variant only; its absence marks git's whitespace variant. (b) no field: the interop takes the trailer from the fixture, as `badRefContent`'s content today. (c) `trailing?` plus an explicit `form: 'direct' \| 'symbolic'`. | (a) | git prints the trailer, and a caller cannot recover it by resolving: the ref resolves fine. (a) mirrors ADR-1121's `referent?`, one optional datum per msgId. (c) adds a field whose value is already implied. (b) hides data, against ADR-249's "ship the fields". |
+| D6 | Fold the five gaps | decided — ADR-1126. §2 amended in this run: the pins (L-OUT, L-ABS-other, L-GITFOO, L-DIE-refs) show git's referent is the link's realpath relative to the gitdir, not the link text; this design follows the pins. | — | — |
+| D7 | Shape of git's two walk warnings (`error opening directory '<dir>/'`, `failed to stat '<path>'`); neither is a msg-id, git exits 0 | decided — ADR-1127 (as recommended: option (a)) | — | — |
+| D8 | git's `refs verify` child dies on a link whose realpath fails (L-DIE-*, L-LOOP): fsck gets bit 8 and loses every check after it, root refs included | decided — ADR-1128 (as recommended: option (a)) | — | — |
+| D9 | How the store computes git's realpath referent | decided — ADR-1129 (as recommended: option (a)) | — | — |
+| D10 | Carrying `trailingRefContent`'s trailer | decided — ADR-1130 (as recommended: option (a)) | — | — |
 
 ## Test strategy
 
