@@ -4750,6 +4750,28 @@ describe('Given loose ref directories one of which cannot be read', () => {
     });
   });
 
+  describe('When listing names with the refs root itself unreadable', () => {
+    it('Then PERMISSION_DENIED propagates instead of an empty listing', async () => {
+      // Arrange
+      const ctx = await deniedDirs(['/repo/.git/refs'], ['refs/heads/a']);
+      const sut = createRefStore(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut.listRefNames();
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'PERMISSION_DENIED',
+        path: '/repo/.git/refs',
+      });
+    });
+  });
+
   describe('When listing with a packed ref under the unreadable directory', () => {
     it('Then the packed ref is returned and the loose sibling is not', async () => {
       // Arrange

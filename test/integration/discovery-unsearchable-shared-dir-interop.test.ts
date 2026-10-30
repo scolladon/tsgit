@@ -213,6 +213,101 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
       },
     );
 
+    const explicitRepository = (slug: string): string => {
+      const dir = path.join(root, `explicit-${slug}`);
+      runGit(['init', '-q', '-b', 'main', dir]);
+      runGit(['-C', dir, 'config', 'user.name', 'Ada']);
+      runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
+      runGit(['-C', dir, 'config', 'gc.pruneExpire', 'now']);
+      runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'first']);
+      runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'second']);
+      return dir;
+    };
+
+    const explicitOutcome = async (gitDir: string): Promise<string> => {
+      try {
+        const repo = await openTrackedRepository({ gitDir });
+        await repo.log();
+        return 'OK';
+      } catch (err) {
+        return (err as { data?: { code?: string } }).data?.code ?? 'UNKNOWN';
+      }
+    };
+
+    const explicitMaintenance = async (gitDir: string): Promise<string> => {
+      try {
+        const repo = await openTrackedRepository({ gitDir });
+        await repo.maintenance({ tasks: ['gc'] });
+        return 'OK';
+      } catch (err) {
+        return (err as { data?: { code?: string } }).data?.code ?? 'UNKNOWN';
+      }
+    };
+
+    const gitOnGitDir = (gitDir: string, ...args: ReadonlyArray<string>) =>
+      tryRunGitWithExit([`--git-dir=${gitDir}`, ...args]);
+
+    describe.each(REFUSED_ROWS)('When an explicit gitDir has %s', (slug, shared, mode) => {
+      it.each(['detached', 'attached'] as const)(
+        'Then git exits 128 and tsgit refuses with NOT_A_REPOSITORY (%s HEAD)',
+        async (head) => {
+          // Arrange
+          const dir = explicitRepository(`${slug}-${head}`);
+          if (head === 'detached') runGit(['-C', dir, 'checkout', '-q', '--detach', 'HEAD~1']);
+          const gitDir = path.join(dir, '.git');
+          const sut = explicitOutcome;
+
+          // Act
+          const result = await withMode(gitDir, shared, mode, async () => ({
+            gitExit: gitOnGitDir(gitDir, 'rev-list', '--all').exitCode,
+            outcome: await sut(gitDir),
+          }));
+
+          // Assert
+          expect(result).toEqual({ gitExit: GIT_REFUSED, outcome: 'NOT_A_REPOSITORY' });
+        },
+      );
+    });
+
+    describe('When an explicit gitDir has refs-0300', () => {
+      it('Then git exits 0 and tsgit reads the log', async () => {
+        // Arrange
+        const dir = explicitRepository('refs-0300-accepted');
+        const gitDir = path.join(dir, '.git');
+        const sut = explicitOutcome;
+
+        // Act
+        const result = await withMode(gitDir, 'refs', 0o300, async () => ({
+          gitExit: gitOnGitDir(gitDir, 'rev-parse', 'HEAD').exitCode,
+          outcome: await sut(gitDir),
+        }));
+
+        // Assert
+        expect(result).toEqual({ gitExit: GIT_ACCEPTED, outcome: 'OK' });
+      });
+    });
+
+    describe('When gc runs on an explicit gitDir with refs-000 and a detached HEAD', () => {
+      it('Then both tools refuse and keep the object only the loose ref reaches', async () => {
+        // Arrange
+        const dir = explicitRepository('gc-refs-000');
+        const tip = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+        runGit(['-C', dir, 'checkout', '-q', '--detach', 'HEAD~1']);
+        const gitDir = path.join(dir, '.git');
+        const sut = explicitMaintenance;
+
+        // Act
+        const result = await withMode(gitDir, 'refs', 0o000, async () => ({
+          gitExit: gitOnGitDir(gitDir, 'gc', '--prune=now').exitCode,
+          outcome: await sut(gitDir),
+        }));
+
+        // Assert
+        expect(result).toEqual({ gitExit: GIT_REFUSED, outcome: 'NOT_A_REPOSITORY' });
+        expect(tryRunGitWithExit(['-C', dir, 'cat-file', '-e', tip]).exitCode).toBe(GIT_ACCEPTED);
+      });
+    });
+
     describe('When the directory holds no repository', () => {
       it('Then tsgit status refuses with NOT_A_REPOSITORY', async () => {
         // Arrange

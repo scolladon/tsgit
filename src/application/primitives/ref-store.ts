@@ -1022,19 +1022,21 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   const entryKind = (entry: DirEntry): ListedKind => (entry.isDirectory ? 'directory' : 'ref');
 
-  /** git's loose iterator drops a directory it cannot open and carries on. */
-  async function readdirOrSkip(dir: string): Promise<ReadonlyArray<DirEntry>> {
+  /** git's loose iterator drops a directory below `refs/` it cannot open and
+   *  carries on; an unreadable `refs/` itself is a repository git refuses up
+   *  front, so the walk must not turn it into an empty listing. */
+  async function readdirOrSkip(dir: string, prefix: string): Promise<ReadonlyArray<DirEntry>> {
     try {
       return await ctx.fs.readdir(dir);
     } catch (err) {
-      if (errorCodeOf(err) === PERMISSION_DENIED_CODE) return [];
+      if (errorCodeOf(err) === PERMISSION_DENIED_CODE && prefix !== REFS_DIR) return [];
       throw err;
     }
   }
 
   /** Recursively walk one `refs/**` root, composing slash-joined ref names as it descends. */
   async function walkRefDir(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
-    const entries = await readdirOrSkip(dir);
+    const entries = await readdirOrSkip(dir, prefix);
     const names: RefName[] = [];
     for (const entry of entries) {
       const path = `${dir}/${entry.name}`;

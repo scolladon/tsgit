@@ -437,7 +437,7 @@ export const resolveLayout = async (
       ? await resolveExplicitOutcome(probe, opts.gitDir, cwd, pathPolicy, commonDirOverride)
       : await findLayout(probe, cwd, pathPolicy, opts.ceilingDirs, commonDirOverride);
   if (outcome === undefined) return undefined;
-  return finishLayout(
+  const layout = await finishLayout(
     probe,
     outcome,
     pathPolicy,
@@ -455,4 +455,7 @@ export const resolveLayout = async (
     },
     caps,
   );
+  // A discovered layout already passed `is_git_directory` in the walk; an
+  // explicit gitDir skips the walk, and git applies the same rule to it.
+  return opts.gitDir === undefined ? layout : markUnsearchableGitDir(layout, probe, pathPolicy);
 };

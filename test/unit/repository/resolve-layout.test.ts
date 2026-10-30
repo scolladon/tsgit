@@ -1668,3 +1668,45 @@ describe('markUnsearchableGitDir', () => {
     });
   });
 });
+
+describe('resolveLayout with an explicit gitDir', () => {
+  const DIR = { isDirectory: true, isFile: false, size: 0 };
+
+  const probeOf = (locked: ReadonlyArray<string>): LayoutProbe => ({
+    stat: async () => DIR,
+    readUtf8: async () => undefined,
+    isSearchable: async (p) => !locked.includes(p),
+  });
+
+  describe('Given an unsearchable refs directory', () => {
+    describe('When the layout is resolved', () => {
+      it('Then it carries unsearchableGitDir', async () => {
+        // Arrange
+        const sut = resolveLayout;
+        const probe = probeOf(['/w/.git/refs']);
+
+        // Act
+        const result = await sut(probe, '/w', posixPolicy, { gitDir: '/w/.git' });
+
+        // Assert
+        expect(result?.unsearchableGitDir).toBe(true);
+      });
+    });
+  });
+
+  describe('Given searchable shared directories', () => {
+    describe('When the layout is resolved', () => {
+      it('Then it is not marked', async () => {
+        // Arrange
+        const sut = resolveLayout;
+        const probe = probeOf([]);
+
+        // Act
+        const result = await sut(probe, '/w', posixPolicy, { gitDir: '/w/.git' });
+
+        // Assert
+        expect(result?.unsearchableGitDir).toBeUndefined();
+      });
+    });
+  });
+});
