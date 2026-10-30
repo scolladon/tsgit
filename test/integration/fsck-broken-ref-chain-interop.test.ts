@@ -810,6 +810,22 @@ const linkedRefRows: ReadonlyArray<Row> = [
 ];
 
 const UNSEARCHABLE_DIR = 'd000';
+const LISTABLE_ONLY = 0o444;
+
+/** A directory git can list but not stat inside: every entry, whatever its kind, is `failed to stat`. */
+const listableOnlyRows: ReadonlyArray<Row> = [
+  ...sortedBothEnds('STAT-LINK, a link in a listable-only directory', (name) => ({
+    refs: { main: SHA, 'sub/keep': SHA },
+    links: { [`sub/${name}`]: '../main' },
+    restricted: { [heads('sub')]: LISTABLE_ONLY },
+    commit: true,
+  })),
+  ...sortedBothEnds('STAT-DIR, a nested directory in a listable-only directory', (name) => ({
+    refs: { main: SHA, [`sub/${name}`]: SHA, 'sub/d/x': SHA },
+    restricted: { [heads('sub')]: LISTABLE_ONLY },
+    commit: true,
+  })),
+];
 
 /** Links whose realpath dies: git's `refs verify` child ends there, whatever follows. */
 const dyingLinkRows: ReadonlyArray<Row> = [
@@ -1158,6 +1174,11 @@ const rowFamilies = [
   {
     given: 'a symbolic link as a loose ref',
     rows: linkedRefRows,
+    enabled: GIT_AVAILABLE && UNPRIVILEGED,
+  },
+  {
+    given: 'a ref directory the permissions let git list but not stat',
+    rows: listableOnlyRows,
     enabled: GIT_AVAILABLE && UNPRIVILEGED,
   },
   {

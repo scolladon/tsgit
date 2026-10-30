@@ -1220,6 +1220,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     for (const entry of entries) {
       if (run.ended) return;
       const name = `${prefix}/${entry.name}` as RefName;
+      if (await entryStatRefused(`${dir}/${entry.name}`, run.findings)) continue;
       if (entry.isSymbolicLink) {
         run.findings.push({ ref: name, msgId: 'symlinkRef' });
         await linkReferentFindings(run, name, `${dir}/${entry.name}`);
@@ -1230,6 +1231,19 @@ function createFilesRefStore(ctx: Context): RefStore {
         continue;
       }
       run.findings.push(...(await looseBodyFindings(name)));
+    }
+  }
+
+  /** git's directory iterator `lstat`s every entry before judging it: a refusal is
+   *  `failed to stat`, and the entry is skipped whatever it is. */
+  async function entryStatRefused(path: string, findings: RefIntegrityFinding[]): Promise<boolean> {
+    try {
+      await ctx.fs.lstat(path);
+      return false;
+    } catch (err) {
+      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
+      findings.push({ msgId: 'unreadableRefPath', operation: 'stat', path });
+      return true;
     }
   }
 

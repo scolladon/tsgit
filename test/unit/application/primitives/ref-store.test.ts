@@ -2837,12 +2837,12 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a loose ref file whose read and whose lstat are both refused', () => {
+  describe('Given a root ref file whose read and whose lstat are both refused', () => {
     describe('When verifyIntegrity is called', () => {
       it('Then an unreadableRefPath finding with the stat operation is returned', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        const refPath = `${ctx.layout.gitDir}/ORIG_HEAD`;
         await ctx.fs.writeUtf8(refPath, `${'1'.repeat(40)}\n`);
         const read = ctx.fs.readUtf8.bind(ctx.fs);
         vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (p: string) => {
@@ -2865,6 +2865,53 @@ describe('ref-store', () => {
           operation: 'stat',
           path: refPath,
         });
+      });
+    });
+  });
+
+  describe('Given an entry under refs/ whose lstat the permissions refuse', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then an unreadableRefPath finding with the stat operation is returned and the entry is skipped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        await ctx.fs.writeUtf8(refPath, 'garbage\n');
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p: string) => {
+          if (p === refPath) throw permissionDenied(p);
+          return lstat(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: refPath }]);
+      });
+    });
+  });
+
+  describe('Given an entry under refs/ whose lstat faults for another reason', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then that fault propagates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        await ctx.fs.writeUtf8(refPath, 'garbage\n');
+        const fault = new Error('EIO');
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p: string) => {
+          if (p === refPath) throw fault;
+          return lstat(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity().catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(fault);
       });
     });
   });
