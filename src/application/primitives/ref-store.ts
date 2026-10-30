@@ -233,6 +233,12 @@ export interface RefEntry {
 export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
+  | {
+      readonly ref: RefName;
+      readonly msgId: 'cannotReadRef';
+      readonly path: string;
+      readonly reason: 'PERMISSION_DENIED';
+    }
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
   | {
       readonly table: string;
@@ -1179,6 +1185,26 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /** git's `cannot read ref file`: a file whose open the permissions refuse is a finding
+   *  and the walk carries on; the `lstat` proves the entry exists, as the open's refusal
+   *  alone cannot tell a denied file from a denied directory above it. */
+  async function readLooseContentOrRefusal(
+    name: RefName,
+  ): Promise<string | undefined | RefIntegrityFinding> {
+    try {
+      return await readLooseContent(name);
+    } catch (err) {
+      if (errorCodeOf(err) !== 'PERMISSION_DENIED') throw err;
+      const path = looseRefPath(refDir(name), name);
+      try {
+        await ctx.fs.lstat(path);
+      } catch (statErr) {
+        throw errorCodeOf(statErr) === 'PERMISSION_DENIED' ? err : statErr;
+      }
+      return { ref: name, msgId: 'cannotReadRef', path, reason: 'PERMISSION_DENIED' };
+    }
+  }
+
   /** `name`'s loose-body verdict: a `ref:` line is healthy, anything that is
    *  not a well-formed oid is `badRefContent`, and an oid with no LOOSE
    *  object behind it is `badRefOid`. A pack-registry probe (multi-pack-index,
@@ -1187,7 +1213,8 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  against its scan-scoped universe once no `badRefContent` finding has
    *  already flagged this ref. */
   async function looseBodyFinding(name: RefName): Promise<RefIntegrityFinding | undefined> {
-    const raw = await readLooseContent(name);
+    const raw = await readLooseContentOrRefusal(name);
+    if (typeof raw === 'object') return raw;
     if (raw === undefined) return undefined;
     const content = raw.replace(/[\r\n]+$/, '');
     if (content.startsWith(SYMBOLIC_PREFIX)) return undefined;

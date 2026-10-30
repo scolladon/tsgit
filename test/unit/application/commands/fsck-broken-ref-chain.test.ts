@@ -2,11 +2,12 @@
  * A ref whose chain fails to resolve to an object is reported with a zero pointer,
  * as are the refs that lead to it: the listing difference names every one.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fsck } from '../../../../src/application/commands/fsck.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { permissionDenied } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const ZERO_POINTER = '0'.repeat(40);
@@ -273,6 +274,217 @@ describe('Given two root refs holding garbage and badRefContent re-typed as a wa
 
       // Assert
       expect(badContentRefs(result)).toEqual(['AAA_HEAD', 'ZED_HEAD']);
+    });
+  });
+});
+
+const EXIT_ALL = 10;
+
+const refuseReadAt = (ctx: Context, paths: ReadonlyArray<string>): void => {
+  const readUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+  const open = ctx.fs.openWithNoFollow.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+    if (paths.includes(path)) throw permissionDenied(path);
+    return readUtf8(path);
+  });
+  vi.spyOn(ctx.fs, 'openWithNoFollow').mockImplementation(async (path: string, mode) => {
+    if (paths.includes(path)) throw permissionDenied(path);
+    return open(path, mode);
+  });
+};
+
+const refuseRead = (ctx: Context, refs: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const paths = refs.map((name) => `${ctx.layout.gitDir}/refs/heads/${name}`);
+  refuseReadAt(ctx, paths);
+  return paths;
+};
+
+const cannotRead = (result: Awaited<ReturnType<typeof fsck>>) =>
+  result.findings.filter(
+    (finding) => finding.type === 'bad-ref' && finding.msgId === 'cannotReadRef',
+  );
+
+describe('Given a ref file the permissions refuse, alone', () => {
+  describe.each([
+    { shape: 'sorting first', name: 'a' },
+    { shape: 'sorting last', name: 'z' },
+  ])('$shape', ({ name }) => {
+    describe('When fsck runs', () => {
+      it('Then it reports cannotReadRef with its path and a zero pointer, exit 10', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plant(ctx, name, `${'1'.repeat(40)}\n`);
+        const [path] = refuseRead(ctx, [name]);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(cannotRead(result)).toEqual([
+          {
+            type: 'bad-ref',
+            ref: `refs/heads/${name}`,
+            msgId: 'cannotReadRef',
+            severity: 'error',
+            path,
+            reason: 'PERMISSION_DENIED',
+          },
+        ]);
+        expect(pointersOf(result)).toEqual(pointers(name));
+        expect(result.exitCode).toBe(EXIT_ALL);
+      });
+    });
+  });
+});
+
+const seedUnreadable = async (): Promise<Context> => {
+  const ctx = await repository();
+  await plant(ctx, 'b', `${'1'.repeat(40)}\n`);
+  refuseRead(ctx, ['b']);
+  return ctx;
+};
+
+describe('Given a ref file the permissions refuse and references are not checked', () => {
+  describe('When fsck runs', () => {
+    it('Then neither the finding nor its exit bit is reported', async () => {
+      // Arrange
+      const ctx = await seedUnreadable();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(cannotRead(result)).toEqual([]);
+      expect(pointersOf(result)).toEqual(pointers('b'));
+      expect(result.exitCode).toBe(EXIT_MISSING);
+    });
+  });
+});
+
+describe('Given a ref file the permissions refuse and the neighbouring message ids set to ignore', () => {
+  describe('When fsck runs', () => {
+    it('Then it stays an error with bit 8, as no setting re-types it', async () => {
+      // Arrange
+      __resetConfigCacheForTests();
+      const ctx = await seedUnreadable();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[fsck]\n\tbadRefContent = ignore\n\tbadRefOid = ignore\n',
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(cannotRead(result)).toHaveLength(1);
+      expect(result.exitCode).toBe(EXIT_ALL);
+    });
+  });
+});
+
+describe('Given a ref file the permissions refuse and strict mode', () => {
+  describe('When fsck runs', () => {
+    it('Then it stays an error with bit 8', async () => {
+      // Arrange
+      const ctx = await seedUnreadable();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { strict: true });
+
+      // Assert
+      expect(cannotRead(result)).toEqual([expect.objectContaining({ severity: 'error' })]);
+      expect(result.exitCode).toBe(EXIT_ALL);
+    });
+  });
+});
+
+describe('Given a ref file the permissions refuse and healthy ones sorting around it', () => {
+  describe('When fsck runs', () => {
+    it('Then only the refused file is reported and the others are read', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'a', GARBAGE);
+      await plant(ctx, 'm', `${'1'.repeat(40)}\n`);
+      await plant(ctx, 'z', GARBAGE);
+      refuseRead(ctx, ['m']);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(cannotRead(result)).toHaveLength(1);
+      expect(badContentRefs(result)).toEqual(['refs/heads/a', 'refs/heads/z']);
+    });
+  });
+});
+
+const reportedRoots = (result: Awaited<ReturnType<typeof fsck>>): ReadonlyArray<string> =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.msgId !== 'badRefOid'
+      ? [`${finding.ref}:${finding.msgId}`]
+      : [],
+  );
+
+describe('Given an unreadable root ref and a root ref holding garbage', () => {
+  describe.each([
+    {
+      shape: 'the unreadable one is listed first',
+      unreadableFirst: true,
+      expected: ['AAA_HEAD:cannotReadRef'],
+    },
+    {
+      shape: 'the garbage one is listed first',
+      unreadableFirst: false,
+      expected: ['AAA_HEAD:badRefContent'],
+    },
+  ])('$shape', ({ unreadableFirst, expected }) => {
+    describe('When fsck runs', () => {
+      it('Then the root-ref check ends at the first error, as git does', async () => {
+        // Arrange — the memory adapter lists files in the order they were written
+        const ctx = await repository();
+        const unreadable = unreadableFirst ? 'AAA_HEAD' : 'ZED_HEAD';
+        const garbage = unreadableFirst ? 'ZED_HEAD' : 'AAA_HEAD';
+        const writes = [
+          [unreadable, `${'1'.repeat(40)}\n`],
+          [garbage, GARBAGE],
+        ] as const;
+        for (const [name, body] of unreadableFirst ? writes : [...writes].reverse()) {
+          await plantRoot(ctx, name, body);
+        }
+        refuseReadAt(ctx, [`${ctx.layout.gitDir}/${unreadable}`]);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(reportedRoots(result)).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('Given a symbolic link under refs/ and references are not checked', () => {
+  describe('When fsck runs', () => {
+    it('Then no symlinkRef notice is reported', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'm', `${'1'.repeat(40)}\n`);
+      await ctx.fs.symlink('m', `${ctx.layout.gitDir}/refs/heads/l`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(
+        result.findings.filter((f) => f.type === 'bad-ref' && f.msgId === 'symlinkRef'),
+      ).toEqual([]);
     });
   });
 });

@@ -2668,6 +2668,121 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a loose ref file whose read is refused for permission', () => {
+    describe.each([
+      { shape: 'the ref sorts first', name: 'a' },
+      { shape: 'the ref sorts last', name: 'z' },
+    ])('$shape', ({ name }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then a cannotReadRef finding names the absolute path as opened', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const refPath = `${ctx.layout.gitDir}/refs/heads/${name}`;
+          await ctx.fs.writeUtf8(refPath, `${'1'.repeat(40)}\n`);
+          const read = ctx.fs.readUtf8.bind(ctx.fs);
+          vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (p: string) => {
+            if (p === refPath) throw permissionDenied(p);
+            return read(p);
+          });
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({
+            ref: `refs/heads/${name}`,
+            msgId: 'cannotReadRef',
+            path: refPath,
+            reason: 'PERMISSION_DENIED',
+          });
+        });
+      });
+    });
+  });
+
+  describe('Given a loose ref file whose read faults for another reason', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then that fault propagates and no finding is made', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        await ctx.fs.writeUtf8(refPath, `${'1'.repeat(40)}\n`);
+        const fault = new Error('EIO');
+        const read = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (p: string) => {
+          if (p === refPath) throw fault;
+          return read(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity().catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a loose ref file whose read and whose lstat are both refused', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the read fault propagates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        await ctx.fs.writeUtf8(refPath, `${'1'.repeat(40)}\n`);
+        const readFault = permissionDenied(refPath);
+        const read = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (p: string) => {
+          if (p === refPath) throw readFault;
+          return read(p);
+        });
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p: string) => {
+          if (p === refPath) throw permissionDenied(p);
+          return lstat(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity().catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(readFault);
+      });
+    });
+  });
+
+  describe('Given a loose ref file whose read is refused and whose lstat faults otherwise', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the lstat fault propagates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        await ctx.fs.writeUtf8(refPath, `${'1'.repeat(40)}\n`);
+        const statFault = new Error('EIO');
+        const read = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (p: string) => {
+          if (p === refPath) throw permissionDenied(p);
+          return read(p);
+        });
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p: string) => {
+          if (p === refPath) throw statFault;
+          return lstat(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity().catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(statFault);
+      });
+    });
+  });
+
   describe('Given a HEAD and a ref under refs/ both holding garbage', () => {
     describe.each([
       { shape: 'the ref sorts first', name: 'a' },

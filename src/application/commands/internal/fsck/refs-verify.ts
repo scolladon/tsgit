@@ -1,5 +1,5 @@
 import { errorDataCode } from '../../../../domain/error-data-code.js';
-import type { FsckSeverityTable } from '../../../../domain/fsck/index.js';
+import type { FsckConfiguredSeverity, FsckSeverityTable } from '../../../../domain/fsck/index.js';
 import { retypeSeverity } from '../../../../domain/fsck/index.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
@@ -63,10 +63,11 @@ interface PassResult {
  */
 function collectSymlinkNotices(
   integrityFindings: ReadonlyArray<RefIntegrityFinding>,
+  checkContentFormat: boolean,
   severities: FsckSeverityTable,
 ): PassResult {
   const severity = retypeSeverity(severities, 'symlinkRef', 'warning');
-  if (severity === 'ignore') return { findings: [], exitBit: 0 };
+  if (!checkContentFormat || severity === 'ignore') return { findings: [], exitBit: 0 };
   const findings = integrityFindings
     .filter((finding) => finding.msgId === 'symlinkRef')
     .map(
@@ -83,30 +84,63 @@ function collectSymlinkNotices(
 
 const REFS_PREFIX = 'refs/';
 
+type ContentFinding = Extract<
+  RefIntegrityFinding,
+  { readonly msgId: 'badRefContent' | 'cannotReadRef' }
+>;
+
+const isContentFinding = (finding: RefIntegrityFinding): finding is ContentFinding =>
+  finding.msgId === 'badRefContent' || finding.msgId === 'cannotReadRef';
+
 /**
- * A ref whose content is not an object name: the content notice, gated by
- * `checkContentFormat`, with a severity `fsck.<msg-id>` can re-type. The zero
- * pointer git reports for it is not synthesised here: the snapshot carries one
- * for every ref the store lists by name and cannot resolve. git's root-ref check
- * (the files beside `refs/`) ends at its first error-severity finding.
+ * The severity a loose-ref content finding is reported at, or `undefined` when it is not
+ * reported. `badRefContent` is re-typed by `fsck.<msg-id>`; `cannotReadRef` is always an
+ * error — no setting and no `--strict` re-types it.
  */
-function collectBadContentNotices(
+function contentSeverity(
+  finding: ContentFinding,
+  badContentSeverity: FsckConfiguredSeverity,
+): BadRefFinding['severity'] | undefined {
+  if (finding.msgId === 'cannotReadRef') return 'error';
+  return badContentSeverity === 'ignore' ? undefined : badContentSeverity;
+}
+
+function contentFinding(
+  finding: ContentFinding,
+  severity: BadRefFinding['severity'],
+): BadRefFinding {
+  if (finding.msgId === 'cannotReadRef') {
+    const { ref, path, reason } = finding;
+    return { type: 'bad-ref', ref, msgId: 'cannotReadRef', severity, path, reason };
+  }
+  return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity };
+}
+
+/**
+ * A ref whose content is not an object name, or whose file the permissions refuse: the
+ * content notice, gated by `checkContentFormat`. The zero pointer git reports for either is
+ * not synthesised here: the snapshot carries one for every ref the store lists by name and
+ * cannot resolve. git's root-ref check (the files beside `refs/`) ends at its first
+ * error-severity finding, an unreadable file included.
+ */
+function collectContentNotices(
   integrityFindings: ReadonlyArray<RefIntegrityFinding>,
   checkContentFormat: boolean,
   severities: FsckSeverityTable,
 ): PassResult {
-  const severity = retypeSeverity(severities, 'badRefContent', 'error');
-  const reportContent = checkContentFormat && severity !== 'ignore';
+  const badContentSeverity = retypeSeverity(severities, 'badRefContent', 'error');
   const findings: BadRefFinding[] = [];
   let rootCheckEnded = false;
   for (const finding of integrityFindings) {
-    if (finding.msgId !== 'badRefContent' || !reportContent) continue;
+    if (!checkContentFormat || !isContentFinding(finding)) continue;
+    const severity = contentSeverity(finding, badContentSeverity);
+    if (severity === undefined) continue;
     const isRootRef = !finding.ref.startsWith(REFS_PREFIX);
     if (isRootRef && rootCheckEnded) continue;
-    findings.push({ type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity });
+    findings.push(contentFinding(finding, severity));
     rootCheckEnded ||= isRootRef && severity === 'error';
   }
-  const exitBit = severity === 'error' && findings.length > 0 ? EXIT_REFS_CONTENT : 0;
+  const exitBit = findings.some((found) => found.severity === 'error') ? EXIT_REFS_CONTENT : 0;
   return { findings, exitBit };
 }
 
@@ -232,8 +266,8 @@ export async function runRefsVerifyPass(
     refStore.verifyIntegrity(),
   ]);
 
-  const symlinks = collectSymlinkNotices(integrityFindings, severities);
-  const badContent = collectBadContentNotices(integrityFindings, checkContentFormat, severities);
+  const symlinks = collectSymlinkNotices(integrityFindings, checkContentFormat, severities);
+  const badContent = collectContentNotices(integrityFindings, checkContentFormat, severities);
   const absent = await collectAbsentTargets(ctx, entries, names, universe, check, promised, parses);
 
   return {
