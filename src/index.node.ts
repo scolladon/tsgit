@@ -5,7 +5,7 @@
  * core factory with the fallback pre-bound.
  */
 import type { Stats } from 'node:fs';
-import { lstat, readFile, readlink, realpath, stat } from 'node:fs/promises';
+import { access, constants, lstat, readFile, readlink, realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { nativeLineEndingFor } from './adapters/node/node-adapter.js';
@@ -279,6 +279,20 @@ const lstatFirstStat = async (
     : { isDirectory: followed.isDirectory(), isFile: followed.isFile(), size: followed.size };
 };
 
+/** Errnos meaning "git's `access(X_OK)` would say no": denied, absent, or a non-directory on the way. */
+const NOT_SEARCHABLE_ERRNOS: ReadonlySet<string> = new Set(['EACCES', 'ENOENT', 'ENOTDIR']);
+
+/** git's `access(path, X_OK)`; any errno outside the "no" set is a real fault and rethrows. */
+const searchable = async (p: string): Promise<boolean> => {
+  try {
+    await access(p, constants.X_OK);
+    return true;
+  } catch (err) {
+    if (NOT_SEARCHABLE_ERRNOS.has((err as NodeJS.ErrnoException).code ?? '')) return false;
+    throw err;
+  }
+};
+
 /**
  * Builds the raw `node:fs/promises`- or sync-`fs`-backed `LayoutProbe`, plus
  * `isPlainDirectory` — a per-open `Map` of every path the probe's `stat` has
@@ -307,6 +321,7 @@ const createNodeLayoutProbe = (
           : runWithinBudget(syncIo.budget, () => syncIo.ops.readlinkSync(p, 'utf8')).catch(
               () => undefined,
             ),
+      isSearchable: searchable,
       isOwnedByCaller: ownedByCallerPredicate({
         // Effective uid, matching the port contract and git's own `geteuid()`.
         callerUid: () => process.geteuid?.() ?? process.getuid?.(),

@@ -45,4 +45,11 @@ export interface LayoutProbe {
    * gate reads the omission as "trusted".
    */
   readonly isOwnedByCaller?: (path: string) => Promise<boolean>;
+  /**
+   * Whether `path` can be searched (git's `access(path, X_OK)`), which
+   * `stat` cannot say: it folds a denial into absence by contract. OPTIONAL:
+   * an adapter without a permission model omits it and is treated as
+   * searchable.
+   */
+  readonly isSearchable?: (path: string) => Promise<boolean>;
 }

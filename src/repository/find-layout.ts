@@ -475,8 +475,12 @@ const candidateSharedDirsValid = async (
   if (source.kind === 'override' || !sameDir(pathPolicy, commonDir, gitDir)) {
     return sharedDirsValid(probe, commonDir, pathPolicy);
   }
-  if (!isSharedDirectory(await settleSpeculation(source.probes.objects))) return false;
-  return isSharedDirectory(await settleSpeculation(source.probes.refs));
+  const objects = await settleSpeculation(source.probes.objects);
+  if (!(await isUsableSharedDir(probe, pathPolicy.join(commonDir, 'objects'), objects))) {
+    return false;
+  }
+  const refs = await settleSpeculation(source.probes.refs);
+  return isUsableSharedDir(probe, pathPolicy.join(commonDir, 'refs'), refs);
 };
 
 /**
@@ -605,11 +609,18 @@ const sharedDirsValid = async (
   commonDir: string,
   pathPolicy: PathPolicy,
 ): Promise<boolean> => {
-  const objects = await probe.stat(pathPolicy.join(commonDir, 'objects'));
-  if (!isSharedDirectory(objects)) return false;
-  const refs = await probe.stat(pathPolicy.join(commonDir, 'refs'));
-  return isSharedDirectory(refs);
+  const objectsPath = pathPolicy.join(commonDir, 'objects');
+  if (!(await isUsableSharedDir(probe, objectsPath, await probe.stat(objectsPath)))) return false;
+  const refsPath = pathPolicy.join(commonDir, 'refs');
+  return isUsableSharedDir(probe, refsPath, await probe.stat(refsPath));
 };
 
 /** Shared by the serial and batched shared-dir checks: a directory qualifies as `objects/`/`refs/`. */
 const isSharedDirectory = (stat: ProbeStat): boolean => stat?.isDirectory === true;
+
+/** A shared directory also has to be searchable: git's `is_git_directory` runs `access(X_OK)` on both. */
+const isUsableSharedDir = async (
+  probe: LayoutProbe,
+  dir: string,
+  stat: ProbeStat,
+): Promise<boolean> => isSharedDirectory(stat) && (await probe.isSearchable?.(dir)) !== false;
