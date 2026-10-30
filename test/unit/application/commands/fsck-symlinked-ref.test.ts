@@ -3,7 +3,7 @@
  * `symlinkRef` warning on every link under `refs/` — whatever its text names
  * and whether or not it resolves — and still exits 0.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -248,6 +248,37 @@ describe('fsck — a loose ref that is a symbolic link', () => {
             severity: 'error',
             target: '1'.repeat(40),
           });
+        });
+      });
+    });
+  });
+});
+
+describe('fsck — a loose ref link beside a .git that is itself a link', () => {
+  describe('Given a store linked as .git and a ref link to a sibling', () => {
+    describe('When the store reports its integrity', () => {
+      it('Then the referent stays absolute and is a badReferentName', async () => {
+        // Arrange
+        const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-gitdir-link-'));
+        tempRoots.push(root);
+        const workDir = path.join(root, 'work');
+        const store = path.join(workDir, 'store.git');
+        await init(createNodeContext({ workDir }));
+        await rename(path.join(workDir, '.git'), store);
+        await symlink(store, path.join(workDir, '.git'));
+        const ctx = createNodeContext({ workDir, gitDir: store });
+        await writeFile(`${store}/refs/heads/main`, `${'1'.repeat(40)}\n`);
+        await symlink('main', `${store}/refs/heads/ln`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({
+          ref: 'refs/heads/ln',
+          msgId: 'badReferentName',
+          referent: path.join(await realpath(store), 'refs/heads/main'),
         });
       });
     });

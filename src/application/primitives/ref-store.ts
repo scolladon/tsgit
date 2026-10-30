@@ -647,12 +647,12 @@ const byPackedRefName = (a: PackedRefEntry, b: PackedRefEntry): number =>
 interface IntegrityRun {
   readonly findings: RefIntegrityFinding[];
   ended: boolean;
-  gitDirReal?: Promise<string>;
+  strippedGitDir?: Promise<string>;
 }
 
 /** The realpath relative to the gitdir; absolute when it lies outside. */
-const referentOf = (real: string, gitDirReal: string): string =>
-  real.startsWith(`${gitDirReal}/`) ? real.slice(gitDirReal.length + 1) : real;
+const referentOf = (real: string, strippedGitDir: string): string =>
+  real.startsWith(`${strippedGitDir}/`) ? real.slice(strippedGitDir.length + 1) : real;
 
 /** A rootless link target (Windows path syntax only) is git's missing-component death. */
 const endOf = (
@@ -1260,11 +1260,17 @@ function createFilesRefStore(ctx: Context): RefStore {
       run.findings.push({ ref, msgId: 'refsVerifyEnded', ...endOf(outcome) });
       return;
     }
-    run.gitDirReal ??= realGitDir();
-    run.findings.push(...referentFindings(ref, referentOf(outcome.path, await run.gitDirReal)));
+    run.strippedGitDir ??= gitDirToStrip();
+    run.findings.push(...referentFindings(ref, referentOf(outcome.path, await run.strippedGitDir)));
   }
 
-  async function realGitDir(): Promise<string> {
+  /** git strips its gitdir as spelled: absolute and normalised, a link on the way
+   *  not followed — a `.git` that links to a store leaves every referent absolute. */
+  async function gitDirToStrip(): Promise<string> {
+    const dotGit = ctx.layout.workDir === undefined ? undefined : `${ctx.layout.workDir}/.git`;
+    if (dotGit !== undefined && (await lstatIfPresent(ctx.fs, dotGit))?.isSymbolicLink === true) {
+      return dotGit;
+    }
     const outcome = await realPathOutcomeOf(ctx, ctx.layout.gitDir);
     return outcome.kind === 'resolved' ? outcome.path : ctx.layout.gitDir;
   }

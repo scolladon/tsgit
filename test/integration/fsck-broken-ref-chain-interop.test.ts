@@ -12,7 +12,7 @@
  *   unique:         tsgit reports a zero pointer on every ref of a broken chain, as git does
  *   interopSurface: fsck
  */
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -68,6 +68,8 @@ interface Row {
   readonly files?: Readonly<Record<string, string>>;
   /** Gitdir-relative paths given a specific mode once seeded. */
   readonly restricted?: Readonly<Record<string, number>>;
+  /** `.git` is a symbolic link to a store beside the repository. */
+  readonly gitDirLink?: boolean;
   /** A linked worktree, its admin dir `worktrees/wt`. */
   readonly linked?: boolean;
   /** Where the command runs from: a sub-directory, or an explicit `--git-dir`. */
@@ -810,6 +812,31 @@ const linkedRefRows: ReadonlyArray<Row> = [
 ];
 
 const UNSEARCHABLE_DIR = 'd000';
+
+/** `.git` itself a link to a store: git strips its unresolved gitdir, never the store's real path. */
+const gitDirLinkRows: ReadonlyArray<Row> = [
+  {
+    title: 'a plain .git, the referent is relative',
+    refs: { main: SHA },
+    commit: true,
+    links: { ln: 'main' },
+  },
+  {
+    title: 'a .git link, the referent stays absolute',
+    refs: { main: SHA },
+    commit: true,
+    links: { ln: 'main' },
+    gitDirLink: true,
+  },
+  {
+    title: 'a .git link run from a sub-directory',
+    refs: { main: SHA },
+    commit: true,
+    links: { ln: 'main' },
+    gitDirLink: true,
+    via: 'sub',
+  },
+];
 const LISTABLE_ONLY = 0o444;
 
 /** A directory git can list but not stat inside: every entry, whatever its kind, is `failed to stat`. */
@@ -975,6 +1002,14 @@ const seedExtras = async (dir: string, row: Row, fill: Fill): Promise<void> => {
   }
 };
 
+/** The store keeps the repository's files; `.git` becomes a link to it, as `ln -s ../store.git .git`. */
+const relocateGitDir = async (dir: string): Promise<void> => {
+  const store = `${dir}-store.git`;
+  roots.push(store);
+  await rename(path.join(dir, '.git'), store);
+  await symlink(store, path.join(dir, '.git'));
+};
+
 const MIXED_CASE_DIGITS = 20;
 const SHORT_DIGITS = 39;
 
@@ -1012,6 +1047,7 @@ const seed = async (row: Row): Promise<{ readonly dir: string; readonly fill: Fi
   if (row.head !== undefined) await writeFile(path.join(dir, '.git', 'HEAD'), fill(row.head));
   for (const [key, value] of Object.entries(row.config ?? {})) git(dir, 'config', key, value);
   await seedExtras(dir, row, fill);
+  if (row.gitDirLink === true) await relocateGitDir(dir);
   return { dir, fill };
 };
 
@@ -1179,6 +1215,11 @@ const rowFamilies = [
   {
     given: 'a ref directory the permissions let git list but not stat',
     rows: listableOnlyRows,
+    enabled: GIT_AVAILABLE && UNPRIVILEGED,
+  },
+  {
+    given: 'a .git that is a symbolic link',
+    rows: gitDirLinkRows,
     enabled: GIT_AVAILABLE && UNPRIVILEGED,
   },
   {
