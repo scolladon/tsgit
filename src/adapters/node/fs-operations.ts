@@ -29,6 +29,7 @@ export type FsOperations = Pick<
   | 'lutimes'
   | 'mkdir'
   | 'open'
+  | 'opendir'
   | 'readdir'
   | 'readFile'
   | 'readlink'

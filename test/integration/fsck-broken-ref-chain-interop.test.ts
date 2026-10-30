@@ -843,6 +843,60 @@ const dyingLinkRows: ReadonlyArray<Row> = [
   },
 ];
 
+/** Rows whose lines depend on the order the operating system lists a directory in. */
+const osOrderRows: ReadonlyArray<Row> = [
+  {
+    title: 'two root refs holding garbage, ZED_HEAD and BAR_HEAD',
+    refs: {},
+    root: { ZED_HEAD: GARBAGE, BAR_HEAD: GARBAGE },
+  },
+  {
+    title: 'a dots referent on HEAD beside a garbage root ref',
+    refs: {},
+    head: 'ref: refs/heads/x..y\n',
+    root: { BAR_HEAD: GARBAGE },
+  },
+  {
+    title: 'a dots referent on HEAD warned beside a garbage root ref',
+    refs: {},
+    head: 'ref: refs/heads/x..y\n',
+    root: { BAR_HEAD: GARBAGE },
+    ...WARN_BAD_REFERENT,
+  },
+  {
+    title: 'a dots referent on ZED_HEAD beside a garbage root ref',
+    refs: {},
+    root: { ZED_HEAD: DOTS, BAR_HEAD: GARBAGE },
+  },
+  {
+    title: 'ORIG_HEAD without a line feed beside a garbage root ref',
+    refs: {},
+    commit: true,
+    root: { ORIG_HEAD: '{commit}', BAR_HEAD: GARBAGE },
+  },
+  {
+    title: 'L-DIE-lost, a dying link losing the content findings read after it',
+    refs: { a: GARBAGE },
+    tags: { t: GARBAGE },
+    links: { z: 'absent-dir/x' },
+  },
+  {
+    title: 'L-DIE-lost, references not checked',
+    refs: { a: GARBAGE },
+    tags: { t: GARBAGE },
+    links: { z: 'absent-dir/x' },
+    ...NO_REFERENCES,
+  },
+  {
+    title: 'a dying link losing the notices of main, HEAD and a root ref',
+    refs: { main: '{commit}' },
+    commit: true,
+    links: { z: 'absent-dir/x' },
+    head: 'ref: refs/heads/main',
+    root: { BAR_HEAD: GARBAGE },
+  },
+];
+
 const roots: string[] = [];
 const refusedPaths: string[] = [];
 
@@ -1079,6 +1133,29 @@ const expectGitsLines = async (row: Row): Promise<void> => {
   expect(othersOf(ourLines)).toEqual(othersOf(gitLines));
 };
 
+const expectGitsLinesInSequence = async (row: Row): Promise<void> => {
+  // Arrange
+  const { dir, fill } = await seed(row);
+  const expected = tryRunGitWithExit(gitArgs(dir, row));
+  const sut = runTsgit;
+
+  // Act
+  const result = await sut(dir, row);
+
+  // Assert
+  const comparable = (line: string): boolean =>
+    REPORT_LINE.test(line) && (DARWIN || !LOOP_TEXT.test(line));
+  const gitLines = gitReportLines(expected.stderr).filter(comparable);
+  const ourLines = rebuiltLines(result, row, dir, fill)
+    .flatMap((line) => line.split('\n'))
+    .filter(comparable);
+  expect(result.exitCode).toBe(expected.exitCode);
+  expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
+  expect(ourLines.filter((line) => !POINTER_LINE.test(line))).toEqual(
+    gitLines.filter((line) => !POINTER_LINE.test(line)),
+  );
+};
+
 describe.skipIf(!GIT_AVAILABLE)('Given a repository with a broken ref chain', () => {
   describe.each(rows)('$title', (row) => {
     describe('When fsck runs', () => {
@@ -1159,6 +1236,21 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
         it(
           'Then tsgit reports git’s lines and exit code',
           async () => expectGitsLines(row),
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || !POSIX)(
+  'Given a repository whose directories the operating system lists in its own order',
+  () => {
+    describe.each(osOrderRows)('$title', (row) => {
+      describe('When fsck runs', () => {
+        it.each([1, 2, 3])(
+          'Then tsgit reports git’s lines in git’s sequence, run %i',
+          async () => expectGitsLinesInSequence(row),
           SETUP_TIMEOUT,
         );
       });

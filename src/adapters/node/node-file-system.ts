@@ -455,6 +455,13 @@ async function runSyncAbsent(
   return runWithinBudget(budget, () => disambiguateMiss(ops, parent, path));
 }
 
+const toDirEntry = (entry: fs.Dirent): DirEntry => ({
+  name: entry.name,
+  isFile: entry.isFile(),
+  isDirectory: entry.isDirectory(),
+  isSymbolicLink: entry.isSymbolicLink(),
+});
+
 /** The sync arm of `tryLstat`: a miss answers `undefined`, every other refusal throws. */
 async function tryLstatSync(
   sync: SyncIoPolicy,
@@ -1400,12 +1407,18 @@ export class NodeFileSystem implements FileSystem {
     const real = this.resolveRead(path, all);
     return runFs(async () => {
       const entries = await this.fsOps.readdir(real, { withFileTypes: true });
-      return entries.map((entry) => ({
-        name: entry.name,
-        isFile: entry.isFile(),
-        isDirectory: entry.isDirectory(),
-        isSymbolicLink: entry.isSymbolicLink(),
-      }));
+      return entries.map(toDirEntry);
+    }, path);
+  };
+
+  /** `readdir`, unsorted: the `Dir` yields the entries as the kernel returns them. */
+  readdirInOsOrder = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
+    return runFs(async () => {
+      const entries: DirEntry[] = [];
+      for await (const entry of await this.fsOps.opendir(real)) entries.push(toDirEntry(entry));
+      return entries;
     }, path);
   };
 

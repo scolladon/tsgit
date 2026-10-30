@@ -932,6 +932,68 @@ describe('wrapFsValidator — the optional tryLstat probe', () => {
   });
 });
 
+describe('wrapFsValidator — the optional readdirInOsOrder listing', () => {
+  const listing = [{ name: 'a', isFile: true, isDirectory: false, isSymbolicLink: false }];
+  // A method that reads its own receiver, as a class-based adapter's does.
+  const fsWithListing = (): FileSystem & { readonly probed: string[] } => {
+    const probed: string[] = [];
+    return {
+      ...stubFs(),
+      probed,
+      readdirInOsOrder(this: { readonly probed: string[] }, path: string) {
+        this.probed.push(path);
+        return Promise.resolve(listing);
+      },
+    };
+  };
+
+  describe('Given an adapter providing readdirInOsOrder and an in-cwd path', () => {
+    describe('When readdirInOsOrder is called through the wrapper', () => {
+      it('Then it delegates on the adapter and returns its answer', async () => {
+        // Arrange
+        const fs = fsWithListing();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        const result = await sut.readdirInOsOrder?.('/repo/x');
+
+        // Assert
+        expect(result).toEqual(listing);
+        expect(fs.probed).toEqual(['/repo/x']);
+      });
+    });
+  });
+
+  describe('Given an adapter providing readdirInOsOrder and a path outside every root', () => {
+    describe('When readdirInOsOrder is called through the wrapper', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO without listing', async () => {
+        // Arrange
+        const fs = fsWithListing();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(async () => sut.readdirInOsOrder?.('/etc/x'));
+        expect(fs.probed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an adapter without readdirInOsOrder', () => {
+    describe('When the wrapper is built', () => {
+      it('Then the wrapper exposes no readdirInOsOrder either', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('readdirInOsOrder' in sut).toBe(false);
+      });
+    });
+  });
+});
+
 describe('wrapFsValidator — the optional lstatIfReachable probe', () => {
   // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
   // call it on the adapter, not detached from it.

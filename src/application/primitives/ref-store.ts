@@ -643,9 +643,6 @@ const byName = (a: RefEntry, b: RefEntry): number => compareRefNames(a.name, b.n
 const byPackedRefName = (a: PackedRefEntry, b: PackedRefEntry): number =>
   compareRefNames(a.name, b.name);
 
-/** Backend dispatcher: `ctx.layout.refStorage` picks the files or reftable
- *  implementation. `getRefStore`'s `Context`-keyed memo (below) is what
- *  keeps this a one-shot decision per Context. */
 /** One `verifyIntegrity` pass: what it found, whether git's walk died, the memoised real gitdir. */
 interface IntegrityRun {
   readonly findings: RefIntegrityFinding[];
@@ -665,6 +662,9 @@ const endOf = (
   reason: failed.reason === 'ROOTLESS' ? 'FILE_NOT_FOUND' : failed.reason,
 });
 
+/** Backend dispatcher: `ctx.layout.refStorage` picks the files or reftable
+ *  implementation. `getRefStore`'s `Context`-keyed memo (below) is what
+ *  keeps this a one-shot decision per Context. */
 export function createRefStore(ctx: Context): RefStore {
   if (ctx.layout.refStorage !== 'reftable') return createFilesRefStore(ctx);
   return withPseudoRefFiles(createReftableRefStore(ctx), createFilesRefStore(ctx));
@@ -1253,6 +1253,12 @@ function createFilesRefStore(ctx: Context): RefStore {
     return outcome.kind === 'resolved' ? outcome.path : ctx.layout.gitDir;
   }
 
+  /** The order git's own `readdir` sees, where the adapter can give it: it decides which
+   *  findings a dying link loses and which garbage root ref is reported first. */
+  function readdirInOsOrder(dir: string): Promise<ReadonlyArray<DirEntry>> {
+    return (ctx.fs.readdirInOsOrder ?? ctx.fs.readdir).call(ctx.fs, dir);
+  }
+
   /** git warns `error opening directory` for a directory the permissions refuse and
    *  carries on with its siblings. */
   async function readdirForIntegrity(
@@ -1260,7 +1266,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     findings: RefIntegrityFinding[],
   ): Promise<ReadonlyArray<DirEntry>> {
     try {
-      return await ctx.fs.readdir(dir);
+      return await readdirInOsOrder(dir);
     } catch (err) {
       if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
       findings.push({ msgId: 'unreadableRefPath', operation: 'open-directory', path: dir });
@@ -1354,7 +1360,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** git checks every root ref after the `refs/` walk, in the gitdir's listing order. */
   async function rootRefFindings(): Promise<readonly RefIntegrityFinding[]> {
     const findings: RefIntegrityFinding[] = [];
-    for (const entry of await ctx.fs.readdir(ctx.layout.gitDir)) {
+    for (const entry of await readdirInOsOrder(ctx.layout.gitDir)) {
       if (entry.isDirectory || !isRootRefName(entry.name)) continue;
       findings.push(...(await looseBodyFindings(entry.name as RefName)));
     }

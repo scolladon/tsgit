@@ -2949,6 +2949,76 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given an adapter that lists a directory in the operating system order', () => {
+    const reversedListing = (ctx: Awaited<ReturnType<typeof buildSeededContext>>): void => {
+      const readdir = ctx.fs.readdir.bind(ctx.fs);
+      Object.assign(ctx.fs, {
+        readdirInOsOrder: async (p: string) => [...(await readdir(p))].reverse(),
+      });
+    };
+
+    describe('When verifyIntegrity walks two loose refs holding garbage', () => {
+      it('Then the findings follow that order, not the sorted one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const heads = `${ctx.layout.gitDir}/refs/heads`;
+        await ctx.fs.writeUtf8(`${heads}/a`, 'garbage\n');
+        await ctx.fs.writeUtf8(`${heads}/z`, 'garbage\n');
+        reversedListing(ctx);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result.map((finding) => ('ref' in finding ? finding.ref : ''))).toEqual([
+          'refs/heads/z',
+          'refs/heads/a',
+        ]);
+      });
+    });
+
+    describe('When verifyIntegrity checks two root refs holding garbage', () => {
+      it('Then the findings follow that order, not the sorted one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/BAR_HEAD`, 'garbage\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ZED_HEAD`, 'garbage\n');
+        reversedListing(ctx);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result.map((finding) => ('ref' in finding ? finding.ref : ''))).toEqual([
+          'ZED_HEAD',
+          'BAR_HEAD',
+        ]);
+      });
+    });
+
+    describe('When that listing faults for another reason than permission', () => {
+      it('Then the fault propagates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fault = new Error('EIO');
+        Object.assign(ctx.fs, {
+          readdirInOsOrder: async () => {
+            throw fault;
+          },
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity().catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+  });
+
   describe('Given a loose ref file whose read is refused and whose lstat faults otherwise', () => {
     describe('When verifyIntegrity is called', () => {
       it('Then the lstat fault propagates', async () => {
