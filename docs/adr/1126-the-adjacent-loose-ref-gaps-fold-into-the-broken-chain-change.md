@@ -47,6 +47,6 @@ shape that needs a further choice returns to the decisions flow before planning.
 ## Consequences
 
 - The five IMPACT lines are folded, none is filed.
-- Two further findings in the same verify and walk are folded too: every root ref's body is checked, not only `HEAD`'s, and resolving a name whose loose path crosses an unreadable directory reads it as missing, ignoring the packed value, as git does.
+- Two further findings in the same verify and walk are folded too: every root ref's body is checked, not only `HEAD`'s, and a name whose loose path crosses an unreadable directory keeps refusing and never takes the packed value, as git does (ADR-1131).
 - Every command that lists or resolves refs runs its interop family in the gate (lesson 015).
 - Review covers the shared walk's callers, not only fsck.

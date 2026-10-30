@@ -21,7 +21,7 @@ included). Pointer lines come from the parent and stay.
 ## Options considered
 
 1. **Faithful: one terminal finding `{ type: 'refs-verify-ended'; ref; path; reason: 'FILE_NOT_FOUND' |
-   'SYMLINK_LOOP' }`, bit 8; the integrity walk stops there** (designer's recommendation) — pros: the
+   'SYMLINK_LOOP' | 'NOT_A_DIRECTORY' | 'PERMISSION_DENIED' }`, bit 8; the integrity walk stops there** (designer's recommendation) — pros: the
    same readdir order on the same filesystem reproduces git's lost lines / cons: a caller loses findings
    git loses.
 2. **The same finding, the walk continues** — cons: a divergence ADR for a reachable shape.
@@ -35,6 +35,8 @@ reason, sets bit 8, and stops: no later content finding is emitted, root refs in
 findings are unaffected. The finding is gated by `checkReferences`.
 
 ## Consequences
+
+- Amended in the planning pass: git also dies `Invalid path …: Not a directory` and `…: Permission denied` (fsck exit 8), so the reason also carries `NOT_A_DIRECTORY` and `PERMISSION_DENIED`.
 
 - The walk order is load-bearing; tests pin both the lost and the kept lines.
 - The parent process never crashes (lesson 017 is not engaged).
