@@ -514,6 +514,79 @@ const REFERENTS: ReadonlyArray<string> = [
   'foo/bar',
 ];
 
+const TRAILING_REF_CONTENT = 'fsck.trailingRefContent';
+const MISSING_NEWLINE = 'fsck.refMissingNewline';
+
+/** A loose body and the configuration it is judged under, seeded alone on a real commit. */
+const bodyRow = (
+  title: string,
+  body: string,
+  extra: Omit<Row, 'title' | 'refs'> = {},
+): ReadonlyArray<Row> =>
+  sortedBothEnds(title, (name) => ({ refs: { [name]: body }, commit: true, ...extra }));
+
+const bodyRows: ReadonlyArray<Row> = [
+  ...bodyRow('UPSPG, upper case name then garbage', '{COMMIT} garbage\n'),
+  ...bodyRow('SPG, name, space, garbage', '{commit} garbage\n'),
+  ...bodyRow('SPG as an error', '{commit} garbage\n', {
+    config: { [TRAILING_REF_CONTENT]: 'error' },
+  }),
+  ...bodyRow('SPG ignored', '{commit} garbage\n', { config: { [TRAILING_REF_CONTENT]: 'ignore' } }),
+  ...bodyRow('SPG, references not checked', '{commit} garbage\n', NO_REFERENCES),
+  ...bodyRow('SPG under strict', '{commit} garbage\n', STRICT),
+  ...bodyRow('TABG, name, tab, garbage', '{commit}\tg\n'),
+  ...bodyRow('SP2, name and two spaces', '{commit}  \n'),
+  ...bodyRow('SPN, name and one space', '{commit} '),
+  ...bodyRow('CRLF, name and carriage return', '{commit}\r\n'),
+  ...bodyRow('NN, name and a blank line', '{commit}\n\n'),
+  ...bodyRow('TWO, name and a second line', '{commit}\nfoo\n'),
+  ...bodyRow('NOLF, name alone', '{commit}'),
+  ...bodyRow('NOLF as an error', '{commit}', { config: { [MISSING_NEWLINE]: 'error' } }),
+  ...bodyRow('NOLF ignored', '{commit}', { config: { [MISSING_NEWLINE]: 'ignore' } }),
+  ...bodyRow('NOLF, references not checked', '{commit}', NO_REFERENCES),
+  ...bodyRow('NOLF under strict', '{commit}', STRICT),
+  ...bodyRow('UPNOLF, upper case name alone', '{COMMIT}'),
+  ...bodyRow('SPGNOLF, name and garbage without a line feed', '{commit} garbage'),
+  ...bodyRow('SYMNOLF, symref without a line feed', 'ref: refs/heads/main'),
+  ...bodyRow('SYMNOLF as an error', 'ref: refs/heads/main', {
+    config: { [MISSING_NEWLINE]: 'error' },
+  }),
+  ...bodyRow('SYMSP, symref and a trailing space', 'ref: refs/heads/main \n'),
+  ...bodyRow('SYMSP as an error', 'ref: refs/heads/main \n', {
+    config: { [TRAILING_REF_CONTENT]: 'error' },
+  }),
+  ...bodyRow('SYMCRLF, symref and carriage return', 'ref: refs/heads/main\r\n'),
+  ...bodyRow('SYMNN, symref and a blank line', 'ref: refs/heads/main\n\n'),
+  ...bodyRow('SYMTABLF, symref and a tab', 'ref: refs/heads/main\t\n'),
+  ...bodyRow('SYMSPNOLF, symref and one space, no line feed', 'ref: refs/heads/main '),
+  ...bodyRow('SYM2SPNOLF, symref and two spaces, no line feed', 'ref: refs/heads/main  '),
+  ...bodyRow('FOO-NOLF, outside referent without a line feed', 'ref: foo'),
+  ...bodyRow('FOO-SP, outside referent and a trailing space', 'ref: foo \n'),
+  ...bodyRow('DOTS-NOLF, dots referent without a line feed', 'ref: x..y'),
+  ...bodyRow('DOTS-NOLF warned', 'ref: x..y', WARN_BAD_REFERENT),
+  ...bodyRow('EMPTY-REFERENT, keyword and a space', 'ref: \n'),
+  ...bodyRow('EMPTY-REFERENT-NN, keyword and blank lines', 'ref: \n\n'),
+  ...bodyRow('EMPTY-REFERENT-bare, keyword alone', 'ref:'),
+  {
+    title: 'HEADTRAIL, HEAD with a trailing space',
+    refs: {},
+    head: 'ref: refs/heads/main \n',
+  },
+  { title: 'HEADNOLF, HEAD without a line feed', refs: {}, head: 'ref: refs/heads/main' },
+  {
+    title: 'R4, a root ref without a line feed alone',
+    refs: {},
+    root: { ORIG_HEAD: '{commit}' },
+    commit: true,
+  },
+  {
+    title: 'R5, a root ref with trailing garbage alone',
+    refs: {},
+    root: { ORIG_HEAD: '{commit} garbage\n' },
+    commit: true,
+  },
+];
+
 const referentRows: ReadonlyArray<Row> = [
   ...sortedBothEnds('dots referent behind a symbolic ref', (name) => ({
     refs: { [name]: toB, b: DOTS },
@@ -638,6 +711,7 @@ const referentRows: ReadonlyArray<Row> = [
     commit: true,
   })),
   ...sortedBothEnds('empty ref file', (name) => ({ refs: { [name]: '' } })),
+  ...bodyRows,
 ];
 
 const roots: string[] = [];
@@ -770,6 +844,16 @@ const rebuiltLines = (
         `${label}: ${finding.ref}: symrefTargetIsNotARef: points to non-ref target '${displayed(finding.referent ?? '')}'`,
       ];
     }
+    if (finding.msgId === 'refMissingNewline') {
+      return [`${label}: ${finding.ref}: refMissingNewline: misses LF at the end`];
+    }
+    if (finding.msgId === 'trailingRefContent') {
+      const detail =
+        finding.trailing === undefined
+          ? 'has trailing whitespaces or newlines'
+          : `has trailing garbage: '${displayed(finding.trailing)}'`;
+      return [`${label}: ${finding.ref}: trailingRefContent: ${detail}`];
+    }
     const body = row.root?.[finding.ref] ?? row.refs[finding.ref.replace('refs/heads/', '')] ?? '';
     return [
       `${label}: ${finding.ref}: ${finding.msgId}: ${displayed(fill(body).replace(TRAILING_BYTES, ''))}`,
@@ -777,16 +861,17 @@ const rebuiltLines = (
   });
 
 const LINE_FEED_CODE = 0x0a;
+const TAB_CODE = 0x09;
 const FIRST_PRINTABLE_CODE = 0x20;
 const DELETE_CODE = 0x7f;
 
-/** git prints every control byte but LF as `?`. */
+/** git prints every control byte but LF and TAB as `?`. */
 const displayed = (text: string): string =>
   [...text]
     .map((char) => {
       const code = char.charCodeAt(0);
       const control = code < FIRST_PRINTABLE_CODE || code === DELETE_CODE;
-      return control && code !== LINE_FEED_CODE ? '?' : char;
+      return control && code !== LINE_FEED_CODE && code !== TAB_CODE ? '?' : char;
     })
     .join('');
 

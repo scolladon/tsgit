@@ -786,3 +786,350 @@ describe('Given a root ref whose referent git rejects', () => {
     });
   });
 });
+
+const SHA = '1'.repeat(40);
+const BODY_MSG_IDS: ReadonlySet<string> = new Set(['trailingRefContent', 'refMissingNewline']);
+
+const bodyNoticesOf = (result: Awaited<ReturnType<typeof fsck>>) =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && BODY_MSG_IDS.has(finding.msgId)
+      ? [
+          {
+            ref: finding.ref,
+            msgId: finding.msgId,
+            severity: finding.severity,
+            trailing: finding.trailing,
+          },
+        ]
+      : [],
+  );
+
+describe('Given a direct ref with garbage after the object name', () => {
+  describe('When fsck runs', () => {
+    it('Then trailingRefContent is info and carries the trailing bytes', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', `${SHA} garbage\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(bodyNoticesOf(result)).toEqual([
+        {
+          ref: 'refs/heads/b',
+          msgId: 'trailingRefContent',
+          severity: 'info',
+          trailing: ' garbage\n',
+        },
+      ]);
+    });
+  });
+});
+
+describe('Given a direct ref with no line feed after the object name', () => {
+  describe('When fsck runs', () => {
+    it('Then refMissingNewline is info and carries no trailing bytes', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', SHA);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(bodyNoticesOf(result)).toEqual([
+        { ref: 'refs/heads/b', msgId: 'refMissingNewline', severity: 'info', trailing: undefined },
+      ]);
+    });
+  });
+});
+
+describe('Given a symbolic ref with trailing whitespace', () => {
+  describe('When fsck runs', () => {
+    it('Then trailingRefContent is info and carries no trailing bytes', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', 'ref: refs/heads/main \n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(bodyNoticesOf(result)).toEqual([
+        { ref: 'refs/heads/b', msgId: 'trailingRefContent', severity: 'info', trailing: undefined },
+      ]);
+    });
+  });
+});
+
+const msgIdsOf = (result: Awaited<ReturnType<typeof fsck>>, ref: string) =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.ref === ref ? [finding.msgId] : [],
+  );
+
+describe('Given a symbolic ref with no line feed', () => {
+  describe('When fsck runs', () => {
+    it('Then refMissingNewline is info', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', 'ref: refs/heads/main');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(bodyNoticesOf(result)).toEqual([
+        { ref: 'refs/heads/b', msgId: 'refMissingNewline', severity: 'info', trailing: undefined },
+      ]);
+    });
+  });
+
+  describe('When the referent is invalid', () => {
+    it('Then refMissingNewline comes before badReferentName', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', 'ref: x..y');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(msgIdsOf(result, 'refs/heads/b')).toEqual([
+        'refMissingNewline',
+        'badReferentName',
+        'badRefOid',
+      ]);
+    });
+  });
+
+  describe('When it also ends with two spaces', () => {
+    it('Then refMissingNewline comes before trailingRefContent', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', 'ref: refs/heads/main  ');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(bodyNoticesOf(result).map((found) => found.msgId)).toEqual([
+        'refMissingNewline',
+        'trailingRefContent',
+      ]);
+    });
+  });
+});
+
+describe('Given a direct ref body git does not flag', () => {
+  describe.each([
+    { shape: 'name and a line feed', body: `${SHA}\n` },
+    { shape: 'symref and a line feed', body: 'ref: refs/heads/main\n' },
+    { shape: 'an empty file', body: '' },
+  ])('$shape', ({ body }) => {
+    describe('When fsck runs', () => {
+      it('Then no body notice is reported', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plant(ctx, 'b', body);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(bodyNoticesOf(result)).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('Given a symbolic ref whose referent is empty', () => {
+  describe.each([
+    { shape: 'a keyword and a space', body: 'ref: \n' },
+    { shape: 'a keyword and blank lines', body: 'ref: \n\n' },
+    { shape: 'a keyword alone', body: 'ref:' },
+  ])('$shape', ({ body }) => {
+    describe('When fsck runs', () => {
+      it('Then only refMissingNewline is reported among the body notices', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plant(ctx, 'b', body);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(bodyNoticesOf(result).map((found) => found.msgId)).toEqual(['refMissingNewline']);
+      });
+    });
+  });
+});
+
+describe('Given a body notice and its configuration', () => {
+  describe.each([
+    { msg: 'trailingRefContent', body: `${SHA} garbage\n` },
+    { msg: 'refMissingNewline', body: SHA },
+  ])('$msg', ({ msg, body }) => {
+    describe('When fsck runs by default', () => {
+      it('Then the notice is info and the exit has no content bit', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plant(ctx, 'b', body);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(bodyNoticesOf(result).map((found) => found.severity)).toEqual(['info']);
+        expect(result.exitCode & EXIT_CONTENT).toBe(0);
+      });
+    });
+
+    describe('When the message is configured as an error', () => {
+      it('Then the notice is an error and the exit has bit 8', async () => {
+        // Arrange
+        const ctx = await repository();
+        await configure(ctx, `\t${msg} = error\n`);
+        await plant(ctx, 'b', body);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(bodyNoticesOf(result).map((found) => found.severity)).toEqual(['error']);
+        expect(result.exitCode & EXIT_CONTENT).toBe(EXIT_CONTENT);
+      });
+    });
+
+    describe('When the message is configured as a warning', () => {
+      it('Then the notice is a warning', async () => {
+        // Arrange
+        const ctx = await repository();
+        await configure(ctx, `\t${msg} = warn\n`);
+        await plant(ctx, 'b', body);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(bodyNoticesOf(result).map((found) => found.severity)).toEqual(['warning']);
+      });
+    });
+
+    describe('When the message is ignored', () => {
+      it('Then the notice is dropped', async () => {
+        // Arrange
+        const ctx = await repository();
+        await configure(ctx, `\t${msg} = ignore\n`);
+        await plant(ctx, 'b', body);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(bodyNoticesOf(result)).toEqual([]);
+      });
+    });
+
+    describe('When references are not checked', () => {
+      it('Then the notice is dropped', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plant(ctx, 'b', body);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx, { checkReferences: false });
+
+        // Assert
+        expect(bodyNoticesOf(result)).toEqual([]);
+      });
+    });
+
+    describe('When fsck runs strict', () => {
+      it('Then the notice keeps its info grade', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plant(ctx, 'b', body);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx, { strict: true });
+
+        // Assert
+        expect(bodyNoticesOf(result).map((found) => found.severity)).toEqual(['info']);
+      });
+    });
+  });
+});
+
+describe('Given a symbolic ref whose referent is an error and which misses its line feed', () => {
+  describe('When fsck runs', () => {
+    it('Then the notice survives the referent error', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', 'ref: x..y');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(bodyNoticesOf(result).map((found) => found.msgId)).toEqual(['refMissingNewline']);
+      expect(result.exitCode & EXIT_CONTENT).toBe(EXIT_CONTENT);
+    });
+  });
+});
+
+describe('Given a root ref missing its line feed', () => {
+  describe.each([
+    { shape: 'sorting first', warned: 'AAA_HEAD', failing: 'ZED_HEAD' },
+    { shape: 'sorting last', warned: 'ZED_HEAD', failing: 'AAA_HEAD' },
+  ])('$shape', ({ warned, failing }) => {
+    describe('When another root ref holds garbage', () => {
+      it('Then the warning does not end the root-ref check', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plantRoot(ctx, warned, SHA);
+        await plantRoot(ctx, failing, GARBAGE);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(bodyNoticesOf(result).map((found) => found.ref)).toEqual([warned]);
+        expect(badContentRefs(result)).toEqual([failing]);
+      });
+    });
+  });
+
+  describe('When an earlier root ref holds garbage', () => {
+    it('Then the error ended the check and the notice is not reported', async () => {
+      // Arrange
+      const ctx = await repository();
+      await configure(ctx, '\trefMissingNewline = error\n');
+      await plantRoot(ctx, 'AAA_HEAD', GARBAGE);
+      await plantRoot(ctx, 'ZED_HEAD', SHA);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(bodyNoticesOf(result)).toEqual([]);
+    });
+  });
+});

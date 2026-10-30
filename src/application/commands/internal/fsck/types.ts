@@ -59,6 +59,8 @@ export type FsckFinding =
       /** The name a symbolic ref points to, exactly as read, on `badReferentName` and
        *  `symrefTargetIsNotARef` — not a `RefName`: git reports it because it is not one. */
       readonly referent?: string;
+      /** The bytes after the object name, on a direct body's `trailingRefContent`. */
+      readonly trailing?: string;
     }
   | {
       /** A path git's refs walk could not open or stat — `error opening directory` /

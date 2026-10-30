@@ -90,7 +90,13 @@ const REFS_PREFIX = 'refs/';
 type ContentFinding = Extract<
   RefIntegrityFinding,
   {
-    readonly msgId: 'badRefContent' | 'cannotReadRef' | 'badReferentName' | 'symrefTargetIsNotARef';
+    readonly msgId:
+      | 'badRefContent'
+      | 'cannotReadRef'
+      | 'badReferentName'
+      | 'symrefTargetIsNotARef'
+      | 'trailingRefContent'
+      | 'refMissingNewline';
   }
 >;
 
@@ -99,12 +105,16 @@ interface ContentGrades {
   readonly badContent: FsckConfiguredSeverity;
   readonly badReferent: FsckConfiguredSeverity;
   readonly notARef: FsckConfiguredSeverity;
+  readonly trailing: FsckConfiguredSeverity;
+  readonly missingNewline: FsckConfiguredSeverity;
 }
 
 const gradesOf = (severities: FsckSeverityTable): ContentGrades => ({
   badContent: retypeSeverity(severities, 'badRefContent', 'error'),
   badReferent: retypeSeverity(severities, 'badReferentName', 'error'),
   notARef: retypeSeverity(severities, 'symrefTargetIsNotARef', 'info'),
+  trailing: retypeSeverity(severities, 'trailingRefContent', 'info'),
+  missingNewline: retypeSeverity(severities, 'refMissingNewline', 'info'),
 });
 
 const unreadablePathFinding = ({
@@ -125,6 +135,8 @@ const CONTENT_MSG_IDS: ReadonlySet<string> = new Set([
   'cannotReadRef',
   'badReferentName',
   'symrefTargetIsNotARef',
+  'trailingRefContent',
+  'refMissingNewline',
 ]);
 
 const isContentFinding = (finding: RefIntegrityFinding): finding is ContentFinding =>
@@ -146,9 +158,19 @@ function contentSeverity(
     const dropped = grades.badReferent === 'error' && shadowed.has(finding.ref);
     return dropped || grades.notARef === 'ignore' ? undefined : grades.notARef;
   }
-  const grade = finding.msgId === 'badReferentName' ? grades.badReferent : grades.badContent;
+  const grade = ownGrade(finding.msgId, grades);
   return grade === 'ignore' ? undefined : grade;
 }
+
+const ownGrade = (
+  msgId: ContentFinding['msgId'],
+  grades: ContentGrades,
+): FsckConfiguredSeverity => {
+  if (msgId === 'badReferentName') return grades.badReferent;
+  if (msgId === 'trailingRefContent') return grades.trailing;
+  if (msgId === 'refMissingNewline') return grades.missingNewline;
+  return grades.badContent;
+};
 
 function contentFinding(
   finding: ContentFinding,
@@ -160,6 +182,14 @@ function contentFinding(
   }
   if (finding.msgId === 'badRefContent') {
     return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity };
+  }
+  if (finding.msgId === 'refMissingNewline') {
+    return { type: 'bad-ref', ref: finding.ref, msgId: 'refMissingNewline', severity };
+  }
+  if (finding.msgId === 'trailingRefContent') {
+    const { ref, trailing } = finding;
+    const base = { type: 'bad-ref', ref, msgId: 'trailingRefContent', severity } as const;
+    return trailing === undefined ? base : { ...base, trailing };
   }
   const { ref, msgId, referent } = finding;
   return { type: 'bad-ref', ref, msgId, severity, referent };

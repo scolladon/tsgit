@@ -50,9 +50,13 @@ const trimStartWhitespace = (text: string): string => {
 
 function readSymbolicBody(content: string): LooseBody {
   const body = trimEndWhitespace(content);
+  const referent = trimStartWhitespace(body.slice(SYMREF_KEYWORD.length));
+  if (referent === '') {
+    return { kind: 'symbolic', referent, missingNewline: true, trailingWhitespace: false };
+  }
   return {
     kind: 'symbolic',
-    referent: trimStartWhitespace(body.slice(SYMREF_KEYWORD.length)),
+    referent,
     missingNewline: !content.endsWith(LINE_FEED),
     trailingWhitespace: content.length - body.length > 1,
   };

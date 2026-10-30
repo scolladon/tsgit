@@ -37,7 +37,7 @@ import {
   serializePackedRefs,
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
-import { readLooseBody } from '../../domain/refs/loose-ref.js';
+import { type LooseBody, readLooseBody } from '../../domain/refs/loose-ref.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
 import { isPseudoRef } from '../../domain/refs/per-worktree-ref.js';
 import {
@@ -250,6 +250,8 @@ export type RefIntegrityFinding =
       readonly msgId: 'badReferentName' | 'symrefTargetIsNotARef';
       readonly referent: string;
     }
+  | { readonly ref: RefName; readonly msgId: 'refMissingNewline' }
+  | { readonly ref: RefName; readonly msgId: 'trailingRefContent'; readonly trailing?: string }
   | {
       readonly msgId: 'unreadableRefPath';
       readonly operation: 'open-directory' | 'stat';
@@ -1247,9 +1249,31 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (raw === undefined) return [];
     const body = readLooseBody(raw, ctx.hashConfig.hexLength);
     if (body.kind === 'unparseable') return [{ ref: name, msgId: 'badRefContent' }];
-    if (body.kind === 'symbolic') return referentFindings(name, body.referent);
-    if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), body.id))) return [];
-    return [{ ref: name, msgId: 'badRefOid', target: body.id }];
+    if (body.kind === 'symbolic') {
+      return [...symbolicBodyNotices(name, body), ...referentFindings(name, body.referent)];
+    }
+    const notices = directBodyNotices(name, body);
+    if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), body.id))) return notices;
+    return [...notices, { ref: name, msgId: 'badRefOid', target: body.id }];
+  }
+
+  function symbolicBodyNotices(
+    ref: RefName,
+    body: Extract<LooseBody, { readonly kind: 'symbolic' }>,
+  ): readonly RefIntegrityFinding[] {
+    const notices: RefIntegrityFinding[] = [];
+    if (body.missingNewline) notices.push({ ref, msgId: 'refMissingNewline' });
+    if (body.trailingWhitespace) notices.push({ ref, msgId: 'trailingRefContent' });
+    return notices;
+  }
+
+  function directBodyNotices(
+    ref: RefName,
+    body: Extract<LooseBody, { readonly kind: 'direct' }>,
+  ): readonly RefIntegrityFinding[] {
+    if (body.missingNewline) return [{ ref, msgId: 'refMissingNewline' }];
+    if (body.trailing === undefined) return [];
+    return [{ ref, msgId: 'trailingRefContent', trailing: body.trailing }];
   }
 
   function referentFindings(ref: RefName, referent: string): readonly RefIntegrityFinding[] {

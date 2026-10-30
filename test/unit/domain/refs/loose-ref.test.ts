@@ -98,6 +98,9 @@ describe('readLooseBody (grammar classes)', () => {
         { content: 'ref: refs/heads/main', referent: 'refs/heads/main', nl: true, tw: false },
         { content: 'ref: refs/heads/main ', referent: 'refs/heads/main', nl: true, tw: false },
         { content: 'ref: ', referent: '', nl: true, tw: false },
+        { content: 'ref: \n', referent: '', nl: true, tw: false },
+        { content: 'ref: \n\n', referent: '', nl: true, tw: false },
+        { content: 'ref:', referent: '', nl: true, tw: false },
         {
           content: 'ref: refs/heads/main\nextra\n',
           referent: 'refs/heads/main\nextra',
