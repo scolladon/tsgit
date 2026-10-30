@@ -2677,6 +2677,109 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a loose symref whose referent git rejects', () => {
+    describe.each([
+      { shape: 'the ref sorts first', name: 'a' },
+      { shape: 'the ref sorts last', name: 'z' },
+    ])('$shape', ({ name }) => {
+      describe('When verifyIntegrity is called', () => {
+        it('Then badReferentName and symrefTargetIsNotARef carry the referent as read', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/${name}`, 'ref: x..y\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          const ref = `refs/heads/${name}`;
+          expect(result).toContainEqual({ ref, msgId: 'badReferentName', referent: 'x..y' });
+          expect(result).toContainEqual({ ref, msgId: 'symrefTargetIsNotARef', referent: 'x..y' });
+        });
+      });
+    });
+  });
+
+  describe('Given a loose symref to a valid ref outside refs/', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then only symrefTargetIsNotARef is returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/s`, 'ref: foo/bar\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(
+          result.filter((finding) => 'ref' in finding && finding.ref === 'refs/heads/s'),
+        ).toEqual([{ ref: 'refs/heads/s', msgId: 'symrefTargetIsNotARef', referent: 'foo/bar' }]);
+      });
+    });
+  });
+
+  describe('Given a loose symref to a root ref', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then no referent finding is returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/s`, 'ref: ORIG_HEAD\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(
+          result.filter((finding) => 'ref' in finding && finding.ref === 'refs/heads/s'),
+        ).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a loose ref holding an upper case object name', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then it is no finding', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('x'),
+          id: '' as ObjectId,
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/u`, `${id.toUpperCase()}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(
+          result.filter((finding) => 'ref' in finding && finding.ref === 'refs/heads/u'),
+        ).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a loose ref holding a sixty-four digit name in a sha1 repository', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then it is badRefContent', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/w`, `${'a'.repeat(64)}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({ ref: 'refs/heads/w', msgId: 'badRefContent' });
+      });
+    });
+  });
+
   describe('Given a loose ref file whose read is refused for permission', () => {
     describe.each([
       { shape: 'the ref sorts first', name: 'a' },

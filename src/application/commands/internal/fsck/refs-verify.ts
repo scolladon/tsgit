@@ -89,8 +89,23 @@ const REFS_PREFIX = 'refs/';
 
 type ContentFinding = Extract<
   RefIntegrityFinding,
-  { readonly msgId: 'badRefContent' | 'cannotReadRef' }
+  {
+    readonly msgId: 'badRefContent' | 'cannotReadRef' | 'badReferentName' | 'symrefTargetIsNotARef';
+  }
 >;
+
+/** The configured grade of each message the content pass reports. */
+interface ContentGrades {
+  readonly badContent: FsckConfiguredSeverity;
+  readonly badReferent: FsckConfiguredSeverity;
+  readonly notARef: FsckConfiguredSeverity;
+}
+
+const gradesOf = (severities: FsckSeverityTable): ContentGrades => ({
+  badContent: retypeSeverity(severities, 'badRefContent', 'error'),
+  badReferent: retypeSeverity(severities, 'badReferentName', 'error'),
+  notARef: retypeSeverity(severities, 'symrefTargetIsNotARef', 'info'),
+});
 
 const unreadablePathFinding = ({
   path,
@@ -105,20 +120,34 @@ const unreadablePathFinding = ({
   reason: 'PERMISSION_DENIED',
 });
 
+const CONTENT_MSG_IDS: ReadonlySet<string> = new Set([
+  'badRefContent',
+  'cannotReadRef',
+  'badReferentName',
+  'symrefTargetIsNotARef',
+]);
+
 const isContentFinding = (finding: RefIntegrityFinding): finding is ContentFinding =>
-  finding.msgId === 'badRefContent' || finding.msgId === 'cannotReadRef';
+  CONTENT_MSG_IDS.has(finding.msgId);
 
 /**
  * The severity a loose-ref content finding is reported at, or `undefined` when it is not
- * reported. `badRefContent` is re-typed by `fsck.<msg-id>`; `cannotReadRef` is always an
- * error — no setting and no `--strict` re-types it.
+ * reported. Each message is re-typed by its own `fsck.<msg-id>`; `cannotReadRef` is always
+ * an error — no setting and no `--strict` re-types it. A ref whose referent is an error
+ * is not also told it points at a non-ref.
  */
 function contentSeverity(
   finding: ContentFinding,
-  badContentSeverity: FsckConfiguredSeverity,
+  grades: ContentGrades,
+  shadowed: ReadonlySet<RefName>,
 ): BadRefFinding['severity'] | undefined {
   if (finding.msgId === 'cannotReadRef') return 'error';
-  return badContentSeverity === 'ignore' ? undefined : badContentSeverity;
+  if (finding.msgId === 'symrefTargetIsNotARef') {
+    const dropped = grades.badReferent === 'error' && shadowed.has(finding.ref);
+    return dropped || grades.notARef === 'ignore' ? undefined : grades.notARef;
+  }
+  const grade = finding.msgId === 'badReferentName' ? grades.badReferent : grades.badContent;
+  return grade === 'ignore' ? undefined : grade;
 }
 
 function contentFinding(
@@ -129,8 +158,21 @@ function contentFinding(
     const { ref, path, reason } = finding;
     return { type: 'bad-ref', ref, msgId: 'cannotReadRef', severity, path, reason };
   }
-  return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity };
+  if (finding.msgId === 'badRefContent') {
+    return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity };
+  }
+  const { ref, msgId, referent } = finding;
+  return { type: 'bad-ref', ref, msgId, severity, referent };
 }
+
+const refsWithInvalidReferent = (
+  integrityFindings: ReadonlyArray<RefIntegrityFinding>,
+): ReadonlySet<RefName> =>
+  new Set(
+    integrityFindings.flatMap((finding) =>
+      finding.msgId === 'badReferentName' ? [finding.ref] : [],
+    ),
+  );
 
 /**
  * A ref whose content is not an object name, or whose file the permissions refuse: the
@@ -144,14 +186,15 @@ function collectContentNotices(
   checkContentFormat: boolean,
   severities: FsckSeverityTable,
 ): PassResult {
-  const badContentSeverity = retypeSeverity(severities, 'badRefContent', 'error');
+  const grades = gradesOf(severities);
+  const shadowed = refsWithInvalidReferent(integrityFindings);
   const findings: Array<BadRefFinding | UnreadablePathFinding> = [];
   let rootCheckEnded = false;
   for (const finding of integrityFindings) {
     if (!checkContentFormat) continue;
     if (finding.msgId === 'unreadableRefPath') findings.push(unreadablePathFinding(finding));
     if (!isContentFinding(finding)) continue;
-    const severity = contentSeverity(finding, badContentSeverity);
+    const severity = contentSeverity(finding, grades, shadowed);
     if (severity === undefined) continue;
     const isRootRef = !finding.ref.startsWith(REFS_PREFIX);
     if (isRootRef && rootCheckEnded) continue;

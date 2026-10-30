@@ -37,6 +37,7 @@ import {
   serializePackedRefs,
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
+import { readLooseBody } from '../../domain/refs/loose-ref.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
 import { isPseudoRef } from '../../domain/refs/per-worktree-ref.js';
 import {
@@ -45,7 +46,11 @@ import {
   refNamePrefixes,
   type TransactionNames,
 } from '../../domain/refs/ref-name-conflict.js';
-import { isRootRefName } from '../../domain/refs/symref-referent.js';
+import {
+  isOutsideRefsNamespace,
+  isRootRefName,
+  isValidSymrefReferent,
+} from '../../domain/refs/symref-referent.js';
 import { type TakenNameIndex, takenNameIndex } from '../../domain/refs/taken-name-index.js';
 import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
@@ -240,6 +245,11 @@ export type RefIntegrityFinding =
       readonly reason: 'PERMISSION_DENIED';
     }
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
+  | {
+      readonly ref: RefName;
+      readonly msgId: 'badReferentName' | 'symrefTargetIsNotARef';
+      readonly referent: string;
+    }
   | {
       readonly msgId: 'unreadableRefPath';
       readonly operation: 'open-directory' | 'stat';
@@ -550,9 +560,6 @@ const packedCacheKey = (stat: FileStat): string => `${stat.mtimeMs}:${stat.size}
  *  smallest one that pays for a prepare pass ahead of its writes. */
 const MIN_TRANSACTION_SIZE = 2;
 const REFS_DIR = 'refs';
-const SYMBOLIC_PREFIX = 'ref: ';
-/** Matches valid SHA-1 (40-hex) or SHA-256 (64-hex) loose-ref content. */
-const LOOSE_OID_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
 function isFileNotFound(err: unknown): boolean {
   return errorDataCode(err) === 'FILE_NOT_FOUND';
@@ -1186,8 +1193,7 @@ function createFilesRefStore(ctx: Context): RefStore {
         await walkIntegrity(`${dir}/${entry.name}`, name, findings);
         continue;
       }
-      const finding = await looseBodyFinding(name);
-      if (finding !== undefined) findings.push(finding);
+      findings.push(...(await looseBodyFindings(name)));
     }
   }
 
@@ -1228,23 +1234,33 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
-  /** `name`'s loose-body verdict: a `ref:` line is healthy, anything that is
-   *  not a well-formed oid is `badRefContent`, and an oid with no LOOSE
-   *  object behind it is `badRefOid`. A pack-registry probe (multi-pack-index,
+  /** `name`'s loose-body verdicts, in git's order. A malformed body is `badRefContent`;
+   *  an oid with no LOOSE object behind it is `badRefOid`; a `ref:` body is judged on its
+   *  referent alone, each fact independent. A pack-registry probe (multi-pack-index,
    *  delta bases…) belongs to a caller's own reachability audit, not this
    *  grammar check — fsck's refs-verify pass runs its own OID-presence check
    *  against its scan-scoped universe once no `badRefContent` finding has
    *  already flagged this ref. */
-  async function looseBodyFinding(name: RefName): Promise<RefIntegrityFinding | undefined> {
+  async function looseBodyFindings(name: RefName): Promise<readonly RefIntegrityFinding[]> {
     const raw = await readLooseContentOrRefusal(name);
-    if (typeof raw === 'object') return raw;
-    if (raw === undefined) return undefined;
-    const content = raw.replace(/[\r\n]+$/, '');
-    if (content.startsWith(SYMBOLIC_PREFIX)) return undefined;
-    if (!LOOSE_OID_RE.test(content)) return { ref: name, msgId: 'badRefContent' };
-    const oid = content as ObjectId;
-    if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), oid))) return undefined;
-    return { ref: name, msgId: 'badRefOid', target: oid };
+    if (typeof raw === 'object') return [raw];
+    if (raw === undefined) return [];
+    const body = readLooseBody(raw, ctx.hashConfig.hexLength);
+    if (body.kind === 'unparseable') return [{ ref: name, msgId: 'badRefContent' }];
+    if (body.kind === 'symbolic') return referentFindings(name, body.referent);
+    if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), body.id))) return [];
+    return [{ ref: name, msgId: 'badRefOid', target: body.id }];
+  }
+
+  function referentFindings(ref: RefName, referent: string): readonly RefIntegrityFinding[] {
+    const findings: RefIntegrityFinding[] = [];
+    if (!isValidSymrefReferent(referent)) {
+      findings.push({ ref, msgId: 'badReferentName', referent });
+    }
+    if (isOutsideRefsNamespace(referent)) {
+      findings.push({ ref, msgId: 'symrefTargetIsNotARef', referent });
+    }
+    return findings;
   }
 
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
@@ -1261,8 +1277,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const findings: RefIntegrityFinding[] = [];
     for (const entry of await ctx.fs.readdir(ctx.layout.gitDir)) {
       if (entry.isDirectory || !isRootRefName(entry.name)) continue;
-      const finding = await looseBodyFinding(entry.name as RefName);
-      if (finding !== undefined) findings.push(finding);
+      findings.push(...(await looseBodyFindings(entry.name as RefName)));
     }
     return findings;
   }

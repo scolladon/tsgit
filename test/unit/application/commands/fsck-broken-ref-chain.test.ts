@@ -575,3 +575,214 @@ describe('Given a ref file whose read and whose stat the permissions refuse', ()
     });
   });
 });
+
+const EXIT_CONTENT = 8;
+const EXIT_WARNINGS_ONLY = 2;
+const DOTS_BODY = 'ref: x..y\n';
+
+const referentFindingsOf = (result: Awaited<ReturnType<typeof fsck>>) =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.referent !== undefined
+      ? [
+          {
+            ref: finding.ref,
+            msgId: finding.msgId,
+            severity: finding.severity,
+            referent: finding.referent,
+          },
+        ]
+      : [],
+  );
+
+const configure = async (ctx: Context, lines: string): Promise<void> => {
+  __resetConfigCacheForTests();
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[fsck]\n${lines}`);
+};
+
+describe('Given a symbolic ref whose referent git rejects', () => {
+  describe.each([
+    { shape: 'the ref sorts first', name: 'a' },
+    { shape: 'the ref sorts last', name: 'z' },
+  ])('$shape', ({ name }) => {
+    describe('When fsck runs', () => {
+      it('Then badReferentName is an error carrying the referent, and the exit has bit 8', async () => {
+        // Arrange
+        const ctx = await repository();
+        await plant(ctx, name, DOTS_BODY);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(referentFindingsOf(result)).toEqual([
+          {
+            ref: `refs/heads/${name}`,
+            msgId: 'badReferentName',
+            severity: 'error',
+            referent: 'x..y',
+          },
+        ]);
+        expect(result.exitCode & EXIT_CONTENT).toBe(EXIT_CONTENT);
+      });
+    });
+  });
+});
+
+describe('Given badReferentName re-typed as a warning', () => {
+  describe('When fsck runs on a dots referent', () => {
+    it('Then the non-ref target is kept as info and no error bit is set', async () => {
+      // Arrange
+      const ctx = await repository();
+      await configure(ctx, '\tbadReferentName = warn\n');
+      await plant(ctx, 'b', DOTS_BODY);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(referentFindingsOf(result)).toEqual([
+        { ref: 'refs/heads/b', msgId: 'badReferentName', severity: 'warning', referent: 'x..y' },
+        { ref: 'refs/heads/b', msgId: 'symrefTargetIsNotARef', severity: 'info', referent: 'x..y' },
+      ]);
+      expect(result.exitCode).toBe(EXIT_WARNINGS_ONLY);
+    });
+  });
+
+  describe('When strict fsck runs on a dots referent', () => {
+    it('Then both findings keep their configured grades', async () => {
+      // Arrange
+      const ctx = await repository();
+      await configure(ctx, '\tbadReferentName = warn\n');
+      await plant(ctx, 'b', DOTS_BODY);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { strict: true });
+
+      // Assert
+      expect(referentFindingsOf(result).map((found) => found.severity)).toEqual([
+        'warning',
+        'info',
+      ]);
+      expect(result.exitCode).toBe(EXIT_WARNINGS_ONLY);
+    });
+  });
+});
+
+describe('Given badReferentName ignored', () => {
+  describe('When fsck runs on a dots referent', () => {
+    it('Then only the non-ref target is reported', async () => {
+      // Arrange
+      const ctx = await repository();
+      await configure(ctx, '\tbadReferentName = ignore\n');
+      await plant(ctx, 'b', DOTS_BODY);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(referentFindingsOf(result).map((found) => found.msgId)).toEqual([
+        'symrefTargetIsNotARef',
+      ]);
+    });
+  });
+});
+
+describe('Given both referent messages ignored', () => {
+  describe('When fsck runs on a dots referent', () => {
+    it('Then no referent finding is reported', async () => {
+      // Arrange
+      const ctx = await repository();
+      await configure(ctx, '\tbadReferentName = ignore\n\tsymrefTargetIsNotARef = ignore\n');
+      await plant(ctx, 'b', DOTS_BODY);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(referentFindingsOf(result)).toEqual([]);
+    });
+  });
+});
+
+describe('Given a valid referent outside refs/', () => {
+  describe('When fsck runs', () => {
+    it('Then the non-ref target is info and the exit carries no content bit', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'b', 'ref: foo/bar\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(referentFindingsOf(result)).toEqual([
+        {
+          ref: 'refs/heads/b',
+          msgId: 'symrefTargetIsNotARef',
+          severity: 'info',
+          referent: 'foo/bar',
+        },
+      ]);
+      expect(result.exitCode).toBe(EXIT_WARNINGS_ONLY);
+    });
+  });
+
+  describe('When symrefTargetIsNotARef is an error', () => {
+    it('Then it is reported as an error and the exit has bit 8', async () => {
+      // Arrange
+      const ctx = await repository();
+      await configure(ctx, '\tsymrefTargetIsNotARef = error\n');
+      await plant(ctx, 'b', 'ref: foo/bar\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(referentFindingsOf(result).map((found) => found.severity)).toEqual(['error']);
+      expect(result.exitCode).toBe(EXIT_CONTENT | EXIT_WARNINGS_ONLY);
+    });
+  });
+
+  describe('When symrefTargetIsNotARef is an error and references are not checked', () => {
+    it('Then nothing is reported by the content pass', async () => {
+      // Arrange
+      const ctx = await repository();
+      await configure(ctx, '\tsymrefTargetIsNotARef = error\n');
+      await plant(ctx, 'b', 'ref: foo/bar\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(referentFindingsOf(result)).toEqual([]);
+      expect(result.exitCode).toBe(EXIT_WARNINGS_ONLY);
+    });
+  });
+});
+
+describe('Given a root ref whose referent git rejects', () => {
+  describe('When fsck runs with a later root ref holding garbage', () => {
+    it('Then the error ends the root-ref check', async () => {
+      // Arrange
+      const ctx = await repository();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/x..y\n');
+      await plantRoot(ctx, 'ZED_HEAD', GARBAGE);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(referentFindingsOf(result).map((found) => found.ref)).toEqual(['HEAD']);
+      expect(badContentRefs(result)).toEqual([]);
+    });
+  });
+});

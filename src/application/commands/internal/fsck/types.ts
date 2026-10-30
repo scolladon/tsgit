@@ -56,6 +56,9 @@ export type FsckFinding =
       readonly path?: string;
       /** Why that file could not be read. */
       readonly reason?: 'PERMISSION_DENIED';
+      /** The name a symbolic ref points to, exactly as read, on `badReferentName` and
+       *  `symrefTargetIsNotARef` — not a `RefName`: git reports it because it is not one. */
+      readonly referent?: string;
     }
   | {
       /** A path git's refs walk could not open or stat — `error opening directory` /

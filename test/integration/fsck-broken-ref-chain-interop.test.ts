@@ -33,6 +33,8 @@ const REFUSED = 0o000;
 const RESTORED = 0o755;
 const LINKED_ID = 'wt';
 
+type Fill = (text: string) => string;
+
 interface Row {
   readonly title: string;
   /** Loose ref files by name under `refs/heads/`; `{commit}` stands for a real commit id. */
@@ -473,6 +475,171 @@ const dirRows: ReadonlyArray<Row> = [
   })),
 ];
 
+const DOTS = 'ref: x..y\n';
+const BAD_REFERENT = 'fsck.badReferentName';
+const NOT_A_REF = 'fsck.symrefTargetIsNotARef';
+const WARN_BAD_REFERENT = { config: { [BAD_REFERENT]: 'warn' } } as const;
+
+/** Each referent git judges, the body `ref: <referent>\n` seeded alone. */
+const REFERENTS: ReadonlyArray<string> = [
+  'foo',
+  'main',
+  'refs',
+  'refs/foo',
+  'refs/heads/@',
+  'HEAD',
+  'FETCH_HEAD',
+  'MERGE_HEAD',
+  'ORIG_HEAD',
+  'FOO_HEAD',
+  'A_HEAD',
+  '_HEAD',
+  'FO-O_HEAD',
+  'BISECT_HEAD',
+  'FOO1_HEAD',
+  'Foo_HEAD',
+  'AUTO_MERGE',
+  'BISECT_EXPECTED_REV',
+  'MERGE_AUTOSTASH',
+  'NOTES_MERGE_PARTIAL',
+  'NOTES_MERGE_REF',
+  'refs/heads/x.lock',
+  'refs/heads/',
+  'refs/heads/.x',
+  'refs/heads/a b',
+  'refs/heads/ma*n',
+  '@',
+  'refs/heads/x..y',
+  'x..y',
+  'foo/bar',
+];
+
+const referentRows: ReadonlyArray<Row> = [
+  ...sortedBothEnds('dots referent behind a symbolic ref', (name) => ({
+    refs: { [name]: toB, b: DOTS },
+  })),
+  ...sortedBothEnds('dots referent behind a chain of three', (name) => ({
+    refs: { [name]: toB, b: 'ref: refs/heads/c\n', c: DOTS },
+  })),
+  ...sortedBothEnds('dots referent with no symbolic ref pointing at it', (name) => ({
+    refs: { [name]: DOTS },
+  })),
+  { title: 'dots referent on HEAD', refs: {}, head: 'ref: refs/heads/x..y\n' },
+  ...sortedBothEnds('badReferentName as a warning', (name) => ({
+    refs: { [name]: toB, b: DOTS },
+    ...WARN_BAD_REFERENT,
+  })),
+  ...sortedBothEnds('badReferentName ignored', (name) => ({
+    refs: { [name]: toB, b: DOTS },
+    config: { [BAD_REFERENT]: 'ignore' },
+  })),
+  ...sortedBothEnds('badReferentName warned and symrefTargetIsNotARef ignored', (name) => ({
+    refs: { [name]: DOTS },
+    config: { [BAD_REFERENT]: 'warn', [NOT_A_REF]: 'ignore' },
+  })),
+  ...sortedBothEnds('badReferentName warned under strict', (name) => ({
+    refs: { [name]: DOTS },
+    ...WARN_BAD_REFERENT,
+    ...STRICT,
+  })),
+  {
+    title: 'badReferentName warned on HEAD',
+    refs: {},
+    head: 'ref: refs/heads/x..y\n',
+    ...WARN_BAD_REFERENT,
+  },
+  ...sortedBothEnds('symrefTargetIsNotARef as an error', (name) => ({
+    refs: { [name]: 'ref: foo/bar\n' },
+    config: { [NOT_A_REF]: 'error' },
+  })),
+  ...sortedBothEnds('symrefTargetIsNotARef as an error, references not checked', (name) => ({
+    refs: { [name]: 'ref: foo/bar\n' },
+    config: { [NOT_A_REF]: 'error' },
+    ...NO_REFERENCES,
+  })),
+  ...sortedBothEnds('symrefTargetIsNotARef under strict', (name) => ({
+    refs: { [name]: 'ref: foo/bar\n' },
+    ...STRICT,
+  })),
+  ...sortedBothEnds('badReferentName warned on a pseudo ref referent', (name) => ({
+    refs: { [name]: 'ref: FETCH_HEAD\n' },
+    ...WARN_BAD_REFERENT,
+  })),
+  ...sortedBothEnds('dots referent, references not checked', (name) => ({
+    refs: { [name]: toB, b: DOTS },
+    ...NO_REFERENCES,
+  })),
+  ...sortedBothEnds('dots referent, connectivity only', (name) => ({
+    refs: { [name]: toB, b: DOTS },
+    ...CONNECTIVITY,
+  })),
+  ...REFERENTS.flatMap((referent) =>
+    sortedBothEnds(`referent grammar, ${JSON.stringify(referent)}`, (name) => ({
+      refs: { [name]: `ref: ${referent}\n` },
+    })),
+  ),
+  ...sortedBothEnds('symref with no space after the keyword', (name) => ({
+    refs: { main: SHA, [name]: 'ref:refs/heads/main\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('symref with two spaces after the keyword', (name) => ({
+    refs: { main: SHA, [name]: 'ref:  refs/heads/main\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('symref with a tab after the keyword', (name) => ({
+    refs: { main: SHA, [name]: 'ref:\trefs/heads/main\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('symref with a vertical tab after the keyword', (name) => ({
+    refs: { main: SHA, [name]: 'ref:\vrefs/heads/main\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('symref with a form feed after the keyword', (name) => ({
+    refs: { main: SHA, [name]: 'ref:\frefs/heads/main\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('symref with a vertical tab before the line feed', (name) => ({
+    refs: { main: SHA, [name]: 'ref: refs/heads/main\v\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('symref followed by a second line', (name) => ({
+    refs: { main: SHA, [name]: 'ref: refs/heads/main\nextra\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('symref followed by garbage on its line', (name) => ({
+    refs: { main: SHA, [name]: 'ref: refs/heads/main garbage\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('upper case object name', (name) => ({
+    refs: { [name]: '{COMMIT}\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('half upper case object name', (name) => ({
+    refs: { [name]: '{MIXED}\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('object name with garbage glued on', (name) => ({
+    refs: { [name]: '{commit}garbage\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('object name one digit short', (name) => ({
+    refs: { [name]: '{SHORT}\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('object name one digit long', (name) => ({
+    refs: { [name]: '{commit}0\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('sixty-four digit object name in a sha1 repository', (name) => ({
+    refs: { [name]: `${'a'.repeat(64)}\n` },
+  })),
+  ...sortedBothEnds('object name then a vertical tab', (name) => ({
+    refs: { [name]: '{commit}\v\n' },
+    commit: true,
+  })),
+  ...sortedBothEnds('empty ref file', (name) => ({ refs: { [name]: '' } })),
+];
+
 const roots: string[] = [];
 const refusedPaths: string[] = [];
 
@@ -489,7 +656,7 @@ const commitOf = (dir: string): string => {
   return git(dir, 'commit-tree', tree, '-m', 'c').trim();
 };
 
-const seedExtras = async (dir: string, row: Row, fill: (text: string) => string): Promise<void> => {
+const seedExtras = async (dir: string, row: Row, fill: Fill): Promise<void> => {
   const gitDir = path.join(dir, '.git');
   for (const [name, target] of Object.entries(row.links ?? {})) {
     await symlink(target, path.join(gitDir, 'refs', 'heads', name));
@@ -516,12 +683,23 @@ const seedExtras = async (dir: string, row: Row, fill: (text: string) => string)
   }
 };
 
-const seed = async (row: Row): Promise<string> => {
+const MIXED_CASE_DIGITS = 20;
+const SHORT_DIGITS = 39;
+
+const seed = async (row: Row): Promise<{ readonly dir: string; readonly fill: Fill }> => {
   const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-chain-')));
   roots.push(dir);
   runGit(['init', '-q', '-b', 'main', dir]);
   const commit = row.commit === true ? commitOf(dir) : '';
-  const fill = (text: string): string => text.replaceAll('{commit}', commit);
+  const fill: Fill = (text) =>
+    text
+      .replaceAll('{commit}', commit)
+      .replaceAll('{COMMIT}', commit.toUpperCase())
+      .replaceAll(
+        '{MIXED}',
+        commit.slice(0, MIXED_CASE_DIGITS).toUpperCase() + commit.slice(MIXED_CASE_DIGITS),
+      )
+      .replaceAll('{SHORT}', commit.slice(0, SHORT_DIGITS));
   const heads = path.join(dir, '.git', 'refs', 'heads');
   await mkdir(heads, { recursive: true });
   for (const [name, body] of Object.entries(row.refs)) {
@@ -541,7 +719,7 @@ const seed = async (row: Row): Promise<string> => {
   if (row.head !== undefined) await writeFile(path.join(dir, '.git', 'HEAD'), fill(row.head));
   for (const [key, value] of Object.entries(row.config ?? {})) git(dir, 'config', key, value);
   await seedExtras(dir, row, fill);
-  return dir;
+  return { dir, fill };
 };
 
 /** git's report lines (`error:`, `warning:`, `notice:`) from its stderr. */
@@ -556,7 +734,12 @@ const printedPath = (dir: string, file: string, row: Row): string =>
   row.via === 'gitdir' || file.includes(LINKED_ADMIN) ? file : path.relative(dir, file);
 
 /** The same lines rebuilt from tsgit's findings; the seeded bodies stand for the content. */
-const rebuiltLines = (result: FsckResult, row: Row, dir: string): ReadonlyArray<string> =>
+const rebuiltLines = (
+  result: FsckResult,
+  row: Row,
+  dir: string,
+  fill: Fill,
+): ReadonlyArray<string> =>
   result.findings.flatMap((finding) => {
     if (finding.type === 'no-default-references') return ['notice: No default references'];
     if (finding.type === 'unreadable-ref-path') {
@@ -577,9 +760,35 @@ const rebuiltLines = (result: FsckResult, row: Row, dir: string): ReadonlyArray<
     if (finding.msgId === 'symlinkRef') {
       return [`${label}: ${finding.ref}: symlinkRef: use deprecated symbolic link for symref`];
     }
+    if (finding.msgId === 'badReferentName') {
+      return [
+        `${label}: ${finding.ref}: badReferentName: points to invalid refname '${displayed(finding.referent ?? '')}'`,
+      ];
+    }
+    if (finding.msgId === 'symrefTargetIsNotARef') {
+      return [
+        `${label}: ${finding.ref}: symrefTargetIsNotARef: points to non-ref target '${displayed(finding.referent ?? '')}'`,
+      ];
+    }
     const body = row.root?.[finding.ref] ?? row.refs[finding.ref.replace('refs/heads/', '')] ?? '';
-    return [`${label}: ${finding.ref}: ${finding.msgId}: ${body.replace(TRAILING_BYTES, '')}`];
+    return [
+      `${label}: ${finding.ref}: ${finding.msgId}: ${displayed(fill(body).replace(TRAILING_BYTES, ''))}`,
+    ];
   });
+
+const LINE_FEED_CODE = 0x0a;
+const FIRST_PRINTABLE_CODE = 0x20;
+const DELETE_CODE = 0x7f;
+
+/** git prints every control byte but LF as `?`. */
+const displayed = (text: string): string =>
+  [...text]
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      const control = code < FIRST_PRINTABLE_CODE || code === DELETE_CODE;
+      return control && code !== LINE_FEED_CODE ? '?' : char;
+    })
+    .join('');
 
 const pointersOf = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
   lines.filter((line) => POINTER_LINE.test(line));
@@ -601,7 +810,7 @@ const runTsgit = async (dir: string, row: Row): Promise<FsckResult> => {
 
 const expectGitsLines = async (row: Row): Promise<void> => {
   // Arrange
-  const dir = await seed(row);
+  const { dir, fill } = await seed(row);
   const expected = tryRunGitWithExit(gitArgs(dir, row));
   const sut = runTsgit;
 
@@ -610,7 +819,9 @@ const expectGitsLines = async (row: Row): Promise<void> => {
 
   // Assert
   const gitLines = gitReportLines(expected.stderr);
-  const ourLines = rebuiltLines(result, row, dir);
+  const ourLines = rebuiltLines(result, row, dir, fill)
+    .flatMap((line) => line.split('\n'))
+    .filter((line) => REPORT_LINE.test(line));
   expect(result.exitCode).toBe(expected.exitCode);
   expect(pointersOf(ourLines)).toEqual(pointersOf(gitLines));
   expect(othersOf(ourLines)).toEqual(othersOf(gitLines));
@@ -647,6 +858,21 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
   'Given a repository with a ref directory the permissions refuse',
   () => {
     describe.each(dirRows)('$title', (row) => {
+      describe('When fsck runs', () => {
+        it(
+          'Then tsgit reports git’s lines and exit code',
+          async () => expectGitsLines(row),
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a repository with a loose ref git judges by its body',
+  () => {
+    describe.each(referentRows)('$title', (row) => {
       describe('When fsck runs', () => {
         it(
           'Then tsgit reports git’s lines and exit code',
