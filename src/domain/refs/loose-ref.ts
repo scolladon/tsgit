@@ -38,13 +38,13 @@ const isWhitespace = (char: string | undefined): boolean =>
 
 const trimEndWhitespace = (text: string): string => {
   let end = text.length;
-  while (end > 0 && isWhitespace(text[end - 1])) end -= 1;
+  while (isWhitespace(text[end - 1])) end -= 1;
   return text.slice(0, end);
 };
 
 const trimStartWhitespace = (text: string): string => {
   let start = 0;
-  while (start < text.length && isWhitespace(text[start])) start += 1;
+  while (isWhitespace(text[start])) start += 1;
   return text.slice(start);
 };
 
