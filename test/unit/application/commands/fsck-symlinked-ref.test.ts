@@ -3,6 +3,7 @@
  * `symlinkRef` warning on every link under `refs/` — whatever its text names
  * and whether or not it resolves — and still exits 0.
  */
+import { opendirSync } from 'node:fs';
 import { mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -51,11 +52,34 @@ const nodeRepo = async (): Promise<Context> => {
 };
 
 const ADAPTERS = [
-  { adapter: 'memory', build: memoryRepo },
-  { adapter: 'node', build: nodeRepo },
+  { adapter: 'memory', build: memoryRepo, native: false },
+  { adapter: 'node', build: nodeRepo, native: true },
 ] as const;
 
+/** tsgit's referents speak `/` whatever the host's separator is. */
+const referentSpelling = (native: string): string => native.replaceAll(path.sep, '/');
+
 const gitPath = (ctx: Context, relative: string): string => `${ctx.layout.gitDir}/${relative}`;
+
+/** The order the OS lists `dir` — the order git walks it, and so the order findings follow. */
+const osOrderOf = (dir: string): string[] => {
+  const handle = opendirSync(dir);
+  try {
+    const names: string[] = [];
+    for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+      names.push(entry.name);
+    }
+    return names;
+  } finally {
+    handle.closeSync();
+  }
+};
+
+/** `names` in the order the adapter's directory lists them; sorted where the store has no OS. */
+const linkOrderOf = (ctx: Context, native: boolean, names: readonly string[]): string[] =>
+  native
+    ? osOrderOf(gitPath(ctx, 'refs/heads')).filter((name) => names.includes(name))
+    : [...names].sort();
 
 /** A repository whose `side` names one commit. */
 const seedRepository = async (build: () => Promise<Context>): Promise<Context> => {
@@ -255,7 +279,7 @@ describe('fsck — a loose ref that is a symbolic link', () => {
 });
 
 describe('fsck — two loose ref links whose referents git rejects', () => {
-  describe.each(ADAPTERS)('$adapter adapter', ({ build }) => {
+  describe.each(ADAPTERS)('$adapter adapter', ({ build, native }) => {
     describe('Given links a and b to files outside the refs namespace', () => {
       describe('When fsck audits them', () => {
         it('Then each link reports its notice and its verdict together, link by link', async () => {
@@ -275,12 +299,12 @@ describe('fsck — two loose ref links whose referents git rejects', () => {
               ? [`${finding.ref} ${finding.msgId}`]
               : [],
           );
-          expect(reported).toEqual([
-            'refs/heads/a symlinkRef',
-            'refs/heads/a badReferentName',
-            'refs/heads/b symlinkRef',
-            'refs/heads/b badReferentName',
-          ]);
+          expect(reported).toEqual(
+            linkOrderOf(ctx, native, ['a', 'b']).flatMap((name) => [
+              `refs/heads/${name} symlinkRef`,
+              `refs/heads/${name} badReferentName`,
+            ]),
+          );
         });
       });
     });
@@ -289,7 +313,7 @@ describe('fsck — two loose ref links whose referents git rejects', () => {
 
 describe('fsck — a loose ref link beside a .git that is itself a link', () => {
   const linkedStore = async (): Promise<{ workDir: string; store: string }> => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-gitdir-link-'));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-gitdir-link-')));
     tempRoots.push(root);
     const workDir = path.join(root, 'work');
     const store = path.join(workDir, 'store.git');
@@ -315,7 +339,7 @@ describe('fsck — a loose ref link beside a .git that is itself a link', () => 
         expect(result).toContainEqual({
           ref: 'refs/heads/ln',
           msgId: 'badReferentName',
-          referent: path.join(store, 'refs/heads/main'),
+          referent: referentSpelling(path.join(store, 'refs/heads/main')),
         });
       });
     });
@@ -350,7 +374,7 @@ describe('fsck — a loose ref link beside a .git that is itself a link', () => 
         expect(result).toContainEqual({
           ref: 'refs/heads/ln',
           msgId: 'badReferentName',
-          referent: path.join(store, 'refs/heads/main'),
+          referent: referentSpelling(path.join(store, 'refs/heads/main')),
         });
       });
     });
