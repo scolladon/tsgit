@@ -273,9 +273,9 @@ const isPresentButUnsearchable = async (probe: LayoutProbe, dir: string): Promis
 
 /**
  * Marks a found-nothing bootstrap layout whose `.git` holds an existing but
- * unsearchable `objects/` or `refs/`: git's `is_git_directory` rejects such a
- * gitdir, so read commands refuse it while `openRepository`, `init` and
- * `clone` still bootstrap. An absent directory is not marked, so a fresh
+ * unsearchable `objects/` or `refs/` — of the common dir, where a linked
+ * worktree keeps them: git's `is_git_directory` rejects such a gitdir, so read
+ * commands refuse it while `openRepository`, `init` and `clone` still bootstrap. An absent directory is not marked, so a fresh
  * `init` target can still bootstrap. Called on the bootstrap path only, so a
  * discovered layout pays no extra I/O.
  */
@@ -284,8 +284,9 @@ export const markUnsearchableGitDir = async (
   probe: LayoutProbe,
   pathPolicy: PathPolicy,
 ): Promise<RepositoryLayoutInput> => {
+  const commonDir = layout.commonDir ?? layout.gitDir;
   for (const name of SHARED_DIRECTORIES) {
-    if (await isPresentButUnsearchable(probe, pathPolicy.join(layout.gitDir, name))) {
+    if (await isPresentButUnsearchable(probe, pathPolicy.join(commonDir, name))) {
       return { ...layout, unsearchableGitDir: true };
     }
   }

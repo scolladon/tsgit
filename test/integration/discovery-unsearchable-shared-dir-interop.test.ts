@@ -308,6 +308,46 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
       });
     });
 
+    describe.each(REFUSED_ROWS)(
+      'When an explicit gitDir is a linked worktree admin dir and the common dir has %s',
+      (slug, shared, mode) => {
+        it('Then git exits 128 and tsgit refuses with NOT_A_REPOSITORY', async () => {
+          // Arrange
+          const dir = explicitRepository(`linked-${slug}`);
+          const workTree = path.join(root, `explicit-linked-${slug}-wt`);
+          runGit(['-C', dir, 'worktree', 'add', '-q', '--detach', workTree, 'HEAD']);
+          const admin = path.join(dir, '.git', 'worktrees', path.basename(workTree));
+          const sut = async (): Promise<string> => {
+            try {
+              const repo = await openTrackedRepository({
+                cwd: workTree,
+                gitDir: admin,
+                workDir: workTree,
+              });
+              await repo.log();
+              return 'OK';
+            } catch (err) {
+              return (err as { data?: { code?: string } }).data?.code ?? 'UNKNOWN';
+            }
+          };
+
+          // Act
+          const result = await withMode(path.join(dir, '.git'), shared, mode, async () => ({
+            gitExit: tryRunGitWithExit([
+              `--git-dir=${admin}`,
+              `--work-tree=${workTree}`,
+              'rev-parse',
+              'HEAD',
+            ]).exitCode,
+            outcome: await sut(),
+          }));
+
+          // Assert
+          expect(result).toEqual({ gitExit: GIT_REFUSED, outcome: 'NOT_A_REPOSITORY' });
+        });
+      },
+    );
+
     describe('When the directory holds no repository', () => {
       it('Then tsgit status refuses with NOT_A_REPOSITORY', async () => {
         // Arrange

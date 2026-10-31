@@ -1617,6 +1617,26 @@ describe('markUnsearchableGitDir', () => {
     },
   );
 
+  describe.each(['refs', 'objects'])(
+    'Given a linked worktree layout whose common dir has an unsearchable %s',
+    (shared) => {
+      describe('When the layout is marked', () => {
+        it('Then it carries unsearchableGitDir, judged by the common dir as git does', async () => {
+          // Arrange
+          const linked = { ...layout, gitDir: '/c/.git/worktrees/w', commonDir: '/c/.git' };
+          const sut = markUnsearchableGitDir;
+          const probe = probeOf(['/c/.git/refs', '/c/.git/objects'], [`/c/.git/${shared}`]);
+
+          // Act
+          const result = await sut(linked, probe, posixPolicy);
+
+          // Assert
+          expect(result).toEqual({ ...linked, unsearchableGitDir: true });
+        });
+      });
+    },
+  );
+
   describe('Given searchable refs and objects directories', () => {
     describe('When the layout is marked', () => {
       it('Then it is returned unchanged', async () => {
