@@ -1,7 +1,7 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { asciiLower } from '../../../domain/pretty/ascii.js';
 import { parseAlternatesFile } from '../../../domain/storage/alternates.js';
-import type { Context } from '../../../ports/context.js';
+import { type Context, isUsableHopLimit } from '../../../ports/context.js';
 import type {
   AlternatePathProbe,
   ObjectSourceReader,
@@ -10,15 +10,43 @@ import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 import type { GitPathSyntax } from './git-path-syntax.js';
 
-/** git's nested-symlink limit; its post-increment check lets one more link through than the limit. */
-const MAX_SYMLINKS = 32;
+/**
+ * git's nested-symlink limit is the platform header's symlink-limit macro — glibc and musl say 20, git
+ * falls back to 32 elsewhere; its post-increment check lets one more link through than the limit.
+ * The adapter supplies its host's value; this is git's fallback for a host that declares none.
+ */
+export const DEFAULT_SYMLINK_HOP_LIMIT = 32;
 const FILE_NOT_FOUND = 'FILE_NOT_FOUND';
 const NOT_A_DIRECTORY = 'NOT_A_DIRECTORY';
+const PERMISSION_DENIED = 'PERMISSION_DENIED';
+const SYMLINK_LOOP = 'SYMLINK_LOOP';
+const ROOTLESS = 'ROOTLESS';
+
+export type RealpathFailureReason =
+  | typeof FILE_NOT_FOUND
+  | typeof NOT_A_DIRECTORY
+  | typeof PERMISSION_DENIED
+  | typeof SYMLINK_LOOP
+  | typeof ROOTLESS;
+
+/** Where git's `strbuf_realpath` stops: `path` is the text its `Invalid path` fault names. */
+export type RealpathOutcome =
+  | { readonly kind: 'resolved'; readonly path: string }
+  | {
+      readonly kind: 'failed';
+      readonly path: string;
+      readonly reason: RealpathFailureReason;
+      /** The adapter's own refusal, for a `PERMISSION_DENIED` stop. */
+      readonly cause?: unknown;
+    };
+
+type Failure = Extract<RealpathOutcome, { readonly kind: 'failed' }>;
 
 type Lookup =
   | { readonly kind: 'found'; readonly isLink: boolean }
   | { readonly kind: 'absent' }
-  | { readonly kind: 'blocked' };
+  | { readonly kind: 'blocked' }
+  | { readonly kind: 'denied'; readonly cause: unknown };
 
 const lookup = async (probe: AlternatePathProbe, path: string): Promise<Lookup> => {
   try {
@@ -28,6 +56,7 @@ const lookup = async (probe: AlternatePathProbe, path: string): Promise<Lookup> 
     const code = errorDataCode(error);
     if (code === FILE_NOT_FOUND) return { kind: 'absent' };
     if (code === NOT_A_DIRECTORY) return { kind: 'blocked' };
+    if (code === PERMISSION_DENIED) return { kind: 'denied', cause: error };
     throw error;
   }
 };
@@ -38,11 +67,23 @@ const TRAILING_SEPARATOR = '';
 
 interface Walk {
   readonly syntax: GitPathSyntax;
+  readonly input: string;
+  readonly limit: number;
   root: string;
   readonly names: string[];
   readonly pending: string[];
   hops: number;
 }
+
+/** What one step of the walk does: nothing to report, or where the walk stops. */
+type Step = Failure | undefined;
+
+const stopAt = (reason: RealpathFailureReason, path: string, cause?: unknown): Failure => ({
+  kind: 'failed',
+  reason,
+  path,
+  ...(cause === undefined ? {} : { cause }),
+});
 
 /** git appends `/` after the resolved prefix unless it already ends in one (`C:` → `C:/x`). */
 const joinedPath = (root: string, names: ReadonlyArray<string>): string => {
@@ -61,35 +102,34 @@ const restartAt = (walk: Walk, path: string): boolean => {
   return true;
 };
 
-const follow = async (probe: AlternatePathProbe, walk: Walk, link: string): Promise<boolean> => {
-  if (walk.hops++ > MAX_SYMLINKS) return false;
+const follow = async (probe: AlternatePathProbe, walk: Walk, link: string): Promise<Step> => {
+  if (walk.hops++ > walk.limit) return stopAt(SYMLINK_LOOP, walk.input);
   const target = await probe.readlink(link);
-  if (walk.syntax.isAbsolute(target)) return restartAt(walk, target);
+  if (walk.syntax.isAbsolute(target)) {
+    return restartAt(walk, target) ? undefined : stopAt(ROOTLESS, walk.input);
+  }
   walk.pending.unshift(...walk.syntax.components(target));
-  return true;
+  return undefined;
 };
 
-const descend = async (
-  probe: AlternatePathProbe,
-  walk: Walk,
-  segment: string,
-): Promise<boolean> => {
-  if (segment === CURRENT_DIRECTORY || segment === TRAILING_SEPARATOR) return true;
+const descend = async (probe: AlternatePathProbe, walk: Walk, segment: string): Promise<Step> => {
+  if (segment === CURRENT_DIRECTORY || segment === TRAILING_SEPARATOR) return undefined;
   if (segment === '..') {
     walk.names.pop();
-    return true;
+    return undefined;
   }
   const candidate = joinedPath(walk.root, [...walk.names, segment]);
   const found = await lookup(probe, candidate);
-  if (found.kind === 'blocked') return false;
+  if (found.kind === 'blocked') return stopAt(NOT_A_DIRECTORY, candidate);
+  if (found.kind === 'denied') return stopAt(PERMISSION_DENIED, candidate, found.cause);
   if (found.kind === 'absent') {
     walk.names.push(segment);
-    return walk.pending.length === 0;
+    return walk.pending.length === 0 ? undefined : stopAt(FILE_NOT_FOUND, candidate);
   }
   if (found.isLink) return follow(probe, walk, candidate);
   // git appends any non-link without a directory check: a later `..` walks back out of a file.
   walk.names.push(segment);
-  return true;
+  return undefined;
 };
 
 /** git's realpath starts a rootless path (a share-less `\\server`) from its cwd. */
@@ -102,22 +142,51 @@ const startAt = (walk: Walk, path: string, cwd: string): boolean => {
 
 /**
  * git's `strbuf_realpath(…, die_on_error=0)` over the port: every component is resolved and only
- * the last may be missing, with no separator after it. `undefined` when a middle component is
- * absent or under a file, links loop, or a link names a rootless target.
+ * the last may be missing, with no separator after it. The outcome says where the walk stopped
+ * and why when a middle component is absent or under a file, the permissions refuse one, links
+ * loop, or a link names a rootless target.
+ */
+export const realpathOutcome = async (
+  syntax: GitPathSyntax,
+  probe: AlternatePathProbe,
+  path: string,
+  cwd: string,
+  hopLimit: number = DEFAULT_SYMLINK_HOP_LIMIT,
+): Promise<RealpathOutcome> => {
+  const walk: Walk = {
+    syntax,
+    input: path,
+    limit: isUsableHopLimit(hopLimit) ? hopLimit : DEFAULT_SYMLINK_HOP_LIMIT,
+    // Stryker disable next-line StringLiteral: equivalent — startAt sets root through restartAt before any read, else the walk stops
+    root: '',
+    // Stryker disable next-line ArrayDeclaration: equivalent — restartAt empties names on success, else the walk stops before any use
+    names: [],
+    pending: [],
+    hops: 0,
+  };
+  if (!startAt(walk, path, cwd)) return stopAt(ROOTLESS, path);
+  while (walk.pending.length > 0) {
+    const stop = await descend(probe, walk, walk.pending.shift() as string);
+    if (stop !== undefined) return stop;
+  }
+  return { kind: 'resolved', path: joinedPath(walk.root, walk.names) };
+};
+
+/**
+ * The resolved path, `undefined` when the walk stops; a refusal by the permissions is rethrown as
+ * the adapter raised it.
  */
 export const realpathAllowingMissingLeaf = async (
   syntax: GitPathSyntax,
   probe: AlternatePathProbe,
   path: string,
   cwd: string,
+  hopLimit: number = DEFAULT_SYMLINK_HOP_LIMIT,
 ): Promise<string | undefined> => {
-  // Stryker disable next-line StringLiteral: equivalent — startAt sets root through restartAt before any read, else returns undefined
-  const walk: Walk = { syntax, root: '', names: [], pending: [], hops: 0 };
-  if (!startAt(walk, path, cwd)) return undefined;
-  while (walk.pending.length > 0) {
-    if (!(await descend(probe, walk, walk.pending.shift() as string))) return undefined;
-  }
-  return joinedPath(walk.root, walk.names);
+  const outcome = await realpathOutcome(syntax, probe, path, cwd, hopLimit);
+  if (outcome.kind === 'resolved') return outcome.path;
+  if (outcome.reason === PERMISSION_DENIED) throw outcome.cause;
+  return undefined;
 };
 
 /** git's `odb.c` refuses to descend once a holder sits at this alternate depth. */
@@ -269,6 +338,7 @@ const realEntryPath = async (
       probe(joined),
       joined,
       resolution.cwd,
+      resolution.ctx.symlinkHopLimit,
     );
     if (real === undefined) return void report(resolution, unresolvableAt(joined, holder));
     return real.replace(TRAILING_SLASHES, '');
@@ -360,9 +430,10 @@ const primaryRealpath = async (
   io: AlternateChainIo,
   raw: string,
   cwd: string,
+  hopLimit: number | undefined,
 ): Promise<string | undefined> => {
   try {
-    return await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw, cwd);
+    return await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw, cwd, hopLimit);
   } catch (error) {
     if (errorDataCode(error) === undefined) throw error;
     return undefined;
@@ -393,7 +464,7 @@ export const resolveObjectSources = async (
 }> => {
   const raw = `${commonGitDir(ctx)}/objects`;
   const cwd = ctx.layout.workDir ?? ctx.cwd;
-  const primary = (await primaryRealpath(io, raw, cwd)) ?? raw;
+  const primary = (await primaryRealpath(io, raw, cwd, ctx.symlinkHopLimit)) ?? raw;
   const key = (await readIgnoreCase(ctx)) ? asciiLower : (path: string) => path;
   const resolution = startResolution({ ctx, io, key, cwd }, primary, options);
   const entries =

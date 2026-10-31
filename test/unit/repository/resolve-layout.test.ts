@@ -2,8 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { posixPolicy, windowsPolicy } from '../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../src/domain/error.js';
+import type { LayoutProbe } from '../../../src/ports/layout-probe.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
-import { resolveLayout, syntheticFallbackLayout } from '../../../src/repository/resolve-layout.js';
+import { findLayout } from '../../../src/repository/find-layout.js';
+import {
+  markUnsearchableGitDir,
+  resolveLayout,
+  syntheticFallbackLayout,
+} from '../../../src/repository/resolve-layout.js';
 
 // `resolveLayout` composes the walk (`findLayout`) with the config-driven
 // work-tree precedence (Stage 3) and the bareness formula (Stage 4), plus
@@ -1577,6 +1583,329 @@ describe('resolveLayout', () => {
             refStorage: 'files',
           });
         });
+      });
+    });
+  });
+});
+
+describe('markUnsearchableGitDir', () => {
+  const layout = { gitDir: '/w/.git', workDir: '/w', bare: false, refStorage: 'files' } as const;
+  const DIR = { isDirectory: true, isFile: false, size: 0 };
+
+  /** A probe where `present` paths are directories and `locked` ones fail `isSearchable`. */
+  const probeOf = (present: ReadonlyArray<string>, locked: ReadonlyArray<string>): LayoutProbe => ({
+    stat: async (p) => (present.includes(p) ? DIR : undefined),
+    readUtf8: async () => undefined,
+    isSearchable: async (p) => !locked.includes(p),
+  });
+
+  describe.each(['refs', 'objects'])(
+    'Given an existing %s directory that is not searchable',
+    (shared) => {
+      describe('When the layout is marked', () => {
+        it('Then it carries unsearchableGitDir', async () => {
+          // Arrange
+          const sut = markUnsearchableGitDir;
+          const probe = probeOf(['/w/.git/refs', '/w/.git/objects'], [`/w/.git/${shared}`]);
+
+          // Act
+          const result = await sut(layout, probe, posixPolicy);
+
+          // Assert
+          expect(result).toEqual({ ...layout, unsearchableGitDir: true });
+        });
+      });
+    },
+  );
+
+  describe.each(['refs', 'objects'])(
+    'Given a linked worktree layout whose common dir has an unsearchable %s',
+    (shared) => {
+      describe('When the layout is marked', () => {
+        it('Then it carries unsearchableGitDir, judged by the common dir as git does', async () => {
+          // Arrange
+          const linked = { ...layout, gitDir: '/c/.git/worktrees/w', commonDir: '/c/.git' };
+          const sut = markUnsearchableGitDir;
+          const probe = probeOf(['/c/.git/refs', '/c/.git/objects'], [`/c/.git/${shared}`]);
+
+          // Act
+          const result = await sut(linked, probe, posixPolicy);
+
+          // Assert
+          expect(result).toEqual({ ...linked, unsearchableGitDir: true });
+        });
+      });
+    },
+  );
+
+  describe('Given searchable refs and objects directories', () => {
+    describe('When the layout is marked', () => {
+      it('Then it is returned unchanged', async () => {
+        // Arrange
+        const sut = markUnsearchableGitDir;
+        const probe = probeOf(['/w/.git/refs', '/w/.git/objects'], []);
+
+        // Act
+        const result = await sut(layout, probe, posixPolicy);
+
+        // Assert
+        expect(result).toBe(layout);
+      });
+    });
+  });
+
+  describe('Given refs and objects directories that do not exist', () => {
+    describe('When the layout is marked', () => {
+      it('Then it is returned unchanged so init and clone can bootstrap', async () => {
+        // Arrange
+        const sut = markUnsearchableGitDir;
+        const probe = probeOf([], ['/w/.git/refs', '/w/.git/objects']);
+
+        // Act
+        const result = await sut(layout, probe, posixPolicy);
+
+        // Assert
+        expect(result).toBe(layout);
+      });
+    });
+  });
+
+  describe('Given a probe without a searchability capability', () => {
+    describe('When the layout is marked', () => {
+      it('Then it is returned unchanged', async () => {
+        // Arrange
+        const sut = markUnsearchableGitDir;
+        const probe: LayoutProbe = {
+          stat: async () => DIR,
+          readUtf8: async () => undefined,
+        };
+
+        // Act
+        const result = await sut(layout, probe, posixPolicy);
+
+        // Assert
+        expect(result).toBe(layout);
+      });
+    });
+  });
+});
+
+describe('resolveLayout with an explicit gitDir', () => {
+  const DIR = { isDirectory: true, isFile: false, size: 0 };
+
+  const probeOf = (locked: ReadonlyArray<string>): LayoutProbe => ({
+    stat: async () => DIR,
+    readUtf8: async () => undefined,
+    isSearchable: async (p) => !locked.includes(p),
+  });
+
+  describe('Given an unsearchable refs directory', () => {
+    describe('When the layout is resolved', () => {
+      it('Then it carries unsearchableGitDir', async () => {
+        // Arrange
+        const sut = resolveLayout;
+        const probe = probeOf(['/w/.git/refs']);
+
+        // Act
+        const result = await sut(probe, '/w', posixPolicy, { gitDir: '/w/.git' });
+
+        // Assert
+        expect(result?.unsearchableGitDir).toBe(true);
+      });
+    });
+  });
+
+  describe('Given searchable shared directories', () => {
+    describe('When the layout is resolved', () => {
+      it('Then it is not marked', async () => {
+        // Arrange
+        const sut = resolveLayout;
+        const probe = probeOf([]);
+
+        // Act
+        const result = await sut(probe, '/w', posixPolicy, { gitDir: '/w/.git' });
+
+        // Assert
+        expect(result?.unsearchableGitDir).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('resolveLayout keeping the gitdir as git spells it', () => {
+  const keepsSpelling = { gitDirSpelling: true } as const;
+
+  describe('Given a discovered .git directory and a capability to keep the spelling', () => {
+    describe('When the layout is resolved from a sub-directory', () => {
+      it('Then the spelling is the origin joined with .git', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        await fs.mkdir('/repo/normal/sub');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo/normal/sub',
+          posixPolicy,
+          {},
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDirSpelling).toBe('/repo/normal/.git');
+      });
+    });
+  });
+
+  describe('Given an explicit gitDir given relative to the cwd', () => {
+    describe('When the layout is resolved', () => {
+      it('Then the spelling is that gitDir made absolute against the cwd', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/store');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo',
+          posixPolicy,
+          { gitDir: 'a/../store' },
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDirSpelling).toBe('/repo/store');
+      });
+    });
+  });
+
+  describe('Given a cwd that is itself a bare git directory', () => {
+    describe('When the layout is resolved', () => {
+      it('Then the spelling is that directory', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare.git');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo/bare.git',
+          posixPolicy,
+          {},
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDirSpelling).toBe('/repo/bare.git');
+      });
+    });
+  });
+
+  describe('Given a cwd inside a bare git directory', () => {
+    describe('When the layout is resolved', () => {
+      it('Then the spelling is the bare directory, not the cwd', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare.git');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo/bare.git/objects',
+          posixPolicy,
+          {},
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDirSpelling).toBe('/repo/bare.git');
+      });
+    });
+  });
+
+  describe.each([
+    { route: 'a discovered gitfile', discovered: true },
+    { route: 'an explicit gitDir naming a gitfile', discovered: false },
+  ])('Given $route', ({ discovered }) => {
+    describe('When the layout is resolved', () => {
+      it('Then there is no spelling, the pointer target being what git resolves', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/admin');
+        await fs.mkdir('/repo/wt');
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/admin\n');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo/wt',
+          posixPolicy,
+          discovered ? {} : { gitDir: '/repo/wt/.git' },
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDir).toBe('/repo/admin');
+        expect(result?.gitDirSpelling).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a discovered .git directory and no capability to keep the spelling', () => {
+    describe('When the layout is resolved', () => {
+      it('Then the layout carries no spelling', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(fileSystemLayoutProbe(fs), '/repo/normal', posixPolicy);
+
+        // Assert
+        expect(result?.gitDirSpelling).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('resolveLayout probing a discovered gitdir', () => {
+  describe('Given a discovered .git directory', () => {
+    describe('When the layout is resolved', () => {
+      it('Then it asks the searchability question no more often than the walk alone', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        const searchabilityAsks = async (run: (probe: LayoutProbe) => Promise<unknown>) => {
+          const asked: string[] = [];
+          const base = fileSystemLayoutProbe(fs);
+          await run({
+            ...base,
+            isSearchable: async (p) => {
+              asked.push(p);
+              return true;
+            },
+          });
+          return asked;
+        };
+        const sut = resolveLayout;
+
+        // Act
+        const walkOnly = await searchabilityAsks((probe) =>
+          findLayout(probe, '/repo/normal', posixPolicy),
+        );
+        const resolved = await searchabilityAsks((probe) =>
+          sut(probe, '/repo/normal', posixPolicy),
+        );
+
+        // Assert
+        expect(resolved).toEqual(walkOnly);
       });
     });
   });

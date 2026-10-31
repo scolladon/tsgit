@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   type AlternateChainIo,
   realpathAllowingMissingLeaf,
+  realpathOutcome,
   resolveObjectSources,
 } from '../../../../../src/application/primitives/internal/alternate-chain.js';
 import {
@@ -198,6 +199,30 @@ describe('realpathAllowingMissingLeaf', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'NaN', limit: Number.NaN },
+    { label: 'Infinity', limit: Number.POSITIVE_INFINITY },
+    { label: 'a billion', limit: 1e9 },
+    { label: 'zero', limit: 0 },
+    { label: 'a negative number', limit: -5 },
+  ])('Given a two-link loop and a hop limit of $label', ({ limit }) => {
+    describe('When realpathOutcome', () => {
+      it('Then the walk stops on the loop', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('/repo/b', '/repo/a');
+        await ctx.fs.symlink('/repo/a', '/repo/b');
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/a/objects', CWD, limit);
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'failed', reason: 'SYMLINK_LOOP' });
       });
     });
   });
@@ -1129,6 +1154,299 @@ describe('resolveObjectSources on a Windows filesystem', () => {
 
         // Assert
         expect(result.diagnostics.map((d) => d.reason)).toEqual(['unresolvable']);
+      });
+    });
+  });
+});
+
+describe('realpathOutcome', () => {
+  describe('Given a path through a symlinked directory', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it is resolved to the real path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir('/repo/real/objects');
+        await ctx.fs.symlink('/repo/real', '/repo/link');
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/link/objects', CWD);
+
+        // Assert
+        expect(result).toEqual({ kind: 'resolved', path: '/repo/real/objects' });
+      });
+    });
+  });
+
+  describe('Given a path whose last component is missing', () => {
+    describe('When realpathOutcome', () => {
+      it('Then the missing last component is kept', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/ghost', CWD);
+
+        // Assert
+        expect(result).toEqual({ kind: 'resolved', path: '/repo/d/ghost' });
+      });
+    });
+  });
+
+  describe('Given a path whose middle component is missing', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed FILE_NOT_FOUND at the resolved prefix and the missing name', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/missing/x', CWD);
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'FILE_NOT_FOUND',
+          path: '/repo/d/missing',
+        });
+      });
+    });
+  });
+
+  describe('Given a failure without an underlying error', () => {
+    describe('When realpathOutcome', () => {
+      it('Then the failure carries no cause key', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/missing/x', CWD);
+
+        // Assert
+        expect(Object.keys(result)).toEqual(['kind', 'reason', 'path']);
+      });
+    });
+  });
+
+  describe('Given a path under a file', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed NOT_A_DIRECTORY at the file and the next name', async () => {
+        // Arrange
+        const probe = {
+          ...createMemoryContext().fs,
+          lstat: async (probed: string) => {
+            if (probed === '/repo' || probed === '/repo/file') return statOf(false);
+            throw notADirectory(probed);
+          },
+        } satisfies AlternatePathProbe;
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, probe, '/repo/file/x/y', CWD);
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'NOT_A_DIRECTORY',
+          path: '/repo/file/x',
+        });
+      });
+    });
+  });
+
+  describe('Given a component the permissions refuse', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed PERMISSION_DENIED at that component', async () => {
+        // Arrange
+        const fault = permissionDenied('/repo/d000');
+        const probe = {
+          ...createMemoryContext().fs,
+          lstat: async (probed: string) => {
+            if (probed === '/repo') return statOf(false);
+            throw fault;
+          },
+        } satisfies AlternatePathProbe;
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, probe, '/repo/d000/x', CWD);
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'PERMISSION_DENIED',
+          path: '/repo/d000',
+          cause: fault,
+        });
+      });
+    });
+  });
+
+  describe('Given a lookup failing with a codeless error', () => {
+    describe('When realpathOutcome', () => {
+      it('Then the error propagates', async () => {
+        // Arrange
+        const fault = new Error('boom');
+        const probe = { ...createMemoryContext().fs, lstat: async () => Promise.reject(fault) };
+        const sut = realpathOutcome;
+
+        // Act
+        const result = sut(posixGitPathSyntax, probe, '/repo/x', CWD);
+
+        // Assert
+        await expect(result).rejects.toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a symlink loop', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed SYMLINK_LOOP at the input path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('/repo/b', '/repo/a');
+        await ctx.fs.symlink('/repo/a', '/repo/b');
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/a/objects', CWD);
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'SYMLINK_LOOP',
+          path: '/repo/a/objects',
+        });
+      });
+    });
+  });
+
+  describe('Given a rootless path from a rootless cwd', () => {
+    describe('When realpathOutcome', () => {
+      it('Then it failed ROOTLESS at the input path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(windowsGitPathSyntax, ctx.fs, '\\\\server', 'repo');
+
+        // Assert
+        expect(result).toEqual({ kind: 'failed', reason: 'ROOTLESS', path: '\\\\server' });
+      });
+    });
+  });
+
+  describe.each([
+    { hopLimit: 20 as number | undefined, host: 'a limit of 20', links: 21, kind: 'resolved' },
+    { hopLimit: 20 as number | undefined, host: 'a limit of 20', links: 22, kind: 'failed' },
+    {
+      hopLimit: undefined as number | undefined,
+      host: 'no declared limit',
+      links: 22,
+      kind: 'resolved',
+    },
+    {
+      hopLimit: undefined as number | undefined,
+      host: 'no declared limit',
+      links: 33,
+      kind: 'resolved',
+    },
+    {
+      hopLimit: undefined as number | undefined,
+      host: 'no declared limit',
+      links: 34,
+      kind: 'failed',
+    },
+  ])('Given a chain of $links links', ({ hopLimit, links, kind }) => {
+    describe('When realpathOutcome runs with $host', () => {
+      it('Then it is $kind', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/end': new Uint8Array() } });
+        for (let hop = 1; hop <= links; hop++) {
+          await ctx.fs.symlink(hop === links ? '/repo/end' : `/repo/l${hop + 1}`, `/repo/l${hop}`);
+        }
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/l1', CWD, hopLimit);
+
+        // Assert
+        expect(result.kind).toBe(kind);
+      });
+    });
+  });
+});
+
+describe('resolveObjectSources under a declared symlink hop limit', () => {
+  const HOP_LIMIT = 3;
+  const CHAIN_LINKS = 5;
+
+  /** `/repo/<prefix>1` through `/repo/<prefix><CHAIN_LINKS>`, the last naming `end`. */
+  const linkChain = async (ctx: Context, prefix: string, end: string): Promise<void> => {
+    for (let hop = 1; hop <= CHAIN_LINKS; hop++) {
+      const target = hop === CHAIN_LINKS ? end : `/repo/${prefix}${hop + 1}`;
+      await ctx.fs.symlink(target, `/repo/${prefix}${hop}`);
+    }
+  };
+
+  describe('Given an alternates entry behind a chain longer than the limit', () => {
+    describe('When the sources are resolved', () => {
+      it('Then the entry is unresolvable, the limit having reached the realpath', async () => {
+        // Arrange
+        const base = contextWith({ [PRIMARY]: '/repo/a1\n' });
+        await base.fs.mkdir('/repo/real');
+        await linkChain(base, 'a', '/repo/real');
+        const ctx: Context = { ...base, symlinkHopLimit: HOP_LIMIT };
+        const sut = resolveObjectSources;
+
+        // Act
+        const result = await sut(ctx, ioOf(ctx));
+
+        // Assert
+        expect(result.diagnostics.map((d) => d.reason)).toEqual(['unresolvable']);
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY]);
+      });
+    });
+  });
+
+  describe('Given a primary objects directory behind a chain longer than the limit', () => {
+    describe('When the sources are resolved', () => {
+      it('Then the primary stays as spelled, the limit having reached its realpath', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.mkdir('/repo/real-objects');
+        await linkChain(base, 'o', '/repo/real-objects');
+        await base.fs.symlink('/repo/o1', PRIMARY);
+        const ctx: Context = { ...base, symlinkHopLimit: HOP_LIMIT };
+        const sut = resolveObjectSources;
+
+        // Act
+        const result = await sut(ctx, ioOf(ctx));
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY]);
+      });
+    });
+  });
+
+  describe('Given the same primary behind the chain and no declared limit', () => {
+    describe('When the sources are resolved', () => {
+      it('Then the primary is its real path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir('/repo/real-objects');
+        await linkChain(ctx, 'o', '/repo/real-objects');
+        await ctx.fs.symlink('/repo/o1', PRIMARY);
+        const sut = resolveObjectSources;
+
+        // Act
+        const result = await sut(ctx, ioOf(ctx));
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual(['/repo/real-objects']);
       });
     });
   });

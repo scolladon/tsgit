@@ -137,7 +137,7 @@ const healthyRepo = async (): Promise<Context> => {
 /** A healthy repository carrying one loose ref that is a symbolic link. */
 const repoWithSymlinkedRef = async (): Promise<Context> => {
   const ctx = await healthyRepo();
-  await ctx.fs.symlink('refs/heads/main', `${ctx.layout.gitDir}/refs/heads/sym`);
+  await ctx.fs.symlink('main', `${ctx.layout.gitDir}/refs/heads/sym`);
   return ctx;
 };
 

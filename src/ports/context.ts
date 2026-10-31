@@ -63,6 +63,20 @@ export interface RepositoryLayout {
   readonly untrusted?: true;
   /** Discovery walked into a gitdir under a name other than `.git`, with `bareRepositories: 'explicit'` set. Present only when true. */
   readonly implicitBare?: true;
+  /**
+   * The found-nothing bootstrap gitdir exists but its `refs/` or `objects/` is not
+   * searchable: git refuses it as `not a repository`, so read commands do too while
+   * `openRepository`, `init` and `clone` still bootstrap. Present only when true.
+   */
+  readonly unsearchableGitDir?: true;
+  /**
+   * The absolute gitdir as git itself spells it — made absolute and normalised, a link on the
+   * way not followed — which `fsck` strips from a symbolic ref's referent. Absent when `gitDir`
+   * already is that spelling.
+   *
+   * @internal
+   */
+  readonly gitDirSpelling?: string;
   /** The first checked path the ownership predicate reported unowned. Present only when one was found. */
   readonly foreignPath?: string;
   /**
@@ -362,6 +376,12 @@ export interface Context {
    * Absent ⇒ `lf`.
    */
   readonly nativeEol?: 'lf' | 'crlf';
+  /**
+   * How many nested symlinks the host's `realpath` follows before it gives up (git's symlink-limit
+   * macro), supplied by the platform adapter. Absent ⇒ git's non-Linux fallback of 32; so is a
+   * value that is not a positive safe integer of at most 1024.
+   */
+  readonly symlinkHopLimit?: number;
 }
 
 export interface CreateContextParts {
@@ -377,6 +397,7 @@ export interface CreateContextParts {
   readonly deltaCache: LruCache<ObjectContent>;
   readonly concurrency?: ConcurrencyLimits;
   readonly nativeEol?: 'lf' | 'crlf';
+  readonly symlinkHopLimit?: number;
   readonly cacheBudgets?: CacheBudgets;
   readonly config?: RepositoryConfig;
   readonly logger?: Logger;
@@ -387,10 +408,19 @@ export interface CreateContextParts {
   readonly ssh?: SshTransport;
 }
 
-/** Assemble a frozen Context from its constituent ports + layout. */
+/** No host follows more links than this; a larger declared limit would let a loop run unbounded. */
+const MAX_SYMLINK_HOP_LIMIT = 1024;
+
+export const isUsableHopLimit = (limit: number | undefined): limit is number =>
+  limit !== undefined && Number.isSafeInteger(limit) && limit > 0 && limit <= MAX_SYMLINK_HOP_LIMIT;
+
+/** Assemble a frozen Context from its constituent ports + layout. An unusable `symlinkHopLimit` is
+ *  dropped, so consumers apply git's fallback. */
 export function createContext(parts: CreateContextParts): Context {
+  const { symlinkHopLimit, ...rest } = parts;
   return Object.freeze({
-    ...parts,
+    ...rest,
+    ...(isUsableHopLimit(symlinkHopLimit) ? { symlinkHopLimit } : {}),
     cwd: parts.cwd ?? parts.layout.workDir ?? parts.layout.gitDir,
     session: createSession(),
   });

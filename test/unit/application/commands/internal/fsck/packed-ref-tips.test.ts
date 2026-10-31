@@ -68,13 +68,13 @@ describe('Given a ref whose tip no store holds', () => {
   });
 });
 
-describe('Given a ref whose file cannot be read', () => {
+describe('Given a ref whose file read faults for another reason than permission', () => {
   describe('When ref tips are checked', () => {
     it('Then the read fault propagates', async () => {
       // Arrange
       const ctx = await repoWithTag(ABSENT);
       const refPath = `${ctx.layout.gitDir}/refs/tags/t`;
-      const fault = permissionDenied(refPath);
+      const fault = new Error('EIO');
       const guarded: Context = {
         ...ctx,
         fs: {
@@ -103,7 +103,42 @@ describe('Given a ref whose file cannot be read', () => {
       }
 
       // Assert
-      expect((caught as TsgitError).data).toEqual(fault.data);
+      expect(caught).toBe(fault);
+    });
+  });
+});
+
+describe('Given a ref whose file the permissions refuse', () => {
+  describe('When ref tips are checked', () => {
+    it('Then the ref is skipped, the way a snapshot of refs skips it', async () => {
+      // Arrange
+      const ctx = await repoWithTag(ABSENT);
+      const refPath = `${ctx.layout.gitDir}/refs/tags/t`;
+      const fault = permissionDenied(refPath);
+      const guarded: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === refPath) throw fault;
+            return ctx.fs.read(path);
+          },
+          readUtf8: async (path: string) => {
+            if (path === refPath) throw fault;
+            return ctx.fs.readUtf8(path);
+          },
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+            if (path === refPath) throw fault;
+            return ctx.fs.openWithNoFollow(path, mode);
+          },
+        },
+      };
+
+      // Act
+      const result = await sut(guarded, NO_CACHE);
+
+      // Assert
+      expect(result).toBeUndefined();
     });
   });
 });

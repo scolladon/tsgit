@@ -115,6 +115,7 @@ const realAdminDir = async (ctx: Context, adminDir: string): Promise<string> =>
     ctx.alternatePathProbe?.(adminDir) ?? narrowAlternatePathProbe(ctx.fs),
     adminDir,
     adminDir,
+    ctx.symlinkHopLimit,
   )) ?? adminDir;
 
 /** git's `should_prune_worktree` for an admin directory; a locked one is kept but never compared for duplicates. */

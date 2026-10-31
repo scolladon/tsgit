@@ -1,20 +1,30 @@
 import { errorDataCode } from '../../../../domain/error-data-code.js';
-import type { FsckSeverityTable } from '../../../../domain/fsck/index.js';
+import type { FsckConfiguredSeverity, FsckSeverityTable } from '../../../../domain/fsck/index.js';
 import { retypeSeverity } from '../../../../domain/fsck/index.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import type { RefIntegrityFinding, RefStore } from '../../../primitives/ref-store.js';
 import { getRefStore } from '../../../primitives/ref-store.js';
-import { resolveRef } from '../../../primitives/resolve-ref.js';
+import { resolveRef, UNREADABLE_REF_CODES } from '../../../primitives/resolve-ref.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './exit-codes.js';
 import { objectIsPresent } from './object-presence.js';
-import { isTolerableRefFault, snapshotWorktreeHeads, type UnreadableHead } from './roots.js';
+import { snapshotWorktreeHeads, type UnreadableHead } from './roots.js';
 import type { FsckFinding } from './types.js';
 import type { ParseCheck } from './verified-copies.js';
 
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
-type RefFinding = FsckFinding & { readonly type: 'bad-ref' | 'no-default-references' };
+type UnreadablePathFinding = FsckFinding & { readonly type: 'unreadable-ref-path' };
+type RefsVerifyEndedFinding = FsckFinding & { readonly type: 'refs-verify-ended' };
+type RefsWalkFailedFinding = FsckFinding & { readonly type: 'refs-walk-failed' };
+type RefFinding = FsckFinding & {
+  readonly type:
+    | 'bad-ref'
+    | 'no-default-references'
+    | 'unreadable-ref-path'
+    | 'refs-verify-ended'
+    | 'refs-walk-failed';
+};
 
 const NO_DEFAULT_REFERENCES: RefFinding = { type: 'no-default-references' };
 
@@ -55,99 +65,233 @@ interface PassResult {
   readonly exitBit: number;
 }
 
-/**
- * git's deprecation notice for a symbolic link standing in for a symref:
- * one notice per link under `refs/`, defaulting to a warning that
- * contributes no exit bit — and re-typed, like every catalogue message, by
- * the repository's own `fsck.<msg-id>` table.
- */
-function collectSymlinkNotices(
-  integrityFindings: ReadonlyArray<RefIntegrityFinding>,
-  severities: FsckSeverityTable,
-): PassResult {
-  const severity = retypeSeverity(severities, 'symlinkRef', 'warning');
-  if (severity === 'ignore') return { findings: [], exitBit: 0 };
-  const findings = integrityFindings
-    .filter((finding) => finding.msgId === 'symlinkRef')
-    .map(
-      (finding): BadRefFinding => ({
-        type: 'bad-ref',
-        ref: finding.ref,
-        msgId: 'symlinkRef',
-        severity,
-      }),
-    );
-  const exitBit = severity === 'error' && findings.length > 0 ? EXIT_REFS_CONTENT : 0;
-  return { findings, exitBit };
+const REFS_PREFIX = 'refs/';
+
+type ContentFinding = Extract<
+  RefIntegrityFinding,
+  {
+    readonly msgId:
+      | 'badRefContent'
+      | 'cannotReadRef'
+      | 'badReferentName'
+      | 'symrefTargetIsNotARef'
+      | 'trailingRefContent'
+      | 'refMissingNewline';
+  }
+>;
+
+/** The configured grade of each message the content pass reports. */
+interface ContentGrades {
+  readonly badContent: FsckConfiguredSeverity;
+  readonly badReferent: FsckConfiguredSeverity;
+  readonly notARef: FsckConfiguredSeverity;
+  readonly trailing: FsckConfiguredSeverity;
+  readonly missingNewline: FsckConfiguredSeverity;
 }
 
+const gradesOf = (severities: FsckSeverityTable): ContentGrades => ({
+  badContent: retypeSeverity(severities, 'badRefContent', 'error'),
+  badReferent: retypeSeverity(severities, 'badReferentName', 'error'),
+  notARef: retypeSeverity(severities, 'symrefTargetIsNotARef', 'info'),
+  trailing: retypeSeverity(severities, 'trailingRefContent', 'info'),
+  missingNewline: retypeSeverity(severities, 'refMissingNewline', 'info'),
+});
+
+const unreadablePathFinding = ({
+  path,
+  operation,
+}: Extract<
+  RefIntegrityFinding,
+  { readonly msgId: 'unreadableRefPath' }
+>): UnreadablePathFinding => ({
+  type: 'unreadable-ref-path',
+  path,
+  operation,
+  reason: 'PERMISSION_DENIED',
+});
+
+const refsWalkFailedFinding = ({
+  path,
+}: Extract<RefIntegrityFinding, { readonly msgId: 'refsWalkFailed' }>): RefsWalkFailedFinding => ({
+  type: 'refs-walk-failed',
+  path,
+  reason: 'PERMISSION_DENIED',
+});
+
+const refsVerifyEndedFinding = ({
+  ref,
+  path,
+  reason,
+}: Extract<
+  RefIntegrityFinding,
+  { readonly msgId: 'refsVerifyEnded' }
+>): RefsVerifyEndedFinding => ({
+  type: 'refs-verify-ended',
+  ref,
+  path,
+  reason,
+});
+
+const CONTENT_MSG_IDS: ReadonlySet<string> = new Set([
+  'badRefContent',
+  'cannotReadRef',
+  'badReferentName',
+  'symrefTargetIsNotARef',
+  'trailingRefContent',
+  'refMissingNewline',
+]);
+
+const isContentFinding = (finding: RefIntegrityFinding): finding is ContentFinding =>
+  CONTENT_MSG_IDS.has(finding.msgId);
+
 /**
- * A ref whose content is not an object name: the content notice (gated by
- * `checkContentFormat`, with a severity `fsck.<msg-id>` can re-type) plus the
- * zero-OID pointer git synthesises for it. That pointer is reported OUTSIDE the catalogue —
- * `fsck.badRefOid` does not reach it, measured against git 2.55.0 — so it
- * always stands, at error severity, contributing bit 2.
- *
- * The two halves reach different names. git's ref-store content check stops at
- * every symbolic link, so a name read through one carries the pointer alone;
- * its ref iterator reads through, so that pointer is still reported under the
- * linked name (measured: a link onto a broken ref yields `symlinkRef` and the
- * pointer, and the `badRefContent` line names the real ref only).
+ * The severity a loose-ref content finding is reported at, or `undefined` when it is not
+ * reported. Each message is re-typed by its own `fsck.<msg-id>`; `cannotReadRef` is always
+ * an error — no setting and no `--strict` re-types it. A ref whose referent is an error
+ * is not also told it points at a non-ref.
  */
-function collectBadContentNotices(
-  ctx: Context,
+function contentSeverity(
+  finding: ContentFinding,
+  grades: ContentGrades,
+  shadowed: ReadonlySet<RefName>,
+): BadRefFinding['severity'] | undefined {
+  if (finding.msgId === 'cannotReadRef') return 'error';
+  if (finding.msgId === 'symrefTargetIsNotARef') {
+    const dropped = grades.badReferent === 'error' && shadowed.has(finding.ref);
+    return dropped || grades.notARef === 'ignore' ? undefined : grades.notARef;
+  }
+  const grade = ownGrade(finding.msgId, grades);
+  return grade === 'ignore' ? undefined : grade;
+}
+
+const ownGrade = (
+  msgId: ContentFinding['msgId'],
+  grades: ContentGrades,
+): FsckConfiguredSeverity => {
+  if (msgId === 'badReferentName') return grades.badReferent;
+  if (msgId === 'trailingRefContent') return grades.trailing;
+  if (msgId === 'refMissingNewline') return grades.missingNewline;
+  return grades.badContent;
+};
+
+function contentFinding(
+  finding: ContentFinding,
+  severity: BadRefFinding['severity'],
+): BadRefFinding {
+  if (finding.msgId === 'cannotReadRef') {
+    const { ref, path, reason } = finding;
+    return { type: 'bad-ref', ref, msgId: 'cannotReadRef', severity, path, reason };
+  }
+  if (finding.msgId === 'badRefContent') {
+    return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity };
+  }
+  if (finding.msgId === 'refMissingNewline') {
+    return { type: 'bad-ref', ref: finding.ref, msgId: 'refMissingNewline', severity };
+  }
+  if (finding.msgId === 'trailingRefContent') {
+    const { ref, trailing } = finding;
+    const base = { type: 'bad-ref', ref, msgId: 'trailingRefContent', severity } as const;
+    return trailing === undefined ? base : { ...base, trailing };
+  }
+  const { ref, msgId, referent } = finding;
+  return { type: 'bad-ref', ref, msgId, severity, referent };
+}
+
+const refsWithInvalidReferent = (
+  integrityFindings: ReadonlyArray<RefIntegrityFinding>,
+): ReadonlySet<RefName> =>
+  new Set(
+    integrityFindings.flatMap((finding) =>
+      finding.msgId === 'badReferentName' ? [finding.ref] : [],
+    ),
+  );
+
+/** The notices of the walk that are not content verdicts: a refused path, and git's
+ *  deprecation notice for a symbolic link standing in for a symref — re-typed, like every
+ *  catalogue message, by the repository's own `fsck.<msg-id>` table. */
+const walkNoticeOf = (
+  finding: RefIntegrityFinding,
+  symlinkGrade: FsckConfiguredSeverity,
+): BadRefFinding | UnreadablePathFinding | RefsWalkFailedFinding | undefined => {
+  if (finding.msgId === 'unreadableRefPath') return unreadablePathFinding(finding);
+  if (finding.msgId === 'refsWalkFailed') return refsWalkFailedFinding(finding);
+  if (finding.msgId !== 'symlinkRef' || symlinkGrade === 'ignore') return undefined;
+  return { type: 'bad-ref', ref: finding.ref, msgId: 'symlinkRef', severity: symlinkGrade };
+};
+
+const failsRefsVerify = (found: RefFinding): boolean =>
+  found.type === 'refs-walk-failed' || (found.type === 'bad-ref' && found.severity === 'error');
+
+/**
+ * Every notice of git's ref-store walk, in the walk's order — a link's deprecation notice
+ * ahead of the referent verdicts that follow it. A ref whose content is not an object name,
+ * or whose file the permissions refuse: the content notice, gated by `checkContentFormat`.
+ * The zero pointer git reports for either is not synthesised here: the snapshot carries one for every ref the store lists by name and
+ * cannot resolve. git's root-ref check (the files beside `refs/`) ends at its first
+ * error-severity finding, an unreadable file included.
+ */
+function collectContentNotices(
   integrityFindings: ReadonlyArray<RefIntegrityFinding>,
   checkContentFormat: boolean,
   severities: FsckSeverityTable,
 ): PassResult {
-  const severity = retypeSeverity(severities, 'badRefContent', 'error');
-  const reportContent = checkContentFormat && severity !== 'ignore';
-  const findings: BadRefFinding[] = [];
-  let exitBit = 0;
+  const grades = gradesOf(severities);
+  const symlinkGrade = retypeSeverity(severities, 'symlinkRef', 'warning');
+  const shadowed = refsWithInvalidReferent(integrityFindings);
+  const findings: Array<BadRefFinding | UnreadablePathFinding | RefsWalkFailedFinding> = [];
+  let rootCheckEnded = false;
   for (const finding of integrityFindings) {
-    if (finding.msgId !== 'badRefContent') continue;
-    const gradeContent = reportContent && !finding.throughSymlink;
-    if (gradeContent) {
-      findings.push({ type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity });
-    }
-    findings.push({
-      type: 'bad-ref',
-      ref: finding.ref,
-      msgId: 'badRefOid',
-      severity: 'error',
-      target: zeroOid(ctx.hashConfig),
-    });
-    exitBit |= EXIT_MISSING;
-    if (gradeContent && severity === 'error') exitBit |= EXIT_REFS_CONTENT;
+    if (!checkContentFormat) continue;
+    const walkNotice = walkNoticeOf(finding, symlinkGrade);
+    if (walkNotice !== undefined) findings.push(walkNotice);
+    if (!isContentFinding(finding)) continue;
+    const severity = contentSeverity(finding, grades, shadowed);
+    if (severity === undefined) continue;
+    const isRootRef = !finding.ref.startsWith(REFS_PREFIX);
+    if (isRootRef && rootCheckEnded) continue;
+    findings.push(contentFinding(finding, severity));
+    rootCheckEnded ||= isRootRef && severity === 'error';
   }
+  const exitBit = findings.some(failsRefsVerify) ? EXIT_REFS_CONTENT : 0;
   return { findings, exitBit };
+}
+
+/** The end of git's refs-verify walk on a link it cannot resolve: reported whatever the
+ *  findings before it, and it fails the verify. */
+function collectWalkEnd(
+  integrityFindings: ReadonlyArray<RefIntegrityFinding>,
+  checkContentFormat: boolean,
+): PassResult {
+  if (!checkContentFormat) return { findings: [], exitBit: 0 };
+  const findings = integrityFindings.flatMap((finding) =>
+    finding.msgId === 'refsVerifyEnded' ? [refsVerifyEndedFinding(finding)] : [],
+  );
+  return { findings, exitBit: findings.length > 0 ? EXIT_REFS_CONTENT : 0 };
 }
 
 const HEAD = 'HEAD' as RefName;
 
 type RefEntries = Awaited<ReturnType<RefStore['listRefs']>>;
 
-/** The chain failures git's `refs_resolve_ref_unsafe` returns NULL on for a
- *  symbolic ref: its end names no ref, it loops, or it outruns the depth git
- *  follows. Each is a broken ref git snapshots with the zero oid. */
-const BROKEN_SYMREF_CODES: ReadonlySet<string | undefined> = new Set([
+/** The chain failures git's `refs_resolve_ref_unsafe` returns NULL on: the ref's content
+ *  or its end names no object, it loops, or it outruns the depth git follows. A permission
+ *  fault on the read is one too — git snapshots the ref with the zero oid. */
+const ZERO_POINTER_CODES: ReadonlySet<string | undefined> = new Set([
+  ...UNREADABLE_REF_CODES,
   'REF_NOT_FOUND',
-  'REF_CYCLE_DETECTED',
-  'REF_CHAIN_TOO_DEEP',
+  'PERMISSION_DENIED',
 ]);
 
-/** The object a ref names — a symbolic one through its chain. A symbolic
- *  ref git cannot resolve to an object is its broken ref, snapshotted with
- *  the zero oid; one whose content is malformed names none. */
-async function targetOf(ctx: Context, entry: RefEntries[number]): Promise<ObjectId | undefined> {
+/** The object a ref names — a symbolic one through its chain. A ref whose chain git cannot
+ *  resolve is snapshotted with the zero oid; any other fault of the read propagates. */
+async function targetOf(ctx: Context, entry: RefEntries[number]): Promise<ObjectId> {
   if (entry.value.kind === 'direct') return entry.value.id;
   try {
     // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
     return await resolveRef(ctx, entry.name, { peel: false });
   } catch (err) {
-    if (BROKEN_SYMREF_CODES.has(errorDataCode(err))) return zeroOid(ctx.hashConfig);
-    if (!isTolerableRefFault(err)) throw err;
-    return undefined;
+    if (ZERO_POINTER_CODES.has(errorDataCode(err))) return zeroOid(ctx.hashConfig);
+    throw err;
   }
 }
 
@@ -158,12 +302,20 @@ interface RefSnapshot {
 }
 
 /** git's snapshot order: every ref by name, then every worktree's HEAD. */
-async function snapshotTargets(ctx: Context, entries: RefEntries): Promise<RefSnapshot> {
+async function snapshotTargets(
+  ctx: Context,
+  entries: RefEntries,
+  names: ReadonlyArray<RefName>,
+): Promise<RefSnapshot> {
+  const entryByName = new Map(entries.map((entry) => [entry.name, entry]));
   const refs: { readonly ref: RefName; readonly id: ObjectId }[] = [];
-  for (const entry of entries) {
-    if (entry.name === HEAD) continue;
-    const id = await targetOf(ctx, entry);
-    if (id !== undefined) refs.push({ ref: entry.name, id });
+  for (const ref of names) {
+    if (ref === HEAD) continue;
+    const entry = entryByName.get(ref);
+    refs.push({
+      ref,
+      id: entry === undefined ? zeroOid(ctx.hashConfig) : await targetOf(ctx, entry),
+    });
   }
   const { heads, unreadable } = await snapshotWorktreeHeads(ctx);
   return { targets: [...refs, ...heads], unreadable };
@@ -179,6 +331,15 @@ const unreadableHeadFinding = ({ ref, path }: UnreadableHead): BadRefFinding => 
   reason: 'PERMISSION_DENIED',
 });
 
+/** How the snapshot's targets are judged present, and whether the unreadable HEADs count. */
+interface PresenceCheck {
+  readonly universe: ReadonlySet<ObjectId>;
+  readonly check: RefTargetCheck;
+  readonly promised: ReadonlySet<ObjectId>;
+  readonly parses: ParseCheck;
+  readonly checkContentFormat: boolean;
+}
+
 /** Every ref — symbolic ones through their chain, every worktree's HEAD
  *  included — naming an object the universe does not hold and no promisor
  *  pack promises: git's `invalid sha1 pointer`. When every snapshotted ref
@@ -186,12 +347,12 @@ const unreadableHeadFinding = ({ ref, path }: UnreadableHead): BadRefFinding => 
 async function collectAbsentTargets(
   ctx: Context,
   entries: RefEntries,
-  universe: ReadonlySet<ObjectId>,
-  check: RefTargetCheck,
-  promised: ReadonlySet<ObjectId>,
-  parses: ParseCheck,
+  names: ReadonlyArray<RefName>,
+  presence: PresenceCheck,
 ): Promise<PassResult> {
-  const { targets, unreadable } = await snapshotTargets(ctx, entries);
+  const { universe, check, promised, parses, checkContentFormat } = presence;
+  const { targets, unreadable: snapshotUnreadable } = await snapshotTargets(ctx, entries, names);
+  const unreadable = checkContentFormat ? snapshotUnreadable : [];
   const unreadableFindings = unreadable.map(unreadableHeadFinding);
   const findings: RefFinding[] = [];
   for (const { ref, id } of targets) {
@@ -210,18 +371,17 @@ async function collectAbsentTargets(
  * Two sub-checks run independently:
  * - **Content format** (gated by `checkReferences`): a malformed loose ref —
  *   reported by the store's own `verifyIntegrity` as `badRefContent` —
- *   contributes `badRefContent` (bit 8, gated) + a synthesised zero-OID
- *   `badRefOid` (bit 2, always), so a loose ref holding bytes that are not an
- *   object name exits 10 = 2|8.
- * - **OID presence** (always): every well-formed ref's OID (loose + packed,
- *   from `listRefs`) must be in the object universe, confirmed via
- *   `isKnownOid` as `check` says (see `RefTargetCheck`), and its served copy
- *   must hash to it (`parses`), as git's `parse_object` checks.
- *   Absent → `badRefOid` (bit 2), so a loose ref naming a well-formed but
- *   absent object exits 2 with AND without `--no-references`. A symbolic ref
- *   (HEAD too) is judged by the object its chain names; one naming none —
- *   an unborn branch — never contributes. A promisor object (`promised`) is
- *   never absent, as git's `snapshot_ref` excuses it.
+ *   contributes `badRefContent` (bit 8, gated).
+ * - **OID presence** (always): git snapshots every ref by name. One whose
+ *   chain resolves to an object must find it in the object universe, confirmed
+ *   via `isKnownOid` as `check` says (see `RefTargetCheck`), and its served
+ *   copy must hash to it (`parses`), as git's `parse_object` checks. One whose
+ *   chain does not resolve — a body git rejects, a referent naming no ref, a
+ *   loop, an unreadable file — is snapshotted with the zero oid, as is every
+ *   ref leading to it: the names `listRefNames` holds that `listRefs` does
+ *   not. Absent → `badRefOid` (bit 2), with AND without `--no-references`.
+ *   An unborn branch behind HEAD never contributes. A promisor object
+ *   (`promised`) is never absent, as git's `snapshot_ref` excuses it.
  */
 export async function runRefsVerifyPass(
   ctx: Context,
@@ -233,22 +393,24 @@ export async function runRefsVerifyPass(
   parses: ParseCheck,
 ): Promise<PassResult> {
   const refStore = getRefStore(ctx);
-  const [entries, integrityFindings] = await Promise.all([
+  const [entries, names, integrityFindings] = await Promise.all([
     refStore.listRefs(),
+    refStore.listRefNames(),
     refStore.verifyIntegrity(),
   ]);
 
-  const symlinks = collectSymlinkNotices(integrityFindings, severities);
-  const badContent = collectBadContentNotices(
-    ctx,
-    integrityFindings,
+  const badContent = collectContentNotices(integrityFindings, checkContentFormat, severities);
+  const walkEnd = collectWalkEnd(integrityFindings, checkContentFormat);
+  const absent = await collectAbsentTargets(ctx, entries, names, {
+    universe,
+    check,
+    promised,
+    parses,
     checkContentFormat,
-    severities,
-  );
-  const absent = await collectAbsentTargets(ctx, entries, universe, check, promised, parses);
+  });
 
   return {
-    findings: [...symlinks.findings, ...badContent.findings, ...absent.findings],
-    exitBit: symlinks.exitBit | badContent.exitBit | absent.exitBit,
+    findings: [...badContent.findings, ...walkEnd.findings, ...absent.findings],
+    exitBit: badContent.exitBit | walkEnd.exitBit | absent.exitBit,
   };
 }

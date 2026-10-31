@@ -669,3 +669,20 @@ describe('createNodeContext native line ending', () => {
     });
   });
 });
+
+describe('createNodeContext symlink hop limit', () => {
+  describe('Given a context built by createNodeContext', () => {
+    describe('When reading symlinkHopLimit', () => {
+      it('Then it declares none, so the walk applies the git limit of 32 on every platform', () => {
+        // Arrange
+        const sut = createNodeContext;
+
+        // Act
+        const result = sut({ workDir: '/tmp/tsgit-ctx-hops' });
+
+        // Assert
+        expect(result.symlinkHopLimit).toBeUndefined();
+      });
+    });
+  });
+});

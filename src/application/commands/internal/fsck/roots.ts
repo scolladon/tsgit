@@ -113,6 +113,12 @@ export function isTolerableRefFault(err: unknown): boolean {
   return code !== undefined && GC_TOLERATED_REF_CODES.has(code);
 }
 
+const PERMISSION_DENIED_CODE = 'PERMISSION_DENIED';
+
+/** A ref read fault git's ref snapshot skips: a broken ref, or a file the permissions refuse. */
+export const isSkippedRefReadFault = (err: unknown): boolean =>
+  isTolerableRefFault(err) || errorDataCode(err) === PERMISSION_DENIED_CODE;
+
 /** Whether a ref tip roots fsck's walk: git's `snapshot_ref` keeps one it holds and can parse. */
 type TipGate = (id: ObjectId) => Promise<boolean>;
 
@@ -893,16 +899,19 @@ type HeadRead =
 
 const NO_HEAD: HeadRead = { kind: 'none' };
 
+/** git reports only the file it could not read; a refused target down the chain ends it silently. */
+const isPermissionRefusalOf = (err: unknown, file: string): boolean =>
+  err instanceof TsgitError && err.data.code === PERMISSION_DENIED_CODE && err.data.path === file;
+
 /** What `worktreeCtx`'s HEAD yields: the object it names, nothing, or a refusal to be read. */
 async function headOf(worktreeCtx: Context): Promise<HeadRead> {
   try {
     // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
     return { kind: 'named', id: await resolveRef(worktreeCtx, HEAD_REF, { peel: false }) };
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'PERMISSION_DENIED') {
-      return { kind: 'unreadable', path: err.data.path };
-    }
-    if (!isTolerableRefFault(err)) throw err;
+    const ownFile = `${worktreeCtx.layout.gitDir}/HEAD`;
+    if (isPermissionRefusalOf(err, ownFile)) return { kind: 'unreadable', path: ownFile };
+    if (!isSkippedRefReadFault(err)) throw err;
     return NO_HEAD;
   }
 }

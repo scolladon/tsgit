@@ -42,6 +42,11 @@ export interface ExplicitLayoutOptions {
  */
 export interface LayoutCapabilities {
   readonly realWorkTreePath?: (path: string) => Promise<string | undefined>;
+  /**
+   * Set by an adapter that canonicalises `gitDir` after resolution: the layout then carries
+   * the gitdir as git spells it, which the canonical form no longer shows.
+   */
+  readonly gitDirSpelling?: true;
 }
 
 /**
@@ -261,6 +266,33 @@ export const syntheticFallbackLayout = (
   };
 };
 
+const SHARED_DIRECTORIES: ReadonlyArray<string> = ['objects', 'refs'];
+
+const isPresentButUnsearchable = async (probe: LayoutProbe, dir: string): Promise<boolean> =>
+  (await probe.stat(dir))?.isDirectory === true && (await probe.isSearchable?.(dir)) === false;
+
+/**
+ * Marks a found-nothing bootstrap layout whose `.git` holds an existing but
+ * unsearchable `objects/` or `refs/` — of the common dir, where a linked
+ * worktree keeps them: git's `is_git_directory` rejects such a gitdir, so read
+ * commands refuse it while `openRepository`, `init` and `clone` still bootstrap. An absent directory is not marked, so a fresh
+ * `init` target can still bootstrap. Called on the bootstrap path only, so a
+ * discovered layout pays no extra I/O.
+ */
+export const markUnsearchableGitDir = async (
+  layout: RepositoryLayoutInput,
+  probe: LayoutProbe,
+  pathPolicy: PathPolicy,
+): Promise<RepositoryLayoutInput> => {
+  const commonDir = layout.commonDir ?? layout.gitDir;
+  for (const name of SHARED_DIRECTORIES) {
+    if (await isPresentButUnsearchable(probe, pathPolicy.join(commonDir, name))) {
+      return { ...layout, unsearchableGitDir: true };
+    }
+  }
+  return layout;
+};
+
 /**
  * Stages 2–4 of layout resolution, given a structural `WalkOutcome` (from the
  * walk, the explicit route, or a fixed-entry shim that has no walk at all):
@@ -381,6 +413,26 @@ const resolveExplicitOutcome = async (
 };
 
 /**
+ * The gitdir as git spells it: the discovered `.git` or the explicit value made absolute,
+ * neither realpathed. A gitfile's target is what git resolves, so the layout's own `gitDir`
+ * already is the spelling there and none is reported.
+ */
+const gitDirSpellingOf = (
+  outcome: WalkOutcome,
+  opts: ExplicitLayoutOptions,
+  cwd: string,
+  pathPolicy: PathPolicy,
+): string | undefined => {
+  if (outcome.route === 'BARE_DIR') return outcome.gitDir;
+  const spelled =
+    outcome.route === 'DISCOVERED'
+      ? pathPolicy.join(outcome.origin, '.git')
+      : // Stryker disable next-line StringLiteral: equivalent — the only route that reaches here without `opts.gitDir` is BARE_DIR, returned above; EXPLICIT always carries it, so the fallback is never read.
+        resolveAgainst(cwd, opts.gitDir ?? '', pathPolicy);
+  return spelled === outcome.gitDir ? spelled : undefined;
+};
+
+/**
  * Resolve the full physical layout for `cwd`: `opts.gitDir`, when given,
  * skips discovery entirely (Stage 1's explicit route); otherwise walk up
  * looking for a `.git` entry or a cwd-is-gitdir match, bounded by
@@ -411,7 +463,7 @@ export const resolveLayout = async (
       ? await resolveExplicitOutcome(probe, opts.gitDir, cwd, pathPolicy, commonDirOverride)
       : await findLayout(probe, cwd, pathPolicy, opts.ceilingDirs, commonDirOverride);
   if (outcome === undefined) return undefined;
-  return finishLayout(
+  const layout = await finishLayout(
     probe,
     outcome,
     pathPolicy,
@@ -429,4 +481,12 @@ export const resolveLayout = async (
     },
     caps,
   );
+  const spelled =
+    caps.gitDirSpelling === true ? gitDirSpellingOf(outcome, opts, cwd, pathPolicy) : undefined;
+  const spelledLayout = spelled === undefined ? layout : { ...layout, gitDirSpelling: spelled };
+  // A discovered layout already passed `is_git_directory` in the walk; an
+  // explicit gitDir skips the walk, and git applies the same rule to it.
+  return opts.gitDir === undefined
+    ? spelledLayout
+    : markUnsearchableGitDir(spelledLayout, probe, pathPolicy);
 };

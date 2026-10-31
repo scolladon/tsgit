@@ -4,6 +4,7 @@ import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import {
   parseLooseRef,
+  readLooseBody,
   serializeDirectRef,
   serializeSymbolicRef,
 } from '../../../../src/domain/refs/loose-ref.js';
@@ -13,24 +14,203 @@ import { arbRefName } from './arbitraries.js';
 const SHA1 = 'a'.repeat(40) as ObjectId;
 const SHA256 = 'b'.repeat(64) as ObjectId;
 
+describe('readLooseBody', () => {
+  describe('Given an upper-case direct oid with a newline', () => {
+    describe('When read with hexLength 40', () => {
+      it('Then it is direct with the lower-case id', () => {
+        // Arrange
+        const content = `${'A'.repeat(40)}\n`;
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(content, 40);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: SHA1, missingNewline: false });
+      });
+    });
+  });
+});
+
+describe('readLooseBody (grammar classes)', () => {
+  const SHA = 'a'.repeat(40);
+
+  describe('Given a direct oid followed by a trailer', () => {
+    describe('When read', () => {
+      it.each([
+        { content: `${SHA} garbage\n`, trailing: ' garbage\n', missingNewline: false },
+        { content: `${SHA}\n\n`, trailing: '\n\n', missingNewline: false },
+        { content: `${SHA}\t\n`, trailing: '\t\n', missingNewline: false },
+        { content: `${SHA}\r\n`, trailing: '\r\n', missingNewline: false },
+        { content: `${SHA} garbage`, trailing: ' garbage', missingNewline: false },
+      ])('Then it keeps the id and reports the trailer of $content', (row) => {
+        // Arrange
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(row.content, 40);
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'direct',
+          id: SHA1,
+          missingNewline: row.missingNewline,
+          trailing: row.trailing,
+        });
+      });
+    });
+  });
+
+  describe('Given a direct oid with no trailer', () => {
+    describe('When read', () => {
+      it('Then it is direct, misses its newline and carries no trailer', () => {
+        // Arrange
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(SHA, 40);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: SHA1, missingNewline: true });
+      });
+    });
+  });
+
+  describe('Given content that is not a ref body', () => {
+    describe('When read', () => {
+      it.each([
+        { label: 'oid glued to garbage', content: `${SHA}garbage\n` },
+        { label: '39 hex digits', content: `${'a'.repeat(39)}\n` },
+        { label: '39 hex digits with no line feed', content: 'a'.repeat(39) },
+        { label: '41 hex digits', content: `${SHA}0\n` },
+        { label: '64 hex digits at width 40', content: `${'a'.repeat(64)}\n` },
+        { label: 'a vertical tab after the oid', content: `${SHA}\v\n` },
+        { label: 'empty content', content: '' },
+      ])('Then $label is unparseable', ({ content }) => {
+        // Arrange
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(content, 40);
+
+        // Assert
+        expect(result).toEqual({ kind: 'unparseable' });
+      });
+    });
+  });
+
+  describe('Given a symbolic body', () => {
+    describe('When read', () => {
+      it.each([
+        { content: 'ref:refs/heads/main\n', referent: 'refs/heads/main', nl: false, tw: false },
+        { content: 'ref:\trefs/heads/main\n', referent: 'refs/heads/main', nl: false, tw: false },
+        { content: 'ref: refs/heads/main \n', referent: 'refs/heads/main', nl: false, tw: true },
+        { content: 'ref: refs/heads/main\r\n', referent: 'refs/heads/main', nl: false, tw: true },
+        { content: 'ref: refs/heads/main', referent: 'refs/heads/main', nl: true, tw: false },
+        { content: 'ref: refs/heads/main ', referent: 'refs/heads/main', nl: true, tw: false },
+        { content: 'ref: ', referent: '', nl: true, tw: false },
+        { content: 'ref: \n', referent: '', nl: true, tw: false },
+        { content: 'ref: \n\n', referent: '', nl: true, tw: false },
+        { content: 'ref:', referent: '', nl: true, tw: false },
+        {
+          content: 'ref: refs/heads/main\nextra\n',
+          referent: 'refs/heads/main\nextra',
+          nl: false,
+          tw: false,
+        },
+        {
+          content: 'ref:\vrefs/heads/main\n',
+          referent: '\vrefs/heads/main',
+          nl: false,
+          tw: false,
+        },
+      ])('Then $content reads as a symref', (row) => {
+        // Arrange
+        const sut = readLooseBody;
+
+        // Act
+        const result = sut(row.content, 40);
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'symbolic',
+          referent: row.referent,
+          missingNewline: row.nl,
+          trailingWhitespace: row.tw,
+        });
+      });
+    });
+  });
+});
+
 describe('parseLooseRef', () => {
   describe('Given loose-ref content encoding a direct ref', () => {
     describe('When parsing', () => {
       it.each([
         { content: `${SHA1}\n`, target: SHA1, label: 'returns DirectRef with correct ObjectId' },
-        { content: `${SHA256}\n`, target: SHA256, label: 'returns DirectRef for a SHA-256 id' },
+        {
+          content: `${SHA256}\n`,
+          target: SHA256,
+          hexLength: 64 as const,
+          label: 'returns DirectRef for a SHA-256 id',
+        },
         { content: `${SHA1}\r\n`, target: SHA1, label: 'handles CRLF gracefully' },
         {
           content: SHA1 as string,
           target: SHA1,
           label: 'handles a missing trailing newline gracefully',
         },
-      ])('Then $label', ({ content, target }) => {
-        // Arrange & Act
-        const result = parseLooseRef(content);
+      ])('Then $label', ({ content, target, hexLength }) => {
+        // Arrange
+        const sut = parseLooseRef;
+
+        // Act
+        const result = sut(content, hexLength ?? 40);
 
         // Assert
         expect(result).toEqual({ type: 'direct', target });
+      });
+    });
+  });
+
+  describe('Given git-lenient loose-ref content', () => {
+    describe('When parsing at hexLength 40', () => {
+      it('Then a symref without a space after the keyword is symbolic', () => {
+        // Arrange
+        const sut = parseLooseRef;
+
+        // Act
+        const result = sut('ref:refs/heads/main\n', 40);
+
+        // Assert
+        expect(result).toEqual({ type: 'symbolic', target: 'refs/heads/main' });
+      });
+
+      it('Then an upper-case oid is direct with the lower-case id', () => {
+        // Arrange
+        const sut = parseLooseRef;
+
+        // Act
+        const result = sut(`${'A'.repeat(40)}\n`, 40);
+
+        // Assert
+        expect(result).toEqual({ type: 'direct', target: SHA1 });
+      });
+
+      it('Then a 64-digit oid is refused with INVALID_OBJECT_ID', () => {
+        // Arrange
+        const sut = parseLooseRef;
+        let thrown: unknown;
+
+        // Act
+        try {
+          sut(`${'a'.repeat(64)}\n`, 40);
+        } catch (e) {
+          thrown = e;
+        }
+
+        // Assert
+        expect((thrown as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
       });
     });
   });
@@ -42,7 +222,7 @@ describe('parseLooseRef', () => {
         const content = 'ref: refs/heads/main\n';
 
         // Act
-        const result = parseLooseRef(content);
+        const result = parseLooseRef(content, 40);
 
         // Assert
         expect(result).toEqual({ type: 'symbolic', target: 'refs/heads/main' });
@@ -57,7 +237,7 @@ describe('parseLooseRef', () => {
         const content = 'ref: refs/heads/main';
 
         // Act
-        const result = parseLooseRef(content);
+        const result = parseLooseRef(content, 40);
 
         // Assert
         expect(result).toEqual({ type: 'symbolic', target: 'refs/heads/main' });
@@ -82,7 +262,7 @@ describe('parseLooseRef', () => {
       ])('Then $label throws INVALID_REF', ({ content, reason }) => {
         // Arrange & Act & Assert
         try {
-          parseLooseRef(content);
+          parseLooseRef(content, 40);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -99,7 +279,7 @@ describe('parseLooseRef', () => {
       it('Then throws INVALID_OBJECT_ID', () => {
         // Arrange
         try {
-          parseLooseRef('not-a-sha');
+          parseLooseRef('not-a-sha', 40);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -115,7 +295,7 @@ describe('parseLooseRef', () => {
       it('Then throws INVALID_REF', () => {
         // Arrange
         try {
-          parseLooseRef('ref: ../../../etc/passwd\n');
+          parseLooseRef('ref: ../../../etc/passwd\n', 40);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -134,7 +314,7 @@ describe('parseLooseRef', () => {
 
         // Act & Assert
         try {
-          parseLooseRef(content);
+          parseLooseRef(content, 40);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -155,7 +335,7 @@ describe('parseLooseRef', () => {
 
         // Act & Assert
         try {
-          parseLooseRef(content);
+          parseLooseRef(content, 40);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -209,7 +389,7 @@ describe('roundtrip', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbObjectId(), (id) => {
-            const result = parseLooseRef(serializeDirectRef(id));
+            const result = parseLooseRef(serializeDirectRef(id), 40);
             expect(result).toEqual({ type: 'direct', target: id });
           }),
         );
@@ -223,7 +403,7 @@ describe('roundtrip', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbRefName(), (name) => {
-            const result = parseLooseRef(serializeSymbolicRef(name));
+            const result = parseLooseRef(serializeSymbolicRef(name), 40);
             expect(result).toEqual({ type: 'symbolic', target: name });
           }),
         );

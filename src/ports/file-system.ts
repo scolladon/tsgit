@@ -172,6 +172,14 @@ export interface FileSystem {
   readonly readdir: (path: string) => Promise<ReadonlyArray<DirEntry>>;
 
   /**
+   * List directory entries exactly as {@link readdir} does, in the order the operating system
+   * returns them (the order git's own `readdir` sees) instead of the adapter's. Same refusals as
+   * `readdir`. OPTIONAL: a caller whose result depends on that order reads through it and falls
+   * back to `readdir` for an adapter without it.
+   */
+  readonly readdirInOsOrder?: (path: string) => Promise<ReadonlyArray<DirEntry>>;
+
+  /**
    * Create directory and all parents. No-op if a directory (or a symlink to one) already holds
    * the leaf; a regular file (or a symlink to one) holding it refuses FILE_EXISTS, as POSIX mkdir
    * reports EEXIST.

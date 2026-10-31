@@ -35,10 +35,10 @@ table top-down and elects the first unblocked item.
 | # | cut | items | why here |
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
-| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · 32.18 · 32.19 · 32.26 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 · 32.47 (spike) | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
+| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · 32.19 · 32.26 · 32.48 · 32.49 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 · 32.47 (spike) | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
 | 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · 32.32 · 32.33 · 32.40 · 32.41 · 32.44 · 32.1 rows A6, A21, A22, A23, D5, D15, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
-| 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · 32.23 · 32.34 · 32.39 · 32.43 · 32.1 rows A2, A13, A20, B13, B17, C6, C22, D19 | refusal mismatches in `merge` / `rebase` / `push` |
-| 5 | **local perf** | #310 → 31.5 · 31.12 · 32.15 · 31.13 · 32.36 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
+| 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · 32.23 · 32.34 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B13, B17, C6, C22, D19 | refusal mismatches in `merge` / `rebase` / `push` |
+| 5 | **local perf** | #310 → 31.5 · 31.12 · 32.15 · 31.13 · 32.36 · 32.50 (spike) | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
 | 7 | **subsystems** | 32.7 → 32.1 row B5 · 32.4 → 32.3 row A10 · 31.9 · 32.35 | low-frequency correctness, each its own `feat:`; 32.7 crosses the containment boundary (security review first) |
 | 8 | **magic + byte-path** | 32.11b magic pathspecs (`!` alias kept = `feat`, dropped = the one major) · 32.28 byte-path port (optional port methods = `feat`, required = major) · 32.9 | the only candidates for a 7.0.0; 32.9 needs editor, rerere and signature-verification capabilities first |
@@ -659,7 +659,7 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   - `rebase-merge/current-fixups` ends with `\n` (git: none, 47 bytes for one entry);
   - the first line of `rewritten-pending` holds the rebased group's base oid (git: the original oid);
   - `rebaseMerges` over an octopus merge refuses `UNSUPPORTED_OPERATION` where git recreates it with `merge -C <sha> s1 s2`, a three-parent commit.
-- [ ] **32.18** `fsck` refs with a broken chain or an unreadable file — pre-existing, pinned against git 2.55:
+- [x] **32.18** `fsck` refs with a broken chain or an unreadable file — pre-existing, pinned against git 2.55: · ADRs 1121–1139 · design/fsck-broken-ref-chain-unreadable.md
   - `a` = `ref: refs/heads/b` with `b` garbage, `abc`, empty or `ref: x..y`: git reports `badRefContent`/`badReferentName` on `b` plus an `invalid sha1 pointer 0000…` for `a` and `b` (exit 10); tsgit omits `a` and reports nothing for the `badReferentName` case (exit 0);
   - an unreadable ordinary ref (`b` permission-denied): git prints `cannot read ref file` plus the pointer lines and exits 8; tsgit throws in `listRefs`.
 - [ ] **32.19** `rev-parse` and commit-ish resolution against corrupt input — pre-existing, pinned against git 2.55:
@@ -684,7 +684,7 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
 - [ ] **32.36** gc stages every pack in memory before installing any — `buildRepack` holds the normal, promisor and cruft `BuildPackResult` bytes together (ADR-1027); peak memory grows from the largest pack to their sum, about one extra full pack on a gc after a history rewrite. `writePackArtifactsViaQuarantine` and `writeCruftPack` write-and-rename in one call, so git's stage-to-disk shape (`.tmp-*-pack` renamed at the end) needs both writers split into stage/install halves plus a cross-build tmp cleanup. The `gc-residency-…-with-…-unexpired-cruft` bench row cannot see pack bytes at its payload size (+6 MB heap is per-object bookkeeping); a large-blob cruft variant would. Not folded: a design of its own. Performance.
 - [ ] **32.37** `fsck` labels a loose body that overruns its size claim past the header window `unterminatedHeader` — git reports `error: corrupt loose object '<oid>'` / `unable to unpack contents` / `object corrupt or missing`; tsgit's `looseHeaderFailure` maps the `LOOSE_OBJECT_CORRUPT` read fault to the `unterminatedHeader` msgId, naming a header that is in fact terminated. Exit codes already match (1 unreferenced, 3 referenced). Not folded: out of scope (message-only, listed in the design's out-of-scope). Message-only.
 - [x] **32.38** `status` reports every tracked gitlink modified — a populated, unmoved submodule and an empty (unpopulated) submodule directory both come back as `{ path: 'sub', unstaged: 'modified', worktree: { mode: '100755' } }` with `clean: false`; git 2.55 prints nothing and exits 0. `compare-working-tree-entry.ts:125` sends every gitlink past the stat arm, and `compareContent` cannot read a directory, so it degrades to `modified` (`:222`). git's `ce_compare_gitlink` resolves the submodule's HEAD instead: unmoved → clean, moved → ` M sub`, and an oversized `sub/.git` → `fatal: too large to be a .git file: 'sub/.git'` exit 128 (tsgit: `modified`, exit 0). Proven 2026-10-24 by a git 2.55 vs tsgit twin probe on main 36a8b9b7. Wrong-result — delivered by the status gitlink parity change on this branch (design docs/design/status-gitlink-parity.md, ADRs 1063–1074).
-- [ ] **32.39** Loose-ref parsing keeps trailing whitespace git strips — `parseLooseRef` trims only `[\r\n]+` (`src/domain/refs/loose-ref.ts:19`). git 2.55 resolves all three cases to the commit: `refs/heads/sp` = `<hex>␠␠`, `HEAD` = `ref: refs/heads/main␠␠`, `HEAD` = `ref: refs/heads/main` + 5000 spaces. tsgit throws `INVALID_REF: refs/heads/sp is broken` and `INVALID_REF: ref name contains forbidden character` (HEAD cases, also from `status`). Proven 2026-10-24, twin probe on main 36a8b9b7. Refusal mismatch.
+- [x] **32.39** Loose-ref parsing keeps trailing whitespace git strips — `parseLooseRef` trims only `[\r\n]+` (`src/domain/refs/loose-ref.ts:19`). git 2.55 resolves all three cases to the commit: `refs/heads/sp` = `<hex>␠␠`, `HEAD` = `ref: refs/heads/main␠␠`, `HEAD` = `ref: refs/heads/main` + 5000 spaces. tsgit throws `INVALID_REF: refs/heads/sp is broken` and `INVALID_REF: ref name contains forbidden character` (HEAD cases, also from `status`). Proven 2026-10-24, twin probe on main 36a8b9b7. Refusal mismatch. · ADRs 1121–1139 · design/fsck-broken-ref-chain-unreadable.md
 - [ ] **32.40** Long pathspecs refused where git stages or reports no match — (a) `add` of an existing 805-byte path (four 200-byte components + `x`): git 2.55 stages it (exit 0); tsgit throws `INVALID_OPTION: pattern exceeds max length 256 bytes` (`resolve-pathspec.ts:119`, `MAX_PATHSPEC_PATTERN_BYTES = 256` at `:23`). ADR-1043 kept the budget only to stay inside 32.11's scope, and names its removal a separate faithful follow-up. (b) A 300-byte single component: git says `pathspec '<p>' did not match any files` (exit 128); tsgit throws `PATHSPEC_OUTSIDE_REPO` — `validatePathspecBody` (`resolve-pathspec.ts:98-103`) maps the 255-byte component cap (`working-tree-path.ts:116`) onto the outside-repository refusal. The raw name-too-long errno suspected in the 32.11 run did not reproduce: the budget refuses before any realpath. Proven 2026-10-24, twin probe on main 36a8b9b7. Refusal mismatch.
 - [ ] **32.41** `checkout` cannot create a branch on an unborn HEAD — git 2.55 `checkout -b x` with no start point succeeds on an unborn branch (`HEAD` → `ref: refs/heads/x`, index kept, no ref written). tsgit's `CheckoutSwitchOptions.rev` is required (`checkout.ts:79`), so that form cannot be expressed. The nearest call, `{ rev: 'HEAD', createBranch: { name: 'x' } }`, throws `REF_NOT_FOUND: ref not found: refs/heads/main` from the unconditional `resolveRef(ctx, 'HEAD')` (`checkout.ts:251`); git's `checkout -b x HEAD` refuses with `fatal: 'HEAD' is not a commit and a branch 'x' cannot be created from it`. Proven 2026-10-24, twin probe on main 36a8b9b7. Refusal mismatch.
 - [ ] **32.42** `add` result order depends on the route — for `！.txt` and `😀.txt`, git 2.55 `add -v` prints `！` then `😀` (index byte order) on the literal, glob and `-A` routes alike. tsgit's literal route returns `["！.txt","😀.txt"]`, but the glob and `all` routes return `["😀.txt","！.txt"]` for `added` and `modified`: `sortedResult` sorts by UTF-16 code unit (`add.ts:1655-1657`, also `removed` at `:450`). The 32.31 test row `removed lists them in code-unit order, as added and modified do` (add.test.ts:801) pins the code-unit order and needs re-pinning against git. Proven 2026-10-24, twin probe on main 36a8b9b7. Wrong-result, low impact.
@@ -753,6 +753,45 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   HEAD:<blob> blob   git=1   verify=128 tsgit=3  findings=bad-object,midx-unusable,missing,unreachable,dangling,root
   HEAD^{tree} tree   git=128 verify=128 tsgit=3
   ```
+
+### Open (scoped 2026-10-31 — follow-ups surfaced by the fsck-broken-ref-chain-unreadable run, triaged)
+
+- [ ] **32.48** `fsck` never checks another worktree's per-worktree refs, and names its own without the `worktrees/<id>/` prefix — run from the main worktree with a symlink at `.git/worktrees/wt/refs/bisect/bad`, git 2.56 `fsck` warns `worktrees/wt/refs/bisect/bad: symlinkRef` (exit 0); with `garbage` in `.git/worktrees/vt/refs/bisect/bad` it errors `worktrees/vt/refs/bisect/bad: badRefContent: garbage` (exit 8). tsgit `fsck` reports only the root and exits 0 in both cases. Run from the linked worktree, tsgit finds the faults but names them `refs/bisect/bad`, where git prints `worktrees/<id>/refs/bisect/bad` (git's pointer line keeps the bare name, which tsgit's `badRefOid` already matches). Locus: the ref-content pass (`src/application/primitives/ref-store.ts` `verifyIntegrity`, driven from `src/application/commands/fsck.ts`) reads only the current worktree's per-worktree refs; git's files-backend fsck walks every worktree's and prefixes all but the main one. Pre-existing (identical on main 071d8e48). Refusal mismatch. Proven 2026-10-31 at 25492826 and on main 071d8e48:
+  ```
+  # git 2.56.0, scrubbed env; repo w + linked worktree wt (branch side)
+  # ln -s ../../../../refs/heads/main w/.git/worktrees/wt/refs/bisect/bad
+  === from w
+    git: warning: worktrees/wt/refs/bisect/bad: symlinkRef: use deprecated symbolic link for symref
+    git exit 0
+    tsgit (HEAD and main): {"findings":[{"type":"root",…}],"exitCode":0}
+  # printf 'garbage\n' > v/.git/worktrees/vt/refs/bisect/bad
+  === from v
+    git: error: worktrees/vt/refs/bisect/bad: badRefContent: garbage
+    git exit 8
+    tsgit (HEAD and main): {"findings":[{"type":"root",…}],"exitCode":0}
+  === from vt
+    git: error: worktrees/vt/refs/bisect/bad: badRefContent: garbage
+    git: error: refs/bisect/bad: invalid sha1 pointer 0000000000000000000000000000000000000000
+    tsgit: [{"ref":"refs/bisect/bad","msgId":"badRefContent"},{"ref":"refs/bisect/bad","msgId":"badRefOid"}] exit 10
+  ```
+  Not folded: it adds feature behaviour (a ref-store walk over every worktree) beyond the broken-ref-chain change.
+- [ ] **32.49** A symref body naming `main-worktree/HEAD` does not resolve — with `refs/heads/x` = `ref: main-worktree/HEAD`, git 2.56 `fsck` warns only `refs/heads/x: symrefTargetIsNotARef: points to non-ref target 'main-worktree/HEAD'` and exits 0, because the referent resolves to the main worktree's HEAD; tsgit adds `badRefOid` with the zero oid and exits 2. The resolver (`src/application/primitives/resolve-ref.ts`) has no `main-worktree/` or `worktrees/<id>/` namespace; those names appear only as fsck display names (`src/application/commands/internal/fsck/roots.ts`). Fix shape: resolve both prefixes as git's `parse_worktree_ref` does, against the main or the named worktree's private refs — the same change gives `rev-parse main-worktree/HEAD` its path. Pre-existing (main 071d8e48 gives the same `badRefOid` and exit 2). Refusal mismatch (exit code), low frequency. Proven 2026-10-31 at 25492826 and on main 071d8e48:
+  ```
+  # git 2.56.0, scrubbed env; printf 'ref: main-worktree/HEAD\n' > .git/refs/heads/x
+    git: warning: refs/heads/x: symrefTargetIsNotARef: points to non-ref target 'main-worktree/HEAD'
+    git exit 0
+    tsgit HEAD: symrefTargetIsNotARef (info) + badRefOid target 0000000000000000000000000000000000000000, exitCode 2
+    tsgit main: badRefOid target 0000000000000000000000000000000000000000, exitCode 2
+  ```
+  Not folded: out of scope — the locus is the shared ref resolver, not fsck's broken-chain reporting.
+- [ ] **32.50** Spike — full `fsck` makes about five `lstatIfReachable` and five `openWithNoFollow` calls per loose ref — on a repository with 5031 loose refs, tsgit `fsck` issues 71,059 file-system calls on HEAD and 71,054 on main (`lstatIfReachable` 25163, `openWithNoFollow` 25169, about one each of `exists`, `stat`, `read`, `readUtf8` per ref); wall time 2.40 s including node start and transpile, against 0.31 s for git 2.56 `fsck`. The counts are the same at ref depth 3 and 4, so it is not one call per path component. Locus: `src/application/commands/fsck.ts` and its ref passes through `src/application/primitives/ref-store.ts`. Pre-existing (identical on main 071d8e48). Performance. Question: which fsck passes (ref-content check, root collection, reflog or worktree walks, connectivity) each lstat and open every loose ref, and can they share one lstat and one no-follow read per ref without losing the symlink and unreadable-ref findings? Proven 2026-10-31 at 25492826 and on main 071d8e48, two runs each:
+  ```
+  # 5031 loose refs, fs proxy counting calls during fsck(ctx)
+  HEAD: total 71059 {"lstatIfReachable":25163,"openWithNoFollow":25169,"exists":5557,"stat":5041,"read":5040,"readUtf8":5033, …}
+  main: total 71054 {"lstatIfReachable":25163,"openWithNoFollow":25169,"exists":5557,"stat":5041,"read":5040,"readUtf8":5033, …}
+  git fsck wall: 0.307s · tsgit fsck wall (incl. node + transpile): 2.403s
+  ```
+  Not folded: out of scope — a perf pass over fsck's ref passes, outside the broken-ref-chain correctness change.
 
 ---
 

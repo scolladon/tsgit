@@ -56,7 +56,7 @@
   {
     "name": "Browser bundle (no-build)",
     "path": "dist/browser/tsgit.js",
-    "limit": "360.2 kB",
+    "limit": "362.6 kB",
     "gzip": true
   },
   {
@@ -374,25 +374,25 @@
   {
     "name": "Full library",
     "path": "dist/esm/**/*.js",
-    "limit": "418.2 kB",
+    "limit": "421.3 kB",
     "gzip": true
   },
   {
     "name": "Chunks: domain",
     "path": "dist/esm/chunks/domain-*.js",
-    "limit": "128.5 kB",
+    "limit": "128.9 kB",
     "gzip": true
   },
   {
     "name": "Chunks: primitives",
     "path": "dist/esm/chunks/primitives-*.js",
-    "limit": "112.3 kB",
+    "limit": "113.7 kB",
     "gzip": true
   },
   {
     "name": "Chunks: commands-internal",
     "path": "dist/esm/chunks/commands-internal-*.js",
-    "limit": "92.1 kB",
+    "limit": "92.7 kB",
     "gzip": true
   },
   {

@@ -732,6 +732,27 @@ describe('Given a directory whose HEAD is a dangling symlink into refs/', () => 
   });
 });
 
+describe('Node shim — symlink hop limit', () => {
+  describe('Given a repository opened through the node entry', () => {
+    describe('When reading ctx.symlinkHopLimit', () => {
+      it('Then it declares none, so the walk applies the git limit of 32 on every platform', async () => {
+        // Arrange
+        const sut = openRepository;
+
+        // Act
+        const result = await sut({ cwd: tmpdir });
+
+        try {
+          // Assert
+          expect(result.ctx.symlinkHopLimit).toBeUndefined();
+        } finally {
+          await result.dispose();
+        }
+      });
+    });
+  });
+});
+
 describe('Node shim — native line ending', () => {
   describe('Given a repository opened through the node entry', () => {
     describe('When reading ctx.nativeEol', () => {

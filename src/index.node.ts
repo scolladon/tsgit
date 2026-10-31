@@ -5,7 +5,7 @@
  * core factory with the fallback pre-bound.
  */
 import type { Stats } from 'node:fs';
-import { lstat, readFile, readlink, realpath, stat } from 'node:fs/promises';
+import { access, constants, lstat, readFile, readlink, realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { nativeLineEndingFor } from './adapters/node/node-adapter.js';
@@ -38,6 +38,7 @@ import type { RepositoryLayoutInput } from './repository/layout-input.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import {
   type ExplicitLayoutOptions,
+  markUnsearchableGitDir,
   resolveLayout,
   syntheticFallbackLayout,
 } from './repository/resolve-layout.js';
@@ -279,6 +280,28 @@ const lstatFirstStat = async (
     : { isDirectory: followed.isDirectory(), isFile: followed.isFile(), size: followed.size };
 };
 
+/** Errnos meaning "git's `access(X_OK)` would say no": denied, absent, or a non-directory on the way. */
+const NOT_SEARCHABLE_ERRNOS: ReadonlySet<string | undefined> = new Set([
+  'EACCES',
+  'ENOENT',
+  'ENOTDIR',
+]);
+
+/** An `access` refusal read as git reads it: "no" for the listed errnos, a real fault otherwise. */
+const refusalAsVerdict = (err: unknown): false => {
+  if (NOT_SEARCHABLE_ERRNOS.has((err as NodeJS.ErrnoException).code)) return false;
+  throw err;
+};
+
+/** git's `access(path, X_OK)`, on the sync fast path unless the repository opted out of it. */
+const searchable = (syncIo: SyncIoPolicy | undefined, p: string): Promise<boolean> =>
+  syncIo === undefined
+    ? access(p, constants.X_OK).then(() => true, refusalAsVerdict)
+    : runWithinBudget(syncIo.budget, () => syncIo.ops.accessSync(p, constants.X_OK)).then(
+        () => true,
+        refusalAsVerdict,
+      );
+
 /**
  * Builds the raw `node:fs/promises`- or sync-`fs`-backed `LayoutProbe`, plus
  * `isPlainDirectory` — a per-open `Map` of every path the probe's `stat` has
@@ -307,6 +330,7 @@ const createNodeLayoutProbe = (
           : runWithinBudget(syncIo.budget, () => syncIo.ops.readlinkSync(p, 'utf8')).catch(
               () => undefined,
             ),
+      isSearchable: (p) => searchable(syncIo, p),
       isOwnedByCaller: ownedByCallerPredicate({
         // Effective uid, matching the port contract and git's own `geteuid()`.
         callerUid: () => process.geteuid?.() ?? process.getuid?.(),
@@ -389,6 +413,7 @@ const canonicalizeCeilings = async (
  * refusal as a missing one (measured: `fatal: cannot chdir to …`).
  */
 const nodeLayoutCapabilities = {
+  gitDirSpelling: true as const,
   realWorkTreePath: async (p: string): Promise<string | undefined> => {
     try {
       const real = await realpath(p);
@@ -465,7 +490,11 @@ const resolveNodeLayout = async (
   if (resolved === undefined) {
     const gitDir = nodePath.join(cwd, '.git');
     return {
-      layout: syntheticFallbackLayout(gitDir, cwd, cwd, explicit, nativePolicy),
+      layout: await markUnsearchableGitDir(
+        syntheticFallbackLayout(gitDir, cwd, cwd, explicit, nativePolicy),
+        probe,
+        nativePolicy,
+      ),
       canonical: false,
     };
   }

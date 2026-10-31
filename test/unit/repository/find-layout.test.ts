@@ -437,6 +437,109 @@ describe('findLayout', () => {
     });
   });
 
+  describe('Given a probe reporting one shared directory of /repo/.git as not searchable', () => {
+    const probeWithout = (
+      fs: MemoryFileSystem,
+      unsearchable: string,
+      isSearchable?: LayoutProbe['isSearchable'],
+    ): LayoutProbe => ({
+      ...fileSystemLayoutProbe(fs),
+      isSearchable: isSearchable ?? (async (p) => p !== unsearchable),
+    });
+
+    describe.each(['refs', 'objects'])(
+      'When the walk meets /repo/.git with %s/ unsearchable',
+      (dir) => {
+        it('Then it does not adopt that gitdir', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          const sut = findLayout;
+
+          // Act
+          const result = await sut(probeWithout(fs, `/repo/.git/${dir}`), '/repo', posixPolicy);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      },
+    );
+
+    describe.each(['refs', 'objects'])(
+      'When a gitfile points at a gitdir with %s/ unsearchable',
+      (dir) => {
+        it('Then it refuses with NOT_A_REPOSITORY', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/target');
+          await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/target\n');
+          const sut = findLayout;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(probeWithout(fs, `/repo/target/${dir}`), '/repo/wt', posixPolicy);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'NOT_A_REPOSITORY',
+            path: '/repo/wt',
+          });
+        });
+      },
+    );
+
+    describe('When the override common dir has refs/ unsearchable', () => {
+      it('Then it refuses with NOT_A_REPOSITORY', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await makeGitDir(fs, '/repo/alt');
+        const sut = findLayout;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(
+            probeWithout(fs, '/repo/alt/refs'),
+            '/repo',
+            posixPolicy,
+            undefined,
+            '/repo/alt',
+          );
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NOT_A_REPOSITORY',
+          path: '/repo/.git',
+        });
+      });
+    });
+  });
+
+  describe('Given a probe without isSearchable and a valid /repo/.git', () => {
+    describe('When the walk runs', () => {
+      it('Then it adopts the gitdir', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        const sut = findLayout;
+
+        // Act
+        const result = await sut(fileSystemLayoutProbe(fs), '/repo', posixPolicy);
+
+        // Assert
+        expect(result?.gitDir).toBe('/repo/.git');
+      });
+    });
+  });
+
   describe('Given a .git directory whose HEAD entry is itself a directory', () => {
     describe('When findLayout runs from inside it with a valid repo one level up', () => {
       it('Then the invalid directory is skipped and the outer repo is returned', async () => {

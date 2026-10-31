@@ -2078,6 +2078,36 @@ describe('openRepository — worktreeFs memoisation', () => {
     });
   });
 
+  describe('Given a runtime fallback naming a symlink hop limit', () => {
+    describe('When the repository is opened', () => {
+      it('Then ctx.symlinkHopLimit is that limit', async () => {
+        // Arrange
+        const fallback: RuntimeFallback = { ...makeFallback(), symlinkHopLimit: 20 };
+
+        // Act
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+
+        // Assert
+        expect(sut.ctx.symlinkHopLimit).toBe(20);
+      });
+    });
+  });
+
+  describe('Given a runtime fallback without a symlink hop limit', () => {
+    describe('When the repository is opened', () => {
+      it('Then ctx has no symlinkHopLimit key', async () => {
+        // Arrange
+        const fallback = makeFallback();
+
+        // Act
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+
+        // Assert
+        expect('symlinkHopLimit' in sut.ctx).toBe(false);
+      });
+    });
+  });
+
   describe('Given a runtime fallback without a native line ending', () => {
     describe('When the repository is opened', () => {
       it('Then ctx has no nativeEol key', async () => {

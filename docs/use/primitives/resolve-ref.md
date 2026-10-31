@@ -27,11 +27,25 @@ errno other than `ENOENT`. Every resolution made for reading treats it as git's
 NULL, so [`status`](../commands/status.md) reports such a HEAD as unknown and
 initial. `resolveRef` itself still throws the fault.
 
+## Loose ref bodies
+
+A loose ref body is read under git's grammar. A symbolic ref is `ref:` followed
+by any run of space, tab, CR or LF, then the referent; trailing whitespace is
+stripped. A direct ref is a full-width object name (40 or 64 hex digits per the
+repository's hash algorithm), upper or lower case, followed by the end of the
+body or whitespace; bytes after that whitespace are accepted and ignored by
+resolution ([`fsck`](../commands/fsck.md) reports them as `trailingRefContent`).
+Anything else is unparseable.
+
+Resolution through a directory the permissions refuse to search still throws
+`PERMISSION_DENIED`; only the listing verbs skip such a directory.
+
 ## Throws
 
 - `REF_NOT_FOUND` — name does not resolve.
 - `INVALID_REF` — syntactically invalid.
 - `PATH_TOO_LONG` — the loose ref's path exceeds what the file system allows.
+- `PERMISSION_DENIED` — a directory on the loose ref's path cannot be searched.
 
 ## See also
 

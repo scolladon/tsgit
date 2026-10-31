@@ -29,6 +29,7 @@ export type FsOperations = Pick<
   | 'lutimes'
   | 'mkdir'
   | 'open'
+  | 'opendir'
   | 'readdir'
   | 'readFile'
   | 'readlink'
@@ -46,7 +47,14 @@ export const realFsOps: FsOperations = fsPromises;
 
 export type SyncFsOperations = Pick<
   typeof fs,
-  'statSync' | 'lstatSync' | 'readlinkSync' | 'openSync' | 'fstatSync' | 'readSync' | 'closeSync'
+  | 'statSync'
+  | 'lstatSync'
+  | 'readlinkSync'
+  | 'accessSync'
+  | 'openSync'
+  | 'fstatSync'
+  | 'readSync'
+  | 'closeSync'
 > & {
   readonly realpathSync: { readonly native: typeof fs.realpathSync.native };
   /**

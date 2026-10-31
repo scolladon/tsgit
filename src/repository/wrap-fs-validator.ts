@@ -37,7 +37,12 @@ const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> 
   paths.filter((p) => p.length > 0 && !hasDotDotSegment(p));
 
 /** The port's optional one-path read probes. */
-type OptionalPathProbe = 'lexists' | 'tryLstat' | 'lstatIfReachable' | 'tryReadUtf8';
+type OptionalPathProbe =
+  | 'lexists'
+  | 'tryLstat'
+  | 'lstatIfReachable'
+  | 'tryReadUtf8'
+  | 'readdirInOsOrder';
 
 /**
  * An optional probe is forwarded only when the adapter provides it: an absent probe has to stay
@@ -213,6 +218,7 @@ export const wrapFsValidator = (
     ...guardedPathProbe(fs, readGuard, 'tryLstat'),
     ...guardedPathProbe(fs, readGuard, 'lstatIfReachable'),
     ...guardedPathProbe(fs, readGuard, 'tryReadUtf8'),
+    ...guardedPathProbe(fs, readGuard, 'readdirInOsOrder'),
     readdir: (p) => {
       readGuard(p);
       return fs.readdir(p);

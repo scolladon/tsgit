@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
+import { snapshotWorktreeHeads } from '../../../../src/application/commands/internal/fsck/roots.js';
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied } from '../../../../src/domain/error.js';
@@ -270,6 +271,63 @@ describe('Given a linked worktree whose HEAD file cannot be read for permission'
         },
       ]);
       expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+});
+
+const cannotReadFindings = (findings: ReadonlyArray<FsckFinding>) =>
+  findings.filter((finding) => finding.type === 'bad-ref' && finding.msgId === 'cannotReadRef');
+
+describe('Given a linked worktree whose HEAD file cannot be read and references are not checked', () => {
+  describe('When fsck runs', () => {
+    it('Then nothing is reported and the exit code is clean', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      failHeadRead(ctx, permissionDenied(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`));
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(cannotReadFindings(result.findings)).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+/** The permission refusal a mode-000 file draws, on every way the ref store reads one. */
+const refuseRead = (ctx: Context, refused: string): void => {
+  const openWithNoFollow = ctx.fs.openWithNoFollow.bind(ctx.fs);
+  const readUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'openWithNoFollow').mockImplementation(async (path, mode) => {
+    if (path === refused) throw permissionDenied(path);
+    return openWithNoFollow(path, mode);
+  });
+  vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+    if (path === refused) throw permissionDenied(path);
+    return readUtf8(path);
+  });
+};
+
+describe('Given a HEAD naming a branch the permissions refuse', () => {
+  describe('When the worktree heads are snapshotted', () => {
+    it('Then that HEAD is skipped and not listed as an unreadable file', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const targetPath = `${ctx.layout.gitDir}/refs/heads/main`;
+      refuseRead(ctx, targetPath);
+      const sut = snapshotWorktreeHeads;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.unreadable).toEqual([]);
+      expect(result.heads.map((head) => head.ref)).toEqual([
+        'worktrees/wt1/HEAD',
+        'worktrees/wt2/HEAD',
+      ]);
     });
   });
 });

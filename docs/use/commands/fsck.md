@@ -33,7 +33,15 @@ type FsckFinding =
   | { readonly type: 'bad-ref';
       readonly ref: RefName; readonly msgId: string;
       readonly severity: FsckSeverity; readonly target?: ObjectId;
-      readonly path?: string; readonly reason?: 'PERMISSION_DENIED' }
+      readonly path?: string; readonly reason?: 'PERMISSION_DENIED';
+      readonly referent?: string; readonly trailing?: string }
+  | { readonly type: 'unreadable-ref-path';
+      readonly path: string; readonly operation: 'open-directory' | 'stat';
+      readonly reason: 'PERMISSION_DENIED' }
+  | { readonly type: 'refs-walk-failed'; readonly path: string;
+      readonly reason: 'PERMISSION_DENIED' }
+  | { readonly type: 'refs-verify-ended'; readonly ref: RefName; readonly path: string;
+      readonly reason: 'FILE_NOT_FOUND' | 'NOT_A_DIRECTORY' | 'PERMISSION_DENIED' | 'SYMLINK_LOOP' }
   | { readonly type: 'root'; readonly id: ObjectId }
   | { readonly type: 'tagged';
       readonly id: ObjectId; readonly objectType: FsckObjectType;
@@ -120,7 +128,7 @@ interface FsckResult {
 | `indexRoot` | `boolean` | `true` | Treat index blob OIDs — and, when present, the index's cache-tree tree OIDs — as reachability roots (git's default). Set `false` to exclude the index from every role: roots and the cache-tree check below. |
 | `full` | `boolean` | `true` | Include pack objects (git's `--full`). Set `false` to scan loose objects only. |
 | `strict` | `boolean` | `false` | Upgrade WARN-class msg-ids to ERROR and contribute exit bit 1 (git's `--strict`). |
-| `checkReferences` | `boolean` | `true` | Run the `git refs verify` ref-content pass; malformed ref content produces `bad-ref` findings with exit bit 8. |
+| `checkReferences` | `boolean` | `true` | Run the `git refs verify` ref-content pass; malformed ref content produces `bad-ref` findings with exit bit 8. `false` (git's `--no-references`) drops every finding of the pass (`bad-ref` content and `cannotReadRef`, `unreadable-ref-path`, `refs-walk-failed`, `refs-verify-ended`) but not the `badRefOid` pointers, which stay. |
 
 ### Caller projections (the library ships data, not rendering)
 
@@ -152,7 +160,7 @@ findings.filter(f => f.type === 'tagged')
 | `broken-link` | `fromId`, `fromType`, `toId`, `toType` (`FsckObjectType \| 'unknown'`) | Edge from a present object to an absent one. Exit bit 2. |
 | `bad-object` | `id`, `objectType` (`FsckObjectType \| 'unknown'`), `msgId`, `severity` | Object-content validation failure from the named msg-id catalogue, or corrupt/undecodable object. Exit bit 1 (ERROR-class or `--strict`-upgraded). `objectType` is `'unknown'` when the object is undecodable and its type cannot be determined. A loose object — blob, commit, tree or tag alike — whose body overruns its header's size claim past git's 32-byte header window is undecodable for this same reason (`msgId: 'unterminatedHeader'`) — git's buffered loose tier refuses it exactly as it refuses an unparseable header, reported the way `git fsck --full` reports `object corrupt or missing`. A **blob** past `core.bigFileThreshold` (default 512 MiB, strict `>`) takes git's streamed route (`check_stream_oid`) instead: an over-run there is undecodable the same way; a claim at or above the 2 GiB inflate ceiling is also `unterminatedHeader` — reachable under default config for a commit, tree or tag, and for a blob only when `core.bigFileThreshold` is configured above 2 GiB. |
 | `hash-mismatch` | `id`, `actual` | File content hashes to `actual`; file's path implies `id`. A loose object — blob, commit, tree or tag alike — whose body disagrees with its header's size claim, but still resolves, hashes the same bytes git's own buffered loose tier would serve — the claimed prefix when the body overran the claim but still fit the header window, or the real body zero-padded out to the claim when it under-ran — never the claim length or the real on-disk length on their own; `actual` is that hash, matching `git fsck --full`'s own "hash-path mismatch" line. A **blob** past `core.bigFileThreshold` under-runs unpadded instead: git's streamed route hashes the declared header plus the real bytes with no padding, never a claim-sized zero fill — `core.bigFileThreshold` gates blobs only, a commit/tree/tag under-run is always zero-padded regardless of size. tsgit's zero-padding is its own deterministic choice for bytes git's `xmallocz` leaves uninitialised — git's own reported hash for the same under-run claim is not reproducible run to run, so only the `hash-path mismatch, found at: <path>` line and the exit code are git-pinned, never a specific zero-padded value. Exit bit 1. |
-| `bad-ref` | `ref`, `msgId`, `severity`, `target?`, `path?`, `reason?` | Refs-verify pass finding: malformed ref content (`badRefContent` — exit bit 8) or ref pointing at an absent/zero OID (`badRefOid` / *invalid sha1 pointer* — exit bit 2). `target` is present when the ref had a syntactically-valid OID target. A ref file that could not be read (an unreadable linked-worktree `HEAD`) reports `msgId: 'cannotReadRef'` with `path` and `reason: 'PERMISSION_DENIED'` and sets exit bit 8. |
+| `bad-ref` | `ref`, `msgId`, `severity`, `target?`, `path?`, `reason?`, `referent?`, `trailing?` | Refs-verify pass finding: malformed ref content (`badRefContent` — exit bit 8) or ref pointing at an absent/zero OID (`badRefOid` / *invalid sha1 pointer* — exit bit 2). `target` is present when the ref had a syntactically-valid OID target. A loose ref file the permissions refuse to open (under `refs/` or beside it, or a linked worktree's `HEAD`) reports `msgId: 'cannotReadRef'` with `path` (absolute, as opened) and `reason: 'PERMISSION_DENIED'`; it is always an `error`, no `fsck.<msg-id>` setting or `--strict` re-types it, it sets exit bit 8, and `checkReferences: false` drops it. The run carries on, and the ref gets its zero `badRefOid` pointer. A loose symbolic ref whose referent git rejects (not a root ref, not a well-formed name of two or more components) reports `msgId: 'badReferentName'` (default `error`, exit bit 8) with `referent`, the name as read; a referent that is neither a root ref nor under `refs/` or `worktrees/` also reports `symrefTargetIsNotARef` (default `info`, no exit bit unless configured `error`), dropped when the same ref's `badReferentName` is an `error`. Both honour `fsck.<msg-id>`; `--strict` never upgrades them. A loose body with bytes after the object name reports `trailingRefContent` with `trailing`, those bytes; a symbolic body with trailing whitespace reports it without `trailing`; a body missing its final line feed reports `refMissingNewline`. Both default to `info` (no exit bit unless configured `error`), honour `fsck.<msg-id>`, and survive a `badReferentName` on the same ref. |
 | `root` | `id` | Root commit (no parents). Emitted when the caller filters for `type === 'root'`. Exit 0. |
 | `tagged` | `id`, `objectType`, `tagName`, `tag` | Tag target: `id` is the tagged object, `tag` is the tag object OID. Emitted when the caller filters for `type === 'tagged'`. Exit 0. |
 | `pack-inaccessible` | `pack`, `reason` | A pack failed the header gate — bad version, bad signature, truncated file, a header/index object-count disagreement, or a `.pack` that could not be opened. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 1. |
@@ -168,6 +176,9 @@ findings.filter(f => f.type === 'tagged')
 | `invalid-reflog-entry` | `ref`, `id` | A reflog side names an object the run never recorded (git's `invalid reflog entry`); one finding per side, so a line can yield two. |
 | `invalid-cache-tree-pointer` | `id`, `index` | A cache-tree entry names an object no store holds (git's `invalid sha1 pointer in cache-tree`); `index` is the index file naming it, one finding per worktree index. Exit bit 8. |
 | `invalid-resolve-undo-pointer` | `id`, `index` | A regular-file resolve-undo stage names an object no store holds (git's `invalid sha1 pointer in resolve-undo`). Exit bit 8. |
+| `unreadable-ref-path` | `path`, `operation`, `reason` | A path git's refs walk could not open or stat: a directory under `refs/` the permissions refuse to list (`operation: 'open-directory'`, git's `error opening directory`) or an entry it lists but cannot `lstat` (`operation: 'stat'`, git's `failed to stat`). `path` is absolute, as opened; `reason` is `'PERMISSION_DENIED'`. A warning: no exit bit, no `fsck.<msg-id>` setting or `--strict` re-types it, and `checkReferences: false` drops it. The walk carries on with the siblings; the refs below a directory it cannot list are skipped everywhere else, as in git. |
+| `refs-walk-failed` | `path`, `reason` | git's `failed to iterate over` a `refs` root it could not open (the common one, or a linked worktree's own), reported right after the `unreadable-ref-path` warning that names the same directory. `path` is absolute, as opened; `reason` is `'PERMISSION_DENIED'`. Exit bit 8, gated by `checkReferences`. A directory below the root only warns. |
+| `refs-verify-ended` | `ref`, `path`, `reason` | git's `refs verify` child died on a symlinked ref whose real path cannot be resolved (git's `fatal: Invalid path` / `More than N nested symlinks`). `ref` is the link, `path` the absolute path where the resolution stopped, `reason` the fault: `'FILE_NOT_FOUND'`, `'NOT_A_DIRECTORY'`, `'PERMISSION_DENIED'` or `'SYMLINK_LOOP'`. Every content finding that would come after it is lost, as in git; the `badRefOid` pointers stand. Exit bit 8, gated by `checkReferences`. |
 | `no-default-references` | _none_ | No ref names an object git could parse (git's `No default references` notice); no `unreachable` object is reported after it. No exit bit. |
 | `unknown-object-type` | `id` | `connectivityOnly`: a reflog-reached object whose served copy hashes to another id and that no earlier link typed (git's `Unknown object type for`): reached, never walked. No exit bit. |
 | `unexpected-object-type` | `id`, `expectedType` | `connectivityOnly`: an object a link typed as `expectedType` whose served copy is another type (git's `Object <id> not a <type>`): reached, never walked. No exit bit. |
@@ -254,9 +265,9 @@ reconstructed from git's stderr text.
   |---|---|
   | `0` | Clean (or only dangling/unreachable/INFO-WARN content findings). |
   | `1` | Content ERROR, `--strict`-upgraded WARN, corrupt object, hash-mismatch, or any pack, pack-index, reverse-index, bitmap, multi-pack-index or packed-entry fault (bit 1). git 2.56 folds all of them into bit 1; the bits 4, 32, 64 and 128 of earlier gits no longer exist. |
-  | `2` | Missing object, broken link, or ref→absent OID (bit 2). |
+  | `2` | Missing object, broken link, or ref→absent OID (bit 2). Every ref whose chain git cannot resolve (a body it rejects, a referent naming no ref, a loop, an unreadable file) is snapshotted with the zero OID and so also reports `badRefOid` (*invalid sha1 pointer*), as does every ref leading to it. |
   | `3` | Bits 1 and 2 combined (e.g. corrupt object whose absence also breaks a link). |
-  | `8` | Malformed ref content (`badRefContent`, a `bad-ref` finding) **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
+  | `8` | Malformed ref content (`badRefContent`), a symbolic ref whose referent git rejects (`badReferentName`) or an unreadable loose ref file (`cannotReadRef`), both `bad-ref` findings, the end of git's refs walk on a symlinked ref it cannot resolve (`refs-verify-ended`), a `refs` root it cannot open (`refs-walk-failed`), **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
   | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID, or a broken cache-tree alongside an unrelated missing object). |
   | `11` | Bits 1, 2 and 8 combined (e.g. an inaccessible pack beside a missing object and a bad ref). |
   | `16` | `git commit-graph verify` reported a disagreement for some object source's commit-graph file or chain (bit 16, `commit-graph-invalid`). |
@@ -282,6 +293,17 @@ reconstructed from git's stderr text.
   cache-tree never sets it, and a healthy ref beside a broken cache-tree still
   does. An absent index, or one with no cache-tree extension, contributes
   nothing — a bare or never-staged repository is not a fault.
+- **Refs-verify order.** Findings of the refs pass follow git's walk: `refs/**`
+  in the operating system's directory order (the Node adapter reads it; an
+  adapter without that order falls back to its own), then `HEAD` and the other
+  root refs beside `refs/` in the gitdir's listing order. In a linked worktree
+  the common dir's refs come before the worktree's own. A symbolic link is never
+  followed by the walk: it reports itself and the realpath's referent, and a
+  link whose realpath cannot be resolved ends the walk (`refs-verify-ended`),
+  losing every content finding after it. The root-ref check ends at its first
+  `error`-severity finding, an unreadable file included. A `refs` root that
+  cannot be opened ends in `refs-walk-failed`; a root that cannot be searched
+  is skipped, as git skips it.
 - **`--strict` upgrade.** Only the WARN-class msg-ids are affected:
   `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`,
   `largePathname`, `nulInCommit`, `nullSha1`, `zeroPaddedFilemode`. ERROR-class

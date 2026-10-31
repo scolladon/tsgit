@@ -1,4 +1,5 @@
 import type { Dirent, Stats } from 'node:fs';
+import * as fsSync from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
@@ -2249,6 +2250,100 @@ describe('NodeFileSystem — read over the sync gate, real fs', () => {
 
         // Assert
         expect(result).toBe('hello');
+        await fsPromises.rm(dir, { recursive: true, force: true });
+      });
+    });
+  });
+
+  describe('Given a directory holding files and a sub-directory', () => {
+    const seedDir = async (): Promise<string> => {
+      const dir = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-os-order-'));
+      for (const name of ['a', 'b', 'm', 'y', 'z']) {
+        await fsPromises.writeFile(nodePath.join(dir, name), name);
+      }
+      await fsPromises.mkdir(nodePath.join(dir, 'sub'));
+      return dir;
+    };
+
+    describe('When readdirInOsOrder lists it', () => {
+      it('Then it yields the entries in the order opendir yields them, typed as readdir types them', async () => {
+        // Arrange
+        const dir = await seedDir();
+        const sut = new NodeFileSystem([dir]);
+        const dirHandle = fsSync.opendirSync(dir);
+        const osOrder: string[] = [];
+        for (let entry = dirHandle.readSync(); entry !== null; entry = dirHandle.readSync()) {
+          osOrder.push(entry.name);
+        }
+        dirHandle.closeSync();
+
+        // Act
+        const result = await sut.readdirInOsOrder?.(dir);
+
+        // Assert
+        expect(result?.map((entry) => entry.name)).toEqual(osOrder);
+        const sorted = await sut.readdir(dir);
+        expect(result).toEqual(osOrder.map((name) => sorted.find((entry) => entry.name === name)));
+        await fsPromises.rm(dir, { recursive: true, force: true });
+      });
+    });
+
+    describe('When readdirInOsOrder lists an absent path', () => {
+      it('Then it refuses FILE_NOT_FOUND as readdir does', async () => {
+        // Arrange
+        const dir = await seedDir();
+        const sut = new NodeFileSystem([dir]);
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut.readdirInOsOrder?.(nodePath.join(dir, 'absent'));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+        await fsPromises.rm(dir, { recursive: true, force: true });
+      });
+    });
+
+    describe('When readdirInOsOrder lists a file', () => {
+      it('Then it refuses NOT_A_DIRECTORY as readdir does', async () => {
+        // Arrange
+        const dir = await seedDir();
+        const sut = new NodeFileSystem([dir]);
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut.readdirInOsOrder?.(nodePath.join(dir, 'a'));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+        await fsPromises.rm(dir, { recursive: true, force: true });
+      });
+    });
+
+    describe('When readdirInOsOrder lists a path outside every root', () => {
+      it('Then it refuses PERMISSION_DENIED as readdir does', async () => {
+        // Arrange
+        const dir = await seedDir();
+        const sut = new NodeFileSystem([dir]);
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut.readdirInOsOrder?.(os.tmpdir());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
         await fsPromises.rm(dir, { recursive: true, force: true });
       });
     });

@@ -247,6 +247,61 @@ describe('primitives/internal/repo-state', () => {
     });
   });
 
+  describe('Given a layout marked as an unsearchable bootstrap gitdir', () => {
+    const markedCtx = async (): Promise<Context> => {
+      const ctx = await seededCtx();
+      return { ...ctx, layout: { ...ctx.layout, unsearchableGitDir: true } };
+    };
+
+    describe('When assertRepository runs', () => {
+      it('Then it refuses NOT_A_REPOSITORY naming the work tree', async () => {
+        // Arrange
+        const ctx = await markedCtx();
+        const sut = assertRepository;
+
+        // Act
+        const caught = await catchTsgitError(() => sut(ctx));
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'NOT_A_REPOSITORY', path: ctx.layout.workDir });
+      });
+    });
+
+    describe('When assertOperationalRepository runs', () => {
+      it('Then it refuses NOT_A_REPOSITORY naming the work tree', async () => {
+        // Arrange
+        const ctx = await markedCtx();
+        const sut = assertOperationalRepository;
+
+        // Act
+        const caught = await catchTsgitError(() => sut(ctx));
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'NOT_A_REPOSITORY', path: ctx.layout.workDir });
+      });
+    });
+  });
+
+  describe('Given a layout discovery accepted (no marker)', () => {
+    describe('When assertRepository runs', () => {
+      it('Then it resolves without any searchability probe of refs or objects', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+        const sut = assertRepository;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(ctx.layout.workDir);
+        const probed = statSpy.mock.calls.map(([called]) => called);
+        expect(probed).not.toContain(`${ctx.layout.gitDir}/refs`);
+        expect(probed).not.toContain(`${ctx.layout.gitDir}/objects`);
+      });
+    });
+  });
+
   describe('hasUsableHead behaviour matrix (observed through assertRepository)', () => {
     describe('Given a symlinked HEAD pointing at refs/heads/main', () => {
       describe('When assertRepository runs', () => {

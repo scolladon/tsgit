@@ -220,6 +220,51 @@ describe('pruneWorktrees', () => {
       });
     });
 
+    describe('When one reaches its admin dir through a chain longer than the context’s hop limit', () => {
+      it('Then the pointer resolves beside the link, the limit having reached the realpath', async () => {
+        // Arrange
+        const base = await seed();
+        const OUTSIDE = outsideOf(base);
+        await base.fs.writeUtf8(`${OUTSIDE}/live/.git`, 'gitdir: x\n');
+        await base.fs.writeUtf8(`${OUTSIDE}/admin/gitdir`, '../live/.git\n');
+        await base.fs.symlink(`${OUTSIDE}/admin`, `${OUTSIDE}/hop4`);
+        for (const hop of [3, 2, 1]) {
+          await base.fs.symlink(`${OUTSIDE}/hop${hop + 1}`, `${OUTSIDE}/hop${hop}`);
+        }
+        await link(base, 'wt', `${OUTSIDE}/hop1`);
+        const ctx: Context = { ...base, symlinkHopLimit: 3 };
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(await ctx.fs.exists(rootOf(ctx))).toBe(false);
+      });
+    });
+
+    describe('When one reaches its admin dir through that chain and the hop limit allows it', () => {
+      it('Then the pointer resolves beside the target and the link is kept', async () => {
+        // Arrange
+        const ctx = await seed();
+        const OUTSIDE = outsideOf(ctx);
+        await ctx.fs.writeUtf8(`${OUTSIDE}/live/.git`, 'gitdir: x\n');
+        await ctx.fs.writeUtf8(`${OUTSIDE}/admin/gitdir`, '../live/.git\n');
+        await ctx.fs.symlink(`${OUTSIDE}/admin`, `${OUTSIDE}/hop4`);
+        for (const hop of [3, 2, 1]) {
+          await ctx.fs.symlink(`${OUTSIDE}/hop${hop + 1}`, `${OUTSIDE}/hop${hop}`);
+        }
+        await link(ctx, 'wt', `${OUTSIDE}/hop1`);
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual(['wt']);
+      });
+    });
+
     describe('When one names the admin dir of a vanished worktree past the cutoff', () => {
       it('Then the directory it names is emptied through it, nested links unlinked unfollowed, and the link goes', async () => {
         // Arrange

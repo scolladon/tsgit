@@ -26,6 +26,7 @@ const spyOps = {
   statSync: vi.fn(fs.statSync),
   lstatSync: vi.fn(fs.lstatSync),
   readlinkSync: vi.fn(fs.readlinkSync),
+  accessSync: vi.fn(fs.accessSync),
   openSync: vi.fn(fs.openSync),
   fstatSync: vi.fn(fs.fstatSync),
   readSync: vi.fn(fs.readSync),

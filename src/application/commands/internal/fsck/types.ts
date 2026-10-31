@@ -56,6 +56,38 @@ export type FsckFinding =
       readonly path?: string;
       /** Why that file could not be read. */
       readonly reason?: 'PERMISSION_DENIED';
+      /** The name a symbolic ref points to, exactly as read, on `badReferentName` and
+       *  `symrefTargetIsNotARef` — not a `RefName`: git reports it because it is not one. */
+      readonly referent?: string;
+      /** The bytes after the object name, on a direct body's `trailingRefContent`. */
+      readonly trailing?: string;
+    }
+  | {
+      /** A path git's refs walk could not open or stat — `error opening directory` /
+       *  `failed to stat`. A warning: no exit bit, gated by `checkReferences`, never re-typed. */
+      readonly type: 'unreadable-ref-path';
+      /** Absolute, as opened. */
+      readonly path: string;
+      readonly operation: 'open-directory' | 'stat';
+      readonly reason: 'PERMISSION_DENIED';
+    }
+  | {
+      /** git's iteration of a `refs` root that could not be opened — `failed to iterate over`,
+       *  beside the `unreadable-ref-path` warning that names the same directory. Gated by
+       *  `checkReferences`; exit bit 8. */
+      readonly type: 'refs-walk-failed';
+      /** Absolute, as opened. */
+      readonly path: string;
+      readonly reason: 'PERMISSION_DENIED';
+    }
+  | {
+      /** git's `refs verify` child died on this symlinked ref: every content check after
+       *  it is lost, pointers stand. Gated by `checkReferences`; exit bit 8. */
+      readonly type: 'refs-verify-ended';
+      readonly ref: RefName;
+      /** Absolute, where the chain stopped. */
+      readonly path: string;
+      readonly reason: 'FILE_NOT_FOUND' | 'NOT_A_DIRECTORY' | 'PERMISSION_DENIED' | 'SYMLINK_LOOP';
     }
   | {
       /** A reflog side naming an object the run never recorded — git's

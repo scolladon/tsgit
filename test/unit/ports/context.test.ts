@@ -488,3 +488,73 @@ describe('buildCacheBudgets', () => {
     });
   });
 });
+
+describe('createContext symlinkHopLimit', () => {
+  const partsWith = (symlinkHopLimit: number) => ({
+    fs: sentinelFs,
+    hash: sentinelHash,
+    compressor: sentinelCompressor,
+    transport: sentinelTransport,
+    progress: sentinelProgress,
+    layout: sentinelLayout,
+    runtime: sentinelRuntime,
+    hashConfig: sentinelHashConfig,
+    deltaCache: sentinelDeltaCache,
+    symlinkHopLimit,
+  });
+
+  describe.each([
+    { shape: 'NaN', limit: Number.NaN },
+    { shape: 'Infinity', limit: Number.POSITIVE_INFINITY },
+    { shape: 'zero', limit: 0 },
+    { shape: 'negative', limit: -5 },
+    { shape: 'fractional', limit: 2.5 },
+    { shape: 'a billion', limit: 1e9 },
+  ])('Given a declared limit of $shape', ({ limit }) => {
+    describe('When creating context', () => {
+      it('Then the limit is dropped so every consumer applies the default', () => {
+        // Arrange
+        const parts = partsWith(limit);
+        const sut = createContext;
+
+        // Act
+        const result = sut(parts);
+
+        // Assert
+        expect('symlinkHopLimit' in result).toBe(false);
+      });
+    });
+  });
+
+  describe.each([20, 1, 1024])('Given a declared limit of %i', (limit) => {
+    describe('When creating context', () => {
+      it('Then the limit is kept', () => {
+        // Arrange
+        const parts = partsWith(limit);
+        const sut = createContext;
+
+        // Act
+        const result = sut(parts);
+
+        // Assert
+        expect(result.symlinkHopLimit).toBe(limit);
+      });
+    });
+  });
+
+  describe('Given a limit one past the cap', () => {
+    describe('When creating context', () => {
+      it('Then the limit is dropped', () => {
+        // Arrange
+        const parts = partsWith(1025);
+        const sut = createContext;
+
+        // Act
+        const result = sut(parts);
+
+        // Assert
+        expect('symlinkHopLimit' in result).toBe(false);
+      });
+    });
+  });
+});

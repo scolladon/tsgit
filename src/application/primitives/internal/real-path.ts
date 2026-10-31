@@ -1,7 +1,14 @@
 import type { Context } from '../../../ports/context.js';
 import { narrowAlternatePathProbe } from '../object-store.js';
-import { realpathAllowingMissingLeaf } from './alternate-chain.js';
+import {
+  type RealpathOutcome,
+  realpathAllowingMissingLeaf,
+  realpathOutcome,
+} from './alternate-chain.js';
 import { gitPathSyntaxOf } from './git-path-syntax.js';
+
+const probeOf = (ctx: Context, absolute: string) =>
+  ctx.alternatePathProbe?.(absolute) ?? narrowAlternatePathProbe(ctx.fs);
 
 /**
  * git's `real_pathdup`: every component of an absolute path resolved, links followed hop by
@@ -11,7 +18,18 @@ import { gitPathSyntaxOf } from './git-path-syntax.js';
 export const realPathOf = (ctx: Context, absolute: string): Promise<string | undefined> =>
   realpathAllowingMissingLeaf(
     gitPathSyntaxOf(ctx),
-    ctx.alternatePathProbe?.(absolute) ?? narrowAlternatePathProbe(ctx.fs),
+    probeOf(ctx, absolute),
     absolute,
     absolute,
+    ctx.symlinkHopLimit,
+  );
+
+/** {@link realPathOf} that says where and why the chain stopped. */
+export const realPathOutcomeOf = (ctx: Context, absolute: string): Promise<RealpathOutcome> =>
+  realpathOutcome(
+    gitPathSyntaxOf(ctx),
+    probeOf(ctx, absolute),
+    absolute,
+    absolute,
+    ctx.symlinkHopLimit,
   );
