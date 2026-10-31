@@ -1339,3 +1339,75 @@ describe('realpathOutcome', () => {
     });
   });
 });
+
+describe('resolveObjectSources under a declared symlink hop limit', () => {
+  const HOP_LIMIT = 3;
+  const CHAIN_LINKS = 5;
+
+  /** `/repo/<prefix>1` through `/repo/<prefix><CHAIN_LINKS>`, the last naming `end`. */
+  const linkChain = async (ctx: Context, prefix: string, end: string): Promise<void> => {
+    for (let hop = 1; hop <= CHAIN_LINKS; hop++) {
+      const target = hop === CHAIN_LINKS ? end : `/repo/${prefix}${hop + 1}`;
+      await ctx.fs.symlink(target, `/repo/${prefix}${hop}`);
+    }
+  };
+
+  describe('Given an alternates entry behind a chain longer than the limit', () => {
+    describe('When the sources are resolved', () => {
+      it('Then the entry is unresolvable, the limit having reached the realpath', async () => {
+        // Arrange
+        const base = contextWith({ [PRIMARY]: '/repo/a1\n' });
+        await base.fs.mkdir('/repo/real');
+        await linkChain(base, 'a', '/repo/real');
+        const ctx: Context = { ...base, symlinkHopLimit: HOP_LIMIT };
+        const sut = resolveObjectSources;
+
+        // Act
+        const result = await sut(ctx, ioOf(ctx));
+
+        // Assert
+        expect(result.diagnostics.map((d) => d.reason)).toEqual(['unresolvable']);
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY]);
+      });
+    });
+  });
+
+  describe('Given a primary objects directory behind a chain longer than the limit', () => {
+    describe('When the sources are resolved', () => {
+      it('Then the primary stays as spelled, the limit having reached its realpath', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.mkdir('/repo/real-objects');
+        await linkChain(base, 'o', '/repo/real-objects');
+        await base.fs.symlink('/repo/o1', PRIMARY);
+        const ctx: Context = { ...base, symlinkHopLimit: HOP_LIMIT };
+        const sut = resolveObjectSources;
+
+        // Act
+        const result = await sut(ctx, ioOf(ctx));
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY]);
+      });
+    });
+  });
+
+  describe('Given the same primary behind the chain and no declared limit', () => {
+    describe('When the sources are resolved', () => {
+      it('Then the primary is its real path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir('/repo/real-objects');
+        await linkChain(ctx, 'o', '/repo/real-objects');
+        await ctx.fs.symlink('/repo/o1', PRIMARY);
+        const sut = resolveObjectSources;
+
+        // Act
+        const result = await sut(ctx, ioOf(ctx));
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual(['/repo/real-objects']);
+      });
+    });
+  });
+});

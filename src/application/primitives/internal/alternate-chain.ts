@@ -337,6 +337,7 @@ const realEntryPath = async (
       probe(joined),
       joined,
       resolution.cwd,
+      resolution.ctx.symlinkHopLimit,
     );
     if (real === undefined) return void report(resolution, unresolvableAt(joined, holder));
     return real.replace(TRAILING_SLASHES, '');

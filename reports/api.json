@@ -97897,7 +97897,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " follows before it gives up (git's symlink-limit\nmacro), supplied by the platform adapter. Absent ⇒ git's non-Linux fallback of 32."
+										"text": " follows before it gives up (git's symlink-limit\nmacro), supplied by the platform adapter. Absent ⇒ git's non-Linux fallback of 32; so is a\nvalue that is not a positive safe integer of at most 1024."
 									}
 								]
 							},
@@ -161390,7 +161390,15 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Assemble a frozen Context from its constituent ports + layout."
+										"text": "Assemble a frozen Context from its constituent ports + layout. An unusable "
+									},
+									{
+										"kind": "code",
+										"text": "`symlinkHopLimit`"
+									},
+									{
+										"kind": "text",
+										"text": " is\n dropped, so consumers apply git's fallback."
 									}
 								]
 							},

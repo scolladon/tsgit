@@ -378,7 +378,8 @@ export interface Context {
   readonly nativeEol?: 'lf' | 'crlf';
   /**
    * How many nested symlinks the host's `realpath` follows before it gives up (git's symlink-limit
-   * macro), supplied by the platform adapter. Absent ⇒ git's non-Linux fallback of 32.
+   * macro), supplied by the platform adapter. Absent ⇒ git's non-Linux fallback of 32; so is a
+   * value that is not a positive safe integer of at most 1024.
    */
   readonly symlinkHopLimit?: number;
 }
@@ -407,10 +408,19 @@ export interface CreateContextParts {
   readonly ssh?: SshTransport;
 }
 
-/** Assemble a frozen Context from its constituent ports + layout. */
+/** No host follows more links than this; a larger declared limit would let a loop run unbounded. */
+const MAX_SYMLINK_HOP_LIMIT = 1024;
+
+const isUsableHopLimit = (limit: number | undefined): limit is number =>
+  limit !== undefined && Number.isSafeInteger(limit) && limit > 0 && limit <= MAX_SYMLINK_HOP_LIMIT;
+
+/** Assemble a frozen Context from its constituent ports + layout. An unusable `symlinkHopLimit` is
+ *  dropped, so consumers apply git's fallback. */
 export function createContext(parts: CreateContextParts): Context {
+  const { symlinkHopLimit, ...rest } = parts;
   return Object.freeze({
-    ...parts,
+    ...rest,
+    ...(isUsableHopLimit(symlinkHopLimit) ? { symlinkHopLimit } : {}),
     cwd: parts.cwd ?? parts.layout.workDir ?? parts.layout.gitDir,
     session: createSession(),
   });
