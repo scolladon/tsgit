@@ -234,6 +234,20 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
       }
     };
 
+    const linkedAdminOutcome = async (workTree: string, admin: string): Promise<string> => {
+      try {
+        const repo = await openTrackedRepository({
+          cwd: workTree,
+          gitDir: admin,
+          workDir: workTree,
+        });
+        await repo.log();
+        return 'OK';
+      } catch (err) {
+        return (err as { data?: { code?: string } }).data?.code ?? 'UNKNOWN';
+      }
+    };
+
     const explicitMaintenance = async (gitDir: string): Promise<string> => {
       try {
         const repo = await openTrackedRepository({ gitDir });
@@ -317,19 +331,7 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
           const workTree = path.join(root, `explicit-linked-${slug}-wt`);
           runGit(['-C', dir, 'worktree', 'add', '-q', '--detach', workTree, 'HEAD']);
           const admin = path.join(dir, '.git', 'worktrees', path.basename(workTree));
-          const sut = async (): Promise<string> => {
-            try {
-              const repo = await openTrackedRepository({
-                cwd: workTree,
-                gitDir: admin,
-                workDir: workTree,
-              });
-              await repo.log();
-              return 'OK';
-            } catch (err) {
-              return (err as { data?: { code?: string } }).data?.code ?? 'UNKNOWN';
-            }
-          };
+          const sut = linkedAdminOutcome;
 
           // Act
           const result = await withMode(path.join(dir, '.git'), shared, mode, async () => ({
@@ -339,7 +341,7 @@ describe.skipIf(!GIT_AVAILABLE || !UNPRIVILEGED)(
               'rev-parse',
               'HEAD',
             ]).exitCode,
-            outcome: await sut(),
+            outcome: await sut(workTree, admin),
           }));
 
           // Assert
