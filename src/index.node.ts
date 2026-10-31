@@ -282,11 +282,15 @@ const lstatFirstStat = async (
 };
 
 /** Errnos meaning "git's `access(X_OK)` would say no": denied, absent, or a non-directory on the way. */
-const NOT_SEARCHABLE_ERRNOS: ReadonlySet<string> = new Set(['EACCES', 'ENOENT', 'ENOTDIR']);
+const NOT_SEARCHABLE_ERRNOS: ReadonlySet<string | undefined> = new Set([
+  'EACCES',
+  'ENOENT',
+  'ENOTDIR',
+]);
 
 /** An `access` refusal read as git reads it: "no" for the listed errnos, a real fault otherwise. */
 const refusalAsVerdict = (err: unknown): false => {
-  if (NOT_SEARCHABLE_ERRNOS.has((err as NodeJS.ErrnoException).code ?? '')) return false;
+  if (NOT_SEARCHABLE_ERRNOS.has((err as NodeJS.ErrnoException).code)) return false;
   throw err;
 };
 
