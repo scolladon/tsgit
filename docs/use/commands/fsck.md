@@ -128,7 +128,7 @@ interface FsckResult {
 | `indexRoot` | `boolean` | `true` | Treat index blob OIDs — and, when present, the index's cache-tree tree OIDs — as reachability roots (git's default). Set `false` to exclude the index from every role: roots and the cache-tree check below. |
 | `full` | `boolean` | `true` | Include pack objects (git's `--full`). Set `false` to scan loose objects only. |
 | `strict` | `boolean` | `false` | Upgrade WARN-class msg-ids to ERROR and contribute exit bit 1 (git's `--strict`). |
-| `checkReferences` | `boolean` | `true` | Run the `git refs verify` ref-content pass; malformed ref content produces `bad-ref` findings with exit bit 8. |
+| `checkReferences` | `boolean` | `true` | Run the `git refs verify` ref-content pass; malformed ref content produces `bad-ref` findings with exit bit 8. `false` (git's `--no-references`) drops every finding of the pass (`bad-ref` content and `cannotReadRef`, `unreadable-ref-path`, `refs-walk-failed`, `refs-verify-ended`) but not the `badRefOid` pointers, which stay. |
 
 ### Caller projections (the library ships data, not rendering)
 
@@ -265,7 +265,7 @@ reconstructed from git's stderr text.
   |---|---|
   | `0` | Clean (or only dangling/unreachable/INFO-WARN content findings). |
   | `1` | Content ERROR, `--strict`-upgraded WARN, corrupt object, hash-mismatch, or any pack, pack-index, reverse-index, bitmap, multi-pack-index or packed-entry fault (bit 1). git 2.56 folds all of them into bit 1; the bits 4, 32, 64 and 128 of earlier gits no longer exist. |
-  | `2` | Missing object, broken link, or ref→absent OID (bit 2). |
+  | `2` | Missing object, broken link, or ref→absent OID (bit 2). Every ref whose chain git cannot resolve (a body it rejects, a referent naming no ref, a loop, an unreadable file) is snapshotted with the zero OID and so also reports `badRefOid` (*invalid sha1 pointer*), as does every ref leading to it. |
   | `3` | Bits 1 and 2 combined (e.g. corrupt object whose absence also breaks a link). |
   | `8` | Malformed ref content (`badRefContent`), a symbolic ref whose referent git rejects (`badReferentName`) or an unreadable loose ref file (`cannotReadRef`), both `bad-ref` findings, the end of git's refs walk on a symlinked ref it cannot resolve (`refs-verify-ended`), a `refs` root it cannot open (`refs-walk-failed`), **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
   | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID, or a broken cache-tree alongside an unrelated missing object). |
@@ -293,6 +293,17 @@ reconstructed from git's stderr text.
   cache-tree never sets it, and a healthy ref beside a broken cache-tree still
   does. An absent index, or one with no cache-tree extension, contributes
   nothing — a bare or never-staged repository is not a fault.
+- **Refs-verify order.** Findings of the refs pass follow git's walk: `refs/**`
+  in the operating system's directory order (the Node adapter reads it; an
+  adapter without that order falls back to its own), then `HEAD` and the other
+  root refs beside `refs/` in the gitdir's listing order. In a linked worktree
+  the common dir's refs come before the worktree's own. A symbolic link is never
+  followed by the walk: it reports itself and the realpath's referent, and a
+  link whose realpath cannot be resolved ends the walk (`refs-verify-ended`),
+  losing every content finding after it. The root-ref check ends at its first
+  `error`-severity finding, an unreadable file included. A `refs` root that
+  cannot be opened ends in `refs-walk-failed`; a root that cannot be searched
+  is skipped, as git skips it.
 - **`--strict` upgrade.** Only the WARN-class msg-ids are affected:
   `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`,
   `largePathname`, `nulInCommit`, `nullSha1`, `zeroPaddedFilemode`. ERROR-class
