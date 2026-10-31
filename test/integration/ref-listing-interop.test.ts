@@ -583,6 +583,42 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
       });
     });
 
+    describe.each([
+      { label: 'the main worktree', linkedWorktree: false },
+      { label: 'a linked worktree', linkedWorktree: true },
+    ])('Given the common refs root is searchable but not readable, from $label', (row) => {
+      describe('When the branches are listed by both tools', () => {
+        it('Then tsgit lists what git branch and for-each-ref refs/heads/ list', async () => {
+          // Arrange
+          const { dir, ctx } = await newRepo();
+          const linked = `${dir}-searchable-${row.linkedWorktree}`;
+          roots.push(linked);
+          if (row.linkedWorktree) git(dir, 'worktree', 'add', '-q', '-b', 'wtb', linked);
+          const refsRoot = path.join(dir, '.git', 'refs');
+          chmodSync(refsRoot, 0o300);
+          restorers.push(() => chmodSync(refsRoot, RESTORED));
+          const cwd = row.linkedWorktree ? linked : dir;
+          const expectedRefs = lines(
+            git(cwd, 'for-each-ref', '--format=%(refname)', 'refs/heads/'),
+          );
+          const expectedBranches = lines(git(cwd, 'branch', '--list', '--format=%(refname)'));
+          const repo = row.linkedWorktree ? await openRepository({ cwd }) : { ctx };
+          const sut = branchList;
+
+          // Act
+          const listed = (await getRefStore(repo.ctx).listRefs('refs/heads/' as RefName)).map(
+            (entry) => entry.name as string,
+          );
+          const { branches } = await sut(repo.ctx);
+
+          // Assert
+          expect(listed).toEqual(expectedRefs);
+          expect(branches.map((branch) => branch.name as string).sort()).toEqual(expectedBranches);
+          expect(expectedRefs).toEqual([]);
+        });
+      });
+    });
+
     describe('Given an unreferenced commit named only by a ref under a refs root that is searchable but not listable', () => {
       const SEARCHABLE_NOT_LISTABLE = 0o300;
       const orphanBehindRefsRoot = async (): Promise<{ dir: string; ctx: Context; id: string }> => {

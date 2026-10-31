@@ -779,6 +779,9 @@ interface WalkTarget {
   readonly root: string;
   readonly relative: string;
   readonly ownNamespace: boolean;
+  /** The directory git opens first for this target: the common `refs`, or a per-worktree
+   *  namespace; the walk reads it and every directory down to `root` before listing `root`. */
+  readonly entry: string;
 }
 
 function createFilesRefStore(ctx: Context): RefStore {
@@ -1111,21 +1114,29 @@ function createFilesRefStore(ctx: Context): RefStore {
   function refsWalkTargets(relative: string): ReadonlyArray<WalkTarget> {
     const own = `${ctx.layout.gitDir}/${relative}`;
     const common = `${commonGitDir(ctx)}/${relative}`;
-    if (own === common) return [{ root: own, relative, ownNamespace: false }];
-    return [...ownWalkTargets(relative), { root: common, relative, ownNamespace: false }];
+    const shared = (root: string): WalkTarget => ({
+      root,
+      relative,
+      ownNamespace: false,
+      entry: `${commonGitDir(ctx)}/${REFS_DIR}`,
+    });
+    if (own === common) return [shared(own)];
+    return [...ownWalkTargets(relative), shared(common)];
   }
 
   function ownWalkTargets(relative: string): ReadonlyArray<WalkTarget> {
     const namespaces = PER_WORKTREE_PREFIXES.map((namespace) => namespace.slice(0, -1));
     const inside = (namespace: string): boolean =>
       relative === namespace || relative.startsWith(`${namespace}/`);
-    const target = (rel: string): WalkTarget => ({
+    const target = (rel: string, namespace: string): WalkTarget => ({
       root: `${ctx.layout.gitDir}/${rel}`,
       relative: rel,
       ownNamespace: true,
+      entry: `${ctx.layout.gitDir}/${namespace}`,
     });
-    if (relative === REFS_DIR) return namespaces.map(target);
-    return namespaces.some(inside) ? [target(relative)] : [];
+    if (relative === REFS_DIR) return namespaces.map((namespace) => target(namespace, namespace));
+    const holder = namespaces.find(inside);
+    return holder === undefined ? [] : [target(relative, holder)];
   }
 
   /**
@@ -1161,12 +1172,36 @@ function createFilesRefStore(ctx: Context): RefStore {
     return names;
   }
 
+  /** The directories git reads on its way from the target's entry down to the one it lists:
+   *  none when the jump landed on the entry itself. */
+  function ancestorsOf(target: WalkTarget): ReadonlyArray<string> {
+    const below = target.root.slice(target.entry.length);
+    if (below === '') return [];
+    const cuts = [...below.matchAll(/\//g)].map((match) => match.index).filter((at) => at > 0);
+    return [target.entry, ...cuts.map((at) => target.entry + below.slice(0, at))];
+  }
+
+  /** git reaches a directory only by reading every one above it, so a refusal or an absence
+   *  on the way hides everything below. */
+  async function ancestorsReadable(target: WalkTarget): Promise<boolean> {
+    for (const dir of ancestorsOf(target)) {
+      try {
+        await ctx.fs.readdir(dir);
+      } catch (err) {
+        if (errorCodeOf(err) === PERMISSION_DENIED_CODE || isFileNotFound(err)) return false;
+        throw err;
+      }
+    }
+    return true;
+  }
+
   /** A per-worktree namespace git cannot search is simply not listed. */
   async function walkTarget(
     target: WalkTarget,
     prefix: RefName | undefined,
   ): Promise<ReadonlyArray<RefName>> {
     try {
+      if (!(await ancestorsReadable(target))) return [];
       return await walkRefsRoot(target.root, target.relative, prefix);
     } catch (err) {
       if (target.ownNamespace && errorCodeOf(err) === PERMISSION_DENIED_CODE) return [];

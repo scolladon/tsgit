@@ -4715,6 +4715,93 @@ describe('ref-store — names of a linked worktree', () => {
   });
 });
 
+describe('ref-store — a prefixed listing below a directory git cannot read', () => {
+  const LOOSE_ID = 'd'.repeat(40);
+
+  const refusing = (ctx: Context, dir: string): void => {
+    const readdir = ctx.fs.readdir.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path) => {
+      if (path === dir) throw permissionDenied(dir);
+      return readdir(path);
+    });
+  };
+
+  describe('Given the common refs root is not readable', () => {
+    describe('When refs/heads/ is listed', () => {
+      it('Then nothing is listed, as git cannot reach refs/heads through it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${LOOSE_ID}\n`);
+        refusing(ctx, '/repo/.git/refs');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames('refs/heads/' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given refs/heads is not readable', () => {
+    describe('When refs/heads/feature/ is listed', () => {
+      it('Then nothing is listed, as git cannot reach refs/heads/feature through it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/feature/x', `${LOOSE_ID}\n`);
+        refusing(ctx, '/repo/.git/refs/heads');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames('refs/heads/feature/' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose bisect namespace is not readable', () => {
+    describe('When refs/bisect/deep/ is listed', () => {
+      it('Then nothing is listed, as git cannot reach refs/bisect/deep through it', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ctx: Context = {
+          ...base,
+          layout: { ...base.layout, gitDir: '/repo/wt', commonDir: base.layout.gitDir },
+        };
+        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/deep/x', 'garbage\n');
+        refusing(ctx, '/repo/wt/refs/bisect');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames('refs/bisect/deep/' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given no directory above the walked one is refused', () => {
+    describe('When refs/heads/ is listed', () => {
+      it('Then the refs below are listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${LOOSE_ID}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames('refs/heads/' as RefName);
+
+        // Assert
+        expect(result).toEqual(['refs/heads/main']);
+      });
+    });
+  });
+});
+
 describe('ref-store — the integrity walk of a linked worktree', () => {
   describe('Given a malformed ref in the shared refs and one in the worktree own namespace', () => {
     describe('When verifyIntegrity is called', () => {
