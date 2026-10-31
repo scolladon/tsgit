@@ -4,6 +4,7 @@ import { posixPolicy, windowsPolicy } from '../../../src/adapters/node/path-poli
 import { TsgitError } from '../../../src/domain/error.js';
 import type { LayoutProbe } from '../../../src/ports/layout-probe.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
+import { findLayout } from '../../../src/repository/find-layout.js';
 import {
   markUnsearchableGitDir,
   resolveLayout,
@@ -1804,6 +1805,29 @@ describe('resolveLayout keeping the gitdir as git spells it', () => {
     });
   });
 
+  describe('Given a cwd inside a bare git directory', () => {
+    describe('When the layout is resolved', () => {
+      it('Then the spelling is the bare directory, not the cwd', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare.git');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo/bare.git/objects',
+          posixPolicy,
+          {},
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDirSpelling).toBe('/repo/bare.git');
+      });
+    });
+  });
+
   describe.each([
     { route: 'a discovered gitfile', discovered: true },
     { route: 'an explicit gitDir naming a gitfile', discovered: false },
@@ -1846,6 +1870,42 @@ describe('resolveLayout keeping the gitdir as git spells it', () => {
 
         // Assert
         expect(result?.gitDirSpelling).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('resolveLayout probing a discovered gitdir', () => {
+  describe('Given a discovered .git directory', () => {
+    describe('When the layout is resolved', () => {
+      it('Then it asks the searchability question no more often than the walk alone', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        const searchabilityAsks = async (run: (probe: LayoutProbe) => Promise<unknown>) => {
+          const asked: string[] = [];
+          const base = fileSystemLayoutProbe(fs);
+          await run({
+            ...base,
+            isSearchable: async (p) => {
+              asked.push(p);
+              return true;
+            },
+          });
+          return asked;
+        };
+        const sut = resolveLayout;
+
+        // Act
+        const walkOnly = await searchabilityAsks((probe) =>
+          findLayout(probe, '/repo/normal', posixPolicy),
+        );
+        const resolved = await searchabilityAsks((probe) =>
+          sut(probe, '/repo/normal', posixPolicy),
+        );
+
+        // Assert
+        expect(resolved).toEqual(walkOnly);
       });
     });
   });

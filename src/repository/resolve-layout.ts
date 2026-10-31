@@ -427,7 +427,8 @@ const gitDirSpellingOf = (
   const spelled =
     outcome.route === 'DISCOVERED'
       ? pathPolicy.join(outcome.origin, '.git')
-      : resolveAgainst(cwd, opts.gitDir ?? '', pathPolicy);
+      : // Stryker disable next-line StringLiteral: equivalent — the only route that reaches here without `opts.gitDir` is BARE_DIR, returned above; EXPLICIT always carries it, so the fallback is never read.
+        resolveAgainst(cwd, opts.gitDir ?? '', pathPolicy);
   return spelled === outcome.gitDir ? spelled : undefined;
 };
 
