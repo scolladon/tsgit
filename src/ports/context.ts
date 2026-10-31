@@ -411,7 +411,7 @@ export interface CreateContextParts {
 /** No host follows more links than this; a larger declared limit would let a loop run unbounded. */
 const MAX_SYMLINK_HOP_LIMIT = 1024;
 
-const isUsableHopLimit = (limit: number | undefined): limit is number =>
+export const isUsableHopLimit = (limit: number | undefined): limit is number =>
   limit !== undefined && Number.isSafeInteger(limit) && limit > 0 && limit <= MAX_SYMLINK_HOP_LIMIT;
 
 /** Assemble a frozen Context from its constituent ports + layout. An unusable `symlinkHopLimit` is

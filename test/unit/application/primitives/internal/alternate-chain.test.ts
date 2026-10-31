@@ -204,6 +204,30 @@ describe('realpathAllowingMissingLeaf', () => {
   });
 
   describe.each([
+    { label: 'NaN', limit: Number.NaN },
+    { label: 'Infinity', limit: Number.POSITIVE_INFINITY },
+    { label: 'a billion', limit: 1e9 },
+    { label: 'zero', limit: 0 },
+    { label: 'a negative number', limit: -5 },
+  ])('Given a two-link loop and a hop limit of $label', ({ limit }) => {
+    describe('When realpathOutcome', () => {
+      it('Then the walk stops on the loop', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('/repo/b', '/repo/a');
+        await ctx.fs.symlink('/repo/a', '/repo/b');
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/a/objects', CWD, limit);
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'failed', reason: 'SYMLINK_LOOP' });
+      });
+    });
+  });
+
+  describe.each([
     { links: 33, expected: '/repo/real/objects' },
     { links: 34, expected: undefined },
   ])('Given a chain of $links symlinks to the directory', ({ links, expected }) => {

@@ -1,7 +1,7 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { asciiLower } from '../../../domain/pretty/ascii.js';
 import { parseAlternatesFile } from '../../../domain/storage/alternates.js';
-import type { Context } from '../../../ports/context.js';
+import { type Context, isUsableHopLimit } from '../../../ports/context.js';
 import type {
   AlternatePathProbe,
   ObjectSourceReader,
@@ -157,7 +157,7 @@ export const realpathOutcome = async (
   const walk: Walk = {
     syntax,
     input: path,
-    limit: hopLimit,
+    limit: isUsableHopLimit(hopLimit) ? hopLimit : DEFAULT_SYMLINK_HOP_LIMIT,
     root: '',
     names: [],
     pending: [],
