@@ -668,8 +668,9 @@ const comparable = (path: string, windows: boolean): string =>
 
 /** The realpath relative to the gitdir; absolute when it lies outside. */
 const referentOf = (real: string, strippedGitDir: string, windows: boolean): string => {
-  const prefix = `${comparable(strippedGitDir, windows)}/`;
-  return comparable(real, windows).startsWith(prefix) ? real.slice(prefix.length) : real;
+  const cut = strippedGitDir.length + 1;
+  const head = comparable(real.slice(0, cut), windows);
+  return head === `${comparable(strippedGitDir, windows)}/` ? real.slice(cut) : real;
 };
 
 /** A rootless link target (Windows path syntax only) is git's missing-component death. */
