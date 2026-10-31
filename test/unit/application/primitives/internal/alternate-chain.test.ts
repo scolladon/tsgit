@@ -1214,6 +1214,22 @@ describe('realpathOutcome', () => {
     });
   });
 
+  describe('Given a failure without an underlying error', () => {
+    describe('When realpathOutcome', () => {
+      it('Then the failure carries no cause key', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+        const sut = realpathOutcome;
+
+        // Act
+        const result = await sut(posixGitPathSyntax, ctx.fs, '/repo/d/missing/x', CWD);
+
+        // Assert
+        expect(Object.keys(result)).toEqual(['kind', 'reason', 'path']);
+      });
+    });
+  });
+
   describe('Given a path under a file', () => {
     describe('When realpathOutcome', () => {
       it('Then it failed NOT_A_DIRECTORY at the file and the next name', async () => {

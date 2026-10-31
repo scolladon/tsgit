@@ -153,12 +153,13 @@ export const realpathOutcome = async (
   cwd: string,
   hopLimit: number = DEFAULT_SYMLINK_HOP_LIMIT,
 ): Promise<RealpathOutcome> => {
-  // Stryker disable next-line StringLiteral: equivalent — startAt sets root through restartAt before any read, else returns undefined
   const walk: Walk = {
     syntax,
     input: path,
     limit: isUsableHopLimit(hopLimit) ? hopLimit : DEFAULT_SYMLINK_HOP_LIMIT,
+    // Stryker disable next-line StringLiteral: equivalent — startAt sets root through restartAt before any read, else the walk stops
     root: '',
+    // Stryker disable next-line ArrayDeclaration: equivalent — restartAt empties names on success, else the walk stops before any use
     names: [],
     pending: [],
     hops: 0,
