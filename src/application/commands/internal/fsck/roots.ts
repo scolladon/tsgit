@@ -113,6 +113,12 @@ export function isTolerableRefFault(err: unknown): boolean {
   return code !== undefined && GC_TOLERATED_REF_CODES.has(code);
 }
 
+const PERMISSION_DENIED_CODE = 'PERMISSION_DENIED';
+
+/** A ref read fault git's ref snapshot skips: a broken ref, or a file the permissions refuse. */
+export const isSkippedRefReadFault = (err: unknown): boolean =>
+  isTolerableRefFault(err) || errorDataCode(err) === PERMISSION_DENIED_CODE;
+
 /** Whether a ref tip roots fsck's walk: git's `snapshot_ref` keeps one it holds and can parse. */
 type TipGate = (id: ObjectId) => Promise<boolean>;
 
@@ -905,7 +911,7 @@ async function headOf(worktreeCtx: Context): Promise<HeadRead> {
   } catch (err) {
     const ownFile = `${worktreeCtx.layout.gitDir}/HEAD`;
     if (isPermissionRefusalOf(err, ownFile)) return { kind: 'unreadable', path: ownFile };
-    if (!isTolerableRefFault(err) && errorDataCode(err) !== 'PERMISSION_DENIED') throw err;
+    if (!isSkippedRefReadFault(err)) throw err;
     return NO_HEAD;
   }
 }

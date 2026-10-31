@@ -9,7 +9,7 @@ import { readObject } from '../../../primitives/read-object.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { type CachedGitObject, packedLocationOf } from './object-cache.js';
 import { looseHolderPath } from './object-presence.js';
-import { isTolerableRefFault } from './roots.js';
+import { isSkippedRefReadFault } from './roots.js';
 import { isStoredCorruption } from './stored-corruption.js';
 
 /** A ref whose file the permissions refuse is skipped, as git's snapshot skips it. */
@@ -18,7 +18,7 @@ async function tipOf(ctx: Context, ref: RefName): Promise<ObjectId | undefined> 
     // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
     return await resolveRef(ctx, ref, { peel: false });
   } catch (err) {
-    if (!isTolerableRefFault(err) && errorDataCode(err) !== 'PERMISSION_DENIED') throw err;
+    if (!isSkippedRefReadFault(err)) throw err;
     return undefined;
   }
 }
