@@ -35,10 +35,10 @@ table top-down and elects the first unblocked item.
 | # | cut | items | why here |
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
-| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · 32.19 · 32.26 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 · 32.47 (spike) | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
+| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · 32.19 · 32.26 · 32.48 · 32.49 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 · 32.47 (spike) | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
 | 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · 32.32 · 32.33 · 32.40 · 32.41 · 32.44 · 32.1 rows A6, A21, A22, A23, D5, D15, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · 32.23 · 32.34 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B13, B17, C6, C22, D19 | refusal mismatches in `merge` / `rebase` / `push` |
-| 5 | **local perf** | #310 → 31.5 · 31.12 · 32.15 · 31.13 · 32.36 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
+| 5 | **local perf** | #310 → 31.5 · 31.12 · 32.15 · 31.13 · 32.36 · 32.50 (spike) | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
 | 7 | **subsystems** | 32.7 → 32.1 row B5 · 32.4 → 32.3 row A10 · 31.9 · 32.35 | low-frequency correctness, each its own `feat:`; 32.7 crosses the containment boundary (security review first) |
 | 8 | **magic + byte-path** | 32.11b magic pathspecs (`!` alias kept = `feat`, dropped = the one major) · 32.28 byte-path port (optional port methods = `feat`, required = major) · 32.9 | the only candidates for a 7.0.0; 32.9 needs editor, rerere and signature-verification capabilities first |
@@ -753,6 +753,45 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   HEAD:<blob> blob   git=1   verify=128 tsgit=3  findings=bad-object,midx-unusable,missing,unreachable,dangling,root
   HEAD^{tree} tree   git=128 verify=128 tsgit=3
   ```
+
+### Open (scoped 2026-10-31 — follow-ups surfaced by the fsck-broken-ref-chain-unreadable run, triaged)
+
+- [ ] **32.48** `fsck` never checks another worktree's per-worktree refs, and names its own without the `worktrees/<id>/` prefix — run from the main worktree with a symlink at `.git/worktrees/wt/refs/bisect/bad`, git 2.56 `fsck` warns `worktrees/wt/refs/bisect/bad: symlinkRef` (exit 0); with `garbage` in `.git/worktrees/vt/refs/bisect/bad` it errors `worktrees/vt/refs/bisect/bad: badRefContent: garbage` (exit 8). tsgit `fsck` reports only the root and exits 0 in both cases. Run from the linked worktree, tsgit finds the faults but names them `refs/bisect/bad`, where git prints `worktrees/<id>/refs/bisect/bad` (git's pointer line keeps the bare name, which tsgit's `badRefOid` already matches). Locus: the ref-content pass (`src/application/primitives/ref-store.ts` `verifyIntegrity`, driven from `src/application/commands/fsck.ts`) reads only the current worktree's per-worktree refs; git's files-backend fsck walks every worktree's and prefixes all but the main one. Pre-existing (identical on main 071d8e48). Refusal mismatch. Proven 2026-10-31 at 25492826 and on main 071d8e48:
+  ```
+  # git 2.56.0, scrubbed env; repo w + linked worktree wt (branch side)
+  # ln -s ../../../../refs/heads/main w/.git/worktrees/wt/refs/bisect/bad
+  === from w
+    git: warning: worktrees/wt/refs/bisect/bad: symlinkRef: use deprecated symbolic link for symref
+    git exit 0
+    tsgit (HEAD and main): {"findings":[{"type":"root",…}],"exitCode":0}
+  # printf 'garbage\n' > v/.git/worktrees/vt/refs/bisect/bad
+  === from v
+    git: error: worktrees/vt/refs/bisect/bad: badRefContent: garbage
+    git exit 8
+    tsgit (HEAD and main): {"findings":[{"type":"root",…}],"exitCode":0}
+  === from vt
+    git: error: worktrees/vt/refs/bisect/bad: badRefContent: garbage
+    git: error: refs/bisect/bad: invalid sha1 pointer 0000000000000000000000000000000000000000
+    tsgit: [{"ref":"refs/bisect/bad","msgId":"badRefContent"},{"ref":"refs/bisect/bad","msgId":"badRefOid"}] exit 10
+  ```
+  Not folded: it adds feature behaviour (a ref-store walk over every worktree) beyond the broken-ref-chain change.
+- [ ] **32.49** A symref body naming `main-worktree/HEAD` does not resolve — with `refs/heads/x` = `ref: main-worktree/HEAD`, git 2.56 `fsck` warns only `refs/heads/x: symrefTargetIsNotARef: points to non-ref target 'main-worktree/HEAD'` and exits 0, because the referent resolves to the main worktree's HEAD; tsgit adds `badRefOid` with the zero oid and exits 2. The resolver (`src/application/primitives/resolve-ref.ts`) has no `main-worktree/` or `worktrees/<id>/` namespace; those names appear only as fsck display names (`src/application/commands/internal/fsck/roots.ts`). Fix shape: resolve both prefixes as git's `parse_worktree_ref` does, against the main or the named worktree's private refs — the same change gives `rev-parse main-worktree/HEAD` its path. Pre-existing (main 071d8e48 gives the same `badRefOid` and exit 2). Refusal mismatch (exit code), low frequency. Proven 2026-10-31 at 25492826 and on main 071d8e48:
+  ```
+  # git 2.56.0, scrubbed env; printf 'ref: main-worktree/HEAD\n' > .git/refs/heads/x
+    git: warning: refs/heads/x: symrefTargetIsNotARef: points to non-ref target 'main-worktree/HEAD'
+    git exit 0
+    tsgit HEAD: symrefTargetIsNotARef (info) + badRefOid target 0000000000000000000000000000000000000000, exitCode 2
+    tsgit main: badRefOid target 0000000000000000000000000000000000000000, exitCode 2
+  ```
+  Not folded: out of scope — the locus is the shared ref resolver, not fsck's broken-chain reporting.
+- [ ] **32.50** Spike — full `fsck` makes about five `lstatIfReachable` and five `openWithNoFollow` calls per loose ref — on a repository with 5031 loose refs, tsgit `fsck` issues 71,059 file-system calls on HEAD and 71,054 on main (`lstatIfReachable` 25163, `openWithNoFollow` 25169, about one each of `exists`, `stat`, `read`, `readUtf8` per ref); wall time 2.40 s including node start and transpile, against 0.31 s for git 2.56 `fsck`. The counts are the same at ref depth 3 and 4, so it is not one call per path component. Locus: `src/application/commands/fsck.ts` and its ref passes through `src/application/primitives/ref-store.ts`. Pre-existing (identical on main 071d8e48). Performance. Question: which fsck passes (ref-content check, root collection, reflog or worktree walks, connectivity) each lstat and open every loose ref, and can they share one lstat and one no-follow read per ref without losing the symlink and unreadable-ref findings? Proven 2026-10-31 at 25492826 and on main 071d8e48, two runs each:
+  ```
+  # 5031 loose refs, fs proxy counting calls during fsck(ctx)
+  HEAD: total 71059 {"lstatIfReachable":25163,"openWithNoFollow":25169,"exists":5557,"stat":5041,"read":5040,"readUtf8":5033, …}
+  main: total 71054 {"lstatIfReachable":25163,"openWithNoFollow":25169,"exists":5557,"stat":5041,"read":5040,"readUtf8":5033, …}
+  git fsck wall: 0.307s · tsgit fsck wall (incl. node + transpile): 2.403s
+  ```
+  Not folded: out of scope — a perf pass over fsck's ref passes, outside the broken-ref-chain correctness change.
 
 ---
 
