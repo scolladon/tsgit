@@ -4,7 +4,11 @@ subjects:
 ---
 # 1135 — the realpath walk caps symlink hops per platform, as the C library does
 
-- **Status:** accepted
+
+> Superseded by ADR-1140 for the per-platform hop limit (20 on Linux, 32 elsewhere): git 2.56 on
+> Linux enforces 32, measured on the PR's CI leg.
+
+- **Status:** superseded by ADR-1140
 - **Date:** 2026-10-30
 - **Design:** docs/design/fsck-broken-ref-chain-unreadable.md (DC-6) · **Plan:** docs/plan/fsck-broken-ref-chain-unreadable.md · **Supersedes/Refines:** refines ADR-1129
 
