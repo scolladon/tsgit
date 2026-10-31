@@ -97,14 +97,6 @@ const syncIoOptions = (syncIo: SyncIoPolicy | undefined): { readonly syncIo?: Sy
 export const nativeLineEndingFor = (platform: NodeJS.Platform): 'lf' | 'crlf' =>
   platform === 'win32' ? 'crlf' : 'lf';
 
-/**
- * git's symlink-limit macro on the given platform: glibc and musl say 20, git falls back to 32
- * elsewhere.
- * @internal
- */
-export const symlinkHopLimitFor = (platform: NodeJS.Platform): number =>
-  platform === 'linux' ? 20 : 32;
-
 export function createNodeContext(options: NodeAdapterOptions): Context {
   const workDir = nodePath.resolve(options.workDir);
   const gitDir =
@@ -134,7 +126,6 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     layout,
     runtime: 'node' as const,
     nativeEol: nativeLineEndingFor(process.platform),
-    symlinkHopLimit: symlinkHopLimitFor(process.platform),
     hashConfig: configFor(algorithm),
     deltaCache,
     cacheBudgets: buildCacheBudgets({

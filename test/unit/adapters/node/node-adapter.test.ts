@@ -7,7 +7,6 @@ import {
   createNodeContext,
   nativeLineEndingFor,
   resolveHomeDir,
-  symlinkHopLimitFor,
 } from '../../../../src/adapters/node/node-adapter.js';
 import { NodeCommandRunner } from '../../../../src/adapters/node/node-command-runner.js';
 import { NodeCompressor } from '../../../../src/adapters/node/node-compressor.js';
@@ -671,33 +670,18 @@ describe('createNodeContext native line ending', () => {
   });
 });
 
-describe('symlinkHopLimitFor', () => {
-  describe.each([
-    ['linux', 20],
-    ['darwin', 32],
-    ['win32', 32],
-  ] as const)('Given the %s platform', (platform, expected) => {
-    describe('When symlinkHopLimitFor runs', () => {
-      it(`Then ${expected}`, () => {
-        // Arrange / Act
-        const result = symlinkHopLimitFor(platform);
-
-        // Assert
-        expect(result).toBe(expected);
-      });
-    });
-  });
-});
-
 describe('createNodeContext symlink hop limit', () => {
   describe('Given a context built by createNodeContext', () => {
     describe('When reading symlinkHopLimit', () => {
-      it('Then it equals symlinkHopLimitFor(process.platform)', () => {
-        // Arrange / Act
-        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-hops' });
+      it('Then it declares none, so the walk applies the git limit of 32 on every platform', () => {
+        // Arrange
+        const sut = createNodeContext;
+
+        // Act
+        const result = sut({ workDir: '/tmp/tsgit-ctx-hops' });
 
         // Assert
-        expect(sut.symlinkHopLimit).toBe(symlinkHopLimitFor(process.platform));
+        expect(result.symlinkHopLimit).toBeUndefined();
       });
     });
   });

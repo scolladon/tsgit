@@ -8,7 +8,7 @@ import type { Stats } from 'node:fs';
 import { access, constants, lstat, readFile, readlink, realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
-import { nativeLineEndingFor, symlinkHopLimitFor } from './adapters/node/node-adapter.js';
+import { nativeLineEndingFor } from './adapters/node/node-adapter.js';
 import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
 import { NodeCompressor } from './adapters/node/node-compressor.js';
 import { nativeMachineFacts } from './adapters/node/node-concurrency.js';
@@ -172,7 +172,6 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     windowsPathSyntax: nativePolicy.windowsSyntax,
     windowsIndexPaths: nativePolicy.windowsSyntax,
     nativeEol: nativeLineEndingFor(process.platform),
-    symlinkHopLimit: symlinkHopLimitFor(process.platform),
     filenameProbe: nodeFilenameProbe,
     makeConfinedFs: (roots: ReadonlyArray<string>): NodeFileSystem =>
       new NodeFileSystem([...roots], {

@@ -16,7 +16,7 @@ import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createNodeContext, symlinkHopLimitFor } from '../../src/adapters/node/node-adapter.js';
+import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type FsckOptions, type FsckResult, fsck } from '../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import { openRepository } from '../../src/index.node.js';
@@ -32,7 +32,8 @@ const UNPRIVILEGED = POSIX && process.getuid?.() !== 0;
 const REFUSED = 0o000;
 const RESTORED = 0o755;
 const LINKED_ID = 'wt';
-const HOP_CAP = symlinkHopLimitFor(process.platform);
+/** git's own symlink-hop limit, on every platform. */
+const HOP_CAP = 32;
 
 type Fill = (text: string) => string;
 
@@ -900,7 +901,7 @@ const listableOnlyRows: ReadonlyArray<Row> = [
 /** Links whose realpath dies: git's `refs verify` child ends there, whatever follows. */
 const CHAIN_LENGTH = 25;
 
-/** A chain of links that resolves under a cap of 32 hops and dies under a cap of 20. */
+/** A chain of links that resolves or dies by the hop cap git enforces on every platform. */
 const hopChain = (length: number): Pick<Row, 'links' | 'besideLinks'> => ({
   links: { z: '{dir}/hop1' },
   besideLinks: Object.fromEntries(
@@ -926,13 +927,13 @@ const dyingLinkRows: ReadonlyArray<Row> = [
     links: { b: 'b' },
   },
   {
-    title: 'a chain of links longer than the platform hop limit of some systems',
+    title: 'a chain of links longer than the C library limit of 20, which git does not apply',
     refs: { main: SHA },
     commit: true,
     ...hopChain(CHAIN_LENGTH),
   },
   {
-    title: 'a chain of links longer than every platform hop limit',
+    title: "a chain of links longer than git's hop limit of 32",
     refs: { main: SHA },
     commit: true,
     ...hopChain(HOP_CAP + 3),
