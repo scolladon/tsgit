@@ -438,6 +438,37 @@ describe('ref-store — a directory at a ref or log path', () => {
     });
   });
 
+  describe('Given an empty directory at the ref path and a rename refused for a reason other than a directory', () => {
+    describe('When a set is applied', () => {
+      it('Then that refusal propagates and the directory stays', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.mkdir(gitPath(base, REF));
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            rename: async (src) => Promise.reject(unsupportedOperation('filesystem', `EIO ${src}`)),
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        const data = await refusalOf(() =>
+          sut.applyRefUpdates([{ kind: 'set', name: REF, id: ID }]),
+        );
+
+        // Assert
+        expect(data).toEqual({
+          code: 'UNSUPPORTED_OPERATION',
+          operation: 'filesystem',
+          reason: `EIO ${gitPath(base, `${REF}.lock`)}`,
+        });
+        expect(await isDirectory(base, REF)).toBe(true);
+      });
+    });
+  });
+
   describe('Given the reflog append is refused', () => {
     describe.each([
       {

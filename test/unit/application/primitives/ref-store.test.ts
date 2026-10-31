@@ -4784,6 +4784,65 @@ describe('ref-store — a prefixed listing below a directory git cannot read', (
     });
   });
 
+  describe.each([
+    {
+      prefix: 'refs/',
+      read: ['/repo/.git/refs', '/repo/.git/refs/heads', '/repo/.git/refs/heads/feature'],
+    },
+    {
+      prefix: 'refs/heads/feature/',
+      read: ['/repo/.git/refs', '/repo/.git/refs/heads', '/repo/.git/refs/heads/feature'],
+    },
+    {
+      prefix: 'refs/heads/',
+      read: ['/repo/.git/refs', '/repo/.git/refs/heads', '/repo/.git/refs/heads/feature'],
+    },
+  ])('Given a ref three directories below the common dir', ({ prefix, read }) => {
+    describe(`When ${prefix} is listed`, () => {
+      it('Then each directory on the way is read once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/feature/x', `${LOOSE_ID}\n`);
+        const reads: string[] = [];
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path) => {
+          reads.push(path);
+          return readdir(path);
+        });
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        await sut(prefix as RefName);
+
+        // Assert
+        expect(reads).toEqual(read);
+      });
+    });
+  });
+
+  describe('Given a directory above the walked one faults for another reason', () => {
+    describe('When refs/heads/feature/ is listed', () => {
+      it('Then the fault propagates rather than hiding the refs below', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/feature/x', `${LOOSE_ID}\n`);
+        const fault = new Error('readdir fault');
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path) => {
+          if (path === '/repo/.git/refs/heads') throw fault;
+          return readdir(path);
+        });
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        const result = await sut('refs/heads/feature/' as RefName).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+  });
+
   describe('Given no directory above the walked one is refused', () => {
     describe('When refs/heads/ is listed', () => {
       it('Then the refs below are listed', async () => {
@@ -4797,6 +4856,220 @@ describe('ref-store — a prefixed listing below a directory git cannot read', (
 
         // Assert
         expect(result).toEqual(['refs/heads/main']);
+      });
+    });
+  });
+});
+
+describe('ref-store — loose refs listed from a linked worktree', () => {
+  const LOOSE_ID = 'd'.repeat(40) as ObjectId;
+
+  const linked = async (): Promise<Context> => {
+    const base = await buildSeededContext();
+    return {
+      ...base,
+      layout: { ...base.layout, gitDir: '/repo/wt', commonDir: base.layout.gitDir },
+    };
+  };
+
+  describe('Given a shared ref in the common dir and a per-worktree ref in the worktree gitdir', () => {
+    describe('When refs/ is listed', () => {
+      it('Then both are listed', async () => {
+        // Arrange
+        const ctx = await linked();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${LOOSE_ID}\n`);
+        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/bad', `${LOOSE_ID}\n`);
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        const result = await sut('refs/' as RefName);
+
+        // Assert
+        expect(result).toEqual(['refs/bisect/bad', 'refs/heads/main']);
+      });
+    });
+  });
+
+  describe('Given a per-worktree ref and a shared ref written in the common dir', () => {
+    describe('When refs/ is listed', () => {
+      it('Then the common copy of the per-worktree namespace is no ref of this worktree', async () => {
+        // Arrange
+        const ctx = await linked();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${LOOSE_ID}\n`);
+        await ctx.fs.writeUtf8('/repo/.git/refs/bisect/other', `${LOOSE_ID}\n`);
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        const result = await sut('refs/' as RefName);
+
+        // Assert
+        expect(result).toEqual(['refs/heads/main']);
+      });
+    });
+  });
+
+  describe.each([
+    'refs/bisect/',
+    'refs/bisect/deep/',
+    'refs/worktree/',
+    'refs/worktree/deep/',
+    'refs/rewritten/deep/',
+  ])('Given a per-worktree ref below the worktree gitdir namespace', (prefix) => {
+    describe(`When ${prefix} is listed`, () => {
+      it('Then it is listed', async () => {
+        // Arrange
+        const ctx = await linked();
+        await ctx.fs.writeUtf8(`/repo/wt/${prefix}x`, `${LOOSE_ID}\n`);
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        const result = await sut(prefix as RefName);
+
+        // Assert
+        expect(result).toEqual([`${prefix}x`]);
+      });
+    });
+  });
+
+  describe('Given a per-worktree ref two directories below the worktree gitdir', () => {
+    describe('When refs/bisect/deep/ is listed', () => {
+      it('Then only the directories from the namespace down are read in the worktree gitdir', async () => {
+        // Arrange
+        const ctx = await linked();
+        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/deep/x', `${LOOSE_ID}\n`);
+        const reads: string[] = [];
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path) => {
+          reads.push(path);
+          return readdir(path);
+        });
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        await sut('refs/bisect/deep/' as RefName);
+
+        // Assert
+        expect(reads.filter((path) => !path.startsWith('/repo/.git'))).toEqual([
+          '/repo/wt/refs/bisect',
+          '/repo/wt/refs/bisect/deep',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a name outside the per-worktree namespaces', () => {
+    describe('When refs/heads/ is listed', () => {
+      it('Then the worktree gitdir copy is never opened', async () => {
+        // Arrange
+        const ctx = await linked();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${LOOSE_ID}\n`);
+        await ctx.fs.writeUtf8('/repo/wt/refs/heads/own', `${LOOSE_ID}\n`);
+        const opened: string[] = [];
+        const stat = ctx.fs.stat.bind(ctx.fs);
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path) => {
+          opened.push(path);
+          return stat(path);
+        });
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path) => {
+          opened.push(path);
+          return readdir(path);
+        });
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        const result = await sut('refs/heads/' as RefName);
+
+        // Assert
+        expect(result).toEqual(['refs/heads/main']);
+        expect(opened.filter((path) => path.startsWith('/repo/wt'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a repository that is not a linked worktree', () => {
+    describe('When listRefs reads a per-worktree ref', () => {
+      it('Then the ref is listed once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/bisect/bad', `${LOOSE_ID}\n`);
+        const sut = createRefStore(ctx).listRefs;
+
+        // Act
+        const result = await sut('refs/bisect/' as RefName);
+
+        // Assert
+        expect(result.map((entry) => entry.name)).toEqual(['refs/bisect/bad']);
+      });
+    });
+  });
+
+  describe('Given the stat of a worktree namespace is refused', () => {
+    describe('When refs/bisect/ is listed', () => {
+      it('Then nothing is listed from it', async () => {
+        // Arrange
+        const ctx = await linked();
+        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/bad', `${LOOSE_ID}\n`);
+        const stat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path) => {
+          if (path === '/repo/wt/refs/bisect') throw permissionDenied(path);
+          return stat(path);
+        });
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        const result = await sut('refs/bisect/' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the stat of a worktree namespace faults for another reason', () => {
+    describe('When refs/bisect/ is listed', () => {
+      it('Then the fault propagates', async () => {
+        // Arrange
+        const ctx = await linked();
+        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/bad', `${LOOSE_ID}\n`);
+        const fault = new Error('stat fault');
+        const stat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path) => {
+          if (path === '/repo/wt/refs/bisect') throw fault;
+          return stat(path);
+        });
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        const result = await sut('refs/bisect/' as RefName).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+  });
+
+  describe('Given the stat of a shared directory is refused', () => {
+    describe('When refs/heads/ is listed', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const ctx = await linked();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${LOOSE_ID}\n`);
+        const stat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path) => {
+          if (path === '/repo/.git/refs/heads') throw permissionDenied(path);
+          return stat(path);
+        });
+        const sut = createRefStore(ctx).listRefNames;
+
+        // Act
+        const result = await sut('refs/heads/' as RefName).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: '/repo/.git/refs/heads',
+        });
       });
     });
   });
@@ -4824,6 +5097,35 @@ describe('ref-store — the integrity walk of a linked worktree', () => {
           'refs/heads/zzz',
           'refs/bisect/bad',
         ]);
+      });
+    });
+  });
+});
+
+describe('ref-store — the integrity walk of a linked worktree that ends early', () => {
+  describe('Given a link in the shared refs whose realpath dies and a malformed own ref', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the walk ends there and the own refs root is never opened', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ctx: Context = {
+          ...base,
+          layout: { ...base.layout, gitDir: '/repo/wt', commonDir: base.layout.gitDir },
+        };
+        await ctx.fs.symlink('missing/x', '/repo/.git/refs/heads/z');
+        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/bad', 'garbage\n');
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path) => {
+          if (path === '/repo/wt/refs') throw permissionDenied(path);
+          return readdir(path);
+        });
+        const sut = createRefStore(ctx).verifyIntegrity;
+
+        // Act
+        const result = await sut();
+
+        // Assert
+        expect(result.map((finding) => finding.msgId)).toEqual(['symlinkRef', 'refsVerifyEnded']);
       });
     });
   });

@@ -4,11 +4,13 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { createNodeContext } from '../../../../src/adapters/node/node-adapter.js';
+import { narrowAlternatePathProbe } from '../../../../src/application/primitives/object-store.js';
 import { createRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
+  fileNotFound,
   permissionDenied,
   type TsgitError,
   unsupportedOperation,
@@ -16,6 +18,7 @@ import {
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { emptyTreeOid } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import type { FileStat } from '../../../../src/ports/file-system.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'A U Thor',
@@ -342,6 +345,32 @@ describe('ref-store — a symbolic link as a loose ref', () => {
     });
   });
 
+  describe('Given an adapter with no no-follow open and a link in the ref path', () => {
+    describe('When resolveDirect reads the link', () => {
+      it('Then the plain reader decides, not the link probe', async () => {
+        // Arrange
+        const { ctx: base } = await seedRepository(memoryRepo);
+        await base.fs.symlink(SIDE, gitPath(base, LINK));
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            openWithNoFollow: async () => {
+              throw unsupportedOperation('openWithNoFollow', 'no symbolic links here');
+            },
+          },
+        };
+        const sut = createRefStore(ctx).resolveDirect;
+
+        // Act
+        const result = await sut(LINK);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
   describe('Given a regular loose ref the process may not open', () => {
     describe('When resolveDirect reads it', () => {
       it('Then the refusal propagates with its data', async () => {
@@ -495,6 +524,63 @@ describe('ref-store — the referent of a symbolic link as a loose ref', () => {
 
         // Assert
         expect(result).toEqual([{ ref: LINK, msgId: 'symlinkRef' }]);
+      });
+    });
+  });
+
+  describe('Given a gitdir whose parent the path probe resolves into nowhere', () => {
+    describe('When verifyIntegrity is called on a link to a sibling name', () => {
+      it('Then the gitdir is stripped as spelled and only the symlinkRef is reported', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.symlink('side', gitPath(base, LINK));
+        const vanished = async (p: string): Promise<never> => Promise.reject(fileNotFound(p));
+        const asLink = async (p: string): Promise<FileStat> => ({
+          ...(await base.fs.lstat(p)),
+          isSymbolicLink: true,
+          isDirectory: false,
+        });
+        const ctx: Context = {
+          ...base,
+          alternatePathProbe: (p) =>
+            p === '/repo'
+              ? { lstat: asLink, readlink: async () => '/other', stat: vanished }
+              : narrowAlternatePathProbe(base.fs),
+        };
+        const sut = createRefStore(ctx).verifyIntegrity;
+
+        // Act
+        const result = await sut();
+
+        // Assert
+        expect(result).toEqual([{ ref: LINK, msgId: 'symlinkRef' }]);
+      });
+    });
+  });
+
+  describe('Given a gitdir directly under the root', () => {
+    describe('When verifyIntegrity is called on a link to a sibling name', () => {
+      it('Then no parent path is probed', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const ctx: Context = { ...base, layout: { ...base.layout, gitDir: '/repo' } };
+        await ctx.fs.symlink('side', gitPath(ctx, LINK));
+        const probed: string[] = [];
+        const probing: Context = {
+          ...ctx,
+          alternatePathProbe: (p) => {
+            probed.push(p);
+            return narrowAlternatePathProbe(ctx.fs);
+          },
+        };
+        const sut = createRefStore(probing).verifyIntegrity;
+
+        // Act
+        const result = await sut();
+
+        // Assert
+        expect(result).toEqual([{ ref: LINK, msgId: 'symlinkRef' }]);
+        expect(probed).not.toContain('');
       });
     });
   });
