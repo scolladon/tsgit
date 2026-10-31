@@ -659,9 +659,18 @@ interface IntegrityRun {
   strippedGitDir?: Promise<string>;
 }
 
+const BACKSLASH = /\\/g;
+
+/** The spelling a path is compared in: the realpath walk speaks `/`, a Windows gitdir may speak `\`
+ *  and, like the filesystem it names, ignores case. */
+const comparable = (path: string, windows: boolean): string =>
+  windows ? path.replace(BACKSLASH, '/').toLowerCase() : path;
+
 /** The realpath relative to the gitdir; absolute when it lies outside. */
-const referentOf = (real: string, strippedGitDir: string): string =>
-  real.startsWith(`${strippedGitDir}/`) ? real.slice(strippedGitDir.length + 1) : real;
+const referentOf = (real: string, strippedGitDir: string, windows: boolean): string => {
+  const prefix = `${comparable(strippedGitDir, windows)}/`;
+  return comparable(real, windows).startsWith(prefix) ? real.slice(prefix.length) : real;
+};
 
 /** A rootless link target (Windows path syntax only) is git's missing-component death. */
 const endOf = (
@@ -1392,7 +1401,12 @@ function createFilesRefStore(ctx: Context): RefStore {
       return;
     }
     run.strippedGitDir ??= gitDirToStrip();
-    run.findings.push(...referentFindings(ref, referentOf(outcome.path, await run.strippedGitDir)));
+    run.findings.push(
+      ...referentFindings(
+        ref,
+        referentOf(outcome.path, await run.strippedGitDir, ctx.windowsPathSyntax === true),
+      ),
+    );
   }
 
   /** The order git's own `readdir` sees, where the adapter can give it: it decides which

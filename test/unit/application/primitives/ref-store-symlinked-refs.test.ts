@@ -657,6 +657,25 @@ describe('ref-store — the referent of a symbolic link as a loose ref', () => {
     });
   });
 
+  describe('Given a Windows gitdir spelled with backslashes and another case', () => {
+    describe('When verifyIntegrity judges a link to a sibling ref', () => {
+      it('Then the referent is stripped to its refs name and no badReferentName is reported', async () => {
+        // Arrange
+        const base = { ...createMemoryContext(), windowsPathSyntax: true };
+        const spelled = base.layout.gitDir.toUpperCase().replaceAll('/', '\\');
+        const ctx = { ...base, layout: { ...base.layout, gitDirSpelling: spelled } };
+        await ctx.fs.symlink('side', gitPath(ctx, LINK));
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badReferentName' }));
+      });
+    });
+  });
+
   describe('Given a link whose target is a rootless Windows path', () => {
     describe('When verifyIntegrity is called', () => {
       it('Then the walk ends with FILE_NOT_FOUND', async () => {
