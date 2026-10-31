@@ -30,6 +30,14 @@ export interface RepositoryLayoutInput {
    * `openRepository`, `init` and `clone` still bootstrap. Present only when true.
    */
   readonly unsearchableGitDir?: true;
+  /**
+   * The absolute gitdir as git itself spells it — made absolute and normalised, a link on the
+   * way not followed — which `fsck` strips from a symbolic ref's referent. Absent when `gitDir`
+   * already is that spelling.
+   *
+   * @internal
+   */
+  readonly gitDirSpelling?: string;
   /** The first checked path the ownership predicate reported unowned. Present only when one was found. */
   readonly foreignPath?: string;
   /** The repository-format acceptance verdict — absent when accepted. */

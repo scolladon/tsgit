@@ -4,7 +4,7 @@
  * Every ref a broken chain touches is reported by git with a zero pointer. Each row seeds
  * a repository, runs real `git fsck` and tsgit's `fsck` on it, rebuilds git's stderr lines
  * from tsgit's structured findings and compares: exit codes equal, pointer lines in
- * sequence, every other line as a sorted multiset.
+ * sequence, every other line in git’s sequence.
  *
  * @proves
  *   surface:        fsck
@@ -71,7 +71,7 @@ interface Row {
   /** A linked worktree, its admin dir `worktrees/wt`. */
   readonly linked?: boolean;
   /** Where the command runs from: a sub-directory, or an explicit `--git-dir`. */
-  readonly via?: 'sub' | 'gitdir' | 'linked';
+  readonly via?: 'sub' | 'gitdir' | 'linked' | 'gitdir-link' | 'gitdir-beside-link';
 }
 
 const GARBAGE = 'garbage\n';
@@ -853,6 +853,21 @@ const gitDirLinkRows: ReadonlyArray<Row> = [
     gitDirLink: true,
     via: 'sub',
   },
+  {
+    title: 'an explicit gitdir spelled through a link, the referent stays absolute',
+    refs: { main: SHA },
+    commit: true,
+    links: { ln: 'main' },
+    via: 'gitdir-link',
+  },
+  {
+    title:
+      'an explicit real gitdir beside a work tree whose .git links to it, the referent is relative',
+    refs: { main: SHA },
+    commit: true,
+    links: { ln: 'main' },
+    via: 'gitdir-beside-link',
+  },
 ];
 const LISTABLE_ONLY = 0o444;
 
@@ -1067,6 +1082,22 @@ const relocateGitDir = async (dir: string): Promise<void> => {
   await symlink(store, path.join(dir, '.git'));
 };
 
+const spelledLink = (dir: string): string => `${dir}-gd`;
+const besideWorkTree = (dir: string): string => `${dir}-wt`;
+
+/** The extra spelling an explicit `--git-dir` is reached through. */
+const seedExplicitGitDir = async (dir: string, row: Row): Promise<void> => {
+  if (row.via === 'gitdir-link') {
+    roots.push(spelledLink(dir));
+    await symlink(path.join(dir, '.git'), spelledLink(dir));
+  }
+  if (row.via === 'gitdir-beside-link') {
+    roots.push(besideWorkTree(dir));
+    await mkdir(besideWorkTree(dir));
+    await symlink(path.join(dir, '.git'), path.join(besideWorkTree(dir), '.git'));
+  }
+};
+
 const MIXED_CASE_DIGITS = 20;
 const SHORT_DIGITS = 39;
 
@@ -1105,6 +1136,7 @@ const seed = async (row: Row): Promise<{ readonly dir: string; readonly fill: Fi
   for (const [key, value] of Object.entries(row.config ?? {})) git(dir, 'config', key, value);
   await seedExtras(dir, row, fill);
   if (row.gitDirLink === true) await relocateGitDir(dir);
+  await seedExplicitGitDir(dir, row);
   return { dir, fill };
 };
 
@@ -1217,10 +1249,24 @@ const cwdOf = (dir: string, row: Row): string => {
 const gitArgs = (dir: string, row: Row): ReadonlyArray<string> => {
   const flags = row.flags ?? [];
   if (row.via === 'gitdir') return [`--git-dir=${path.join(dir, '.git')}`, 'fsck', ...flags];
+  if (row.via === 'gitdir-link') return [`--git-dir=${spelledLink(dir)}`, 'fsck', ...flags];
+  if (row.via === 'gitdir-beside-link') {
+    const workTree = `--work-tree=${besideWorkTree(dir)}`;
+    return [`--git-dir=${path.join(dir, '.git')}`, workTree, 'fsck', ...flags];
+  }
   return ['-C', cwdOf(dir, row), 'fsck', ...flags];
 };
 
 const runTsgit = async (dir: string, row: Row): Promise<FsckResult> => {
+  if (row.via === 'gitdir-link') {
+    const repo = await openRepository({ cwd: dir, gitDir: spelledLink(dir) });
+    return repo.fsck(row.options);
+  }
+  if (row.via === 'gitdir-beside-link') {
+    const workDir = besideWorkTree(dir);
+    const repo = await openRepository({ cwd: workDir, workDir, gitDir: path.join(dir, '.git') });
+    return repo.fsck(row.options);
+  }
   if (row.via === undefined || row.via === 'gitdir') {
     return fsck(createNodeContext({ workDir: dir }), row.options);
   }

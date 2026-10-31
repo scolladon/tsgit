@@ -410,6 +410,7 @@ const canonicalizeCeilings = async (
  * refusal as a missing one (measured: `fatal: cannot chdir to …`).
  */
 const nodeLayoutCapabilities = {
+  gitDirSpelling: true as const,
   realWorkTreePath: async (p: string): Promise<string | undefined> => {
     try {
       const real = await realpath(p);

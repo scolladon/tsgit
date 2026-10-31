@@ -1710,3 +1710,123 @@ describe('resolveLayout with an explicit gitDir', () => {
     });
   });
 });
+
+describe('resolveLayout keeping the gitdir as git spells it', () => {
+  const keepsSpelling = { gitDirSpelling: true } as const;
+
+  describe('Given a discovered .git directory and a capability to keep the spelling', () => {
+    describe('When the layout is resolved from a sub-directory', () => {
+      it('Then the spelling is the origin joined with .git', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        await fs.mkdir('/repo/normal/sub');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo/normal/sub',
+          posixPolicy,
+          {},
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDirSpelling).toBe('/repo/normal/.git');
+      });
+    });
+  });
+
+  describe('Given an explicit gitDir given relative to the cwd', () => {
+    describe('When the layout is resolved', () => {
+      it('Then the spelling is that gitDir made absolute against the cwd', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/store');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo',
+          posixPolicy,
+          { gitDir: 'a/../store' },
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDirSpelling).toBe('/repo/store');
+      });
+    });
+  });
+
+  describe('Given a cwd that is itself a bare git directory', () => {
+    describe('When the layout is resolved', () => {
+      it('Then the spelling is that directory', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare.git');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo/bare.git',
+          posixPolicy,
+          {},
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDirSpelling).toBe('/repo/bare.git');
+      });
+    });
+  });
+
+  describe.each([
+    { route: 'a discovered gitfile', discovered: true },
+    { route: 'an explicit gitDir naming a gitfile', discovered: false },
+  ])('Given $route', ({ discovered }) => {
+    describe('When the layout is resolved', () => {
+      it('Then there is no spelling, the pointer target being what git resolves', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/admin');
+        await fs.mkdir('/repo/wt');
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/admin\n');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(
+          fileSystemLayoutProbe(fs),
+          '/repo/wt',
+          posixPolicy,
+          discovered ? {} : { gitDir: '/repo/wt/.git' },
+          keepsSpelling,
+        );
+
+        // Assert
+        expect(result?.gitDir).toBe('/repo/admin');
+        expect(result?.gitDirSpelling).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a discovered .git directory and no capability to keep the spelling', () => {
+    describe('When the layout is resolved', () => {
+      it('Then the layout carries no spelling', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        const sut = resolveLayout;
+
+        // Act
+        const result = await sut(fileSystemLayoutProbe(fs), '/repo/normal', posixPolicy);
+
+        // Assert
+        expect(result?.gitDirSpelling).toBeUndefined();
+      });
+    });
+  });
+});

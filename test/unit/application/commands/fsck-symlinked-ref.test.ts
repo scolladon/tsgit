@@ -288,21 +288,25 @@ describe('fsck — two loose ref links whose referents git rejects', () => {
 });
 
 describe('fsck — a loose ref link beside a .git that is itself a link', () => {
+  const linkedStore = async (): Promise<{ workDir: string; store: string }> => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-gitdir-link-'));
+    tempRoots.push(root);
+    const workDir = path.join(root, 'work');
+    const store = path.join(workDir, 'store.git');
+    await init(createNodeContext({ workDir }));
+    await rename(path.join(workDir, '.git'), store);
+    await symlink(store, path.join(workDir, '.git'));
+    await writeFile(`${store}/refs/heads/main`, `${'1'.repeat(40)}\n`);
+    await symlink('main', `${store}/refs/heads/ln`);
+    return { workDir, store: await realpath(store) };
+  };
+
   describe('Given a store linked as .git and a ref link to a sibling', () => {
-    describe('When the store reports its integrity', () => {
+    describe('When the store reports its integrity through the .git link', () => {
       it('Then the referent stays absolute and is a badReferentName', async () => {
         // Arrange
-        const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-gitdir-link-'));
-        tempRoots.push(root);
-        const workDir = path.join(root, 'work');
-        const store = path.join(workDir, 'store.git');
-        await init(createNodeContext({ workDir }));
-        await rename(path.join(workDir, '.git'), store);
-        await symlink(store, path.join(workDir, '.git'));
-        const ctx = createNodeContext({ workDir, gitDir: store });
-        await writeFile(`${store}/refs/heads/main`, `${'1'.repeat(40)}\n`);
-        await symlink('main', `${store}/refs/heads/ln`);
-        const sut = createRefStore(ctx);
+        const { workDir, store } = await linkedStore();
+        const sut = createRefStore(createNodeContext({ workDir }));
 
         // Act
         const result = await sut.verifyIntegrity();
@@ -311,7 +315,42 @@ describe('fsck — a loose ref link beside a .git that is itself a link', () => 
         expect(result).toContainEqual({
           ref: 'refs/heads/ln',
           msgId: 'badReferentName',
-          referent: path.join(await realpath(store), 'refs/heads/main'),
+          referent: path.join(store, 'refs/heads/main'),
+        });
+      });
+    });
+
+    describe('When the store is named by its real path beside that .git link', () => {
+      it('Then the referent is relative to the store, as git strips the gitdir it was given', async () => {
+        // Arrange
+        const { workDir, store } = await linkedStore();
+        const sut = createRefStore(createNodeContext({ workDir, gitDir: store }));
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badReferentName' }));
+      });
+    });
+
+    describe('When the layout carries the spelling the gitdir was reached through', () => {
+      it('Then that spelling is what is stripped, not the real path', async () => {
+        // Arrange
+        const { workDir, store } = await linkedStore();
+        const spelled = `${workDir}/via-link`;
+        await symlink(store, spelled);
+        const ctx = createNodeContext({ workDir, gitDir: store });
+        const sut = createRefStore({ ...ctx, layout: { ...ctx.layout, gitDirSpelling: spelled } });
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({
+          ref: 'refs/heads/ln',
+          msgId: 'badReferentName',
+          referent: path.join(store, 'refs/heads/main'),
         });
       });
     });

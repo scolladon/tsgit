@@ -652,7 +652,7 @@ const byName = (a: RefEntry, b: RefEntry): number => compareRefNames(a.name, b.n
 const byPackedRefName = (a: PackedRefEntry, b: PackedRefEntry): number =>
   compareRefNames(a.name, b.name);
 
-/** One `verifyIntegrity` pass: what it found, whether git's walk died, the memoised real gitdir. */
+/** One `verifyIntegrity` pass: what it found, whether git's walk died, the memoised gitdir spelling. */
 interface IntegrityRun {
   readonly findings: RefIntegrityFinding[];
   ended: boolean;
@@ -1277,6 +1277,19 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /** git strips its gitdir as spelled, never resolved: a gitdir reached through a link, or
+   *  a `.git` that links to a store, leaves every referent absolute. Without the spelling the
+   *  layout carries, the directories above the gitdir are physical (git's own cwd is) and the
+   *  last component is left alone. */
+  async function gitDirToStrip(): Promise<string> {
+    const { gitDirSpelling, gitDir } = ctx.layout;
+    if (gitDirSpelling !== undefined) return gitDirSpelling;
+    const cut = gitDir.lastIndexOf('/');
+    if (cut <= 0) return gitDir;
+    const parent = await realPathOutcomeOf(ctx, gitDir.slice(0, cut));
+    return parent.kind === 'resolved' ? `${parent.path}${gitDir.slice(cut)}` : gitDir;
+  }
+
   /** The link's facts come from its realpath, not its text: the referent is the realpath
    *  relative to the gitdir, or the absolute realpath outside it. */
   async function linkReferentFindings(
@@ -1292,17 +1305,6 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
     run.strippedGitDir ??= gitDirToStrip();
     run.findings.push(...referentFindings(ref, referentOf(outcome.path, await run.strippedGitDir)));
-  }
-
-  /** git strips its gitdir as spelled: absolute and normalised, a link on the way
-   *  not followed — a `.git` that links to a store leaves every referent absolute. */
-  async function gitDirToStrip(): Promise<string> {
-    const dotGit = ctx.layout.workDir === undefined ? undefined : `${ctx.layout.workDir}/.git`;
-    if (dotGit !== undefined && (await lstatIfPresent(ctx.fs, dotGit))?.isSymbolicLink === true) {
-      return dotGit;
-    }
-    const outcome = await realPathOutcomeOf(ctx, ctx.layout.gitDir);
-    return outcome.kind === 'resolved' ? outcome.path : ctx.layout.gitDir;
   }
 
   /** The order git's own `readdir` sees, where the adapter can give it: it decides which

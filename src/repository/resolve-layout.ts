@@ -42,6 +42,11 @@ export interface ExplicitLayoutOptions {
  */
 export interface LayoutCapabilities {
   readonly realWorkTreePath?: (path: string) => Promise<string | undefined>;
+  /**
+   * Set by an adapter that canonicalises `gitDir` after resolution: the layout then carries
+   * the gitdir as git spells it, which the canonical form no longer shows.
+   */
+  readonly gitDirSpelling?: true;
 }
 
 /**
@@ -407,6 +412,25 @@ const resolveExplicitOutcome = async (
 };
 
 /**
+ * The gitdir as git spells it: the discovered `.git` or the explicit value made absolute,
+ * neither realpathed. A gitfile's target is what git resolves, so the layout's own `gitDir`
+ * already is the spelling there and none is reported.
+ */
+const gitDirSpellingOf = (
+  outcome: WalkOutcome,
+  opts: ExplicitLayoutOptions,
+  cwd: string,
+  pathPolicy: PathPolicy,
+): string | undefined => {
+  if (outcome.route === 'BARE_DIR') return outcome.gitDir;
+  const spelled =
+    outcome.route === 'DISCOVERED'
+      ? pathPolicy.join(outcome.origin, '.git')
+      : resolveAgainst(cwd, opts.gitDir ?? '', pathPolicy);
+  return spelled === outcome.gitDir ? spelled : undefined;
+};
+
+/**
  * Resolve the full physical layout for `cwd`: `opts.gitDir`, when given,
  * skips discovery entirely (Stage 1's explicit route); otherwise walk up
  * looking for a `.git` entry or a cwd-is-gitdir match, bounded by
@@ -455,7 +479,12 @@ export const resolveLayout = async (
     },
     caps,
   );
+  const spelled =
+    caps.gitDirSpelling === true ? gitDirSpellingOf(outcome, opts, cwd, pathPolicy) : undefined;
+  const spelledLayout = spelled === undefined ? layout : { ...layout, gitDirSpelling: spelled };
   // A discovered layout already passed `is_git_directory` in the walk; an
   // explicit gitDir skips the walk, and git applies the same rule to it.
-  return opts.gitDir === undefined ? layout : markUnsearchableGitDir(layout, probe, pathPolicy);
+  return opts.gitDir === undefined
+    ? spelledLayout
+    : markUnsearchableGitDir(spelledLayout, probe, pathPolicy);
 };
