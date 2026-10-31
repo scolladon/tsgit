@@ -12,7 +12,7 @@ import { FETCH_HEAD, MERGE_HEAD } from './state-files.js';
 const ROOT_REF_SYNTAX = /^[A-Z_-]*$/;
 
 /** Ref namespaces git scopes to a single worktree. */
-const PER_WORKTREE_PREFIXES: ReadonlyArray<string> = [
+export const PER_WORKTREE_PREFIXES: ReadonlyArray<string> = [
   'refs/bisect/',
   'refs/worktree/',
   'refs/rewritten/',

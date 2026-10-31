@@ -493,6 +493,15 @@ const dirRows: ReadonlyArray<Row> = [
     linked: true,
     via: 'linked',
   },
+  {
+    title: 'DIR-WT-search, a linked worktree own refs root is searchable but not listable',
+    refs: { main: SHA },
+    files: { [`worktrees/${LINKED_ID}/refs/bisect/good`]: SHA },
+    restricted: { [`worktrees/${LINKED_ID}/refs`]: DIR_MODE_SEARCHABLE_ONLY },
+    commit: true,
+    linked: true,
+    via: 'linked',
+  },
 ];
 
 const DOTS = 'ref: x..y\n';

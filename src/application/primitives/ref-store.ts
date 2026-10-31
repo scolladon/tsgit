@@ -39,7 +39,7 @@ import {
 } from '../../domain/refs/index.js';
 import { type LooseBody, readLooseBody } from '../../domain/refs/loose-ref.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
-import { isPseudoRef } from '../../domain/refs/per-worktree-ref.js';
+import { isPseudoRef, PER_WORKTREE_PREFIXES } from '../../domain/refs/per-worktree-ref.js';
 import {
   firstRefNameConflict,
   type RefNameFacts,
@@ -775,6 +775,12 @@ const EMPTY_PACKED_REFS: LoadedPackedRefs = {
   smallestUnder: () => EMPTY_SMALLEST_UNDER_INDEX,
 };
 
+interface WalkTarget {
+  readonly root: string;
+  readonly relative: string;
+  readonly ownNamespace: boolean;
+}
+
 function createFilesRefStore(ctx: Context): RefStore {
   let packedCache: { readonly loaded: LoadedPackedRefs; readonly mtimeKey: string } | undefined;
 
@@ -1090,13 +1096,35 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) ? HEAD_NAME : undefined;
   }
 
-  /** The worktree's own and the common dir's copies of `relative`, collapsed
-   *  into one when both name the same directory (a normal repository or the
-   *  main worktree). */
-  function refsWalkRoots(relative: string = REFS_DIR): ReadonlyArray<string> {
+  /** The worktree's own and the common dir's `refs` roots, collapsed into one when both name
+   *  the same directory (a normal repository or the main worktree). */
+  function refsWalkRoots(): ReadonlyArray<string> {
+    const own = `${ctx.layout.gitDir}/${REFS_DIR}`;
+    const common = `${commonGitDir(ctx)}/${REFS_DIR}`;
+    return own === common ? [own] : [own, common];
+  }
+
+  /** The directories to walk for `relative`: the common dir's copy and, in a linked worktree,
+   *  the own gitdir's per-worktree namespaces only — git opens `refs/bisect`, `refs/rewritten`
+   *  and `refs/worktree` there directly and never reads the own `refs` root. */
+  function refsWalkTargets(relative: string): ReadonlyArray<WalkTarget> {
     const own = `${ctx.layout.gitDir}/${relative}`;
     const common = `${commonGitDir(ctx)}/${relative}`;
-    return own === common ? [own] : [own, common];
+    if (own === common) return [{ root: own, relative, ownNamespace: false }];
+    return [...ownWalkTargets(relative), { root: common, relative, ownNamespace: false }];
+  }
+
+  function ownWalkTargets(relative: string): ReadonlyArray<WalkTarget> {
+    const namespaces = PER_WORKTREE_PREFIXES.map((namespace) => namespace.slice(0, -1));
+    const inside = (namespace: string): boolean =>
+      relative === namespace || relative.startsWith(`${namespace}/`);
+    const target = (rel: string): WalkTarget => ({
+      root: `${ctx.layout.gitDir}/${rel}`,
+      relative: rel,
+      ownNamespace: true,
+    });
+    if (relative === REFS_DIR) return namespaces.map(target);
+    return namespaces.some(inside) ? [target(relative)] : [];
   }
 
   /**
@@ -1132,6 +1160,19 @@ function createFilesRefStore(ctx: Context): RefStore {
     return names;
   }
 
+  /** A per-worktree namespace git cannot search is simply not listed. */
+  async function walkTarget(
+    target: WalkTarget,
+    prefix: RefName | undefined,
+  ): Promise<ReadonlyArray<RefName>> {
+    try {
+      return await walkRefsRoot(target.root, target.relative, prefix);
+    } catch (err) {
+      if (target.ownNamespace && errorCodeOf(err) === PERMISSION_DENIED_CODE) return [];
+      throw err;
+    }
+  }
+
   /**
    * Every loose ref name this Context can see matching `prefix`: `HEAD`
    * (when it matches) plus a walk of `refs/**` under both the worktree's own
@@ -1151,13 +1192,13 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (head !== undefined) names.push(head);
     const root = refsWalkRoot(prefix);
     if (root === undefined) return names;
-    for (const walkRoot of refsWalkRoots(root.relative)) {
+    for (const target of refsWalkTargets(root.relative)) {
       // Loop form, not `names.push(...names)` — `walkRefDir`'s own reason
       // twelve lines above applies here too: V8 caps spread-call argument
       // counts (~10^5), which a large unpacked ref space (a mirror's
       // `refs/pull/*`, a fetch not yet followed by `pack-refs`) can exceed.
-      for (const name of await walkRefsRoot(walkRoot, root.relative, prefix)) {
-        if (walkRoot === `${refDir(name)}/${root.relative}`) names.push(name);
+      for (const name of await walkTarget(target, prefix)) {
+        if (target.root === `${refDir(name)}/${target.relative}`) names.push(name);
       }
     }
     return names;

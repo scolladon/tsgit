@@ -546,18 +546,25 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
       });
     });
 
-    describe('Given a linked worktree whose own refs root has no access', () => {
+    describe.each([
+      ['no access', UNREADABLE],
+      ['search but no listing', 0o300],
+    ])('Given a linked worktree whose own refs root has %s', (_label, mode) => {
       describe('When the refs are listed from the linked worktree', () => {
         it('Then tsgit lists what git for-each-ref lists', async () => {
           // Arrange
           const { dir } = await newRepo();
-          const linked = `${dir}-linked`;
+          const linked = `${dir}-linked-${mode}`;
           roots.push(linked);
           git(dir, 'worktree', 'add', '-q', '-b', 'wtb', linked);
           const ownRefs = path.join(dir, '.git', 'worktrees', path.basename(linked), 'refs');
-          mkdirSync(path.join(ownRefs, 'bisect'), { recursive: true });
-          writeFileSync(path.join(ownRefs, 'bisect', 'good'), git(linked, 'rev-parse', 'HEAD'));
-          chmodSync(ownRefs, UNREADABLE);
+          const head = git(linked, 'rev-parse', 'HEAD');
+          for (const namespace of ['bisect', 'rewritten', 'worktree/deep', 'heads']) {
+            mkdirSync(path.join(ownRefs, namespace), { recursive: true });
+            writeFileSync(path.join(ownRefs, namespace, 'good'), head);
+          }
+          writeFileSync(path.join(ownRefs, 'stray'), head);
+          chmodSync(ownRefs, mode);
           restorers.push(() => chmodSync(ownRefs, RESTORED));
           const expected = git(linked, 'for-each-ref', '--format=%(refname)')
             .split('\n')
@@ -570,6 +577,8 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
 
           // Assert
           expect(result).toEqual(expected.sort());
+          expect(result).not.toContain('refs/heads/good');
+          expect(result).not.toContain('refs/stray');
         });
       });
     });
