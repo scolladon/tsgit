@@ -437,7 +437,15 @@ done
 # keys, the merge-base paint queue, the per-entry CRC base attribution and the
 # own-pack REF_DELTA base lookup — runtime code shipped in every distribution form,
 # none removable without dropping the refusals and recoveries git performs.
-SIZE_CAP=$((1501 * 1024))
+# Raised 1501 -> 1510 KiB by the fsck broken-ref-chain and unreadable-ref work: the measured
+# pack landed at 1 546 052 B, 9 028 B over the old cap, attributable to git's loose-body
+# grammar (symref whitespace, direct-oid trailers, both widths), the referent and root-ref
+# predicates, the userland realpath referent with its per-platform hop limit, the no-follow
+# integrity walk with its stat, open and iterate refusals, the per-worktree listing, the
+# discovery and explicit-route searchability checks and the new fsck finding arms —
+# runtime code shipped in every distribution form, none removable without dropping the
+# findings and refusals git performs.
+SIZE_CAP=$((1510 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
