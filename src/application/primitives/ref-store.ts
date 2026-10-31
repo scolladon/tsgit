@@ -1250,7 +1250,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     for (const entry of entries) {
       if (run.ended) return;
       const name = `${prefix}/${entry.name}` as RefName;
-      if (await entryStatRefused(`${dir}/${entry.name}`, run.findings)) continue;
+      if (await statRefusedUpFront(entry, `${dir}/${entry.name}`, run.findings)) continue;
       if (entry.isSymbolicLink) {
         run.findings.push({ ref: name, msgId: 'symlinkRef' });
         await linkReferentFindings(run, name, `${dir}/${entry.name}`);
@@ -1263,6 +1263,17 @@ function createFilesRefStore(ctx: Context): RefStore {
       run.findings.push(...(await looseBodyFindings(name)));
     }
   }
+
+  /** A regular file's `lstat` is left to the read that follows it: its refusal ends in the
+   *  same `failed to stat` at the same position, without a second call per ref. */
+  const statRefusedUpFront = (
+    entry: DirEntry,
+    path: string,
+    findings: RefIntegrityFinding[],
+  ): Promise<boolean> =>
+    entry.isDirectory || entry.isSymbolicLink
+      ? entryStatRefused(path, findings)
+      : Promise.resolve(false);
 
   /** git's directory iterator `lstat`s every entry before judging it: a refusal is
    *  `failed to stat`, and the entry is skipped whatever it is. */

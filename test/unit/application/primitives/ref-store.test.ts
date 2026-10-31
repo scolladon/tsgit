@@ -2869,16 +2869,24 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given an entry under refs/ whose lstat the permissions refuse', () => {
+  describe.each([
+    { shape: 'a symbolic link', seed: 'link' },
+    { shape: 'a directory', seed: 'directory' },
+  ])('Given $shape under refs/ whose lstat the permissions refuse', ({ seed }) => {
+    const plant = async (ctx: Context, path: string): Promise<void> => {
+      if (seed === 'link') await ctx.fs.symlink('main', path);
+      else await ctx.fs.writeUtf8(`${path}/x`, `${'1'.repeat(40)}\n`);
+    };
+
     describe('When verifyIntegrity is called', () => {
       it('Then an unreadableRefPath finding with the stat operation is returned and the entry is skipped', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
-        await ctx.fs.writeUtf8(refPath, 'garbage\n');
+        const entryPath = `${ctx.layout.gitDir}/refs/heads/entry`;
+        await plant(ctx, entryPath);
         const lstat = ctx.fs.lstat.bind(ctx.fs);
         vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p: string) => {
-          if (p === refPath) throw permissionDenied(p);
+          if (p === entryPath) throw permissionDenied(p);
           return lstat(p);
         });
         const sut = createRefStore(ctx);
@@ -2887,22 +2895,28 @@ describe('ref-store', () => {
         const result = await sut.verifyIntegrity();
 
         // Assert
-        expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: refPath }]);
+        expect(result).toEqual([
+          { msgId: 'unreadableRefPath', operation: 'stat', path: entryPath },
+        ]);
       });
     });
   });
 
-  describe('Given an entry under refs/ whose lstat faults for another reason', () => {
+  describe.each([
+    { shape: 'a symbolic link', seed: 'link' },
+    { shape: 'a directory', seed: 'directory' },
+  ])('Given $shape under refs/ whose lstat faults for another reason', ({ seed }) => {
     describe('When verifyIntegrity is called', () => {
       it('Then that fault propagates', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
-        await ctx.fs.writeUtf8(refPath, 'garbage\n');
+        const entryPath = `${ctx.layout.gitDir}/refs/heads/entry`;
+        if (seed === 'link') await ctx.fs.symlink('main', entryPath);
+        else await ctx.fs.writeUtf8(`${entryPath}/x`, `${'1'.repeat(40)}\n`);
         const fault = new Error('EIO');
         const lstat = ctx.fs.lstat.bind(ctx.fs);
         vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p: string) => {
-          if (p === refPath) throw fault;
+          if (p === entryPath) throw fault;
           return lstat(p);
         });
         const sut = createRefStore(ctx);
@@ -2968,6 +2982,29 @@ describe('ref-store', () => {
             { msgId: 'unreadableRefPath', operation: 'open-directory', path: dir },
           ]);
         });
+      });
+    });
+  });
+
+  describe('Given healthy regular loose refs and a directory beside them', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then only the directory is statted ahead of the walk', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const heads = `${ctx.layout.gitDir}/refs/heads`;
+        await ctx.fs.writeUtf8(`${heads}/main`, `${'1'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(`${heads}/d/x`, `${'1'.repeat(40)}\n`);
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.verifyIntegrity();
+
+        // Assert
+        const statted = lstat.mock.calls.map(([target]) => target);
+        expect(statted).toContain(`${heads}/d`);
+        expect(statted).not.toContain(`${heads}/main`);
+        expect(statted).not.toContain(`${heads}/d/x`);
       });
     });
   });
@@ -3084,6 +3121,34 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a regular loose ref whose read and whose lstat the permissions refuse', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the one finding is the refused stat, as when the walk statted it first', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        await ctx.fs.writeUtf8(refPath, `${'1'.repeat(40)}\n`);
+        const read = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (p: string) => {
+          if (p === refPath) throw permissionDenied(p);
+          return read(p);
+        });
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p: string) => {
+          if (p === refPath) throw permissionDenied(p);
+          return lstat(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: refPath }]);
       });
     });
   });
