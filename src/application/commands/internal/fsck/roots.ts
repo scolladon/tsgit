@@ -901,7 +901,7 @@ const NO_HEAD: HeadRead = { kind: 'none' };
 
 /** git reports only the file it could not read; a refused target down the chain ends it silently. */
 const isPermissionRefusalOf = (err: unknown, file: string): boolean =>
-  err instanceof TsgitError && err.data.code === 'PERMISSION_DENIED' && err.data.path === file;
+  err instanceof TsgitError && err.data.code === PERMISSION_DENIED_CODE && err.data.path === file;
 
 /** What `worktreeCtx`'s HEAD yields: the object it names, nothing, or a refusal to be read. */
 async function headOf(worktreeCtx: Context): Promise<HeadRead> {
