@@ -60,6 +60,8 @@ interface Row {
   readonly tagLinks?: Readonly<Record<string, string>>;
   /** Loose ref files by name under `refs/tags/`. */
   readonly tags?: Readonly<Record<string, string>>;
+  /** Symbolic links by path relative to the linked worktree's admin dir, to the link text. */
+  readonly ownLinks?: Readonly<Record<string, string>>;
   /** Gitdir-relative paths whose mode is 000 once seeded. */
   readonly unreadable?: ReadonlyArray<string>;
   /** Files by gitdir-relative path, their directories created. */
@@ -943,6 +945,14 @@ const dyingLinkRows: ReadonlyArray<Row> = [
     ...NO_REFERENCES,
   },
   {
+    title: 'a per-worktree self-loop link and a shared garbage ref, read from a linked worktree',
+    refs: { bad: GARBAGE },
+    commit: true,
+    linked: true,
+    via: 'linked',
+    ownLinks: { 'refs/bisect/loop': 'loop' },
+  },
+  {
     title: 'a dying tag link loses both root-ref notices',
     refs: { main: SHA },
     commit: true,
@@ -1068,6 +1078,11 @@ const seedExtras = async (dir: string, row: Row, fill: Fill): Promise<void> => {
   await mkdir(path.join(dir, 'sub'), { recursive: true });
   if (row.linked === true)
     git(dir, 'worktree', 'add', '-q', '--detach', path.join(dir, LINKED_ID), fill('{commit}'));
+  for (const [relative, target] of Object.entries(row.ownLinks ?? {})) {
+    const link = path.join(gitDir, 'worktrees', LINKED_ID, relative);
+    await mkdir(path.dirname(link), { recursive: true });
+    await symlink(fill(target), link);
+  }
   for (const [relative, body] of Object.entries(row.files ?? {})) {
     await mkdir(path.dirname(path.join(gitDir, relative)), { recursive: true });
     await writeFile(path.join(gitDir, relative), fill(body));
@@ -1170,10 +1185,17 @@ const END_TEXT = {
 const endedLine = (
   finding: Extract<FsckResult['findings'][number], { readonly type: 'refs-verify-ended' }>,
   dir: string,
+  row: Row,
 ): string =>
   finding.reason === 'SYMLINK_LOOP'
-    ? `fatal: More than ${HOP_CAP} nested symlinks on path '${path.relative(dir, finding.path)}'`
+    ? `fatal: More than ${HOP_CAP} nested symlinks on path '${printedPath(dir, finding.path, row)}'`
     : `fatal: Invalid path '${finding.path}': ${END_TEXT[finding.reason]}`;
+
+const OWN_NAMESPACE = /^refs\/(bisect|rewritten|worktree)\//;
+
+/** git names a linked worktree's own refs by the admin dir they live in. */
+const shownRef = (ref: string, row: Row): string =>
+  row.via === 'linked' && OWN_NAMESPACE.test(ref) ? `worktrees/${LINKED_ID}/${ref}` : ref;
 
 /** The same lines rebuilt from tsgit's findings; the seeded bodies stand for the content. */
 const rebuiltLines = (
@@ -1193,7 +1215,7 @@ const rebuiltLines = (
     if (finding.type === 'refs-walk-failed') {
       return [`error: failed to iterate over '${printedPath(dir, finding.path, row)}'`];
     }
-    if (finding.type === 'refs-verify-ended') return [endedLine(finding, dir)];
+    if (finding.type === 'refs-verify-ended') return [endedLine(finding, dir, row)];
     if (finding.type !== 'bad-ref') return [];
     const label = finding.severity === 'error' ? 'error' : 'warning';
     if (finding.msgId === 'badRefOid') {
@@ -1204,7 +1226,9 @@ const rebuiltLines = (
       return [`error: cannot read ref file '${shown}': Permission denied`];
     }
     if (finding.msgId === 'symlinkRef') {
-      return [`${label}: ${finding.ref}: symlinkRef: use deprecated symbolic link for symref`];
+      return [
+        `${label}: ${shownRef(finding.ref, row)}: symlinkRef: use deprecated symbolic link for symref`,
+      ];
     }
     if (finding.msgId === 'badReferentName') {
       return [

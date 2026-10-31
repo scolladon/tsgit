@@ -1096,12 +1096,13 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) ? HEAD_NAME : undefined;
   }
 
-  /** The worktree's own and the common dir's `refs` roots, collapsed into one when both name
-   *  the same directory (a normal repository or the main worktree). */
+  /** The common dir's and the worktree's own `refs` roots in the order git checks them — the
+   *  shared refs first — collapsed into one when both name the same directory (a normal
+   *  repository or the main worktree). */
   function refsWalkRoots(): ReadonlyArray<string> {
     const own = `${ctx.layout.gitDir}/${REFS_DIR}`;
     const common = `${commonGitDir(ctx)}/${REFS_DIR}`;
-    return own === common ? [own] : [own, common];
+    return own === common ? [own] : [common, own];
   }
 
   /** The directories to walk for `relative`: the common dir's copy and, in a linked worktree,
