@@ -81,6 +81,7 @@ describe('readLooseBody (grammar classes)', () => {
       it.each([
         { label: 'oid glued to garbage', content: `${SHA}garbage\n` },
         { label: '39 hex digits', content: `${'a'.repeat(39)}\n` },
+        { label: '39 hex digits with no line feed', content: 'a'.repeat(39) },
         { label: '41 hex digits', content: `${SHA}0\n` },
         { label: '64 hex digits at width 40', content: `${'a'.repeat(64)}\n` },
         { label: 'a vertical tab after the oid', content: `${SHA}\v\n` },
