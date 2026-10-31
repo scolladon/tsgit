@@ -554,6 +554,48 @@ describe('Given a directory under refs/ the permissions refuse', () => {
   });
 });
 
+describe('Given the refs root the permissions refuse', () => {
+  const seedUnreadableRoot = async (): Promise<{ ctx: Context; root: string }> => {
+    const ctx = await repository();
+    const root = `${ctx.layout.gitDir}/refs`;
+    refuseListingAt(ctx, [root]);
+    return { ctx, root };
+  };
+
+  describe('When fsck runs', () => {
+    it('Then the walk of that root fails with exit bit 8', async () => {
+      // Arrange
+      const { ctx, root } = await seedUnreadableRoot();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'refs-walk-failed',
+        path: root,
+        reason: 'PERMISSION_DENIED',
+      });
+      expect(result.exitCode & EXIT_CONTENT).toBe(EXIT_CONTENT);
+    });
+  });
+
+  describe('When fsck runs without checking references', () => {
+    it('Then the failure is dropped', async () => {
+      // Arrange
+      const { ctx } = await seedUnreadableRoot();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(result.findings.map((finding) => finding.type)).not.toContain('refs-walk-failed');
+    });
+  });
+});
+
 describe('Given a ref file whose read and whose stat the permissions refuse', () => {
   describe('When fsck runs', () => {
     it('Then one unreadable-ref-path warning with the stat operation is reported', async () => {

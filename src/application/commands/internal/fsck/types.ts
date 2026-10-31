@@ -72,6 +72,15 @@ export type FsckFinding =
       readonly reason: 'PERMISSION_DENIED';
     }
   | {
+      /** git's iteration of a `refs` root that could not be opened — `failed to iterate over`,
+       *  beside the `unreadable-ref-path` warning that names the same directory. Gated by
+       *  `checkReferences`; exit bit 8. */
+      readonly type: 'refs-walk-failed';
+      /** Absolute, as opened. */
+      readonly path: string;
+      readonly reason: 'PERMISSION_DENIED';
+    }
+  | {
       /** git's `refs verify` child died on this symlinked ref: every content check after
        *  it is lost, pointers stand. Gated by `checkReferences`; exit bit 8. */
       readonly type: 'refs-verify-ended';

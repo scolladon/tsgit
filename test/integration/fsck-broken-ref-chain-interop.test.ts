@@ -484,6 +484,15 @@ const dirRows: ReadonlyArray<Row> = [
     restricted: { [heads('real')]: REFUSED },
     commit: true,
   })),
+  {
+    title: 'DIR-WT, a linked worktree own refs root is unreadable',
+    refs: { main: SHA },
+    files: { [`worktrees/${LINKED_ID}/refs/bisect/good`]: SHA },
+    restricted: { [`worktrees/${LINKED_ID}/refs`]: REFUSED },
+    commit: true,
+    linked: true,
+    via: 'linked',
+  },
 ];
 
 const DOTS = 'ref: x..y\n';
@@ -1139,6 +1148,9 @@ const rebuiltLines = (
       return finding.operation === 'open-directory'
         ? [`warning: error opening directory '${shown}${path.sep}': Permission denied`]
         : [`warning: failed to stat '${shown}': Permission denied`];
+    }
+    if (finding.type === 'refs-walk-failed') {
+      return [`error: failed to iterate over '${printedPath(dir, finding.path, row)}'`];
     }
     if (finding.type === 'refs-verify-ended') return [endedLine(finding, dir)];
     if (finding.type !== 'bad-ref') return [];

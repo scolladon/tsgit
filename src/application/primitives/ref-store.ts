@@ -272,6 +272,7 @@ export type RefIntegrityFinding =
       readonly operation: 'open-directory' | 'stat';
       readonly path: string;
     }
+  | { readonly msgId: 'refsWalkFailed'; readonly path: string }
   | {
       readonly table: string;
       readonly msgId: 'badReftableTable';
@@ -1030,21 +1031,20 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   const entryKind = (entry: DirEntry): ListedKind => (entry.isDirectory ? 'directory' : 'ref');
 
-  /** git's loose iterator drops a directory below `refs/` it cannot open and
-   *  carries on; an unreadable `refs/` itself is a repository git refuses up
-   *  front, so the walk must not turn it into an empty listing. */
-  async function readdirOrSkip(dir: string, prefix: string): Promise<ReadonlyArray<DirEntry>> {
+  /** git's loose iterator drops a directory it cannot open, a refs root included, and carries
+   *  on; the opening routes already refuse the repositories git refuses. */
+  async function readdirOrSkip(dir: string): Promise<ReadonlyArray<DirEntry>> {
     try {
       return await ctx.fs.readdir(dir);
     } catch (err) {
-      if (errorCodeOf(err) === PERMISSION_DENIED_CODE && prefix !== REFS_DIR) return [];
+      if (errorCodeOf(err) === PERMISSION_DENIED_CODE) return [];
       throw err;
     }
   }
 
   /** Recursively walk one `refs/**` root, composing slash-joined ref names as it descends. */
   async function walkRefDir(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
-    const entries = await readdirOrSkip(dir, prefix);
+    const entries = await readdirOrSkip(dir);
     const names: RefName[] = [];
     for (const entry of entries) {
       const path = `${dir}/${entry.name}`;
@@ -1227,6 +1227,26 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  a link whose realpath fails ends the whole check. */
   async function walkIntegrity(dir: string, prefix: string, run: IntegrityRun): Promise<void> {
     const entries = await readdirForIntegrity(dir, run.findings);
+    await walkIntegrityEntries(dir, prefix, entries ?? [], run);
+  }
+
+  /** The `refs` root git iterates as a whole: when it cannot be opened the iteration itself
+   *  fails, where a directory below it is only warned about. */
+  async function walkIntegrityRoot(root: string, run: IntegrityRun): Promise<void> {
+    const entries = await readdirForIntegrity(root, run.findings);
+    if (entries === undefined) {
+      run.findings.push({ msgId: 'refsWalkFailed', path: root });
+      return;
+    }
+    await walkIntegrityEntries(root, REFS_DIR, entries, run);
+  }
+
+  async function walkIntegrityEntries(
+    dir: string,
+    prefix: string,
+    entries: ReadonlyArray<DirEntry>,
+    run: IntegrityRun,
+  ): Promise<void> {
     for (const entry of entries) {
       if (run.ended) return;
       const name = `${prefix}/${entry.name}` as RefName;
@@ -1292,17 +1312,17 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /** git warns `error opening directory` for a directory the permissions refuse and
-   *  carries on with its siblings. */
+   *  carries on with its siblings; `undefined` says the directory could not be opened. */
   async function readdirForIntegrity(
     dir: string,
     findings: RefIntegrityFinding[],
-  ): Promise<ReadonlyArray<DirEntry>> {
+  ): Promise<ReadonlyArray<DirEntry> | undefined> {
     try {
       return await readdirInOsOrder(dir);
     } catch (err) {
       if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
       findings.push({ msgId: 'unreadableRefPath', operation: 'open-directory', path: dir });
-      return [];
+      return undefined;
     }
   }
 
@@ -1388,7 +1408,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const run: IntegrityRun = { findings: [], ended: false };
     for (const root of refsWalkRoots()) {
       if (run.ended) break;
-      if (await isDirectoryPath(root)) await walkIntegrity(root, REFS_DIR, run);
+      if (await isDirectoryPath(root)) await walkIntegrityRoot(root, run);
     }
     if (!run.ended) run.findings.push(...(await rootRefFindings()));
     return run.findings;

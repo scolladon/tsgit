@@ -16,8 +16,14 @@ import type { ParseCheck } from './verified-copies.js';
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
 type UnreadablePathFinding = FsckFinding & { readonly type: 'unreadable-ref-path' };
 type RefsVerifyEndedFinding = FsckFinding & { readonly type: 'refs-verify-ended' };
+type RefsWalkFailedFinding = FsckFinding & { readonly type: 'refs-walk-failed' };
 type RefFinding = FsckFinding & {
-  readonly type: 'bad-ref' | 'no-default-references' | 'unreadable-ref-path' | 'refs-verify-ended';
+  readonly type:
+    | 'bad-ref'
+    | 'no-default-references'
+    | 'unreadable-ref-path'
+    | 'refs-verify-ended'
+    | 'refs-walk-failed';
 };
 
 const NO_DEFAULT_REFERENCES: RefFinding = { type: 'no-default-references' };
@@ -101,6 +107,14 @@ const unreadablePathFinding = ({
   type: 'unreadable-ref-path',
   path,
   operation,
+  reason: 'PERMISSION_DENIED',
+});
+
+const refsWalkFailedFinding = ({
+  path,
+}: Extract<RefIntegrityFinding, { readonly msgId: 'refsWalkFailed' }>): RefsWalkFailedFinding => ({
+  type: 'refs-walk-failed',
+  path,
   reason: 'PERMISSION_DENIED',
 });
 
@@ -198,11 +212,15 @@ const refsWithInvalidReferent = (
 const walkNoticeOf = (
   finding: RefIntegrityFinding,
   symlinkGrade: FsckConfiguredSeverity,
-): BadRefFinding | UnreadablePathFinding | undefined => {
+): BadRefFinding | UnreadablePathFinding | RefsWalkFailedFinding | undefined => {
   if (finding.msgId === 'unreadableRefPath') return unreadablePathFinding(finding);
+  if (finding.msgId === 'refsWalkFailed') return refsWalkFailedFinding(finding);
   if (finding.msgId !== 'symlinkRef' || symlinkGrade === 'ignore') return undefined;
   return { type: 'bad-ref', ref: finding.ref, msgId: 'symlinkRef', severity: symlinkGrade };
 };
+
+const failsRefsVerify = (found: RefFinding): boolean =>
+  found.type === 'refs-walk-failed' || (found.type === 'bad-ref' && found.severity === 'error');
 
 /**
  * Every notice of git's ref-store walk, in the walk's order — a link's deprecation notice
@@ -220,7 +238,7 @@ function collectContentNotices(
   const grades = gradesOf(severities);
   const symlinkGrade = retypeSeverity(severities, 'symlinkRef', 'warning');
   const shadowed = refsWithInvalidReferent(integrityFindings);
-  const findings: Array<BadRefFinding | UnreadablePathFinding> = [];
+  const findings: Array<BadRefFinding | UnreadablePathFinding | RefsWalkFailedFinding> = [];
   let rootCheckEnded = false;
   for (const finding of integrityFindings) {
     if (!checkContentFormat) continue;
@@ -234,9 +252,7 @@ function collectContentNotices(
     findings.push(contentFinding(finding, severity));
     rootCheckEnded ||= isRootRef && severity === 'error';
   }
-  const exitBit = findings.some((found) => found.type === 'bad-ref' && found.severity === 'error')
-    ? EXIT_REFS_CONTENT
-    : 0;
+  const exitBit = findings.some(failsRefsVerify) ? EXIT_REFS_CONTENT : 0;
   return { findings, exitBit };
 }
 

@@ -2972,6 +2972,28 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given the refs root whose listing is refused', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the refused directory is followed by a failed walk of that root', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const root = `${ctx.layout.gitDir}/refs`;
+        await ctx.fs.writeUtf8(`${root}/heads/d/x`, `${'1'.repeat(40)}\n`);
+        refuseListing(ctx, [root]);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { msgId: 'unreadableRefPath', operation: 'open-directory', path: root },
+          { msgId: 'refsWalkFailed', path: root },
+        ]);
+      });
+    });
+  });
+
   describe('Given a directory under refs/ whose listing faults for another reason', () => {
     describe('When verifyIntegrity is called', () => {
       it('Then that fault propagates', async () => {
@@ -4822,24 +4844,16 @@ describe('Given loose ref directories one of which cannot be read', () => {
   });
 
   describe('When listing names with the refs root itself unreadable', () => {
-    it('Then PERMISSION_DENIED propagates instead of an empty listing', async () => {
+    it('Then the walk skips it and lists nothing, as git does', async () => {
       // Arrange
       const ctx = await deniedDirs(['/repo/.git/refs'], ['refs/heads/a']);
       const sut = createRefStore(ctx);
 
       // Act
-      let caught: unknown;
-      try {
-        await sut.listRefNames();
-      } catch (err) {
-        caught = err;
-      }
+      const result = await sut.listRefNames();
 
       // Assert
-      expect((caught as TsgitError).data).toEqual({
-        code: 'PERMISSION_DENIED',
-        path: '/repo/.git/refs',
-      });
+      expect(result).toEqual([]);
     });
   });
 

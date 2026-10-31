@@ -38,6 +38,8 @@ type FsckFinding =
   | { readonly type: 'unreadable-ref-path';
       readonly path: string; readonly operation: 'open-directory' | 'stat';
       readonly reason: 'PERMISSION_DENIED' }
+  | { readonly type: 'refs-walk-failed'; readonly path: string;
+      readonly reason: 'PERMISSION_DENIED' }
   | { readonly type: 'refs-verify-ended'; readonly ref: RefName; readonly path: string;
       readonly reason: 'FILE_NOT_FOUND' | 'NOT_A_DIRECTORY' | 'PERMISSION_DENIED' | 'SYMLINK_LOOP' }
   | { readonly type: 'root'; readonly id: ObjectId }
@@ -175,6 +177,7 @@ findings.filter(f => f.type === 'tagged')
 | `invalid-cache-tree-pointer` | `id`, `index` | A cache-tree entry names an object no store holds (git's `invalid sha1 pointer in cache-tree`); `index` is the index file naming it, one finding per worktree index. Exit bit 8. |
 | `invalid-resolve-undo-pointer` | `id`, `index` | A regular-file resolve-undo stage names an object no store holds (git's `invalid sha1 pointer in resolve-undo`). Exit bit 8. |
 | `unreadable-ref-path` | `path`, `operation`, `reason` | A path git's refs walk could not open or stat: a directory under `refs/` the permissions refuse to list (`operation: 'open-directory'`, git's `error opening directory`) or an entry it lists but cannot `lstat` (`operation: 'stat'`, git's `failed to stat`). `path` is absolute, as opened; `reason` is `'PERMISSION_DENIED'`. A warning: no exit bit, no `fsck.<msg-id>` setting or `--strict` re-types it, and `checkReferences: false` drops it. The walk carries on with the siblings; the refs below a directory it cannot list are skipped everywhere else, as in git. |
+| `refs-walk-failed` | `path`, `reason` | git's `failed to iterate over` a `refs` root it could not open (the common one, or a linked worktree's own), reported right after the `unreadable-ref-path` warning that names the same directory. `path` is absolute, as opened; `reason` is `'PERMISSION_DENIED'`. Exit bit 8, gated by `checkReferences`. A directory below the root only warns. |
 | `refs-verify-ended` | `ref`, `path`, `reason` | git's `refs verify` child died on a symlinked ref whose real path cannot be resolved (git's `fatal: Invalid path` / `More than N nested symlinks`). `ref` is the link, `path` the absolute path where the resolution stopped, `reason` the fault: `'FILE_NOT_FOUND'`, `'NOT_A_DIRECTORY'`, `'PERMISSION_DENIED'` or `'SYMLINK_LOOP'`. Every content finding that would come after it is lost, as in git; the `badRefOid` pointers stand. Exit bit 8, gated by `checkReferences`. |
 | `no-default-references` | _none_ | No ref names an object git could parse (git's `No default references` notice); no `unreachable` object is reported after it. No exit bit. |
 | `unknown-object-type` | `id` | `connectivityOnly`: a reflog-reached object whose served copy hashes to another id and that no earlier link typed (git's `Unknown object type for`): reached, never walked. No exit bit. |
@@ -264,7 +267,7 @@ reconstructed from git's stderr text.
   | `1` | Content ERROR, `--strict`-upgraded WARN, corrupt object, hash-mismatch, or any pack, pack-index, reverse-index, bitmap, multi-pack-index or packed-entry fault (bit 1). git 2.56 folds all of them into bit 1; the bits 4, 32, 64 and 128 of earlier gits no longer exist. |
   | `2` | Missing object, broken link, or ref→absent OID (bit 2). |
   | `3` | Bits 1 and 2 combined (e.g. corrupt object whose absence also breaks a link). |
-  | `8` | Malformed ref content (`badRefContent`), a symbolic ref whose referent git rejects (`badReferentName`) or an unreadable loose ref file (`cannotReadRef`), both `bad-ref` findings, the end of git's refs walk on a symlinked ref it cannot resolve (`refs-verify-ended`), **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
+  | `8` | Malformed ref content (`badRefContent`), a symbolic ref whose referent git rejects (`badReferentName`) or an unreadable loose ref file (`cannotReadRef`), both `bad-ref` findings, the end of git's refs walk on a symlinked ref it cannot resolve (`refs-verify-ended`), a `refs` root it cannot open (`refs-walk-failed`), **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
   | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID, or a broken cache-tree alongside an unrelated missing object). |
   | `11` | Bits 1, 2 and 8 combined (e.g. an inaccessible pack beside a missing object and a bad ref). |
   | `16` | `git commit-graph verify` reported a disagreement for some object source's commit-graph file or chain (bit 16, `commit-graph-invalid`). |

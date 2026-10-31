@@ -12,7 +12,7 @@
  *   unique:         branch and tag listings drop a chain git's own iterator drops
  *   interopSurface: branchList
  */
-import { chmodSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -26,6 +26,7 @@ import { tagList } from '../../src/application/commands/tag.js';
 import { getRefStore } from '../../src/application/primitives/ref-store.js';
 import { resolveRef } from '../../src/application/primitives/resolve-ref.js';
 import type { RefName } from '../../src/domain/objects/index.js';
+import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import { disableAutoMaintenance, GIT_AVAILABLE, git, runGit } from './interop-helpers.js';
 
@@ -541,6 +542,78 @@ describe.skipIf(!GIT_AVAILABLE || !PERMISSION_BITS_ENFORCED)(
           // Assert
           expect(gitStatus).toBe(128);
           expect(code).toBe('PERMISSION_DENIED');
+        });
+      });
+    });
+
+    describe('Given a linked worktree whose own refs root has no access', () => {
+      describe('When the refs are listed from the linked worktree', () => {
+        it('Then tsgit lists what git for-each-ref lists', async () => {
+          // Arrange
+          const { dir } = await newRepo();
+          const linked = `${dir}-linked`;
+          roots.push(linked);
+          git(dir, 'worktree', 'add', '-q', '-b', 'wtb', linked);
+          const ownRefs = path.join(dir, '.git', 'worktrees', path.basename(linked), 'refs');
+          mkdirSync(path.join(ownRefs, 'bisect'), { recursive: true });
+          writeFileSync(path.join(ownRefs, 'bisect', 'good'), git(linked, 'rev-parse', 'HEAD'));
+          chmodSync(ownRefs, UNREADABLE);
+          restorers.push(() => chmodSync(ownRefs, RESTORED));
+          const expected = git(linked, 'for-each-ref', '--format=%(refname)')
+            .split('\n')
+            .filter(Boolean);
+          const repo = await openRepository({ cwd: linked });
+          const sut = listRefNamesOf;
+
+          // Act
+          const result = await sut(repo.ctx);
+
+          // Assert
+          expect(result).toEqual(expected.sort());
+        });
+      });
+    });
+
+    describe('Given an unreferenced commit named only by a ref under a refs root that is searchable but not listable', () => {
+      const SEARCHABLE_NOT_LISTABLE = 0o300;
+      const orphanBehindRefsRoot = async (): Promise<{ dir: string; ctx: Context; id: string }> => {
+        const repo = await newRepo();
+        git(repo.dir, 'config', 'gc.pruneExpire', 'now');
+        const tree = git(repo.dir, 'rev-parse', 'HEAD^{tree}').trim();
+        const id = git(repo.dir, 'commit-tree', tree, '-m', 'orphan').trim();
+        git(repo.dir, '-c', 'core.logAllRefUpdates=false', 'update-ref', 'refs/heads/side', id);
+        git(repo.dir, 'update-ref', '-d', 'HEAD');
+        const refsRoot = path.join(repo.dir, '.git', 'refs');
+        chmodSync(refsRoot, SEARCHABLE_NOT_LISTABLE);
+        restorers.push(() => chmodSync(refsRoot, RESTORED));
+        return { ...repo, id };
+      };
+      const exists = (dir: string, id: string): boolean => {
+        try {
+          git(dir, 'cat-file', '-t', id);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      describe('When gc prunes', () => {
+        it('Then git and tsgit both complete and the object is gone', async () => {
+          // Arrange
+          const g = await orphanBehindRefsRoot();
+          const t = await orphanBehindRefsRoot();
+          const sut = maintenance;
+
+          // Act
+          git(g.dir, 'gc', '-q', '--prune=now');
+          const result = await sut(t.ctx, { tasks: ['gc'] });
+
+          // Assert
+          chmodSync(path.join(g.dir, '.git', 'refs'), RESTORED);
+          chmodSync(path.join(t.dir, '.git', 'refs'), RESTORED);
+          expect(result.tasksFailed).toEqual([]);
+          expect(exists(g.dir, g.id)).toBe(false);
+          expect(exists(t.dir, t.id)).toBe(false);
         });
       });
     });
