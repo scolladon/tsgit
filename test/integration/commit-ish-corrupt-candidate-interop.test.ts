@@ -16,11 +16,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { describe as describeCommand } from '../../src/application/commands/describe.js';
 import { diff } from '../../src/application/commands/diff.js';
 import { log } from '../../src/application/commands/log.js';
 import { rebaseRun } from '../../src/application/commands/rebase.js';
 import { type RevParseEntry, revParse } from '../../src/application/commands/rev-parse.js';
+import { revertRun } from '../../src/application/commands/revert.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import {
@@ -51,9 +53,11 @@ const identity: NodeJS.ProcessEnv = {
   GIT_COMMITTER_DATE: '1700000000 +0000',
 };
 
-type Variant = 'non-hex' | 'truncated' | 'absent' | 'valid' | 'missing-ref';
+type Variant = 'non-hex' | 'truncated' | 'absent' | 'valid' | 'missing-ref' | 'tag-of-tree';
 
 const VARIANTS: ReadonlyArray<Variant> = ['non-hex', 'truncated', 'absent', 'valid', 'missing-ref'];
+const TEMPLATE_VARIANTS: ReadonlyArray<Variant> = [...VARIANTS, 'tag-of-tree'];
+const TREE_TAG_NAME = 't';
 
 interface Fixture {
   readonly dir: string;
@@ -70,6 +74,7 @@ interface Captured {
 interface Refusal {
   readonly code: string;
   readonly revision?: string;
+  readonly type?: string;
   readonly printed?: ReadonlyArray<RevParseEntry>;
 }
 
@@ -89,20 +94,26 @@ const tagObjectFor = (variant: Variant, c1: string): string => {
   return c1;
 };
 
-const writeTagRef = (dir: string, oid: string): void =>
-  writeFileSync(path.join(dir, '.git', 'refs', 'tags', 'x'), `${oid}\n`);
+const tagRefName = (variant: Variant): string => (variant === 'tag-of-tree' ? TREE_TAG_NAME : 'x');
+
+const writeTagRef = (dir: string, name: string, oid: string): void =>
+  writeFileSync(path.join(dir, '.git', 'refs', 'tags', name), `${oid}\n`);
 
 const plantTag = (dir: string, variant: Variant, c1: string): string => {
   if (variant === 'missing-ref') {
-    writeTagRef(dir, MISSING_REF_TARGET);
+    writeTagRef(dir, 'x', MISSING_REF_TARGET);
     return MISSING_REF_TARGET;
   }
-  const body = `object ${tagObjectFor(variant, c1)}\ntype commit\ntag x\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`;
+  const [object, type] =
+    variant === 'tag-of-tree'
+      ? [git(dir, 'rev-parse', 'main^{tree}').trim(), 'tree']
+      : [tagObjectFor(variant, c1), 'commit'];
+  const body = `object ${object}\ntype ${type}\ntag ${tagRefName(variant)}\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`;
   const bodyFile = path.join(mkdtempSync(path.join(os.tmpdir(), 'tsgit-corrupt-tag-body-')), 'tag');
   scratch.push(path.dirname(bodyFile));
   writeFileSync(bodyFile, body);
   const oid = git(dir, 'hash-object', '-t', 'tag', '-w', '--literally', bodyFile).trim();
-  writeTagRef(dir, oid);
+  writeTagRef(dir, tagRefName(variant), oid);
   return oid;
 };
 
@@ -132,12 +143,12 @@ const copyFixture = async (variant: Variant): Promise<Fixture> => {
     dir,
     c1: git(dir, 'rev-parse', 'main~1').trim(),
     c2: git(dir, 'rev-parse', 'main').trim(),
-    tag: (await readTagRef(dir)).trim(),
+    tag: (await readTagRef(dir, tagRefName(variant))).trim(),
   };
 };
 
-const readTagRef = async (dir: string): Promise<string> =>
-  readFile(path.join(dir, '.git', 'refs', 'tags', 'x'), 'utf8');
+const readTagRef = async (dir: string, name: string): Promise<string> =>
+  readFile(path.join(dir, '.git', 'refs', 'tags', name), 'utf8');
 
 const capture = (): Captured => {
   const lines: string[] = [];
@@ -169,12 +180,19 @@ const AMBIGUOUS_ARGUMENT = (arg: string): ReadonlyArray<string> => [
   "'git <command> [<revision>...] -- [<file>...]'",
 ];
 
-const refusalLines = (data: Refusal): ReadonlyArray<string> => {
+const refusalLines = (data: Refusal, route = 'cherry-pick'): ReadonlyArray<string> => {
   switch (data.code) {
     case 'OBJECT_NOT_FOUND': {
       const entry = data.printed?.find((printed) => printed.kind === 'path');
       return entry?.kind === 'path' ? AMBIGUOUS_ARGUMENT(entry.path) : [];
     }
+    case 'BAD_OBJECT':
+      return [`fatal: bad object ${data.revision}`];
+    case 'CANNOT_PICK_NON_COMMIT':
+      return [
+        `error: ${data.revision}: can't cherry-pick a ${data.type}`,
+        `fatal: ${route} failed`,
+      ];
     case 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB':
       return [`fatal: ${data.revision} is neither a commit nor blob`];
     default:
@@ -244,9 +262,58 @@ const tsgitRefusal = async (
   }
 };
 
+interface ReplayState {
+  readonly cherryPickHead: boolean;
+  readonly revertHead: boolean;
+  readonly sequencer: boolean;
+  readonly head: string;
+  readonly status: string;
+}
+
+const stateOf = (dir: string): ReplayState => ({
+  cherryPickHead: existsSync(path.join(dir, '.git', 'CHERRY_PICK_HEAD')),
+  revertHead: existsSync(path.join(dir, '.git', 'REVERT_HEAD')),
+  sequencer: existsSync(path.join(dir, '.git', 'sequencer')),
+  head: git(dir, 'rev-parse', 'HEAD').trim(),
+  status: git(dir, 'status', '--porcelain'),
+});
+
+interface ReplayRoute {
+  readonly route: 'cherry-pick' | 'revert';
+  readonly args: ReadonlyArray<string>;
+  readonly run: (ctx: Context, commits: ReadonlyArray<string>) => Promise<unknown>;
+}
+
+const cherryPick: ReplayRoute['run'] = (ctx, commits) => cherryPickRun(ctx, { commits });
+const revert: ReplayRoute['run'] = (ctx, commits) => revertRun(ctx, { commits });
+
+const tsgitReplay = async (
+  dir: string,
+  route: ReplayRoute['route'],
+  run: ReplayRoute['run'],
+  commits: ReadonlyArray<string>,
+): Promise<Outcome> => {
+  const captured = capture();
+  const ctx: Context = { ...createNodeContext({ workDir: dir }), logger: captured.logger };
+  try {
+    await run(ctx, commits);
+    return { refused: false, stdout: '', diagnostics: captured.lines };
+  } catch (error) {
+    const data = (error as TsgitError).data as unknown as Refusal;
+    return {
+      refused: true,
+      stdout: '',
+      diagnostics: [...captured.lines, ...refusalLines(data, route)],
+    };
+  }
+};
+
+const ambiguityWarnings = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
+  lines.filter((line) => line.startsWith('warning: refname '));
+
 describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish candidate', () => {
   beforeAll(async () => {
-    await Promise.all(VARIANTS.map(buildTemplate));
+    await Promise.all(TEMPLATE_VARIANTS.map(buildTemplate));
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -434,5 +501,73 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
         });
       },
     );
+  });
+
+  describe.each([
+    { variant: 'non-hex', names: ['x'], lines: 1 },
+    { variant: 'truncated', names: ['x'], lines: 1 },
+    { variant: 'missing-ref', names: ['x'], lines: 1 },
+    { variant: 'absent', names: ['x'], lines: 2 },
+    { variant: 'tag-of-tree', names: ['t'], lines: 0 },
+  ] as const)('Given the $variant variant', ({ variant, names, lines }) => {
+    describe.each([
+      { route: 'cherry-pick', verb: 'cherry-pick', run: cherryPick, tail: [] },
+      { route: 'cherry-pick', verb: 'cherry-pick', run: cherryPick, tail: ['main'] },
+      { route: 'revert', verb: 'revert', run: revert, tail: [] },
+    ] as const)('When $verb takes $names then $tail', ({ route, verb, run, tail }) => {
+      it('Then tsgit refuses with git lines and writes no state, as git does', async () => {
+        // Arrange
+        const commits = [...names, ...tail];
+        const twinGit = await copyFixture(variant);
+        const twinTsgit = await copyFixture(variant);
+        const expected = gitOutcome(twinGit.dir, [verb, ...commits]);
+
+        // Act
+        const result = await tsgitReplay(twinTsgit.dir, route, run, commits);
+
+        // Assert
+        const expectedLines = expected.diagnostics.filter(
+          (line) => !/^error: could not/.test(line),
+        );
+        expect(expected.refused).toBe(true);
+        expect(ambiguityWarnings(expected.diagnostics)).toHaveLength(
+          variant === 'tag-of-tree' ? 0 : lines,
+        );
+        expect(result.diagnostics).toEqual(expectedLines);
+        expect(stateOf(twinTsgit.dir)).toEqual(stateOf(twinGit.dir));
+        expect(stateOf(twinGit.dir)).toEqual({
+          cherryPickHead: false,
+          revertHead: false,
+          sequencer: false,
+          head: twinGit.c2,
+          status: '',
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { verb: 'cherry-pick', run: cherryPick, commits: ['x'] },
+    { verb: 'cherry-pick', run: cherryPick, commits: ['x..main'] },
+    { verb: 'cherry-pick', run: cherryPick, commits: ['^x', 'main'] },
+    { verb: 'revert', run: revert, commits: ['x'] },
+  ] as const)('Given a valid x ambiguous between tag and branch', ({ verb, run, commits }) => {
+    describe('When $verb takes $commits', () => {
+      it('Then tsgit warns the ambiguity as often as git does', async () => {
+        // Arrange
+        const twinGit = await copyFixture('valid');
+        const twinTsgit = await copyFixture('valid');
+        const expected = gitOutcome(twinGit.dir, [verb, ...commits]);
+
+        // Act
+        const result = await tsgitReplay(twinTsgit.dir, verb, run, commits);
+
+        // Assert
+        expect(ambiguityWarnings(expected.diagnostics)).toHaveLength(2);
+        expect(ambiguityWarnings(result.diagnostics)).toEqual(
+          ambiguityWarnings(expected.diagnostics),
+        );
+      });
+    });
   });
 });

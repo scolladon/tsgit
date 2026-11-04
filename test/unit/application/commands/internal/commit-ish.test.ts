@@ -6,9 +6,11 @@ import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
   isObjectReadFault,
+  readRevisionObject,
   resolveCommitIsh,
   resolveCommitIshObject,
 } from '../../../../../src/application/commands/internal/commit-ish.js';
+import * as readObjectMod from '../../../../../src/application/primitives/read-object.js';
 import * as resolveRefMod from '../../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -461,6 +463,62 @@ describe('isObjectReadFault', () => {
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('readRevisionObject', () => {
+  describe.each([
+    { code: 'INVALID_OBJECT_ID', failure: invalidObjectId('zz') },
+    { code: 'OBJECT_NOT_FOUND', failure: objectNotFound('a'.repeat(40) as ObjectId) },
+  ])('Given a named object whose read fails with $code', ({ failure }) => {
+    describe('When readRevisionObject reads it', () => {
+      it('Then it refuses BAD_OBJECT { revision }', async () => {
+        // Arrange
+        const { ctx, head } = await seedCommit();
+        vi.spyOn(readObjectMod, 'readObject').mockRejectedValue(failure);
+        const sut = readRevisionObject;
+
+        // Act
+        const outcome = await sut(ctx, head, 'x').catch((error: TsgitError) => error);
+
+        // Assert
+        expect((outcome as TsgitError).data).toEqual({ code: 'BAD_OBJECT', revision: 'x' });
+      });
+    });
+  });
+
+  describe('Given a read failing without a code', () => {
+    describe('When readRevisionObject reads it', () => {
+      it('Then the failure propagates unchanged', async () => {
+        // Arrange
+        const { ctx, head } = await seedCommit();
+        const failure = new Error('boom');
+        vi.spyOn(readObjectMod, 'readObject').mockRejectedValue(failure);
+        const sut = readRevisionObject;
+
+        // Act
+        const outcome = await sut(ctx, head, 'x').catch((error: unknown) => error);
+
+        // Assert
+        expect(outcome).toBe(failure);
+      });
+    });
+  });
+
+  describe('Given a readable commit', () => {
+    describe('When readRevisionObject reads it', () => {
+      it('Then it returns the object', async () => {
+        // Arrange
+        const { ctx, head } = await seedCommit();
+        const sut = readRevisionObject;
+
+        // Act
+        const result = await sut(ctx, head, 'x');
+
+        // Assert
+        expect(result.id).toBe(head);
       });
     });
   });

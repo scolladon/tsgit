@@ -6,10 +6,10 @@ import {
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { limitList, resolveLimitOptions } from '../../primitives/internal/limit-list.js';
-import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js';
+import { type PeeledRef, peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js';
 import { readObject } from '../../primitives/read-object.js';
 import { evaluateRevision } from '../rev-parse.js';
-import { resolveCommitIsh } from './commit-ish.js';
+import { isObjectReadFault, readRevisionObject, resolveCommitIshObject } from './commit-ish.js';
 import { previousCheckoutArg } from './prior-checkout.js';
 
 const RANGE = /^(.*)\.\.(.*)$/;
@@ -45,11 +45,10 @@ interface Seeds {
   readonly named: ReadonlyArray<ObjectId>;
 }
 
-interface SeedLists {
-  readonly tips: ObjectId[];
-  readonly excluded: ObjectId[];
-  readonly named: ObjectId[];
-  readonly objects: NamedObject[];
+type SeedRole = 'tip' | 'excluded';
+
+interface Seed extends NamedObject {
+  readonly role: SeedRole;
 }
 
 /** git's `setup_revisions` + `prepare_revs` over a cherry-pick / revert argument list. */
@@ -76,50 +75,62 @@ export const resolveSequencerRevisions = async (
 export const isSequence = (args: ReadonlyArray<string>, revisions: SequencerRevisions): boolean =>
   args.length > 1 || revisions.kind === 'walked';
 
+/** Both of git's phases: `setup_revisions` resolves every argument, then `sequencer_pick_revisions` rereads and type-checks each name. */
 const resolveSeeds = async (ctx: Context, args: ReadonlyArray<string>): Promise<Seeds> => {
-  const seeds: SeedLists = { tips: [], excluded: [], named: [], objects: [] };
-  for (const arg of args) await addSeed(ctx, arg, seeds);
-  for (const object of seeds.objects) await assertPicksCommit(ctx, object);
-  return seeds;
+  const named: Seed[] = [];
+  for (const arg of args) named.push(...(await argSeeds(ctx, arg)));
+  const picked: Seed[] = [];
+  for (const seed of named) picked.push({ ...seed, id: await pickedCommit(ctx, seed) });
+  const idsOf = (role: SeedRole): ObjectId[] =>
+    picked.filter((seed) => seed.role === role).map((seed) => seed.id);
+  return { tips: idsOf('tip'), excluded: idsOf('excluded'), named: picked.map((seed) => seed.id) };
 };
 
-/** git's `sequencer_pick_revisions` check, run once every argument resolved: each named object must peel to a commit. */
-const assertPicksCommit = async (ctx: Context, { name, id }: NamedObject): Promise<void> => {
-  if ((await peelRefToCommit(ctx, id)) !== undefined) return;
-  throw cannotPickNonCommit(name, (await readObject(ctx, id)).type);
+/** git's second `repo_get_oid` on a name, then its type check: the name must peel to a commit. */
+const pickedCommit = async (ctx: Context, { name }: Seed): Promise<ObjectId> => {
+  const reread = await evaluateRevision(ctx, name);
+  const peeled = await peelToCommit(ctx, reread);
+  if (peeled !== undefined) return peeled.commit.id;
+  throw cannotPickNonCommit(name, (await readObject(ctx, reread)).type);
+};
+
+/** A chain ending at an object that does not read peels to no commit, as git's `lookup_commit_reference` finds none. */
+const peelToCommit = async (ctx: Context, id: ObjectId): Promise<PeeledRef | undefined> => {
+  try {
+    return await peelRefToCommit(ctx, id);
+  } catch (error) {
+    if (isObjectReadFault(error)) return undefined;
+    throw error;
+  }
 };
 
 /** One argument as git's `setup_revisions` reads it: `A..B`, `^A`, or a commit-ish. */
-const addSeed = async (ctx: Context, arg: string, seeds: SeedLists): Promise<void> => {
+const argSeeds = async (ctx: Context, arg: string): Promise<ReadonlyArray<Seed>> => {
   if (arg.includes(SYMMETRIC_RANGE)) {
     throw invalidOption('commits', `unsupported revision form '${arg}' (use a commit-ish or A..B)`);
   }
   const range = RANGE.exec(arg);
   if (range !== null) {
     const [excluded, tip] = [orHead(range[1] as string), orHead(range[2] as string)];
-    addExcluded(seeds, { name: excluded, id: await evaluateRevision(ctx, excluded) });
-    addTip(seeds, { name: tip, id: await evaluateRevision(ctx, tip) });
-    return;
+    return [await evaluatedSeed(ctx, excluded, 'excluded'), await evaluatedSeed(ctx, tip, 'tip')];
   }
   if (arg.startsWith(EXCLUDE_PREFIX)) {
-    const name = arg.slice(EXCLUDE_PREFIX.length);
-    addExcluded(seeds, { name, id: await evaluateRevision(ctx, name) });
-    return;
+    return [await evaluatedSeed(ctx, arg.slice(EXCLUDE_PREFIX.length), 'excluded')];
   }
-  const resolve = REVISION_OPERATOR.test(arg) ? evaluateRevision : resolveCommitIsh;
-  addTip(seeds, { name: arg, id: await resolve(ctx, arg) });
+  return [await plainSeed(ctx, arg)];
 };
 
-const addTip = (seeds: SeedLists, object: NamedObject): void => {
-  seeds.tips.push(object.id);
-  seeds.named.push(object.id);
-  seeds.objects.push(object);
-};
+const evaluatedSeed = async (ctx: Context, name: string, role: SeedRole): Promise<Seed> => ({
+  name,
+  role,
+  id: await evaluateRevision(ctx, name),
+});
 
-const addExcluded = (seeds: SeedLists, object: NamedObject): void => {
-  seeds.excluded.push(object.id);
-  seeds.named.push(object.id);
-  seeds.objects.push(object);
+const plainSeed = async (ctx: Context, name: string): Promise<Seed> => {
+  if (REVISION_OPERATOR.test(name)) return evaluatedSeed(ctx, name, 'tip');
+  const id = await resolveCommitIshObject(ctx, name);
+  await readRevisionObject(ctx, id, name);
+  return { name, role: 'tip', id };
 };
 
 const walkSeeds = async (ctx: Context, seeds: Seeds): Promise<ReadonlyArray<ObjectId>> => {

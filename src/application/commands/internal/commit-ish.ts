@@ -5,8 +5,14 @@
  * so both commands share one ladder. The first candidate that names an object wins
  * and its faults propagate, as git's `repo_get_oid` does.
  */
+import { badObject } from '../../../domain/commands/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
-import { isOid, type ObjectId, type RefName } from '../../../domain/objects/index.js';
+import {
+  type GitObject,
+  isOid,
+  type ObjectId,
+  type RefName,
+} from '../../../domain/objects/index.js';
 import { refNotFound } from '../../../domain/refs/error.js';
 import type { Context } from '../../../ports/context.js';
 import { peelChain, tagHop } from '../../primitives/internal/peel-chain.js';
@@ -36,6 +42,20 @@ const OBJECT_READ_FAULT_CODES: ReadonlySet<string> = new Set([
 export const isObjectReadFault = (error: unknown): boolean => {
   const code = errorDataCode(error);
   return code !== undefined && OBJECT_READ_FAULT_CODES.has(code);
+};
+
+/** git's `get_reference`: the object a revision names must read, else `bad object <revision>`. */
+export const readRevisionObject = async (
+  ctx: Context,
+  id: ObjectId,
+  revision: string,
+): Promise<GitObject> => {
+  try {
+    return await readObject(ctx, id);
+  } catch (error) {
+    if (isObjectReadFault(error)) throw badObject(revision);
+    throw error;
+  }
 };
 
 const unpeeledCandidate =
