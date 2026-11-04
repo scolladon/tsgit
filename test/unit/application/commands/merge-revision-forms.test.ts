@@ -12,6 +12,7 @@ import { resolveRef } from '../../../../src/application/primitives/resolve-ref.j
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeRawObjectBytes } from '../primitives/fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -145,6 +146,33 @@ describe('merge names each revision form as git does', () => {
         // Assert
         expect(result).toEqual({ code: 'REF_NOT_FOUND', name: tree.data.tree });
       });
+    });
+  });
+});
+
+describe.each([
+  { variant: 'non-hex', target: 'z'.repeat(40), bare: false },
+  { variant: 'truncated', target: 'abc', bare: false },
+  { variant: 'absent', target: 'a'.repeat(40), bare: false },
+  { variant: 'missing', target: 'b'.repeat(40), bare: true },
+])('Given a tag ref x naming a $variant object', ({ target, bare }) => {
+  describe.each([{ rev: 'x' }, { rev: ['side', 'x'] }])('When merge takes $rev', ({ rev }) => {
+    it('Then it refuses REF_NOT_FOUND { name: x }', async () => {
+      // Arrange
+      const { ctx } = await seed();
+      const body = `object ${target}\ntype commit\ntag x\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`;
+      const tagId = await writeRawObjectBytes(ctx, 'tag', new TextEncoder().encode(body));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, `${bare ? target : tagId}\n`);
+      const sut = mergeRun;
+
+      // Act
+      const result = await sut(ctx, { rev, author }).then(
+        () => undefined,
+        (e: unknown) => (e as TsgitError).data,
+      );
+
+      // Assert
+      expect(result).toEqual({ code: 'REF_NOT_FOUND', name: 'x' });
     });
   });
 });

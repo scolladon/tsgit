@@ -13,7 +13,12 @@
  */
 import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
-import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
+import {
+  blameNonCommit,
+  invalidOption,
+  pathNotInTree,
+  worktreeFileAbsent,
+} from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import { precedesByArrival, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import type { TreeDiff } from '../../domain/diff/diff-change.js';
@@ -32,6 +37,7 @@ import { diffTrees } from '../primitives/diff-trees.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   descendMatchingTreeChain,
@@ -40,8 +46,13 @@ import {
 } from '../primitives/internal/resolve-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readObject } from '../primitives/read-object.js';
 import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
-import { resolveCommitIsh } from './internal/commit-ish.js';
+import {
+  readRevisionObject,
+  resolveCommitIsh,
+  resolveCommitIshObject,
+} from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 
@@ -190,11 +201,27 @@ export const blame = async (
     }
   } else {
     const rev = opts.rev ?? DEFAULT_REV;
-    await seed(board, await resolveCommitIsh(ctx, rev), filePath, rev, opts.range);
+    await seed(board, await resolveBlameTarget(ctx, rev), filePath, rev, opts.range);
   }
   await walk(board);
   const lines = [...board.finalized].sort((a, b) => a.finalLine - b.finalLine);
   return { path: filePath, lines };
+};
+
+/**
+ * git's `lookup_commit_reference` for a blame revision: the named object must read
+ * (`bad object`), and an annotated tag peels to a commit that must exist (`Non commit`).
+ */
+const resolveBlameTarget = async (ctx: Context, revision: string): Promise<ObjectId> => {
+  const named = await resolveCommitIshObject(ctx, revision);
+  const object = await readRevisionObject(ctx, named, revision);
+  if (object.type !== 'tag') return named;
+  try {
+    return (await peelChain(ctx, object.data.object, readObject, tagHop)).id;
+  } catch (error) {
+    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') throw blameNonCommit(revision);
+    throw error;
+  }
 };
 
 /** `path` split into its `/`-separated segments, for the tree descent below. */

@@ -26,7 +26,11 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, Blob, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { refuseReadOnSymlink, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
+import {
+  refuseReadOnSymlink,
+  serializeIndexFixtureAsync,
+  writeRawObjectBytes,
+} from '../primitives/fixtures.js';
 import { asBareContext } from './fixtures.js';
 
 const ident = (name: string, timestamp: number): AuthorIdentity => ({
@@ -1853,6 +1857,98 @@ describe('Given a merge of two equal-date parents whose own parents are missing'
 
       // Assert
       expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missingTree });
+    });
+  });
+});
+
+const tagBody = (target: string): Uint8Array =>
+  new TextEncoder().encode(
+    `object ${target}\ntype commit\ntag x\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`,
+  );
+
+interface CorruptTagRef {
+  readonly ctx: Context;
+  readonly warnings: string[];
+  readonly tagId: ObjectId | undefined;
+  readonly target: string;
+}
+
+/** A branch x and a tag ref x that win the ladder: the tag names `target` in its body, or is a bare ref to it. */
+const seedAmbiguousTagRef = async (target: string, bare = false): Promise<CorruptTagRef> => {
+  const ctx = await seed();
+  const head = await commitFile(ctx, 'c1', 'f', 'a\n');
+  const warnings: string[] = [];
+  const logged = { ...ctx, logger: { warn: (message: string) => void warnings.push(message) } };
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${head}\n`);
+  const tagId = bare ? undefined : await writeRawObjectBytes(ctx, 'tag', tagBody(target));
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, `${tagId ?? target}\n`);
+  return { ctx: logged, warnings, tagId, target };
+};
+
+const refusalOf = async (read: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await read();
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
+describe.each([
+  { variant: 'non-hex', target: 'z'.repeat(40), bare: false },
+  { variant: 'truncated', target: 'abc', bare: false },
+  { variant: 'missing', target: 'b'.repeat(40), bare: true },
+])('Given a tag ref x naming a $variant object ahead of branch x', ({ target, bare }) => {
+  describe('When blame reads f at x', () => {
+    it('Then it refuses BAD_OBJECT { revision: x } after warning the ambiguity', async () => {
+      // Arrange
+      const { ctx, warnings } = await seedAmbiguousTagRef(target, bare);
+      const sut = blame;
+
+      // Act
+      const result = await refusalOf(() => sut(ctx, 'f', { rev: 'x' }));
+
+      // Assert
+      expect(result).toEqual({ code: 'BAD_OBJECT', revision: 'x' });
+      expect(warnings).toEqual(["refname 'x' is ambiguous."]);
+    });
+  });
+});
+
+describe('Given a tag ref x whose target object is missing', () => {
+  describe('When blame reads f at x', () => {
+    it('Then it refuses BLAME_NON_COMMIT { revision: x }', async () => {
+      // Arrange
+      const { ctx } = await seedAmbiguousTagRef('a'.repeat(40));
+      const sut = blame;
+
+      // Act
+      const result = await refusalOf(() => sut(ctx, 'f', { rev: 'x' }));
+
+      // Assert
+      expect(result).toEqual({ code: 'BLAME_NON_COMMIT', revision: 'x' });
+    });
+  });
+});
+
+describe('Given a tag target whose read fails without a code', () => {
+  describe('When blame reads f at x', () => {
+    it('Then the failure propagates', async () => {
+      // Arrange
+      const { ctx } = await seedAmbiguousTagRef('a'.repeat(40));
+      const real = readObjectMod.readObject;
+      const failure = new Error('disk gone');
+      vi.spyOn(readObjectMod, 'readObject').mockImplementation((c, id) =>
+        id === 'a'.repeat(40) ? Promise.reject(failure) : real(c, id),
+      );
+      const sut = blame;
+
+      // Act
+      const result = await sut(ctx, 'f', { rev: 'x' }).catch((error: unknown) => error);
+
+      // Assert
+      expect(result).toBe(failure);
+      vi.restoreAllMocks();
     });
   });
 });

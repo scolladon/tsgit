@@ -16,10 +16,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { blame } from '../../src/application/commands/blame.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { describe as describeCommand } from '../../src/application/commands/describe.js';
 import { diff } from '../../src/application/commands/diff.js';
 import { log } from '../../src/application/commands/log.js';
+import { mergeRun } from '../../src/application/commands/merge.js';
 import { rebaseRun } from '../../src/application/commands/rebase.js';
 import { type RevParseEntry, revParse } from '../../src/application/commands/rev-parse.js';
 import { revertRun } from '../../src/application/commands/revert.js';
@@ -74,6 +76,7 @@ interface Captured {
 interface Refusal {
   readonly code: string;
   readonly revision?: string;
+  readonly name?: string;
   readonly type?: string;
   readonly printed?: ReadonlyArray<RevParseEntry>;
 }
@@ -195,6 +198,11 @@ const refusalLines = (data: Refusal, route = 'cherry-pick'): ReadonlyArray<strin
       ];
     case 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB':
       return [`fatal: ${data.revision} is neither a commit nor blob`];
+    case 'BLAME_NON_COMMIT':
+      return [`fatal: Non commit ${data.revision}?`];
+    case 'REF_NOT_FOUND':
+      if (route !== 'merge') throw new Error(`unexpected refusal ${data.code} on ${route}`);
+      return [`merge: ${data.name} - not something we can merge`];
     default:
       throw new Error(`unexpected refusal ${data.code}`);
   }
@@ -279,7 +287,7 @@ const stateOf = (dir: string): ReplayState => ({
 });
 
 interface ReplayRoute {
-  readonly route: 'cherry-pick' | 'revert';
+  readonly route: 'cherry-pick' | 'revert' | 'merge';
   readonly args: ReadonlyArray<string>;
   readonly run: (ctx: Context, commits: ReadonlyArray<string>) => Promise<unknown>;
 }
@@ -307,6 +315,25 @@ const tsgitReplay = async (
     };
   }
 };
+
+const tsgitBlame = async (dir: string, revision: string): Promise<Outcome> => {
+  const captured = capture();
+  const ctx: Context = { ...createNodeContext({ workDir: dir }), logger: captured.logger };
+  const sut = blame;
+  try {
+    await sut(ctx, 'f', { rev: revision });
+    return { refused: false, stdout: '', diagnostics: captured.lines };
+  } catch (error) {
+    const data = (error as TsgitError).data as unknown as Refusal;
+    return { refused: true, stdout: '', diagnostics: [...captured.lines, ...refusalLines(data)] };
+  }
+};
+
+const mergeRoute: ReplayRoute['run'] = (ctx, rev) =>
+  mergeRun(ctx, {
+    rev: [...rev],
+    author: { name: 'A', email: 'a@x', timestamp: 1_700_000_000, timezoneOffset: '+0000' },
+  });
 
 const ambiguityWarnings = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
   lines.filter((line) => line.startsWith('warning: refname '));
@@ -570,4 +597,57 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
       });
     });
   });
+
+  describe.each([
+    { variant: 'non-hex', refusal: 'fatal: bad object x', lines: 1 },
+    { variant: 'truncated', refusal: 'fatal: bad object x', lines: 1 },
+    { variant: 'missing-ref', refusal: 'fatal: bad object x', lines: 1 },
+    { variant: 'absent', refusal: 'fatal: Non commit x?', lines: 1 },
+  ] as const)('Given the $variant variant', ({ variant, refusal, lines }) => {
+    describe('When git blame and blame read f at x', () => {
+      it('Then tsgit refuses with git lines, as git does', async () => {
+        // Arrange
+        const { dir } = await copyFixture(variant);
+        const expected = gitOutcome(dir, ['blame', 'x', '--', 'f']);
+
+        // Act
+        const result = await tsgitBlame(dir, 'x');
+
+        // Assert
+        expect(expected.refused).toBe(true);
+        expect(ambiguityWarnings(expected.diagnostics)).toHaveLength(lines);
+        expect(expected.diagnostics.at(-1)).toBe(refusal);
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each(['non-hex', 'truncated', 'absent', 'missing-ref'] as const)(
+    'Given the %s variant',
+    (variant) => {
+      describe.each([{ revs: ['x'] }, { revs: ['main', 'x'] }])(
+        'When merge takes $revs',
+        ({ revs }) => {
+          it('Then tsgit refuses with git lines and writes no MERGE_HEAD, as git does', async () => {
+            // Arrange
+            const commits = [...revs];
+            const twinGit = await copyFixture(variant);
+            const twinTsgit = await copyFixture(variant);
+            const expected = gitOutcome(twinGit.dir, ['merge', ...commits]);
+
+            // Act
+            const result = await tsgitReplay(twinTsgit.dir, 'merge', mergeRoute, commits);
+
+            // Assert
+            expect(expected.refused).toBe(true);
+            expect(expected.diagnostics.at(-1)).toBe('merge: x - not something we can merge');
+            expect(result.diagnostics).toEqual(expected.diagnostics);
+            expect(existsSync(path.join(twinTsgit.dir, '.git', 'MERGE_HEAD'))).toBe(false);
+            expect(stateOf(twinTsgit.dir)).toEqual(stateOf(twinGit.dir));
+            expect(stateOf(twinGit.dir).head).toBe(twinGit.c2);
+          });
+        },
+      );
+    },
+  );
 });

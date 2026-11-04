@@ -50,6 +50,7 @@ import {
   FILE_MODE,
   type FileMode,
   type FilePath,
+  type GitObject,
   type ObjectId,
   type RefName,
   type TreeEntry,
@@ -100,7 +101,7 @@ import {
 } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { createIgnoredProbe } from '../primitives/internal/occupant-clash.js';
-import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import { type PeelOutcome, peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import {
   type SurvivingDirectories,
   survivingDirectoriesOf,
@@ -137,6 +138,7 @@ import { branchMergeOptions } from './internal/branch-merge-options.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg, conflictsHint } from './internal/cherry-pick-state.js';
 import { indexDifferences } from './internal/clean-work-tree.js';
+import { isObjectReadFault } from './internal/commit-ish.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { configuredMergeFastForward } from './internal/fast-forward-config.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -662,9 +664,23 @@ const resolveMergeParent = async (ctx: Context, name: string): Promise<MergeRemo
   const spelt = await interpretMergeName(ctx, name);
   const object = await resolveRevisionExpression(ctx, spelt);
   if (object === undefined) throw refNotFound(name as RefName);
-  const { id, result } = await peelChain(ctx, object, readObject, tagHop);
+  const { id, result } = await peelMergeParent(ctx, object, name);
   if (result.type !== 'commit') throw refNotFound(name as RefName);
   return { id, name, object, spelt };
+};
+
+/** A tag chain that cannot be read leaves nothing to merge: git's `get_merge_parent` finds no commit. */
+const peelMergeParent = async (
+  ctx: Context,
+  object: ObjectId,
+  name: string,
+): Promise<PeelOutcome<GitObject>> => {
+  try {
+    return await peelChain(ctx, object, readObject, tagHop);
+  } catch (error) {
+    if (isObjectReadFault(error)) throw refNotFound(name as RefName);
+    throw error;
+  }
 };
 
 /** git's `get_merge_parent` over each name given, in order. */
