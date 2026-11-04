@@ -315,6 +315,33 @@ describe('Given objects behind zero or more tags', () => {
     });
   });
 
+  describe('When revParse reads <tag>^{commit} on a tag whose object line does not parse', () => {
+    it('Then it prints the argument as a path and refuses OBJECT_NOT_FOUND', async () => {
+      // Arrange
+      const { ctx } = await peelRepo();
+      const bytes = new TextEncoder().encode(
+        `object ${'z'.repeat(40)}\ntype commit\ntag x\ntagger A <a@a> 0 +0000\n\nmsg\n`,
+      );
+      const tag = await writeRawObjectBytes(ctx, 'tag', bytes);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, `${tag}\n`);
+      const sut = revParse;
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await sut(ctx, 'x^{commit}');
+      } catch (error) {
+        caught = error as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toMatchObject({
+        code: 'OBJECT_NOT_FOUND',
+        printed: [{ kind: 'path', path: 'x^{commit}' }],
+      });
+    });
+  });
+
   describe('When evaluateRevision keeps an absent object with ^{object}', () => {
     it('Then it refuses without a message', async () => {
       // Arrange

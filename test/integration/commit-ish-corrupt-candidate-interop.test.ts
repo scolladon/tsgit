@@ -16,6 +16,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { diff } from '../../src/application/commands/diff.js';
+import { log } from '../../src/application/commands/log.js';
 import { type RevParseEntry, revParse } from '../../src/application/commands/rev-parse.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
@@ -201,6 +203,26 @@ const tsgitRevParse = async (dir: string, arg: string): Promise<Outcome> => {
   }
 };
 
+interface ReadRefusal {
+  readonly refused: boolean;
+  readonly code: string | undefined;
+  readonly warnings: ReadonlyArray<string>;
+}
+
+const tsgitRefusal = async (
+  dir: string,
+  read: (ctx: Context) => Promise<unknown>,
+): Promise<ReadRefusal> => {
+  const captured = capture();
+  const ctx: Context = { ...createNodeContext({ workDir: dir }), logger: captured.logger };
+  try {
+    await read(ctx);
+    return { refused: false, code: undefined, warnings: captured.lines };
+  } catch (error) {
+    return { refused: true, code: (error as TsgitError).data.code, warnings: captured.lines };
+  }
+};
+
 describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish candidate', () => {
   beforeAll(async () => {
     await Promise.all(VARIANTS.map(buildTemplate));
@@ -269,6 +291,67 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
         // Assert
         expect(expected.refused).toBe(true);
         expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each([
+    { variant: 'non-hex', arg: 'x^{commit}' },
+    { variant: 'non-hex', arg: 'x^{blob}' },
+    { variant: 'truncated', arg: 'x^{commit}' },
+    { variant: 'truncated', arg: 'x^{blob}' },
+  ] as const)('Given $variant, $arg', ({ variant, arg }) => {
+    describe('When git rev-parse and revParse read the argument', () => {
+      it('Then tsgit prints the argument, warns once and refuses on it, as git does', async () => {
+        // Arrange
+        const { dir } = await copyFixture(variant);
+        const expected = gitOutcome(dir, ['rev-parse', arg]);
+
+        // Act
+        const result = await tsgitRevParse(dir, arg);
+
+        // Assert
+        expect(expected).toEqual({
+          refused: true,
+          stdout: arg,
+          diagnostics: ["warning: refname 'x' is ambiguous.", ...AMBIGUOUS_ARGUMENT(arg)],
+        });
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      route: 'log',
+      git: ['log', '-1', 'x^{commit}'],
+      read: (ctx: Context) => log(ctx, { rev: 'x^{commit}', limit: 1 }),
+    },
+    {
+      route: 'diff',
+      git: ['diff', 'x^{commit}'],
+      read: (ctx: Context) => diff(ctx, { from: 'x^{commit}' }),
+    },
+  ])('Given a corrupt tag ref x, $route reading x^{commit}', ({ git: args, read }) => {
+    describe.each(['non-hex', 'truncated'] as const)('When the tag is %s', (variant) => {
+      it('Then tsgit refuses OBJECT_NOT_FOUND and warns once, as git does', async () => {
+        // Arrange
+        const { dir } = await copyFixture(variant);
+        const expected = gitOutcome(dir, args);
+
+        // Act
+        const result = await tsgitRefusal(dir, read);
+
+        // Assert
+        expect(expected.diagnostics).toEqual([
+          "warning: refname 'x' is ambiguous.",
+          ...AMBIGUOUS_ARGUMENT('x^{commit}'),
+        ]);
+        expect(result).toEqual({
+          refused: expected.refused,
+          code: 'OBJECT_NOT_FOUND',
+          warnings: expected.diagnostics.slice(0, 1),
+        });
       });
     });
   });

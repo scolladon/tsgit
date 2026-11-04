@@ -1,13 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../../src/application/commands/init.js';
+import * as objectTypeTable from '../../../../../src/application/primitives/internal/object-type-table.js';
 import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
 import { peel } from '../../../../../src/application/primitives/internal/peel.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { writeForgedTagLoop, writeSelfHashedLooseWithDeclaredSize } from '../fixtures.js';
+import {
+  writeForgedTagLoop,
+  writeRawObjectBytes,
+  writeSelfHashedLooseWithDeclaredSize,
+} from '../fixtures.js';
 
 interface Logging {
   readonly ctx: Context;
@@ -157,6 +162,63 @@ describe('peel', () => {
 
         // Assert
         expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: blob });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'non-hex', objectId: 'z'.repeat(40) },
+    { label: 'truncated', objectId: 'abc' },
+  ])('Given a tag whose object line is $label', ({ objectId }) => {
+    describe('When it is peeled to a commit', () => {
+      it("Then it refuses OBJECT_NOT_FOUND on the tag's id", async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const bytes = new TextEncoder().encode(
+          `object ${objectId}\ntype commit\ntag x\ntagger A <a@a> 0 +0000\n\nmsg\n`,
+        );
+        const tag = await writeRawObjectBytes(ctx, 'tag', bytes);
+        const sut = peel;
+
+        // Act
+        const result = await caught(() => sut(ctx, createObjectTypeTable(), tag, 'commit'));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: tag });
+      });
+    });
+  });
+
+  describe('Given a hop whose read fails without an error code', () => {
+    describe('When it is peeled', () => {
+      it('Then the failure propagates unchanged', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('x\n'),
+        });
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: { object: blob, objectType: 'blob', tagName: 't', message: 'm', extraHeaders: [] },
+        });
+        const failure = new Error('boom');
+        vi.spyOn(objectTypeTable, 'parseTypedPeelHop').mockRejectedValue(failure);
+        const sut = peel;
+        let result: unknown;
+
+        // Act
+        try {
+          await sut(ctx, createObjectTypeTable(), tag, 'commit');
+        } catch (error) {
+          result = error;
+        }
+        vi.restoreAllMocks();
+
+        // Assert
+        expect(result).toBe(failure);
       });
     });
   });
