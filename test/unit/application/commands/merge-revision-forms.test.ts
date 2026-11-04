@@ -9,7 +9,7 @@ import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { writeRawObjectBytes } from '../primitives/fixtures.js';
@@ -173,6 +173,209 @@ describe.each([
 
       // Assert
       expect(result).toEqual({ code: 'REF_NOT_FOUND', name: 'x' });
+    });
+  });
+});
+
+const FANOUT = '/objects/ab';
+const UNABLE_TO_OPEN = 'unable to open';
+const AMBIGUOUS = 'is ambiguous';
+const READ_TWICE = 2;
+const READ_THRICE = 3;
+const TWO_PARENTS_READ_TWICE_EACH = 5;
+
+interface CountedContext {
+  readonly ctx: Context;
+  /** Makes the `ab` fanout refuse to list, as a mode-000 directory does, from now on. */
+  readonly arm: () => void;
+  readonly errors: () => number;
+  readonly warnings: () => number;
+}
+
+/**
+ * A context whose `ab` fanout can be made to refuse listing after seeding (the object store
+ * binds the file system on first use) and whose unable-to-open and ambiguity logs are counted.
+ */
+const countedContext = (): CountedContext => {
+  const base = createMemoryContext();
+  let armed = false;
+  let errors = 0;
+  let warnings = 0;
+  const ctx: Context = {
+    ...base,
+    fs: {
+      ...base.fs,
+      readdir: async (path: string) => {
+        if (armed && path.endsWith(FANOUT)) throw permissionDenied(path);
+        return base.fs.readdir(path);
+      },
+    },
+    logger: {
+      error: (message) => {
+        if (message.startsWith(UNABLE_TO_OPEN)) errors += 1;
+      },
+      warn: (message) => {
+        if (message.includes(AMBIGUOUS)) warnings += 1;
+      },
+    },
+  };
+  return {
+    ctx,
+    arm: () => {
+      armed = true;
+    },
+    errors: () => errors,
+    warnings: () => warnings,
+  };
+};
+
+/** main holds f; each named branch adds one commit of its own on top of it. HEAD on main. */
+const seedAheadBranches = async (ctx: Context, names: ReadonlyArray<string>): Promise<void> => {
+  await init(ctx);
+  await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[user]\n\tname = Ada\n\temail = a@x\n');
+  await commitFile(ctx, 'f');
+  for (const name of names) {
+    await branchCreate(ctx, { name });
+    await checkout(ctx, { rev: name });
+    await commitFile(ctx, `${name}.txt`);
+    await checkout(ctx, { rev: 'main' });
+  }
+  await expect(ctx.fs.readdir(`${ctx.layout.gitDir}${FANOUT}`)).rejects.toMatchObject({
+    data: { code: 'FILE_NOT_FOUND' },
+  });
+};
+
+/** A counted context seeded with `names` ahead of main, its fanout armed. */
+const armedAhead = async (names: ReadonlyArray<string>): Promise<CountedContext> => {
+  const counted = countedContext();
+  await seedAheadBranches(counted.ctx, names);
+  counted.arm();
+  return counted;
+};
+
+describe('Given a branch abcd ahead of main whose fanout directory cannot be listed', () => {
+  describe('When merge abcd runs without a message', () => {
+    it('Then it logs the unable-to-open line three times, once per read git makes', async () => {
+      // Arrange
+      const { ctx, errors } = await armedAhead(['abcd']);
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'abcd', author });
+
+      // Assert
+      expect(errors()).toBe(READ_THRICE);
+    });
+  });
+
+  describe('When merge abcd runs with a message', () => {
+    it('Then it logs the unable-to-open line twice, the name read once', async () => {
+      // Arrange
+      const { ctx, errors } = await armedAhead(['abcd']);
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'abcd', message: 'm', author });
+
+      // Assert
+      expect(errors()).toBe(READ_TWICE);
+    });
+  });
+
+  describe('When merge abcd abce runs without a message', () => {
+    it('Then it logs the unable-to-open line five times, each parent read twice', async () => {
+      // Arrange
+      const { ctx, errors } = await armedAhead(['abcd', 'abce']);
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: ['abcd', 'abce'], author });
+
+      // Assert
+      expect(errors()).toBe(TWO_PARENTS_READ_TWICE_EACH);
+    });
+  });
+});
+
+describe('Given a branch abcd at main whose fanout directory cannot be listed', () => {
+  describe('When merge abcd runs without a message', () => {
+    it('Then it logs the unable-to-open line twice, a subsumed parent read once', async () => {
+      // Arrange
+      const counted = countedContext();
+      await seedAheadBranches(counted.ctx, []);
+      await branchCreate(counted.ctx, { name: 'abcd' });
+      counted.arm();
+      const sut = mergeRun;
+
+      // Act
+      const result = await sut(counted.ctx, { rev: 'abcd', author });
+
+      // Assert
+      expect(result.kind).toBe('up-to-date');
+      expect(counted.errors()).toBe(READ_TWICE);
+    });
+  });
+});
+
+describe('Given a branch abcd behind main whose fanout directory cannot be listed', () => {
+  describe('When merge abcd runs without a message', () => {
+    it('Then it logs the unable-to-open line twice, a subsumed parent read once', async () => {
+      // Arrange
+      const counted = countedContext();
+      await seedAheadBranches(counted.ctx, []);
+      await branchCreate(counted.ctx, { name: 'abcd' });
+      await commitFile(counted.ctx, 'm');
+      counted.arm();
+      const sut = mergeRun;
+
+      // Act
+      const result = await sut(counted.ctx, { rev: 'abcd', author });
+
+      // Assert
+      expect(result.kind).toBe('up-to-date');
+      expect(counted.errors()).toBe(READ_TWICE);
+    });
+  });
+});
+
+describe('Given a tag x and a branch x at a commit ahead of main', () => {
+  describe('When merge x runs without a message', () => {
+    it('Then it warns the ambiguity twice, once per read git makes', async () => {
+      // Arrange
+      const counted = countedContext();
+      await seedAheadBranches(counted.ctx, ['x']);
+      await counted.ctx.fs.writeUtf8(
+        `${counted.ctx.layout.gitDir}/refs/tags/x`,
+        `${await resolveRef(counted.ctx, 'refs/heads/x' as RefName)}\n`,
+      );
+      const { ctx, warnings } = counted;
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'x', author });
+
+      // Assert
+      expect(warnings()).toBe(READ_TWICE);
+    });
+  });
+
+  describe('When merge x runs with a message', () => {
+    it('Then it warns the ambiguity once', async () => {
+      // Arrange
+      const counted = countedContext();
+      await seedAheadBranches(counted.ctx, ['x']);
+      await counted.ctx.fs.writeUtf8(
+        `${counted.ctx.layout.gitDir}/refs/tags/x`,
+        `${await resolveRef(counted.ctx, 'refs/heads/x' as RefName)}\n`,
+      );
+      const { ctx, warnings } = counted;
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'x', message: 'm', author });
+
+      // Assert
+      expect(warnings()).toBe(1);
     });
   });
 });

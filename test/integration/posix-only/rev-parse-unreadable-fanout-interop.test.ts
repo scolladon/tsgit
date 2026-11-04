@@ -296,6 +296,29 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)('integration — an unreadable fanout
     });
   });
 
+  describe('Given a mode 000 fanout directory and a branch abcd ahead of main', () => {
+    describe.each([
+      ['merge abcd', ['merge', BRANCH], { rev: BRANCH }, READ_THRICE],
+      ['merge -m m abcd', ['merge', '-m', 'm', BRANCH], { rev: BRANCH, message: 'm' }, READ_TWICE],
+    ] as const)('When %s runs', (_name, gitArgs, input, count) => {
+      it('Then it exits 0 and tsgit logs the lines git logs, as often', async () => {
+        // Arrange
+        const repos = twins('mode 000', 'ahead');
+        const expected = gitRun(repos.git, gitArgs);
+        const { ctx, logged } = loggingContext(repos.ours);
+
+        // Act
+        const refusal = await refusalOf(mergeRun(ctx, input));
+
+        // Assert
+        expect(expected.exitCode).toBe(0);
+        expect(expected.errors).toHaveLength(count);
+        expect(refusal).toBeUndefined();
+        expect(rebuilt(ctx, logged)).toEqual(expected.errors);
+      });
+    });
+  });
+
   const replays: ReadonlyArray<readonly [string, string, (ctx: Context) => Promise<unknown>]> = [
     ['cherry-pick', 'cherry-pick', (ctx) => cherryPickRun(ctx, { commits: [BRANCH] })],
     ['revert', 'revert', (ctx) => revertRun(ctx, { commits: [BRANCH] })],
