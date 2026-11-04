@@ -167,7 +167,7 @@ Only the pinned code is folded. Other parse codes keep propagating; a new code j
 
 ### D4 — the misspelt reread is quiet for the refname check
 
-`rereadMisspelt` reads quietly unless `dropsQuietRead(arg)`, and threads that through `evaluateTyped` → `evaluate` → `resolveBase` → `resolveRevisionName` → `resolveRefLadder`/`resolveSubstitutedRefLadder` → `resolveAmbiguousLadder`. When the read is quiet, `resolveAmbiguousLadder` skips both `countFound` (the rest of the candidates) and `isAmbiguous` (the warning **and** the abbreviation scan), as `get_oid_basic`'s `&&` short-circuit does.
+`rereadMisspelt` reads quietly unless `dropsQuietRead(arg)`, and threads that through `evaluateTyped` → `evaluate` → `resolveBase` → `resolveRevisionName` → `resolveRefLadder`/`resolveSubstitutedRefLadder` → `resolveAmbiguousLadder`. When the read is quiet, `resolveAmbiguousLadder` still runs `countFound` (git's `expand_ref` reads every namespace, so a later dangling candidate's skip line prints again — pinned: `rev-parse d^{blob}` prints it twice) and skips only `isAmbiguous` (the warning **and** the abbreviation scan), as `get_oid_basic`'s `&&` short-circuit does.
 
 These stay as they are:
 
@@ -194,7 +194,7 @@ The mechanism is DC-7. This fixes the `W×2` in `revParse x^{commit}` (absent, M
 **Counts (DC-3):**
 
 - A per-session memo of fanout directories whose listing failed, `WeakMap<Session, Set<string>>`, keyed like `loose-oid-cache.ts`. That is git's `subdir_seen` bit set on failure. A memoised directory answers `[]` without reading the directory and without logging.
-- `resolveOidPrefix` (not `abbreviateObjectId`) does git's `odb_reprepare` retry: when no candidate is found, it drops the memo entries for the directories this call consulted and scans once more.
+- `resolveOidPrefix` (not `abbreviateObjectId`) does git's `odb_reprepare` retry: when no candidate is found and this call consulted a failed directory (freshly or from the memo), it drops those entries and scans once more; a miss over readable directories is not scanned again (every pinned count is unchanged).
 
 This reproduces every Fixture B count, given D2 (the sequencer's second read) and D4 (the quiet reread scans nothing when the name resolves as a ref).
 
