@@ -136,6 +136,13 @@ const countFound = async <T>(
   return count;
 };
 
+/** How a name is read: `quiet` is git's `GET_OID_QUIETLY`, which counts the later candidates but neither warns the ambiguity nor scans abbreviations. */
+export type RevisionReadMode = 'reporting' | 'quiet';
+
+export interface LadderOptions {
+  readonly mode?: RevisionReadMode | undefined;
+}
+
 /**
  * `get_oid_basic`'s ladder over `candidates` — `dwim_ref`'s namespaces, or
  * `dwim_log`'s: the first that counts wins. Only then is the check's setting
@@ -147,6 +154,7 @@ export const resolveAmbiguousLadder = async <T>(
   name: string,
   candidates: ReadonlyArray<RefName | 'HEAD'>,
   read: CandidateReader<T>,
+  { mode = 'reporting' }: LadderOptions = {},
 ): Promise<T | undefined> => {
   for (const [index, candidate] of candidates.entries()) {
     const found = await read(candidate);
@@ -154,7 +162,9 @@ export const resolveAmbiguousLadder = async <T>(
     const { warns } = await readSettings(ctx);
     if (!warns) return found;
     const othersFound = await countFound(candidates.slice(index + 1), read);
-    if (await isAmbiguous(ctx, name, othersFound)) warnAmbiguous(ctx, name);
+    if (mode === 'reporting' && (await isAmbiguous(ctx, name, othersFound))) {
+      warnAmbiguous(ctx, name);
+    }
     return found;
   }
   return undefined;
@@ -165,7 +175,8 @@ export const resolveRefLadder = (
   ctx: Context,
   name: string,
   resolve: CandidateResolver,
-): Promise<ObjectId | undefined> => resolveSubstitutedRefLadder(ctx, name, name, resolve);
+  options?: LadderOptions,
+): Promise<ObjectId | undefined> => resolveSubstitutedRefLadder(ctx, name, name, resolve, options);
 
 /** git's `substitute_branch_name` under `dwim_ref`: the ladder walks `substitute`'s
  *  namespaces while the ambiguity is still judged and warned under `name`. */
@@ -174,9 +185,14 @@ export const resolveSubstitutedRefLadder = (
   name: string,
   substitute: string,
   resolve: CandidateResolver,
+  options?: LadderOptions,
 ): Promise<ObjectId | undefined> =>
-  resolveAmbiguousLadder(ctx, name, refCandidates(substitute), (candidate) =>
-    readCandidate(ctx, candidate, resolve),
+  resolveAmbiguousLadder(
+    ctx,
+    name,
+    refCandidates(substitute),
+    (candidate) => readCandidate(ctx, candidate, resolve),
+    options,
   );
 
 /** git's check once one namespace resolved: another namespace, or a unique abbreviation, also names it. */

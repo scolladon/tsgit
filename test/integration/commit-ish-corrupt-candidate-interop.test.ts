@@ -249,4 +249,27 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
       });
     });
   });
+
+  describe.each([
+    { variant: 'absent', arg: 'x^{commit}' },
+    { variant: 'absent', arg: 'x^{blob}' },
+    { variant: 'missing-ref', arg: 'x^{commit}' },
+    { variant: 'missing-ref', arg: 'x^{blob}' },
+    { variant: 'valid', arg: 'x^{blob}' },
+  ] as const)('Given $variant, $arg', ({ variant, arg }) => {
+    describe('When git rev-parse and revParse read the argument', () => {
+      it('Then tsgit warns and errs as often as git, and refuses on the printed path', async () => {
+        // Arrange
+        const { dir } = await copyFixture(variant);
+        const expected = gitOutcome(dir, ['rev-parse', arg]);
+
+        // Act
+        const result = await tsgitRevParse(dir, arg);
+
+        // Assert
+        expect(expected.refused).toBe(true);
+        expect(result).toEqual(expected);
+      });
+    });
+  });
 });

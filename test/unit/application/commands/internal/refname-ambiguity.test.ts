@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { expandRef } from '../../../../../src/application/commands/internal/refname-ambiguity.js';
+import {
+  expandRef,
+  resolveAmbiguousLadder,
+} from '../../../../../src/application/commands/internal/refname-ambiguity.js';
 import * as configRead from '../../../../../src/application/primitives/config-read.js';
+import * as resolveOidPrefixModule from '../../../../../src/application/primitives/resolve-oid-prefix.js';
 import type { ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../../src/ports/context.js';
 
 vi.mock('../../../../../src/application/primitives/config-read.js', async (importOriginal) => ({
   ...(await importOriginal<typeof configRead>()),
@@ -36,6 +41,75 @@ describe('expandRef', () => {
           'refs/remotes/main/HEAD',
         ]);
         expect(settingsReads).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+});
+
+type Candidate = RefName | 'HEAD';
+
+const loggedCtx = (warn: (message: string) => void) =>
+  ({ ...createMemoryContext(), logger: { warn } }) as unknown as Context;
+
+describe('resolveAmbiguousLadder', () => {
+  describe('Given two candidates that both resolve', () => {
+    describe('When resolveAmbiguousLadder reads them in quiet mode', () => {
+      it('Then it returns the first and warns nothing', async () => {
+        // Arrange
+        const warnings: string[] = [];
+        const ctx = loggedCtx((message) => warnings.push(message));
+        const candidates = ['x', 'refs/tags/x'] as Candidate[];
+        const read = (candidate: Candidate) => Promise.resolve(`found:${candidate}`);
+        const sut = resolveAmbiguousLadder;
+
+        // Act
+        const result = await sut(ctx, 'x', candidates, read, { mode: 'quiet' });
+
+        // Assert
+        expect(result).toBe('found:x');
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given one candidate that resolves under a hex-looking name', () => {
+    describe('When resolveAmbiguousLadder reads it in quiet mode', () => {
+      it('Then it makes no abbreviation scan', async () => {
+        // Arrange
+        const ctx = loggedCtx(() => undefined);
+        const scan = vi.spyOn(resolveOidPrefixModule, 'resolveOidPrefix');
+        const read = (candidate: Candidate) =>
+          Promise.resolve(candidate === 'abcd' ? ID : undefined);
+        const sut = resolveAmbiguousLadder;
+
+        // Act
+        const result = await sut(ctx, 'abcd', ['abcd'] as Candidate[], read, { mode: 'quiet' });
+
+        // Assert
+        expect(result).toBe(ID);
+        expect(scan).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a winner followed by a dangling candidate', () => {
+    describe('When resolveAmbiguousLadder reads them in quiet mode', () => {
+      it('Then the later candidate is still read', async () => {
+        // Arrange
+        const ctx = loggedCtx(() => undefined);
+        const seen: Candidate[] = [];
+        const read = (candidate: Candidate) => {
+          seen.push(candidate);
+          return Promise.resolve(candidate === 'x' ? ID : undefined);
+        };
+        const candidates = ['x', 'refs/tags/x'] as Candidate[];
+        const sut = resolveAmbiguousLadder;
+
+        // Act
+        await sut(ctx, 'x', candidates, read, { mode: 'quiet' });
+
+        // Assert
+        expect(seen).toEqual(candidates);
       });
     });
   });
