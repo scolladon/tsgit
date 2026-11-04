@@ -30,13 +30,17 @@ rescan. The existing ambiguity interop suite pins its logs "once per read git ma
 **Adopted-as-recommended (no user judgment): option 1.** `resolve-oid-prefix.ts` keeps a
 `WeakMap<Session, Set<string>>` of fanout directories whose listing failed, keyed on `ctx.session` as
 `loose-oid-cache.ts` keys its cache (ADR-509). A memoised directory answers an empty listing without a
-read and without a log. When `resolveOidPrefix` finds no candidate it drops the memo entries for the
-directories this call consulted and scans once more; `abbreviateObjectId` never scans again. Successful
+read and without a log. When `resolveOidPrefix` finds no candidate and this call consulted a
+failed directory (freshly or from the memo), it drops those entries and scans once more — every pinned
+count is unchanged and a healthy store is never listed twice per miss; `abbreviateObjectId` never scans again. Successful
 listings are never cached.
 
 ## Consequences
 
 - Counts match git on every pinned route: 2 on a miss, 3 with the sequencer's second read
   (ADR-1146) or the misspelt reread, 1 on a packed hit and on `--short`.
+- A miss over readable directories is not scanned twice: git's reprepare retry is observable only
+  through the failed-directory log lines and an unpinned write race, so the rescan is bound to a
+  consulted failed directory (planning refinement).
 - A long-lived `Context` logs fewer lines on a later command than a fresh git process would — the
   same equation ADR-509 already accepts for the loose-object cache.
