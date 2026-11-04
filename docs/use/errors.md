@@ -177,6 +177,9 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `OPERATION_IN_PROGRESS` | `operation` | Another long-running operation (merge / rebase / cherry-pick) is pending. |
 | `SIGNING_FAILED` | `reason` | `commit` / `tag` requested signing but the signing program failed or is unavailable (off-node, no `gpg`, bad key, or `gpg.format=x509` which is unsupported). Nothing is written. |
 | `CANNOT_PICK_NON_COMMIT` | `revision, type` | `cherryPick` / `revert` argument (or a range side) peels to no commit; `type` is the named object's own type. |
+| `BAD_OBJECT` | `revision` | The named object does not read (`cherryPick`, `revert`, `blame`). |
+| `DESCRIBE_NEITHER_COMMIT_NOR_BLOB` | `revision` | `describe`'s target does not read or peel. |
+| `BLAME_NON_COMMIT` | `revision` | `blame`'s named tag reads but its target is missing. |
 | `EMPTY_COMMIT_SET` | — | `cherryPick` / `revert` arguments that resolve to no commit. |
 | `FORMAT_PLACEHOLDER_UNSUPPORTED` | `placeholder, reason` | An `archive` `export-subst` format holds a placeholder the command does not support (`'not-supported'`) or cannot parse (`'unparsable'`). |
 | `TIMESTAMP_OUT_OF_RANGE` | `reason, timestamp, zone` | A commit date being formatted falls outside git's range once shifted by its zone: `reason` is `'before-epoch'` or `'too-large'`. |
