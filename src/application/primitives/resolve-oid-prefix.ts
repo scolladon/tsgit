@@ -66,14 +66,29 @@ function patternFor(
 
 const UNABLE_TO_OPEN = 'unable to open';
 
+/** git reports a directory it failed to list once per process: its loose-object cache
+ *  keeps the failure and answers later scans from it. Keyed on `ctx.session`, as
+ *  `loose-oid-cache`'s `fanoutCache`, so spread contexts share it. */
+const failedListings = new WeakMap<Context['session'], Set<string>>();
+
+const failedListingsOf = (ctx: Context): Set<string> => {
+  let failed = failedListings.get(ctx.session);
+  if (failed === undefined) {
+    failed = new Set();
+    failedListings.set(ctx.session, failed);
+  }
+  return failed;
+};
+
 /** git's `for_each_file_in_obj_subdir`: a fanout directory that cannot be listed is
  *  skipped and reported, never fatal. A missing directory ("nothing loose here yet")
  *  is silent. A failure carrying no code is not a filesystem answer: it propagates. */
 const skipUnreadableFanout = (ctx: Context, dir: string, error: unknown): [] => {
   const code = errorDataCode(error);
   if (code === undefined) throw error;
-  if (code !== 'FILE_NOT_FOUND')
-    ctx.logger?.error?.(`${UNABLE_TO_OPEN} ${dir}`, { path: dir, code });
+  if (code === 'FILE_NOT_FOUND') return [];
+  failedListingsOf(ctx).add(dir);
+  ctx.logger?.error?.(`${UNABLE_TO_OPEN} ${dir}`, { path: dir, code });
   return [];
 };
 
@@ -82,13 +97,14 @@ const skipUnreadableFanout = (ctx: Context, dir: string, error: unknown): [] => 
  *  `readdir` answers in.
  *  No `exists` pre-probe: `readdir` itself answers "nothing loose here yet". A
  *  directory that cannot be listed (`PERMISSION_DENIED`, a file at the fanout path)
- *  folds to an empty scan and is logged once, as git does. */
+ *  folds to an empty scan and is logged once per session, as git does. */
 export const scanLooseIn = async (
   ctx: Context,
   source: ObjectSource,
   prefix: string,
 ): Promise<ReadonlyArray<ObjectId>> => {
   const dir = fanoutDirIn(source.objectsDir, prefix.slice(0, 2));
+  if (failedListingsOf(ctx).has(dir)) return [];
   const rest = prefix.slice(2);
   const looseName = patternFor(LOOSE_NAME_PATTERNS, ctx.hashConfig.algorithm);
   let entries: Awaited<ReturnType<Context['fs']['readdir']>>;
@@ -166,6 +182,35 @@ const chooseCandidate = async (
   throw ambiguousOidPrefix(prefix, described, readFaults);
 };
 
+const scanSources = async (
+  ctx: Context,
+  sources: ReadonlyArray<ObjectSource>,
+  prefix: string,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const perSource = await Promise.all(
+    sources.map((source) =>
+      Promise.all([scanLooseIn(ctx, source, prefix), scanPacksIn(source, prefix)]),
+    ),
+  );
+  return [...new Set<ObjectId>(perSource.flat(2))];
+};
+
+/** git's `get_short_oid` scans a miss again after `reprepare_packed_git`, which drops the
+ *  loose-object cache: only the directories this miss consulted are forgotten, and
+ *  only a remembered failure makes the rescan worth running. */
+const forgetFailed = (
+  ctx: Context,
+  sources: ReadonlyArray<ObjectSource>,
+  prefix: string,
+): boolean => {
+  const failed = failedListingsOf(ctx);
+  let forgotten = false;
+  for (const source of sources) {
+    if (failed.delete(fanoutDirIn(source.objectsDir, prefix.slice(0, 2)))) forgotten = true;
+  }
+  return forgotten;
+};
+
 export const resolveOidPrefix = async (
   ctx: Context,
   prefix: string,
@@ -174,12 +219,9 @@ export const resolveOidPrefix = async (
   if (isOid(prefix, ctx.hashConfig)) return prefix as ObjectId;
   if (!patternFor(OID_PREFIX_PATTERNS, ctx.hashConfig.algorithm).test(prefix)) return undefined;
   const { sources } = await getObjectStore(ctx);
-  const perSource = await Promise.all(
-    sources.map((source) =>
-      Promise.all([scanLooseIn(ctx, source, prefix), scanPacksIn(source, prefix)]),
-    ),
-  );
-  const unique = [...new Set<ObjectId>(perSource.flat(2))];
+  let unique = await scanSources(ctx, sources, prefix);
+  if (unique.length === 0 && forgetFailed(ctx, sources, prefix))
+    unique = await scanSources(ctx, sources, prefix);
   if (unique.length <= 1) return unique[0];
   return chooseCandidate(ctx, prefix, unique, accepts);
 };
