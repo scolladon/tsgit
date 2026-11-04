@@ -9,6 +9,7 @@
  * `rev-parse`.
  */
 import { ambiguousOidPrefix } from '../../domain/commands/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { CandidateReadFault } from '../../domain/objects/ambiguous-candidate.js';
 import type { HashConfig } from '../../domain/objects/hash-config.js';
 import { isOid, type ObjectId } from '../../domain/objects/index.js';
@@ -21,7 +22,6 @@ import {
   passesHint,
 } from './internal/ambiguous-candidates.js';
 import { configuredHint } from './internal/disambiguation-hints.js';
-import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
 import { getObjectStore, type ObjectSource } from './object-store.js';
 import { fanoutDirIn } from './path-layout.js';
 
@@ -64,13 +64,25 @@ function patternFor(
   return patterns[algorithm];
 }
 
+const UNABLE_TO_OPEN = 'unable to open';
+
+/** git's `for_each_file_in_obj_subdir`: a fanout directory that cannot be listed is
+ *  skipped and reported, never fatal. A missing directory ("nothing loose here yet")
+ *  is silent. A failure carrying no code is not a filesystem answer: it propagates. */
+const skipUnreadableFanout = (ctx: Context, dir: string, error: unknown): [] => {
+  const code = errorDataCode(error);
+  if (code === undefined) throw error;
+  if (code !== 'FILE_NOT_FOUND')
+    ctx.logger?.error?.(`${UNABLE_TO_OPEN} ${dir}`, { path: dir, code });
+  return [];
+};
+
 /** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan),
  *  in id order as git's loose-object cache walks them, whatever order
  *  `readdir` answers in.
- *  No `exists` pre-probe: `readdir` itself answers "nothing loose here yet"
- *  via `isMissingFanoutDir` (a missing directory or a file occupying the
- *  fanout path), folded to an empty scan; any other fault (e.g. a
- *  `PERMISSION_DENIED` directory) is rethrown, never silently swallowed. */
+ *  No `exists` pre-probe: `readdir` itself answers "nothing loose here yet". A
+ *  directory that cannot be listed (`PERMISSION_DENIED`, a file at the fanout path)
+ *  folds to an empty scan and is logged once, as git does. */
 export const scanLooseIn = async (
   ctx: Context,
   source: ObjectSource,
@@ -83,8 +95,7 @@ export const scanLooseIn = async (
   try {
     entries = await source.fs.readdir(dir);
   } catch (error) {
-    if (!isMissingFanoutDir(error)) throw error;
-    return [];
+    return skipUnreadableFanout(ctx, dir, error);
   }
   const found: ObjectId[] = [];
   for (const entry of entries) {

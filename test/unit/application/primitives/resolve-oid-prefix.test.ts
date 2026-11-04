@@ -401,7 +401,8 @@ describe('resolveOidPrefix', () => {
       it('Then returns undefined without an exists probe or faulting on the absent directory', async () => {
         // Arrange — nothing was written under objects/ff.
         const base = await buildSeededContext();
-        const { ctx, calls } = instrumentedContext(base);
+        const error = vi.fn();
+        const { ctx, calls } = instrumentedContext({ ...base, logger: { error } });
 
         // Act
         const result = await resolveOidPrefix(ctx, 'ffff');
@@ -410,33 +411,56 @@ describe('resolveOidPrefix', () => {
         expect(result).toBeUndefined();
         expect(calls().filter((c) => c.method === 'exists')).toEqual([]);
       });
+
+      it('Then it logs nothing', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const error = vi.fn();
+        const ctx: Context = { ...base, logger: { error } };
+
+        // Act
+        await resolveOidPrefix(ctx, 'ffff');
+
+        // Assert
+        expect(error).not.toHaveBeenCalled();
+      });
     });
   });
 
   describe('Given a fanout path occupied by a regular file instead of a directory', () => {
     describe('When resolveOidPrefix scans that prefix', () => {
-      it('Then returns undefined without faulting on the NOT_A_DIRECTORY readdir', async () => {
+      it('Then it answers undefined and logs NOT_A_DIRECTORY once', async () => {
         // Arrange — `objects/ff` exists as a plain file, not a directory.
-        const ctx = await buildSeededContext();
-        await ctx.fs.write(`${ctx.layout.gitDir}/objects/ff`, new Uint8Array([0]));
+        const base = await buildSeededContext();
+        await base.fs.write(`${base.layout.gitDir}/objects/ff`, new Uint8Array([0]));
+        const error = vi.fn();
+        const ctx: Context = { ...base, logger: { error } };
+        const fanoutDir = `${base.layout.gitDir}/objects/ff`;
 
         // Act
         const result = await resolveOidPrefix(ctx, 'ffff');
 
         // Assert
         expect(result).toBeUndefined();
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(error).toHaveBeenCalledWith(`unable to open ${fanoutDir}`, {
+          path: fanoutDir,
+          code: 'NOT_A_DIRECTORY',
+        });
       });
     });
   });
 
   describe('Given a fanout directory whose readdir rejects with PERMISSION_DENIED', () => {
     describe('When resolveOidPrefix scans that prefix', () => {
-      it('Then the fault is rethrown, never folded to an empty scan', async () => {
+      it('Then it answers undefined and logs one unable-to-open error with the path and code', async () => {
         // Arrange
         const base = await buildSeededContext();
         const fanoutDir = `${base.layout.gitDir}/objects/ff`;
+        const error = vi.fn();
         const ctx: Context = {
           ...base,
+          logger: { error },
           fs: {
             ...base.fs,
             readdir: async (path: string) => {
@@ -447,17 +471,42 @@ describe('resolveOidPrefix', () => {
         };
 
         // Act
-        let caught: unknown;
-        try {
-          await resolveOidPrefix(ctx, 'ffff');
-          expect.unreachable();
-        } catch (error) {
-          caught = error;
-        }
+        const result = await resolveOidPrefix(ctx, 'ffff');
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(result).toBeUndefined();
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(error).toHaveBeenCalledWith(`unable to open ${fanoutDir}`, {
+          path: fanoutDir,
+          code: 'PERMISSION_DENIED',
+        });
+      });
+    });
+  });
+
+  describe('Given a fanout readdir that fails without an error code', () => {
+    describe('When resolveOidPrefix scans', () => {
+      it('Then the failure propagates', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const fanoutDir = `${base.layout.gitDir}/objects/ff`;
+        const failure = new Error('disk on fire');
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readdir: async (path: string) => {
+              if (path === fanoutDir) throw failure;
+              return base.fs.readdir(path);
+            },
+          },
+        };
+
+        // Act
+        const result = resolveOidPrefix(ctx, 'ffff');
+
+        // Assert
+        await expect(result).rejects.toBe(failure);
       });
     });
   });

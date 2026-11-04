@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { abbreviateObjectId } from '../../../../src/application/primitives/abbreviate-object-id.js';
 import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { writeSyntheticPackIn } from './pack-fixture.js';
@@ -318,6 +318,41 @@ describe('abbreviateObjectId', () => {
 
         // Assert
         expect(result).toBe(id);
+      });
+    });
+  });
+
+  describe("Given the id's own fanout directory rejects PERMISSION_DENIED", () => {
+    describe('When abbreviateObjectId abbreviates it', () => {
+      it('Then it answers the base-length abbreviation and logs once', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const id = oidOf('abcdef0', '1');
+        const fanoutDir = `${base.layout.gitDir}/objects/ab`;
+        const error = vi.fn();
+        const ctx: Context = {
+          ...base,
+          logger: { error },
+          fs: {
+            ...base.fs,
+            readdir: async (path: string) => {
+              if (path === fanoutDir) throw permissionDenied(fanoutDir);
+              return base.fs.readdir(path);
+            },
+          },
+        };
+
+        // Act
+        const sut = abbreviateObjectId;
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toBe('abcdef0');
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(error).toHaveBeenCalledWith(`unable to open ${fanoutDir}`, {
+          path: fanoutDir,
+          code: 'PERMISSION_DENIED',
+        });
       });
     });
   });
