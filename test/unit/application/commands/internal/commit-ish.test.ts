@@ -4,20 +4,27 @@ import { add } from '../../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../../src/application/commands/branch.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { resolveCommitIsh } from '../../../../../src/application/commands/internal/commit-ish.js';
+import {
+  isObjectReadFault,
+  resolveCommitIsh,
+  resolveCommitIshObject,
+} from '../../../../../src/application/commands/internal/commit-ish.js';
 import * as resolveRefMod from '../../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
-import { objectNotFound } from '../../../../../src/domain/objects/error.js';
+import { invalidObjectId, objectNotFound } from '../../../../../src/domain/objects/error.js';
 import type {
   AuthorIdentity,
   ObjectId,
   RefName,
   Tag,
 } from '../../../../../src/domain/objects/index.js';
+import { refNotFound } from '../../../../../src/domain/refs/error.js';
 import { invalidMultiPackIndex } from '../../../../../src/domain/storage/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
+
+import { writeRawObjectBytes } from '../../primitives/fixtures.js';
 
 const author: AuthorIdentity = { name: 'T', email: 't@x', timestamp: 1, timezoneOffset: '+0000' };
 
@@ -346,22 +353,114 @@ describe('resolveCommitIsh — a symbolic chain deeper than the reading cap', ()
       });
     });
   });
+});
 
-  describe('Given a ref candidate whose target object is absent ahead of a resolvable one', () => {
-    describe('When resolveCommitIsh sweeps the candidates', () => {
-      it('Then the absent candidate is swept past and the next one resolves', async () => {
+describe('resolveCommitIsh — a corrupt first candidate', () => {
+  describe.each([
+    {
+      variant: 'non-hex',
+      body: 'z'.repeat(40),
+      expected: { code: 'INVALID_OBJECT_ID', value: 'z'.repeat(40) },
+    },
+    {
+      variant: 'absent',
+      body: 'a'.repeat(40),
+      expected: { code: 'OBJECT_NOT_FOUND', id: 'a'.repeat(40) },
+    },
+    {
+      variant: 'missing',
+      body: undefined,
+      expected: { code: 'OBJECT_NOT_FOUND', id: 'b'.repeat(40) },
+    },
+  ])('Given a tag ref x naming a $variant object ahead of branch x', ({ body, expected }) => {
+    describe('When resolveCommitIsh resolves x', () => {
+      it('Then it refuses on the tag ref and warns the ambiguity first', async () => {
         // Arrange
         const { ctx, head } = await seedCommit();
-        const absent = 'b'.repeat(40) as ObjectId;
-        vi.spyOn(resolveRefMod, 'readRefCandidate')
-          .mockRejectedValueOnce(objectNotFound(absent))
-          .mockResolvedValueOnce({ kind: 'found', id: head, ref: 'refs/tags/x' as RefName });
+        const warnings: string[] = [];
+        const logged = {
+          ...ctx,
+          logger: { warn: (message: string) => void warnings.push(message) },
+        };
+        const gitDir = ctx.layout.gitDir;
+        await ctx.fs.writeUtf8(`${gitDir}/refs/heads/x`, `${head}\n`);
+        const tagTarget =
+          body === undefined
+            ? 'b'.repeat(40)
+            : await writeRawObjectBytes(
+                ctx,
+                'tag',
+                new TextEncoder().encode(
+                  `object ${body}\ntype commit\ntag x\ntagger A <a@x> 1 +0000\n\nmsg\n`,
+                ),
+              );
+        await ctx.fs.writeUtf8(`${gitDir}/refs/tags/x`, `${tagTarget}\n`);
+        const sut = resolveCommitIsh;
 
         // Act
-        const result = await resolveCommitIsh(ctx, 'x');
+        const outcome = await sut(logged, 'x').catch((error: TsgitError) => error);
 
         // Assert
-        expect(result).toBe(head);
+        expect((outcome as TsgitError).data).toMatchObject(expected);
+        expect(warnings).toEqual(["refname 'x' is ambiguous."]);
+      });
+    });
+  });
+});
+
+describe('resolveCommitIshObject', () => {
+  describe('Given an annotated tag v1', () => {
+    describe('When resolveCommitIshObject resolves v1', () => {
+      it("Then it returns the tag's own id", async () => {
+        // Arrange
+        const { ctx, head } = await seedCommit();
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: head,
+            objectType: 'commit',
+            tagName: 'v1',
+            tagger: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
+            message: 'v1',
+            extraHeaders: [],
+          },
+        };
+        const tagId = await writeObject(ctx, tag);
+        await updateRef(ctx, 'refs/tags/v1' as RefName, tagId, { reflogMessage: 'seed' });
+        const sut = resolveCommitIshObject;
+
+        // Act
+        const result = await sut(ctx, 'v1');
+
+        // Assert
+        expect(result).toBe(tagId);
+      });
+    });
+  });
+});
+
+describe('isObjectReadFault', () => {
+  describe.each([
+    {
+      fault: 'OBJECT_NOT_FOUND error',
+      error: objectNotFound('a'.repeat(40) as ObjectId),
+      expected: true,
+    },
+    { fault: 'INVALID_OBJECT_ID error', error: invalidObjectId('zz'), expected: true },
+    { fault: 'REF_NOT_FOUND error', error: refNotFound('x' as RefName), expected: false },
+    { fault: 'code-less Error', error: new Error('boom'), expected: false },
+  ])('Given a $fault', ({ error, expected }) => {
+    describe('When isObjectReadFault judges it', () => {
+      it('Then it answers its verdict', () => {
+        // Arrange
+        const sut = isObjectReadFault;
+
+        // Act
+        const result = sut(error);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

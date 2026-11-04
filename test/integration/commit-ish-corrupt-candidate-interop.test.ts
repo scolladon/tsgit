@@ -10,14 +10,16 @@
  *   unique:         a corrupt first commit-ish candidate wins the ladder and every route refuses on it as git does
  *   interopSurface: revParse, cherryPick, revert, merge
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { describe as describeCommand } from '../../src/application/commands/describe.js';
 import { diff } from '../../src/application/commands/diff.js';
 import { log } from '../../src/application/commands/log.js';
+import { rebaseRun } from '../../src/application/commands/rebase.js';
 import { type RevParseEntry, revParse } from '../../src/application/commands/rev-parse.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
@@ -67,6 +69,7 @@ interface Captured {
 
 interface Refusal {
   readonly code: string;
+  readonly revision?: string;
   readonly printed?: ReadonlyArray<RevParseEntry>;
 }
 
@@ -172,6 +175,8 @@ const refusalLines = (data: Refusal): ReadonlyArray<string> => {
       const entry = data.printed?.find((printed) => printed.kind === 'path');
       return entry?.kind === 'path' ? AMBIGUOUS_ARGUMENT(entry.path) : [];
     }
+    case 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB':
+      return [`fatal: ${data.revision} is neither a commit nor blob`];
     default:
       throw new Error(`unexpected refusal ${data.code}`);
   }
@@ -200,6 +205,22 @@ const tsgitRevParse = async (dir: string, arg: string): Promise<Outcome> => {
       stdout: revParseStdout(data.printed ?? []),
       diagnostics: [...captured.lines, ...refusalLines(data)],
     };
+  }
+};
+
+const tsgitDescribe = async (
+  dir: string,
+  options: { readonly always?: true },
+): Promise<Outcome> => {
+  const captured = capture();
+  const ctx: Context = { ...createNodeContext({ workDir: dir }), logger: captured.logger };
+  const sut = describeCommand;
+  try {
+    await sut(ctx, 'x', options);
+    return { refused: false, stdout: '', diagnostics: captured.lines };
+  } catch (error) {
+    const data = (error as TsgitError).data as unknown as Refusal;
+    return { refused: true, stdout: '', diagnostics: [...captured.lines, ...refusalLines(data)] };
   }
 };
 
@@ -354,5 +375,64 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
         });
       });
     });
+  });
+
+  describe.each([
+    { variant: 'non-hex', data: { code: 'INVALID_OBJECT_ID', value: NON_HEX_OBJECT } },
+    { variant: 'truncated', data: { code: 'INVALID_OBJECT_ID', value: TRUNCATED_OBJECT } },
+    { variant: 'absent', data: { code: 'OBJECT_NOT_FOUND', id: ABSENT_OBJECT } },
+    { variant: 'missing-ref', data: { code: 'OBJECT_NOT_FOUND', id: MISSING_REF_TARGET } },
+  ] as const)('Given $variant', ({ variant, data }) => {
+    describe('When git rebase -i and rebaseRun take the todo pick x', () => {
+      it('Then both refuse and tsgit writes no rebase state', async () => {
+        // Arrange
+        const { dir, c1, c2 } = await copyFixture(variant);
+        const expected = tryRunGitWithExit(['-C', dir, 'rebase', '-i', c1], {
+          env: { ...runGitEnv(), ...identity, GIT_SEQUENCE_EDITOR: "printf 'pick x\\n' >" },
+        });
+        runGit(['-C', dir, 'rebase', '--abort'], { env: identity });
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = rebaseRun;
+
+        // Act
+        const result = await sut(ctx, {
+          upstream: c1,
+          interactive: [{ action: 'pick', oid: 'x' }],
+        }).catch((error: TsgitError) => error);
+
+        // Assert
+        expect(expected.exitCode).toBe(1);
+        expect(expected.stderr).toContain('error: invalid line 1: pick x');
+        expect((result as TsgitError).data).toMatchObject(data);
+        expect(existsSync(path.join(dir, '.git', 'rebase-merge'))).toBe(false);
+        expect(git(dir, 'rev-parse', 'HEAD').trim()).toBe(c2);
+      });
+    });
+  });
+
+  describe.each([
+    { options: {}, flags: [] },
+    { options: { always: true }, flags: ['--always'] },
+  ] as const)('Given describe with $flags', ({ options, flags }) => {
+    describe.each(['non-hex', 'truncated', 'absent', 'missing-ref'] as const)(
+      'When the tag ref x names a %s object',
+      (variant) => {
+        it('Then git and describe warn the ambiguity and refuse neither a commit nor blob', async () => {
+          // Arrange
+          const { dir } = await copyFixture(variant);
+          const expected = gitOutcome(dir, ['describe', ...flags, 'x']);
+
+          // Act
+          const result = await tsgitDescribe(dir, options);
+
+          // Assert
+          expect(expected.diagnostics).toEqual([
+            "warning: refname 'x' is ambiguous.",
+            'fatal: x is neither a commit nor blob',
+          ]);
+          expect(result).toEqual(expected);
+        });
+      },
+    );
   });
 });

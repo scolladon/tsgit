@@ -7,6 +7,7 @@
  */
 import {
   cannotDescribe,
+  describeNeitherCommitNorBlob,
   noAnnotatedNames,
   noExactMatch,
   noNames,
@@ -33,7 +34,7 @@ import {
 } from '../primitives/internal/commit-date-walk.js';
 import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { resolveCommitIsh } from './internal/commit-ish.js';
+import { isObjectReadFault, resolveCommitIsh } from './internal/commit-ish.js';
 import {
   type ContainsPlan,
   type DescribeOptions,
@@ -65,6 +66,16 @@ export interface DescribeResult {
 const DEFAULT_REV = 'HEAD';
 const TAGS_PREFIX = 'refs/tags/';
 
+/** git's `describe`: a revision whose object cannot be read is neither a commit nor a blob. */
+const resolveDescribeTarget = async (ctx: Context, revision: string): Promise<ObjectId> => {
+  try {
+    return await resolveCommitIsh(ctx, revision);
+  } catch (error) {
+    if (isObjectReadFault(error)) throw describeNeitherCommitNorBlob(revision);
+    throw error;
+  }
+};
+
 export function describe(
   ctx: Context,
   rev: string | undefined,
@@ -83,7 +94,7 @@ export async function describe(
   await assertOperationalRepository(ctx);
   if (opts.contains === true) return describeContains(ctx, rev, parseContainsOptions(opts));
   const plan = parseDescribeOptions(opts, rev !== undefined);
-  const target = await resolveCommitIsh(ctx, rev ?? DEFAULT_REV);
+  const target = await resolveDescribeTarget(ctx, rev ?? DEFAULT_REV);
   const dirty = await computeDirty(ctx, plan);
   const nameMap = await buildNameMap(ctx, plan);
   const minPriority = minQualifyingPriority(plan);
