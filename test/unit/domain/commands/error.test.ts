@@ -138,11 +138,14 @@ describe('domain commands error — factory data', () => {
         ['DESCRIBE_NEITHER_COMMIT_NOR_BLOB', describeNeitherCommitNorBlob],
         ['BLAME_NON_COMMIT', blameNonCommit],
       ] as const)('Then %s carries the revision as typed', (code, factory) => {
-        // Arrange + Act
-        const sut = factory('x');
+        // Arrange
+        const sut = factory;
+
+        // Act
+        const result = sut('x');
 
         // Assert
-        expect(sut.data).toEqual({ code, revision: 'x' });
+        expect(result.data).toEqual({ code, revision: 'x' });
       });
     });
   });

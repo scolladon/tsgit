@@ -1575,87 +1575,87 @@ describe('Given a stat-moved tracked file', () => {
       );
     });
   });
+});
 
-  describe.each([
-    { variant: 'non-hex', object: 'z'.repeat(40) },
-    { variant: 'truncated', object: 'abc' },
-    { variant: 'absent', object: 'a'.repeat(40) },
-    { variant: 'missing-ref', object: undefined },
-  ])('Given a tag ref x naming a $variant object ahead of branch x', ({ object }) => {
-    describe.each([{}, { always: true }])('When describe reads x with %o', (opts) => {
-      it("Then it refuses DESCRIBE_NEITHER_COMMIT_NOR_BLOB { revision: 'x' } after warning the ambiguity", async () => {
-        // Arrange
-        const ctx = await seed();
-        const head = await commitFile(ctx, 'c1');
-        const warnings: string[] = [];
-        const logged = {
-          ...ctx,
-          logger: { warn: (message: string) => void warnings.push(message) },
-        };
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${head}\n`);
-        const tagTarget =
-          object === undefined
-            ? 'b'.repeat(40)
-            : await writeRawObjectBytes(
-                ctx,
-                'tag',
-                new TextEncoder().encode(
-                  `object ${object}\ntype commit\ntag x\ntagger A <a@x> 1 +0000\n\nmsg\n`,
-                ),
-              );
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, `${tagTarget}\n`);
-        const sut = describeCmd;
+describe.each([
+  { variant: 'non-hex', object: 'z'.repeat(40) },
+  { variant: 'truncated', object: 'abc' },
+  { variant: 'absent', object: 'a'.repeat(40) },
+  { variant: 'missing-ref', object: undefined },
+])('Given a tag ref x naming a $variant object ahead of branch x', ({ object }) => {
+  describe.each([{}, { always: true }])('When describe reads x with %o', (opts) => {
+    it("Then it refuses DESCRIBE_NEITHER_COMMIT_NOR_BLOB { revision: 'x' } after warning the ambiguity", async () => {
+      // Arrange
+      const ctx = await seed();
+      const head = await commitFile(ctx, 'c1');
+      const warnings: string[] = [];
+      const logged = {
+        ...ctx,
+        logger: { warn: (message: string) => void warnings.push(message) },
+      };
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${head}\n`);
+      const tagTarget =
+        object === undefined
+          ? 'b'.repeat(40)
+          : await writeRawObjectBytes(
+              ctx,
+              'tag',
+              new TextEncoder().encode(
+                `object ${object}\ntype commit\ntag x\ntagger A <a@x> 1 +0000\n\nmsg\n`,
+              ),
+            );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, `${tagTarget}\n`);
+      const sut = describeCmd;
 
-        // Act
-        const error = await catchError(() => sut(logged, 'x', opts));
+      // Act
+      const error = await catchError(() => sut(logged, 'x', opts));
 
-        // Assert
-        expect(error.data).toMatchObject({
-          code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB',
-          revision: 'x',
-        });
-        expect(warnings).toEqual(["refname 'x' is ambiguous."]);
+      // Assert
+      expect(error.data).toMatchObject({
+        code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB',
+        revision: 'x',
       });
+      expect(warnings).toEqual(["refname 'x' is ambiguous."]);
     });
   });
+});
 
-  describe('Given a name no ref or object carries', () => {
-    describe('When describe reads it', () => {
-      it('Then it refuses REF_NOT_FOUND { name }', async () => {
-        // Arrange
-        const ctx = await seed();
-        await commitFile(ctx, 'c1');
-        const sut = describeCmd;
+describe('Given a name no ref or object carries', () => {
+  describe('When describe reads it', () => {
+    it('Then it refuses REF_NOT_FOUND { name }', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1');
+      const sut = describeCmd;
 
-        // Act
-        const error = await catchError(() => sut(ctx, 'nowhere'));
+      // Act
+      const error = await catchError(() => sut(ctx, 'nowhere'));
 
-        // Assert
-        expect(error.data).toMatchObject({ code: 'REF_NOT_FOUND', name: 'nowhere' });
-      });
+      // Assert
+      expect(error.data).toMatchObject({ code: 'REF_NOT_FOUND', name: 'nowhere' });
     });
   });
+});
 
-  describe('Given a tag whose read fails without a code', () => {
-    describe('When describe reads it', () => {
-      it('Then the failure propagates', async () => {
-        // Arrange
-        const ctx = await seed();
-        const head = await commitFile(ctx, 'c1');
-        const tagId = await tagObjectRef(ctx, 'v1', head, 'commit', clock + 1);
-        const failure = new Error('boom');
-        const original = readObjectModule.readObject;
-        vi.spyOn(readObjectModule, 'readObject').mockImplementation((c, id) =>
-          id === tagId ? Promise.reject(failure) : original(c, id),
-        );
-        const sut = describeCmd;
+describe('Given a tag whose read fails without a code', () => {
+  describe('When describe reads it', () => {
+    it('Then the failure propagates', async () => {
+      // Arrange
+      const ctx = await seed();
+      const head = await commitFile(ctx, 'c1');
+      const tagId = await tagObjectRef(ctx, 'v1', head, 'commit', clock + 1);
+      const failure = new Error('boom');
+      const original = readObjectModule.readObject;
+      vi.spyOn(readObjectModule, 'readObject').mockImplementation((c, id) =>
+        id === tagId ? Promise.reject(failure) : original(c, id),
+      );
+      const sut = describeCmd;
 
-        // Act
-        const outcome = await sut(ctx, 'v1').catch((error: unknown) => error);
+      // Act
+      const outcome = await sut(ctx, 'v1').catch((error: unknown) => error);
 
-        // Assert
-        expect(outcome).toBe(failure);
-      });
+      // Assert
+      expect(outcome).toBe(failure);
     });
   });
 });
