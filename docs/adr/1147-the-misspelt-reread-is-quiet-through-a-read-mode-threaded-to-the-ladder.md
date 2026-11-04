@@ -13,8 +13,9 @@ subjects:
 ## Context
 
 After a miss, `rev-parse` re-reads the argument to decide whether it names a path
-(`maybe_die_on_misspelt_object_name`), and git reads it quietly: `get_oid_basic` skips the rest of
-the ladder count, the refname warning and the abbreviation scan, while a `^` or `~` suffix drops the
+(`maybe_die_on_misspelt_object_name`), and git reads it quietly: `dwim_ref` still reads every
+namespace, so a skipped candidate's `ignoring dangling symref` line prints again, while
+`get_oid_basic` skips the refname warning and the abbreviation scan; a `^` or `~` suffix drops the
 quiet flag and the `ignoring dangling symref` line stays printed twice (all pinned twice on 2.56.0).
 tsgit's `rereadMisspelt` re-emits the warning, so `rev-parse x^{commit}` on a tag whose target is
 missing, and `x^{blob}` on a valid ambiguous `x`, warn twice where git warns once.
@@ -32,11 +33,14 @@ missing, and `x^{blob}` on a valid ambiguous `x`, warn twice where git warns onc
 
 **Adopted-as-recommended (no user judgment): option 1.** `rereadMisspelt` reads in `'quiet'` mode
 unless the argument carries a `^` or `~` operator; in quiet mode `resolveAmbiguousLadder` returns the
-first candidate that counts without counting the rest, without the warning and without the
-abbreviation scan. `warnSkipped`, `warnIfRefNamesObjectId` and `reportPeelMismatch` are not gated.
+first candidate that counts after reading the later candidates as `expand_ref` does (their skip
+warnings included), without the ambiguity warning and without the abbreviation scan. `warnSkipped`, `warnIfRefNamesObjectId` and `reportPeelMismatch` are not gated.
 
 ## Consequences
 
 - Warning counts match git on every pinned `rev-parse` row, including the `x~5` control (twice) and
   the dangling-symref controls (the skip line twice).
 - `resolveRevisionName` takes `{ accepts?, mode? }`; its callers are updated in the same part.
+- Erratum (planning): the first wording also skipped the later-candidate count in quiet mode. git's
+  `rev-parse d^{blob}` prints `ignoring dangling symref refs/heads/d` twice (pinned on 2.56.0), and only
+  the count's read of `refs/heads/d` after the winning tag produces the second line, so the count stays.
