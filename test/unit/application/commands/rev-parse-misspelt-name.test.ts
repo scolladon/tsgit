@@ -26,15 +26,17 @@ const danglingRepo = async (warn: (message: string) => void): Promise<Context> =
 const AMBIGUOUS = "refname 'x' is ambiguous.";
 const MISSING_TARGET = 'b'.repeat(40);
 
-/** A branch `x` and a tag `x`: the tag at the same commit, or — `missingTag` — at an object nobody wrote. */
+type TagTarget = 'the same commit' | 'a missing object';
+
+/** A branch `x` and a tag `x`, the tag at `target`: the branch's commit, or an object nobody wrote. */
 const ambiguousRepo = async (
   warn: (message: string) => void,
-  missingTag: boolean,
+  target: TagTarget,
 ): Promise<Context> => {
   const base = createMemoryContext();
   const { commitIds } = await seedRepo(base, { commits: [{ tree: EMPTY_TREE }] });
   const tip = commitIds[0] as ObjectId;
-  const tag = missingTag ? MISSING_TARGET : tip;
+  const tag = target === 'a missing object' ? MISSING_TARGET : tip;
   await seedRepo(base, {
     refs: { 'refs/heads/main': tip, 'refs/heads/x': tip, 'refs/tags/x': tag },
   });
@@ -492,13 +494,13 @@ describe('Given an expression whose name warns, names no object, and names a wor
 
 describe('Given an ambiguous name x', () => {
   describe.each([
-    { arg: 'x^{blob}', missingTag: false },
-    { arg: 'x^{commit}', missingTag: true },
-  ])('When revParse reads $arg, which names no object', ({ arg, missingTag }) => {
+    { arg: 'x^{blob}', target: 'the same commit' as const },
+    { arg: 'x^{commit}', target: 'a missing object' as const },
+  ])('When revParse reads $arg, which names no object', ({ arg, target }) => {
     it('Then it warns the ambiguity once, the reread being quiet', async () => {
       // Arrange
       const warnings: string[] = [];
-      const ctx = await ambiguousRepo((message) => warnings.push(message), missingTag);
+      const ctx = await ambiguousRepo((message) => warnings.push(message), target);
       const sut = revParse;
 
       // Act
@@ -517,7 +519,7 @@ describe('Given an ambiguous name x', () => {
     it('Then it warns twice, the ancestor step dropping the quiet read', async () => {
       // Arrange
       const warnings: string[] = [];
-      const ctx = await ambiguousRepo((message) => warnings.push(message), false);
+      const ctx = await ambiguousRepo((message) => warnings.push(message), 'the same commit');
       const sut = revParse;
 
       // Act
