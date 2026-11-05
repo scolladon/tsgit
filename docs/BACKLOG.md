@@ -35,7 +35,7 @@ table top-down and elects the first unblocked item.
 | # | cut | items | why here |
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
-| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · 32.19 · 32.26 · 32.48 · 32.49 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 · 32.47 (spike) | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
+| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · 32.26 · 32.48 · 32.49 · 32.13 · 32.14 · 32.12 · 32.1 rows D9, D10, D22 · 32.47 (spike) | clock-driven: lands when git 2.56.x settles, CI git pinned in the same PR; the one cut that can block every other (red `main`) |
 | 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · 32.32 · 32.33 · 32.40 · 32.41 · 32.44 · 32.1 rows A6, A21, A22, A23, D5, D15, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · 32.23 · 32.34 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B13, B17, C6, C22, D19 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 32.15 · 31.13 · 32.36 · 32.50 (spike) | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
@@ -662,7 +662,7 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
 - [x] **32.18** `fsck` refs with a broken chain or an unreadable file — pre-existing, pinned against git 2.55: · ADRs 1121–1139 · design/fsck-broken-ref-chain-unreadable.md
   - `a` = `ref: refs/heads/b` with `b` garbage, `abc`, empty or `ref: x..y`: git reports `badRefContent`/`badReferentName` on `b` plus an `invalid sha1 pointer 0000…` for `a` and `b` (exit 10); tsgit omits `a` and reports nothing for the `badReferentName` case (exit 0);
   - an unreadable ordinary ref (`b` permission-denied): git prints `cannot read ref file` plus the pointer lines and exits 8; tsgit throws in `listRefs`.
-- [ ] **32.19** `rev-parse` and commit-ish resolution against corrupt input — pre-existing, pinned against git 2.55:
+- [x] **32.19** `rev-parse` and commit-ish resolution against corrupt input — pre-existing, pinned against git 2.55: · ADRs 1141–1147 · design/rev-parse-corrupt-input.md
   - `resolveCommitIsh` sweeps past a corrupt candidate (a tag ref to a tag object naming a malformed id, plus a valid same-name head): git `cherry-pick x` is `fatal: bad object x` and `rev-parse x^{commit}` exits 128; tsgit returns the head;
   - an unreadable `objects/<xx>` during the abbreviation check is rethrown (`objects/ab` mode 000 plus branch `abcd`: git `rev-parse abcd` logs `error: unable to open .git/objects/ab: Permission denied` twice and prints the commit, exit 0; tsgit rethrows `PERMISSION_DENIED`).
 - [ ] **32.20** `submodule init` skips a submodule whose url is already configured — `.gitmodules` `update` is then never copied (git 2.55 writes `update = merge` into the config; tsgit leaves it unchanged). Pre-existing.
