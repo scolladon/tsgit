@@ -501,7 +501,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
         // Assert
         expect(expected.exitCode).toBe(1);
         expect(expected.stderr).toContain('error: invalid line 1: pick x');
-        expect((result as TsgitError).data).toMatchObject(data);
+        expect((result as TsgitError).data).toEqual(data);
         expect(existsSync(path.join(dir, '.git', 'rebase-merge'))).toBe(false);
         expect(git(dir, 'rev-parse', 'HEAD').trim()).toBe(c2);
       });

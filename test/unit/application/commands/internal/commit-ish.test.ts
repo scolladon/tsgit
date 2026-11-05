@@ -403,7 +403,7 @@ describe('resolveCommitIsh — a corrupt first candidate', () => {
         const outcome = await sut(logged, 'x').catch((error: TsgitError) => error);
 
         // Assert
-        expect((outcome as TsgitError).data).toMatchObject(expected);
+        expect((outcome as TsgitError).data).toEqual(expected);
         expect(warnings).toEqual(["refname 'x' is ambiguous."]);
       });
     });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -7,6 +7,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
+import * as readObjectModule from '../../../../src/application/primitives/read-object.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
@@ -254,17 +255,37 @@ const armedAhead = async (names: ReadonlyArray<string>): Promise<CountedContext>
 };
 
 describe('Given a branch abcd ahead of main whose fanout directory cannot be listed', () => {
-  describe('When merge abcd runs without a message', () => {
+  describe.each([
+    { shape: 'by default', options: {} },
+    { shape: 'with fastForward only', options: { fastForward: 'only' as const } },
+    { shape: 'with fastForward never', options: { fastForward: 'never' as const } },
+    { shape: 'with squash', options: { squash: true } },
+  ])('When merge abcd runs without a message, $shape', ({ options }) => {
     it('Then it logs the unable-to-open line three times, once per read git makes', async () => {
       // Arrange
       const { ctx, errors } = await armedAhead(['abcd']);
       const sut = mergeRun;
 
       // Act
-      await sut(ctx, { rev: 'abcd', author });
+      await sut(ctx, { rev: 'abcd', author, ...options });
 
       // Assert
       expect(errors()).toBe(READ_THRICE);
+    });
+  });
+
+  describe('When merge abcd runs with heads a caller described', () => {
+    it('Then it logs the unable-to-open line twice, the described parent not read again', async () => {
+      // Arrange
+      const { ctx, errors } = await armedAhead(['abcd']);
+      const id = await resolveRef(ctx, 'refs/heads/abcd' as RefName);
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'abcd', author }, { heads: [{ id, description: "branch 'abcd'" }] });
+
+      // Assert
+      expect(errors()).toBe(READ_TWICE);
     });
   });
 
@@ -376,6 +397,31 @@ describe('Given a tag x and a branch x at a commit ahead of main', () => {
 
       // Assert
       expect(warnings()).toBe(1);
+    });
+  });
+});
+
+describe('Given a merge parent whose tag object read fails without an error code', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When merge takes the tag', () => {
+    it('Then the failure propagates unchanged', async () => {
+      // Arrange
+      const { ctx, tagOid } = await seed();
+      const failure = new Error('boom');
+      const original = readObjectModule.readObject;
+      vi.spyOn(readObjectModule, 'readObject').mockImplementation((c, id) =>
+        id === tagOid ? Promise.reject(failure) : original(c, id),
+      );
+      const sut = mergeRun;
+
+      // Act
+      const caught = await sut(ctx, { rev: 'v1', author }).catch((error: unknown) => error);
+
+      // Assert
+      expect(caught).toBe(failure);
     });
   });
 });
