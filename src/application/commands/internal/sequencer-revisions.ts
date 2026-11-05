@@ -2,6 +2,7 @@ import {
   cannotPickNonCommit,
   emptyCommitSet,
   invalidOption,
+  invalidRevisionRange,
 } from '../../../domain/commands/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -86,12 +87,23 @@ const resolveSeeds = async (ctx: Context, args: ReadonlyArray<string>): Promise<
   return { tips: idsOf('tip'), excluded: idsOf('excluded'), named: picked.map((seed) => seed.id) };
 };
 
-/** git's second `repo_get_oid` on a name, then its type check: the name must peel to a commit. */
-const pickedCommit = async (ctx: Context, { name }: Seed): Promise<ObjectId> => {
+/**
+ * git's second `repo_get_oid` on a name, then its type check: the name must peel to a
+ * commit. The pick itself is the first read's object, as `setup_revisions`' pending list
+ * holds it; the second read decides nothing but the refusal.
+ */
+const pickedCommit = async (ctx: Context, { name, id }: Seed): Promise<ObjectId> => {
   const reread = await evaluateRevision(ctx, name);
-  const peeled = await peelToCommit(ctx, reread);
-  if (peeled !== undefined) return peeled.commit.id;
-  throw cannotPickNonCommit(name, (await readObject(ctx, reread)).type);
+  const checked = await peelToCommit(ctx, reread);
+  if (checked === undefined) throw cannotPickNonCommit(name, (await readObject(ctx, reread)).type);
+  return reread === id ? checked.commit.id : commitOf(ctx, name, id);
+};
+
+/** The first read's object peeled to its commit, when the second read named another object. */
+const commitOf = async (ctx: Context, name: string, id: ObjectId): Promise<ObjectId> => {
+  const peeled = await peelToCommit(ctx, id);
+  if (peeled === undefined) throw cannotPickNonCommit(name, (await readObject(ctx, id)).type);
+  return peeled.commit.id;
 };
 
 /** A chain ending at an object that does not read peels to no commit, as git's `lookup_commit_reference` finds none. */
@@ -111,13 +123,43 @@ const argSeeds = async (ctx: Context, arg: string): Promise<ReadonlyArray<Seed>>
   }
   const range = RANGE.exec(arg);
   if (range !== null) {
-    const [excluded, tip] = [orHead(range[1] as string), orHead(range[2] as string)];
-    return [await evaluatedSeed(ctx, excluded, 'excluded'), await evaluatedSeed(ctx, tip, 'tip')];
+    return rangeSeeds(ctx, arg, orHead(range[1] as string), orHead(range[2] as string));
   }
   if (arg.startsWith(EXCLUDE_PREFIX)) {
-    return [await evaluatedSeed(ctx, arg.slice(EXCLUDE_PREFIX.length), 'excluded')];
+    return [await excludedSeed(ctx, arg.slice(EXCLUDE_PREFIX.length))];
   }
   return [await plainSeed(ctx, arg)];
+};
+
+/** git's `handle_dotdot`: both ends are read, and a side that does not read makes the range invalid. */
+const rangeSeeds = async (
+  ctx: Context,
+  arg: string,
+  excluded: string,
+  tip: string,
+): Promise<ReadonlyArray<Seed>> => {
+  const seeds = [
+    await evaluatedSeed(ctx, excluded, 'excluded'),
+    await evaluatedSeed(ctx, tip, 'tip'),
+  ];
+  for (const seed of seeds) await readRangeSide(ctx, seed.id, arg);
+  return seeds;
+};
+
+const readRangeSide = async (ctx: Context, id: ObjectId, arg: string): Promise<void> => {
+  try {
+    await readObject(ctx, id);
+  } catch (error) {
+    if (isObjectReadFault(error)) throw invalidRevisionRange(arg);
+    throw error;
+  }
+};
+
+/** git's `get_reference` on an excluded side: the named object must read. */
+const excludedSeed = async (ctx: Context, name: string): Promise<Seed> => {
+  const seed = await evaluatedSeed(ctx, name, 'excluded');
+  await readRevisionObject(ctx, seed.id, name);
+  return seed;
 };
 
 const evaluatedSeed = async (ctx: Context, name: string, role: SeedRole): Promise<Seed> => ({

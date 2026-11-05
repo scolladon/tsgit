@@ -76,6 +76,7 @@ interface Captured {
 interface Refusal {
   readonly code: string;
   readonly revision?: string;
+  readonly expression?: string;
   readonly name?: string;
   readonly type?: string;
   readonly printed?: ReadonlyArray<RevParseEntry>;
@@ -191,6 +192,8 @@ const refusalLines = (data: Refusal, route = 'cherry-pick'): ReadonlyArray<strin
     }
     case 'BAD_OBJECT':
       return [`fatal: bad object ${data.revision}`];
+    case 'INVALID_REVISION_RANGE':
+      return [`fatal: Invalid revision range ${data.expression}`];
     case 'CANNOT_PICK_NON_COMMIT':
       return [
         `error: ${data.revision}: can't cherry-pick a ${data.type}`,
@@ -553,14 +556,11 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
         const result = await tsgitReplay(twinTsgit.dir, route, run, commits);
 
         // Assert
-        const expectedLines = expected.diagnostics.filter(
-          (line) => !/^error: could not/.test(line),
-        );
         expect(expected.refused).toBe(true);
         expect(ambiguityWarnings(expected.diagnostics)).toHaveLength(
           variant === 'tag-of-tree' ? 0 : lines,
         );
-        expect(result.diagnostics).toEqual(expectedLines);
+        expect(result.diagnostics).toEqual(expected.diagnostics);
         expect(stateOf(twinTsgit.dir)).toEqual(stateOf(twinGit.dir));
         expect(stateOf(twinGit.dir)).toEqual({
           cherryPickHead: false,
@@ -569,6 +569,34 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
           head: twinGit.c2,
           status: '',
         });
+      });
+    });
+  });
+
+  describe.each([
+    { variant: 'non-hex', refusal: 'fatal: bad object x' },
+    { variant: 'missing-ref', refusal: 'fatal: bad object x' },
+  ] as const)('Given the $variant variant', ({ variant, refusal }) => {
+    describe.each([
+      { commits: ['^x', 'main'], last: refusal },
+      { commits: ['main', '^x'], last: refusal },
+      { commits: ['x..main'], last: 'fatal: Invalid revision range x..main' },
+    ])('When cherry-pick takes $commits', ({ commits, last }) => {
+      it('Then tsgit refuses on the first read with git lines and writes no state, as git does', async () => {
+        // Arrange
+        const twinGit = await copyFixture(variant);
+        const twinTsgit = await copyFixture(variant);
+        const expected = gitOutcome(twinGit.dir, ['cherry-pick', ...commits]);
+
+        // Act
+        const result = await tsgitReplay(twinTsgit.dir, 'cherry-pick', cherryPick, commits);
+
+        // Assert
+        expect(expected.refused).toBe(true);
+        expect(ambiguityWarnings(expected.diagnostics)).toHaveLength(1);
+        expect(expected.diagnostics.at(-1)).toBe(last);
+        expect(result).toEqual(expected);
+        expect(stateOf(twinTsgit.dir)).toEqual(stateOf(twinGit.dir));
       });
     });
   });
