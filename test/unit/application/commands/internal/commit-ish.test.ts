@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../../src/application/commands/branch.js';
@@ -27,6 +27,10 @@ import { invalidMultiPackIndex } from '../../../../../src/domain/storage/error.j
 import type { Context } from '../../../../../src/ports/context.js';
 
 import { writeRawObjectBytes } from '../../primitives/fixtures.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const author: AuthorIdentity = { name: 'T', email: 't@x', timestamp: 1, timezoneOffset: '+0000' };
 

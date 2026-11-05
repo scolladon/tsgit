@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   expandRef,
@@ -8,6 +8,10 @@ import * as configRead from '../../../../../src/application/primitives/config-re
 import * as resolveOidPrefixModule from '../../../../../src/application/primitives/resolve-oid-prefix.js';
 import type { ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 vi.mock('../../../../../src/application/primitives/config-read.js', async (importOriginal) => ({
   ...(await importOriginal<typeof configRead>()),

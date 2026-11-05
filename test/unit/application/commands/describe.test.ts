@@ -28,6 +28,10 @@ import type { Context } from '../../../../src/ports/context.js';
 import { writeRawObjectBytes } from '../primitives/fixtures.js';
 import { asBareContext } from './fixtures.js';
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 const ident = (timestamp: number): AuthorIdentity => ({
   name: 'A U Thor',
   email: 'author@example.com',
