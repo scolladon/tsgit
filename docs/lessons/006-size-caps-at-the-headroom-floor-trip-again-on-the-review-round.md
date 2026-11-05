@@ -13,7 +13,7 @@ evidence:
 source: { run: gc-size-lying-loose-blob, phase: review, date: 2026-10-21 }
 status: active
 supersedes: []
-last-verified: 2026-10-29
+last-verified: 2026-11-05
 ---
 # 006 — Size caps at the headroom floor trip again on the review round
 
@@ -51,3 +51,4 @@ Record each raise in the design's raise section and the tarball cap's comment, w
 `Full library` over by 231 kB and `Chunks: primitives` over by 112 kB: the previous build's chunk files were
 still in `dist/` beside the new ones and the chunk globs summed both. `rm -rf dist .wireit` then measured the
 true rows (1.4 kB and 670 B over) and the caps were raised once, after the review round, from those numbers.
+`.size-limit.json` — on the rev-parse corrupt-input change, `check:size` went red by 48–115 B after an early part and by hundreds of bytes after the last; the raise waited for a clean build and a `main` baseline, landed once with 0.3 kB of headroom on the user's call, held through three review cycles and a refactor, and was tightened to the measurement after the mutation triage, the last step that touches `src/`.

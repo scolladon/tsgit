@@ -14,7 +14,7 @@ evidence:
 source: { run: forced-checkout-displace-occupant, phase: implementation, date: 2026-10-25 }
 status: active
 supersedes: []
-last-verified: 2026-10-26
+last-verified: 2026-11-05
 ---
 # 015 — A shared command-path change runs the command's whole interop family
 
@@ -46,3 +46,4 @@ worktree.
 `src/application/commands/merge.ts` — `snapshotBeforeStrategies` and its fallback identity.
 `test/integration/missing-value-refusal-interop.test.ts`, `test/integration/conflict-style-interop.test.ts`,
 `test/integration/checkout-leading-symlink-interop.test.ts` — the suites that went red.
+`src/application/commands/merge.ts` — the shared read-fault mapper refactor touched the merge, describe, blame, cherry-pick and revert paths at once; its gate ran each command's interop family (`merge-interop`, `describe-interop`, `blame-interop`, `sequencer-range-order-interop`, `commit-ish-corrupt-candidate-interop`) and every row stayed green, which is the behaviour-preservation proof a refactor needs.
