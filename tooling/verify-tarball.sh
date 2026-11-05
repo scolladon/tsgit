@@ -451,9 +451,9 @@ done
 # sequencer's second read, the quiet read mode, the describe, blame and merge refusal arms
 # with merge's parent re-read, the fanout-fault classifier with its session memo and rescan,
 # and the peel fold — runtime code shipped in every distribution form, none removable without
-# dropping the refusals and diagnostics git performs. The cap carries ~3 KiB of headroom on
-# the user's call, to be tightened to the measurement once the review round converges.
-SIZE_CAP=$((1516 * 1024))
+# dropping the refusals and diagnostics git performs. Tightened 1516 -> 1514 KiB to the final
+# measurement (1 549 164 B, 1512.9 KiB) plus 1 KiB once the review and the mutation triage converged.
+SIZE_CAP=$((1514 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

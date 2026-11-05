@@ -778,7 +778,8 @@ Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-lim
 bytes, against `main` at `751166b5` built the same way at the same toolchain. On the user's call
 each failing row is raised to its measurement plus 0.3 kB of headroom, rounded up to the next
 0.1 kB, so the review round's fixes do not re-trip it; the caps are tightened back to the
-measurement rounded up to the next 0.1 kB once the review converges.
+measurement plus 0.1 kB, rounded up to the next 0.1 kB, once the review and the mutation triage
+converge.
 
 | Row | old limit | baseline | measured | Δ | new limit | attributable to |
 |---|--:|--:|--:|--:|--:|---|
@@ -790,3 +791,17 @@ measurement rounded up to the next 0.1 kB once the review converges.
 
 The npm tarball cap moved 1510 → 1516 KiB (1 548 704 B measured, 2 464 B over the old cap; the baseline pack is 1 546 158 B); its
 attribution lives in `tooling/verify-tarball.sh`'s cap block.
+
+Tightened after the mutation triage, the last step that touches `src/`, on a clean build of the
+final shape (the shared read-fault mapper refactor and the triage's removal of an unused
+`evaluateRevision` parameter included): measurement plus 0.1 kB, rounded up to the next 0.1 kB.
+
+| Row | raised to | final measurement | tightened to | headroom |
+|---|--:|--:|--:|--:|
+| Browser bundle (no-build) | 363.6 kB | 363 291 | 363.4 kB | 109 B |
+| Full library | 422.4 kB | 422 198 | 422.3 kB | 102 B |
+| Chunks: domain | 129.4 kB | 129 007 | 129.2 kB | 193 B |
+| Chunks: primitives | 114.1 kB | 113 794 | 113.9 kB | 106 B |
+| Chunks: commands-internal | 93.5 kB | 93 257 | 93.4 kB | 143 B |
+
+The npm tarball cap moved 1516 → 1514 KiB on the same terms (1 549 164 B measured, 1512.9 KiB).
