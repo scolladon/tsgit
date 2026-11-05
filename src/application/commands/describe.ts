@@ -68,7 +68,9 @@ export interface DescribeResult {
 const DEFAULT_REV = 'HEAD';
 const TAGS_PREFIX = 'refs/tags/';
 
-const DESCRIBABLE_TYPES: ReadonlySet<string> = new Set(['commit', 'blob']);
+/** git's describe: a commit at any depth, or a blob the name itself holds — never a blob behind a tag. */
+const describable = (named: ObjectId, peeled: PeelOutcome<GitObject>): boolean =>
+  peeled.result.type === 'commit' || (peeled.result.type === 'blob' && peeled.id === named);
 
 /**
  * git's `describe`: the named object (a ref's winner or an object name alike) is read
@@ -78,7 +80,7 @@ const DESCRIBABLE_TYPES: ReadonlySet<string> = new Set(['commit', 'blob']);
 const resolveDescribeTarget = async (ctx: Context, revision: string): Promise<ObjectId> => {
   const named = await resolveCommitIshObject(ctx, revision);
   const peeled = await peelDescribeTarget(ctx, named, revision);
-  if (!DESCRIBABLE_TYPES.has(peeled.result.type)) throw describeNeitherCommitNorBlob(revision);
+  if (!describable(named, peeled)) throw describeNeitherCommitNorBlob(revision);
   return peeled.id;
 };
 

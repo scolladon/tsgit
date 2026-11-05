@@ -559,7 +559,10 @@ describe('Given a tag d ahead of a dangling refs/heads/d', () => {
 });
 
 describe('Given an ambiguous name x and a path its tree lacks', () => {
-  describe.each(['x:nope', 'x^{tree}:nope'])('When revParse reads %s', (arg) => {
+  describe.each([
+    { arg: 'x:nope', rev: 'x' },
+    { arg: 'x^{tree}:nope', rev: 'x^{tree}' },
+  ])('When revParse reads $arg', ({ arg, rev }) => {
     it('Then it warns the ambiguity once, the tree-path reread being quiet', async () => {
       // Arrange
       const warnings: string[] = [];
@@ -570,8 +573,13 @@ describe('Given an ambiguous name x and a path its tree lacks', () => {
       const result = await sut(ctx, arg).catch((error: unknown) => (error as TsgitError).data);
 
       // Assert
-      expect((result as { readonly code: string }).code).toBe('PATH_NOT_IN_TREE');
-      expect(warnings.filter((message) => message === AMBIGUOUS)).toHaveLength(1);
+      expect(result).toEqual({
+        code: 'PATH_NOT_IN_TREE',
+        rev,
+        path: 'nope',
+        printed: [{ kind: 'path', path: arg }],
+      });
+      expect(warnings).toEqual([AMBIGUOUS]);
     });
   });
 });

@@ -260,6 +260,7 @@ describe('Given a branch abcd ahead of main whose fanout directory cannot be lis
     { shape: 'with fastForward only', options: { fastForward: 'only' as const } },
     { shape: 'with fastForward never', options: { fastForward: 'never' as const } },
     { shape: 'with squash', options: { squash: true } },
+    { shape: 'with commit false', options: { commit: false } },
   ])('When merge abcd runs without a message, $shape', ({ options }) => {
     it('Then it logs the unable-to-open line three times, once per read git makes', async () => {
       // Arrange

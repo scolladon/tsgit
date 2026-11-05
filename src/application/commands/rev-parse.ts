@@ -750,8 +750,10 @@ const resolveIndexStage = async (
  * `<tree-ish>:<path>` — resolve the left side to a tree, then descend `path`'s
  * `/`-separated components to the addressed blob/tree. An empty path returns the
  * tree itself (`HEAD:` ⇒ the root tree).
+ *
+ * git's `get_oid_with_context_1` hands its own flags to the tree part, the quiet
+ * reread's included.
  */
-/** git's `get_oid_with_context_1` hands its own flags to the tree part, the quiet reread's included. */
 const resolveTreePath = async (
   ctx: Context,
   table: ObjectTypeTable | undefined,

@@ -55,11 +55,19 @@ const identity: NodeJS.ProcessEnv = {
   GIT_COMMITTER_DATE: '1700000000 +0000',
 };
 
-type Variant = 'non-hex' | 'truncated' | 'absent' | 'valid' | 'missing-ref' | 'tag-of-tree';
+type Variant =
+  | 'non-hex'
+  | 'truncated'
+  | 'absent'
+  | 'valid'
+  | 'missing-ref'
+  | 'tag-of-tree'
+  | 'tag-of-blob';
 
 const VARIANTS: ReadonlyArray<Variant> = ['non-hex', 'truncated', 'absent', 'valid', 'missing-ref'];
-const TEMPLATE_VARIANTS: ReadonlyArray<Variant> = [...VARIANTS, 'tag-of-tree'];
+const TEMPLATE_VARIANTS: ReadonlyArray<Variant> = [...VARIANTS, 'tag-of-tree', 'tag-of-blob'];
 const TREE_TAG_NAME = 't';
+const BLOB_TAG_NAME = 'tb';
 
 interface Fixture {
   readonly dir: string;
@@ -98,20 +106,28 @@ const tagObjectFor = (variant: Variant, c1: string): string => {
   return c1;
 };
 
-const tagRefName = (variant: Variant): string => (variant === 'tag-of-tree' ? TREE_TAG_NAME : 'x');
+const tagRefName = (variant: Variant): string => {
+  if (variant === 'tag-of-tree') return TREE_TAG_NAME;
+  if (variant === 'tag-of-blob') return BLOB_TAG_NAME;
+  return 'x';
+};
 
 const writeTagRef = (dir: string, name: string, oid: string): void =>
   writeFileSync(path.join(dir, '.git', 'refs', 'tags', name), `${oid}\n`);
+
+/** What the planted tag names: the fixture's tree, its blob `f`, or a commit-typed target. */
+const taggedObject = (dir: string, variant: Variant, c1: string): readonly [string, string] => {
+  if (variant === 'tag-of-tree') return [git(dir, 'rev-parse', 'main^{tree}').trim(), 'tree'];
+  if (variant === 'tag-of-blob') return [git(dir, 'rev-parse', 'main:f').trim(), 'blob'];
+  return [tagObjectFor(variant, c1), 'commit'];
+};
 
 const plantTag = (dir: string, variant: Variant, c1: string): string => {
   if (variant === 'missing-ref') {
     writeTagRef(dir, 'x', MISSING_REF_TARGET);
     return MISSING_REF_TARGET;
   }
-  const [object, type] =
-    variant === 'tag-of-tree'
-      ? [git(dir, 'rev-parse', 'main^{tree}').trim(), 'tree']
-      : [tagObjectFor(variant, c1), 'commit'];
+  const [object, type] = taggedObject(dir, variant, c1);
   const body = `object ${object}\ntype ${type}\ntag ${tagRefName(variant)}\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`;
   const bodyFile = path.join(mkdtempSync(path.join(os.tmpdir(), 'tsgit-corrupt-tag-body-')), 'tag');
   scratch.push(path.dirname(bodyFile));
@@ -582,6 +598,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
       { commits: ['^x', 'main'], last: refusal },
       { commits: ['main', '^x'], last: refusal },
       { commits: ['x..main'], last: 'fatal: Invalid revision range x..main' },
+      { commits: ['main..x'], last: 'fatal: Invalid revision range main..x' },
     ])('When cherry-pick takes $commits', ({ commits, last }) => {
       it('Then tsgit refuses on the first read with git lines and writes no state, as git does', async () => {
         // Arrange
@@ -673,6 +690,12 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
       revision: (dir: string) => git(dir, 'rev-parse', 'main^{tree}').trim(),
     },
     { shape: 'a full object id nothing holds', fixture: 'valid', revision: () => ABSENT_OBJECT },
+    { shape: 'an annotated tag of a blob', fixture: 'tag-of-blob', revision: () => BLOB_TAG_NAME },
+    {
+      shape: 'an annotated tag of a blob by its id',
+      fixture: 'tag-of-blob',
+      revision: (dir: string) => git(dir, 'rev-parse', `refs/tags/${BLOB_TAG_NAME}`).trim(),
+    },
   ] as const)('Given $shape', ({ fixture, revision }) => {
     describe('When git describe and describe read it', () => {
       it('Then both refuse neither a commit nor blob, as git does', async () => {
@@ -706,6 +729,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
         return 'outer';
       },
     },
+    { shape: 'an annotated tag of a blob', fixture: 'tag-of-blob', revision: () => BLOB_TAG_NAME },
   ] as const)('Given $shape', ({ fixture, revision }) => {
     describe('When git blame and blame read f at it', () => {
       it('Then both refuse Non commit, as git does', async () => {

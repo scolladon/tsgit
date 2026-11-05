@@ -6,6 +6,7 @@ import {
 import * as revParseModule from '../../../../../src/application/commands/rev-parse.js';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import * as peelRefModule from '../../../../../src/application/primitives/internal/peel-ref-to-commit.js';
+import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../../src/domain/objects/index.js';
@@ -576,6 +577,59 @@ describe('resolveSequencerRevisions — the two reads of a name', () => {
         // Assert
         expect(caught).toBe(failure);
       });
+    });
+  });
+});
+
+describe('Given a range side whose read fails without an error code', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe.each(['x..main', 'main..x'])('When the sequencer takes the range %s', (range) => {
+    it('Then the failure propagates unchanged', async () => {
+      // Arrange
+      const history = await buildHistory(SPEC);
+      const gitDir = history.ctx.layout.gitDir;
+      await history.ctx.fs.writeUtf8(`${gitDir}/refs/heads/x`, `${history.id('a1')}\n`);
+      await history.ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, `${history.id('a2')}\n`);
+      const failure = new Error('boom');
+      const original = readObjectModule.readObject;
+      vi.spyOn(readObjectModule, 'readObject').mockImplementation((ctx, id) =>
+        id === history.id('a1') ? Promise.reject(failure) : original(ctx, id),
+      );
+      const sut = resolveSequencerRevisions;
+
+      // Act
+      const caught = await sut(history.ctx, [range]).catch((error: unknown) => error);
+
+      // Assert
+      expect(caught).toBe(failure);
+    });
+  });
+});
+
+describe('Given a branch x whose first read is a tag of a tree and whose second read is a commit', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When the sequencer resolves x', () => {
+    it("Then it refuses CANNOT_PICK_NON_COMMIT with the first read's unpeeled type", async () => {
+      // Arrange
+      const history = await buildHistory(SPEC);
+      const tip = await readObjectModule.readObject(history.ctx, history.id('a2'));
+      if (tip.type !== 'commit') throw new Error('expected a commit');
+      const treeTag = await rawTagNaming(history, tip.data.tree, 'tree');
+      await history.ctx.fs.writeUtf8(`${history.ctx.layout.gitDir}/refs/heads/x`, `${treeTag}\n`);
+      vi.spyOn(revParseModule, 'evaluateRevision').mockResolvedValueOnce(history.id('a2'));
+      const sut = resolveSequencerRevisions;
+
+      // Act
+      const result = await refusalOf(() => sut(history.ctx, ['x']));
+
+      // Assert
+      expect(result).toEqual({ code: 'CANNOT_PICK_NON_COMMIT', revision: 'x', type: 'tag' });
     });
   });
 });

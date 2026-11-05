@@ -2022,3 +2022,28 @@ describe('Given a revision that reads but does not peel to a commit', () => {
     });
   });
 });
+
+describe('Given an annotated tag tb of a blob', () => {
+  describe('When blame reads f at tb', () => {
+    it("Then it refuses BLAME_NON_COMMIT { revision: 'tb' }", async () => {
+      // Arrange
+      const ctx = await seed();
+      const tree = await treeOfHead(ctx, await commitFile(ctx, 'c1', 'f', 'a\n'));
+      const treeObject = await readObjectMod.readObject(ctx, tree);
+      if (treeObject.type !== 'tree') throw new Error('expected a tree');
+      const blob = treeObject.entries.find((entry) => entry.name === 'f')?.id;
+      const tag = await rawTag(
+        ctx,
+        `object ${blob}\ntype blob\ntag tb\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`,
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/tb`, `${tag}\n`);
+      const sut = blame;
+
+      // Act
+      const result = await refusalOf(() => sut(ctx, 'f', { rev: 'tb' }));
+
+      // Assert
+      expect(result).toEqual({ code: 'BLAME_NON_COMMIT', revision: 'tb' });
+    });
+  });
+});

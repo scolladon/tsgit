@@ -1721,3 +1721,40 @@ describe('Given a target that reads but is neither a commit nor a blob', () => {
     });
   });
 });
+
+const blobOf = async (ctx: Context, tree: ObjectId, name: string): Promise<ObjectId> => {
+  const object = await readObject(ctx, tree);
+  if (object.type !== 'tree') throw new Error(`expected a tree: ${tree}`);
+  const entry = object.entries.find((candidate) => candidate.name === name);
+  if (entry === undefined) throw new Error(`no entry ${name}`);
+  return entry.id;
+};
+
+const tagOfBlob = async (ctx: Context, blob: ObjectId): Promise<ObjectId> =>
+  writeRawObjectBytes(
+    ctx,
+    'tag',
+    new TextEncoder().encode(
+      `object ${blob}\ntype blob\ntag tb\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`,
+    ),
+  );
+
+describe('Given an annotated tag tb of a blob', () => {
+  describe.each(['by its name', 'by its id'])('When describe reads the tag %s', (how) => {
+    it('Then it refuses DESCRIBE_NEITHER_COMMIT_NOR_BLOB, the blob being behind a tag', async () => {
+      // Arrange
+      const ctx = await seed();
+      const tree = await treeOf(ctx, await commitFile(ctx, 'c1'));
+      const tag = await tagOfBlob(ctx, await blobOf(ctx, tree, 'c1.txt'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/tb`, `${tag}\n`);
+      const revision = how === 'by its name' ? 'tb' : tag;
+      const sut = describeCmd;
+
+      // Act
+      const result = await sut(ctx, revision).catch((error: unknown) => (error as TsgitError).data);
+
+      // Assert
+      expect(result).toEqual({ code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB', revision });
+    });
+  });
+});
