@@ -249,9 +249,7 @@ describe('getObjectStore', () => {
           deriveContext(ctx, { layout: { ...ctx.layout, workDir: root, gitDir: `${root}/.git` } }),
         );
         await Promise.all(
-          ['/repo/sub-a', '/repo/sub-b'].map((root) =>
-            ctx.fs.mkdir(`${root}/.git/objects`, { recursive: true }),
-          ),
+          ['/repo/sub-a', '/repo/sub-b'].map((root) => ctx.fs.mkdir(`${root}/.git/objects`)),
         );
         const stores = await Promise.all([ctx, ...children].map((each) => getObjectStore(each)));
         const spies = stores.flatMap((store) =>
