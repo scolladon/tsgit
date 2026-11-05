@@ -601,6 +601,28 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
     });
   });
 
+  describe('Given a valid x ambiguous between tag and branch', () => {
+    describe.each(['x:absent', 'x^{tree}:absent'])('When rev-parse reads %s', (arg) => {
+      it('Then tsgit warns the ambiguity once and refuses the path, as git does', async () => {
+        // Arrange
+        const { dir } = await copyFixture('valid');
+        const expected = gitOutcome(dir, ['rev-parse', arg]);
+
+        // Act
+        const result = await tsgitRefusal(dir, (ctx) => revParse(ctx, arg));
+
+        // Assert
+        expect(expected.refused).toBe(true);
+        expect(ambiguityWarnings(expected.diagnostics)).toHaveLength(1);
+        expect(result).toEqual({
+          refused: true,
+          code: 'PATH_NOT_IN_TREE',
+          warnings: ambiguityWarnings(expected.diagnostics),
+        });
+      });
+    });
+  });
+
   describe.each([
     { verb: 'cherry-pick', run: cherryPick, commits: ['x'] },
     { verb: 'cherry-pick', run: cherryPick, commits: ['x..main'] },

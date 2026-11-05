@@ -414,10 +414,8 @@ const evaluate = async (
     return resolveIndexStage(ctx, { stage: expr.stage, path: resolveRelativePath(ctx, expr.path) });
   }
   if (expr.kind === 'tree-path') {
-    const whole = mayReadWhole(raw)
-      ? await readWholeName(ctx, table, raw, { accepts: options.accepts })
-      : undefined;
-    return whole ?? resolveTreePath(ctx, table, expr.rev, expr.path);
+    const whole = mayReadWhole(raw) ? await readWholeName(ctx, table, raw, options) : undefined;
+    return whole ?? resolveTreePath(ctx, table, expr.rev, expr.path, options.mode);
   }
   if (expr.kind === 'message-search') return searchFromRefs(ctx, table, expr.pattern, raw);
   // `now` is read once per call so the reflog `@{date}` resolution is
@@ -753,14 +751,17 @@ const resolveIndexStage = async (
  * `/`-separated components to the addressed blob/tree. An empty path returns the
  * tree itself (`HEAD:` ⇒ the root tree).
  */
+/** git's `get_oid_with_context_1` hands its own flags to the tree part, the quiet reread's included. */
 const resolveTreePath = async (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   rev: string,
   rawPath: string,
+  mode?: RevisionReadMode,
 ): Promise<ObjectId> => {
   const baseId = await evaluate(ctx, table, parseExpression(rev), rev, {
     accepts: treeishFilter(ctx),
+    mode,
   });
   const path = resolveRelativePath(ctx, rawPath);
   const treeId = await peel(ctx, table, baseId, 'tree');

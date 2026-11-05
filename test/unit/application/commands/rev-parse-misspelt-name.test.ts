@@ -557,3 +557,21 @@ describe('Given a tag d ahead of a dangling refs/heads/d', () => {
     });
   });
 });
+
+describe('Given an ambiguous name x and a path its tree lacks', () => {
+  describe.each(['x:nope', 'x^{tree}:nope'])('When revParse reads %s', (arg) => {
+    it('Then it warns the ambiguity once, the tree-path reread being quiet', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await ambiguousRepo((message) => warnings.push(message), 'the same commit');
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg).catch((error: unknown) => (error as TsgitError).data);
+
+      // Assert
+      expect((result as { readonly code: string }).code).toBe('PATH_NOT_IN_TREE');
+      expect(warnings.filter((message) => message === AMBIGUOUS)).toHaveLength(1);
+    });
+  });
+});
