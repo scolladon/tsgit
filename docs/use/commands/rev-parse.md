@@ -78,7 +78,7 @@ A refusal reached after git has already printed lines carries them as `printed` 
 - `REVPARSE_UNRESOLVED` — name does not resolve, or `@{date}` form unparseable.
 - `AMBIGUOUS_OID_PREFIX` — short oid matches multiple objects. git's `error: short object ID <prefix> is ambiguous` goes to `logger.error` once per read git makes aloud — twice for a name under `^<n>`/`~<n>`, whose misspelt-name re-read git does not quiet — followed by its `hint: The candidates are:` header on `logger.error` with the structured `candidates` (`{ id, type, date?, subject? }`, tags then commits, trees and blobs, each by id) as payload. An ambiguous range side or parent-shorthand base is reported the same way, then the whole argument is read as one name.
 - `REFLOG_ENTRY_OUT_OF_RANGE` — `@{N}` beyond the reflog length.
-- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class), checked by an explicit call right after the operational gate and before the expression is parsed, transcribing git's own per-builtin prologue. See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class), checked by an explicit call right after the operational gate and before the expression is parsed, transcribing git's own per-builtin prologue. See [`internals.md`](../primitives/internals.md#assertreposettingsvalid).
 
 ## See also
 
