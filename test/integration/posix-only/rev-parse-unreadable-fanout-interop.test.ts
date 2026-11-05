@@ -34,6 +34,7 @@ import {
   runGitEnv,
   tryRunGitWithExit,
 } from '../interop-helpers.js';
+import { trackedContexts } from '../repository-lifecycle.js';
 
 const IS_ROOT = process.getuid?.() === 0;
 const WRITABLE_DIR = 0o755;
@@ -70,6 +71,8 @@ const READ_THRICE = 3;
 const VARIANTS = ['mode 000', 'regular file'] as const;
 type Variant = (typeof VARIANTS)[number];
 type BranchShape = 'none' | 'same' | 'ahead';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 describe.skipIf(!GIT_AVAILABLE || IS_ROOT)('integration — an unreadable fanout directory', () => {
   let pair: PeerPair;
@@ -123,7 +126,7 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)('integration — an unreadable fanout
   const loggingContext = (repo: string): { readonly ctx: Context; readonly logged: Logged[] } => {
     const logged: Logged[] = [];
     const ctx: Context = {
-      ...createNodeContext({ workDir: repo }),
+      ...createTrackedNodeContext({ workDir: repo }),
       logger: { error: (message, context) => logged.push({ message, context }) },
     };
     return { ctx, logged };
