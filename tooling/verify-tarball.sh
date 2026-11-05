@@ -445,7 +445,15 @@ done
 # discovery and explicit-route searchability checks and the new fsck finding arms —
 # runtime code shipped in every distribution form, none removable without dropping the
 # findings and refusals git performs.
-SIZE_CAP=$((1510 * 1024))
+# Raised 1510 -> 1516 KiB by the corrupt commit-ish refusals and the unreadable fanout scan:
+# the measured pack landed at 1 548 704 B, 2 464 B over the old cap, attributable to the three
+# git-named refusal codes, the unswept commit-ish ladder and its named-object read, the
+# sequencer's second read, the quiet read mode, the describe, blame and merge refusal arms
+# with merge's parent re-read, the fanout-fault classifier with its session memo and rescan,
+# and the peel fold — runtime code shipped in every distribution form, none removable without
+# dropping the refusals and diagnostics git performs. The cap carries ~3 KiB of headroom on
+# the user's call, to be tightened to the measurement once the review round converges.
+SIZE_CAP=$((1516 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

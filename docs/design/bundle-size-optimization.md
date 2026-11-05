@@ -771,3 +771,22 @@ its baseline of 6 398 B).
 The npm tarball cap moved 1454 → 1455 KiB (1 489 535 B measured, 639 B over the old cap; the
 baseline pack is 1 488 266 B, so the round adds 1 269 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — corrupt commit-ish refusals and the unreadable fanout scan
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`), gzip
+bytes, against `main` at `751166b5` built the same way at the same toolchain. On the user's call
+each failing row is raised to its measurement plus 0.3 kB of headroom, rounded up to the next
+0.1 kB, so the review round's fixes do not re-trip it; the caps are tightened back to the
+measurement rounded up to the next 0.1 kB once the review converges.
+
+| Row | old limit | baseline | measured | Δ | new limit | attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 362.6 kB | 362 505 | 363 228 | +723 | 363.6 kB | the sum of the rows below, shipped to the browser |
+| Full library | 421.3 kB | 421 191 | 422 076 | +885 | 422.4 kB | the sum of the rows below |
+| Chunks: domain | 128.9 kB | 128 885 | 129 007 | +122 | 129.4 kB | the `BAD_OBJECT`, `DESCRIBE_NEITHER_COMMIT_NOR_BLOB` and `BLAME_NON_COMMIT` error members, their factories and messages |
+| Chunks: primitives | 113.7 kB | 113 631 | 113 773 | +142 | 114.1 kB | the fanout-fault classifier and its structured log, the session memo of failed listings with the miss rescan, and the peel fold of an unparseable tag |
+| Chunks: commands-internal | 92.7 kB | 92 643 | 93 111 | +468 | 93.5 kB | the unswept commit-ish ladder with its object-name/ref split and the named-object read, the sequencer's two-phase read, the quiet read mode threaded to the ladder, and the describe, blame and merge refusal arms with merge's parent re-read |
+
+The npm tarball cap moved 1510 → 1516 KiB (1 548 704 B measured, 2 464 B over the old cap; the baseline pack is 1 546 158 B); its
+attribution lives in `tooling/verify-tarball.sh`'s cap block.
