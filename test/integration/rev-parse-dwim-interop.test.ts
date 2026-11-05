@@ -948,3 +948,51 @@ describe.skipIf(!GIT_AVAILABLE)('integration — error lines a revision operator
     },
   );
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — revParse misspelt reread past a dangling symref',
+  () => {
+    let repo = '';
+
+    beforeAll(async () => {
+      repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-dangling-reread-'));
+      runGit(['init', '-q', '-b', 'main', repo]);
+      disableAutoMaintenance(repo);
+      writeFileSync(path.join(repo, 'f'), 'hi\n');
+      git(repo, 'add', 'f');
+      runGit(['-C', repo, 'commit', '-q', '-m', 'c1'], { env: IDENTITY_ENV });
+      git(repo, 'tag', 'd');
+      writeFileSync(path.join(repo, '.git', 'refs', 'heads', 'd'), 'ref: refs/heads/nowhere\n');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe.each(['d^{blob}', 'd~5'])('Given a tag d ahead of a dangling refs/heads/d', (arg) => {
+      describe(`When git and tsgit rev-parse ${arg}`, () => {
+        it('Then tsgit prints the dangling line as often as git does', async () => {
+          // Arrange
+          const { stderr } = tryRunGitWithExit(['-C', repo, 'rev-parse', arg]);
+          const lines: string[] = [];
+          const ctx = {
+            ...createNodeContext({ workDir: repo }),
+            logger: {
+              warn: (message: string) => lines.push(`warning: ${message}`),
+              error: (message: string) => lines.push(`error: ${message}`),
+            },
+          };
+          const sut = revParse;
+
+          // Act
+          await sut(ctx, arg).catch(() => undefined);
+
+          // Assert
+          const expected = stderrLines(stderr).filter((line) => /^(warning|error): /.test(line));
+          expect(expected.length).toBeGreaterThan(0);
+          expect(lines).toEqual(expected);
+        });
+      });
+    });
+  },
+);

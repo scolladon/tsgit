@@ -13,7 +13,12 @@
  */
 import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
-import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
+import {
+  blameNonCommit,
+  invalidOption,
+  pathNotInTree,
+  worktreeFileAbsent,
+} from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import { precedesByArrival, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import type { TreeDiff } from '../../domain/diff/diff-change.js';
@@ -23,7 +28,13 @@ import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
-import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  GitObject,
+  ObjectId,
+  TreeEntry,
+} from '../../domain/objects/index.js';
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
 import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
@@ -32,6 +43,7 @@ import { diffTrees } from '../primitives/diff-trees.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { type PeelOutcome, peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   descendMatchingTreeChain,
@@ -40,8 +52,14 @@ import {
 } from '../primitives/internal/resolve-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readObject } from '../primitives/read-object.js';
 import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
-import { resolveCommitIsh } from './internal/commit-ish.js';
+import {
+  readRevisionObject,
+  refusingObjectReadFault,
+  resolveCommitIsh,
+  resolveCommitIshObject,
+} from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 
@@ -190,12 +208,35 @@ export const blame = async (
     }
   } else {
     const rev = opts.rev ?? DEFAULT_REV;
-    await seed(board, await resolveCommitIsh(ctx, rev), filePath, rev, opts.range);
+    await seed(board, await resolveBlameTarget(ctx, rev), filePath, rev, opts.range);
   }
   await walk(board);
   const lines = [...board.finalized].sort((a, b) => a.finalLine - b.finalLine);
   return { path: filePath, lines };
 };
+
+/**
+ * git's `lookup_commit_reference` for a blame revision: the named object must read
+ * (`bad object`), and what it peels to must be a commit (`Non commit`): a chain that
+ * stops reading past the first hop, a tag of a tree and a bare tree all fail that.
+ */
+const resolveBlameTarget = async (ctx: Context, revision: string): Promise<ObjectId> => {
+  const named = await resolveCommitIshObject(ctx, revision);
+  await readRevisionObject(ctx, named, revision);
+  const peeled = await peelBlameTarget(ctx, named, revision);
+  if (peeled.result.type !== 'commit') throw blameNonCommit(revision);
+  return peeled.id;
+};
+
+const peelBlameTarget = (
+  ctx: Context,
+  named: ObjectId,
+  revision: string,
+): Promise<PeelOutcome<GitObject>> =>
+  refusingObjectReadFault(
+    () => peelChain(ctx, named, readObject, tagHop),
+    () => blameNonCommit(revision),
+  );
 
 /** `path` split into its `/`-separated segments, for the tree descent below. */
 const pathSegments = (path: FilePath): ReadonlyArray<string> => path.split('/');

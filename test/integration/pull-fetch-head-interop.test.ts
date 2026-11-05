@@ -50,6 +50,9 @@ import {
   type TreeEntry,
   v1,
 } from './occupant-displacement-fixtures.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const PEER_URL = 'https://example.com/peer.git';
 const SHORT_URL = 'https://example.com/peer';
@@ -201,7 +204,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         // Arrange
         const { ours, theirs } = setUp(label, branch, config);
         const ctx = {
-          ...createNodeContext({ workDir: ours }),
+          ...createTrackedNodeContext({ workDir: ours }),
           transport: backendTransport(peerRoot),
         };
         const sut = pull;
@@ -233,7 +236,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
           dated(['-C', dir, 'update-ref', 'refs/remotes/origin/side', 'HEAD']);
         }
         const ctx = {
-          ...createNodeContext({ workDir: ours }),
+          ...createTrackedNodeContext({ workDir: ours }),
           transport: backendTransport(peerRoot),
         };
         const sut = pull;
@@ -269,7 +272,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
       ['branch.main.merge', 'refs/heads/root'],
     ] as const;
     const ctxFor = (ours: string) => ({
-      ...createNodeContext({ workDir: ours }),
+      ...createTrackedNodeContext({ workDir: ours }),
       transport: backendTransport(peerRoot),
     });
     const origHead = (dir: string): string | undefined => {
@@ -374,7 +377,10 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
 
           // Act
           await sut(
-            { ...createNodeContext({ workDir: ours }), transport: backendTransport(peerRoot) },
+            {
+              ...createTrackedNodeContext({ workDir: ours }),
+              transport: backendTransport(peerRoot),
+            },
             { ...opts, rebase: false, author: IDENTITY, committer: IDENTITY },
           );
 
@@ -391,7 +397,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
       ['branch.main.merge', 'refs/heads/side'],
     ] as const;
     const ctxFor = (ours: string) => ({
-      ...createNodeContext({ workDir: ours }),
+      ...createTrackedNodeContext({ workDir: ours }),
       transport: backendTransport(peerRoot),
     });
     /** Both clones without their local commit, so the upstream fast-forwards. */
@@ -489,7 +495,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         dated(['-C', work, 'push', '-q', bare, 'main']);
         const warnings: string[] = [];
         const ctx = {
-          ...createNodeContext({ workDir: dirs.ours }),
+          ...createTrackedNodeContext({ workDir: dirs.ours }),
           transport: backendTransport(path.join(caseRoot, 'peer')),
           logger: { warn: (message: string) => warnings.push(message) },
         };
@@ -547,7 +553,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull into an unborn HEAD interop', () => {
     return dirs;
   };
   const ctxFor = (ours: string) => ({
-    ...createNodeContext({ workDir: ours }),
+    ...createTrackedNodeContext({ workDir: ours }),
     transport: backendTransport(peerRoot),
   });
   const state = (dir: string): string =>
@@ -850,7 +856,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull into an unborn branch over an occupant int
           writeFileSync(path.join(dir, 'other'), 'o\n');
         }
         const ctx = {
-          ...createNodeContext({ workDir: dirs.ours }),
+          ...createTrackedNodeContext({ workDir: dirs.ours }),
           transport: backendTransport(serveRoot),
         };
         const sut = pull;

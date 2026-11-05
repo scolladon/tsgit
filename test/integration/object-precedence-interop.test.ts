@@ -34,6 +34,9 @@ import {
   runGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const SETUP_TIMEOUT = 60_000;
 const HELLO = Buffer.from('hello\n');
@@ -109,7 +112,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Arrange
         const impostor = Buffer.from('LOOSE!\n');
         await plantLoose(dir, blobId, 'blob', impostor);
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = blobId as ObjectId;
 
         // Act — git side: info + buffered-class surfaces vs. the streaming class
@@ -154,7 +157,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             'IMPOSTOR\n',
         );
         await plantLoose(dir, commitId, 'commit', impostorBody);
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = commitId as ObjectId;
 
         // Act — git side
@@ -176,7 +179,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // original has exactly one entry (a.txt), so serving the impostor is
         // observably distinct from serving the pack.
         await plantLoose(dir, treeId, 'tree', Buffer.alloc(0));
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = treeId as ObjectId;
 
         // Act — git side
@@ -196,7 +199,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       it('Then git prints an inflate error but still serves the pack content, and tsgit resolves the pack content without throwing', async () => {
         // Arrange
         await plantGarbageLoose(dir, blobId);
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = blobId as ObjectId;
 
         // Act — git side
@@ -223,7 +226,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // falls back to the pack too, unlike the O1 impostor (a validly
         // zlib-decodable loose file, which streaming serves as-is).
         await plantGarbageLoose(dir, blobId);
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = blobId as ObjectId;
 
         // Act — git side
@@ -255,7 +258,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Arrange
         const unpackedId = 'd'.repeat(40);
         await plantGarbageLoose(dir, unpackedId);
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = unpackedId as ObjectId;
 
         // Act — git side
@@ -288,7 +291,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       it('Then both git and tsgit report the pack content and its true 6-byte size, never the claimed 99', async () => {
         // Arrange
         await plantLooseDeclaring(dir, blobId, 'blob', 99, HELLO);
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = blobId as ObjectId;
 
         // Act — git side
@@ -341,7 +344,7 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
 
       it('Then git serves the loose blob after an error line, and tsgit serves it too', async () => {
         // Arrange
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = blobId as ObjectId;
 
         // Act — git side
@@ -391,7 +394,7 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
       describe('When reading the packed blob', () => {
         it('Then git refuses the packed blob with exit 128, and tsgit refuses it with OBJECT_NOT_FOUND', async () => {
           // Arrange
-          const ctx = createNodeContext({ workDir: dir });
+          const ctx = createTrackedNodeContext({ workDir: dir });
           const id = packedBlobId as ObjectId;
 
           // Act — git side
@@ -416,7 +419,7 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
       describe('When reading the loose blob', () => {
         it('Then git still serves the loose blob after an error line, and tsgit serves it too', async () => {
           // Arrange
-          const ctx = createNodeContext({ workDir: dir });
+          const ctx = createTrackedNodeContext({ workDir: dir });
           const id = looseBlobId as ObjectId;
 
           // Act — git side
@@ -458,7 +461,7 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
 
       it('Then git serves the loose blob after an error line, and tsgit serves it too', async () => {
         // Arrange
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = blobId as ObjectId;
 
         // Act — git side
@@ -507,7 +510,7 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
       it('Then git cat-file -t reports commit, and tsgit resolves it too via one re-scan retry (reprepare_packed_git)', async () => {
         // Arrange — a long-lived Context: reading the earlier PACKED commit
         // memoises the pack registry's directory listing before the repack.
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         await readObject(ctx, firstCommitId as ObjectId);
 
         // Act — external repack+prune: HEAD's own commit (and its tree and
@@ -585,7 +588,7 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
 
       it('Then git refuses cat-file -p as corrupt, and tsgit refuses readObject with INVALID_PACK_ENTRY at the same offset', async () => {
         // Arrange
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = blobId as ObjectId;
 
         // Act — git side
@@ -619,7 +622,7 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
 
       it('Then git refuses its streaming reader (cat-file --filters) the same way, and tsgit refuses streamBlob at stream end', async () => {
         // Arrange
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const id = blobId as ObjectId;
 
         // Act — git side: --filters is git's streaming-class reader (smudge

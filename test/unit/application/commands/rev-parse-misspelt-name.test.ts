@@ -23,6 +23,26 @@ const danglingRepo = async (warn: (message: string) => void): Promise<Context> =
   return { ...base, logger: { warn } } as Context;
 };
 
+const AMBIGUOUS = "refname 'x' is ambiguous.";
+const MISSING_TARGET = 'b'.repeat(40);
+
+type TagTarget = 'the same commit' | 'a missing object';
+
+/** A branch `x` and a tag `x`, the tag at `target`: the branch's commit, or an object nobody wrote. */
+const ambiguousRepo = async (
+  warn: (message: string) => void,
+  target: TagTarget,
+): Promise<Context> => {
+  const base = createMemoryContext();
+  const { commitIds } = await seedRepo(base, { commits: [{ tree: EMPTY_TREE }] });
+  const tip = commitIds[0] as ObjectId;
+  const tag = target === 'a missing object' ? MISSING_TARGET : tip;
+  await seedRepo(base, {
+    refs: { 'refs/heads/main': tip, 'refs/heads/x': tip, 'refs/tags/x': tag },
+  });
+  return { ...base, logger: { warn } } as Context;
+};
+
 const failureOf = async (run: () => Promise<unknown>): Promise<unknown> => {
   try {
     await run();
@@ -468,6 +488,98 @@ describe('Given an expression whose name warns, names no object, and names a wor
       // Assert
       expect(result).toMatchObject({ code: 'OBJECT_NOT_FOUND' });
       expect(warnings).toEqual([DANGLING]);
+    });
+  });
+});
+
+describe('Given an ambiguous name x', () => {
+  describe.each([
+    { arg: 'x^{blob}', target: 'the same commit' as const },
+    { arg: 'x^{commit}', target: 'a missing object' as const },
+  ])('When revParse reads $arg, which names no object', ({ arg, target }) => {
+    it('Then it warns the ambiguity once, the reread being quiet', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await ambiguousRepo((message) => warnings.push(message), target);
+      const sut = revParse;
+
+      // Act
+      const result = await failureOf(() => sut(ctx, arg));
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'OBJECT_NOT_FOUND',
+        printed: [{ kind: 'path', path: arg }],
+      });
+      expect(warnings.filter((message) => message === AMBIGUOUS)).toHaveLength(1);
+    });
+  });
+
+  describe('When revParse reads x~5', () => {
+    it('Then it warns twice, the ancestor step dropping the quiet read', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await ambiguousRepo((message) => warnings.push(message), 'the same commit');
+      const sut = revParse;
+
+      // Act
+      await failureOf(() => sut(ctx, 'x~5'));
+
+      // Assert
+      expect(warnings.filter((message) => message === AMBIGUOUS)).toHaveLength(2);
+    });
+  });
+});
+
+describe('Given a tag d ahead of a dangling refs/heads/d', () => {
+  describe('When revParse reads d^{blob}', () => {
+    it('Then the dangling line is logged twice', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const base = createMemoryContext();
+      const { commitIds } = await seedRepo(base, { commits: [{ tree: EMPTY_TREE }] });
+      const tip = commitIds[0] as ObjectId;
+      await seedRepo(base, { refs: { 'refs/heads/main': tip, 'refs/tags/d': tip } });
+      await base.fs.writeUtf8(`${base.layout.gitDir}/refs/heads/d`, 'ref: refs/heads/nope\n');
+      const ctx = {
+        ...base,
+        logger: { warn: (message: string) => warnings.push(message) },
+      } as Context;
+      const sut = revParse;
+
+      // Act
+      await failureOf(() => sut(ctx, 'd^{blob}'));
+
+      // Assert
+      expect(
+        warnings.filter((message) => message === 'ignoring dangling symref refs/heads/d'),
+      ).toHaveLength(2);
+    });
+  });
+});
+
+describe('Given an ambiguous name x and a path its tree lacks', () => {
+  describe.each([
+    { arg: 'x:nope', rev: 'x' },
+    { arg: 'x^{tree}:nope', rev: 'x^{tree}' },
+  ])('When revParse reads $arg', ({ arg, rev }) => {
+    it('Then it warns the ambiguity once, the tree-path reread being quiet', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await ambiguousRepo((message) => warnings.push(message), 'the same commit');
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg).catch((error: unknown) => (error as TsgitError).data);
+
+      // Assert
+      expect(result).toEqual({
+        code: 'PATH_NOT_IN_TREE',
+        rev,
+        path: 'nope',
+        printed: [{ kind: 'path', path: arg }],
+      });
+      expect(warnings).toEqual([AMBIGUOUS]);
     });
   });
 });

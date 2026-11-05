@@ -287,7 +287,7 @@ await repo.stash.apply({ restoreIndex: true });
   transcribing git's own per-builtin prologue. The order matters: a bare
   repository reports `WORK_TREE_REQUIRED` first, unlike
   [`sparseCheckout`](sparse-checkout.md), which reports the config class
-  first. See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
+  first. See [`internals.md`](../primitives/internals.md#assertreposettingsvalid).
 
 See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list.
 

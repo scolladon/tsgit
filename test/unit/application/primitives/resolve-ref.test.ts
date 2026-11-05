@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { lstatIfReachable } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import {
@@ -16,6 +16,10 @@ import type { ObjectId, RefName, Tag, Tree } from '../../../../src/domain/object
 import { invalidRef } from '../../../../src/domain/refs/error.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, writeForgedTagLoop } from './fixtures.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const MAIN_ID = 'a'.repeat(40) as ObjectId;
 const OTHER_ID = 'b'.repeat(40) as ObjectId;

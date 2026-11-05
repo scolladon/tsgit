@@ -46,7 +46,9 @@ import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import { missingLine } from './fsck-line-helpers.js';
 import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
-import { trackedRepositories } from './repository-lifecycle.js';
+import { trackedContexts, trackedRepositories } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const openTrackedRepository = trackedRepositories();
 
@@ -257,7 +259,7 @@ beforeAll(async () => {
   await mkdir(path.join(zeroPadDir, '.git', 'refs', 'heads'), { recursive: true });
   await writeFile(path.join(zeroPadDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
 
-  zeroPadCtx = createNodeContext({ workDir: zeroPadDir });
+  zeroPadCtx = createTrackedNodeContext({ workDir: zeroPadDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -320,7 +322,7 @@ beforeAll(async () => {
   await pointRefAtTree('dirMode', zeroPadDirModeTreeSha);
   await pointRefAtTree('symlinkMode', zeroPadSymlinkTreeSha);
 
-  zeroPadAllCtx = createNodeContext({ workDir: zeroPadAllDir });
+  zeroPadAllCtx = createTrackedNodeContext({ workDir: zeroPadAllDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -392,7 +394,7 @@ beforeAll(async () => {
   const commitForDuplicate = await writeLooseObject(catalogueDir, 'commit', commitForDuplicateBody);
   await writeFile(path.join(refsDir, 'duplicateEntries'), `${commitForDuplicate}\n`);
 
-  catalogueCtx = createNodeContext({ workDir: catalogueDir });
+  catalogueCtx = createTrackedNodeContext({ workDir: catalogueDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -445,7 +447,7 @@ beforeAll(async () => {
   await pointRefAtTree('hasDotdot', hasDotdotTreeSha);
   await pointRefAtTree('fullPathname', fullPathnameTreeSha);
 
-  nameFaultsCtx = createNodeContext({ workDir: nameFaultsDir });
+  nameFaultsCtx = createTrackedNodeContext({ workDir: nameFaultsDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -478,7 +480,7 @@ beforeAll(async () => {
   // Overwrite with invalid zlib data
   await writeFile(objPath, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
 
-  corruptCtx = createNodeContext({ workDir: corruptDir });
+  corruptCtx = createTrackedNodeContext({ workDir: corruptDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -516,7 +518,7 @@ beforeAll(async () => {
   await chmod(sha1Path, 0o644);
   await writeFile(sha1Path, sha2Content);
 
-  hashMismatchCtx = createNodeContext({ workDir: hashMismatchDir });
+  hashMismatchCtx = createTrackedNodeContext({ workDir: hashMismatchDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -560,7 +562,7 @@ beforeAll(async () => {
     tagBody,
   );
 
-  nonBlobUnderrunCtx = createNodeContext({ workDir: nonBlobUnderrunDir });
+  nonBlobUnderrunCtx = createTrackedNodeContext({ workDir: nonBlobUnderrunDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -589,7 +591,7 @@ beforeAll(async () => {
   overrunTreeSha = await writeLooseObjectWithClaim(nonBlobOverrunDir, 'tree', 6, overrunBody);
   overrunTagSha = await writeLooseObjectWithClaim(nonBlobOverrunDir, 'tag', 6, overrunBody);
 
-  nonBlobOverrunCtx = createNodeContext({ workDir: nonBlobOverrunDir });
+  nonBlobOverrunCtx = createTrackedNodeContext({ workDir: nonBlobOverrunDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -619,7 +621,7 @@ beforeAll(async () => {
     Buffer.from('abcdefgh'),
   );
 
-  hashMismatchCatalogueCtx = createNodeContext({ workDir: hashMismatchCatalogueDir });
+  hashMismatchCatalogueCtx = createTrackedNodeContext({ workDir: hashMismatchCatalogueDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -653,7 +655,7 @@ beforeAll(async () => {
     Buffer.from('abcdefgh'),
   );
 
-  bigFileTruncateCtx = createNodeContext({ workDir: bigFileTruncateDir });
+  bigFileTruncateCtx = createTrackedNodeContext({ workDir: bigFileTruncateDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -702,7 +704,7 @@ beforeAll(async () => {
     BIG_FILE_BODY,
   );
 
-  bigFileCtx = createNodeContext({ workDir: bigFileDir });
+  bigFileCtx = createTrackedNodeContext({ workDir: bigFileDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -743,7 +745,7 @@ beforeAll(async () => {
     Buffer.from('xxx'),
   );
 
-  bigFileUnderrunMismatchCtx = createNodeContext({ workDir: bigFileUnderrunMismatchDir });
+  bigFileUnderrunMismatchCtx = createTrackedNodeContext({ workDir: bigFileUnderrunMismatchDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -771,7 +773,7 @@ beforeAll(async () => {
     Buffer.from('HELLOWORLD'),
   );
 
-  overrunMismatchCtx = createNodeContext({ workDir: overrunMismatchDir });
+  overrunMismatchCtx = createTrackedNodeContext({ workDir: overrunMismatchDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -1564,7 +1566,7 @@ beforeAll(async () => {
   await chmod(blobPath, 0o644);
   await writeFile(blobPath, await readFile(otherPath));
 
-  referencedHashMismatchCtx = createNodeContext({ workDir: referencedHashMismatchDir });
+  referencedHashMismatchCtx = createTrackedNodeContext({ workDir: referencedHashMismatchDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -1602,7 +1604,7 @@ beforeAll(async () => {
   await chmod(blobPath, 0o644);
   await writeFile(blobPath, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
 
-  referencedGarbageZlibCtx = createNodeContext({ workDir: referencedGarbageZlibDir });
+  referencedGarbageZlibCtx = createTrackedNodeContext({ workDir: referencedGarbageZlibDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -1658,7 +1660,7 @@ beforeAll(async () => {
     `${commitSha}\n`,
   );
 
-  referencedBigFileOverrunCtx = createNodeContext({ workDir: referencedBigFileOverrunDir });
+  referencedBigFileOverrunCtx = createTrackedNodeContext({ workDir: referencedBigFileOverrunDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -1799,7 +1801,7 @@ beforeAll(async () => {
     referencedCorruptPackDir,
   );
 
-  referencedCorruptPackCtx = createNodeContext({ workDir: referencedCorruptPackDir });
+  referencedCorruptPackCtx = createTrackedNodeContext({ workDir: referencedCorruptPackDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -1889,7 +1891,7 @@ beforeAll(async () => {
   await mkdir(path.dirname(blobPath), { recursive: true });
   await writeFile(blobPath, await readFile(otherPath));
 
-  shadowedPackCtx = createNodeContext({ workDir: shadowedPackDir });
+  shadowedPackCtx = createTrackedNodeContext({ workDir: shadowedPackDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -1999,7 +2001,7 @@ beforeAll(async () => {
   await chmod(blobPath, 0o644);
   await writeFile(blobPath, await readFile(otherPath));
 
-  taggedUnreadableCtx = createNodeContext({ workDir: taggedUnreadableDir });
+  taggedUnreadableCtx = createTrackedNodeContext({ workDir: taggedUnreadableDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2071,7 +2073,7 @@ beforeAll(async () => {
   // Write a valid-format but absent OID to a loose ref (bypasses git's write-side check)
   await mkdir(path.join(refAbsentDir, '.git', 'refs', 'heads'), { recursive: true });
   await writeFile(path.join(refAbsentDir, '.git', 'refs', 'heads', 'broken'), `${ABSENT_OID}\n`);
-  refAbsentCtx = createNodeContext({ workDir: refAbsentDir });
+  refAbsentCtx = createTrackedNodeContext({ workDir: refAbsentDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2133,7 +2135,7 @@ beforeAll(async () => {
     path.join(refBadContentDir, '.git', 'refs', 'heads', 'garbage'),
     `${BAD_CONTENT}\n`,
   );
-  refBadContentCtx = createNodeContext({ workDir: refBadContentDir });
+  refBadContentCtx = createTrackedNodeContext({ workDir: refBadContentDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2207,7 +2209,7 @@ beforeAll(async () => {
   await writeFile(path.join(reflogSentinelDir, 'readme.txt'), 'hello\n');
   runGit(['-C', reflogSentinelDir, 'add', 'readme.txt'], { env: SAFE_ENV });
   runGit(['-C', reflogSentinelDir, 'commit', '-m', 'initial commit'], { env: SAFE_ENV });
-  reflogSentinelCtx = createNodeContext({ workDir: reflogSentinelDir });
+  reflogSentinelCtx = createTrackedNodeContext({ workDir: reflogSentinelDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2278,7 +2280,7 @@ beforeAll(async () => {
   await writeFile(path.join(gitmodulesUrlDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
   await writeFile(path.join(gitmodulesUrlDir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
 
-  gitmodulesUrlCtx = createNodeContext({ workDir: gitmodulesUrlDir });
+  gitmodulesUrlCtx = createTrackedNodeContext({ workDir: gitmodulesUrlDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2311,7 +2313,7 @@ beforeAll(async () => {
   await writeFile(path.join(gitmodulesParseDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
   await writeFile(path.join(gitmodulesParseDir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
 
-  gitmodulesParseCtx = createNodeContext({ workDir: gitmodulesParseDir });
+  gitmodulesParseCtx = createTrackedNodeContext({ workDir: gitmodulesParseDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2447,7 +2449,7 @@ beforeAll(async () => {
   await writeFile(path.join(connTreeBlobDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
   await rm(path.join(connTreeBlobDir, '.git', 'logs'), { recursive: true, force: true });
 
-  connTreeBlobCtx = createNodeContext({ workDir: connTreeBlobDir });
+  connTreeBlobCtx = createTrackedNodeContext({ workDir: connTreeBlobDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2477,7 +2479,7 @@ beforeAll(async () => {
   await writeFile(path.join(connTreeSubtreeDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
   await rm(path.join(connTreeSubtreeDir, '.git', 'logs'), { recursive: true, force: true });
 
-  connTreeSubtreeCtx = createNodeContext({ workDir: connTreeSubtreeDir });
+  connTreeSubtreeCtx = createTrackedNodeContext({ workDir: connTreeSubtreeDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2506,7 +2508,7 @@ beforeAll(async () => {
   );
   await rm(path.join(connCommitTreeDir, '.git', 'logs'), { recursive: true, force: true });
 
-  connCommitTreeCtx = createNodeContext({ workDir: connCommitTreeDir });
+  connCommitTreeCtx = createTrackedNodeContext({ workDir: connCommitTreeDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2539,7 +2541,7 @@ beforeAll(async () => {
   );
   await rm(path.join(connCommitParentDir, '.git', 'logs'), { recursive: true, force: true });
 
-  connCommitParentCtx = createNodeContext({ workDir: connCommitParentDir });
+  connCommitParentCtx = createTrackedNodeContext({ workDir: connCommitParentDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2568,7 +2570,7 @@ beforeAll(async () => {
   );
   await rm(path.join(connTagTargetDir, '.git', 'logs'), { recursive: true, force: true });
 
-  connTagTargetCtx = createNodeContext({ workDir: connTagTargetDir });
+  connTagTargetCtx = createTrackedNodeContext({ workDir: connTagTargetDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2630,7 +2632,7 @@ beforeAll(async () => {
 
   await rm(path.join(badDateOverflowDir, '.git', 'logs'), { recursive: true, force: true });
 
-  badDateOverflowCtx = createNodeContext({ workDir: badDateOverflowDir });
+  badDateOverflowCtx = createTrackedNodeContext({ workDir: badDateOverflowDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -2965,7 +2967,7 @@ beforeAll(async () => {
   // Read-through text, so the link also resolves as a path and git's own
   // worktree probe stays out of the way.
   await symlink('side', path.join(symlinkRefDir, '.git', 'refs', 'heads', 'rel'));
-  symlinkRefCtx = createNodeContext({ workDir: symlinkRefDir });
+  symlinkRefCtx = createTrackedNodeContext({ workDir: symlinkRefDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
@@ -3037,7 +3039,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         await mkdir(path.join(heads, 'nest'), { recursive: true });
         await symlink('other', path.join(heads, 'dl'));
         await symlink('../side', path.join(heads, 'nest', 'deep'));
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitResult = gitFsck(dir, '--full');
@@ -3096,7 +3098,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const heads = path.join(dir, '.git', 'refs', 'heads');
         await writeFile(path.join(heads, 'broken-ref'), 'garbage\n');
         await symlink('broken-ref', path.join(heads, 'broken-link'));
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitResult = gitFsck(dir, '--full');
@@ -3138,7 +3140,7 @@ describe.skipIf(!GIT_AVAILABLE)('Given HEAD itself stored as a symbolic link to 
       runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
       await rm(path.join(dir, '.git', 'HEAD'));
       await symlink('refs/heads/main', path.join(dir, '.git', 'HEAD'));
-      const ctx = createNodeContext({ workDir: dir });
+      const ctx = createTrackedNodeContext({ workDir: dir });
 
       // Act
       const gitResult = gitFsck(dir, '--full');
@@ -3170,7 +3172,7 @@ const symlinkRefRepoWith = async (
   for (const [key, value] of entries) {
     runGit(['-C', dir, 'config', key, value], { env: SAFE_ENV });
   }
-  return { dir, ctx: createNodeContext({ workDir: dir }) };
+  return { dir, ctx: createTrackedNodeContext({ workDir: dir }) };
 };
 
 const catchFsckError = async (ctx: Context): Promise<TsgitError> => {
@@ -3281,7 +3283,7 @@ const fsckRepoWithConfigText = async (
   runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
   await appendFile(path.join(dir, '.git', 'config'), text);
   __resetConfigCacheForTests();
-  return { dir, ctx: createNodeContext({ workDir: dir }) };
+  return { dir, ctx: createTrackedNodeContext({ workDir: dir }) };
 };
 
 describe.skipIf(!GIT_AVAILABLE)('Given a fsck msg-id sitting under a subsection header', () => {
@@ -3518,7 +3520,7 @@ const nulInCommitRepoWith = async (
     runGit(['-C', dir, 'config', key, value], { env: SAFE_ENV });
   }
   __resetConfigCacheForTests();
-  return { dir, ctx: createNodeContext({ workDir: dir }), commitSha: id };
+  return { dir, ctx: createTrackedNodeContext({ workDir: dir }), commitSha: id };
 };
 
 /** Every `nulInCommit` finding the audit reported. */
@@ -3593,7 +3595,7 @@ const badRefContentRepo = async (
     runGit(['-C', dir, 'config', key, value], { env: SAFE_ENV });
   }
   __resetConfigCacheForTests();
-  return { dir, ctx: createNodeContext({ workDir: dir }) };
+  return { dir, ctx: createTrackedNodeContext({ workDir: dir }) };
 };
 
 describe.skipIf(!GIT_AVAILABLE)('Given a loose ref whose content is not an object name', () => {
@@ -3769,7 +3771,7 @@ const withSkipList = async (
   await writeFile(list, makeBody(repo));
   runGit(['-C', repo.dir, 'config', 'fsck.skipList', list], { env: SAFE_ENV });
   __resetConfigCacheForTests();
-  return { ...repo, list, ctx: createNodeContext({ workDir: repo.dir }) };
+  return { ...repo, list, ctx: createTrackedNodeContext({ workDir: repo.dir }) };
 };
 
 /** The same repository with `fsck.skipList` naming a file that was never
@@ -3949,7 +3951,7 @@ describe.skipIf(!GIT_AVAILABLE)('Given fsck.skipList present with no value at al
         const before = (await readFile(configPath, 'utf8')).split('\n').filter((l) => l !== '');
         await writeFile(configPath, `${before.join('\n')}\n[fsck]\n\tskipList\n`);
         __resetConfigCacheForTests();
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitResult = gitFsck(dir, '--full');
@@ -4014,7 +4016,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Arrange
           const { dir } = await skipListRepoPointedAtAbsentList('absent');
           const absent = path.join(dir, 'absent-names.txt');
-          const ctx = createNodeContext({ workDir: dir });
+          const ctx = createTrackedNodeContext({ workDir: dir });
 
           // Act
           const gitResult = gitFsck(dir, '--full');
@@ -4091,7 +4093,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         async () => {
           // Arrange
           __resetConfigCacheForTests();
-          const ctx = createNodeContext({ workDir: unreadableDir });
+          const ctx = createTrackedNodeContext({ workDir: unreadableDir });
 
           // Act
           const gitResult = gitFsck(unreadableDir);
@@ -4159,7 +4161,7 @@ const repeatedSkipListRepo = async (
     runGit(['-C', dir, 'config', '--add', 'fsck.skipList', list], { env: SAFE_ENV });
   }
   __resetConfigCacheForTests();
-  return { dir, ctx: createNodeContext({ workDir: dir }), lists };
+  return { dir, ctx: createTrackedNodeContext({ workDir: dir }), lists };
 };
 
 describe.skipIf(!GIT_AVAILABLE)(
@@ -4256,7 +4258,7 @@ describe.skipIf(!GIT_AVAILABLE)('Given a fsck msg-id written with no value at al
           const before = (await readFile(configPath, 'utf8')).split('\n').filter((l) => l !== '');
           await writeFile(configPath, `${before.join('\n')}\n[fsck]\n\t${row.msgId}\n`);
           __resetConfigCacheForTests();
-          const ctx = createNodeContext({ workDir: dir });
+          const ctx = createTrackedNodeContext({ workDir: dir });
 
           // Act
           const gitResult = gitFsck(dir, '--full');

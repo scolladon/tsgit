@@ -50,6 +50,7 @@ import {
   FILE_MODE,
   type FileMode,
   type FilePath,
+  type GitObject,
   type ObjectId,
   type RefName,
   type TreeEntry,
@@ -100,7 +101,7 @@ import {
 } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { createIgnoredProbe } from '../primitives/internal/occupant-clash.js';
-import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import { type PeelOutcome, peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import {
   type SurvivingDirectories,
   survivingDirectoriesOf,
@@ -137,6 +138,7 @@ import { branchMergeOptions } from './internal/branch-merge-options.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg, conflictsHint } from './internal/cherry-pick-state.js';
 import { indexDifferences } from './internal/clean-work-tree.js';
+import { refusingObjectReadFault } from './internal/commit-ish.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { configuredMergeFastForward } from './internal/fast-forward-config.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -310,10 +312,14 @@ export interface MergeInternalOptions {
   readonly heads?: ReadonlyArray<MergeHead>;
 }
 
+/** Where a settled message came from: the caller, heads a caller described, or git's default. */
+type MessageSource = 'given' | 'supplied-heads' | 'generated';
+
 /** A merge whose message and autostash are settled — the caller's, or git's default. */
 type SettledMerge = Omit<MergeRunInput, 'rev' | 'autostash' | 'strategy'> & {
   readonly rev: string;
   readonly message: string;
+  readonly messageSource: MessageSource;
   readonly autostash: boolean;
   /** The strategies tried in turn: the caller's, `pull.twohead`'s / `pull.octopus`'s, or git's default. */
   readonly strategies: ReadonlyArray<string>;
@@ -446,8 +452,10 @@ const settleMessage = async (
   // A lone surrogate is how the escaped byte form spells a raw byte; a caller's text never means one.
   const given = opts.message === undefined ? undefined : wellFormed(opts.message);
   if (given !== undefined && log.length === 0) {
-    return { ...opts, rev, autostash, message: given };
+    return { ...opts, rev, autostash, message: given, messageSource: 'given' };
   }
+  const messageSource: MessageSource =
+    internal.heads === undefined ? 'generated' : 'supplied-heads';
   const heads =
     internal.heads ??
     (await Promise.all(
@@ -456,11 +464,11 @@ const settleMessage = async (
   const into = shortBranchName(target.branch ?? HEAD);
   const formatted = await formatMergeMessage(ctx, heads, into, given);
   if (log.length === 0) {
-    return { ...opts, rev, autostash, message: withoutFinalNewline(formatted) };
+    return { ...opts, rev, autostash, message: withoutFinalNewline(formatted), messageSource };
   }
   const shortlog = await mergeShortlog(ctx, heads, target.ourId, log);
   const message = withoutFinalNewline(`${completeLine(formatted)}${shortlog}`);
-  return { ...opts, rev, autostash, message };
+  return { ...opts, rev, autostash, message, messageSource };
 };
 
 /** git's `merge_msg`: `prepare_merge_message`'s output without its final newline, which the state file restores. */
@@ -469,6 +477,20 @@ const withoutFinalNewline = (text: string): string => text.slice(0, -1);
 /** git's `strbuf_complete_line`: a non-empty text ends with a newline. */
 const completeLine = (text: string): string =>
   text === '' || text.endsWith('\n') ? text : `${text}\n`;
+
+/**
+ * git's `merge_name` reads each parent `reduce_parents` kept once more while it
+ * composes the default message; that read's diagnostics — an ambiguity warning, an
+ * unreadable fanout directory — are the observable part, so the read is made as git makes it.
+ */
+const rereadParentsForMessage = async (
+  ctx: Context,
+  opts: SettledMerge,
+  survivors: ReadonlyArray<MergeRemote>,
+): Promise<void> => {
+  if (opts.messageSource !== 'generated') return;
+  for (const remote of survivors) await resolveRevisionExpression(ctx, remote.spelt);
+};
 
 /**
  * What git settles before merging: the fast-forward policy (the caller's, else
@@ -662,10 +684,21 @@ const resolveMergeParent = async (ctx: Context, name: string): Promise<MergeRemo
   const spelt = await interpretMergeName(ctx, name);
   const object = await resolveRevisionExpression(ctx, spelt);
   if (object === undefined) throw refNotFound(name as RefName);
-  const { id, result } = await peelChain(ctx, object, readObject, tagHop);
+  const { id, result } = await peelMergeParent(ctx, object, name);
   if (result.type !== 'commit') throw refNotFound(name as RefName);
   return { id, name, object, spelt };
 };
+
+/** A tag chain that cannot be read leaves nothing to merge: git's `get_merge_parent` finds no commit. */
+const peelMergeParent = (
+  ctx: Context,
+  object: ObjectId,
+  name: string,
+): Promise<PeelOutcome<GitObject>> =>
+  refusingObjectReadFault(
+    () => peelChain(ctx, object, readObject, tagHop),
+    () => refNotFound(name as RefName),
+  );
 
 /** git's `get_merge_parent` over each name given, in order. */
 const resolveRemotes = async (
@@ -696,9 +729,10 @@ const twoHeadMerge = async (
   const bases = await tryMergeBasesOf(ctx, [ourId, theirId]);
   // git's `reduce_heads` leaves no remote head when its walk cannot parse a parent.
   if (bases === undefined) return { kind: 'up-to-date', id: ourId };
-  assertRelated(opts, bases);
   const [base] = bases;
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
+  await rereadParentsForMessage(ctx, opts, [remote]);
+  assertRelated(opts, bases);
   if (base === ourId && opts.fastForward !== 'never') {
     return fastForwardOrSquash(ctx, { opts, internal, branch }, { ourId, theirId });
   }
@@ -1060,6 +1094,7 @@ const manyHeadMerge = async (
   const opts = await settleMerge(ctx, input, described, { branch, ourId }, remotes);
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
+  await rereadParentsForMessage(ctx, opts, remotes);
   assertRelated(opts, await mergeBasesOf(ctx, [ourId, ...remotes.map((r) => r.id)], OCTOPUS));
   if (opts.fastForward === 'only') throw nonFastForward(branch ?? HEAD, ourId, remotes[0]!.id);
   const keepsHead = reduced.includes(ourId) || opts.fastForward === 'never';

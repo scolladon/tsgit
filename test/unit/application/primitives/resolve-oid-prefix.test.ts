@@ -60,6 +60,30 @@ const writeLooseNamed = async (
   await ctx.fs.write(path, new Uint8Array([1]));
 };
 
+/** A context whose `objects/<prefix[0..2]>` listing always fails, counting the attempts. */
+const failingFanout = async (
+  prefix: string,
+  base?: Awaited<ReturnType<typeof buildSeededContext>>,
+) => {
+  const seeded = base ?? (await buildSeededContext());
+  const fanoutDir = `${seeded.layout.gitDir}/objects/${prefix.slice(0, 2)}`;
+  const error = vi.fn();
+  let attempts = 0;
+  const ctx: Context = {
+    ...seeded,
+    logger: { error },
+    fs: {
+      ...seeded.fs,
+      readdir: async (path: string) => {
+        if (path !== fanoutDir) return seeded.fs.readdir(path);
+        attempts += 1;
+        throw permissionDenied(fanoutDir);
+      },
+    },
+  };
+  return { ctx, error, reads: () => attempts };
+};
+
 describe('resolveOidPrefix', () => {
   describe('Given a full 40-hex oid', () => {
     describe('When resolveOidPrefix is called', () => {
@@ -401,7 +425,8 @@ describe('resolveOidPrefix', () => {
       it('Then returns undefined without an exists probe or faulting on the absent directory', async () => {
         // Arrange — nothing was written under objects/ff.
         const base = await buildSeededContext();
-        const { ctx, calls } = instrumentedContext(base);
+        const error = vi.fn();
+        const { ctx, calls } = instrumentedContext({ ...base, logger: { error } });
 
         // Act
         const result = await resolveOidPrefix(ctx, 'ffff');
@@ -410,33 +435,56 @@ describe('resolveOidPrefix', () => {
         expect(result).toBeUndefined();
         expect(calls().filter((c) => c.method === 'exists')).toEqual([]);
       });
+
+      it('Then it logs nothing', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const error = vi.fn();
+        const ctx: Context = { ...base, logger: { error } };
+
+        // Act
+        await resolveOidPrefix(ctx, 'ffff');
+
+        // Assert
+        expect(error).not.toHaveBeenCalled();
+      });
     });
   });
 
   describe('Given a fanout path occupied by a regular file instead of a directory', () => {
     describe('When resolveOidPrefix scans that prefix', () => {
-      it('Then returns undefined without faulting on the NOT_A_DIRECTORY readdir', async () => {
+      it('Then it answers undefined and logs NOT_A_DIRECTORY on the scan and its rescan', async () => {
         // Arrange — `objects/ff` exists as a plain file, not a directory.
-        const ctx = await buildSeededContext();
-        await ctx.fs.write(`${ctx.layout.gitDir}/objects/ff`, new Uint8Array([0]));
+        const base = await buildSeededContext();
+        await base.fs.write(`${base.layout.gitDir}/objects/ff`, new Uint8Array([0]));
+        const error = vi.fn();
+        const ctx: Context = { ...base, logger: { error } };
+        const fanoutDir = `${base.layout.gitDir}/objects/ff`;
 
         // Act
         const result = await resolveOidPrefix(ctx, 'ffff');
 
         // Assert
         expect(result).toBeUndefined();
+        expect(error).toHaveBeenCalledTimes(2);
+        expect(error).toHaveBeenCalledWith(`unable to open ${fanoutDir}`, {
+          path: fanoutDir,
+          code: 'NOT_A_DIRECTORY',
+        });
       });
     });
   });
 
   describe('Given a fanout directory whose readdir rejects with PERMISSION_DENIED', () => {
     describe('When resolveOidPrefix scans that prefix', () => {
-      it('Then the fault is rethrown, never folded to an empty scan', async () => {
+      it('Then it answers undefined and logs the unable-to-open error with the path and code twice', async () => {
         // Arrange
         const base = await buildSeededContext();
         const fanoutDir = `${base.layout.gitDir}/objects/ff`;
+        const error = vi.fn();
         const ctx: Context = {
           ...base,
+          logger: { error },
           fs: {
             ...base.fs,
             readdir: async (path: string) => {
@@ -447,17 +495,42 @@ describe('resolveOidPrefix', () => {
         };
 
         // Act
-        let caught: unknown;
-        try {
-          await resolveOidPrefix(ctx, 'ffff');
-          expect.unreachable();
-        } catch (error) {
-          caught = error;
-        }
+        const result = await resolveOidPrefix(ctx, 'ffff');
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(result).toBeUndefined();
+        expect(error).toHaveBeenCalledTimes(2);
+        expect(error).toHaveBeenCalledWith(`unable to open ${fanoutDir}`, {
+          path: fanoutDir,
+          code: 'PERMISSION_DENIED',
+        });
+      });
+    });
+  });
+
+  describe('Given a fanout readdir that fails without an error code', () => {
+    describe('When resolveOidPrefix scans', () => {
+      it('Then the failure propagates', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const fanoutDir = `${base.layout.gitDir}/objects/ff`;
+        const failure = new Error('disk on fire');
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readdir: async (path: string) => {
+              if (path === fanoutDir) throw failure;
+              return base.fs.readdir(path);
+            },
+          },
+        };
+
+        // Act
+        const result = resolveOidPrefix(ctx, 'ffff');
+
+        // Assert
+        await expect(result).rejects.toBe(failure);
       });
     });
   });
@@ -1010,4 +1083,111 @@ describe('resolveOidPrefix under core.disambiguate', () => {
       });
     },
   );
+
+  describe('Given a fanout directory that cannot be listed and no packed match', () => {
+    describe('When resolveOidPrefix misses it twice in one session', () => {
+      it('Then it logs twice on the first call and once on the second', async () => {
+        // Arrange
+        const { ctx, error, reads } = await failingFanout('ffff');
+        const sut = resolveOidPrefix;
+
+        // Act
+        await sut(ctx, 'ffff');
+        const afterFirst = { logs: error.mock.calls.length, reads: reads() };
+        await sut(ctx, 'ffff');
+
+        // Assert
+        expect([afterFirst.logs, error.mock.calls.length - afterFirst.logs]).toEqual([2, 1]);
+        expect([afterFirst.reads, reads() - afterFirst.reads]).toEqual([2, 1]);
+      });
+    });
+  });
+
+  describe('Given that directory in the primary and a readable one in an alternate', () => {
+    describe('When resolveOidPrefix misses the prefix', () => {
+      it('Then it scans again and logs twice, as git does', async () => {
+        // Arrange
+        const base = await borrowerContext();
+        await base.fs.mkdir(`${ALT_OBJECTS}/ff`);
+        const { ctx, error, reads } = await failingFanout('ffff', base);
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, 'ffff');
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect([error.mock.calls.length, reads()]).toEqual([2, 2]);
+      });
+    });
+  });
+
+  describe('Given that directory and a packed object under the prefix', () => {
+    describe('When resolveOidPrefix resolves the prefix twice in one session', () => {
+      it('Then it logs once, then not at all, and reads the directory once', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const [packed] = await writeSyntheticPack(base, 'hit', [
+          { kind: 'base', type: 'blob', content: encoder.encode('packed\n') },
+        ]);
+        const prefix = (packed as string).slice(0, 4);
+        const { ctx, error, reads } = await failingFanout(prefix, base);
+        const sut = resolveOidPrefix;
+
+        // Act
+        const first = await sut(ctx, prefix);
+        const logsAfterFirst = error.mock.calls.length;
+        const second = await sut(ctx, prefix);
+
+        // Assert
+        expect([first, second]).toEqual([packed, packed]);
+        expect([logsAfterFirst, error.mock.calls.length, reads()]).toEqual([1, 1, 1]);
+      });
+    });
+  });
+
+  describe('Given a readable directory and no match', () => {
+    describe('When resolveOidPrefix misses', () => {
+      it('Then it reads the directory once', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await writeLooseNamed(base, `ff00${'0'.repeat(36)}`);
+        const { ctx, calls } = instrumentedContext(base);
+        const fanoutDir = `${base.layout.gitDir}/objects/ff`;
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, 'ffff');
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(calls().filter((c) => c.method === 'readdir' && c.path === fanoutDir)).toHaveLength(
+          1,
+        );
+      });
+    });
+  });
+
+  describe('Given a readable directory', () => {
+    describe('When resolveOidPrefix resolves it twice', () => {
+      it('Then it reads it twice', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const oid = `ffff${'0'.repeat(36)}`;
+        await writeLooseNamed(base, oid);
+        const { ctx, calls } = instrumentedContext(base);
+        const fanoutDir = `${base.layout.gitDir}/objects/ff`;
+        const sut = resolveOidPrefix;
+
+        // Act
+        await sut(ctx, 'ffff');
+        await sut(ctx, 'ffff');
+
+        // Assert
+        expect(calls().filter((c) => c.method === 'readdir' && c.path === fanoutDir)).toHaveLength(
+          2,
+        );
+      });
+    });
+  });
 });

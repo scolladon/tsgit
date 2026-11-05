@@ -23,6 +23,9 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
 import type { Blob, ObjectId } from '../../src/domain/objects/index.js';
 import { GIT_AVAILABLE, runGitAsync, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Ada',
@@ -73,7 +76,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-corrupt precedence interop', () => {
         // Arrange
         const oid = await buildBothStoresRepo(dir);
         await rm(loosePathFor(dir, oid), { force: true });
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const result = await readObject(ctx, oid);
@@ -96,7 +99,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-corrupt precedence interop', () => {
         const loosePath = loosePathFor(dir, oid);
         await rm(loosePath, { force: true });
         await writeFile(loosePath, new TextEncoder().encode('not-a-zlib-stream'));
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const result = await readObject(ctx, oid);

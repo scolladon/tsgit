@@ -7,6 +7,7 @@
  */
 import {
   cannotDescribe,
+  describeNeitherCommitNorBlob,
   noAnnotatedNames,
   noExactMatch,
   noNames,
@@ -21,7 +22,7 @@ import {
   shouldReplaceName,
 } from '../../domain/describe/index.js';
 import { TsgitError } from '../../domain/error.js';
-import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
 import { RefName as RefNameFactory } from '../../domain/objects/object-id.js';
 import { workTreeRequired } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
@@ -31,9 +32,11 @@ import {
   type DateWalkStep,
   selectParents,
 } from '../primitives/internal/commit-date-walk.js';
+import { type PeelOutcome, peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
+import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { resolveCommitIsh } from './internal/commit-ish.js';
+import { refusingObjectReadFault, resolveCommitIshObject } from './internal/commit-ish.js';
 import {
   type ContainsPlan,
   type DescribeOptions,
@@ -65,6 +68,32 @@ export interface DescribeResult {
 const DEFAULT_REV = 'HEAD';
 const TAGS_PREFIX = 'refs/tags/';
 
+/** git's describe: a commit at any depth, or a blob the name itself holds — never a blob behind a tag. */
+const describable = (named: ObjectId, peeled: PeelOutcome<GitObject>): boolean =>
+  peeled.result.type === 'commit' || (peeled.result.type === 'blob' && peeled.id === named);
+
+/**
+ * git's `describe`: the named object (a ref's winner or an object name alike) is read
+ * and peeled; one that does not read, does not peel, or ends on anything but a commit
+ * or a blob is neither a commit nor a blob.
+ */
+const resolveDescribeTarget = async (ctx: Context, revision: string): Promise<ObjectId> => {
+  const named = await resolveCommitIshObject(ctx, revision);
+  const peeled = await peelDescribeTarget(ctx, named, revision);
+  if (!describable(named, peeled)) throw describeNeitherCommitNorBlob(revision);
+  return peeled.id;
+};
+
+const peelDescribeTarget = (
+  ctx: Context,
+  named: ObjectId,
+  revision: string,
+): Promise<PeelOutcome<GitObject>> =>
+  refusingObjectReadFault(
+    () => peelChain(ctx, named, readObject, tagHop),
+    () => describeNeitherCommitNorBlob(revision),
+  );
+
 export function describe(
   ctx: Context,
   rev: string | undefined,
@@ -83,7 +112,7 @@ export async function describe(
   await assertOperationalRepository(ctx);
   if (opts.contains === true) return describeContains(ctx, rev, parseContainsOptions(opts));
   const plan = parseDescribeOptions(opts, rev !== undefined);
-  const target = await resolveCommitIsh(ctx, rev ?? DEFAULT_REV);
+  const target = await resolveDescribeTarget(ctx, rev ?? DEFAULT_REV);
   const dirty = await computeDirty(ctx, plan);
   const nameMap = await buildNameMap(ctx, plan);
   const minPriority = minQualifyingPriority(plan);

@@ -336,6 +336,21 @@ export type CommandError =
       readonly type: ObjectType;
     }
   | {
+      readonly code: 'BAD_OBJECT';
+      /** The argument as the caller typed it (`'HEAD'` when the command defaults). */
+      readonly revision: string;
+    }
+  | {
+      readonly code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB';
+      /** The argument as the caller typed it (`'HEAD'` when the command defaults). */
+      readonly revision: string;
+    }
+  | {
+      readonly code: 'BLAME_NON_COMMIT';
+      /** The argument as the caller typed it (`'HEAD'` when the command defaults). */
+      readonly revision: string;
+    }
+  | {
       readonly code: 'CHECKOUT_NON_COMMIT';
       /** The switch argument as given — git's `-` spelt `@{-1}`. */
       readonly revision: string;
@@ -879,6 +894,18 @@ export const emptyCommitSet = (): TsgitError => new TsgitError({ code: 'EMPTY_CO
 /** git's `sequencer_pick_revisions`: a named object that peels to no commit. */
 export const cannotPickNonCommit = (revision: string, type: ObjectType): TsgitError =>
   new TsgitError({ code: 'CANNOT_PICK_NON_COMMIT', revision, type });
+
+/** git's `revision.c` get_reference: the named object does not read. */
+export const badObject = (revision: string): TsgitError =>
+  new TsgitError({ code: 'BAD_OBJECT', revision });
+
+/** git's `builtin/describe.c`: the target neither reads nor peels to a commit or blob. */
+export const describeNeitherCommitNorBlob = (revision: string): TsgitError =>
+  new TsgitError({ code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB', revision });
+
+/** git's `builtin/blame.c`: a named tag reads but its target is missing. */
+export const blameNonCommit = (revision: string): TsgitError =>
+  new TsgitError({ code: 'BLAME_NON_COMMIT', revision });
 
 /** git checkout's `Cannot switch branch to a non-commit`: a tree-ish that peels to no commit. */
 export const checkoutNonCommit = (revision: string): TsgitError =>

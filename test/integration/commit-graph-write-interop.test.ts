@@ -43,6 +43,9 @@ import {
   runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -173,7 +176,7 @@ async function writeBoth(
   await cp(baseDir, oursDir, { recursive: true });
 
   git(peerDir, 'commit-graph', 'write', '--reachable');
-  const ctx = createNodeContext({ workDir: oursDir, algorithm });
+  const ctx = createTrackedNodeContext({ workDir: oursDir, algorithm });
   await writeCommitGraph(ctx);
 
   const peerBytes = await readFile(commitGraphPath(`${peerDir}/.git`));
@@ -617,7 +620,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
       const sut = maintenance;
 
       // Act
-      const result = await sut(createNodeContext({ workDir: oursDir, algorithm: 'sha1' }), {
+      const result = await sut(createTrackedNodeContext({ workDir: oursDir, algorithm: 'sha1' }), {
         tasks: ['commit-graph', 'gc'],
       });
 
@@ -694,7 +697,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable p
         await cp(dir, oursDir, { recursive: true });
         const peer = tryRunGitWithExit(['-C', dir, 'commit-graph', 'write', '--reachable']);
         const logged: string[] = [];
-        const base = createNodeContext({ workDir: oursDir, algorithm: 'sha1' });
+        const base = createTrackedNodeContext({ workDir: oursDir, algorithm: 'sha1' });
         const sut = writeCommitGraph;
 
         // Act
@@ -727,7 +730,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable p
         await cp(dir, oursDir, { recursive: true });
         const peer = tryRunGitWithExit(['-C', dir, 'maintenance', 'run', '--task=commit-graph']);
         const logged: string[] = [];
-        const base = createNodeContext({ workDir: oursDir, algorithm: 'sha1' });
+        const base = createTrackedNodeContext({ workDir: oursDir, algorithm: 'sha1' });
         const sut = maintenance;
 
         // Act
@@ -764,7 +767,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable p
         await cp(dir, oursDir, { recursive: true });
         const peer = tryRunGitWithExit(['-C', dir, 'maintenance', 'run', '--task=commit-graph']);
         const logged: string[] = [];
-        const base = createNodeContext({ workDir: oursDir, algorithm: 'sha1' });
+        const base = createTrackedNodeContext({ workDir: oursDir, algorithm: 'sha1' });
         const sut = maintenance;
 
         // Act
@@ -800,7 +803,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable p
         await cp(dir, oursDir, { recursive: true });
         const peer = tryRunGitWithExit(['-C', dir, 'maintenance', 'run', '--task=commit-graph']);
         const logged: string[] = [];
-        const base = createNodeContext({ workDir: oursDir, algorithm: 'sha1' });
+        const base = createTrackedNodeContext({ workDir: oursDir, algorithm: 'sha1' });
         const sut = maintenance;
 
         // Act

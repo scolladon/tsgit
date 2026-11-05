@@ -23,7 +23,7 @@ Equivalent under readback: the on-disk loose-object SHA matches `git hash-object
 
 ## Repo-settings validation
 
-`writeObject` validates the repo-settings class (`core.maxTreeDepth`, `core.deltaBaseCacheLimit`) as its **first step**, mirroring git's own `hash-object -w` / `write-tree`, which consult the packed store before writing and so reach `prepare_repo_settings` on the same path. This narrows an earlier guarantee: a primitive-only session (one that never ran an operational gate) still needs no gate to *read* objects, but it is **not** exempt from this check on a *write* — `writeObject` (and `writeTree`, which calls it) refuses a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` whether or not a gate ran this session. See [ADR-862](../../adr/862-the-object-write-entry-is-a-repo-settings-boundary.md) and the [repo-settings tier](internals.md#assertrepossettingsvalid) in `internals.md`.
+`writeObject` validates the repo-settings class (`core.maxTreeDepth`, `core.deltaBaseCacheLimit`) as its **first step**, mirroring git's own `hash-object -w` / `write-tree`, which consult the packed store before writing and so reach `prepare_repo_settings` on the same path. This narrows an earlier guarantee: a primitive-only session (one that never ran an operational gate) still needs no gate to *read* objects, but it is **not** exempt from this check on a *write* — `writeObject` (and `writeTree`, which calls it) refuses a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` whether or not a gate ran this session. See [ADR-862](../../adr/862-the-object-write-entry-is-a-repo-settings-boundary.md) and the [repo-settings tier](internals.md#assertreposettingsvalid) in `internals.md`.
 
 ## Throws
 

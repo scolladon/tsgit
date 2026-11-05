@@ -70,9 +70,20 @@ interface DescribeResult {
   repository has none. `broken` tolerates that same failure instead of
   refusing — a bare repository (or one with no resolved work tree) reports
   `dirty: true` rather than throwing, matching git's `<name>-broken` output.
+- **Target:** `rev` is read as git's `get_oid_basic` reads it: the first
+  candidate namespace whose ref resolves wins (`refs/tags/<name>` before
+  `refs/heads/<name>`), whatever object it holds, and a later candidate is never
+  tried; a name ambiguous between namespaces logs `refname '<name>' is
+  ambiguous.` on `ctx.logger.warn` before any refusal. The named object is then
+  peeled through its tags: a commit at any depth is described, and a blob passes
+  only when the named object is itself that blob. Everything else refuses
+  `DESCRIBE_NEITHER_COMMIT_NOR_BLOB` (`revision`: `rev` as given, `'HEAD'` when
+  omitted): a tag of a tree, a tree, a tag of a blob, a named object or tag
+  target that does not read or parse, an absent full object id. A name that
+  resolves nowhere still refuses `REF_NOT_FOUND`.
 - **Refusals:** `NO_NAMES` (no tags at all), `NO_ANNOTATED_NAMES` (only lightweight
   tags in default mode), `NO_REACHABLE_NAMES` (tags exist but none reach the
-  target), `NO_EXACT_MATCH`, `WORK_TREE_REQUIRED` (`dirty: true` against a
+  target), `NO_EXACT_MATCH`, `DESCRIBE_NEITHER_COMMIT_NOR_BLOB` (see **Target**), `WORK_TREE_REQUIRED` (`dirty: true` against a
   repository with no work tree — not raised when `broken: true` is also set).
   `always: true` returns the oid fallback instead.
 

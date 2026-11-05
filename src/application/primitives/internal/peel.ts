@@ -1,3 +1,4 @@
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { objectNotFound } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -9,6 +10,8 @@ import {
   parseTypedPeelHop,
 } from './object-type-table.js';
 import { walkPeelChain } from './peel-chain.js';
+
+const INVALID_OBJECT_ID = 'INVALID_OBJECT_ID';
 
 type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
 
@@ -42,15 +45,29 @@ export const peel = async (
 
 /**
  * One hop's object. git's `peel_object` types a blob through `oid_object_info`,
- * never its body, so a blob answers from its header alone.
+ * never its body, so a blob answers from its header alone. A tag whose `object`
+ * line does not parse names no object, as git's `parse_object` answering NULL.
  */
 const readHop = async (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   oid: ObjectId,
 ): Promise<PeelHopObject | undefined> => {
-  if (!(await isBlobByHeader(ctx, oid))) return parseTypedPeelHop(ctx, table, oid);
+  if (!(await isBlobByHeader(ctx, oid))) return parseUnlessMalformed(ctx, table, oid);
   return assignObjectType(ctx, table, oid, 'blob') ? { type: 'blob' } : undefined;
+};
+
+const parseUnlessMalformed = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  oid: ObjectId,
+): Promise<PeelHopObject | undefined> => {
+  try {
+    return await parseTypedPeelHop(ctx, table, oid);
+  } catch (error) {
+    if (errorDataCode(error) === INVALID_OBJECT_ID) return undefined;
+    throw error;
+  }
 };
 
 /** A tag hops to its target and a commit to its root tree, until `target` is reached. */

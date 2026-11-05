@@ -45,6 +45,18 @@ type CherryPickResult =
   oldest-first. A named object that peels to no commit refuses
   `CANNOT_PICK_NON_COMMIT`; arguments that resolve to no commit at all refuse
   `EMPTY_COMMIT_SET`.
+- **Name resolution.** Each argument is read as git's `get_oid_basic` reads it:
+  the first candidate namespace whose ref resolves wins (`refs/tags/<name>` before
+  `refs/heads/<name>`, so a tag `x` shadows a branch `x`), whatever object it
+  holds. A first candidate whose object does not read refuses `BAD_OBJECT`
+  (`INVALID_REVISION_RANGE` on a range side), and one that reads but peels to no
+  commit (a tag of a tree, a tag whose target is missing) refuses
+  `CANNOT_PICK_NON_COMMIT` with that object's own `type`; a later candidate is
+  never tried. Nothing is written before either refusal. As git does, every
+  name is read twice, once to collect the arguments and once to check each
+  pick, so a name ambiguous between namespaces logs `refname '<name>' is
+  ambiguous.` on `ctx.logger.warn` twice; a name refused on its first read
+  logs it once.
 - **Conflict.** Returns `{ kind: 'conflict', ... }`, writing `CHERRY_PICK_HEAD`,
   a `MERGE_MSG` draft (with a `# Conflicts:` block), stage-1/2/3 index entries,
   and `<<<<<<<` markers. Resolve with `repo.add(paths)` then
@@ -97,7 +109,9 @@ type CherryPickResult =
   is already pending.
 - `NO_OPERATION_IN_PROGRESS` — `continue`/`skip`/`abort` with nothing in progress.
 - `INVALID_OPTION` — an unsupported revision form (`A...B`).
-- `CANNOT_PICK_NON_COMMIT` — a named object peels to no commit.
+- `BAD_OBJECT` — a plain argument or a `^X` exclusion names an object that does not read.
+- `INVALID_REVISION_RANGE` — a side of an `A..B` range names an object that does not read; `expression` is the whole range.
+- `CANNOT_PICK_NON_COMMIT` — a named object reads but peels to no commit.
 - `EMPTY_COMMIT_SET` — the arguments resolve to no commit.
 - `CHERRY_PICK_MERGE_NO_MAINLINE` — picking a merge commit (≥2 parents) without `-m`.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated commit-ish matched more than one object.

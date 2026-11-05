@@ -183,7 +183,7 @@ with `CONFIG_BAD_NUMERIC_VALUE` (the repo-settings class), checked right after t
 operational gate and **before** the work-tree requirement, transcribing git's own
 per-builtin prologue. `add`, `update` and `deinit` carry no such check of their own,
 and reach the class only if what they do touches the object store. See
-[`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
+[`internals.md`](../primitives/internals.md#assertreposettingsvalid).
 
 ### `init`
 

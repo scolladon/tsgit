@@ -6,6 +6,8 @@ import {
   atomicPushUnsupported,
   authorUnconfigured,
   badBranchMergeOptions,
+  badObject,
+  blameNonCommit,
   blockedHost,
   branchExists,
   branchNotFound,
@@ -31,6 +33,7 @@ import {
   configUnknownNegotiationAlgorithm,
   configUnknownValue,
   configValueInvalid,
+  describeNeitherCommitNorBlob,
   emptyCommitMessage,
   emptyPathspec,
   envBadBooleanValue,
@@ -128,6 +131,25 @@ const dummyReportStatus = {
 } as const;
 
 describe('domain commands error — factory data', () => {
+  describe('Given a revision a corrupt commit-ish names', () => {
+    describe('When a refusal factory is called', () => {
+      it.each([
+        ['BAD_OBJECT', badObject],
+        ['DESCRIBE_NEITHER_COMMIT_NOR_BLOB', describeNeitherCommitNorBlob],
+        ['BLAME_NON_COMMIT', blameNonCommit],
+      ] as const)('Then %s carries the revision as typed', (code, factory) => {
+        // Arrange
+        const sut = factory;
+
+        // Act
+        const result = sut('x');
+
+        // Assert
+        expect(result.data).toEqual({ code, revision: 'x' });
+      });
+    });
+  });
+
   describe('Given the workingTreeDirty error helper', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
@@ -2233,6 +2255,12 @@ describe('domain commands error — extractDetail message formatting', () => {
       { code: 'CANNOT_PICK_NON_COMMIT', revision: 'HEAD:d/f', type: 'blob' },
       "CANNOT_PICK_NON_COMMIT: HEAD:d/f: can't cherry-pick a blob",
     ],
+    [{ code: 'BAD_OBJECT', revision: 'x' }, 'BAD_OBJECT: bad object x'],
+    [
+      { code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB', revision: 'x' },
+      'DESCRIBE_NEITHER_COMMIT_NOR_BLOB: x is neither a commit nor blob',
+    ],
+    [{ code: 'BLAME_NON_COMMIT', revision: 'x' }, 'BLAME_NON_COMMIT: Non commit x?'],
     [
       { code: 'CHECKOUT_NON_COMMIT', revision: 'HEAD^{tree}' },
       "CHECKOUT_NON_COMMIT: Cannot switch branch to a non-commit 'HEAD^{tree}'",

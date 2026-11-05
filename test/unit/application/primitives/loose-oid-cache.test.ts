@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   forgetLooseOidPrefix,
@@ -8,6 +8,10 @@ import {
 import type { SourceLocation } from '../../../../src/application/primitives/internal/source-location.js';
 import { fileNotFound, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const looseFilePath = (ctx: { layout: { gitDir: string } }, id: ObjectId): string =>
   `${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`;

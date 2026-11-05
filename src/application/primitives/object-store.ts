@@ -16,6 +16,7 @@ import {
   assertRepoSettingsValid,
   repoSettingsVerdictSettled,
 } from './internal/repo-settings-gate.js';
+import { sessionsMintedBy } from './internal/session-lineage.js';
 import type { SourceLocation } from './internal/source-location.js';
 import { createPackRegistry, type PackRegistry } from './pack-registry.js';
 import { commonGitDir, objectsDirOf } from './path-layout.js';
@@ -317,11 +318,20 @@ export const refreshObjectStore = (ctx: Context): void => {
   resolvedHandles.get(ctx.session)?.store.refresh();
 };
 
-/** Disposal never starts a build; a build that failed has nothing left to close. */
+/**
+ * Disposal never starts a build; a build that failed has nothing left to close.
+ * The sessions this one minted for derived contexts are disposed with it: a
+ * submodule's or an alternate donor's store has no other owner left.
+ */
 export const disposeObjectStore = async (ctx: Context): Promise<void> => {
-  const pending = memos.get(ctx.session)?.peek();
+  await disposeSessionStore(ctx.session);
+};
+
+const disposeSessionStore = async (session: Context['session']): Promise<void> => {
+  const pending = memos.get(session)?.peek();
   const handle = await pending?.catch(() => undefined);
   await handle?.store.dispose();
+  for (const child of sessionsMintedBy(session)) await disposeSessionStore(child);
 };
 
 export interface ObjectSourcesView {

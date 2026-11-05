@@ -20,6 +20,7 @@ import { branchMarkRef } from './branch-mark.js';
 import { nthPriorCheckout } from './prior-checkout.js';
 import {
   expandRef,
+  type RevisionReadMode,
   resolveRefLadder,
   resolveSubstitutedRefLadder,
   warnIfRefNamesObjectId,
@@ -37,6 +38,11 @@ const resolveCandidate =
   (candidate: RefName | 'HEAD'): Promise<RefCandidateOutcome> =>
     readRefCandidate(ctx, candidate);
 
+export interface RevisionNameOptions {
+  readonly accepts?: CandidateFilter | undefined;
+  readonly mode?: RevisionReadMode | undefined;
+}
+
 /**
  * `name` as an object id: a full-width oid wins over a same-named ref (git
  * resolves an object name first), then the ref ladder, then an abbreviated
@@ -46,19 +52,19 @@ const resolveCandidate =
 export const resolveRevisionName = async (
   ctx: Context,
   name: string,
-  accepts?: CandidateFilter,
+  { accepts, mode }: RevisionNameOptions = {},
 ): Promise<ObjectId | undefined> => {
   if (isOid(name, ctx.hashConfig)) {
     await warnIfRefNamesObjectId(ctx, name, resolveCandidate(ctx));
     return ObjectIdFactory.from(name);
   }
   const prior = await nthPriorCheckout(ctx, name);
-  if (prior !== undefined) return resolvePriorCheckout(ctx, name, prior);
+  if (prior !== undefined) return resolvePriorCheckout(ctx, name, prior, mode);
   const marked = name.includes(MARK_OPENER) ? await branchMarkRef(ctx, name) : undefined;
   if (marked !== undefined) {
-    return resolveSubstitutedRefLadder(ctx, name, marked, resolveCandidate(ctx));
+    return resolveSubstitutedRefLadder(ctx, name, marked, resolveCandidate(ctx), { mode });
   }
-  const byRef = await resolveRefLadder(ctx, name, resolveCandidate(ctx));
+  const byRef = await resolveRefLadder(ctx, name, resolveCandidate(ctx), { mode });
   if (byRef !== undefined) return byRef;
   return resolveOidPrefix(ctx, name, accepts);
 };
@@ -70,9 +76,10 @@ const resolvePriorCheckout = (
   ctx: Context,
   name: string,
   prior: string,
+  mode: RevisionReadMode | undefined,
 ): Promise<ObjectId | undefined> => {
   if (isOid(prior, ctx.hashConfig)) return Promise.resolve(ObjectIdFactory.from(prior));
-  return resolveSubstitutedRefLadder(ctx, name, prior, resolveCandidate(ctx));
+  return resolveSubstitutedRefLadder(ctx, name, prior, resolveCandidate(ctx), { mode });
 };
 
 /** git's `substitute_branch_name` before `dwim_ref`: a branch mark spelt as the ref it names. */

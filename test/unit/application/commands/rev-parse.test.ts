@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   evaluateRevision,
@@ -21,6 +21,10 @@ import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 

@@ -100,6 +100,16 @@ type BlameLine = CommittedBlameLine | UncommittedBlameLine;
   an inverted range is swapped rather than refused (git's `-L` semantics), and
   `end` past the last line is clamped. A start below 1, a start past the last
   line, or a non-integer bound refuses (`INVALID_OPTION`).
+- **Revision resolution:** `rev` is read as git's `get_oid_basic` reads it: the
+  first candidate namespace whose ref resolves wins (`refs/tags/<name>` before
+  `refs/heads/<name>`, so a tag `x` shadows a branch `x`), whatever object it
+  holds, and a later candidate is never tried. A name ambiguous between
+  namespaces logs `refname '<name>' is ambiguous.` on `ctx.logger.warn` once,
+  before any refusal. A named object that does not read refuses `BAD_OBJECT`
+  (`revision`: `rev` as given). One that reads but does not peel to a commit
+  refuses `BLAME_NON_COMMIT` (`revision`): a tag of a tree, a tree id, or a tag
+  whose chain stops reading past the first hop (its target is missing or does
+  not parse).
 - **Refusals:** a path absent from `rev` refuses (`PATH_NOT_IN_TREE`). In
   `worktree` mode against a non-bare repository with no work tree, `blame`
   refuses `WORK_TREE_REQUIRED` before any path check. Otherwise: an untracked

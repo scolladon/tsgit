@@ -33,5 +33,6 @@ REPOSITORY_BETTERLEAKS_FILTER_REGEX_EXCLUDE: test/unit/application/commands/inte
 # so disable that one check. Real basic-auth secrets stay covered by secretlint +
 # betterleaks.
 REPOSITORY_CHECKOV_ARGUMENTS: "--skip-check CKV_SECRET_4"
-
-SPELL_CSPELL_ARGUMENTS: "--words 'RUNBOOK,tsgit,scolladon'"
+# The config lists MegaLinter's own linter keys (JSON_JSONLINT, …), which are not words; the
+# local spelling check never scans this dotfile either (cspell skips dotfiles by default).
+SPELL_CSPELL_FILTER_REGEX_EXCLUDE: \.mega-linter\.yml

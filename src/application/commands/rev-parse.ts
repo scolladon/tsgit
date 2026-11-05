@@ -55,7 +55,11 @@ import {
   rereadsMisspeltRevision,
 } from './internal/misspelt-revision.js';
 import { nthPriorCheckout } from './internal/prior-checkout.js';
-import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
+import {
+  type RevisionReadMode,
+  readCandidateRef,
+  resolveAmbiguousLadder,
+} from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
   type DifferenceSides,
@@ -73,7 +77,7 @@ import {
   type RevOperation,
 } from './internal/rev-parse-grammar.js';
 import { type ParentShorthand, parentShorthand } from './internal/rev-parse-parent-shorthand.js';
-import { resolveRevisionName } from './internal/revision-name.js';
+import { type RevisionNameOptions, resolveRevisionName } from './internal/revision-name.js';
 import { startupPrefix } from './internal/startup-prefix.js';
 
 export type { RevParseEntry } from '../../domain/objects/rev-parse-entry.js';
@@ -163,7 +167,7 @@ const rereadMisspelt = async (
 ): Promise<void> => {
   if (isMessageSearch(arg)) return;
   try {
-    await evaluateTyped(ctx, table, arg);
+    await evaluateTyped(ctx, table, arg, { mode: readModeOf(arg) });
   } catch (error) {
     if (errorDataCode(error) === 'AMBIGUOUS_OID_PREFIX' && dropsQuietRead(arg)) {
       reportAmbiguousOid(ctx, error);
@@ -181,6 +185,9 @@ const dropsQuietRead = (arg: string): boolean => {
   return expr.kind === 'ref-or-hex' && expr.operations.some((op) => PARENT_STEPS.has(op.kind));
 };
 
+/** The quiet reread of git's `maybe_die_on_misspelt_object_name`, unless a `^<n>` or `~<n>` drops it. */
+const readModeOf = (arg: string): RevisionReadMode => (dropsQuietRead(arg) ? 'reporting' : 'quiet');
+
 /** git's `get_oid` read aloud: an ambiguous abbreviated name is reported before the read fails. */
 export const readReporting = async (
   ctx: Context,
@@ -189,7 +196,7 @@ export const readReporting = async (
   accepts?: CandidateFilter,
 ): Promise<ObjectId> => {
   try {
-    return await evaluateTyped(ctx, table, expression, accepts);
+    return await evaluateTyped(ctx, table, expression, { accepts });
   } catch (error) {
     reportAmbiguousOid(ctx, error);
     throw error;
@@ -374,26 +381,22 @@ const shorthandEntries = (
 /**
  * git's `get_oid` over one expression, read once and typed into its own
  * table: the commands that refuse their argument without the misspelt-name
- * diagnosis. `accepts` is the
- * caller's disambiguation hint for an abbreviated name read as is.
+ * diagnosis.
  */
-export const evaluateRevision = (
-  ctx: Context,
-  expression: string,
-  accepts?: CandidateFilter,
-): Promise<ObjectId> => evaluateTyped(ctx, createObjectTypeTable(), expression, accepts);
+export const evaluateRevision = (ctx: Context, expression: string): Promise<ObjectId> =>
+  evaluateTyped(ctx, createObjectTypeTable(), expression);
 
 /** git's `get_oid` typing each object it parses into `table`, the invocation's. */
 const evaluateTyped = async (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   expression: string,
-  accepts?: CandidateFilter,
+  options: RevisionNameOptions = {},
 ): Promise<ObjectId> => {
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
   const expr = parseExpression(expression);
-  return evaluate(ctx, table, expr, expression, accepts);
+  return evaluate(ctx, table, expr, expression, options);
 };
 
 const evaluate = async (
@@ -401,14 +404,14 @@ const evaluate = async (
   table: ObjectTypeTable | undefined,
   expr: RevExpression,
   raw: string,
-  accepts?: CandidateFilter,
+  options: RevisionNameOptions = {},
 ): Promise<ObjectId> => {
   if (expr.kind === 'index-stage') {
     return resolveIndexStage(ctx, { stage: expr.stage, path: resolveRelativePath(ctx, expr.path) });
   }
   if (expr.kind === 'tree-path') {
-    const whole = mayReadWhole(raw) ? await readWholeName(ctx, table, raw, accepts) : undefined;
-    return whole ?? resolveTreePath(ctx, table, expr.rev, expr.path);
+    const whole = mayReadWhole(raw) ? await readWholeName(ctx, table, raw, options) : undefined;
+    return whole ?? resolveTreePath(ctx, table, expr.rev, expr.path, options.mode);
   }
   if (expr.kind === 'message-search') return searchFromRefs(ctx, table, expr.pattern, raw);
   // `now` is read once per call so the reflog `@{date}` resolution is
@@ -417,7 +420,10 @@ const evaluate = async (
   let id =
     expr.reflog !== undefined
       ? await resolveReflogBase(ctx, expr.base, expr.reflog, now, raw)
-      : await resolveBase(ctx, expr.base, baseHint(ctx, expr.operations, accepts));
+      : await resolveBase(ctx, expr.base, {
+          accepts: baseHint(ctx, expr.operations, options.accepts),
+          mode: options.mode,
+        });
   for (const op of expr.operations) {
     id = await applyOperation(ctx, table, id, op);
   }
@@ -434,10 +440,10 @@ const readWholeName = async (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   raw: string,
-  accepts: CandidateFilter | undefined,
+  options: RevisionNameOptions,
 ): Promise<ObjectId | undefined> => {
   try {
-    return await evaluate(ctx, table, parseWholeName(raw), raw, accepts);
+    return await evaluate(ctx, table, parseWholeName(raw), raw, options);
   } catch (error) {
     if (!WHOLE_NAME_MISSES.has(errorDataCode(error))) throw error;
     return undefined;
@@ -472,13 +478,13 @@ const baseHint = (
 const resolveBase = async (
   ctx: Context,
   base: string,
-  accepts: CandidateFilter | undefined,
+  options: RevisionNameOptions,
 ): Promise<ObjectId> => {
   // The shared `get_oid` ladder: a full-width oid, then the gitrevisions
   // candidate namespaces (the verbatim one also covering the `HEAD` literal),
   // then an abbreviated object id — which still throws AMBIGUOUS_OID_PREFIX
   // when the prefix matches more than one object.
-  const id = await resolveRevisionName(ctx, interpretEmptyAt(base), accepts);
+  const id = await resolveRevisionName(ctx, interpretEmptyAt(base), options);
   if (id !== undefined) return id;
   throw objectNotFound(base as ObjectId);
 };
@@ -740,14 +746,21 @@ const resolveIndexStage = async (
  * `<tree-ish>:<path>` — resolve the left side to a tree, then descend `path`'s
  * `/`-separated components to the addressed blob/tree. An empty path returns the
  * tree itself (`HEAD:` ⇒ the root tree).
+ *
+ * git's `get_oid_with_context_1` hands its own flags to the tree part, the quiet
+ * reread's included.
  */
 const resolveTreePath = async (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   rev: string,
   rawPath: string,
+  mode?: RevisionReadMode,
 ): Promise<ObjectId> => {
-  const baseId = await evaluate(ctx, table, parseExpression(rev), rev, treeishFilter(ctx));
+  const baseId = await evaluate(ctx, table, parseExpression(rev), rev, {
+    accepts: treeishFilter(ctx),
+    mode,
+  });
   const path = resolveRelativePath(ctx, rawPath);
   const treeId = await peel(ctx, table, baseId, 'tree');
   if (path === '') return treeId;

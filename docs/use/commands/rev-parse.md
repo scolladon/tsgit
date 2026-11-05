@@ -53,6 +53,9 @@ An abbreviated id shared by several objects is read with the hint of the operati
 ## Behaviour
 
 - **Lenient reflog reads.** `@{N}` and `@{date}` read the reflog leniently: a malformed line is skipped, and `@{N}`'s numbering counts only the surviving entries — matching git.
+- **Peeling a tag that does not parse.** `X^{commit}` or `X^{blob}` over a tag whose `object` line is not an object id names no object, as git's `parse_object` does: the argument is printed as a path and the read refuses `OBJECT_NOT_FOUND` with that path in `printed`.
+- **Quiet misspelt-name re-read.** An argument that names no object is read a second time before the refusal, as git's misspelt-name check does. That re-read is quiet: it neither logs `refname '<name>' is ambiguous.` nor runs the abbreviation scan behind it, so the warning is logged once. Under `^<n>`/`~<n>` the re-read is not quiet and the warning is logged twice. A skipped candidate's `ignoring dangling symref <ref>` line is logged on both reads.
+- **Unreadable fanout directory.** A loose `objects/<xx>` directory that cannot be listed during an abbreviated-id scan (including the abbreviation check behind the ambiguity warning) is skipped, not fatal: it logs `logger.error('unable to open <dir>', { path, code })` (`PERMISSION_DENIED`, or `NOT_A_DIRECTORY` for a regular file at that path) and the scan goes on. A missing directory is silent; a failure carrying no code still throws. The count follows git's per-process cache over `ctx.session`: the first scan meeting the directory logs twice on a miss and once on a hit, a later scan once on a miss and not on a hit. With `core.warnAmbiguousRefs=false` a name that resolves as a ref scans nothing and logs nothing.
 - **`@{date}` before the log begins** clamps to the oldest surviving entry's pre-state (`oldId`), or its post-state (`newId`) when that pre-state is the null id — the ref's creation entry — matching git.
 
 ## Examples
@@ -75,7 +78,7 @@ A refusal reached after git has already printed lines carries them as `printed` 
 - `REVPARSE_UNRESOLVED` — name does not resolve, or `@{date}` form unparseable.
 - `AMBIGUOUS_OID_PREFIX` — short oid matches multiple objects. git's `error: short object ID <prefix> is ambiguous` goes to `logger.error` once per read git makes aloud — twice for a name under `^<n>`/`~<n>`, whose misspelt-name re-read git does not quiet — followed by its `hint: The candidates are:` header on `logger.error` with the structured `candidates` (`{ id, type, date?, subject? }`, tags then commits, trees and blobs, each by id) as payload. An ambiguous range side or parent-shorthand base is reported the same way, then the whole argument is read as one name.
 - `REFLOG_ENTRY_OUT_OF_RANGE` — `@{N}` beyond the reflog length.
-- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class), checked by an explicit call right after the operational gate and before the expression is parsed, transcribing git's own per-builtin prologue. See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class), checked by an explicit call right after the operational gate and before the expression is parsed, transcribing git's own per-builtin prologue. See [`internals.md`](../primitives/internals.md#assertreposettingsvalid).
 
 ## See also
 

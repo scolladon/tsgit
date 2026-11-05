@@ -57,6 +57,9 @@ import {
   tryRunGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 /** Probes one `git init` capability once, in a throwaway `mktemp` dir, never touching a fixture. */
 const probeInitCapability = (...args: ReadonlyArray<string>): boolean => {
@@ -388,7 +391,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate({ all: true }), When comparing to git bundle create --all', () => {
     it('Then the header bytes are byte-identical (refs sorted, HEAD last, annotated tag → tag-object oid)', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin1-all.bundle');
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['--all'], env);
@@ -434,7 +437,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       'Then the header bytes are byte-identical for $label',
       async ({ file, gitArgs, options }) => {
         // Arrange
-        const ctx = createNodeContext({ workDir: pair.peer });
+        const ctx = createTrackedNodeContext({ workDir: pair.peer });
         const env = runGitEnv();
         const bundleFile = path.join(bundleDir, file);
         const gitBytes = gitBundleCreate(pair.peer, bundleFile, gitArgs, env);
@@ -451,7 +454,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate two-dot range main~2..main, When comparing to git bundle create main~2..main', () => {
     it('Then the header bytes are byte-identical and prerequisites are oid-sorted', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin1-two-dot.bundle');
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['main~2..main'], env);
@@ -471,7 +474,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate three-dot main...feature, When comparing to git bundle create main...feature', () => {
     it('Then header bytes are byte-identical to git and prerequisite comment is the folded first paragraph', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin1-three-dot.bundle');
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['main...feature'], env);
@@ -498,7 +501,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate ^-exclusion form (main ^main~2), When comparing to git bundle create main ^main~2', () => {
     it('Then header bytes are byte-identical to both git and the two-dot form (A..B ≡ ^A B)', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin1-exclude.bundle');
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['main', '^main~2'], env);
@@ -523,7 +526,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate three-dot main...feature, When inspecting prerequisite ordering', () => {
     it('Then prerequisites are oid-sorted ascending and match git', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin2-single-base.bundle');
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['main...feature'], env);
@@ -545,7 +548,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate criss-cross branch-a...branch-b (two merge-bases), When comparing prerequisites to git', () => {
     it('Then both merge-base prerequisites are oid-sorted and match git exactly', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pairCriss.peer });
+      const ctx = createTrackedNodeContext({ workDir: pairCriss.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDirCriss, 'pin2-criss.bundle');
       const gitBytes = gitBundleCreate(pairCriss.peer, bundleFile, ['branch-a...branch-b'], env);
@@ -569,7 +572,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate explicit-exclude form vs three-dot criss-cross, When comparing', () => {
     it('Then explicit ^A ^B yields byte-identical headers and the same oid-sorted prerequisites as branch-a...branch-b', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pairCriss.peer });
+      const ctx = createTrackedNodeContext({ workDir: pairCriss.peer });
 
       // Act — symmetric-range form
       const threeDot = await bundleCreate(ctx, {
@@ -596,7 +599,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate({ all: true }), When comparing pack object ids to git', () => {
     it('Then the oid sets are equal', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin3-all.bundle');
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['--all'], env);
@@ -614,7 +617,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate two-dot main~2..main, When examining the pack object ids', () => {
     it('Then prerequisite commits are absent from the pack (prereq-blob exclusion); git accepts the bundle', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin3-two-dot.bundle');
       // Create git's bundle to confirm git agrees on what objects go in (written but pack not
@@ -644,7 +647,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleCreate criss-cross branch-a...branch-b, When examining the pack object ids', () => {
     it('Then merge-base commits are absent from the pack; git accepts the bundle', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pairCriss.peer });
+      const ctx = createTrackedNodeContext({ workDir: pairCriss.peer });
       const env = runGitEnv();
       // Create git's bundle (thin pack — cannot be compared with walkPackEntries directly).
       const gitBundleFile = path.join(bundleDirCriss, 'pin3-criss.bundle');
@@ -677,7 +680,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given a bundle tsgit creates with { all: true }, When real git consumes it', () => {
     it('Then git bundle verify passes and git clone succeeds with matching HEAD', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const created = await bundleCreate(ctx, { all: true });
       const bundleFile = path.join(bundleDir, 'pin4-roundtrip.bundle');
       await writeFile(bundleFile, created.bytes);
@@ -710,7 +713,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       // Range bundles (e.g. main~2..main) produce thin packs where delta bases reference
       // prerequisite objects outside the pack; walkPackEntries cannot resolve those since it only
       // searches within the supplied pack bytes, not the repo object store.
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin5-git-created.bundle');
       gitBundleCreate(pair.peer, bundleFile, ['--all'], env);
@@ -741,7 +744,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given a bundle with a prerequisite, When tsgit verifies in a repo lacking the objects', () => {
     it('Then prerequisitesPresent is false and the missing oid is listed', async () => {
       // Arrange — create incremental bundle in main repo
-      const mainCtx = createNodeContext({ workDir: pair.peer });
+      const mainCtx = createTrackedNodeContext({ workDir: pair.peer });
       const created = await bundleCreate(mainCtx, {
         revs: [{ range: ['main~2', 'main'] }],
       });
@@ -749,7 +752,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       await writeFile(bundleFile, created.bytes);
 
       // Use the ours scratch dir (no git objects) as the context for verify
-      const emptyCtx = createNodeContext({ workDir: pair.ours });
+      const emptyCtx = createTrackedNodeContext({ workDir: pair.ours });
 
       // Act
       const result = await bundleVerify(emptyCtx, { path: bundleFile });
@@ -767,7 +770,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given a bundle with a corrupt pack entry byte and a recomputed (valid) SHA-1 trailer, When bundleVerify is called', () => {
     it('Then bundleVerify throws DECOMPRESS_FAILED (pack-entry inflate failure)', async () => {
       // Arrange — valid bundle, then flip one byte in pack data and fix the trailer
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const result = await bundleCreate(ctx, { all: true });
       const hdr = parseBundleHeader(result.bytes, '<test>');
       const corrupt = corruptPackData(result.bytes, hdr.packOffset);
@@ -795,7 +798,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       // so the bounded inflate genuinely overflows the compressor's own
       // output cap: the ONLY way to reach withDeclaredSizeCheck's remap,
       // as opposed to Pin 6's post-decode length mismatch above.
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const result = await bundleCreate(ctx, { all: true });
       const hdr = parseBundleHeader(result.bytes, '<test>');
       const lied = lieEntrySizeSmall(result.bytes, hdr.packOffset);
@@ -827,7 +830,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given no rev-args (empty selection), When bundleCreate is called', () => {
     it('Then BUNDLE_EMPTY { reason: no-refs } is thrown, reconstructing "Refusing to create empty bundle."', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
 
       // Act
       let caught: unknown;
@@ -858,7 +861,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given a bare-rev tip (main~1, no full ref name), When bundleCreate is called', () => {
     it('Then BUNDLE_EMPTY { reason: no-refs } is thrown (bare rev yields no ref line)', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
 
       // Act
       let caught: unknown;
@@ -879,7 +882,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given an unknown ref tip, When bundleCreate is called', () => {
     it('Then a REVPARSE error propagates (reconstructing git "unknown revision" diagnostic)', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
 
       // Act
       let caught: unknown;
@@ -899,7 +902,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given a missing bundle file path, When bundleVerify is called', () => {
     it('Then BUNDLE_READ_FAILED is thrown, reconstructing git "could not open" error', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const missingPath = path.join(bundleDir, 'does-not-exist.bundle');
 
       // Act
@@ -929,7 +932,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       // Arrange — write non-empty content so git must actually read the bytes.
       // An empty (0-byte) chmod-000 file may report "does not look like a bundle" on macOS
       // (open() returns fd with 0 bytes readable) rather than "could not open".
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const lockedFile = path.join(bundleDir, 'locked.bundle');
       writeFileSync(lockedFile, 'placeholder content\n');
       chmodSync(lockedFile, 0o000);
@@ -981,7 +984,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       'Then BUNDLE_BAD_HEADER is thrown, reconstructing git "does not look like" error for $label',
       async ({ file, setup }) => {
         // Arrange
-        const ctx = createNodeContext({ workDir: pair.peer });
+        const ctx = createTrackedNodeContext({ workDir: pair.peer });
         const targetPath = path.join(bundleDir, file);
         await setup(targetPath);
 
@@ -1015,7 +1018,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       // fixture fails at the pack layer instead of the header layer.
 
       // Arrange — a syntactically valid v3/sha1 header, zero refs, no pack bytes
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const v3Header = '# v3 git bundle\n@object-format=sha1\n\n';
       const v3File = path.join(bundleDir, 'v3-empty-pack.bundle');
       writeFileSync(v3File, Buffer.from(v3Header, 'utf8'));
@@ -1046,7 +1049,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleListHeads with no filter, When bundleListHeads is called', () => {
     it('Then all refs from the bundle header are returned in order', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const created = await bundleCreate(ctx, { all: true });
       const bundleFile = path.join(bundleDir, 'pin8.bundle');
       await writeFile(bundleFile, created.bytes);
@@ -1064,7 +1067,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleListHeads with exact full-name filter ["refs/tags/v1.0"], When bundleListHeads is called', () => {
     it('Then only refs/tags/v1.0 is returned (exact-match)', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const created = await bundleCreate(ctx, { all: true });
       const bundleFile = path.join(bundleDir, 'pin8-filter.bundle');
       await writeFile(bundleFile, created.bytes);
@@ -1084,7 +1087,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleListHeads with near-miss partial names ["v1.0", "tags/v1.0", "main"], When bundleListHeads is called', () => {
     it('Then no refs are returned (partial names do not match full ref names, matching git)', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const created = await bundleCreate(ctx, { all: true });
       const bundleFile = path.join(bundleDir, 'pin8-near-miss.bundle');
       await writeFile(bundleFile, created.bytes);
@@ -1117,7 +1120,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given bundleVerify on a v2 git bundle, When the hash algorithm field is read', () => {
     it('Then hashAlgorithm is "sha1", reconstructing "The bundle uses this hash algorithm: sha1"', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const created = await bundleCreate(ctx, { branches: true });
       const bundleFile = path.join(bundleDir, 'pin9-hash.bundle');
       await writeFile(bundleFile, created.bytes);
@@ -1147,7 +1150,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       // Arrange — git creates an incremental bundle; its pack is thin (delta bases are
       // prerequisite objects outside the pack body). Verify against the full repo where
       // all prerequisite objects are present.
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin10-thin-present.bundle');
       // main~2..main includes file modifications so git produces real deltas.
@@ -1185,7 +1188,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
 
       // Initialise pair.ours as a git repo so git bundle verify can run there
       runGit(['init', '-q', '-b', 'main', pair.ours], { env });
-      const emptyCtx = createNodeContext({ workDir: pair.ours });
+      const emptyCtx = createTrackedNodeContext({ workDir: pair.ours });
 
       // Act
       const result = await bundleVerify(emptyCtx, { path: bundleFile });
@@ -1209,7 +1212,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given a SHA-1 repository, When bundleCreate writes with no version option (regression control)', () => {
     it('Then the bytes are byte-identical to git bundle create --all and the bundle still verifies (R6)', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin11-v2-control.bundle');
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['--all'], env);
@@ -1228,7 +1231,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   describe('Given git bundle create --filter=blob:none on a SHA-1 repository, When bundleVerify reads the resulting bundle', () => {
     it('Then git writes v3 with the filter capability and tsgit exposes it, keyed on the filter trigger rather than the algorithm', async () => {
       // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
+      const ctx = createTrackedNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
       const bundleFile = path.join(bundleDir, 'pin11-filter.bundle');
       gitBundleCreate(pair.peer, bundleFile, ['--all', '--filter=blob:none'], env);
@@ -1248,7 +1251,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     () => {
       it('Then git bundle verify and git bundle list-heads both accept it, and cloning it yields a SHA-256 repository', async () => {
         // Arrange
-        const ctx = createNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
+        const ctx = createTrackedNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
         const env = runGitEnv();
         const bundleFile = path.join(bundleDirSha256, 'pin11-sha256-write.bundle');
 
@@ -1285,7 +1288,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     () => {
       it("Then version, hashAlgorithm and 64-hex refs match git's own bundle", async () => {
         // Arrange
-        const ctx = createNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
+        const ctx = createTrackedNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
         const env = runGitEnv();
         const bundleFile = path.join(bundleDirSha256, 'pin11-git-write.bundle');
         const gitBytes = gitBundleCreate(pairSha256.peer, bundleFile, ['--all'], env);
@@ -1318,8 +1321,11 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
         // context is confined to, so the sha256-bytes file is written into
         // bundleDir (sha1Ctx's own root) and vice versa; only the bundle
         // CONTENT is cross-format, not the reading context's containment root.
-        const sha1Ctx = createNodeContext({ workDir: pair.peer });
-        const sha256Ctx = createNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
+        const sha1Ctx = createTrackedNodeContext({ workDir: pair.peer });
+        const sha256Ctx = createTrackedNodeContext({
+          workDir: pairSha256.peer,
+          algorithm: 'sha256',
+        });
         const sha256BytesInSha1Root = path.join(
           bundleDir,
           'pin11-cross-sha256-in-sha1-root.bundle',
@@ -1354,7 +1360,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     () => {
       it('Then it refuses BUNDLE_UNSUPPORTED_VERSION with version 2, twinned against git exit 128 for the same request', async () => {
         // Arrange
-        const ctx = createNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
+        const ctx = createTrackedNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
         const env = runGitEnv();
         const bundleFile = path.join(bundleDirSha256, 'pin11-v2-refused.bundle');
 
@@ -1412,7 +1418,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
           writeFileSync(path.join(dir, 'blob.bin'), Buffer.from([...shared, 0x01]));
           runGit(['-C', dir, 'add', '-A'], { env });
           runGit(['-C', dir, 'commit', '-m', 'v2'], { env: commitEnv });
-          const ctx = createNodeContext({ workDir: dir });
+          const ctx = createTrackedNodeContext({ workDir: dir });
 
           // Act
           const result = await bundleCreate(ctx, { all: true });
@@ -1493,7 +1499,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — clock-skewed have lines', ()
           ['main', `^${excluded}`],
           runGitEnv(),
         );
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const sut = bundleCreate;
 
         // Act
@@ -1576,7 +1582,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — tag, tree and blob tips', ()
     it('Then the header and the packed object count match git', async () => {
       // Arrange
       const gitBytes = gitBundleCreate(dir, path.join(dir, 'b.bundle'), words, runGitEnv());
-      const ctx = createNodeContext({ workDir: dir });
+      const ctx = createTrackedNodeContext({ workDir: dir });
       const sut = bundleCreate;
 
       // Act
@@ -1605,7 +1611,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — tag, tree and blob tips', ()
         path.join(dir, 's.bundle'),
         expression,
       ]);
-      const ctx = createNodeContext({ workDir: dir });
+      const ctx = createTrackedNodeContext({ workDir: dir });
       const sut = bundleCreate;
 
       // Act
@@ -1648,7 +1654,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — tag, tree and blob tips', ()
         path.join(dir, 'e.bundle'),
         ...words,
       ]);
-      const ctx = createNodeContext({ workDir: dir });
+      const ctx = createTrackedNodeContext({ workDir: dir });
       const sut = bundleCreate;
 
       // Act
@@ -1688,7 +1694,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           ['main..main-tree'],
           runGitEnv(),
         );
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const sut = bundleCreate;
 
         // Act
@@ -1773,7 +1779,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — object types assigned while 
           ...args,
         ]);
         const logged: string[] = [];
-        const base = createNodeContext({ workDir: dir });
+        const base = createTrackedNodeContext({ workDir: dir });
         const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
         const sut = bundleCreate;
 
@@ -1806,7 +1812,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — object types assigned while 
           'main',
         ]);
         const logged: string[] = [];
-        const base = createNodeContext({ workDir: dir });
+        const base = createTrackedNodeContext({ workDir: dir });
         const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
         const sut = bundleCreate;
 
@@ -1884,7 +1890,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — object types assigned while 
             ...argsOf(blob),
           ]);
           const logged: string[] = [];
-          const base = createNodeContext({ workDir: dir });
+          const base = createTrackedNodeContext({ workDir: dir });
           const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
           const sut = bundleCreate;
 
@@ -1926,7 +1932,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — object types assigned while 
             ...args,
           ]);
           const logged: string[] = [];
-          const base = createNodeContext({ workDir: dir });
+          const base = createTrackedNodeContext({ workDir: dir });
           const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
           const sut = bundleCreate;
 
@@ -1953,7 +1959,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — object types assigned while 
         const dir = buildRepo((_dir, _blob, root) => root);
         runGit(['-C', dir, 'symbolic-ref', 'HEAD', 'refs/heads/unborn']);
         const gitBytes = gitBundleCreate(dir, path.join(dir, 'g.bundle'), ['--all'], runGitEnv());
-        const ctx = createNodeContext({ workDir: dir });
+        const ctx = createTrackedNodeContext({ workDir: dir });
         const sut = bundleCreate;
 
         // Act

@@ -48,6 +48,10 @@ import {
   runGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedContexts, trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const ROW_TIMEOUT = 30_000;
 const LOCAL_COMMIT_COUNT = 1;
@@ -118,7 +122,7 @@ const pairOf = (slug: string, prepare?: (borrower: string, donor: string) => voi
 };
 
 const tsgitGc = async (dir: string): Promise<void> => {
-  const repo = await openRepository({ cwd: dir });
+  const repo = await openTrackedRepository({ cwd: dir });
   await repo.maintenance({ tasks: ['gc'] });
 };
 
@@ -394,7 +398,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
           const before = readFileSync(liarPath);
           reachLiar(pair.gitSide, liarId);
           reachLiar(pair.tsgitSide, liarId);
-          const sut = await openRepository({ cwd: pair.tsgitSide });
+          const sut = await openTrackedRepository({ cwd: pair.tsgitSide });
 
           // Act
           runGit(['-C', pair.gitSide, 'gc', '-q']);
@@ -424,7 +428,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
           const before = readFileSync(liarPath);
           runGit(['-C', pair.gitSide, 'update-ref', 'refs/tags/liar', liarId]);
           runGit(['-C', pair.tsgitSide, 'update-ref', 'refs/tags/liar', liarId]);
-          const sut = await openRepository({ cwd: pair.tsgitSide });
+          const sut = await openTrackedRepository({ cwd: pair.tsgitSide });
 
           // Act
           runGit(['-C', pair.gitSide, 'gc', '-q']);
@@ -660,7 +664,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — the direct node context'
           const pair = pairOf('n1');
           const { oid } = donorPackedBlob(pair.donor);
           const expected = runGit(['-C', pair.gitSide, 'cat-file', 'blob', oid]);
-          const sut = createNodeContext;
+          const sut = createTrackedNodeContext;
 
           // Act
           const result = await readObject(sut({ workDir: pair.tsgitSide }), oid as ObjectId);
@@ -684,7 +688,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — the direct node context'
           const expected = runGit(['-C', pair.gitSide, 'log', '--format=%H'])
             .split('\n')
             .filter((line) => line !== '');
-          const sut = createNodeContext;
+          const sut = createTrackedNodeContext;
 
           // Act
           const result = await log(sut({ workDir: pair.tsgitSide }));
@@ -703,7 +707,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — the direct node context'
         async () => {
           // Arrange
           const pair = pairOf('n3');
-          const sut = createNodeContext;
+          const sut = createTrackedNodeContext;
 
           // Act
           runGit(['-C', pair.gitSide, 'maintenance', 'run', '--task=commit-graph']);

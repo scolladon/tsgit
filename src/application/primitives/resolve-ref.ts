@@ -11,7 +11,7 @@ import { exceedsMaxSymbolicDepth } from './validators.js';
 
 /** {@link resolveDirectChain}'s result: the resolved id, or the ref name the
  *  chain ended on when no candidate exists — never a thrown `REF_NOT_FOUND`,
- *  so a caller sweeping several candidates (rev-parse, resolveCommitIsh)
+ *  so a caller sweeping several candidates (the rev-parse ladder)
  *  pays no stack-capturing throw per miss. `found.name` is the chain's
  *  TERMINAL name — the name asked for when it resolves directly, or the last
  *  symref hop's name when it does not. */

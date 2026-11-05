@@ -42,8 +42,8 @@ const suffixOf = (id: ObjectId): string => id.slice(2);
 
 /** `readdir` on a missing fanout dir reports `FILE_NOT_FOUND` on every adapter;
  *  `NOT_A_DIRECTORY` covers the other tolerated shape, a regular file occupying the fanout
- *  path instead of a directory. Both mean "nothing loose here yet". Exported for
- *  `resolve-oid-prefix.ts`'s `scanLoose`, which folds the identical two shapes. */
+ *  path instead of a directory. Both mean "nothing loose here yet" to the suffix cache.
+ *  The prefix scan classifies these faults itself, as it logs the second. */
 export function isMissingFanoutDir(error: unknown): boolean {
   const code = errorDataCode(error);
   return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';

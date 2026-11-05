@@ -1,14 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   isSequence,
   resolveSequencerRevisions,
 } from '../../../../../src/application/commands/internal/sequencer-revisions.js';
+import * as revParseModule from '../../../../../src/application/commands/rev-parse.js';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
+import * as peelRefModule from '../../../../../src/application/primitives/internal/peel-ref-to-commit.js';
+import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { buildSeededContext } from '../../primitives/fixtures.js';
+import { buildSeededContext, writeRawObjectBytes } from '../../primitives/fixtures.js';
 
 const EPOCH = 1_700_000_000;
 const AUTHOR: AuthorIdentity = {
@@ -377,6 +380,252 @@ describe('isSequence', () => {
         // Assert
         expect(result).toBe(expected);
       });
+    });
+  });
+});
+
+const AMBIGUOUS_X = "refname 'x' is ambiguous.";
+
+/** Branch x and main on `a2`, plus a tag ref x on the given object. */
+const plantTagAheadOfBranch = async (
+  history: History,
+  tagTarget: ObjectId | string,
+): Promise<void> => {
+  const gitDir = history.ctx.layout.gitDir;
+  const tip = `${history.id('a2')}\n`;
+  await history.ctx.fs.writeUtf8(`${gitDir}/refs/heads/x`, tip);
+  await history.ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, tip);
+  await history.ctx.fs.writeUtf8(`${gitDir}/refs/tags/x`, `${tagTarget}\n`);
+};
+
+const rawTagNaming = (history: History, object: string, type: string): Promise<ObjectId> =>
+  writeRawObjectBytes(
+    history.ctx,
+    'tag',
+    new TextEncoder().encode(
+      `object ${object}\ntype ${type}\ntag x\ntagger A <a@x> 1 +0000\n\nmsg\n`,
+    ),
+  );
+
+const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+    return undefined;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+};
+
+describe('resolveSequencerRevisions — a corrupt name', () => {
+  describe.each([
+    { variant: 'non-hex', body: 'z'.repeat(40) },
+    { variant: 'M', body: undefined },
+  ])('Given a tag ref x naming a $variant object ahead of branch x', ({ body }) => {
+    describe('When the sequencer resolves x', () => {
+      it("Then it refuses BAD_OBJECT { revision: 'x' }", async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const target =
+          body === undefined ? 'b'.repeat(40) : await rawTagNaming(history, body, 'commit');
+        await plantTagAheadOfBranch(history, target);
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        const result = await refusalOf(() => sut(history.ctx, ['x']));
+
+        // Assert
+        expect(result).toEqual({ code: 'BAD_OBJECT', revision: 'x' });
+      });
+    });
+  });
+
+  describe.each([
+    { variant: 'absent', object: 'a'.repeat(40), type: 'commit' },
+    { variant: 'tree', object: undefined, type: 'tree' },
+  ])('Given a tag ref x naming a $variant object', ({ object, type }) => {
+    describe("When the sequencer resolves the tag's name", () => {
+      it("Then it refuses CANNOT_PICK_NON_COMMIT with type 'tag'", async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const named =
+          object ??
+          (await writeObject(history.ctx, {
+            type: 'tree',
+            id: '' as ObjectId,
+            entries: [],
+          } as Tree));
+        await plantTagAheadOfBranch(history, await rawTagNaming(history, named, type));
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        const result = await refusalOf(() => sut(history.ctx, ['x']));
+
+        // Assert
+        expect(result).toEqual({ code: 'CANNOT_PICK_NON_COMMIT', revision: 'x', type: 'tag' });
+      });
+    });
+  });
+
+  describe.each([{ args: ['x'] }, { args: ['x..main'] }, { args: ['^x', 'main'] }])(
+    'Given a valid x ambiguous between a lightweight tag and a branch',
+    ({ args }) => {
+      describe(`When the sequencer resolves ${JSON.stringify(args)}`, () => {
+        it('Then it warns the ambiguity twice, once per read git makes', async () => {
+          // Arrange
+          const history = await buildHistory(SPEC);
+          await plantTagAheadOfBranch(history, history.id('a2'));
+          const warnings: string[] = [];
+          const ctx = { ...history.ctx, logger: { warn: (m: string) => void warnings.push(m) } };
+          const sut = resolveSequencerRevisions;
+
+          // Act
+          await sut(ctx, args).catch(() => undefined);
+
+          // Assert
+          expect(warnings).toEqual([AMBIGUOUS_X, AMBIGUOUS_X]);
+        });
+      });
+    },
+  );
+});
+
+describe('resolveSequencerRevisions — a corrupt side', () => {
+  describe.each([
+    { variant: 'non-hex', body: 'z'.repeat(40) },
+    { variant: 'M', body: undefined },
+  ])('Given a tag ref x naming a $variant object ahead of branch x', ({ body }) => {
+    const plant = async (): Promise<History> => {
+      const history = await buildHistory(SPEC);
+      const target =
+        body === undefined ? 'b'.repeat(40) : await rawTagNaming(history, body, 'commit');
+      await plantTagAheadOfBranch(history, target);
+      return history;
+    };
+
+    describe('When the sequencer excludes x', () => {
+      it("Then it refuses BAD_OBJECT { revision: 'x' } on the first read", async () => {
+        // Arrange
+        const history = await plant();
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        const result = await refusalOf(() => sut(history.ctx, ['^x', 'main']));
+
+        // Assert
+        expect(result).toEqual({ code: 'BAD_OBJECT', revision: 'x' });
+      });
+    });
+
+    describe.each(['x..main', 'main..x'])('When the sequencer takes the range %s', (range) => {
+      it('Then it refuses INVALID_REVISION_RANGE naming the range', async () => {
+        // Arrange
+        const history = await plant();
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        const result = await refusalOf(() => sut(history.ctx, [range]));
+
+        // Assert
+        expect(result).toEqual({ code: 'INVALID_REVISION_RANGE', expression: range });
+      });
+    });
+  });
+});
+
+describe('resolveSequencerRevisions — the two reads of a name', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a branch x whose second read answers another commit', () => {
+    describe('When the sequencer resolves x', () => {
+      it('Then it picks the commit of the first read, as git picks from its pending list', async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        await history.ctx.fs.writeUtf8(
+          `${history.ctx.layout.gitDir}/refs/heads/x`,
+          `${history.id('a2')}\n`,
+        );
+        vi.spyOn(revParseModule, 'evaluateRevision').mockResolvedValueOnce(history.id('a1'));
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        const result = await sut(history.ctx, ['x']);
+
+        // Assert
+        expect(history.names(result.commits)).toEqual(['a2']);
+      });
+    });
+  });
+
+  describe('Given a peel that fails without an error code', () => {
+    describe('When the sequencer resolves x', () => {
+      it('Then the failure propagates unchanged', async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        await history.ctx.fs.writeUtf8(
+          `${history.ctx.layout.gitDir}/refs/heads/x`,
+          `${history.id('a2')}\n`,
+        );
+        const failure = new Error('boom');
+        vi.spyOn(peelRefModule, 'peelRefToCommit').mockRejectedValueOnce(failure);
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        const caught = await sut(history.ctx, ['x']).catch((error: unknown) => error);
+
+        // Assert
+        expect(caught).toBe(failure);
+      });
+    });
+  });
+
+  describe('Given x re-pointed between the two reads, from a tag of a tree to a commit', () => {
+    describe('When the sequencer resolves x', () => {
+      it("Then it refuses CANNOT_PICK_NON_COMMIT with the first read's unpeeled type", async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const tip = await readObjectModule.readObject(history.ctx, history.id('a2'));
+        if (tip.type !== 'commit') throw new Error('expected a commit');
+        const treeTag = await rawTagNaming(history, tip.data.tree, 'tree');
+        await history.ctx.fs.writeUtf8(`${history.ctx.layout.gitDir}/refs/heads/x`, `${treeTag}\n`);
+        vi.spyOn(revParseModule, 'evaluateRevision').mockResolvedValueOnce(history.id('a2'));
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        const result = await refusalOf(() => sut(history.ctx, ['x']));
+
+        // Assert
+        expect(result).toEqual({ code: 'CANNOT_PICK_NON_COMMIT', revision: 'x', type: 'tag' });
+      });
+    });
+  });
+});
+
+describe('Given a range side whose read fails without an error code', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe.each(['x..main', 'main..x'])('When the sequencer takes the range %s', (range) => {
+    it('Then the failure propagates unchanged', async () => {
+      // Arrange
+      const history = await buildHistory(SPEC);
+      const gitDir = history.ctx.layout.gitDir;
+      await history.ctx.fs.writeUtf8(`${gitDir}/refs/heads/x`, `${history.id('a1')}\n`);
+      await history.ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, `${history.id('a2')}\n`);
+      const failure = new Error('boom');
+      const original = readObjectModule.readObject;
+      vi.spyOn(readObjectModule, 'readObject').mockImplementation((ctx, id) =>
+        id === history.id('a1') ? Promise.reject(failure) : original(ctx, id),
+      );
+      const sut = resolveSequencerRevisions;
+
+      // Act
+      const caught = await sut(history.ctx, [range]).catch((error: unknown) => error);
+
+      // Assert
+      expect(caught).toBe(failure);
     });
   });
 });

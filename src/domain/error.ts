@@ -680,6 +680,12 @@ function extractDetail(data: TsgitErrorData): string {
       return 'empty commit set passed';
     case 'CANNOT_PICK_NON_COMMIT':
       return `${data.revision}: can't cherry-pick a ${data.type}`;
+    case 'BAD_OBJECT':
+      return `bad object ${data.revision}`;
+    case 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB':
+      return `${data.revision} is neither a commit nor blob`;
+    case 'BLAME_NON_COMMIT':
+      return `Non commit ${data.revision}?`;
     case 'CHECKOUT_NON_COMMIT':
       return `Cannot switch branch to a non-commit '${data.revision}'`;
     case 'CHECKOUT_START_POINT_NOT_COMMIT':
