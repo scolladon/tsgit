@@ -195,20 +195,31 @@ const scanSources = async (
   return [...new Set<ObjectId>(perSource.flat(2))];
 };
 
-/** git's `get_short_oid` scans a miss again after `reprepare_packed_git`, which drops the
- *  loose-object cache: only the directories this miss consulted are forgotten, and
- *  only a remembered failure makes the rescan worth running. */
-const forgetFailed = (
-  ctx: Context,
+/** The fanout directory a prefix scan consults in each object source. */
+const consultedDirectories = (
   sources: ReadonlyArray<ObjectSource>,
   prefix: string,
-): boolean => {
+): ReadonlyArray<string> =>
+  sources.map((source) => fanoutDirIn(source.objectsDir, prefix.slice(0, 2)));
+
+/** Whether a miss consulted a directory whose listing failed earlier in the session. */
+const consultedFailure = (ctx: Context, directories: ReadonlyArray<string>): boolean => {
   const failed = failedListingsOf(ctx);
-  let forgotten = false;
-  for (const source of sources) {
-    if (failed.delete(fanoutDirIn(source.objectsDir, prefix.slice(0, 2)))) forgotten = true;
-  }
-  return forgotten;
+  return directories.some((directory) => failed.has(directory));
+};
+
+/** git's `get_short_oid` scans a miss again after `reprepare_packed_git`, which drops the
+ *  loose-object cache: only the directories this miss consulted are forgotten before the
+ *  second scan. */
+const forgetAndRescan = async (
+  ctx: Context,
+  sources: ReadonlyArray<ObjectSource>,
+  directories: ReadonlyArray<string>,
+  prefix: string,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const failed = failedListingsOf(ctx);
+  for (const directory of directories) failed.delete(directory);
+  return scanSources(ctx, sources, prefix);
 };
 
 export const resolveOidPrefix = async (
@@ -219,9 +230,13 @@ export const resolveOidPrefix = async (
   if (isOid(prefix, ctx.hashConfig)) return prefix as ObjectId;
   if (!patternFor(OID_PREFIX_PATTERNS, ctx.hashConfig.algorithm).test(prefix)) return undefined;
   const { sources } = await getObjectStore(ctx);
-  let unique = await scanSources(ctx, sources, prefix);
-  if (unique.length === 0 && forgetFailed(ctx, sources, prefix))
-    unique = await scanSources(ctx, sources, prefix);
+  const first = await scanSources(ctx, sources, prefix);
+  const directories = consultedDirectories(sources, prefix);
+  // Only a remembered failure makes git's reprepare rescan worth running.
+  const unique =
+    first.length === 0 && consultedFailure(ctx, directories)
+      ? await forgetAndRescan(ctx, sources, directories, prefix)
+      : first;
   if (unique.length <= 1) return unique[0];
   return chooseCandidate(ctx, prefix, unique, accepts);
 };
