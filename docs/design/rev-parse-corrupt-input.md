@@ -82,7 +82,10 @@ Every row was run at least twice in a scrubbed `mktemp -d` throwaway, and both r
 
 | Route | git 2.56 | tsgit today |
 |---|---|---|
-| `rev-parse abcd`, `abcd^{commit}`, `--verify abcd`, `show -s abcd`, `describe --always abcd`, `merge abcd`, `blame abcd -- f` | 0, the commit, **E×2** | throws `PERMISSION_DENIED {path}` |
+| `rev-parse abcd`, `abcd^{commit}`, `--verify abcd`, `show -s abcd`, `describe --always abcd`, `merge abcd` (abcd at HEAD), `blame abcd -- f` | 0, the commit, **E×2** | throws `PERMISSION_DENIED {path}` |
+| `merge abcd` with abcd AHEAD of HEAD, no `-m` (fast-forward, `--ff-only`, `--no-ff`, `--squash`, `-q`, `--no-commit` alike); `merge abcd abce`, two ahead parents | **E×3**; **E×5** | throws (after the fanout fix: E×2 / E×3 — the default message never re-read the parents) |
+| `merge -m m abcd` ahead; `merge -m m abcd abce` | **E×2**; **E×3** | throws |
+| `merge x` with tag `x` and branch `x` at a commit ahead, no `-m`; with `-m` | **W×2**; **W×1** | W×1 |
 | `cherry-pick abcd`, `revert abcd` | own outcome, **E×3** | throws |
 | `-c core.warnAmbiguousRefs=false rev-parse abcd` | 0, no stderr | ✓ ok, no log |
 | `objects/ab` is a regular file: `rev-parse abcd` / `cherry-pick abcd` | 0, **ENOTDIR×2** / **×3** | ok, **no log** (folded silently) |
@@ -180,6 +183,8 @@ The mechanism is DC-7. This fixes the `W×2` in `revParse x^{commit}` (absent, M
 ### D5 — merge maps a peel fault to its "not something we can merge"
 
 `merge.ts` `resolveMergeParent`: when `peelChain` fails with `OBJECT_NOT_FOUND`, `INVALID_OBJECT_ID` or another read fault of the chain, throw `refNotFound(name)`. That is the same refusal the function already gives a non-commit, and it rebuilds `merge: x - not something we can merge` with exit 1. This is DC-5, folding a route that never reaches `resolveCommitIsh`.
+
+**merge reads each surviving parent again for its default message** (found by the fixture B rows, pinned twice on 2.56.0). git's `collect_parents` resolves every argument (`get_merge_parent`), reduces the heads (`reduce_parents`: a parent HEAD already reaches is dropped), and then — only when no `-m` is given, or a shortlog is asked for — calls `merge_name` on each surviving parent, which resolves the name once more (`get_merge_parent` again). That second read emits the ambiguity warning a second time and, on a miss, one more fanout log. `settleMessage` therefore records where the message came from (`messageSource: 'given' | 'supplied-heads' | 'generated'`), and `rereadParentsForMessage` resolves each surviving parent again (`resolveRevisionExpression` on its spelt name) when it is `'generated'`: in `twoHeadMerge` right after the up-to-date checks (a subsumed parent is never re-read) and before the unrelated-histories refusal, as in git; in the octopus path over the already-reduced survivors. Heads a caller described (`pull`'s FETCH_HEAD path) are not re-read, as git's `handle_fetch_head` does not.
 
 ### D6 — an unreadable fanout directory is skipped, logged, and counted as git counts
 
