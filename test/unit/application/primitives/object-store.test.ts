@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
+import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import {
   posixGitPathSyntax,
   windowsGitPathSyntax,
@@ -234,6 +235,35 @@ describe('getObjectStore', () => {
 
         // Assert
         expect(spies).toHaveLength(2);
+        for (const spy of spies) expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a store whose session minted two derived sessions across a repository boundary', () => {
+    describe('When disposePackRegistry runs on the parent', () => {
+      it("Then the registries of both derived stores are disposed with the parent's", async () => {
+        // Arrange
+        const ctx = contextWithAlternates();
+        const children = ['/repo/sub-a', '/repo/sub-b'].map((root) =>
+          deriveContext(ctx, { layout: { ...ctx.layout, workDir: root, gitDir: `${root}/.git` } }),
+        );
+        await Promise.all(
+          ['/repo/sub-a', '/repo/sub-b'].map((root) =>
+            ctx.fs.mkdir(`${root}/.git/objects`, { recursive: true }),
+          ),
+        );
+        const stores = await Promise.all([ctx, ...children].map((each) => getObjectStore(each)));
+        const spies = stores.flatMap((store) =>
+          store.sources.map((s) => vi.spyOn(s.registry, 'dispose')),
+        );
+
+        // Act
+        const sut = disposePackRegistry;
+        await sut(ctx);
+
+        // Assert
+        expect(spies).toHaveLength(3);
         for (const spy of spies) expect(spy).toHaveBeenCalledTimes(1);
       });
     });

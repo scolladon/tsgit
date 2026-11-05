@@ -37,6 +37,7 @@
  */
 import type { Context } from '../../ports/context.js';
 import { createSession } from '../../ports/context.js';
+import { adoptSession } from './internal/session-lineage.js';
 import { commonDirOf } from './path-layout.js';
 
 export interface DeriveContextOptions {
@@ -69,6 +70,13 @@ export function deriveContext(
   return Object.freeze({
     ...ctx,
     ...changes,
-    session: freshSession ? createSession() : ctx.session,
+    session: freshSession ? mintChildSession(ctx.session) : ctx.session,
   });
 }
+
+/** A fresh session the parent's disposal still reaches. */
+const mintChildSession = (parent: Context['session']): Context['session'] => {
+  const child = createSession();
+  adoptSession(parent, child);
+  return child;
+};
