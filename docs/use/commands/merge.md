@@ -41,7 +41,7 @@ type MergeResult =
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `target` | `string` | (required) | Ref name, oid, or `'HEAD'` of the branch to merge in. |
-| `message` | `string` | auto | Override the merge-commit message. |
+| `message` | `string` | auto | Override the merge-commit message. Without it, each merged head that is not already merged is read once more while the default message is composed, as git's `merge_name` does, so that read's diagnostics (a `refname '<name>' is ambiguous.` warning, an unreadable fanout directory's `logger.error`) repeat; the heads `pull` supplies are not re-read. |
 | `fastForward` | `'only' \| 'never' \| 'allow'` | `'allow'` | Fast-forward policy (see below). |
 | `autostash` | `boolean` | `merge.autostash` | Stash a dirty tree before the merge (`MERGE_AUTOSTASH`) and re-apply it when the merge concludes, or on the `commit` / `merge.abort` that ends a conflict stop (a conflicting or refused re-apply stores the autostash in the stash list and warns, as git does); a `reset` or `checkout` that drops the merge state files it in the stash list (`autostash`) instead. |
 | `log` | `boolean \| number` | `merge.log` / `merge.summary` | Follow the message (the default title, or `message`) with git's shortlog of each head: `* <head>:` then the subjects of the commits it brings in over HEAD, newest first, merges skipped. `true` lists 20, a number at most that many (`(<n> commits)` and `...` past it), `false` / `0` none; a negative count defers to the config. `merge.branchdesc` adds a local branch's `branch.<name>.description` under its header. A negative `merge.log` refuses with `CONFIG_NEGATIVE_LENGTH`, a non-integer with `CONFIG_BAD_NUMERIC_VALUE`. |
@@ -350,7 +350,7 @@ switch (result.kind) {
 - `NON_FAST_FORWARD` — `fastForward: 'only'` and no fast-forward is possible.
 - `WORKING_TREE_DIRTY` — the index differs from HEAD (a staged change git's `index_has_changes` refuses before any strategy runs — a gitlink difference its configured `ignore = all` hides is let through and rides into the result), or a fast-forward, clean, or conflicting merge would overwrite uncommitted working-tree changes (or clobber an untracked file); nothing is written. Tracked-dirty paths arrive in `localChanges`, untracked clashes in `untracked`, classified as in [`checkout`](checkout.md#behaviour). A file or symlink in a leading path of an incoming add is an untracked clash naming that component.
 - `INVALID_INDEX_ENTRY` — a conflicting merge's outcome or conflict path fails git's own index-entry name rules (absolute path; `.`, `..`, or empty segment; `.git`/`.gitmodules` alias). Every path the write is about to touch is checked in one pass before any of them is written, so a hostile path anywhere in the batch refuses the whole conflict write, atomically.
-- `REF_NOT_FOUND` — `target` does not resolve.
+- `REF_NOT_FOUND` — `target` does not resolve, or names an object that does not read, whose tag chain does not peel, or that peels to no commit (git's `merge: <name> - not something we can merge`).
 - `MERGE_STRATEGY_FAILED` — the one strategy given failed, including on a staged change after the snapshot (`ours`, `octopus`, `resolve`).
 - `NO_MERGE_STRATEGY_HANDLED` — several strategies were given and none handled the merge.
 - `PATHSPEC_BEYOND_SYMLINK` — a tracked path with local changes lies beyond a symlinked directory, found while the merge snapshots them.
