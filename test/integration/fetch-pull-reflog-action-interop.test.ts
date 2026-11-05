@@ -23,6 +23,9 @@ import { pull } from '../../src/application/commands/pull.js';
 import type { Context } from '../../src/ports/context.js';
 import { backendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, topReflogSubject } from './interop-helpers.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const PEER_URL = 'https://example.com/peer.git';
 const ROW_TIMEOUT = 60_000;
@@ -123,7 +126,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch and pull reflog action interop', () => {
           // Arrange
           const { ours, theirs, peerRoot } = setUp(label.replaceAll(' ', '-'));
           const ctx = {
-            ...createNodeContext({ workDir: ours }),
+            ...createTrackedNodeContext({ workDir: ours }),
             transport: backendTransport(peerRoot),
           };
           const sut = run;

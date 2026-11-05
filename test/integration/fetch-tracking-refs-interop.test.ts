@@ -19,6 +19,9 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type FetchUpdate, fetch } from '../../src/application/commands/fetch.js';
 import { backendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, git, runGit, tryRunGitWithExit } from './interop-helpers.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const PEER_URL = 'https://example.com/peer.git';
 const REFSPECS = ['+refs/heads/b*:refs/remotes/x/b*', '^refs/heads/b3'] as const;
@@ -93,7 +96,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
         // Arrange
         const { ours, theirs, peerRoot } = setUp('configured');
         const ctx = {
-          ...createNodeContext({ workDir: ours }),
+          ...createTrackedNodeContext({ workDir: ours }),
           transport: backendTransport(peerRoot),
         };
         const sut = fetch;
@@ -115,7 +118,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
         // Arrange
         const { ours, theirs, peerRoot } = setUp('command-line');
         const ctx = {
-          ...createNodeContext({ workDir: ours }),
+          ...createTrackedNodeContext({ workDir: ours }),
           transport: backendTransport(peerRoot),
         };
         const refspec = '+refs/heads/*:refs/remotes/other/*';
@@ -151,7 +154,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
           runGit(['-C', dir, 'remote', 'add', 'origin', url]);
         }
         const ctx = {
-          ...createNodeContext({ workDir: dirs.ours }),
+          ...createTrackedNodeContext({ workDir: dirs.ours }),
           transport: backendTransport(emptyRoot),
         };
         const sut = fetch;
@@ -203,7 +206,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
         runGit(['-C', work, 'branch', '-f', 'side', 'other']);
         runGit(['-C', work, 'push', '-q', '-f', bare, 'main', 'side', 'v1']);
         const ctx = {
-          ...createNodeContext({ workDir: dirs.ours }),
+          ...createTrackedNodeContext({ workDir: dirs.ours }),
           transport: backendTransport(peerRoot),
         };
         const sut = fetch;
@@ -262,7 +265,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
         runGit(['-C', work, 'tag', '-f', 'v1']);
         runGit(['-C', work, 'push', '-q', '-f', bare, 'main', 'side', 'v1']);
         const ctx = {
-          ...createNodeContext({ workDir: dirs.ours }),
+          ...createTrackedNodeContext({ workDir: dirs.ours }),
           transport: backendTransport(peerRoot),
         };
         const sut = fetch;
@@ -332,7 +335,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
         runGit(['-C', work, 'push', '-q', '-f', bare, 'main', 'mid']);
         const warnings: string[] = [];
         const ctx = {
-          ...createNodeContext({ workDir: dirs.ours }),
+          ...createTrackedNodeContext({ workDir: dirs.ours }),
           transport: backendTransport(peerRoot),
           logger: { warn: (message: string) => warnings.push(message) },
         };
@@ -377,7 +380,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
           if (state === 'born') runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'mine']);
         }
         const ctx = {
-          ...createNodeContext({ workDir: dirs.ours }),
+          ...createTrackedNodeContext({ workDir: dirs.ours }),
           transport: backendTransport(peerRoot),
         };
         const before = allRefs(dirs.ours);
@@ -442,7 +445,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
           ]);
         }
         const ctx = {
-          ...createNodeContext({ workDir: dirs.ours }),
+          ...createTrackedNodeContext({ workDir: dirs.ours }),
           transport: backendTransport(peerRoot),
         };
         const sut = fetch;

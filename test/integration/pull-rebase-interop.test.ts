@@ -21,6 +21,9 @@ import { pull } from '../../src/application/commands/pull.js';
 import { errorDataCode } from '../../src/domain/error-data-code.js';
 import { backendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const PEER_URL = 'https://example.com/peer.git';
 const EPOCH = 1_700_000_000;
@@ -106,7 +109,10 @@ const pullBoth = async (ours: string, theirs: string, peerRoot: string) => {
   dated(['-C', theirs, '-c', 'pull.rebase=true', 'pull']);
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(EPOCH * 1000);
-  const ctx = { ...createNodeContext({ workDir: ours }), transport: backendTransport(peerRoot) };
+  const ctx = {
+    ...createTrackedNodeContext({ workDir: ours }),
+    transport: backendTransport(peerRoot),
+  };
   await pull(ctx, { rebase: true });
 };
 
@@ -212,7 +218,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull rebase interop', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(EPOCH * 1000);
     const ctx = {
-      ...createNodeContext({ workDir: dirs.ours }),
+      ...createTrackedNodeContext({ workDir: dirs.ours }),
       transport: backendTransport(dirs.peerRoot),
     };
     const code = await pull(ctx, {}).then(

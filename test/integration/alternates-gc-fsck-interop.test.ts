@@ -48,6 +48,9 @@ import {
   runGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const ROW_TIMEOUT = 30_000;
 const LOCAL_COMMIT_COUNT = 1;
@@ -118,7 +121,7 @@ const pairOf = (slug: string, prepare?: (borrower: string, donor: string) => voi
 };
 
 const tsgitGc = async (dir: string): Promise<void> => {
-  const repo = await openRepository({ cwd: dir });
+  const repo = await openTrackedRepository({ cwd: dir });
   await repo.maintenance({ tasks: ['gc'] });
 };
 
@@ -394,7 +397,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
           const before = readFileSync(liarPath);
           reachLiar(pair.gitSide, liarId);
           reachLiar(pair.tsgitSide, liarId);
-          const sut = await openRepository({ cwd: pair.tsgitSide });
+          const sut = await openTrackedRepository({ cwd: pair.tsgitSide });
 
           // Act
           runGit(['-C', pair.gitSide, 'gc', '-q']);
@@ -424,7 +427,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
           const before = readFileSync(liarPath);
           runGit(['-C', pair.gitSide, 'update-ref', 'refs/tags/liar', liarId]);
           runGit(['-C', pair.tsgitSide, 'update-ref', 'refs/tags/liar', liarId]);
-          const sut = await openRepository({ cwd: pair.tsgitSide });
+          const sut = await openTrackedRepository({ cwd: pair.tsgitSide });
 
           // Act
           runGit(['-C', pair.gitSide, 'gc', '-q']);

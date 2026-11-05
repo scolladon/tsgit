@@ -23,6 +23,9 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type FetchOptions, fetch } from '../../src/application/commands/fetch.js';
 import { backendTransport, protocolV2BackendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, git, runGit } from './interop-helpers.js';
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const PEER_URL = 'https://example.com/peer.git';
 const SHORT_URL = 'https://example.com/peer';
@@ -152,7 +155,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
         // Arrange
         const { ours, theirs } = setUp(label, config);
         const ctx = {
-          ...createNodeContext({ workDir: ours }),
+          ...createTrackedNodeContext({ workDir: ours }),
           transport: backendTransport(peerRoot),
         };
         const sut = fetch;
@@ -182,7 +185,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch of an object id interop', () => {
         const { ours, theirs } = setUp(label, []);
         const refspecs = specs(git(peerPath, 'rev-parse', 'main').trim());
         const ctx = {
-          ...createNodeContext({ workDir: ours }),
+          ...createTrackedNodeContext({ workDir: ours }),
           transport: backendTransport(peerRoot),
         };
         const sut = fetch;
@@ -220,7 +223,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch of the remote HEAD over protocol v2 inter
           }
         }
         const ctx = {
-          ...createNodeContext({ workDir: ours }),
+          ...createTrackedNodeContext({ workDir: ours }),
           transport: protocolV2BackendTransport(peerRoot),
         };
         const sut = fetch;
