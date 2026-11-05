@@ -36,7 +36,7 @@ import { type PeelOutcome, peelChain, tagHop } from '../primitives/internal/peel
 import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { isObjectReadFault, resolveCommitIshObject } from './internal/commit-ish.js';
+import { refusingObjectReadFault, resolveCommitIshObject } from './internal/commit-ish.js';
 import {
   type ContainsPlan,
   type DescribeOptions,
@@ -84,18 +84,15 @@ const resolveDescribeTarget = async (ctx: Context, revision: string): Promise<Ob
   return peeled.id;
 };
 
-const peelDescribeTarget = async (
+const peelDescribeTarget = (
   ctx: Context,
   named: ObjectId,
   revision: string,
-): Promise<PeelOutcome<GitObject>> => {
-  try {
-    return await peelChain(ctx, named, readObject, tagHop);
-  } catch (error) {
-    if (isObjectReadFault(error)) throw describeNeitherCommitNorBlob(revision);
-    throw error;
-  }
-};
+): Promise<PeelOutcome<GitObject>> =>
+  refusingObjectReadFault(
+    () => peelChain(ctx, named, readObject, tagHop),
+    () => describeNeitherCommitNorBlob(revision),
+  );
 
 export function describe(
   ctx: Context,

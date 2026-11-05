@@ -10,7 +10,12 @@ import { limitList, resolveLimitOptions } from '../../primitives/internal/limit-
 import { type PeeledRef, peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js';
 import { readObject } from '../../primitives/read-object.js';
 import { evaluateRevision } from '../rev-parse.js';
-import { isObjectReadFault, readRevisionObject, resolveCommitIshObject } from './commit-ish.js';
+import {
+  isObjectReadFault,
+  readRevisionObject,
+  refusingObjectReadFault,
+  resolveCommitIshObject,
+} from './commit-ish.js';
 import { previousCheckoutArg } from './prior-checkout.js';
 
 const RANGE = /^(.*)\.\.(.*)$/;
@@ -147,12 +152,10 @@ const rangeSeeds = async (
 };
 
 const readRangeSide = async (ctx: Context, id: ObjectId, arg: string): Promise<void> => {
-  try {
-    await readObject(ctx, id);
-  } catch (error) {
-    if (isObjectReadFault(error)) throw invalidRevisionRange(arg);
-    throw error;
-  }
+  await refusingObjectReadFault(
+    () => readObject(ctx, id),
+    () => invalidRevisionRange(arg),
+  );
 };
 
 /** git's `get_reference` on an excluded side: the named object must read. */

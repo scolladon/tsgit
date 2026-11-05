@@ -55,8 +55,8 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import {
-  isObjectReadFault,
   readRevisionObject,
+  refusingObjectReadFault,
   resolveCommitIsh,
   resolveCommitIshObject,
 } from './internal/commit-ish.js';
@@ -228,18 +228,15 @@ const resolveBlameTarget = async (ctx: Context, revision: string): Promise<Objec
   return peeled.id;
 };
 
-const peelBlameTarget = async (
+const peelBlameTarget = (
   ctx: Context,
   named: ObjectId,
   revision: string,
-): Promise<PeelOutcome<GitObject>> => {
-  try {
-    return await peelChain(ctx, named, readObject, tagHop);
-  } catch (error) {
-    if (isObjectReadFault(error)) throw blameNonCommit(revision);
-    throw error;
-  }
-};
+): Promise<PeelOutcome<GitObject>> =>
+  refusingObjectReadFault(
+    () => peelChain(ctx, named, readObject, tagHop),
+    () => blameNonCommit(revision),
+  );
 
 /** `path` split into its `/`-separated segments, for the tree descent below. */
 const pathSegments = (path: FilePath): ReadonlyArray<string> => path.split('/');

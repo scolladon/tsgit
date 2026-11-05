@@ -6,6 +6,7 @@
  * and its faults propagate, as git's `repo_get_oid` does.
  */
 import { badObject } from '../../../domain/commands/error.js';
+import type { TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import {
   type GitObject,
@@ -45,15 +46,25 @@ export const isObjectReadFault = (error: unknown): boolean => {
 };
 
 /** git's `get_reference`: the object a revision names must read, else `bad object <revision>`. */
-export const readRevisionObject = async (
+export const readRevisionObject = (
   ctx: Context,
   id: ObjectId,
   revision: string,
-): Promise<GitObject> => {
+): Promise<GitObject> =>
+  refusingObjectReadFault(
+    () => readObject(ctx, id),
+    () => badObject(revision),
+  );
+
+/** `read`, an object-read fault of its own turned into the caller's refusal — git's `get_reference` die shape. */
+export const refusingObjectReadFault = async <T>(
+  read: () => Promise<T>,
+  refusal: () => TsgitError,
+): Promise<T> => {
   try {
-    return await readObject(ctx, id);
+    return await read();
   } catch (error) {
-    if (isObjectReadFault(error)) throw badObject(revision);
+    if (isObjectReadFault(error)) throw refusal();
     throw error;
   }
 };
