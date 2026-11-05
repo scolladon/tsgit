@@ -805,3 +805,16 @@ final shape (the shared read-fault mapper refactor and the triage's removal of a
 | Chunks: commands-internal | 93.5 kB | 93 257 | 93.4 kB | 143 B |
 
 The npm tarball cap moved 1516 → 1514 KiB on the same terms (1 549 164 B measured, 1512.9 KiB).
+
+Re-tightened once more after the integrate phase's dispose fix (a session lineage so a derived
+context's object store is disposed with its parent, `session-lineage.ts`), on the same terms:
+
+| Row | tightened to | final measurement | re-tightened to | headroom |
+|---|--:|--:|--:|--:|
+| Browser bundle (no-build) | 363.4 kB | 363 385 | 363.5 kB | 115 B |
+| Full library | 422.3 kB | 422 342 | 422.5 kB | 158 B |
+| Chunks: domain | 129.2 kB | 129 007 | 129.2 kB | 193 B |
+| Chunks: primitives | 113.9 kB | 113 856 | 114.0 kB | 144 B |
+| Chunks: commands-internal | 93.4 kB | 93 258 | 93.4 kB | 142 B |
+
+The tarball measured 1 549 313 B (1513.0 KiB); the 1514 KiB cap holds.
