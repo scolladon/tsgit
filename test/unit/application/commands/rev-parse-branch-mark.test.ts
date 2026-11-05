@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { resolveRevision } from '../../../../src/application/commands/rev-parse.js';
+import { resolveRevision, revParse } from '../../../../src/application/commands/rev-parse.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -85,6 +85,44 @@ describe('Given main tracking origin/main', () => {
         reason: 'no-upstream',
         branch: 'nou',
       });
+    });
+  });
+});
+
+const LOCAL_UPSTREAM = `[branch "main"]
+  remote = .
+  merge = refs/heads/other
+`;
+
+/** main's upstream is the local branch other, which refs/remotes/other shadows; warnings captured. */
+const shadowedUpstreamRepo = async () => {
+  const warnings: string[] = [];
+  const base = createMemoryContext();
+  const ctx: Context = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+  await init(ctx);
+  const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `${config}${LOCAL_UPSTREAM}`);
+  const tip = await commitFile(ctx, 'tip.txt');
+  await updateRef(ctx, 'refs/heads/other' as RefName, tip, { reflogMessage: 'branch' });
+  await updateRef(ctx, 'refs/remotes/other' as RefName, tip, { reflogMessage: 'fetch' });
+  return { ctx, warnings };
+};
+
+describe('Given an upstream branch name a remote-tracking ref also carries', () => {
+  describe('When revParse reads @{u}^{blob}, which names no object', () => {
+    it('Then it warns the ambiguity once, the reread being quiet, as git does', async () => {
+      // Arrange
+      const { ctx, warnings } = await shadowedUpstreamRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, '@{u}^{blob}').catch(
+        (error: unknown) => (error as TsgitError).data,
+      );
+
+      // Assert
+      expect(result).toMatchObject({ code: 'OBJECT_NOT_FOUND' });
+      expect(warnings).toEqual(["refname '@{u}' is ambiguous."]);
     });
   });
 });

@@ -381,14 +381,10 @@ const shorthandEntries = (
 /**
  * git's `get_oid` over one expression, read once and typed into its own
  * table: the commands that refuse their argument without the misspelt-name
- * diagnosis. `accepts` is the
- * caller's disambiguation hint for an abbreviated name read as is.
+ * diagnosis.
  */
-export const evaluateRevision = (
-  ctx: Context,
-  expression: string,
-  accepts?: CandidateFilter,
-): Promise<ObjectId> => evaluateTyped(ctx, createObjectTypeTable(), expression, { accepts });
+export const evaluateRevision = (ctx: Context, expression: string): Promise<ObjectId> =>
+  evaluateTyped(ctx, createObjectTypeTable(), expression);
 
 /** git's `get_oid` typing each object it parses into `table`, the invocation's. */
 const evaluateTyped = async (

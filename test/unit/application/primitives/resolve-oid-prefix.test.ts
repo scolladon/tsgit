@@ -1103,6 +1103,25 @@ describe('resolveOidPrefix under core.disambiguate', () => {
     });
   });
 
+  describe('Given that directory in the primary and a readable one in an alternate', () => {
+    describe('When resolveOidPrefix misses the prefix', () => {
+      it('Then it scans again and logs twice, as git does', async () => {
+        // Arrange
+        const base = await borrowerContext();
+        await base.fs.mkdir(`${ALT_OBJECTS}/ff`);
+        const { ctx, error, reads } = await failingFanout('ffff', base);
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, 'ffff');
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect([error.mock.calls.length, reads()]).toEqual([2, 2]);
+      });
+    });
+  });
+
   describe('Given that directory and a packed object under the prefix', () => {
     describe('When resolveOidPrefix resolves the prefix twice in one session', () => {
       it('Then it logs once, then not at all, and reads the directory once', async () => {

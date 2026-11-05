@@ -5,7 +5,7 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { resolveRevision } from '../../../../src/application/commands/rev-parse.js';
+import { resolveRevision, revParse } from '../../../../src/application/commands/rev-parse.js';
 import { errorDataCode } from '../../../../src/domain/error-data-code.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -126,6 +126,22 @@ describe('Given a tag sharing the prior branch name', () => {
 
       // Assert
       expect(result).toBe(repo.main);
+      expect(repo.warnings).toEqual(["refname '@{-1}' is ambiguous."]);
+    });
+  });
+
+  describe('When revParse reads @{-1}^{blob}, which names no object', () => {
+    it('Then it warns the ambiguity once, the reread being quiet, as git does', async () => {
+      // Arrange
+      const repo = await switchedRepo();
+      await repo.ctx.fs.writeUtf8(`${repo.ctx.layout.gitDir}/refs/tags/side`, `${repo.main}\n`);
+      const sut = revParse;
+
+      // Act
+      const result = await codeOf(() => sut(repo.ctx, '@{-1}^{blob}'));
+
+      // Assert
+      expect(result).toBe('OBJECT_NOT_FOUND');
       expect(repo.warnings).toEqual(["refname '@{-1}' is ambiguous."]);
     });
   });
