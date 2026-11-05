@@ -16,13 +16,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { add } from '../../src/application/commands/add.js';
 import { blame } from '../../src/application/commands/blame.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { describe as describeCommand } from '../../src/application/commands/describe.js';
 import { diff } from '../../src/application/commands/diff.js';
 import { log } from '../../src/application/commands/log.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
-import { rebaseRun } from '../../src/application/commands/rebase.js';
+import { rebaseContinue, rebaseRun } from '../../src/application/commands/rebase.js';
 import { type RevParseEntry, revParse } from '../../src/application/commands/rev-parse.js';
 import { revertRun } from '../../src/application/commands/revert.js';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -520,6 +521,77 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
         expect((result as TsgitError).data).toEqual(data);
         expect(existsSync(path.join(dir, '.git', 'rebase-merge'))).toBe(false);
         expect(git(dir, 'rev-parse', 'HEAD').trim()).toBe(c2);
+      });
+    });
+  });
+
+  /** A branch `side` off c1 whose `f` conflicts with main's c2: a rebase-merges run onto it stops on c2. */
+  const plantConflictingSide = (dir: string, c1: string): void => {
+    git(dir, 'checkout', '-q', '-b', 'side', c1);
+    writeFileSync(path.join(dir, 'f'), 'hi\nside\n');
+    runGit(['-C', dir, 'commit', '-q', '-am', 's1'], { env: identity });
+    git(dir, 'checkout', '-q', 'main');
+  };
+
+  const resolveConflict = (dir: string): void => {
+    writeFileSync(path.join(dir, 'f'), 'hi\nresolved\n');
+  };
+
+  describe('Given a rebase-merges run stopped on a conflict whose remaining todo is hand-edited to reset x', () => {
+    describe('When git rebase --continue and rebaseContinue run with x naming a non-hex tag object', () => {
+      it('Then both refuse on x, warn its ambiguity once and keep the rebase state, as git does', async () => {
+        // Arrange
+        const twinGit = await copyFixture('non-hex');
+        const twinTsgit = await copyFixture('non-hex');
+        plantConflictingSide(twinGit.dir, twinGit.c1);
+        plantConflictingSide(twinTsgit.dir, twinTsgit.c1);
+        const quietEditor = { ...identity, GIT_EDITOR: 'true' };
+        const started = tryRunGitWithExit(
+          ['-C', twinGit.dir, 'rebase', '--rebase-merges', 'side'],
+          {
+            env: quietEditor,
+          },
+        );
+        resolveConflict(twinGit.dir);
+        git(twinGit.dir, 'add', 'f');
+        writeFileSync(
+          path.join(twinGit.dir, '.git', 'rebase-merge', 'git-rebase-todo'),
+          'reset x\n',
+        );
+        const expected = tryRunGitWithExit(['-C', twinGit.dir, 'rebase', '--continue'], {
+          env: quietEditor,
+        });
+        const captured = capture();
+        const ctx: Context = {
+          ...createNodeContext({ workDir: twinTsgit.dir }),
+          logger: captured.logger,
+        };
+        const stopped = await rebaseRun(ctx, { upstream: 'side', rebaseMerges: true });
+        resolveConflict(twinTsgit.dir);
+        await add(ctx, ['f']);
+        writeFileSync(
+          path.join(twinTsgit.dir, '.git', 'rebase-merge', 'git-rebase-todo'),
+          'reset x\n',
+        );
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx).catch((error: TsgitError) => error);
+
+        // Assert
+        expect(started.exitCode).not.toBe(0);
+        expect(stopped.kind).toBe('conflict');
+        expect(expected.exitCode).toBe(1);
+        expect(expected.stderr).toContain("error: could not resolve 'x'");
+        const gitWarnings = ambiguityWarnings(gitStderrLines(expected.stderr.replace(/\r/g, '\n')));
+        expect(gitWarnings).toHaveLength(1);
+        expect(captured.lines).toEqual(gitWarnings);
+        expect((result as TsgitError).data).toEqual({
+          code: 'INVALID_OBJECT_ID',
+          value: NON_HEX_OBJECT,
+        });
+        expect(existsSync(path.join(twinGit.dir, '.git', 'rebase-merge'))).toBe(true);
+        expect(existsSync(path.join(twinTsgit.dir, '.git', 'rebase-merge'))).toBe(true);
       });
     });
   });

@@ -579,6 +579,27 @@ describe('resolveSequencerRevisions — the two reads of a name', () => {
       });
     });
   });
+
+  describe('Given x re-pointed between the two reads, from a tag of a tree to a commit', () => {
+    describe('When the sequencer resolves x', () => {
+      it("Then it refuses CANNOT_PICK_NON_COMMIT with the first read's unpeeled type", async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const tip = await readObjectModule.readObject(history.ctx, history.id('a2'));
+        if (tip.type !== 'commit') throw new Error('expected a commit');
+        const treeTag = await rawTagNaming(history, tip.data.tree, 'tree');
+        await history.ctx.fs.writeUtf8(`${history.ctx.layout.gitDir}/refs/heads/x`, `${treeTag}\n`);
+        vi.spyOn(revParseModule, 'evaluateRevision').mockResolvedValueOnce(history.id('a2'));
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        const result = await refusalOf(() => sut(history.ctx, ['x']));
+
+        // Assert
+        expect(result).toEqual({ code: 'CANNOT_PICK_NON_COMMIT', revision: 'x', type: 'tag' });
+      });
+    });
+  });
 });
 
 describe('Given a range side whose read fails without an error code', () => {
@@ -605,31 +626,6 @@ describe('Given a range side whose read fails without an error code', () => {
 
       // Assert
       expect(caught).toBe(failure);
-    });
-  });
-});
-
-describe('Given a branch x whose first read is a tag of a tree and whose second read is a commit', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  describe('When the sequencer resolves x', () => {
-    it("Then it refuses CANNOT_PICK_NON_COMMIT with the first read's unpeeled type", async () => {
-      // Arrange
-      const history = await buildHistory(SPEC);
-      const tip = await readObjectModule.readObject(history.ctx, history.id('a2'));
-      if (tip.type !== 'commit') throw new Error('expected a commit');
-      const treeTag = await rawTagNaming(history, tip.data.tree, 'tree');
-      await history.ctx.fs.writeUtf8(`${history.ctx.layout.gitDir}/refs/heads/x`, `${treeTag}\n`);
-      vi.spyOn(revParseModule, 'evaluateRevision').mockResolvedValueOnce(history.id('a2'));
-      const sut = resolveSequencerRevisions;
-
-      // Act
-      const result = await refusalOf(() => sut(history.ctx, ['x']));
-
-      // Assert
-      expect(result).toEqual({ code: 'CANNOT_PICK_NON_COMMIT', revision: 'x', type: 'tag' });
     });
   });
 });

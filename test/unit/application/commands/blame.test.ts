@@ -2032,6 +2032,7 @@ describe('Given an annotated tag tb of a blob', () => {
       const treeObject = await readObjectMod.readObject(ctx, tree);
       if (treeObject.type !== 'tree') throw new Error('expected a tree');
       const blob = treeObject.entries.find((entry) => entry.name === 'f')?.id;
+      if (blob === undefined) throw new Error('no entry f');
       const tag = await rawTag(
         ctx,
         `object ${blob}\ntype blob\ntag tb\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`,
