@@ -69,6 +69,8 @@ Every row was run at least twice in a scrubbed `mktemp -d` throwaway, and both r
 | `cherry-pick x`, `cherry-pick x main`, `revert x` | 128, `W`, `fatal: bad object x`, no state | 128, `W×2`, `error: x: can't cherry-pick a tag`, `fatal: cherry-pick failed` (`revert failed`), no state | **sweeps:** picks or reverts c1, writes `CHERRY_PICK_HEAD`/`REVERT_HEAD` or a conflict |
 | `blame x -- f` | 128, `W`, `fatal: bad object x` | 128, `W`, `fatal: Non commit x?` | **sweeps:** blames c1 |
 | `describe x` / `describe --always x` | 128, `W`, `fatal: x is neither a commit nor blob` | same | throws `INVALID_OBJECT_ID`/`OBJECT_NOT_FOUND` (from `buildNameMap`, by accident), no `W` |
+| `describe t` (tag of a tree), `describe <tree oid>`, `describe <absent 40-hex>` (review pins, x2) | 128, `fatal: <rev> is neither a commit nor blob` | — | `NO_REACHABLE_NAMES` for the first two, `OBJECT_NOT_FOUND` for the absent id |
+| `blame t -- f` (tag of a tree), `blame <tree oid> -- f`, `blame outer -- f` (outer → a tag whose object line does not parse; review pins, x2) | 128, `fatal: Non commit <rev>?` | — | `UNEXPECTED_OBJECT_TYPE` for the first two, `INVALID_OBJECT_ID` for outer |
 | `merge x` | 1, `W`, `merge: x - not something we can merge` | same | throws `INVALID_OBJECT_ID`/`OBJECT_NOT_FOUND` (from `resolveMergeParent`'s `peelChain`) |
 | `rebase -i`, todo `pick x` | 1, `W`, `error: invalid line 1: pick x`, `rebase-merge/` kept (absent adds `error: Could not read aaa…`) | — | sweeps (`resolveCommitIsh`) |
 | `rebase -i`, todo `reset x` | 1, `W`, `error: could not resolve 'x'` | — | sweeps (`lookupLabel` → `resolveCommitIsh`) |

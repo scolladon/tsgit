@@ -780,12 +780,16 @@ describe('describe', () => {
         // Act
         const result = await describeCmd(ctx);
 
-        // Assert — the tree tag peels to a tree and is dropped, leaving v1.0.
+        // Assert — the tree tag peels to a tree and is dropped, leaving v1.0; named as the
+        // target it is neither a commit nor a blob, as git refuses it.
         expect(result.name).toBe('v1.0');
         // And describing the tree oid itself refuses — the dropped tree tag must
         // not be mapped onto the tree (which would let it exact-match).
         const onTree = await catchError(() => describeCmd(ctx, tree));
-        expect(onTree.data).toMatchObject({ code: 'NO_REACHABLE_NAMES' });
+        expect(onTree.data).toEqual({
+          code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB',
+          revision: tree,
+        });
       });
     });
   });
@@ -814,7 +818,7 @@ describe('describe', () => {
 
   describe('Given a tree object as the target', () => {
     describe('When describe runs', () => {
-      it('Then it refuses (a tree reaches no tagged commit)', async () => {
+      it('Then it refuses neither a commit nor blob, as git does', async () => {
         // Arrange
         const ctx = await seed();
         const c1 = await commitFile(ctx, 'c1');
@@ -825,7 +829,7 @@ describe('describe', () => {
         const error = await catchError(() => describeCmd(ctx, tree));
 
         // Assert
-        expect(error.data).toMatchObject({ code: 'NO_REACHABLE_NAMES' });
+        expect(error.data).toEqual({ code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB', revision: tree });
       });
     });
   });
@@ -1656,6 +1660,64 @@ describe('Given a tag whose read fails without a code', () => {
 
       // Assert
       expect(outcome).toBe(failure);
+    });
+  });
+});
+
+const tagOfTree = async (ctx: Context, tree: ObjectId): Promise<ObjectId> =>
+  writeRawObjectBytes(
+    ctx,
+    'tag',
+    new TextEncoder().encode(
+      `object ${tree}\ntype tree\ntag tt\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`,
+    ),
+  );
+
+describe('Given a target that reads but is neither a commit nor a blob', () => {
+  describe('When describe reads an annotated tag of a tree', () => {
+    it("Then it refuses DESCRIBE_NEITHER_COMMIT_NOR_BLOB { revision: 'tt' }", async () => {
+      // Arrange
+      const ctx = await seed();
+      const tag = await tagOfTree(ctx, await treeOf(ctx, await commitFile(ctx, 'c1')));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/tt`, `${tag}\n`);
+      const sut = describeCmd;
+
+      // Act
+      const result = await sut(ctx, 'tt').catch((error: unknown) => (error as TsgitError).data);
+
+      // Assert
+      expect(result).toEqual({ code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB', revision: 'tt' });
+    });
+  });
+
+  describe('When describe reads a tree by its id', () => {
+    it('Then it refuses DESCRIBE_NEITHER_COMMIT_NOR_BLOB naming the id', async () => {
+      // Arrange
+      const ctx = await seed();
+      const tree = await treeOf(ctx, await commitFile(ctx, 'c1'));
+      const sut = describeCmd;
+
+      // Act
+      const result = await sut(ctx, tree).catch((error: unknown) => (error as TsgitError).data);
+
+      // Assert
+      expect(result).toEqual({ code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB', revision: tree });
+    });
+  });
+
+  describe('When describe reads a full object id nothing holds', () => {
+    it('Then it refuses DESCRIBE_NEITHER_COMMIT_NOR_BLOB naming the id', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1');
+      const absent = 'a'.repeat(40);
+      const sut = describeCmd;
+
+      // Act
+      const result = await sut(ctx, absent).catch((error: unknown) => (error as TsgitError).data);
+
+      // Assert
+      expect(result).toEqual({ code: 'DESCRIBE_NEITHER_COMMIT_NOR_BLOB', revision: absent });
     });
   });
 });

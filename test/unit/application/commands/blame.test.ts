@@ -1952,3 +1952,73 @@ describe('Given a tag target whose read fails without a code', () => {
     });
   });
 });
+
+const rawTag = (ctx: Context, body: string): Promise<ObjectId> =>
+  writeRawObjectBytes(ctx, 'tag', new TextEncoder().encode(body));
+
+const treeOfHead = async (ctx: Context, head: ObjectId): Promise<ObjectId> => {
+  const object = await readObjectMod.readObject(ctx, head);
+  if (object.type !== 'commit') throw new Error(`expected a commit: ${head}`);
+  return object.data.tree;
+};
+
+describe('Given a revision that reads but does not peel to a commit', () => {
+  describe('When blame reads f at an annotated tag of a tree', () => {
+    it("Then it refuses BLAME_NON_COMMIT { revision: 't' }", async () => {
+      // Arrange
+      const ctx = await seed();
+      const tree = await treeOfHead(ctx, await commitFile(ctx, 'c1', 'f', 'a\n'));
+      const tag = await rawTag(
+        ctx,
+        `object ${tree}\ntype tree\ntag t\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`,
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${tag}\n`);
+      const sut = blame;
+
+      // Act
+      const result = await refusalOf(() => sut(ctx, 'f', { rev: 't' }));
+
+      // Assert
+      expect(result).toEqual({ code: 'BLAME_NON_COMMIT', revision: 't' });
+    });
+  });
+
+  describe('When blame reads f at a tree by its id', () => {
+    it('Then it refuses BLAME_NON_COMMIT naming the id', async () => {
+      // Arrange
+      const ctx = await seed();
+      const tree = await treeOfHead(ctx, await commitFile(ctx, 'c1', 'f', 'a\n'));
+      const sut = blame;
+
+      // Act
+      const result = await refusalOf(() => sut(ctx, 'f', { rev: tree }));
+
+      // Assert
+      expect(result).toEqual({ code: 'BLAME_NON_COMMIT', revision: tree });
+    });
+  });
+
+  describe('When blame reads f at a tag naming a tag whose object line does not parse', () => {
+    it("Then it refuses BLAME_NON_COMMIT { revision: 'outer' }", async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f', 'a\n');
+      const inner = await rawTag(
+        ctx,
+        `object ${'z'.repeat(40)}\ntype commit\ntag x\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`,
+      );
+      const outer = await rawTag(
+        ctx,
+        `object ${inner}\ntype tag\ntag outer\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`,
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/outer`, `${outer}\n`);
+      const sut = blame;
+
+      // Act
+      const result = await refusalOf(() => sut(ctx, 'f', { rev: 'outer' }));
+
+      // Assert
+      expect(result).toEqual({ code: 'BLAME_NON_COMMIT', revision: 'outer' });
+    });
+  });
+});

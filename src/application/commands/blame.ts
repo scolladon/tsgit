@@ -28,7 +28,13 @@ import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
-import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  GitObject,
+  ObjectId,
+  TreeEntry,
+} from '../../domain/objects/index.js';
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
 import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
@@ -37,7 +43,7 @@ import { diffTrees } from '../primitives/diff-trees.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
-import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import { type PeelOutcome, peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   descendMatchingTreeChain,
@@ -49,6 +55,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import {
+  isObjectReadFault,
   readRevisionObject,
   resolveCommitIsh,
   resolveCommitIshObject,
@@ -210,16 +217,26 @@ export const blame = async (
 
 /**
  * git's `lookup_commit_reference` for a blame revision: the named object must read
- * (`bad object`), and an annotated tag peels to a commit that must exist (`Non commit`).
+ * (`bad object`), and what it peels to must be a commit (`Non commit`): a chain that
+ * stops reading past the first hop, a tag of a tree and a bare tree all fail that.
  */
 const resolveBlameTarget = async (ctx: Context, revision: string): Promise<ObjectId> => {
   const named = await resolveCommitIshObject(ctx, revision);
-  const object = await readRevisionObject(ctx, named, revision);
-  if (object.type !== 'tag') return named;
+  await readRevisionObject(ctx, named, revision);
+  const peeled = await peelBlameTarget(ctx, named, revision);
+  if (peeled.result.type !== 'commit') throw blameNonCommit(revision);
+  return peeled.id;
+};
+
+const peelBlameTarget = async (
+  ctx: Context,
+  named: ObjectId,
+  revision: string,
+): Promise<PeelOutcome<GitObject>> => {
   try {
-    return (await peelChain(ctx, object.data.object, readObject, tagHop)).id;
+    return await peelChain(ctx, named, readObject, tagHop);
   } catch (error) {
-    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') throw blameNonCommit(revision);
+    if (isObjectReadFault(error)) throw blameNonCommit(revision);
     throw error;
   }
 };

@@ -240,12 +240,13 @@ const tsgitRevParse = async (dir: string, arg: string): Promise<Outcome> => {
 const tsgitDescribe = async (
   dir: string,
   options: { readonly always?: true },
+  revision = 'x',
 ): Promise<Outcome> => {
   const captured = capture();
   const ctx: Context = { ...createNodeContext({ workDir: dir }), logger: captured.logger };
   const sut = describeCommand;
   try {
-    await sut(ctx, 'x', options);
+    await sut(ctx, revision, options);
     return { refused: false, stdout: '', diagnostics: captured.lines };
   } catch (error) {
     const data = (error as TsgitError).data as unknown as Refusal;
@@ -644,6 +645,81 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a corrupt first commit-ish cand
         expect(ambiguityWarnings(result.diagnostics)).toEqual(
           ambiguityWarnings(expected.diagnostics),
         );
+      });
+    });
+  });
+
+  /** A tag `outer` whose object is the fixture's tag: a chain that reads one hop and then does not. */
+  const plantOuterTag = (dir: string, tag: string): void => {
+    const body = `object ${tag}\ntype tag\ntag outer\ntagger A <a@x> 1700000000 +0000\n\nmsg\n`;
+    const bodyFile = path.join(
+      mkdtempSync(path.join(os.tmpdir(), 'tsgit-corrupt-outer-tag-')),
+      'tag',
+    );
+    scratch.push(path.dirname(bodyFile));
+    writeFileSync(bodyFile, body);
+    writeTagRef(
+      dir,
+      'outer',
+      git(dir, 'hash-object', '-t', 'tag', '-w', '--literally', bodyFile).trim(),
+    );
+  };
+
+  describe.each([
+    { shape: 'an annotated tag of a tree', fixture: 'tag-of-tree', revision: () => TREE_TAG_NAME },
+    {
+      shape: 'a tree by its id',
+      fixture: 'valid',
+      revision: (dir: string) => git(dir, 'rev-parse', 'main^{tree}').trim(),
+    },
+    { shape: 'a full object id nothing holds', fixture: 'valid', revision: () => ABSENT_OBJECT },
+  ] as const)('Given $shape', ({ fixture, revision }) => {
+    describe('When git describe and describe read it', () => {
+      it('Then both refuse neither a commit nor blob, as git does', async () => {
+        // Arrange
+        const { dir } = await copyFixture(fixture);
+        const target = revision(dir);
+        const expected = gitOutcome(dir, ['describe', target]);
+
+        // Act
+        const result = await tsgitDescribe(dir, {}, target);
+
+        // Assert
+        expect(expected.diagnostics).toEqual([`fatal: ${target} is neither a commit nor blob`]);
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each([
+    { shape: 'an annotated tag of a tree', fixture: 'tag-of-tree', revision: () => TREE_TAG_NAME },
+    {
+      shape: 'a tree by its id',
+      fixture: 'valid',
+      revision: (dir: string) => git(dir, 'rev-parse', 'main^{tree}').trim(),
+    },
+    {
+      shape: 'a tag naming a tag whose object line does not parse',
+      fixture: 'non-hex',
+      revision: (dir: string, tag: string) => {
+        plantOuterTag(dir, tag);
+        return 'outer';
+      },
+    },
+  ] as const)('Given $shape', ({ fixture, revision }) => {
+    describe('When git blame and blame read f at it', () => {
+      it('Then both refuse Non commit, as git does', async () => {
+        // Arrange
+        const { dir, tag } = await copyFixture(fixture);
+        const target = revision(dir, tag);
+        const expected = gitOutcome(dir, ['blame', target, '--', 'f']);
+
+        // Act
+        const result = await tsgitBlame(dir, target);
+
+        // Assert
+        expect(expected.diagnostics.at(-1)).toBe(`fatal: Non commit ${target}?`);
+        expect(result).toEqual(expected);
       });
     });
   });

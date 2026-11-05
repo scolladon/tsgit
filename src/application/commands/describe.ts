@@ -22,7 +22,7 @@ import {
   shouldReplaceName,
 } from '../../domain/describe/index.js';
 import { TsgitError } from '../../domain/error.js';
-import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
 import { RefName as RefNameFactory } from '../../domain/objects/object-id.js';
 import { workTreeRequired } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
@@ -32,9 +32,11 @@ import {
   type DateWalkStep,
   selectParents,
 } from '../primitives/internal/commit-date-walk.js';
+import { type PeelOutcome, peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
+import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { isObjectReadFault, resolveCommitIsh } from './internal/commit-ish.js';
+import { isObjectReadFault, resolveCommitIshObject } from './internal/commit-ish.js';
 import {
   type ContainsPlan,
   type DescribeOptions,
@@ -66,10 +68,27 @@ export interface DescribeResult {
 const DEFAULT_REV = 'HEAD';
 const TAGS_PREFIX = 'refs/tags/';
 
-/** git's `describe`: a revision whose object cannot be read is neither a commit nor a blob. */
+const DESCRIBABLE_TYPES: ReadonlySet<string> = new Set(['commit', 'blob']);
+
+/**
+ * git's `describe`: the named object (a ref's winner or an object name alike) is read
+ * and peeled; one that does not read, does not peel, or ends on anything but a commit
+ * or a blob is neither a commit nor a blob.
+ */
 const resolveDescribeTarget = async (ctx: Context, revision: string): Promise<ObjectId> => {
+  const named = await resolveCommitIshObject(ctx, revision);
+  const peeled = await peelDescribeTarget(ctx, named, revision);
+  if (!DESCRIBABLE_TYPES.has(peeled.result.type)) throw describeNeitherCommitNorBlob(revision);
+  return peeled.id;
+};
+
+const peelDescribeTarget = async (
+  ctx: Context,
+  named: ObjectId,
+  revision: string,
+): Promise<PeelOutcome<GitObject>> => {
   try {
-    return await resolveCommitIsh(ctx, revision);
+    return await peelChain(ctx, named, readObject, tagHop);
   } catch (error) {
     if (isObjectReadFault(error)) throw describeNeitherCommitNorBlob(revision);
     throw error;
