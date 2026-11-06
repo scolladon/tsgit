@@ -429,6 +429,23 @@ const SURROGATE_MIN = 0xd800;
 const SURROGATE_MAX = 0xdfff;
 const UNICODE_LOW_REJECTED = 0xfffe;
 const UNICODE_HIGH_REJECTED = 0xffff;
+// Lead and follow-byte bounds of the sequences git's UTF-8 picker rejects.
+const TWO_BYTE_LEAD_MIN = 0xc2;
+const FOUR_BYTE_LEAD_MAX = 0xf4;
+const OVERLONG_TWO_BYTE_LEADS = [0xc0, 0xc1] as const;
+const THREE_BYTE_LEAD_LOWEST = 0xe0;
+const OVERLONG_THREE_BYTE_SECOND_MAX = 0x9f;
+const SURROGATE_LEAD = 0xed;
+const SURROGATE_SECOND_MIN = 0xa0;
+const NON_CHARACTER_LEAD = 0xef;
+const NON_CHARACTER_SECOND = 0xbf;
+const NON_CHARACTER_THIRDS = [0xbe, 0xbf] as const;
+const FOUR_BYTE_LEAD_LOWEST = 0xf0;
+const OVERLONG_FOUR_BYTE_SECOND_MAX = 0x8f;
+const ABOVE_RANGE_SECOND_MIN = 0x90;
+const BEYOND_FOUR_BYTE_LEAD_MIN = 0xf5;
+const BEYOND_FOUR_BYTE_LEAD_MAX = 0xf7;
+const FIVE_BYTE_LEAD_MIN = 0xf8;
 
 const concatBytes = (parts: readonly Uint8Array[]): Uint8Array =>
   Uint8Array.from(parts.flatMap((part) => [...part]));
@@ -474,25 +491,52 @@ export function arbHfsNeedleVariant(alias: DotgitAliasName): fc.Arbitrary<Uint8A
 }
 
 const arbLeadWithAsciiFollower = (): fc.Arbitrary<number[]> =>
-  fc.tuple(arbByteIn(0xc2, 0xf4), arbByteIn(ASCII_NON_NUL_MIN, ASCII_MAX)).map((pair) => pair);
+  fc
+    .tuple(
+      arbByteIn(TWO_BYTE_LEAD_MIN, FOUR_BYTE_LEAD_MAX),
+      arbByteIn(ASCII_NON_NUL_MIN, ASCII_MAX),
+    )
+    .map((pair) => pair);
 
 const arbRejectedLeadOnly = (): fc.Arbitrary<number[]> =>
-  fc.oneof(arbByteIn(0xf8, BYTE_MAX), arbContinuation()).map((lead) => [lead]);
+  fc.oneof(arbByteIn(FIVE_BYTE_LEAD_MIN, BYTE_MAX), arbContinuation()).map((lead) => [lead]);
 
 const arbRejectedWithContinuations = (): fc.Arbitrary<number[]> =>
   fc
     .oneof(
-      fc.tuple(fc.constantFrom(0xc0, 0xc1), arbContinuation()),
-      fc.tuple(fc.constant(0xe0), arbByteIn(CONTINUATION_MIN, 0x9f), arbContinuation()),
-      fc.tuple(fc.constant(0xed), arbByteIn(0xa0, CONTINUATION_MAX), arbContinuation()),
-      fc.tuple(fc.constant(0xef), fc.constant(0xbf), fc.constantFrom(0xbe, 0xbf)),
+      fc.tuple(fc.constantFrom(...OVERLONG_TWO_BYTE_LEADS), arbContinuation()),
+      fc.tuple(
+        fc.constant(THREE_BYTE_LEAD_LOWEST),
+        arbByteIn(CONTINUATION_MIN, OVERLONG_THREE_BYTE_SECOND_MAX),
+        arbContinuation(),
+      ),
+      fc.tuple(
+        fc.constant(SURROGATE_LEAD),
+        arbByteIn(SURROGATE_SECOND_MIN, CONTINUATION_MAX),
+        arbContinuation(),
+      ),
+      fc.tuple(
+        fc.constant(NON_CHARACTER_LEAD),
+        fc.constant(NON_CHARACTER_SECOND),
+        fc.constantFrom(...NON_CHARACTER_THIRDS),
+      ),
       fc
-        .tuple(fc.constant(0xf0), arbByteIn(CONTINUATION_MIN, 0x8f), arbContinuations(2))
+        .tuple(
+          fc.constant(FOUR_BYTE_LEAD_LOWEST),
+          arbByteIn(CONTINUATION_MIN, OVERLONG_FOUR_BYTE_SECOND_MAX),
+          arbContinuations(2),
+        )
         .map(([lead, second, rest]) => [lead, second, ...rest]),
       fc
-        .tuple(fc.constant(0xf4), arbByteIn(0x90, CONTINUATION_MAX), arbContinuations(2))
+        .tuple(
+          fc.constant(FOUR_BYTE_LEAD_MAX),
+          arbByteIn(ABOVE_RANGE_SECOND_MIN, CONTINUATION_MAX),
+          arbContinuations(2),
+        )
         .map(([lead, second, rest]) => [lead, second, ...rest]),
-      fc.tuple(arbByteIn(0xf5, 0xf7), arbContinuations(3)).map(([lead, rest]) => [lead, ...rest]),
+      fc
+        .tuple(arbByteIn(BEYOND_FOUR_BYTE_LEAD_MIN, BEYOND_FOUR_BYTE_LEAD_MAX), arbContinuations(3))
+        .map(([lead, rest]) => [lead, ...rest]),
     )
     .map((bytes) => [...bytes]);
 

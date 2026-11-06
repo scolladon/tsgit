@@ -4546,7 +4546,7 @@ describe.each([
   {
     label: 'symlink named .gitmodules/x',
     mode: '120000',
-    name: '.gitmodules/x',
+    nameBytes: encode('.gitmodules/x'),
     expected: [
       { msgId: 'fullPathname', severity: 'warning' },
       { msgId: 'gitmodulesSymlink', severity: 'error' },
@@ -4555,7 +4555,7 @@ describe.each([
   {
     label: 'symlink named .gitignore/x',
     mode: '120000',
-    name: '.gitignore/x',
+    nameBytes: encode('.gitignore/x'),
     expected: [
       { msgId: 'fullPathname', severity: 'warning' },
       { msgId: 'gitignoreSymlink', severity: 'info' },
@@ -4564,17 +4564,17 @@ describe.each([
   {
     label: 'directory named .g<ZWNJ>it/x',
     mode: '40000',
-    name: '.g‌it/x',
+    nameBytes: concatBytes([encode('.g'), Uint8Array.of(0xe2, 0x80, 0x8c), encode('it/x')]),
     expected: [
       { msgId: 'hasDotgit', severity: 'warning' },
       { msgId: 'fullPathname', severity: 'warning' },
     ],
   },
-] as const)('Given a tree entry $label', ({ mode, name, expected }) => {
+] as const)('Given a tree entry $label', ({ mode, nameBytes, expected }) => {
   describe('When validateObject runs', () => {
     it('Then emits the path fault and the alias fault', () => {
       // Arrange
-      const rawBody = buildTree(buildTreeEntryBytes(mode, encode(name), BLOB_SHA));
+      const rawBody = buildTree(buildTreeEntryBytes(mode, nameBytes, BLOB_SHA));
       const sut = validateObject;
 
       // Act

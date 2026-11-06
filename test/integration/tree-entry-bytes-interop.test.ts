@@ -1469,11 +1469,14 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
                 if (!gitResult.stderr.includes(text))
                   disagreements.push(`${candidate.label}: ${text}`);
               }
-              if (
-                sortedExpected.length === 0 &&
-                gitResult.stderr.includes(`in ${side.type} ${side.id}:`)
-              ) {
-                disagreements.push(`${candidate.label}: unexpected git finding on ${side.type}`);
+              const marker = `in ${side.type} ${side.id}:`;
+              const reported = gitResult.stderr
+                .split('\n')
+                .filter((stderrLine) => stderrLine.includes(marker)).length;
+              if (reported !== sortedExpected.length) {
+                disagreements.push(
+                  `${candidate.label}: git reported ${reported} finding(s) on ${side.type}, expected ${sortedExpected.length}`,
+                );
               }
             }
           }
