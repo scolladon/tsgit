@@ -22,9 +22,9 @@
  */
 import fc from 'fast-check';
 import { describe, it } from 'vitest';
+import { gitPickerValidPrefix } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mode.js';
 import {
-  gitPickerValidPrefix,
   isDotGitAlias,
   type VerifyPathRejection,
   verifyPath,

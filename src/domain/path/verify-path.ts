@@ -1,5 +1,5 @@
 import { splitAtSlash } from '../git-index/index-path-key.js';
-import { decodePreservingBom, encode, wellFormedSequenceLength } from '../objects/encoding.js';
+import { decodePreservingBom, encode, gitPickerValidPrefix } from '../objects/encoding.js';
 import { FILE_MODE, type FileMode } from '../objects/file-mode.js';
 import { matchesNtfsDotgitAlias } from '../objects/tree-entry-bytes.js';
 
@@ -54,35 +54,8 @@ const hasIgnorableCodepoint = (part: string): boolean => {
   return false;
 };
 
-const THREE_BYTE_LEAD_NON_CHARACTER = 0xef;
-const NON_CHARACTER_SECOND = 0xbf;
-const NON_CHARACTER_THIRD_MIN = 0xbe;
 const BMP_LAST_MINUS_ONE = 0xfffe;
 const BMP_LAST = 0xffff;
-
-const isNonCharacterTail = (bytes: Uint8Array, at: number): boolean =>
-  bytes[at] === THREE_BYTE_LEAD_NON_CHARACTER &&
-  bytes[at + 1] === NON_CHARACTER_SECOND &&
-  (bytes[at + 2] as number) >= NON_CHARACTER_THIRD_MIN;
-
-/** Length of the sequence git's `pick_one_utf8_char` accepts at `at`, or 0 when it rejects. */
-const acceptedSequenceLength = (bytes: Uint8Array, at: number): number => {
-  const length = wellFormedSequenceLength(bytes, at);
-  // The non-character tail starts with a three-byte lead, so it only ever meets a three-byte length or 0.
-  return isNonCharacterTail(bytes, at) ? 0 : length;
-};
-
-/** Offset of the first sequence git's `pick_one_utf8_char` rejects, else `bytes.length`. */
-export const gitPickerValidPrefix = (bytes: Uint8Array): number => {
-  let at = 0;
-  // Stryker disable next-line EqualityOperator: equivalent — at bytes.length the lead reads undefined, acceptedSequenceLength is 0 and the loop returns at, which is bytes.length.
-  while (at < bytes.length) {
-    const length = acceptedSequenceLength(bytes, at);
-    if (length === 0) return at;
-    at += length;
-  }
-  return bytes.length;
-};
 
 const firstNonCharacter = (part: string): number => {
   // Stryker disable next-line EqualityOperator: equivalent — charCodeAt(part.length) is NaN, matches neither non-character, so the loop still ends at part.length.
