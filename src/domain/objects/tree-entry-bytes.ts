@@ -1,3 +1,5 @@
+import { gitPickerSequenceLength } from './encoding.js';
+
 /**
  * Shared byte-level primitives for a tree entry. Kept deliberately small:
  * the octal-digit scan is the one piece of logic the tree parser and the raw
@@ -62,13 +64,6 @@ const NTFS_SHORT_NAME_LOW_DIGIT = 0x31; // '1'
 const NTFS_SHORT_NAME_HIGH_DIGIT = 0x34; // '4'
 const NTFS_SHORT_NAME_PREFIX_LENGTH = 6;
 
-// Decodes only to run the HFS-ignorable fold — the one place in this file
-// where decoding is correct rather than a bug, because git decodes here
-// too (next_hfs_char). ignoreBOM: a leading BOM is one of the ignorable
-// code points and is stripped by the fold's own filter, at any position —
-// never by the decoder silently eating just the first one.
-const HFS_DECODER = new TextDecoder('utf-8', { ignoreBOM: true });
-
 function foldAsciiCodePoint(codePoint: number): number {
   // Stryker disable next-line EqualityOperator: equivalent — DotgitAliasName is a closed union of 5 literals (git/gitmodules/gitattributes/gitignore/mailmap) with no 'z', so the Z-only boundary this changes never determines any fold comparison this file makes.
   return codePoint >= ASCII_UPPER_A && codePoint <= ASCII_UPPER_Z
@@ -76,12 +71,44 @@ function foldAsciiCodePoint(codePoint: number): number {
     : codePoint;
 }
 
+const END_OF_NAME = 0; // git's next_hfs_char at the terminating NUL
+const THREE_BYTE_SEQUENCE_LENGTH = 3;
+const THREE_BYTE_LEAD_PAYLOAD_MASK = 0x0f;
+const CONTINUATION_PAYLOAD_MASK = 0x3f;
+const THREE_BYTE_LEAD_SHIFT = 12;
+const CONTINUATION_SHIFT = 6;
+
+/** git's arithmetic over a sequence its picker accepted as three bytes. */
+function threeByteCodePoint(name: Uint8Array, at: number): number {
+  return (
+    (((name[at] as number) & THREE_BYTE_LEAD_PAYLOAD_MASK) << THREE_BYTE_LEAD_SHIFT) |
+    (((name[at + 1] as number) & CONTINUATION_PAYLOAD_MASK) << CONTINUATION_SHIFT) |
+    ((name[at + 2] as number) & CONTINUATION_PAYLOAD_MASK)
+  );
+}
+
+function skipIgnorableSequences(name: Uint8Array, at: number): number {
+  let cursor = at;
+  while (
+    gitPickerSequenceLength(name, cursor) === THREE_BYTE_SEQUENCE_LENGTH &&
+    HFS_IGNORABLE_CODE_POINTS.has(threeByteCodePoint(name, cursor))
+  ) {
+    cursor += THREE_BYTE_SEQUENCE_LENGTH;
+  }
+  return cursor;
+}
+
+/** The end of the span, or a sequence the picker rejects, ends the name. */
+function endsHfsName(name: Uint8Array, at: number): boolean {
+  return gitPickerSequenceLength(name, at) === 0;
+}
+
 /**
- * True when `buf[start, end)`, decoded as UTF-8 with every HFS-ignorable
- * code point dropped and the rest ASCII-case-folded, equals exactly
- * `.<alias>` — git's `is_hfs_dot_generic`. Malformed UTF-8 decodes to
- * U+FFFD, which matches no needle character, so it fails rather than
- * throws — matching git's own "can't be `.git`" outcome for bad bytes.
+ * git's `is_hfs_dot_generic`: the name is read through git's UTF-8 picker.
+ * Ignorable sequences are skipped only when the picker accepts them; each
+ * needle character is compared on its raw byte, ASCII-folded, so a byte git
+ * would not read as that ASCII character fails. After the needle the name
+ * matches at the end of the span or at a sequence the picker rejects.
  */
 function foldsToHfsAlias(
   buf: Uint8Array,
@@ -89,19 +116,14 @@ function foldsToHfsAlias(
   end: number,
   alias: DotgitAliasName,
 ): boolean {
-  const decoded = HFS_DECODER.decode(buf.subarray(start, end));
-  const wantLength = alias.length + 1; // leading '.' + alias
-  let matched = 0;
-  for (const char of decoded) {
-    const codePoint = char.codePointAt(0)!;
-    if (HFS_IGNORABLE_CODE_POINTS.has(codePoint)) continue;
-    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — once matched reaches wantLength (alias.length+1), the next want=alias.charCodeAt(matched-1) index is out of range and returns NaN, whose !== comparison is always true, so the loop returns false on the next iteration regardless of this guard.
-    if (matched >= wantLength) return false;
-    const want = matched === 0 ? ASCII_DOT : alias.charCodeAt(matched - 1);
-    if (foldAsciiCodePoint(codePoint) !== want) return false;
-    matched++;
+  const name = buf.subarray(start, end);
+  let at = skipIgnorableSequences(name, 0);
+  for (let i = 0; i <= alias.length; i++) {
+    const want = i === 0 ? ASCII_DOT : alias.charCodeAt(i - 1);
+    if (foldAsciiCodePoint(name[at] ?? END_OF_NAME) !== want) return false;
+    at = skipIgnorableSequences(name, at + 1);
   }
-  return matched === wantLength;
+  return endsHfsName(name, at);
 }
 
 const ASCII_COLON = 0x3a;
@@ -229,8 +251,9 @@ export function matchesNtfsDotgitAlias(
 
 /**
  * True when `buf[start, end)` is an alias of `.<alias>` under git's dotgit
- * fold: HFS-ignorable code points dropped at any position, or the NTFS
- * short-name / trailing dot-space form, either compared case-insensitively.
+ * fold: the name read through git's UTF-8 picker, accepted ignorable
+ * sequences dropped at any position and a rejected sequence ending the
+ * name, or the NTFS short-name / trailing dot-space form, either compared case-insensitively.
  * Used only for fsck's alias comparisons (`hasDotgit`, `.gitmodules`,
  * `.gitattributes`, `.gitignore`, `.mailmap`) — the duplicate key, the sort
  * key and the length count compare raw bytes and never call this.

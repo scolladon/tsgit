@@ -1142,6 +1142,342 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
         },
       );
     });
+
+    // -------------------------------------------------------------------
+    // Case 13 — git's HFS reader reads a sequence its UTF-8 picker rejects
+    // as the end of the name, for all five dotgit names: ".git" followed by
+    // a rejected byte is still a dotgit alias, and a rejected byte inside
+    // the needle never is.
+    // -------------------------------------------------------------------
+
+    describe('Given dotgit names followed by a sequence git rejects (and their controls), When both tools fsck them', () => {
+      type AliasMsgId =
+        | 'hasDotgit'
+        | 'fullPathname'
+        | 'gitmodulesSymlink'
+        | 'gitattributesSymlink'
+        | 'gitignoreSymlink'
+        | 'mailmapSymlink'
+        | 'gitmodulesParse'
+        | 'gitattributesLineLength';
+      type Kind = 'dir' | 'blob' | 'link' | 'badGitmodules' | 'longAttributes';
+      type AliasRow = {
+        readonly label: string;
+        readonly nameBytes: Uint8Array;
+        readonly kind: Kind;
+        readonly tree: ReadonlyArray<AliasMsgId>;
+        readonly blob: ReadonlyArray<AliasMsgId>;
+      };
+
+      const GIT_TEXT: Readonly<Record<AliasMsgId, string>> = {
+        hasDotgit: "contains '.git'",
+        fullPathname: 'contains full pathnames',
+        gitmodulesSymlink: '.gitmodules is a symbolic link',
+        gitattributesSymlink: '.gitattributes is a symlink',
+        gitignoreSymlink: '.gitignore is a symlink',
+        mailmapSymlink: '.mailmap is a symlink',
+        gitmodulesParse: 'could not parse gitmodules blob',
+        gitattributesLineLength: '.gitattributes has too long lines to parse',
+      };
+      const BASE_SEVERITY: Readonly<Record<AliasMsgId, 'error' | 'warning' | 'info'>> = {
+        hasDotgit: 'warning',
+        fullPathname: 'warning',
+        gitmodulesSymlink: 'error',
+        gitattributesSymlink: 'info',
+        gitignoreSymlink: 'info',
+        mailmapSymlink: 'info',
+        gitmodulesParse: 'info',
+        gitattributesLineLength: 'error',
+      };
+      const expectedSeverity = (msgId: AliasMsgId, strict: boolean): string =>
+        strict && BASE_SEVERITY[msgId] === 'warning' ? 'error' : BASE_SEVERITY[msgId];
+      const gitWord = (severity: string): string => (severity === 'info' ? 'warning' : severity);
+      const reconstructBlobLine = (
+        severity: string,
+        id: string,
+        msgId: string,
+        text: string,
+      ): string => `${severity} in blob ${id}: ${msgId}: ${text}`;
+
+      const bytesOf = (...parts: ReadonlyArray<string | ReadonlyArray<number>>): Uint8Array =>
+        concatBytes(
+          ...parts.map((part) => (typeof part === 'string' ? encode(part) : Uint8Array.from(part))),
+        );
+      const FF = [0xff] as const;
+      const IGNORABLE = [0xe2, 0x80, 0x8c] as const;
+      const row = (
+        label: string,
+        nameBytes: Uint8Array,
+        kind: Kind,
+        tree: ReadonlyArray<AliasMsgId> = [],
+        blob: ReadonlyArray<AliasMsgId> = [],
+      ): AliasRow => ({ label, nameBytes, kind, tree, blob });
+
+      const rejectedTails: ReadonlyArray<readonly [string, ReadonlyArray<number>]> = [
+        ['ff', [0xff]],
+        ['fe', [0xfe]],
+        ['five-byte-lead', [0xf8, 0x80, 0x80, 0x80, 0x80]],
+        ['lone-continuation', [0x80]],
+        ['overlong-two-byte-c0', [0xc0, 0x80]],
+        ['overlong-two-byte-c1', [0xc1, 0xbf]],
+        ['truncated-two-byte', [0xc2]],
+        ['truncated-three-byte', [0xe2, 0x80]],
+        ['three-byte-ascii-continuation', [0xe2, 0x80, 0x41]],
+        ['three-byte-bad-second', [0xe2, 0xc0, 0x8c]],
+        ['three-byte-ascii-second', [0xe2, 0x78]],
+        ['overlong-three-byte', [0xe0, 0x80, 0xaf]],
+        ['truncated-overlong-three-byte', [0xe0, 0x80]],
+        ['surrogate', [0xed, 0xa0, 0x80]],
+        ['reserved-end-fe', [0xef, 0xbf, 0xbe]],
+        ['reserved-end-ff', [0xef, 0xbf, 0xbf]],
+        ['four-byte-ascii-continuation', [0xf0, 0x9f, 0x98, 0x41]],
+        ['overlong-four-byte', [0xf0, 0x80, 0x80, 0x80]],
+        ['beyond-unicode-range', [0xf4, 0x90, 0x80, 0x80]],
+        ['four-byte-lead-f5', [0xf5, 0x80, 0x80, 0x80]],
+        ['two-rejected-bytes', [0xff, 0xff]],
+        ['ignorable-then-rejected', [...IGNORABLE, 0xff]],
+        ['rejected-then-ignorable', [0xff, ...IGNORABLE]],
+      ];
+
+      const rows: ReadonlyArray<AliasRow> = [
+        ...rejectedTails.map(([tag, tail]) =>
+          row(`dir .git then ${tag}`, bytesOf('.git', tail), 'dir', ['hasDotgit']),
+        ),
+        row('dir upper-case .GIT then ff', bytesOf('.GIT', FF), 'dir', ['hasDotgit']),
+        row('dir ignorable inside needle then ff', bytesOf('.gi', IGNORABLE, 't', FF), 'dir', [
+          'hasDotgit',
+        ]),
+        row('dir ignorable after dot then ff', bytesOf('.', IGNORABLE, 'GIT', FF), 'dir', [
+          'hasDotgit',
+        ]),
+        row('dir leading ignorable then ff', bytesOf(IGNORABLE, '.git', FF), 'dir', ['hasDotgit']),
+        row('dir ignorable inside needle then 80', bytesOf('.g', IGNORABLE, 'it', [0x80]), 'dir', [
+          'hasDotgit',
+        ]),
+        row('blob .git then ff', bytesOf('.git', FF), 'blob', ['hasDotgit']),
+
+        row(
+          'badGitmodules .gitmodules then ff',
+          bytesOf('.gitmodules', FF),
+          'badGitmodules',
+          [],
+          ['gitmodulesParse'],
+        ),
+        row('blob .gitmodules then ff', bytesOf('.gitmodules', FF), 'blob'),
+        row('link .gitmodules then ff', bytesOf('.gitmodules', FF), 'link', ['gitmodulesSymlink']),
+        row(
+          'longAttributes .gitattributes then ff',
+          bytesOf('.gitattributes', FF),
+          'longAttributes',
+          [],
+          ['gitattributesLineLength'],
+        ),
+        row(
+          'longAttributes plain .gitattributes',
+          bytesOf('.gitattributes'),
+          'longAttributes',
+          [],
+          ['gitattributesLineLength'],
+        ),
+        row('link .gitattributes then ff', bytesOf('.gitattributes', FF), 'link', [
+          'gitattributesSymlink',
+        ]),
+        row('link .gitignore then ff', bytesOf('.gitignore', FF), 'link', ['gitignoreSymlink']),
+        row('link .mailmap then ff', bytesOf('.mailmap', FF), 'link', ['mailmapSymlink']),
+        row('blob .gitignore then ff', bytesOf('.gitignore', FF), 'blob'),
+        row('blob .mailmap then ff', bytesOf('.mailmap', FF), 'blob'),
+
+        row('link .gitmodules ff slash x', bytesOf('.gitmodules', FF, '/x'), 'link', [
+          'gitmodulesSymlink',
+          'fullPathname',
+        ]),
+        row(
+          'badGitmodules .gitmodules ff slash x',
+          bytesOf('.gitmodules', FF, '/x'),
+          'badGitmodules',
+          ['fullPathname'],
+          ['gitmodulesParse'],
+        ),
+
+        row('dir rejected byte inside needle', bytesOf('.g', FF, 'it'), 'dir'),
+        row(
+          'dir rejected sequence computing U+200C inside needle',
+          bytesOf('.g', [0xe2, 0xc0, 0x8c], 'it'),
+          'dir',
+        ),
+        row('dir rejected byte after dot', bytesOf('.', FF, 'git'), 'dir'),
+        row('dir rejected byte before dot', bytesOf(FF, '.git'), 'dir'),
+        row('dir extra letter then ff', bytesOf('.gitx', FF), 'dir'),
+        row('dir .git then accepted two-byte', bytesOf('.git', [0xc3, 0xa9]), 'dir'),
+        row('dir .git then replacement character', bytesOf('.git', [0xef, 0xbf, 0xbd]), 'dir'),
+        row('dir .git then accepted U+FFBF', bytesOf('.git', [0xef, 0xbe, 0xbf]), 'dir'),
+        row('dir short name then ff', bytesOf('git~1', FF), 'dir'),
+        row('blob backslash segment then ff', bytesOf('x\\.git', FF), 'blob'),
+        row('dir .git then BOM', bytesOf('.git', [0xef, 0xbb, 0xbf]), 'dir', ['hasDotgit']),
+        row(
+          'badGitmodules .gitmodules then BOM',
+          bytesOf('.gitmodules', [0xef, 0xbb, 0xbf]),
+          'badGitmodules',
+          [],
+          ['gitmodulesParse'],
+        ),
+      ];
+
+      const MODE_OF: Readonly<Record<Kind, string>> = {
+        dir: '40000',
+        blob: '100644',
+        link: '120000',
+        badGitmodules: '100644',
+        longAttributes: '100644',
+      };
+      const slugOf = (label: string): string => label.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+
+      let hfsDir = '';
+      const ids = new Map<string, { readonly treeId: string; readonly blobId: string }>();
+
+      beforeAll(async () => {
+        hfsDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-tree-bytes-fsck-hfs-'));
+        runGit(['init', '-q', '-b', 'main', hfsDir]);
+        const hello = runGit(['-C', hfsDir, 'hash-object', '-w', '--stdin'], {
+          input: 'hello\n',
+        }).trim();
+        const subtree = buildTreeIn(hfsDir, rawEntry('100644', 'x', hello));
+        const blobIdOf = (candidate: AliasRow): string => {
+          const slug = slugOf(candidate.label);
+          if (candidate.kind === 'badGitmodules') {
+            return runGit(['-C', hfsDir, 'hash-object', '-w', '--stdin'], {
+              input: `[\n# ${slug}\n`,
+            }).trim();
+          }
+          if (candidate.kind === 'longAttributes') {
+            return runGit(['-C', hfsDir, 'hash-object', '-w', '--stdin'], {
+              input: `${slug}${'a'.repeat(3000)}\n`,
+            }).trim();
+          }
+          return candidate.kind === 'dir' ? subtree : hello;
+        };
+        for (const candidate of rows) {
+          const blobId = blobIdOf(candidate);
+          const treeId = buildLiteralTreeIn(
+            hfsDir,
+            rawEntryBytes(MODE_OF[candidate.kind], candidate.nameBytes, blobId),
+          );
+          ids.set(candidate.label, { treeId, blobId });
+        }
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await rm(hfsDir, { recursive: true, force: true });
+      });
+
+      const strictRows: ReadonlyArray<{ readonly label: string; readonly strict: boolean }> = [
+        { label: 'without --strict', strict: false },
+        { label: 'with --strict', strict: true },
+      ];
+
+      it.each(strictRows)(
+        'Then git and tsgit fsck agree on every row $label',
+        async ({ strict }) => {
+          // Arrange
+          const gitFlags = strict ? ['--strict'] : [];
+          const gitResult = tryRunGitWithExit(['-C', hfsDir, 'fsck', ...gitFlags]);
+          const ctx = createNodeContext({ workDir: hfsDir });
+
+          // Act
+          const result = await fsck(ctx, { strict });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
+          const disagreements: string[] = [];
+          for (const candidate of rows) {
+            const { treeId, blobId } = ids.get(candidate.label)!;
+            const sides = [
+              { type: 'tree', id: treeId, expected: candidate.tree, line: reconstructTreeLine },
+              { type: 'blob', id: blobId, expected: candidate.blob, line: reconstructBlobLine },
+            ] as const;
+            for (const side of sides) {
+              const sortedExpected = [...side.expected].sort();
+              const actual = result.findings
+                .filter((f) => isBadObjectFor(f, side.id))
+                .map(({ msgId, severity }) => ({ msgId, severity }))
+                .sort((a, b) => a.msgId.localeCompare(b.msgId));
+              expect(actual, candidate.label).toEqual(
+                sortedExpected.map((msgId) => ({
+                  msgId,
+                  severity: expectedSeverity(msgId, strict),
+                })),
+              );
+              for (const msgId of sortedExpected) {
+                const text = side.line(
+                  gitWord(expectedSeverity(msgId, strict)),
+                  side.id,
+                  msgId,
+                  GIT_TEXT[msgId],
+                );
+                if (!gitResult.stderr.includes(text))
+                  disagreements.push(`${candidate.label}: ${text}`);
+              }
+              if (
+                sortedExpected.length === 0 &&
+                gitResult.stderr.includes(`in ${side.type} ${side.id}:`)
+              ) {
+                disagreements.push(`${candidate.label}: unexpected git finding on ${side.type}`);
+              }
+            }
+          }
+          expect(disagreements).toEqual([]);
+        },
+      );
+    });
+
+    describe('Given only a directory named .git then FF, When both tools fsck it', () => {
+      let exitDir = '';
+      let treeId = '';
+
+      beforeAll(async () => {
+        exitDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-tree-bytes-fsck-hfs-exit-'));
+        runGit(['init', '-q', '-b', 'main', exitDir]);
+        const hello = runGit(['-C', exitDir, 'hash-object', '-w', '--stdin'], {
+          input: 'hello\n',
+        }).trim();
+        const subtree = buildTreeIn(exitDir, rawEntry('100644', 'x', hello));
+        treeId = buildLiteralTreeIn(
+          exitDir,
+          rawEntryBytes('40000', concatBytes(encode('.git'), Uint8Array.of(0xff)), subtree),
+        );
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await rm(exitDir, { recursive: true, force: true });
+      });
+
+      it.each([
+        { label: 'without --strict', strict: false },
+        { label: 'with --strict', strict: true },
+      ])('Then both tools exit with the warning-or-error verdict $label', async ({ strict }) => {
+        // Arrange
+        const gitFlags = strict ? ['--strict'] : [];
+        const gitResult = tryRunGitWithExit(['-C', exitDir, 'fsck', ...gitFlags]);
+        const ctx = createNodeContext({ workDir: exitDir });
+        const severity = strict ? 'error' : 'warning';
+
+        // Act
+        const result = await fsck(ctx, { strict });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(strict ? 1 : 0);
+        expect(result.exitCode).toBe(strict ? 1 : 0);
+        expect(gitResult.stderr).toContain(
+          reconstructTreeLine(severity, treeId, 'hasDotgit', "contains '.git'"),
+        );
+        expect(
+          result.findings
+            .filter((f) => isBadObjectFor(f, treeId))
+            .map(({ msgId, severity: found }) => ({ msgId, severity: found })),
+        ).toEqual([{ msgId: 'hasDotgit', severity }]);
+      });
+    });
   });
 
   // ---------------------------------------------------------------------

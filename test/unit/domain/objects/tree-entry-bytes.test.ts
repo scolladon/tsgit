@@ -139,6 +139,179 @@ describe('hasNonOctalByte', () => {
       });
     });
   });
+
+  describe.each([
+    { label: 'FF', tail: [0xff] },
+    { label: 'FE', tail: [0xfe] },
+    { label: 'F8 80 80 80 80', tail: [0xf8, 0x80, 0x80, 0x80, 0x80] },
+    { label: 'a lone continuation 80', tail: [0x80] },
+    { label: 'overlong C0 80', tail: [0xc0, 0x80] },
+    { label: 'overlong C1 BF', tail: [0xc1, 0xbf] },
+    { label: 'a two-byte lead truncated at the span end', tail: [0xc2] },
+    { label: 'E2 80 truncated', tail: [0xe2, 0x80] },
+    { label: 'E2 80 41', tail: [0xe2, 0x80, 0x41] },
+    { label: 'E2 C0 8C', tail: [0xe2, 0xc0, 0x8c] },
+    { label: 'E2 78', tail: [0xe2, 0x78] },
+    { label: 'overlong E0 80 AF', tail: [0xe0, 0x80, 0xaf] },
+    { label: 'E0 80', tail: [0xe0, 0x80] },
+    { label: 'surrogate ED A0 80', tail: [0xed, 0xa0, 0x80] },
+    { label: 'EF BF BE', tail: [0xef, 0xbf, 0xbe] },
+    { label: 'EF BF BF', tail: [0xef, 0xbf, 0xbf] },
+    { label: 'F0 9F 98 41', tail: [0xf0, 0x9f, 0x98, 0x41] },
+    { label: 'overlong F0 80 80 80', tail: [0xf0, 0x80, 0x80, 0x80] },
+    { label: 'beyond-range F4 90 80 80', tail: [0xf4, 0x90, 0x80, 0x80] },
+    { label: 'F5 80 80 80', tail: [0xf5, 0x80, 0x80, 0x80] },
+    { label: 'two rejected bytes (first ends the read)', tail: [0xff, 0xff] },
+    { label: 'an ignorable then a rejected byte', tail: [0xe2, 0x80, 0x8c, 0xff] },
+    { label: 'a rejected byte then an ignorable (rest unread)', tail: [0xff, 0xe2, 0x80, 0x8c] },
+  ])("Given '.git' followed by $label, a sequence git's UTF-8 picker rejects", ({ tail }) => {
+    describe('When matched against "git"', () => {
+      it('Then it matches', () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+        const buf = concatBytes(encode('.git'), Uint8Array.of(...tail));
+
+        // Act
+        const result = sut(buf, 0, buf.length, 'git');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'upper-case needle then FF', parts: [encode('.GIT'), Uint8Array.of(0xff)] },
+    {
+      label: 'an ignorable inside the needle then FF',
+      parts: [encode('.gi'), U200C, encode('t'), Uint8Array.of(0xff)],
+    },
+    {
+      label: 'an ignorable between the dot and the name then FF',
+      parts: [encode('.'), U200C, encode('GIT'), Uint8Array.of(0xff)],
+    },
+    { label: 'a leading ignorable then FF', parts: [U200C, encode('.git'), Uint8Array.of(0xff)] },
+    {
+      label: 'an ignorable inside the needle then 80',
+      parts: [encode('.g'), U200C, encode('it'), Uint8Array.of(0x80)],
+    },
+  ])('Given $label', ({ parts }) => {
+    describe('When matched against "git"', () => {
+      it('Then it matches', () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+        const buf = concatBytes(...parts);
+
+        // Act
+        const result = sut(buf, 0, buf.length, 'git');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe.each(['gitmodules', 'gitattributes', 'gitignore', 'mailmap'] as const)(
+    'Given ".%s" followed by a byte git rejects',
+    (alias) => {
+      describe('When matched against its own alias', () => {
+        it('Then it matches', () => {
+          // Arrange
+          const sut = matchesDotgitAlias;
+          const buf = concatBytes(encode(`.${alias}`), Uint8Array.of(0xff));
+
+          // Act
+          const result = sut(buf, 0, buf.length, alias);
+
+          // Assert
+          expect(result).toBe(true);
+        });
+      });
+    },
+  );
+
+  describe.each([
+    { label: 'C3 A9', tail: [0xc3, 0xa9] },
+    { label: 'C2 80', tail: [0xc2, 0x80] },
+    { label: 'E0 A0 80', tail: [0xe0, 0xa0, 0x80] },
+    { label: 'E2 98 83', tail: [0xe2, 0x98, 0x83] },
+    { label: 'ED 9F BF', tail: [0xed, 0x9f, 0xbf] },
+    { label: 'EF BE BF', tail: [0xef, 0xbe, 0xbf] },
+    { label: 'a literal U+FFFD', tail: [0xef, 0xbf, 0xbd] },
+    { label: 'F0 90 80 80', tail: [0xf0, 0x90, 0x80, 0x80] },
+    { label: 'F0 9F 98 80', tail: [0xf0, 0x9f, 0x98, 0x80] },
+    { label: 'F4 8F BF BF', tail: [0xf4, 0x8f, 0xbf, 0xbf] },
+    {
+      label: 'F2 80 8C 80, whose first three bytes compute to U+200C',
+      tail: [0xf2, 0x80, 0x8c, 0x80],
+    },
+    { label: 'the ASCII letter x', tail: [0x78] },
+  ])("Given '.git' followed by $label, a sequence git's picker accepts", ({ tail }) => {
+    describe('When matched against "git"', () => {
+      it('Then it does not match', () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+        const buf = concatBytes(encode('.git'), Uint8Array.of(...tail));
+
+        // Act
+        const result = sut(buf, 0, buf.length, 'git');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a rejected byte inside the needle',
+      parts: [encode('.g'), Uint8Array.of(0xff), encode('it')],
+    },
+    {
+      label: 'a rejected sequence computing to U+200C inside the needle',
+      parts: [encode('.g'), Uint8Array.of(0xe2, 0xc0, 0x8c), encode('it')],
+    },
+    {
+      label:
+        'a valid four-byte character whose first three bytes compute to U+200C inside the needle',
+      parts: [encode('.g'), Uint8Array.of(0xf2, 0x80, 0x8c, 0x80), encode('it')],
+    },
+    {
+      label: 'a rejected byte right after the dot',
+      parts: [encode('.'), Uint8Array.of(0xff), encode('git')],
+    },
+    { label: 'a rejected byte before the dot', parts: [Uint8Array.of(0xff), encode('.git')] },
+  ])('Given $label', ({ parts }) => {
+    describe('When matched against "git"', () => {
+      it('Then it does not match', () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+        const buf = concatBytes(...parts);
+
+        // Act
+        const result = sut(buf, 0, buf.length, 'git');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a span ending inside a three-byte sequence whose rest lies past the end', () => {
+    describe('When only [start, end) is matched against "git"', () => {
+      it('Then it matches, as git reads the truncated sequence as the end of the name', () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+        const buf = concatBytes(encode('.git'), Uint8Array.of(0xe2, 0x98, 0x83));
+
+        // Act
+        const result = sut(buf, 0, 5, 'git');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
 });
 
 describe('entryNameKey', () => {
@@ -441,12 +614,11 @@ describe('matchesDotgitAlias', () => {
     });
   });
 
-  describe('Given a name containing an invalid UTF-8 byte immediately after ".git"', () => {
+  describe('Given a name holding a byte git\'s UTF-8 reader rejects immediately after ".git"', () => {
     describe('When matching against "git"', () => {
-      it('Then it does not match and does not throw', () => {
-        // Arrange — a lone continuation-less byte decodes to U+FFFD, which
-        // is neither ignorable nor part of the needle, so the HFS fold
-        // fails; the NTFS fold fails too since 0xFF is not '.'/' '.
+      it('Then it matches without throwing, as git reads the rejected byte as the end of the name', () => {
+        // Arrange — git 2.56.0 fsck reports hasDotgit for ".git" + 0xFF: its
+        // UTF-8 picker rejects the byte, which ends the name.
         const sut = matchesDotgitAlias;
         const buf = concatBytes(encode('.git'), Uint8Array.of(0xff));
 
@@ -454,7 +626,7 @@ describe('matchesDotgitAlias', () => {
         const result = sut(buf, 0, buf.length, 'git');
 
         // Assert
-        expect(result).toBe(false);
+        expect(result).toBe(true);
       });
     });
   });
