@@ -319,12 +319,22 @@ reconstructed from git's stderr text.
   `hasDotgit`, `gitmodulesSymlink`, `gitmodulesBlob`, `gitattributesSymlink`,
   `gitattributesBlob`, `gitignoreSymlink` and `mailmapSymlink` each compare the
   entry name through git's `is_hfs_dotgit` / `is_ntfs_dotgit` fold before
-  testing it against the literal: every HFS-ignorable code point (U+200C–
-  U+200F, U+202A–U+202E, U+206A–U+206F, U+FEFF) is dropped at any position,
-  the NTFS 8.3 short-name and stream-suffix forms (`git~1`, `gitmod~1`…`~4`,
-  each optionally followed by trailing dots/spaces) are recognised, and the
-  comparison is case-insensitive — so `.GIT`, `git~1` and a mark-obfuscated
-  `.git` all report `hasDotgit`, not only the exact lower-case name. The fold
+  testing it against the literal. The HFS arm reads the raw name bytes with
+  git's own UTF-8 reader: an HFS-ignorable code point (U+200C–U+200F,
+  U+202A–U+202E, U+206A–U+206F, U+FEFF) is dropped at any position only when
+  that reader accepts its three-byte sequence, so a malformed look-alike is
+  kept. A byte sequence the reader rejects (a stray continuation or invalid
+  lead byte, a truncated or overlong sequence, a surrogate, U+FFFE/U+FFFF,
+  anything above U+10FFFF) or a `/` right after the needle ends the name, so
+  `.git` + `0xFF`, `.GIT` + `0xFF`, `.gitmodules/x` and `.g<ZWNJ>it/x` all
+  report. A valid non-ignorable character after the needle (`.git` + `é`), a
+  rejected sequence inside the needle (`.g` + `0xFF` + `it`) or a plain ASCII
+  tail (`.gitx` + `0xFF`) does not match. The NTFS arm recognises the 8.3
+  short-name and stream-suffix forms (`git~1`, `gitmod~1`…`~4`, each optionally
+  followed by trailing dots/spaces); a backslash after the needle is not a
+  separator, as on POSIX git. The comparison is case-insensitive, so `.GIT`,
+  `git~1` and a mark-obfuscated `.git` all report `hasDotgit`, not only the
+  exact lower-case name. Severities are unchanged by the fold. The fold
   applies only to these seven alias checks; the duplicate key, the sort key
   and the length count (`duplicateEntries`, `treeNotSorted`, `largePathname`)
   stay raw-byte comparisons, matching how git compares those.
