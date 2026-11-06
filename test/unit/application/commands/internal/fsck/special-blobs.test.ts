@@ -9,13 +9,15 @@ const sut = createSpecialBlobLedger;
 const BLOB = '0000000000000000000000000000000000000003' as ObjectId;
 const OTHER_BLOB = '0000000000000000000000000000000000000005' as ObjectId;
 
-type RawEntry = readonly [mode: string, name: string, id: ObjectId];
+type RawEntry = readonly [mode: string, name: string | Uint8Array, id: ObjectId];
 
 /** A tree body exactly as listed — git's raw entry bytes, in the given order. */
 const treeBody = (...entries: ReadonlyArray<RawEntry>): Uint8Array => {
   const encoder = new TextEncoder();
   const parts = entries.flatMap(([mode, name, id]) => [
-    encoder.encode(`${mode} ${name}\0`),
+    encoder.encode(`${mode} `),
+    typeof name === 'string' ? encoder.encode(name) : name,
+    Uint8Array.of(0),
     hexToBytes(id),
   ]);
   const body = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -256,6 +258,41 @@ describe('Given a blob checked under .gitmodules before a later tree names it .g
       // Assert
       expect(ledger.pendingUnder('.gitmodules')).toEqual([]);
       expect(ledger.pendingUnder('.gitattributes')).toEqual([BLOB]);
+    });
+  });
+});
+
+describe.each([
+  { stem: '.gitmodules', queuedUnder: '.gitmodules', other: '.gitattributes' } as const,
+  { stem: '.gitattributes', queuedUnder: '.gitattributes', other: '.gitmodules' } as const,
+])('Given a regular entry named $stem then FF', ({ stem, queuedUnder, other }) => {
+  describe('When the tree is noted', () => {
+    it(`Then its blob is pending under ${queuedUnder}`, () => {
+      // Arrange
+      const ledger = sut(SHA1_CONFIG);
+      const name = Uint8Array.of(...new TextEncoder().encode(stem), 0xff);
+
+      // Act
+      ledger.noteTree(treeBody(['100644', name, BLOB]));
+
+      // Assert
+      expect(ledger.pendingUnder(queuedUnder)).toEqual([BLOB]);
+      expect(ledger.pendingUnder(other)).toEqual([]);
+    });
+  });
+});
+
+describe('Given a regular entry named .gitmodules/x', () => {
+  describe('When the tree is noted', () => {
+    it('Then its blob is pending under .gitmodules', () => {
+      // Arrange
+      const ledger = sut(SHA1_CONFIG);
+
+      // Act
+      ledger.noteTree(treeBody(['100644', '.gitmodules/x', BLOB]));
+
+      // Assert
+      expect(ledger.pendingUnder('.gitmodules')).toEqual([BLOB]);
     });
   });
 });

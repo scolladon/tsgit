@@ -13,6 +13,8 @@ import {
   encode,
   encodeEscaped,
   formatContinuationHeader,
+  gitPickerSequenceLength,
+  gitPickerValidPrefix,
   hasEscapedBytes,
   hexToBytes,
   indexOf,
@@ -740,6 +742,143 @@ describe('encoding', () => {
         it(`Then it is ${JSON.stringify(expected)}`, () => {
           // Arrange
           const sut = wellFormed;
+
+          // Act
+          const result = sut(input);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('gitPickerSequenceLength', () => {
+    describe("Given byte sequences git's UTF-8 picker accepts or rejects", () => {
+      describe('When the accepted length at an offset is measured', () => {
+        it.each([
+          { label: 'accepts ASCII', bytes: [0x61], at: 0, expected: 1 },
+          { label: 'accepts lowest 2-byte', bytes: [0xc2, 0x80], at: 0, expected: 2 },
+          { label: 'accepts valid 2-byte', bytes: [0xc3, 0xa9], at: 0, expected: 2 },
+          { label: 'accepts E0 overlong boundary', bytes: [0xe0, 0xa0, 0x80], at: 0, expected: 3 },
+          { label: 'accepts U+200C', bytes: [0xe2, 0x80, 0x8c], at: 0, expected: 3 },
+          { label: 'accepts valid 3-byte', bytes: [0xe2, 0x98, 0x83], at: 0, expected: 3 },
+          { label: 'accepts surrogate boundary', bytes: [0xed, 0x9f, 0xbf], at: 0, expected: 3 },
+          {
+            label: 'accepts non-character boundary second byte',
+            bytes: [0xef, 0xbe, 0xbf],
+            at: 0,
+            expected: 3,
+          },
+          { label: 'accepts literal U+FFFD', bytes: [0xef, 0xbf, 0xbd], at: 0, expected: 3 },
+          {
+            label: 'accepts F0 overlong boundary',
+            bytes: [0xf0, 0x90, 0x80, 0x80],
+            at: 0,
+            expected: 4,
+          },
+          { label: 'accepts valid 4-byte', bytes: [0xf0, 0x9f, 0x98, 0x80], at: 0, expected: 4 },
+          {
+            label: 'accepts 4-byte whose first three bytes compute to U+200C',
+            bytes: [0xf2, 0x80, 0x8c, 0x80],
+            at: 0,
+            expected: 4,
+          },
+          { label: 'accepts U+10FFFF', bytes: [0xf4, 0x8f, 0xbf, 0xbf], at: 0, expected: 4 },
+          { label: 'rejects lead at or above FE', bytes: [0xff], at: 0, expected: 0 },
+          { label: 'rejects lead FE', bytes: [0xfe], at: 0, expected: 0 },
+          {
+            label: 'rejects lowest lead at or above F8',
+            bytes: [0xf8, 0x80, 0x80, 0x80, 0x80],
+            at: 0,
+            expected: 0,
+          },
+          { label: 'rejects stray continuation', bytes: [0x80], at: 0, expected: 0 },
+          { label: 'rejects C0 lead', bytes: [0xc0, 0x80], at: 0, expected: 0 },
+          { label: 'rejects C1 lead', bytes: [0xc1, 0xbf], at: 0, expected: 0 },
+          { label: 'rejects truncated 2-byte', bytes: [0xc2], at: 0, expected: 0 },
+          { label: 'rejects truncated 3-byte', bytes: [0xe2, 0x80], at: 0, expected: 0 },
+          { label: 'rejects bad third byte', bytes: [0xe2, 0x80, 0x41], at: 0, expected: 0 },
+          { label: 'rejects bad second byte', bytes: [0xe2, 0xc0, 0x8c], at: 0, expected: 0 },
+          { label: 'rejects ASCII second byte', bytes: [0xe2, 0x78], at: 0, expected: 0 },
+          { label: 'rejects E0 overlong', bytes: [0xe0, 0x80, 0xaf], at: 0, expected: 0 },
+          { label: 'rejects truncated E0', bytes: [0xe0, 0x80], at: 0, expected: 0 },
+          { label: 'rejects surrogate', bytes: [0xed, 0xa0, 0x80], at: 0, expected: 0 },
+          { label: 'rejects U+FFFE', bytes: [0xef, 0xbf, 0xbe], at: 0, expected: 0 },
+          { label: 'rejects U+FFFF', bytes: [0xef, 0xbf, 0xbf], at: 0, expected: 0 },
+          { label: 'rejects bad fourth byte', bytes: [0xf0, 0x9f, 0x98, 0x41], at: 0, expected: 0 },
+          { label: 'rejects F0 overlong', bytes: [0xf0, 0x80, 0x80, 0x80], at: 0, expected: 0 },
+          { label: 'rejects above U+10FFFF', bytes: [0xf4, 0x90, 0x80, 0x80], at: 0, expected: 0 },
+          { label: 'rejects lead above F4', bytes: [0xf5, 0x80, 0x80, 0x80], at: 0, expected: 0 },
+          {
+            label: 'accepts 3-byte at offset 1',
+            bytes: [0x61, 0xe2, 0x80, 0x8c],
+            at: 1,
+            expected: 3,
+          },
+          {
+            label: 'rejects non-character at offset 1',
+            bytes: [0x61, 0xef, 0xbf, 0xbe],
+            at: 1,
+            expected: 0,
+          },
+          {
+            label: 'accepts U+FFFD at offset 1',
+            bytes: [0x61, 0xef, 0xbf, 0xbd],
+            at: 1,
+            expected: 3,
+          },
+          { label: 'rejects the end of bytes', bytes: [0x61], at: 1, expected: 0 },
+        ])('Then $label yields $expected', ({ bytes, at, expected }) => {
+          // Arrange
+          const sut = gitPickerSequenceLength;
+          const input = Uint8Array.from(bytes);
+
+          // Act
+          const result = sut(input, at);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('gitPickerValidPrefix', () => {
+    describe("Given byte sequences git's UTF-8 picker accepts or rejects", () => {
+      describe('When the valid prefix is measured', () => {
+        it.each([
+          { label: 'empty', bytes: [], expected: 0 },
+          { label: 'ASCII only', bytes: [0x61, 0x62], expected: 2 },
+          { label: 'DEL', bytes: [0x7f], expected: 1 },
+          { label: 'lowest 2-byte', bytes: [0xc2, 0x80], expected: 2 },
+          { label: 'highest 2-byte', bytes: [0xdf, 0xbf], expected: 2 },
+          { label: 'lowest 3-byte', bytes: [0xe0, 0xa0, 0x80], expected: 3 },
+          { label: 'continuation above range', bytes: [0xc3, 0xc0], expected: 0 },
+          { label: 'valid 2-byte', bytes: [0xc3, 0xa9], expected: 2 },
+          { label: 'valid 3-byte', bytes: [0xe2, 0x80, 0x8c], expected: 3 },
+          { label: 'valid 4-byte', bytes: [0xf0, 0x90, 0x80, 0x80], expected: 4 },
+          { label: 'U+10FFFF', bytes: [0xf4, 0x8f, 0xbf, 0xbf], expected: 4 },
+          { label: 'U+3FFFF', bytes: [0xf0, 0xbf, 0xbf, 0xbf], expected: 4 },
+          { label: 'U+FFFD', bytes: [0xef, 0xbf, 0xbd], expected: 3 },
+          { label: 'C0 lead', bytes: [0x61, 0xc0, 0xaf], expected: 1 },
+          { label: 'C1 lead', bytes: [0xc1, 0xbf], expected: 0 },
+          { label: 'stray continuation', bytes: [0x61, 0x80], expected: 1 },
+          { label: 'E0 overlong', bytes: [0xe0, 0x9f, 0xbf], expected: 0 },
+          { label: 'surrogate ED A0', bytes: [0xed, 0xa0, 0x80], expected: 0 },
+          { label: 'ED 9F is not a surrogate', bytes: [0xed, 0x9f, 0xbf], expected: 3 },
+          { label: 'U+FFFE', bytes: [0xef, 0xbf, 0xbe], expected: 0 },
+          { label: 'U+FFFF', bytes: [0xef, 0xbf, 0xbf], expected: 0 },
+          { label: 'F0 overlong', bytes: [0xf0, 0x8f, 0x80, 0x80], expected: 0 },
+          { label: 'F4 beyond Unicode', bytes: [0xf4, 0x90, 0x80, 0x80], expected: 0 },
+          { label: 'F5 lead', bytes: [0xf5, 0x80, 0x80, 0x80], expected: 0 },
+          { label: 'truncated 3-byte', bytes: [0x61, 0xe2, 0x80], expected: 1 },
+          { label: 'bad continuation', bytes: [0xc3, 0x28], expected: 0 },
+          { label: 'bad third byte', bytes: [0xe2, 0x80, 0x28], expected: 0 },
+        ])('Then $label yields $expected', ({ bytes, expected }) => {
+          // Arrange
+          const sut = gitPickerValidPrefix;
+          const input = Uint8Array.from(bytes);
 
           // Act
           const result = sut(input);

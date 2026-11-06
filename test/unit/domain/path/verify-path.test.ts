@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import {
-  gitPickerValidPrefix,
   isDotGitAlias,
   isDotGitWalkEntry,
   verifyPath,
@@ -1098,51 +1097,6 @@ describe('verifyPath on raw path bytes', () => {
 
         // Act
         const result = verifyPath(view, mode, bytes);
-
-        // Assert
-        expect(result).toBe(expected);
-      });
-    });
-  });
-});
-
-describe('gitPickerValidPrefix', () => {
-  describe("Given byte sequences git's UTF-8 picker accepts or rejects", () => {
-    describe('When the valid prefix is measured', () => {
-      it.each([
-        { label: 'empty', bytes: [], expected: 0 },
-        { label: 'ASCII only', bytes: [0x61, 0x62], expected: 2 },
-        { label: 'DEL', bytes: [0x7f], expected: 1 },
-        { label: 'lowest 2-byte', bytes: [0xc2, 0x80], expected: 2 },
-        { label: 'highest 2-byte', bytes: [0xdf, 0xbf], expected: 2 },
-        { label: 'lowest 3-byte', bytes: [0xe0, 0xa0, 0x80], expected: 3 },
-        { label: 'continuation above range', bytes: [0xc3, 0xc0], expected: 0 },
-        { label: 'valid 2-byte', bytes: [0xc3, 0xa9], expected: 2 },
-        { label: 'valid 3-byte', bytes: [0xe2, 0x80, 0x8c], expected: 3 },
-        { label: 'valid 4-byte', bytes: [0xf0, 0x90, 0x80, 0x80], expected: 4 },
-        { label: 'U+10FFFF', bytes: [0xf4, 0x8f, 0xbf, 0xbf], expected: 4 },
-        { label: 'U+3FFFF', bytes: [0xf0, 0xbf, 0xbf, 0xbf], expected: 4 },
-        { label: 'U+FFFD', bytes: [0xef, 0xbf, 0xbd], expected: 3 },
-        { label: 'C0 lead', bytes: [0x61, 0xc0, 0xaf], expected: 1 },
-        { label: 'C1 lead', bytes: [0xc1, 0xbf], expected: 0 },
-        { label: 'stray continuation', bytes: [0x61, 0x80], expected: 1 },
-        { label: 'E0 overlong', bytes: [0xe0, 0x9f, 0xbf], expected: 0 },
-        { label: 'surrogate ED A0', bytes: [0xed, 0xa0, 0x80], expected: 0 },
-        { label: 'ED 9F is not a surrogate', bytes: [0xed, 0x9f, 0xbf], expected: 3 },
-        { label: 'U+FFFE', bytes: [0xef, 0xbf, 0xbe], expected: 0 },
-        { label: 'U+FFFF', bytes: [0xef, 0xbf, 0xbf], expected: 0 },
-        { label: 'F0 overlong', bytes: [0xf0, 0x8f, 0x80, 0x80], expected: 0 },
-        { label: 'F4 beyond Unicode', bytes: [0xf4, 0x90, 0x80, 0x80], expected: 0 },
-        { label: 'F5 lead', bytes: [0xf5, 0x80, 0x80, 0x80], expected: 0 },
-        { label: 'truncated 3-byte', bytes: [0x61, 0xe2, 0x80], expected: 1 },
-        { label: 'bad continuation', bytes: [0xc3, 0x28], expected: 0 },
-        { label: 'bad third byte', bytes: [0xe2, 0x80, 0x28], expected: 0 },
-      ])('Then $label yields $expected', ({ bytes, expected }) => {
-        // Arrange
-        const sut = Uint8Array.from(bytes);
-
-        // Act
-        const result = gitPickerValidPrefix(sut);
 
         // Assert
         expect(result).toBe(expected);

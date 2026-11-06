@@ -158,6 +158,34 @@ export function wellFormedSequenceLength(bytes: Uint8Array, at: number): number 
   return length;
 }
 
+const THREE_BYTE_LEAD_NON_CHARACTER = 0xef;
+const NON_CHARACTER_SECOND = 0xbf;
+const NON_CHARACTER_THIRD_MIN = 0xbe;
+
+const isNonCharacterTail = (bytes: Uint8Array, at: number): boolean =>
+  bytes[at] === THREE_BYTE_LEAD_NON_CHARACTER &&
+  bytes[at + 1] === NON_CHARACTER_SECOND &&
+  (bytes[at + 2] as number) >= NON_CHARACTER_THIRD_MIN;
+
+/** Length of the sequence git's `pick_one_utf8_char` accepts at `at`, or 0 when it rejects. */
+export function gitPickerSequenceLength(bytes: Uint8Array, at: number): number {
+  const length = wellFormedSequenceLength(bytes, at);
+  // The non-character tail starts with a three-byte lead, so it only ever meets a three-byte length or 0.
+  return isNonCharacterTail(bytes, at) ? 0 : length;
+}
+
+/** Offset of the first sequence git's `pick_one_utf8_char` rejects, else `bytes.length`. */
+export function gitPickerValidPrefix(bytes: Uint8Array): number {
+  let at = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — at bytes.length the lead reads undefined, gitPickerSequenceLength is 0 and the loop returns at, which is bytes.length.
+  while (at < bytes.length) {
+    const length = gitPickerSequenceLength(bytes, at);
+    if (length === 0) return at;
+    at += length;
+  }
+  return bytes.length;
+}
+
 // Python's surrogate-escape error handler: each byte of a rejected sequence becomes the lone surrogate
 // U+DC00 + byte, so the string keeps the bytes and stays injective.
 export function decodeEscapingInvalid(bytes: Uint8Array): string {

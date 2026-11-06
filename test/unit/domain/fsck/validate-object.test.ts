@@ -4471,3 +4471,117 @@ describe('Given a symlink entry whose backslash segment is no dotgit alias', () 
     });
   });
 });
+
+describe.each([
+  {
+    label: 'directory named .git then FF',
+    mode: '40000',
+    stem: '.git',
+    msgId: 'hasDotgit',
+    severity: 'warning',
+  },
+  {
+    label: 'symlink named .gitmodules then FF',
+    mode: '120000',
+    stem: '.gitmodules',
+    msgId: 'gitmodulesSymlink',
+    severity: 'error',
+  },
+  {
+    label: 'symlink named .gitattributes then FF',
+    mode: '120000',
+    stem: '.gitattributes',
+    msgId: 'gitattributesSymlink',
+    severity: 'info',
+  },
+  {
+    label: 'symlink named .gitignore then FF',
+    mode: '120000',
+    stem: '.gitignore',
+    msgId: 'gitignoreSymlink',
+    severity: 'info',
+  },
+  {
+    label: 'symlink named .mailmap then FF',
+    mode: '120000',
+    stem: '.mailmap',
+    msgId: 'mailmapSymlink',
+    severity: 'info',
+  },
+] as const)('Given a tree entry $label', ({ mode, stem, msgId, severity }) => {
+  describe('When validateObject runs', () => {
+    it(`Then emits ${msgId}`, () => {
+      // Arrange
+      const nameBytes = concatBytes([encode(stem), Uint8Array.of(0xff)]);
+      const rawBody = buildTree(buildTreeEntryBytes(mode, nameBytes, BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody, strict: false, hashConfig: SHA1_CONFIG });
+
+      // Assert
+      expect(result).toEqual([{ msgId, severity }]);
+    });
+  });
+});
+
+describe('Given a directory entry named .git then FF under strict checking', () => {
+  describe('When validateObject runs', () => {
+    it('Then hasDotgit is an error', () => {
+      // Arrange
+      const nameBytes = concatBytes([encode('.git'), Uint8Array.of(0xff)]);
+      const rawBody = buildTree(buildTreeEntryBytes('40000', nameBytes, BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody, strict: true, hashConfig: SHA1_CONFIG });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'hasDotgit', severity: 'error' }]);
+    });
+  });
+});
+
+describe.each([
+  {
+    label: 'symlink named .gitmodules/x',
+    mode: '120000',
+    nameBytes: encode('.gitmodules/x'),
+    expected: [
+      { msgId: 'fullPathname', severity: 'warning' },
+      { msgId: 'gitmodulesSymlink', severity: 'error' },
+    ],
+  },
+  {
+    label: 'symlink named .gitignore/x',
+    mode: '120000',
+    nameBytes: encode('.gitignore/x'),
+    expected: [
+      { msgId: 'fullPathname', severity: 'warning' },
+      { msgId: 'gitignoreSymlink', severity: 'info' },
+    ],
+  },
+  {
+    label: 'directory named .g<ZWNJ>it/x',
+    mode: '40000',
+    nameBytes: concatBytes([encode('.g'), Uint8Array.of(0xe2, 0x80, 0x8c), encode('it/x')]),
+    expected: [
+      { msgId: 'hasDotgit', severity: 'warning' },
+      { msgId: 'fullPathname', severity: 'warning' },
+    ],
+  },
+] as const)('Given a tree entry $label', ({ mode, nameBytes, expected }) => {
+  describe('When validateObject runs', () => {
+    it('Then emits the path fault and the alias fault', () => {
+      // Arrange
+      const rawBody = buildTree(buildTreeEntryBytes(mode, nameBytes, BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody, strict: false, hashConfig: SHA1_CONFIG });
+
+      // Assert
+      expect(result).toEqual(expected);
+    });
+  });
+});

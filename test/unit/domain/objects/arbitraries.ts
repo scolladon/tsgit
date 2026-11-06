@@ -12,6 +12,8 @@ import type { ObjectType } from '../../../../src/domain/objects/header.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import type { DotgitAliasName } from '../../../../src/domain/objects/tree-entry-bytes.js';
+import { arbIgnorableCodepoint } from '../path/arbitraries.js';
 
 export function arbObjectId(length: 40 | 64 = 40): fc.Arbitrary<ObjectId> {
   return fc
@@ -409,4 +411,159 @@ export function splitAtCuts(bytes: Uint8Array, cuts: ReadonlyArray<number>): Uin
     chunks.push(bytes.subarray(points[i] as number, points[i + 1] as number));
   }
   return chunks;
+}
+
+const textEncoder = new TextEncoder();
+const encodeCodepoint = (codepoint: number): Uint8Array =>
+  textEncoder.encode(String.fromCodePoint(codepoint));
+
+const MAX_INSERTED_SEQUENCES = 2;
+const MAX_ACCEPTED_SEQUENCES = 4;
+const BYTE_MAX = 0xff;
+const ASCII_NON_NUL_MIN = 0x01;
+const ASCII_MAX = 0x7f;
+const CONTINUATION_MIN = 0x80;
+const CONTINUATION_MAX = 0xbf;
+const CODEPOINT_MAX = 0x10ffff;
+const SURROGATE_MIN = 0xd800;
+const SURROGATE_MAX = 0xdfff;
+const UNICODE_LOW_REJECTED = 0xfffe;
+const UNICODE_HIGH_REJECTED = 0xffff;
+// Lead and follow-byte bounds of the sequences git's UTF-8 picker rejects.
+const TWO_BYTE_LEAD_MIN = 0xc2;
+const FOUR_BYTE_LEAD_MAX = 0xf4;
+const OVERLONG_TWO_BYTE_LEADS = [0xc0, 0xc1] as const;
+const THREE_BYTE_LEAD_LOWEST = 0xe0;
+const OVERLONG_THREE_BYTE_SECOND_MAX = 0x9f;
+const SURROGATE_LEAD = 0xed;
+const SURROGATE_SECOND_MIN = 0xa0;
+const NON_CHARACTER_LEAD = 0xef;
+const NON_CHARACTER_SECOND = 0xbf;
+const NON_CHARACTER_THIRDS = [0xbe, 0xbf] as const;
+const FOUR_BYTE_LEAD_LOWEST = 0xf0;
+const OVERLONG_FOUR_BYTE_SECOND_MAX = 0x8f;
+const ABOVE_RANGE_SECOND_MIN = 0x90;
+const BEYOND_FOUR_BYTE_LEAD_MIN = 0xf5;
+const BEYOND_FOUR_BYTE_LEAD_MAX = 0xf7;
+const FIVE_BYTE_LEAD_MIN = 0xf8;
+
+const concatBytes = (parts: readonly Uint8Array[]): Uint8Array =>
+  Uint8Array.from(parts.flatMap((part) => [...part]));
+
+const arbByteIn = (min: number, max: number): fc.Arbitrary<number> => fc.integer({ min, max });
+const arbContinuation = (): fc.Arbitrary<number> => arbByteIn(CONTINUATION_MIN, CONTINUATION_MAX);
+const arbContinuations = (count: number): fc.Arbitrary<number[]> =>
+  fc.array(arbContinuation(), { minLength: count, maxLength: count });
+
+export function arbDotgitAliasName(): fc.Arbitrary<DotgitAliasName> {
+  return fc.constantFrom('git', 'gitmodules', 'gitattributes', 'gitignore', 'mailmap');
+}
+
+// One whole accepted ignorable sequence, as the bytes of its code point.
+export function arbHfsIgnorableBytes(): fc.Arbitrary<Uint8Array> {
+  return arbIgnorableCodepoint().map(encodeCodepoint);
+}
+
+const arbCasedName = (alias: DotgitAliasName): fc.Arbitrary<Uint8Array[]> =>
+  fc
+    .tuple(
+      ...[...`.${alias}`].map((char) =>
+        fc.boolean().map((upper) => (upper ? char.toUpperCase() : char)),
+      ),
+    )
+    .map((chars) => chars.map((char) => textEncoder.encode(char)));
+
+// `.<alias>` with arbitrary ASCII case and 0-2 ignorable sequences spliced in
+// at any gap, the one before the dot included.
+export function arbHfsNeedleVariant(alias: DotgitAliasName): fc.Arbitrary<Uint8Array> {
+  const gaps = `.${alias}`.length + 1;
+  const arbInsertion = fc.tuple(arbByteIn(0, gaps - 1), arbHfsIgnorableBytes());
+  return fc
+    .tuple(arbCasedName(alias), fc.array(arbInsertion, { maxLength: MAX_INSERTED_SEQUENCES }))
+    .map(([chars, insertions]) =>
+      concatBytes(
+        [...chars, new Uint8Array()].flatMap((char, gap) => [
+          ...insertions.filter(([at]) => at === gap).map(([, bytes]) => bytes),
+          char,
+        ]),
+      ),
+    );
+}
+
+const arbLeadWithAsciiFollower = (): fc.Arbitrary<number[]> =>
+  fc
+    .tuple(
+      arbByteIn(TWO_BYTE_LEAD_MIN, FOUR_BYTE_LEAD_MAX),
+      arbByteIn(ASCII_NON_NUL_MIN, ASCII_MAX),
+    )
+    .map((pair) => pair);
+
+const arbRejectedLeadOnly = (): fc.Arbitrary<number[]> =>
+  fc.oneof(arbByteIn(FIVE_BYTE_LEAD_MIN, BYTE_MAX), arbContinuation()).map((lead) => [lead]);
+
+const arbRejectedWithContinuations = (): fc.Arbitrary<number[]> =>
+  fc
+    .oneof(
+      fc.tuple(fc.constantFrom(...OVERLONG_TWO_BYTE_LEADS), arbContinuation()),
+      fc.tuple(
+        fc.constant(THREE_BYTE_LEAD_LOWEST),
+        arbByteIn(CONTINUATION_MIN, OVERLONG_THREE_BYTE_SECOND_MAX),
+        arbContinuation(),
+      ),
+      fc.tuple(
+        fc.constant(SURROGATE_LEAD),
+        arbByteIn(SURROGATE_SECOND_MIN, CONTINUATION_MAX),
+        arbContinuation(),
+      ),
+      fc.tuple(
+        fc.constant(NON_CHARACTER_LEAD),
+        fc.constant(NON_CHARACTER_SECOND),
+        fc.constantFrom(...NON_CHARACTER_THIRDS),
+      ),
+      fc
+        .tuple(
+          fc.constant(FOUR_BYTE_LEAD_LOWEST),
+          arbByteIn(CONTINUATION_MIN, OVERLONG_FOUR_BYTE_SECOND_MAX),
+          arbContinuations(2),
+        )
+        .map(([lead, second, rest]) => [lead, second, ...rest]),
+      fc
+        .tuple(
+          fc.constant(FOUR_BYTE_LEAD_MAX),
+          arbByteIn(ABOVE_RANGE_SECOND_MIN, CONTINUATION_MAX),
+          arbContinuations(2),
+        )
+        .map(([lead, second, rest]) => [lead, second, ...rest]),
+      fc
+        .tuple(arbByteIn(BEYOND_FOUR_BYTE_LEAD_MIN, BEYOND_FOUR_BYTE_LEAD_MAX), arbContinuations(3))
+        .map(([lead, rest]) => [lead, ...rest]),
+    )
+    .map((bytes) => [...bytes]);
+
+// A sequence the picker rejects whatever bytes follow it; truncation is left
+// out because the next bytes could complete a valid sequence.
+export function arbPickerRejectedSequence(): fc.Arbitrary<Uint8Array> {
+  return fc
+    .oneof(arbRejectedLeadOnly(), arbRejectedWithContinuations(), arbLeadWithAsciiFollower())
+    .map((bytes) => Uint8Array.from(bytes));
+}
+
+const arbAcceptedSequence = (): fc.Arbitrary<Uint8Array> =>
+  fc.oneof(
+    arbByteIn(ASCII_NON_NUL_MIN, ASCII_MAX).map((byte) => Uint8Array.of(byte)),
+    arbHfsIgnorableBytes(),
+    fc
+      .integer({ min: ASCII_MAX + 1, max: CODEPOINT_MAX })
+      .filter(
+        (cp) =>
+          (cp < SURROGATE_MIN || cp > SURROGATE_MAX) &&
+          cp !== UNICODE_LOW_REJECTED &&
+          cp !== UNICODE_HIGH_REJECTED,
+      )
+      .map(encodeCodepoint),
+  );
+
+// Whole sequences the picker accepts, 0-4 of them back to back.
+export function arbPickerAcceptedSequences(): fc.Arbitrary<Uint8Array> {
+  return fc.array(arbAcceptedSequence(), { maxLength: MAX_ACCEPTED_SEQUENCES }).map(concatBytes);
 }

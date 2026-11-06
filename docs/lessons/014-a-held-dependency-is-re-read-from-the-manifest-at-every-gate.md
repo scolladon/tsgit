@@ -11,7 +11,7 @@ evidence:
 source: { run: status-gitlink-parity, phase: integrate, date: 2026-10-25 }
 status: active
 supersedes: []
-last-verified: 2026-11-05
+last-verified: 2026-11-06
 ---
 # 014 — A held dependency is re-read from the manifest at every gate
 

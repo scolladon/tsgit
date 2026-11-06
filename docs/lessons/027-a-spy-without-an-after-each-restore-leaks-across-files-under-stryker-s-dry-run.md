@@ -13,7 +13,7 @@ evidence:
 source: { run: rev-parse-corrupt-input, phase: validation, date: 2026-11-05 }
 status: active
 supersedes: []
-last-verified: 2026-11-05
+last-verified: 2026-11-06
 ---
 # 027 — A spy without an afterEach restore leaks across files under Stryker's dry run
 
