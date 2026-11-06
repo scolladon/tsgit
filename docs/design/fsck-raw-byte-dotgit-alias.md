@@ -39,7 +39,7 @@ The NTFS arm (`matchesNtfsDotgitAlias`, `isNtfsTail`, `foldsToNtfsShortName`) is
 - R1. For each of the five aliases, the HFS arm matches git's `is_hfs_dot_generic` on raw bytes:
   - Ignorable code points are skipped at any position, but only when git's picker accepts the sequence.
   - Each needle character is compared case-insensitively against ASCII; a non-ASCII character or a rejected sequence fails.
-  - After the needle and any trailing ignorables, the name matches when it ends there, when git's picker rejects the next sequence, or when the next character is `/`.
+  - After the needle and any trailing ignorable sequences, the name matches when it ends there, when git's picker rejects the next sequence, or when the next character is `/`.
 - R2. Every row of the pinned matrix holds on tsgit: findings by `msgId`, `severity` and object id, plus the exit code, with and without `--strict`.
 - R3. Only one implementation of git's picker exists in `src/`. Index-side behaviour is unchanged: every existing `verify-path` test passes, with only import paths edited and the `gitPickerValidPrefix` table moved.
 - R4. The alias fold allocates no decoder output. It reads only `buf[start, end)`, and no picker look-ahead crosses `end`.
@@ -60,8 +60,8 @@ Every row ran in a scrubbed `mktemp -d` throwaway with `env -i`, an isolated `HO
 - `dir`: `40000`, a subtree holding `x`.
 - `blob`: `100644` `hello\n`.
 - `link`: `120000`.
-- `gmblob`: `100644` blob `[\n` (unparseable `.gitmodules`).
-- `galong`: `100644` blob of one 3000-byte line.
+- `badGitmodules`: `100644` blob `[\n` (unparseable `.gitmodules`).
+- `longAttributes`: `100644` blob of one 3000-byte line.
 
 Unless marked `--strict`, rows run without it. "—" means no finding.
 
@@ -78,7 +78,7 @@ Unless marked `--strict`, rows run without it. "—" means no finding.
   - F4 90+;
   - a lead above F4.
 - `next_hfs_char` (L703-741) returns 0 on a rejection.
-- `is_hfs_dot_generic` (L743-776): the first character is `.`, each needle character is `c > 127 → 0` then `tolower(c) == needle`, and after the needle `if (c && !is_dir_sep(c)) return 0; return 1;`.
+- `is_hfs_dot_generic` (L743-776): the first character is `.`, each needle character is `c > 127 → 0` then the lower-cased character equals the needle, and after the needle `if (c && !is_dir_sep(c)) return 0; return 1;`.
 - `fsck_tree` (fsck.c L616-713) runs `is_hfs_*` || `is_ntfs_*` on the whole name for all five aliases. On each backslash segment it runs only `is_ntfs_dotgit`/`is_ntfs_dotgitmodules`.
 
 **M1 — rejected sequence after the needle (the reported gap).** Each rejection rule in the picker has its own row.
@@ -119,11 +119,11 @@ Unless marked `--strict`, rows run without it. "—" means no finding.
 
 | Row | Name bytes | Kind | git | tsgit main |
 |---|---|---|---|---|
-| P | `.gitmodules` FF | gmblob | 0, warning in blob gitmodulesParse (blob queued under `.gitmodules`) | 0, — |
+| P | `.gitmodules` FF | badGitmodules | 0, warning in blob gitmodulesParse (blob queued under `.gitmodules`) | 0, — |
 | AD | `.gitmodules` FF | blob `hello\n` | 0, — (parses) | 0, — |
 | P2l | `.gitmodules` FF | link | **1, error gitmodulesSymlink** | **0, —** |
-| G1 | `.gitattributes` FF | galong | **1, error in blob gitattributesLineLength** | **0, —** |
-| G2 | `.gitattributes` (control) | galong | 1, gitattributesLineLength | 1, gitattributesLineLength |
+| G1 | `.gitattributes` FF | longAttributes | **1, error in blob gitattributesLineLength** | **0, —** |
+| G2 | `.gitattributes` (control) | longAttributes | 1, gitattributesLineLength | 1, gitattributesLineLength |
 | Q | `.gitattributes` FF | link | 0, warning gitattributesSymlink | 0, — |
 | R | `.gitignore` FF | link | 0, warning gitignoreSymlink | 0, — |
 | S | `.mailmap` FF | link | 0, warning mailmapSymlink | 0, — |
@@ -137,8 +137,8 @@ Unless marked `--strict`, rows run without it. "—" means no finding.
 | S1 | `.gitmodules/x` | link | **1, error gitmodulesSymlink** + warning fullPathname | **0, fullPathname only** |
 | S8 | `.gitmodules` FF `/x` | link | **1, gitmodulesSymlink** + fullPathname | **0, fullPathname only** |
 | S9 | `.gitmodules` E2 80 8C `/x` | link | **1, gitmodulesSymlink** + fullPathname | **0, fullPathname only** |
-| S2 | `.gitmodules/x` | gmblob | 0, fullPathname + gitmodulesParse (blob queued) | 0, fullPathname only |
-| P3 | `.gitmodules` FF `/x` | gmblob | 0, fullPathname + gitmodulesParse | 0, fullPathname only |
+| S2 | `.gitmodules/x` | badGitmodules | 0, fullPathname + gitmodulesParse (blob queued) | 0, fullPathname only |
+| P3 | `.gitmodules` FF `/x` | badGitmodules | 0, fullPathname + gitmodulesParse | 0, fullPathname only |
 | S3 | `.gitignore/x` | link | 0, gitignoreSymlink + fullPathname | 0, fullPathname only |
 | S4 | `.mailmap/x` | link | 0, mailmapSymlink + fullPathname | 0, fullPathname only |
 | S5 | `.gitattributes/x` | link | 0, gitattributesSymlink + fullPathname | 0, fullPathname only |
@@ -171,7 +171,7 @@ Unless marked `--strict`, rows run without it. "—" means no finding.
 | O | `x\.git` FF | blob | — | backslash segment is NTFS-only |
 | N1–N4, N6 | `\x\.gitmodules/y`, `x\.gitmodules/y`, `.gitmodules /x`, `.gitignore /x`, `gitmod~1/x` | link | fullPathname only | the NTFS arm does not treat `/` as a terminator for the four non-`git` aliases |
 | H | `.git` EF BB BF | dir | hasDotgit | ignorable tail (already caught) |
-| X | `.gitmodules` EF BB BF | gmblob | gitmodulesParse | ignorable tail (already caught) |
+| X | `.gitmodules` EF BB BF | badGitmodules | gitmodulesParse | ignorable tail (already caught) |
 | Y | `.git` | dir | hasDotgit | exact name |
 
 **M5 — severity and exit code (decision point 2 of the brief: a pinned fact, not a candidate).**
@@ -202,19 +202,19 @@ tsgit's existing `resolveSeverity` table already maps these (Case 12 pins `hasDo
 ```ts
 function foldsToHfsAlias(buf, start, end, alias): boolean {
   const name = buf.subarray(start, end);
-  let at = skipHfsIgnorables(name, 0);
+  let at = skipIgnorableSequences(name, 0);
   for (let i = 0; i <= alias.length; i++) {
     const want = i === 0 ? ASCII_DOT : alias.charCodeAt(i - 1);
     if (foldAsciiCodePoint(name[at] ?? END_OF_NAME) !== want) return false;
-    at = skipHfsIgnorables(name, at + 1);
+    at = skipIgnorableSequences(name, at + 1);
   }
   return endsHfsName(name, at);
 }
 ```
 
 - **`END_OF_NAME = 0`** is git's `next_hfs_char` result at the NUL. Reading past the view yields `undefined`, which is mapped to it instead of being guarded by a separate length check. Such a check would be an equivalent mutant: `foldAsciiCodePoint(undefined)` already fails the comparison.
-- **Needle comparison on the raw byte.** Every needle character is ASCII. An ASCII byte is a one-byte character the picker accepts, so comparing the byte equals git's `tolower(c) == needle`. A byte ≥ 0x80 is either a multi-byte character (git: `c > 127 → 0`) or a rejected lead (git: `c = 0`). Both fail in git, and `foldAsciiCodePoint` leaves the byte ≥ 0x80, so it fails here too. No decode is needed in the needle loop.
-- **`skipHfsIgnorables(name, at): number`** advances over consecutive sequences that git's picker accepts as **three bytes** (`gitPickerSequenceLength(name, at) === 3`, see D2) and whose code point is in `HFS_IGNORABLE_CODE_POINTS`. Every one of the 16 ignorables is a three-byte sequence (U+200C–U+206F, U+FEFF). The code point is computed with git's arithmetic, `((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f)`, in a private `threeByteCodePoint(name, at)`. The acceptance check is load-bearing: in row F1, `E2 C0 8C` computes to U+200C but is rejected. A rejected sequence is not skipped. It stops the skip, and the caller's next byte comparison or `endsHfsName` handles it.
+- **Needle comparison on the raw byte.** Every needle character is ASCII. An ASCII byte is a one-byte character the picker accepts, so comparing the byte equals git's the lower-cased character equals the needle. A byte ≥ 0x80 is either a multi-byte character (git: `c > 127 → 0`) or a rejected lead (git: `c = 0`). Both fail in git, and `foldAsciiCodePoint` leaves the byte ≥ 0x80, so it fails here too. No decode is needed in the needle loop.
+- **`skipIgnorableSequences(name, at): number`** advances over consecutive sequences that git's picker accepts as **three bytes** (`gitPickerSequenceLength(name, at) === 3`, see D2) and whose code point is in `HFS_IGNORABLE_CODE_POINTS`. Every one of the 16 ignorable sequences is a three-byte sequence (U+200C–U+206F, U+FEFF). The code point is computed with git's arithmetic, `((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f)`, in a private `threeByteCodePoint(name, at)`. The acceptance check is load-bearing: in row F1, `E2 C0 8C` computes to U+200C but is rejected. A rejected sequence is not skipped. It stops the skip, and the caller's next byte comparison or `endsHfsName` handles it.
 - **`endsHfsName(name, at): boolean`** is git's `!c || is_dir_sep(c)` after the last `next_hfs_char`: `name[at] === ASCII_SLASH || gitPickerSequenceLength(name, at) === 0`. The picker already returns 0 at `at === name.length` (the lead reads `undefined`), so end-of-name needs no separate clause, which would be an equivalent mutant. `is_dir_sep` is `/` only on the POSIX git that CI and the oracle run (see Out of scope).
 - `HFS_DECODER`, its comment, and the `Stryker disable` equivalence note on `matched >= wantLength` (it no longer exists) are removed. The JSDoc on `foldsToHfsAlias` and on `matchesDotgitAlias` is rewritten to state the rejection-ends-the-name and `/` rules instead of "Malformed UTF-8 … fails".
 - `matchesDotgitAlias`, `namesGitmodules`, every caller in `validate-tree.ts` and `special-blobs.ts`, and the NTFS functions are unchanged. The fix reaches all three caller rows of the Context table through the one predicate.
@@ -257,7 +257,7 @@ Each part is one atomic commit, RED → GREEN per function, gate green before co
 
 **Part 2 — `fix(fsck)`: the HFS arm reads raw bytes (D1, D3).**
 
-- Files: `src/domain/objects/tree-entry-bytes.ts`: `foldsToHfsAlias` body, new private `skipHfsIgnorables`, `threeByteCodePoint` and `endsHfsName`; delete `HFS_DECODER`. Doc comments are updated in `special-blobs.ts` `specialBlobNames` only if a comment there describes the old rule (today it says "matched on raw bytes", which stays true).
+- Files: `src/domain/objects/tree-entry-bytes.ts`: `foldsToHfsAlias` body, new private `skipIgnorableSequences`, `threeByteCodePoint` and `endsHfsName`; delete `HFS_DECODER`. Doc comments are updated in `special-blobs.ts` `specialBlobNames` only if a comment there describes the old rule (today it says "matched on raw bytes", which stays true).
 - Unit (`test/unit/domain/objects/tree-entry-bytes.test.ts`, `describe('matchesDotgitAlias')`):
   - Re-pin L444-459: `Given a name holding a byte git's UTF-8 reader rejects immediately after ".git"` › `Then it matches, as git reads the rejected byte as the end of the name`. Expected `true`. Keep the second half of the old assertion: it does not throw.
   - Add `it.each` tables, each row isolating one guard:
@@ -292,12 +292,12 @@ Each part is one atomic commit, RED → GREEN per function, gate green before co
 
 1. *Given an arbitrary alias, an arbitrary ASCII case variant of `.<alias>` with HFS-ignorable sequences interleaved at arbitrary positions, and a tail of 1–4 arbitrary bytes excluding `.`, space, `:`, `\` and `/` (the NTFS-arm terminators).* The verdict is `true` iff the tail's picker-valid prefix consists only of ignorable sequences. NUL is excluded too, because a tree name cannot hold it. This mirrors `verify-path.properties.test.ts` L185-205.
 2. *Given the same needle variant, ignorable-only padding, then `/`, then arbitrary bytes.* The verdict is always `true` for each alias.
-3. *Given P, a concatenation of whole picker-accepted sequences (ASCII, ignorables, arbitrary encoded code points); R, a picker-rejected sequence whose rejection does not depend on the bytes after it (every M1 rule except truncation: a truncated `E2 80` followed by `8C` would become a valid sequence); and two arbitrary suffixes X and Y.* `matchesDotgitAlias(P+R+X) === matchesDotgitAlias(P+R+Y)` for each alias: neither arm reads past a rejection. A counterexample here is a defect to pin against git, not a property to weaken.
+3. *Given P, a concatenation of whole picker-accepted sequences (ASCII, ignorable sequences, arbitrary encoded code points); R, a picker-rejected sequence whose rejection does not depend on the bytes after it (every M1 rule except truncation: a truncated `E2 80` followed by `8C` would become a valid sequence); and two arbitrary suffixes X and Y.* `matchesDotgitAlias(P+R+X) === matchesDotgitAlias(P+R+Y)` for each alias: neither arm reads past a rejection. A counterexample here is a defect to pin against git, not a property to weaken.
 4. *Given arbitrary bytes.* `matchesDotgitAlias` returns a boolean and never throws for every alias.
 
 **Interop: Case 13 in `test/integration/tree-entry-bytes-interop.test.ts` (ADR-756: the one suite).**
 
-- **Setup.** One `mkdtemp` repo. Trees are dangling single-entry literal trees. git still queues and checks a dangling tree's special blobs: pinned twice in `<scratchpad>/probe6` (`gitmodulesParse` and `gitattributesLineLength` reported on unreferenced trees). Trees are built with the suite's existing `buildLiteralTreeIn` + `rawEntryBytes`, as in Case 12 (L1047-1140). Single-entry trees keep `treeNotSorted` artefacts and DC-3's aggregation out of every row. Blobs come from `hash-object -w`. Each blob-routed row (`gmblob`, `galong`) gets its **own** blob: `[` + LF + `# <row-id>` + LF for `gmblob` (git refuses it at line 1, pinned with `git config --file`), and `<row-id>` + 3000 × `a` + LF for `galong`. Plain rows share `hello\n`. git reports a blob finding once per blob id, so a blob shared between rows could not tell them apart.
+- **Setup.** One `mkdtemp` repo. Trees are dangling single-entry literal trees. git still queues and checks a dangling tree's special blobs: pinned twice in `<scratchpad>/probe6` (`gitmodulesParse` and `gitattributesLineLength` reported on unreferenced trees). Trees are built with the suite's existing `buildLiteralTreeIn` + `rawEntryBytes`, as in Case 12 (L1047-1140). Single-entry trees keep `treeNotSorted` artefacts and DC-3's aggregation out of every row. Blobs come from `hash-object -w`. Each blob-routed row (`badGitmodules`, `longAttributes`) gets its **own** blob: `[` + LF + `# <row-id>` + LF for `badGitmodules` (git refuses it at line 1, pinned with `git config --file`), and `<row-id>` + 3000 × `a` + LF for `longAttributes`. Plain rows share `hello\n`. git reports a blob finding once per blob id, so a blob shared between rows could not tell them apart.
 - **Run.** One `git fsck` and one tsgit `fsck(createNodeContext(...), { strict })` per mode, looped `it.each` over `{ strict: false }` and `{ strict: true }` (the Case 12 pattern).
 - **Per tree, assert:**
   - the tsgit finding (`msgId`, `severity`, object id and type) against the row's expectation;

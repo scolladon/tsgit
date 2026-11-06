@@ -16,7 +16,7 @@ git's `is_hfs_dot_generic` reads a tree entry name through `next_hfs_char`, whic
 on any sequence `pick_one_utf8_char` rejects. After a complete needle (`.git`, `.gitmodules`,
 `.gitattributes`, `.gitignore`, `.mailmap`) the final check is `if (c && !is_dir_sep(c))
 return 0`, so a rejected sequence or a `/` ends the name and the name matches. Pinned twice on
-2.56.0: `.git` + FF, `.GIT` + FF, U+FFFE/U+FFFF, surrogates, overlongs, a lead above F4 and
+2.56.0: `.git` + FF, `.GIT` + FF, U+FFFE/U+FFFF, surrogates, overlong sequences, a lead above F4 and
 `.gitmodules/x` all report; a rejection inside the needle, `.gitx` + FF and a valid character
 after the needle do not. tsgit's `foldsToHfsAlias` decoded the span with a `TextDecoder`, so a
 rejected byte became U+FFFD and failed the exact-length match, and it required end-of-span, so
