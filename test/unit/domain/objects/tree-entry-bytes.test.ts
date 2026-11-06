@@ -663,6 +663,107 @@ describe('matchesDotgitAlias', () => {
       });
     });
   });
+
+  describe("Given a dotgit alias name followed by '/'", () => {
+    describe.each([
+      {
+        label: '.gitmodules/x',
+        nameBytes: encode('.gitmodules/x'),
+        alias: 'gitmodules',
+        expected: true,
+      },
+      {
+        label: '.GITMODULES/x',
+        nameBytes: encode('.GITMODULES/x'),
+        alias: 'gitmodules',
+        expected: true,
+      },
+      {
+        label: '.gitattributes/x',
+        nameBytes: encode('.gitattributes/x'),
+        alias: 'gitattributes',
+        expected: true,
+      },
+      {
+        label: '.gitignore/x',
+        nameBytes: encode('.gitignore/x'),
+        alias: 'gitignore',
+        expected: true,
+      },
+      { label: '.mailmap/x', nameBytes: encode('.mailmap/x'), alias: 'mailmap', expected: true },
+      {
+        label: '.gitmodules<U+200C>/x (ignorable, then slash)',
+        nameBytes: concatBytes(encode('.gitmodules'), U200C, encode('/x')),
+        alias: 'gitmodules',
+        expected: true,
+      },
+      {
+        label: '.g<U+200C>it/x',
+        nameBytes: concatBytes(encode('.g'), U200C, encode('it/x')),
+        alias: 'git',
+        expected: true,
+      },
+      {
+        label: '<BOM>.git/x',
+        nameBytes: concatBytes(BOM, encode('.git/x')),
+        alias: 'git',
+        expected: true,
+      },
+      {
+        label: '.gitmodules<0xFF>/x (rejected byte, then slash)',
+        nameBytes: concatBytes(encode('.gitmodules'), Uint8Array.of(0xff), encode('/x')),
+        alias: 'gitmodules',
+        expected: true,
+      },
+      { label: '.gitx/y', nameBytes: encode('.gitx/y'), alias: 'git', expected: false },
+      {
+        label: '.git<U+00E9>/ (valid non-ignorable character before slash)',
+        nameBytes: concatBytes(encode('.git'), Uint8Array.of(0xc3, 0xa9), encode('/')),
+        alias: 'git',
+        expected: false,
+      },
+      {
+        label: '.gitmodules /x',
+        nameBytes: encode('.gitmodules /x'),
+        alias: 'gitmodules',
+        expected: false,
+      },
+      {
+        label: '\\x\\.gitmodules/y',
+        nameBytes: encode('\\x\\.gitmodules/y'),
+        alias: 'gitmodules',
+        expected: false,
+      },
+      {
+        label: 'x\\.gitmodules/y',
+        nameBytes: encode('x\\.gitmodules/y'),
+        alias: 'gitmodules',
+        expected: false,
+      },
+      {
+        label: 'gitmod~1/x (short name does not stop at slash)',
+        nameBytes: encode('gitmod~1/x'),
+        alias: 'gitmodules',
+        expected: false,
+      },
+    ] as ReadonlyArray<{
+      readonly label: string;
+      readonly nameBytes: Uint8Array;
+      readonly alias: Parameters<typeof matchesDotgitAlias>[3];
+      readonly expected: boolean;
+    }>)('When $label is matched against its alias', ({ nameBytes, alias, expected }) => {
+      it(`Then it resolves to ${expected}`, () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+
+        // Act
+        const result = sut(nameBytes, 0, nameBytes.length, alias);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
 });
 
 describe('Given names git 2.55.0 reads as NTFS aliases of a dotgit file', () => {

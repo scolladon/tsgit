@@ -4541,3 +4541,47 @@ describe('Given a directory entry named .git then FF under strict checking', () 
     });
   });
 });
+
+describe.each([
+  {
+    label: 'symlink named .gitmodules/x',
+    mode: '120000',
+    name: '.gitmodules/x',
+    expected: [
+      { msgId: 'fullPathname', severity: 'warning' },
+      { msgId: 'gitmodulesSymlink', severity: 'error' },
+    ],
+  },
+  {
+    label: 'symlink named .gitignore/x',
+    mode: '120000',
+    name: '.gitignore/x',
+    expected: [
+      { msgId: 'fullPathname', severity: 'warning' },
+      { msgId: 'gitignoreSymlink', severity: 'info' },
+    ],
+  },
+  {
+    label: 'directory named .g<ZWNJ>it/x',
+    mode: '40000',
+    name: '.g‌it/x',
+    expected: [
+      { msgId: 'hasDotgit', severity: 'warning' },
+      { msgId: 'fullPathname', severity: 'warning' },
+    ],
+  },
+] as const)('Given a tree entry $label', ({ mode, name, expected }) => {
+  describe('When validateObject runs', () => {
+    it('Then emits the path fault and the alias fault', () => {
+      // Arrange
+      const rawBody = buildTree(buildTreeEntryBytes(mode, encode(name), BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody, strict: false, hashConfig: SHA1_CONFIG });
+
+      // Assert
+      expect(result).toEqual(expected);
+    });
+  });
+});

@@ -1299,6 +1299,57 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
           ['gitmodulesParse'],
         ),
 
+        row('link .gitmodules slash x', bytesOf('.gitmodules/x'), 'link', [
+          'gitmodulesSymlink',
+          'fullPathname',
+        ]),
+        row('link .gitmodules ignorable slash x', bytesOf('.gitmodules', IGNORABLE, '/x'), 'link', [
+          'gitmodulesSymlink',
+          'fullPathname',
+        ]),
+        row(
+          'badGitmodules .gitmodules slash x',
+          bytesOf('.gitmodules/x'),
+          'badGitmodules',
+          ['fullPathname'],
+          ['gitmodulesParse'],
+        ),
+        row('link .gitignore slash x', bytesOf('.gitignore/x'), 'link', [
+          'gitignoreSymlink',
+          'fullPathname',
+        ]),
+        row('link .mailmap slash x', bytesOf('.mailmap/x'), 'link', [
+          'mailmapSymlink',
+          'fullPathname',
+        ]),
+        row('link .gitattributes slash x', bytesOf('.gitattributes/x'), 'link', [
+          'gitattributesSymlink',
+          'fullPathname',
+        ]),
+        row('dir .g ignorable it slash x', bytesOf('.g', IGNORABLE, 'it/x'), 'dir', [
+          'hasDotgit',
+          'fullPathname',
+        ]),
+        row('dir BOM .git slash x', bytesOf([0xef, 0xbb, 0xbf], '.git/x'), 'dir', [
+          'hasDotgit',
+          'fullPathname',
+        ]),
+        row('dir .git slash x', bytesOf('.git/x'), 'dir', ['hasDotgit', 'fullPathname']),
+        row('dir .git space slash x', bytesOf('.git /x'), 'dir', ['hasDotgit', 'fullPathname']),
+        row('dir .gitx slash y', bytesOf('.gitx/y'), 'dir', ['fullPathname']),
+        row(
+          'link backslash x backslash .gitmodules slash y',
+          bytesOf('\\x\\.gitmodules/y'),
+          'link',
+          ['fullPathname'],
+        ),
+        row('link x backslash .gitmodules slash y', bytesOf('x\\.gitmodules/y'), 'link', [
+          'fullPathname',
+        ]),
+        row('link .gitmodules space slash x', bytesOf('.gitmodules /x'), 'link', ['fullPathname']),
+        row('link .gitignore space slash x', bytesOf('.gitignore /x'), 'link', ['fullPathname']),
+        row('link gitmod tilde 1 slash x', bytesOf('gitmod~1/x'), 'link', ['fullPathname']),
+
         row('dir rejected byte inside needle', bytesOf('.g', FF, 'it'), 'dir'),
         row(
           'dir rejected sequence computing U+200C inside needle',

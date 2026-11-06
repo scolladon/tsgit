@@ -281,3 +281,18 @@ describe.each([
     });
   });
 });
+
+describe('Given a regular entry named .gitmodules/x', () => {
+  describe('When the tree is noted', () => {
+    it('Then its blob is pending under .gitmodules', () => {
+      // Arrange
+      const ledger = sut(SHA1_CONFIG);
+
+      // Act
+      ledger.noteTree(treeBody(['100644', '.gitmodules/x', BLOB]));
+
+      // Assert
+      expect(ledger.pendingUnder('.gitmodules')).toEqual([BLOB]);
+    });
+  });
+});

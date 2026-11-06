@@ -98,9 +98,9 @@ function skipIgnorableSequences(name: Uint8Array, at: number): number {
   return cursor;
 }
 
-/** The end of the span, or a sequence the picker rejects, ends the name. */
+/** The end of the span, a slash, or a sequence the picker rejects, ends the name. */
 function endsHfsName(name: Uint8Array, at: number): boolean {
-  return gitPickerSequenceLength(name, at) === 0;
+  return name[at] === ASCII_SLASH || gitPickerSequenceLength(name, at) === 0;
 }
 
 /**
@@ -108,7 +108,7 @@ function endsHfsName(name: Uint8Array, at: number): boolean {
  * Ignorable sequences are skipped only when the picker accepts them; each
  * needle character is compared on its raw byte, ASCII-folded, so a byte git
  * would not read as that ASCII character fails. After the needle the name
- * matches at the end of the span or at a sequence the picker rejects.
+ * matches at the end of the span, at a slash, or at a sequence the picker rejects.
  */
 function foldsToHfsAlias(
   buf: Uint8Array,
@@ -252,8 +252,8 @@ export function matchesNtfsDotgitAlias(
 /**
  * True when `buf[start, end)` is an alias of `.<alias>` under git's dotgit
  * fold: the name read through git's UTF-8 picker, accepted ignorable
- * sequences dropped at any position and a rejected sequence ending the
- * name, or the NTFS short-name / trailing dot-space form, either compared case-insensitively.
+ * sequences dropped at any position and a slash or a rejected sequence
+ * ending the name, or the NTFS short-name / trailing dot-space form, either compared case-insensitively.
  * Used only for fsck's alias comparisons (`hasDotgit`, `.gitmodules`,
  * `.gitattributes`, `.gitignore`, `.mailmap`) — the duplicate key, the sort
  * key and the length count compare raw bytes and never call this.
