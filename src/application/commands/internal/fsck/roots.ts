@@ -876,13 +876,17 @@ type HeadRead = { readonly kind: 'named'; readonly id: ObjectId } | { readonly k
 
 const NO_HEAD: HeadRead = { kind: 'none' };
 
+/** A HEAD holding bytes that are no object name names nothing; its content verdict is the
+ *  refs pass's, not a fault of the snapshot. */
+const INVALID_OBJECT_ID_CODE = 'INVALID_OBJECT_ID';
+
 /** What `worktreeCtx`'s HEAD yields: the object it names, or nothing. */
 async function headOf(worktreeCtx: Context): Promise<HeadRead> {
   try {
     // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
     return { kind: 'named', id: await resolveRef(worktreeCtx, HEAD_REF, { peel: false }) };
   } catch (err) {
-    if (!isSkippedRefReadFault(err)) throw err;
+    if (!isSkippedRefReadFault(err) && errorDataCode(err) !== INVALID_OBJECT_ID_CODE) throw err;
     return NO_HEAD;
   }
 }

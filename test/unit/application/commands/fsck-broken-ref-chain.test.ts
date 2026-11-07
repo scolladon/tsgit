@@ -94,6 +94,72 @@ describe('Given a ref holding garbage alone', () => {
   });
 });
 
+const badNameFindings = (result: Awaited<ReturnType<typeof fsck>>, msgId: string) =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.msgId === msgId ? [finding] : [],
+  );
+
+describe('Given a branch named refs/heads/a..b holding a valid oid', () => {
+  describe('When fsck runs', () => {
+    it('Then badRefName errors with bit 8', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'a..b', `${'a'.repeat(40)}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badNameFindings(result, 'badRefName')).toEqual([
+        { type: 'bad-ref', ref: 'refs/heads/a..b', msgId: 'badRefName', severity: 'error' },
+      ]);
+      expect(result.exitCode & 8).toBe(8);
+    });
+
+    it('Then the name points at the zero oid, exit 10', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'a..b', `${'a'.repeat(40)}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointersOf(result)).toEqual(pointers('a..b'));
+      expect(result.exitCode).toBe(EXIT_MISSING_AND_CONTENT);
+    });
+  });
+});
+
+const headFindingsOf = (result: Awaited<ReturnType<typeof fsck>>) =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.ref === 'HEAD'
+      ? [{ msgId: finding.msgId, severity: finding.severity, referent: finding.referent }]
+      : [],
+  );
+
+describe('Given HEAD as ref: refs/tags/x', () => {
+  describe('When fsck runs', () => {
+    it('Then only badHeadTarget is reported for HEAD, with bit 8', async () => {
+      // Arrange
+      const ctx = await repository();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/tags/x\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(headFindingsOf(result)).toEqual([
+        { msgId: 'badHeadTarget', severity: 'error', referent: 'refs/tags/x' },
+      ]);
+      expect(result.exitCode & 8).toBe(8);
+    });
+  });
+});
+
 describe('Given a ref holding sixty-four hex digits in a SHA-1 repository', () => {
   describe('When fsck runs', () => {
     it('Then it gets a zero pointer', async () => {

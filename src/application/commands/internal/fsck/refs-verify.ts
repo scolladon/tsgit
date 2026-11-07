@@ -4,6 +4,7 @@ import { retypeSeverity } from '../../../../domain/fsck/index.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
 import { bareStoreRefName } from '../../../../domain/refs/per-worktree-ref.js';
+import { isSafeRefName } from '../../../../domain/refs/ref-validation.js';
 import type { Context } from '../../../../ports/context.js';
 import type { RefIntegrityFinding, RefStore } from '../../../primitives/ref-store.js';
 import { getRefStore } from '../../../primitives/ref-store.js';
@@ -82,14 +83,11 @@ type ContentMsgId =
   | 'badReferentName'
   | 'symrefTargetIsNotARef'
   | 'trailingRefContent'
-  | 'refMissingNewline';
+  | 'refMissingNewline'
+  | 'badRefName'
+  | 'badHeadTarget';
 
-type ContentFinding = Extract<
-  RefIntegrityFinding,
-  { readonly msgId: ContentMsgId | 'badHeadTarget' }
-> & {
-  readonly msgId: ContentMsgId;
-};
+type ContentFinding = Extract<RefIntegrityFinding, { readonly msgId: ContentMsgId }>;
 
 /** The configured grade of each message the content pass reports. */
 interface ContentGrades {
@@ -98,6 +96,8 @@ interface ContentGrades {
   readonly notARef: FsckConfiguredSeverity;
   readonly trailing: FsckConfiguredSeverity;
   readonly missingNewline: FsckConfiguredSeverity;
+  readonly badName: FsckConfiguredSeverity;
+  readonly badHeadTarget: FsckConfiguredSeverity;
 }
 
 const gradesOf = (severities: FsckSeverityTable): ContentGrades => ({
@@ -106,6 +106,8 @@ const gradesOf = (severities: FsckSeverityTable): ContentGrades => ({
   notARef: retypeSeverity(severities, 'symrefTargetIsNotARef', 'info'),
   trailing: retypeSeverity(severities, 'trailingRefContent', 'info'),
   missingNewline: retypeSeverity(severities, 'refMissingNewline', 'info'),
+  badName: retypeSeverity(severities, 'badRefName', 'error'),
+  badHeadTarget: retypeSeverity(severities, 'badHeadTarget', 'error'),
 });
 
 const unreadablePathFinding = ({
@@ -162,6 +164,8 @@ const CONTENT_MSG_IDS: ReadonlySet<string> = new Set([
   'symrefTargetIsNotARef',
   'trailingRefContent',
   'refMissingNewline',
+  'badRefName',
+  'badHeadTarget',
 ]);
 
 const isContentFinding = (finding: RefIntegrityFinding): finding is ContentFinding =>
@@ -176,15 +180,30 @@ const isContentFinding = (finding: RefIntegrityFinding): finding is ContentFindi
 function contentSeverity(
   finding: ContentFinding,
   grades: ContentGrades,
-  shadowed: ReadonlySet<RefName>,
+  shadows: Shadows,
 ): BadRefFinding['severity'] | undefined {
   if (finding.msgId === 'cannotReadRef') return 'error';
-  if (finding.msgId === 'symrefTargetIsNotARef') {
-    const dropped = grades.badReferent === 'error' && shadowed.has(finding.ref);
-    return dropped || grades.notARef === 'ignore' ? undefined : grades.notARef;
-  }
+  if (isShadowed(finding, grades, shadows)) return undefined;
   const grade = ownGrade(finding.msgId, grades);
   return grade === 'ignore' ? undefined : grade;
+}
+
+/** The refs whose verdict hides the referent verdicts of the same ref. */
+interface Shadows {
+  readonly invalidReferent: ReadonlySet<RefName>;
+  readonly badHeadTarget: ReadonlySet<RefName>;
+}
+
+/** git's `refs_fsck_symref` returns on an error-severity bad HEAD target before judging the
+ *  referent's name, and an error-severity bad referent name hides the not-a-ref notice. */
+function isShadowed(finding: ContentFinding, grades: ContentGrades, shadows: Shadows): boolean {
+  const headTargetErrors =
+    grades.badHeadTarget === 'error' && shadows.badHeadTarget.has(finding.ref);
+  if (finding.msgId === 'badReferentName') return headTargetErrors;
+  if (finding.msgId !== 'symrefTargetIsNotARef') return false;
+  return (
+    headTargetErrors || (grades.badReferent === 'error' && shadows.invalidReferent.has(finding.ref))
+  );
 }
 
 const ownGrade = (
@@ -194,6 +213,9 @@ const ownGrade = (
   if (msgId === 'badReferentName') return grades.badReferent;
   if (msgId === 'trailingRefContent') return grades.trailing;
   if (msgId === 'refMissingNewline') return grades.missingNewline;
+  if (msgId === 'symrefTargetIsNotARef') return grades.notARef;
+  if (msgId === 'badRefName') return grades.badName;
+  if (msgId === 'badHeadTarget') return grades.badHeadTarget;
   return grades.badContent;
 };
 
@@ -208,6 +230,9 @@ function contentFinding(
   if (finding.msgId === 'badRefContent') {
     return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity };
   }
+  if (finding.msgId === 'badRefName') {
+    return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefName', severity };
+  }
   if (finding.msgId === 'refMissingNewline') {
     return { type: 'bad-ref', ref: finding.ref, msgId: 'refMissingNewline', severity };
   }
@@ -220,14 +245,11 @@ function contentFinding(
   return { type: 'bad-ref', ref, msgId, severity, referent };
 }
 
-const refsWithInvalidReferent = (
+const refsWith = (
   integrityFindings: ReadonlyArray<RefIntegrityFinding>,
+  msgId: ContentMsgId,
 ): ReadonlySet<RefName> =>
-  new Set(
-    integrityFindings.flatMap((finding) =>
-      finding.msgId === 'badReferentName' ? [finding.ref] : [],
-    ),
-  );
+  new Set(integrityFindings.flatMap((finding) => (finding.msgId === msgId ? [finding.ref] : [])));
 
 /** The notices of the walk that are not content verdicts: a refused path, and git's
  *  deprecation notice for a symbolic link standing in for a symref — re-typed, like every
@@ -277,7 +299,10 @@ function collectContentNotices(
 ): PassResult {
   const grades = gradesOf(severities);
   const symlinkGrade = retypeSeverity(severities, 'symlinkRef', 'warning');
-  const shadowed = refsWithInvalidReferent(integrityFindings);
+  const shadows: Shadows = {
+    invalidReferent: refsWith(integrityFindings, 'badReferentName'),
+    badHeadTarget: refsWith(integrityFindings, 'badHeadTarget'),
+  };
   const findings: WalkNotice[] = [];
   const rootCheckEnded = rootCheckEndedOf();
   for (const finding of integrityFindings) {
@@ -285,7 +310,7 @@ function collectContentNotices(
     const walkNotice = walkNoticeOf(finding, symlinkGrade);
     if (walkNotice !== undefined) findings.push(walkNotice);
     if (!isContentFinding(finding)) continue;
-    const severity = contentSeverity(finding, grades, shadowed);
+    const severity = contentSeverity(finding, grades, shadows);
     if (severity === undefined) continue;
     if (rootCheckEnded(finding.ref, severity)) continue;
     findings.push(contentFinding(finding, severity));
@@ -348,7 +373,10 @@ async function snapshotTargets(
     const entry = entryByName.get(ref);
     refs.push({
       ref,
-      id: entry === undefined ? zeroOid(ctx.hashConfig) : await targetOf(ctx, entry),
+      id:
+        entry === undefined || !isSafeRefName(ref)
+          ? zeroOid(ctx.hashConfig)
+          : await targetOf(ctx, entry),
     });
   }
   const { heads } = await snapshotWorktreeHeads(ctx);

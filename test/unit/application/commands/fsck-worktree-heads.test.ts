@@ -426,6 +426,108 @@ describe('Given garbage in a linked store and references not checked', () => {
   });
 });
 
+describe("Given a linked store's refs/bisect/a..b holding a valid oid", () => {
+  describe('When fsck runs from that worktree', () => {
+    it('Then the zero pointer names refs/bisect/a..b bare', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/refs/bisect/a..b`, `${ABSENT}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(deriveWorktreeContext(ctx, 'wt1', '/work/wt1'));
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([
+        { ...pointer('refs/bisect/a..b'), target: '0'.repeat(40) },
+      ]);
+    });
+  });
+});
+
+describe('Given a linked worktree whose HEAD holds a symbolic ref outside refs/', () => {
+  describe('When fsck runs from the main worktree', () => {
+    it('Then badHeadTarget names worktrees/wt1/HEAD', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, 'ref: refs/tags/x\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(
+        result.findings.filter((f) => f.type === 'bad-ref' && f.msgId === 'badHeadTarget'),
+      ).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'worktrees/wt1/HEAD',
+          msgId: 'badHeadTarget',
+          severity: 'error',
+          referent: 'refs/tags/x',
+        },
+      ]);
+    });
+  });
+});
+
+describe('Given a linked worktree whose HEAD holds a one-component symbolic ref', () => {
+  describe('When fsck runs from the main worktree', () => {
+    it('Then only badHeadTarget is reported for worktrees/wt1/HEAD', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, 'ref: tags\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(
+        result.findings.flatMap((f) =>
+          f.type === 'bad-ref' && f.ref === 'worktrees/wt1/HEAD' ? [f.msgId] : [],
+        ),
+      ).toEqual(['badHeadTarget']);
+    });
+  });
+});
+
+describe('Given a linked worktree whose HEAD holds garbage', () => {
+  describe('When fsck runs from the main worktree', () => {
+    it('Then badRefContent names worktrees/wt1/HEAD and no pointer is reported for it', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual(['worktrees/wt1/HEAD']);
+      expect(pointerFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+describe('Given the main HEAD holding garbage', () => {
+  describe('When fsck runs from a linked worktree', () => {
+    it('Then badRefContent names HEAD', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(deriveWorktreeContext(ctx, 'wt1', '/work/wt1'));
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual(['HEAD']);
+    });
+  });
+});
+
 describe('Given a linked worktree whose HEAD read fails with an unclassified fault', () => {
   describe('When fsck runs', () => {
     it('Then the fault propagates', async () => {
