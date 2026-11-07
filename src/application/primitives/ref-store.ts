@@ -832,8 +832,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     return loaded;
   }
 
-  async function readLooseContent(name: RefName): Promise<string | undefined> {
-    const path = looseRefPath(refDir(name), name);
+  async function readLooseContentAt(path: string): Promise<string | undefined> {
     try {
       return await ctx.fs.readUtf8(path);
     } catch (err) {
@@ -920,19 +919,15 @@ function createFilesRefStore(ctx: Context): RefStore {
    * and any other refusal — an adapter without the open, a regular file in the
    * path — the plain reader, which decides those.
    */
-  async function readLooseLeaf(name: RefName, path: string): Promise<LooseLeaf> {
+  async function readLooseLeaf(path: string): Promise<LooseLeaf> {
     try {
       return await readRegularLeaf(path);
     } catch (err) {
-      return leafAfterRefusedOpen(name, path, err);
+      return leafAfterRefusedOpen(path, err);
     }
   }
 
-  async function leafAfterRefusedOpen(
-    name: RefName,
-    path: string,
-    err: unknown,
-  ): Promise<LooseLeaf> {
+  async function leafAfterRefusedOpen(path: string, err: unknown): Promise<LooseLeaf> {
     const code = errorCodeOf(err);
     if (code === 'FILE_NOT_FOUND') return NO_LEAF;
     // A regular file in the path is no such ref — git's `lstat` leaves the
@@ -944,7 +939,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       return SYMLINK_LEAF;
     }
     if (!PLAIN_READER_CODES.has(code)) throw err;
-    const content = await readLooseContent(name);
+    const content = await readLooseContentAt(path);
     return content === undefined ? NO_LEAF : { kind: 'content', content };
   }
 
@@ -1020,7 +1015,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const dir = refDir(name);
     const path = looseRefPath(dir, name);
     if (await isLooseMiss(path)) return resolveAfterLooseMiss(name, dir, path);
-    const leaf = await readLooseLeaf(name, path);
+    const leaf = await readLooseLeaf(path);
     if (leaf.kind === 'symlink') {
       return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
     }
@@ -1347,7 +1342,7 @@ function createFilesRefStore(ctx: Context): RefStore {
         await walkIntegrity(`${dir}/${entry.name}`, name, run);
         continue;
       }
-      run.findings.push(...(await looseBodyFindings(name)));
+      run.findings.push(...(await looseBodyFindingsAt(name, `${dir}/${entry.name}`)));
     }
   }
 
@@ -1435,13 +1430,12 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  and the walk carries on; the `lstat` proves the entry exists, as the open's refusal
    *  alone cannot tell a denied file from a denied directory above it; an `lstat` the
    *  permissions refuse too is git's `failed to stat`. */
-  async function readLooseContentOrRefusal(name: RefName): Promise<LooseReadOutcome> {
+  async function readLooseContentOrRefusal(name: RefName, path: string): Promise<LooseReadOutcome> {
     try {
-      const raw = await readLooseContent(name);
+      const raw = await readLooseContentAt(path);
       return raw === undefined ? ABSENT_READ : { kind: 'read', raw };
     } catch (err) {
       if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
-      const path = looseRefPath(refDir(name), name);
       try {
         await ctx.fs.lstat(path);
       } catch (statErr) {
@@ -1465,8 +1459,11 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  grammar check — fsck's refs-verify pass runs its own OID-presence check
    *  against its scan-scoped universe once no `badRefContent` finding has
    *  already flagged this ref. */
-  async function looseBodyFindings(name: RefName): Promise<readonly RefIntegrityFinding[]> {
-    const outcome = await readLooseContentOrRefusal(name);
+  async function looseBodyFindingsAt(
+    name: RefName,
+    path: string,
+  ): Promise<readonly RefIntegrityFinding[]> {
+    const outcome = await readLooseContentOrRefusal(name, path);
     if (outcome.kind === 'refused') return [outcome.finding];
     if (outcome.kind === 'absent') return [];
     const body = readLooseBody(outcome.raw, ctx.hashConfig.hexLength);
@@ -1524,7 +1521,9 @@ function createFilesRefStore(ctx: Context): RefStore {
     const findings: RefIntegrityFinding[] = [];
     for (const entry of await readdirInOsOrder(ctx.layout.gitDir)) {
       if (!isRootRefName(entry.name)) continue;
-      findings.push(...(await looseBodyFindings(entry.name as RefName)));
+      findings.push(
+        ...(await looseBodyFindingsAt(entry.name as RefName, `${ctx.layout.gitDir}/${entry.name}`)),
+      );
     }
     return findings;
   }

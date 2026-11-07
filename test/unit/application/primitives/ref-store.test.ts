@@ -5399,3 +5399,78 @@ describe('Given loose ref directories one of which cannot be read', () => {
     });
   });
 });
+
+describe('ref-store — the integrity walk reads each file where it found it', () => {
+  const OID = 'a'.repeat(40);
+  const linkedWorktree = async (): Promise<Context> => {
+    const base = await buildSeededContext();
+    await base.fs.writeUtf8('/repo/.git/worktrees/wt/gitdir', '/work/wt/.git\n');
+    return {
+      ...base,
+      layout: { ...base.layout, gitDir: '/repo/.git/worktrees/wt', commonDir: base.layout.gitDir },
+    };
+  };
+
+  describe("Given garbage at the main worktree's refs/bisect/bad and a clean own refs/bisect/bad", () => {
+    describe('When verifyIntegrity runs from the linked worktree', () => {
+      it("Then the main file's garbage is reported", async () => {
+        // Arrange
+        const ctx = await linkedWorktree();
+        await ctx.fs.writeUtf8('/repo/.git/refs/bisect/bad', 'garbage\n');
+        await ctx.fs.writeUtf8('/repo/.git/worktrees/wt/refs/bisect/bad', `${OID}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({ ref: 'refs/bisect/bad', msgId: 'badRefContent' });
+      });
+    });
+  });
+
+  describe("Given garbage at the own gitdir's refs/heads/stray", () => {
+    describe('When verifyIntegrity runs from the linked worktree', () => {
+      it('Then it is reported', async () => {
+        // Arrange
+        const ctx = await linkedWorktree();
+        await ctx.fs.writeUtf8('/repo/.git/worktrees/wt/refs/heads/stray', 'garbage\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({ ref: 'refs/heads/stray', msgId: 'badRefContent' });
+      });
+    });
+  });
+
+  describe('Given garbage in the main refs/bisect/bad and a valid oid without newline in the own one', () => {
+    describe('When verifyIntegrity runs from the linked worktree', () => {
+      it('Then each file is judged once', async () => {
+        // Arrange
+        const ctx = await linkedWorktree();
+        await ctx.fs.writeUtf8('/repo/.git/refs/bisect/bad', 'garbage\n');
+        await ctx.fs.writeUtf8('/repo/.git/worktrees/wt/refs/bisect/bad', OID);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(
+          result.filter(
+            (finding) =>
+              'ref' in finding &&
+              finding.ref === 'refs/bisect/bad' &&
+              finding.msgId !== 'badRefOid',
+          ),
+        ).toEqual([
+          { ref: 'refs/bisect/bad', msgId: 'badRefContent' },
+          { ref: 'refs/bisect/bad', msgId: 'refMissingNewline' },
+        ]);
+      });
+    });
+  });
+});
