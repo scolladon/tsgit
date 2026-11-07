@@ -655,6 +655,8 @@ each recommendation; the alternative changes only the named part.
 | PC-2 | A property for `bareStoreRefName` | (a) none, as the caller instructed; (b) a round-trip property in the same sibling: `bareStoreRefName(linkedWorktreeRefPrefix(id) + n) === n` for any slash-free `id` and any `n` | (b) | property-testing.md lens 1 fits (prefix add/strip is a pair), and the sibling file already exists in Part 1, so the cost is one `it`. Under (a) the example rows of Part 1 step 3 stand alone. Part 1. |
 | PC-3 | Where the breaking data change is marked (DC-3: a linked store's `ref` gains its prefix; P2's `ref` becomes "HEAD"; `refs-walk-failed.reason` widens) | (a) part commits plain, the PR title carries `!` (squash merge decides the changelog); (b) Parts 5 and 6 commit with `fix(fsck)!:` | (a) | The repository squash-merges and release-please reads the merged title (recent `fix(gc)!:`, `feat!:` titles). A `!` on a part commit is lost in the squash. The propose phase must title the PR with `!`. |
 
+Settled before implementation: PC-1 (a) — `IntegrityStore` has no `linked` field, and ADR-1151 now reads the same; PC-2 (b) — Part 1 adds the round-trip property for `bareStoreRefName` beside the `mainWorktreeBareName` properties; PC-3 — part commits stay plain, and whether the PR title carries the breaking marker is decided when the PR is created.
+
 ## Out-of-perimeter notes
 
 None proven.
