@@ -531,3 +531,78 @@ describe.each([
     });
   });
 });
+
+const refsOnly = (findings: ReadonlyArray<FsckFinding>) =>
+  findings.filter(
+    (finding) =>
+      finding.type === 'refs-walk-failed' ||
+      finding.type === 'unreadable-root-refs' ||
+      finding.type === 'unreadable-ref-path',
+  );
+
+describe('Given a linked worktree whose refs is a regular file', () => {
+  describe('When fsck runs', () => {
+    it('Then refs-walk-failed carries NOT_A_DIRECTORY with bit 8', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const refs = `${ctx.layout.gitDir}/worktrees/wt1/refs`;
+      await ctx.fs.writeUtf8(refs, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(refsOnly(result.findings)).toEqual([
+        { type: 'refs-walk-failed', path: refs, reason: 'NOT_A_DIRECTORY' },
+      ]);
+      expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+});
+
+const refuseAdminListing = (ctx: Context, adminDir: string): void => {
+  const readdir = ctx.fs.readdir.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+    if (path === adminDir) throw permissionDenied(path);
+    return readdir(path);
+  });
+};
+
+describe('Given a linked worktree whose admin dir lists nothing and nothing else is wrong', () => {
+  describe('When fsck runs', () => {
+    it('Then unreadable-root-refs is reported with bit 8 and no other ref finding', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const adminDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+      refuseAdminListing(ctx, adminDir);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(refsOnly(result.findings)).toEqual([
+        { type: 'unreadable-root-refs', path: adminDir, reason: 'PERMISSION_DENIED' },
+      ]);
+      expect(result.findings.filter((finding) => finding.type === 'bad-ref')).toEqual([]);
+      expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+
+  describe('When fsck runs with checkReferences false', () => {
+    it('Then nothing is reported and the exit code is clean', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      refuseAdminListing(ctx, `${ctx.layout.gitDir}/worktrees/wt1`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(refsOnly(result.findings)).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});

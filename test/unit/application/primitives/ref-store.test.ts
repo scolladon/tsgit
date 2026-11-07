@@ -1687,7 +1687,7 @@ describe('ref-store', () => {
       it('Then the followed file answers the name', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const target = `${ctx.layout.gitDir}/elsewhere-packed`;
+        const target = `${ctx.layout.gitDir}/repo/elsewhere-packed`;
         await ctx.fs.writeUtf8(target, `${'b'.repeat(40)} refs/tags/p\n`);
         await ctx.fs.symlink(target, `${ctx.layout.gitDir}/packed-refs`);
         const sut = createRefStore(ctx);
@@ -1724,7 +1724,7 @@ describe('ref-store', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const packedPath = `${ctx.layout.gitDir}/packed-refs`;
-        await ctx.fs.symlink(`${ctx.layout.gitDir}/elsewhere`, packedPath);
+        await ctx.fs.symlink(`${ctx.layout.gitDir}/repo/elsewhere`, packedPath);
         const fault = permissionDenied(packedPath);
         vi.spyOn(ctx.fs, 'stat').mockRejectedValue(fault);
         const sut = createRefStore(ctx);
@@ -3029,7 +3029,7 @@ describe('ref-store', () => {
         // Assert
         expect(result).toEqual([
           { msgId: 'unreadableRefPath', operation: 'open-directory', path: root },
-          { msgId: 'refsWalkFailed', path: root },
+          { msgId: 'refsWalkFailed', path: root, reason: 'PERMISSION_DENIED' },
         ]);
       });
     });
@@ -5940,6 +5940,139 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
 
         // Assert
         expect(refsOf(result)).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a linked store whose refs is a regular file', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the walk fails on it as not a directory', async () => {
+        // Arrange
+        const ctx = await fromMain();
+        await ctx.fs.writeUtf8(`${ADMIN}/wt/refs`, GARBAGE);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { msgId: 'refsWalkFailed', path: `${ADMIN}/wt/refs`, reason: 'NOT_A_DIRECTORY' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a linked store whose refs is a symbolic link to a directory holding garbage', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the walk fails on it as not a directory and reads nothing beneath it', async () => {
+        // Arrange
+        const ctx = await fromMain();
+        await ctx.fs.writeUtf8('/repo/elsewhere/bisect/bad', GARBAGE);
+        await ctx.fs.symlink('/repo/elsewhere', `${ADMIN}/wt/refs`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { msgId: 'refsWalkFailed', path: `${ADMIN}/wt/refs`, reason: 'NOT_A_DIRECTORY' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given the main refs a symbolic link to a directory', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the walk fails on the main refs as not a directory', async () => {
+        // Arrange
+        const ctx = await fromMain([]);
+        await ctx.fs.writeUtf8('/repo/elsewhere/heads/x', `${OID}\n`);
+        await ctx.fs.symlink('/repo/elsewhere', '/repo/.git/refs');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { msgId: 'refsWalkFailed', path: '/repo/.git/refs', reason: 'NOT_A_DIRECTORY' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a linked store with no refs', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = await fromMain();
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the lstat of a store refs root faulting for another reason than absence', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the fault propagates', async () => {
+        // Arrange
+        const ctx = await fromMain();
+        const fault = new Error('EIO');
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p: string) => {
+          if (p === `${ADMIN}/wt/refs`) throw fault;
+          return lstat(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity().catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a linked store gitdir whose listing is refused', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then rootRefsUnreadable names that gitdir', async () => {
+        // Arrange
+        const ctx = await fromMain();
+        refuseListing(ctx, [`${ADMIN}/wt`]);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ msgId: 'rootRefsUnreadable', path: `${ADMIN}/wt` }]);
+      });
+    });
+
+    describe('When the store also holds garbage in its refs/bisect/bad', () => {
+      it('Then the badRefContent is still reported', async () => {
+        // Arrange
+        const ctx = await fromMain();
+        await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/bad`, GARBAGE);
+        refuseListing(ctx, [`${ADMIN}/wt`]);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { ref: 'worktrees/wt/refs/bisect/bad', msgId: 'badRefContent' },
+          { msgId: 'rootRefsUnreadable', path: `${ADMIN}/wt` },
+        ]);
       });
     });
   });

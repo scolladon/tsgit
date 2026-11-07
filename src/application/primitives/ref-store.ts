@@ -277,7 +277,12 @@ export type RefIntegrityFinding =
       readonly operation: 'open-directory' | 'stat';
       readonly path: string;
     }
-  | { readonly msgId: 'refsWalkFailed'; readonly path: string }
+  | {
+      readonly msgId: 'refsWalkFailed';
+      readonly path: string;
+      readonly reason: 'PERMISSION_DENIED' | 'NOT_A_DIRECTORY';
+    }
+  | { readonly msgId: 'rootRefsUnreadable'; readonly path: string }
   | {
       readonly table: string;
       readonly msgId: 'badReftableTable';
@@ -666,6 +671,8 @@ interface IntegrityRun {
 
 /** One ref store git's refs verify checks. `gitDir` is the common dir for the main store, the admin
  *  dir otherwise; `prefix` is "" or "worktrees/<id>/". */
+type RootKind = 'directory' | 'absent' | 'not-a-directory';
+
 interface IntegrityStore {
   readonly gitDir: string;
   readonly prefix: string;
@@ -1319,12 +1326,29 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  fails, where a directory below it is only warned about. */
   async function walkIntegrityRoot(store: IntegrityStore, run: IntegrityRun): Promise<void> {
     const root = `${store.gitDir}/${REFS_DIR}`;
+    const kind = await rootKind(root);
+    if (kind === 'absent') return;
+    if (kind === 'not-a-directory') {
+      run.findings.push({ msgId: 'refsWalkFailed', path: root, reason: 'NOT_A_DIRECTORY' });
+      return;
+    }
     const entries = await readdirForIntegrity(root, run.findings);
     if (entries === undefined) {
-      run.findings.push({ msgId: 'refsWalkFailed', path: root });
+      run.findings.push({ msgId: 'refsWalkFailed', path: root, reason: 'PERMISSION_DENIED' });
       return;
     }
     await walkIntegrityEntries(root, `${store.prefix}${REFS_DIR}`, entries, run);
+  }
+
+  /** A link at the root is not followed, whatever it points at. */
+  async function rootKind(root: string): Promise<RootKind> {
+    try {
+      const stat = await ctx.fs.lstat(root);
+      return stat.isDirectory && !stat.isSymbolicLink ? 'directory' : 'not-a-directory';
+    } catch (err) {
+      if (errorCodeOf(err) === 'FILE_NOT_FOUND') return 'absent';
+      throw err;
+    }
   }
 
   async function walkIntegrityEntries(
@@ -1514,7 +1538,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const run: IntegrityRun = { findings: [], ended: false };
     for (const store of await integrityStores()) {
       if (run.ended) break;
-      if (await isDirectoryPath(`${store.gitDir}/${REFS_DIR}`)) await walkIntegrityRoot(store, run);
+      await walkIntegrityRoot(store, run);
       if (!run.ended) run.findings.push(...(await rootRefFindings(store)));
     }
     return run.findings;
@@ -1532,7 +1556,9 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** git checks every root ref after the `refs/` walk, in the gitdir's listing order. */
   async function rootRefFindings(store: IntegrityStore): Promise<readonly RefIntegrityFinding[]> {
     const findings: RefIntegrityFinding[] = [];
-    for (const entry of await readdirInOsOrder(store.gitDir)) {
+    const entries = await listRootEntries(store.gitDir);
+    if (entries === undefined) return [{ msgId: 'rootRefsUnreadable', path: store.gitDir }];
+    for (const entry of entries) {
       if (!isRootRefName(entry.name)) continue;
       findings.push(
         ...(await looseBodyFindingsAt(
@@ -1542,6 +1568,15 @@ function createFilesRefStore(ctx: Context): RefStore {
       );
     }
     return findings;
+  }
+
+  async function listRootEntries(gitDir: string): Promise<ReadonlyArray<DirEntry> | undefined> {
+    try {
+      return await readdirInOsOrder(gitDir);
+    } catch (err) {
+      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
+      return undefined;
+    }
   }
 
   /** CAS guard shared by `set` / `setSymbolic` / `delete` — a no-op when `expected` is absent. */

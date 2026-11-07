@@ -18,14 +18,22 @@ type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
 type UnreadablePathFinding = FsckFinding & { readonly type: 'unreadable-ref-path' };
 type RefsVerifyEndedFinding = FsckFinding & { readonly type: 'refs-verify-ended' };
 type RefsWalkFailedFinding = FsckFinding & { readonly type: 'refs-walk-failed' };
+type UnreadableRootRefsFinding = FsckFinding & { readonly type: 'unreadable-root-refs' };
 type RefFinding = FsckFinding & {
   readonly type:
     | 'bad-ref'
     | 'no-default-references'
     | 'unreadable-ref-path'
     | 'refs-verify-ended'
-    | 'refs-walk-failed';
+    | 'refs-walk-failed'
+    | 'unreadable-root-refs';
 };
+
+type WalkNotice =
+  | BadRefFinding
+  | UnreadablePathFinding
+  | RefsWalkFailedFinding
+  | UnreadableRootRefsFinding;
 
 const NO_DEFAULT_REFERENCES: RefFinding = { type: 'no-default-references' };
 
@@ -113,8 +121,20 @@ const unreadablePathFinding = ({
 
 const refsWalkFailedFinding = ({
   path,
+  reason,
 }: Extract<RefIntegrityFinding, { readonly msgId: 'refsWalkFailed' }>): RefsWalkFailedFinding => ({
   type: 'refs-walk-failed',
+  path,
+  reason,
+});
+
+const unreadableRootRefsFinding = ({
+  path,
+}: Extract<
+  RefIntegrityFinding,
+  { readonly msgId: 'rootRefsUnreadable' }
+>): UnreadableRootRefsFinding => ({
+  type: 'unreadable-root-refs',
   path,
   reason: 'PERMISSION_DENIED',
 });
@@ -213,15 +233,18 @@ const refsWithInvalidReferent = (
 const walkNoticeOf = (
   finding: RefIntegrityFinding,
   symlinkGrade: FsckConfiguredSeverity,
-): BadRefFinding | UnreadablePathFinding | RefsWalkFailedFinding | undefined => {
+): WalkNotice | undefined => {
   if (finding.msgId === 'unreadableRefPath') return unreadablePathFinding(finding);
   if (finding.msgId === 'refsWalkFailed') return refsWalkFailedFinding(finding);
+  if (finding.msgId === 'rootRefsUnreadable') return unreadableRootRefsFinding(finding);
   if (finding.msgId !== 'symlinkRef' || symlinkGrade === 'ignore') return undefined;
   return { type: 'bad-ref', ref: finding.ref, msgId: 'symlinkRef', severity: symlinkGrade };
 };
 
 const failsRefsVerify = (found: RefFinding): boolean =>
-  found.type === 'refs-walk-failed' || (found.type === 'bad-ref' && found.severity === 'error');
+  found.type === 'refs-walk-failed' ||
+  found.type === 'unreadable-root-refs' ||
+  (found.type === 'bad-ref' && found.severity === 'error');
 
 /** Whether the root-ref check of the store `ref` belongs to already ended: each store's check
  *  ends at its own first error-severity finding, a prefixed `refs/` name not being a root ref. */
@@ -253,7 +276,7 @@ function collectContentNotices(
   const grades = gradesOf(severities);
   const symlinkGrade = retypeSeverity(severities, 'symlinkRef', 'warning');
   const shadowed = refsWithInvalidReferent(integrityFindings);
-  const findings: Array<BadRefFinding | UnreadablePathFinding | RefsWalkFailedFinding> = [];
+  const findings: WalkNotice[] = [];
   const rootCheckEnded = rootCheckEndedOf();
   for (const finding of integrityFindings) {
     if (!checkContentFormat) continue;
