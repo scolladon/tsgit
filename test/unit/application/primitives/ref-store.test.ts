@@ -1682,6 +1682,63 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a loose ref, a packed-only ref and a missing name', () => {
+    describe('When resolveDirectForWrite reads each', () => {
+      it.each([
+        {
+          shape: 'a loose ref',
+          name: 'refs/heads/loose',
+          expected: { kind: 'direct', id: 'a'.repeat(40) },
+        },
+        {
+          shape: 'a packed-only ref',
+          name: 'refs/tags/packed',
+          expected: { kind: 'direct', id: 'b'.repeat(40) },
+        },
+        { shape: 'a missing name', name: 'refs/heads/missing', expected: { kind: 'missing' } },
+      ])('Then it answers what resolveDirect answers for $shape', async ({ name, expected }) => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          packedRefs: [{ name: 'refs/tags/packed' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/loose`, `${'a'.repeat(40)}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirectForWrite(name as RefName);
+
+        // Assert
+        expect(result).toEqual(expected);
+        expect(result).toEqual(await sut.resolveDirect(name as RefName));
+      });
+    });
+  });
+
+  describe('Given a reftable repository with MERGE_HEAD as a file and a branch in the stack', () => {
+    describe('When resolveDirectForWrite reads each', () => {
+      it('Then MERGE_HEAD comes from the file and the branch from the stack', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await writeReftableFiles(ctx, commonReftableDir(ctx), [
+          {
+            name: 'table1.ref',
+            bytes: buildSingleRefTable('refs/heads/main', new Uint8Array(20).fill(0xaa)),
+          },
+        ]);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'cc'.repeat(20)}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const merge = await sut.resolveDirectForWrite('MERGE_HEAD' as RefName);
+        const branch = await sut.resolveDirectForWrite('refs/heads/main' as RefName);
+
+        // Assert
+        expect(merge).toEqual({ kind: 'direct', id: 'cc'.repeat(20) });
+        expect(branch).toEqual({ kind: 'direct', id: 'aa'.repeat(20) });
+      });
+    });
+  });
+
   describe('Given packed-refs is a symbolic link to a packed-refs file', () => {
     describe('When resolveDirect falls through to loadPackedRefs', () => {
       it('Then the followed file answers the name', async () => {
