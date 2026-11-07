@@ -6,11 +6,10 @@
 > `.git/worktrees/<id>` with the prefix `worktrees/<id>/`. tsgit walks only the current
 > worktree's view, reads each body by name instead of at the walked path, and crashes on
 > another worktree's garbage HEAD. Bring the ref-content pass to git's store-by-store walk.
-> Pinned on git 2.56.0. The user's decision points: walk scope, display names, exit bits per
-> fault, and whether 32.49 (`main-worktree/` resolution) folds in.
-> Status: draft → self-reviewed ×3
-
-<!-- cspell:ignore unlistable -->
+> Pinned on git 2.56.0. The read side of 32.49 (`main-worktree/` and `worktrees/<id>/` names
+> in the shared resolver) folds in (ADR-1158), so this change ticks backlog rows 32.48 and
+> 32.49; the write side stays out.
+> Status: draft → self-reviewed ×3 → revised against ADRs 1150–1162 (self-reviewed ×3)
 
 ## Context
 
@@ -50,6 +49,17 @@
     `parse_worktree_ref`-strips the name before applying `badHeadTarget`.
   - `loose_fill_ref_dir`, the listing side, skips every entry whose name starts with `.`
     or ends with `.lock`.
+  - `refs.c` `parse_worktree_ref` and `files-backend.c` `files_ref_path` locate every loose
+    read **and** write. `is_current_worktree_ref` is root-ref syntax or `refs/bisect/`,
+    `refs/worktree/`, `refs/rewritten/`.
+    - `worktrees/<id>/<bare>`, `<bare>` per-worktree (`REF_WORKTREE_OTHER`) →
+      `<common>/worktrees/<id>/<bare>`.
+    - `main-worktree/<bare>`, `<bare>` per-worktree (`REF_WORKTREE_MAIN`) → `<common>/<bare>`.
+    - any other name: the own gitdir when it is per-worktree (`REF_WORKTREE_CURRENT`), else
+      `<common>/<full name>` (`REF_WORKTREE_SHARED`), so `main-worktree/refs/heads/main` is
+      looked up at `<common>/main-worktree/refs/heads/main` and misses.
+    - `read_ref_internal` falls back to `packed-refs` on a loose `ENOENT`, under the **full**
+      name.
 - **tsgit today.**
   - `src/application/primitives/ref-store.ts`:
     - `verifyIntegrity` (L1512) walks `refsWalkRoots()` (L1115): `[common refs/, own refs/]`,
@@ -90,6 +100,28 @@
       fsck (A7 from `w`, A8 from `wt`).
   - `src/application/commands/internal/fsck/types.ts`: `unreadable-ref-path` (L68),
     `refs-walk-failed` (L78, `reason: 'PERMISSION_DENIED'` only), `refs-verify-ended` (L86).
+  - The shared resolver, `src/application/primitives/resolve-ref.ts`:
+    - `resolveDirectChain` (L205) follows every hop through `RefStore.resolveDirect`.
+      `readRefCandidate` (L159: the `rev-parse` ladder at rev-parse.ts L519/L533,
+      `internal/revision-name.ts`, `rev-list.ts`) and `resolveRef` (fsck's `targetOf`,
+      refs-verify.ts L287) sit on it.
+    - The write side shares the same reader: `internal/ref-write-chain.ts`
+      (`walkSymbolicChain`, `readReferentValue` through `resolveDirectChain`,
+      `resolveWithoutDeref`) and the store's own `checkExpected` (ref-store.ts L1533),
+      `refIsPresent` (L2132) and `stillHoldsPackedValue` (L2377).
+    - The files `resolveDirect` (ref-store.ts L1018) reads at `looseRefPath(refDir(name), name)`,
+      with `refDir` = `perWorktreeRefDir` (path-layout.ts L48): the own gitdir for a
+      per-worktree name, the common dir for any other. `readLooseContent` (L835), reached from
+      `leafAfterRefusedOpen` (L947), re-derives the same path from the name. The write routes
+      build their paths with the same `refDir` (L1832, L2071, …).
+    - Hence `main-worktree/HEAD` is looked up at `<common>/main-worktree/HEAD` and misses
+      (C3 `OBJECT_NOT_FOUND`; A25 and B8, where `targetOf` zero-points `refs/heads/x`).
+      `worktrees/<id>/<name>` lands at `<common>/worktrees/<id>/<name>`. For a per-worktree
+      `<name>` that is git's `REF_WORKTREE_OTHER` path, and for any other `<name>` it is git's
+      `REF_WORKTREE_SHARED` path. The two spellings are the same string, which is why A26, A27
+      and the `worktrees/` half of B14/C3 already match.
+    - The reftable backend locates names with `perWorktreeRefDir` too
+      (reftable-ref-store.ts L166).
   - The interop suite `test/integration/fsck-broken-ref-chain-interop.test.ts` has:
     - `printedPath` (L1176), which prints every linked-admin path absolute. That is wrong
       from the main cwd for refs-walk paths (B5, A11, A13, B6, P10 print `.git/worktrees/…`).
@@ -123,7 +155,8 @@ Oracle: **git 2.56.0** (Homebrew, macOS, APFS, non-root).
   linked worktree `vt`, or hand-make an admin dir (`HEAD`, `gitdir`, `commondir`).
 - "from w" means the cwd is the main worktree; "from wt" the linked one.
 - The tsgit column is `openRepository({ cwd }).fsck()` at the branch base adf96e8f. Listing
-  rows use `getRefStore(createNodeContext({ workDir })).listRefNames()/listRefs()`.
+  rows use `getRefStore(createNodeContext({ workDir })).listRefNames()/listRefs()`. C3 uses
+  `revParse(name)`; W14 uses `primitives.updateRef(name, oid, {})`.
 - `<B>` is the throwaway root as `mktemp` printed it, `<RB>` its realpath, `0{40}` the zero
   oid.
 - Rows marked ×3 or ×2 were re-run on fresh throwaways with the same outcome. P11 and P12
@@ -207,11 +240,13 @@ findings as `type ref msgId severity` (`bad-ref` is implied when the type is omi
 | H ×2 | wt admin dir mode 0300, nothing else | w | — (no line; `git refs verify` exits 255) | 8 | ✗ 0 | bit 8 with no git line (DC-5) |
 | P11 | A2 shape, `--no-references` | w | — | 0 | n/a | every store-walk finding dropped |
 | P12 | A2 shape, `-c fsck.badRefContent=warn` | w | `warning: worktrees/wt/refs/bisect/bad: badRefContent: garbage` | 0 | n/a | severity re-typed, no bit |
-| A25 | `refs/heads/x` = `ref: main-worktree/HEAD` | w, wt | `warning: refs/heads/x: symrefTargetIsNotARef: points to non-ref target 'main-worktree/HEAD'` | 0 | ✗ + `badRefOid` zero, 2 | 32.49 (DC-9) |
-| B8 | `refs/heads/x` = `ref: main-worktree/refs/bisect/bad` | w, wt | the same warning, that target | 0 | ✗ + `badRefOid` zero, 2 | 32.49 (DC-9) |
+| A25 | `refs/heads/x` = `ref: main-worktree/HEAD` | w, wt | `warning: refs/heads/x: symrefTargetIsNotARef: points to non-ref target 'main-worktree/HEAD'` | 0 | ✗ + `badRefOid` zero, 2 | `refs/heads/x symrefTargetIsNotARef info` only, exit 0: the chain resolves at `<common>/HEAD` (ADR-1158) |
+| B8 | `refs/heads/x` = `ref: main-worktree/refs/bisect/bad` | w, wt | the same warning, that target | 0 | ✗ + `badRefOid` zero, 2 | that finding only, exit 0: the chain resolves at `<common>/refs/bisect/bad` (ADR-1158) |
 | A26/A27 | `ref: worktrees/wt/HEAD`, `ref: worktrees/wt/refs/bisect/bad` | w, wt | — | 0 | ✓ (the path `<common>/worktrees/wt/…` exists, which matches git's `REF_WORKTREE_OTHER` path) | — |
-| B14/C3 | `rev-parse --verify`: `main-worktree/HEAD`, `worktrees/wt/HEAD`, `worktrees/wt/refs/bisect/bad` resolve; `main-worktree/refs/heads/main`, `worktrees/wt/refs/heads/side`, `worktrees/nope/HEAD` → `fatal: Needed a single revision` 128 | w, wt | — | — | ✗ `main-worktree/HEAD` throws `OBJECT_NOT_FOUND`; the rest ✓ | 32.49 (DC-9) |
+| B14/C3 | `rev-parse --verify`: `main-worktree/HEAD`, `worktrees/wt/HEAD`, `worktrees/wt/refs/bisect/bad` resolve; `main-worktree/refs/heads/main`, `worktrees/wt/refs/heads/side`, `worktrees/nope/HEAD` → `fatal: Needed a single revision` 128 | w, wt | — | — | ✗ `main-worktree/HEAD` throws `OBJECT_NOT_FOUND`; the rest ✓ | the three resolve to git's oid from both working directories; the three refused throw `OBJECT_NOT_FOUND` (ADR-1158) |
+| B15 | MAIN loose `refs/bisect/bad`; `packed-refs` holds `refs/bisect/packed` and `main-worktree/refs/bisect/fullname`; `rev-parse --verify` of `main-worktree/refs/bisect/bad`, `…/packed`, `…/fullname`, `main-worktree/ORIG_HEAD` (absent), `worktrees/wt` | w, wt | — ; `bad` and `fullname` resolve; `packed`, `ORIG_HEAD` and `worktrees/wt` → `fatal: Needed a single revision` 128: the packed fallback uses the full name | — | ✗ `bad` throws `OBJECT_NOT_FOUND`; the rest ✓ | `bad` resolves; the rest as today (ADR-1158) |
 | E1 | MAIN `refs/heads/a..b` = oid | w | `for-each-ref` and `branch`: `warning: ignoring ref with broken name refs/heads/a..b`, name omitted | 0 | ✗ `listRefs` includes it | out of perimeter (listing consumers) |
+| W14 | `update-ref <name> <older oid>` for `main-worktree/HEAD`, `main-worktree/refs/bisect/x`, `worktrees/wt/refs/bisect/y` (write side, git and tsgit each on a fresh throwaway) | wt | — ; git moves `refs/heads/main` through the main HEAD, writes `<common>/refs/bisect/x`, writes `<common>/worktrees/wt/refs/bisect/y` | 0 | ✗ the first two write the stray files `<common>/main-worktree/HEAD` and `<common>/main-worktree/refs/bisect/x`; the third ✓ | unchanged: the write side is out of this change (ADR-1158) and must not see the read-side mapping (DC-14) |
 
 **Path spelling in git's lines** (the interop harness rebuilds it; tsgit always reports the
 absolute path it opened):
@@ -280,6 +315,22 @@ absolute path it opened):
 10. **Listing.** A linked worktree whose own `refs` (or namespace) is not a directory lists
     nothing there and does not throw (B6 from `vt`). The rows DC-11 governs are listed there.
 11. A reftable repository behaves as today.
+12. **Read-side worktree ref namespace** (ADR-1158). On the files backend, every read through
+    `RefStore.resolveDirect` locates `main-worktree/<bare>` with a per-worktree `<bare>`
+    (`isPerWorktreeRef`) at `<common>/<bare>`. A loose miss there falls back to `packed-refs`
+    under the full name, as git's does (B15). `worktrees/<id>/<bare>` keeps today's
+    `<common>/worktrees/<id>/<bare>`, which is git's path for either kind of `<bare>`. Every
+    other name keeps today's location. So:
+    - `revParse` resolves `main-worktree/HEAD`, and `main-worktree/refs/bisect/bad` when the
+      main worktree holds it (B15), from either working directory. From the main one `<common>` is its
+      own gitdir (B14, C3).
+    - `main-worktree/refs/heads/main`, `worktrees/wt/refs/heads/side` and
+      `worktrees/nope/HEAD` stay unresolved (B14, C3).
+    - A symref chain through `ref: main-worktree/<per-worktree name>` resolves, so fsck's
+      snapshot adds no pointer (A25, B8).
+13. **Write side unchanged.** No write route sees requirement 12's mapping. Each one reads and
+    writes at today's location: the store's compare-and-swap and presence reads, and
+    the write chain in `ref-write-chain.ts` (DC-14). W14 stays as it is today.
 
 ## Design
 
@@ -295,6 +346,11 @@ refs-verify.ts runRefsVerifyPass
   └─ collectContentNotices: root check reset per store prefix; new grades
   └─ collectAbsentTargets: snapshot unchanged except unreadable HEADs no longer reported
                            and bad-named refs pointed at zero (DC-12)
+
+resolve-ref.ts resolveDirectChain ── RefStore.resolveDirect(name)
+                                       read locator: main-worktree/<pw> → <common>/<pw>
+ref-write-chain.ts, checkExpected,  ── RefStore.resolveDirectForWrite(name)   (DC-14 (a))
+refIsPresent                           write locator: refDir(name), as today
 ```
 
 `IntegrityStore` is internal to `createFilesRefStore`:
@@ -360,6 +416,63 @@ predicates in a new `src/domain/refs/loose-entry-name.ts`.
 - **`roots.ts`:** `worktreeContexts` builds on `linkedWorktreeAdmins`, so the reflog pass,
   the index pass, `rev-list`'s other-HEAD tips and the snapshot all take OS order (DC-8).
 
+### Read-side worktree ref namespace (ADR-1158)
+
+The domain gets git's `REF_WORKTREE_MAIN` arm of `parse_worktree_ref`:
+
+```ts
+// src/domain/refs/per-worktree-ref.ts
+/** The name `main-worktree/<bare>` stands for in the main worktree's store, when `<bare>` is
+ *  per-worktree; `undefined` for every other name, which git looks up as spelled. */
+export const mainWorktreeBareName = (name: RefName): RefName | undefined
+```
+
+The files store keeps two loose locators:
+
+```ts
+interface LooseLocation {
+  readonly dir: string;  // the git dir the name is stored under (packed-refs probe, ENOTDIR climb root)
+  readonly path: string; // the loose file
+}
+writeLocation(name) = { dir: refDir(name), path: looseRefPath(refDir(name), name) }  // today
+readLocation(name)  = mainWorktreeBareName(name) === undefined
+  ? writeLocation(name)
+  : { dir: commonGitDir(ctx), path: looseRefPath(commonGitDir(ctx), bare) }
+```
+
+- **Reads.** Today's `resolveDirect` body becomes `resolveDirectAt(name, location)`.
+  `RefStore.resolveDirect(name)` = `resolveDirectAt(name, readLocation(name))`. `HEAD` keeps
+  `resolveHeadDirect` before either locator. `readLooseContentAt(path)` (Part 3) already
+  serves `leafAfterRefusedOpen` with the path it was given, so the read locator reaches the
+  plain-reader fallback too. The packed fallback keeps the full name (`resolveAfterLooseMiss(name, dir, path)`).
+- **No `worktrees/<id>/` branch.** Today's location already spells git's path for both kinds
+  of `<bare>`, so a branch for it would only add an equivalent mutant. The B14, C3, A26 and A27
+  unit and interop rows pin the path.
+- **Writes: the guard** (DC-14, written here as its recommendation (a); the planning phase
+  takes the ratified option). `RefStore` gains `resolveDirectForWrite(name)` =
+  `resolveDirectAt(name, writeLocation(name))`. It is the only reader on a write route:
+  - the store's `checkExpected` and `refIsPresent`, which take names from the caller's
+    updates;
+  - `ref-write-chain.ts`: `walkSymbolicChain` and `resolveWithoutDeref` call it, and
+    `readReferentValue` hands `resolveDirectChain` the write view
+    `{ resolveDirect: store.resolveDirectForWrite }`.
+
+  `resolveDirectChain`'s first parameter narrows to `Pick<RefStore, 'resolveDirect'>`, so
+  the write chain can hand it the write view. The guard is those call sites, pinned by the
+  fake-store test in Part 7; nothing in the type system stops a new write route from calling
+  `resolveDirect`, so the doc comment on `resolveDirectForWrite` names the rule. The reftable store sets
+  `resolveDirectForWrite: resolveDirect`, and `withPseudoRefFiles` routes both methods.
+  Readers on a write route whose names the read locator never maps stay on `resolveDirect`:
+  `stillHoldsPackedValue` (names from the loose walk under `refs/`), `update-ref.ts` L255
+  (`HEAD`) and `branch.ts` L315/L529 (`refs/heads/*`).
+- **fsck and rev-parse need no code.** fsck's `targetOf` → `resolveRef`, and `revParse` →
+  `readRefCandidate`, both reach the read locator through `resolveDirectChain`. The
+  `symrefTargetIsNotARef` info on `main-worktree/…` referents stays as it is today.
+- **From the main worktree,** `main-worktree/HEAD` is read at `<common>/HEAD` (its own HEAD)
+  by the loose reader, not by `resolveHeadDirect`. Both readers apply `resolveSymlinkedRef`'s
+  rule, so the value is the same. No row pins a symlinked main HEAD read through the
+  namespace.
+
 ### Parts
 
 **Part 1 — domain predicates.**
@@ -367,8 +480,8 @@ predicates in a new `src/domain/refs/loose-entry-name.ts`.
 | | |
 |---|---|
 | Files | `src/domain/refs/per-worktree-ref.ts`; new `src/domain/refs/loose-entry-name.ts`; `src/domain/refs/symref-referent.ts` |
-| Add | `linkedWorktreeRefPrefix(id: string): string` → `` `worktrees/${id}/` ``; `bareStoreRefName(name: string): string` (strips one leading `worktrees/<id>/`, else identity); `isSkippedByRefsVerify(basename: string): boolean` (`!startsWith('.') && endsWith('.lock')`); `isSkippedByLooseIterator(basename: string): boolean` (`startsWith('.') \|\| endsWith('.lock')`); `isBranchReferent(referent: string): boolean` (`startsWith('refs/heads/')`) |
-| Tests | `test/unit/domain/refs/per-worktree-ref.test.ts`, new `loose-entry-name.test.ts`, `symref-referent.test.ts` (one row per branch of each predicate; `.lock`, `.x.lock`, `x.locked`, `.hidden`). Property lenses: these are not parsers and have no round-trip, so no `*.properties.test.ts`. Record why in the PR. |
+| Add | `linkedWorktreeRefPrefix(id: string): string` → `` `worktrees/${id}/` ``; `bareStoreRefName(name: string): string` (strips one leading `worktrees/<id>/`, else identity); `isSkippedByRefsVerify(basename: string): boolean` (`!startsWith('.') && endsWith('.lock')`); `isSkippedByLooseIterator(basename: string): boolean` (`startsWith('.') \|\| endsWith('.lock')`); `isBranchReferent(referent: string): boolean` (`startsWith('refs/heads/')`); `mainWorktreeBareName(name: RefName): RefName \| undefined` (the remainder after `main-worktree/` when `isPerWorktreeRef` accepts it, else `undefined`) |
+| Tests | `test/unit/domain/refs/per-worktree-ref.test.ts`, new `loose-entry-name.test.ts`, `symref-referent.test.ts` (one row per branch of each predicate; `.lock`, `.x.lock`, `x.locked`, `.hidden`). `mainWorktreeBareName`: `main-worktree/HEAD` → `HEAD`, `main-worktree/ORIG_HEAD`, `main-worktree/refs/bisect/bad`, `main-worktree/refs/worktree/x`, `main-worktree/refs/rewritten/x` → the remainder; `main-worktree/refs/heads/main`, `refs/heads/main`, `HEAD`, `worktrees/wt/HEAD`, `main-worktreeX/HEAD` → `undefined`. Property lenses: the four predicates are not parsers and have no round-trip, so they get no property. `mainWorktreeBareName` is a name parser: new `per-worktree-ref.properties.test.ts`, built on `test/unit/domain/refs/arbitraries.ts`. Round-trip: `mainWorktreeBareName('main-worktree/' + n) === n` for every per-worktree `n`. Totality: `undefined` for every shared `n`, and for any name without the prefix. |
 
 **Part 2 — linked worktree enumeration in OS order.**
 
@@ -384,8 +497,8 @@ predicates in a new `src/domain/refs/loose-entry-name.ts`.
 | | |
 |---|---|
 | Files | `src/application/primitives/ref-store.ts` |
-| Change | `verifyIntegrity` (L1512) → loop over `integrityStores()` = main `{ gitDir: commonGitDir(ctx), prefix: '' }` ++ `linkedWorktreeAdmins(ctx)`; `walkIntegrityRoot` (L1322) gains the `RootKind` lstat and the `NOT_A_DIRECTORY` finding; `walkIntegrityEntries` (L1331) names `${prefix}${relative}` and calls `looseBodyFindingsAt(name, path)`; `looseBodyFindings` (L1468) → `looseBodyFindingsAt(name: RefName, path: string)`; `readLooseContentOrRefusal` (L1438) takes `path`; `rootRefFindings` (L1523) takes the store (`readdirInOsOrder(store.gitDir)`; a `PERMISSION_DENIED` listing pushes the DC-5 finding); `isSkippedByRefsVerify` on non-directory entries. Remove `refsWalkRoots` (L1115) once unused. |
-| Types | `RefIntegrityFinding` (L247): `refsWalkFailed` gains `reason: 'PERMISSION_DENIED' \| 'NOT_A_DIRECTORY'`; add the DC-5 arm `{ msgId: 'rootRefsUnlisted'; path: string }` |
+| Change | `verifyIntegrity` (L1512) → loop over `integrityStores()` = main `{ gitDir: commonGitDir(ctx), prefix: '' }` ++ `linkedWorktreeAdmins(ctx)`; `walkIntegrityRoot` (L1322) gains the `RootKind` lstat and the `NOT_A_DIRECTORY` finding; `walkIntegrityEntries` (L1331) names `${prefix}${relative}` and calls `looseBodyFindingsAt(name, path)`; `looseBodyFindings` (L1468) → `looseBodyFindingsAt(name: RefName, path: string)`; `readLooseContentOrRefusal` (L1438) takes `path`; `readLooseContent(name)` (L835) → `readLooseContentAt(path)`, its other caller `leafAfterRefusedOpen` (L947) passing the path it holds; `rootRefFindings` (L1523) takes the store (`readdirInOsOrder(store.gitDir)`; a `PERMISSION_DENIED` listing pushes the DC-5 finding); `isSkippedByRefsVerify` on non-directory entries. Remove `refsWalkRoots` (L1115) once unused. |
+| Types | `RefIntegrityFinding` (L247): `refsWalkFailed` gains `reason: 'PERMISSION_DENIED' \| 'NOT_A_DIRECTORY'`; add the DC-5 arm `{ msgId: 'rootRefsUnreadable'; path: string }` |
 | Keep | `gitDirToStrip` (L1382) and `linkReferentFindings` (L1393) unchanged: they already strip the cwd's gitdir (requirement 7) |
 | Tests | `test/unit/application/primitives/ref-store.test.ts` (main/linked naming, read-at-path for A5/A16/A20, root kinds B6/P10/S9/A10/A11, root refs P3/S10/P2, run end across stores P4/P5/Q7, `.lock` B7); `ref-store-symlinked-refs.test.ts` (A1/B12/B13 from both working directories, foreign store stripped by the cwd's gitdir) |
 
@@ -410,42 +523,71 @@ predicates in a new `src/domain/refs/loose-entry-name.ts`.
 | | |
 |---|---|
 | Files | `src/application/commands/internal/fsck/refs-verify.ts`, `roots.ts`, `types.ts` |
-| Change | `collectContentNotices` (L233): per-store `rootCheckEnded` keyed on the `worktrees/<id>/` prefix, root test on `bareStoreRefName`; `CONTENT_MSG_IDS`, `ContentFinding`, `ContentGrades`/`gradesOf`, `ownGrade`, `contentFinding` gain `badRefName` and `badHeadTarget`; `badHeadTarget` (error) shadows the same ref's referent facts; `walkNoticeOf` (L212) maps `rootRefsUnlisted`; `refsWalkFailedFinding` copies `reason`; `failsRefsVerify` (L222) counts the DC-5 arm; `snapshotTargets` (L305) zero-points a listed name failing `isSafeRefName`; delete `unreadableHeadFinding` (L325) and `RefSnapshot.unreadable`; `headOf` (roots.ts L907) returns `NO_HEAD` on `INVALID_OBJECT_ID` and drops the `unreadable` read; `WorktreeHeadSnapshot.unreadable` and `UnreadableHead` go. `types.ts` L78 widens `reason`; add the DC-5 arm |
+| Change | `collectContentNotices` (L233): per-store `rootCheckEnded` keyed on the `worktrees/<id>/` prefix, root test on `bareStoreRefName`; `CONTENT_MSG_IDS`, `ContentFinding`, `ContentGrades`/`gradesOf`, `ownGrade`, `contentFinding` gain `badRefName` and `badHeadTarget`; `badHeadTarget` (error) shadows the same ref's referent facts; `walkNoticeOf` (L212) maps `rootRefsUnreadable` to the new `unreadable-root-refs` arm; `refsWalkFailedFinding` copies `reason`; `failsRefsVerify` (L222) counts the DC-5 arm; `snapshotTargets` (L305) zero-points a listed name failing `isSafeRefName`; delete `unreadableHeadFinding` (L325) and `RefSnapshot.unreadable`; `headOf` (roots.ts L907) returns `NO_HEAD` on `INVALID_OBJECT_ID` and drops the `unreadable` read; `WorktreeHeadSnapshot.unreadable` and `UnreadableHead` go. `types.ts` L78 widens `reason`; add the DC-5 arm `{ type: 'unreadable-root-refs'; path: string; reason: 'PERMISSION_DENIED' }` |
 | Tests | `test/unit/application/commands/fsck-worktree-heads.test.ts` (L250 block: P1 `ref` unchanged, now from the walk; P2's `ref` becomes `HEAD`; A7, A8 no throw), `fsck-broken-ref-chain.test.ts` (per-store root stop P3), `fsck-configured-severity.test.ts` (P12, `fsck.badRefName`, `fsck.badHeadTarget`), `fsck-symlinked-ref.test.ts` (prefixed names), `fsck.test.ts` (P11) |
 
-**Part 7 — interop.**
+**Part 7 — the read-side worktree ref namespace.**
+
+| | |
+|---|---|
+| Files | `src/application/primitives/ref-store.ts`; `src/application/primitives/resolve-ref.ts`; `src/application/primitives/internal/ref-write-chain.ts` |
+| Decision | DC-14 must be ratified first; the rows below assume its recommendation (a). Under (b), `resolveDirectForWrite` and the `Pick` narrowing drop out and the write-route rows change |
+| Change | In `createFilesRefStore` (L797): add `writeLocation`/`readLocation` (see "Read-side worktree ref namespace"); today's `resolveDirect` (L1018) body becomes `resolveDirectAt(name, location)`; `resolveDirect` uses `readLocation`; new `resolveDirectForWrite` uses `writeLocation`; `checkExpected` (L1533) and `refIsPresent` (L2132) call `resolveDirectForWrite`; `stillHoldsPackedValue` (L2377) stays on `resolveDirect` (walked names only). `RefStore` (L93) gains `resolveDirectForWrite(name: RefName): Promise<ResolveDirectResult>`; `withPseudoRefFiles` (L694) routes it as it routes `resolveDirect`; `createReftableRefStore` returns `resolveDirectForWrite: resolveDirect`. `resolveDirectChain(refStore: Pick<RefStore, 'resolveDirect'>, …)` (resolve-ref.ts L205). `ref-write-chain.ts`: `walkSymbolicChain` (L49) and `resolveWithoutDeref` (L106) call `store.resolveDirectForWrite`; `readReferentValue` (L88) passes `{ resolveDirect: store.resolveDirectForWrite }`. No change in `rev-parse.ts`, `refs-verify.ts` or `path-layout.ts` |
+| Keep | `refDir`/`perWorktreeRefDir` and every write path builder unchanged (requirement 13); `resolveHeadDirect` for `HEAD` |
+| Tests | `test/unit/application/primitives/commondir-refs.test.ts` (main and child Contexts: `main-worktree/HEAD`, `main-worktree/refs/bisect/bad` loose; B15's packed pair: `main-worktree/refs/bisect/packed` missing although `refs/bisect/packed` is packed, `main-worktree/refs/bisect/fullname` found under its full packed name; `main-worktree/refs/heads/main` missing even when `refs/heads/main` exists, `worktrees/wt/HEAD`, `worktrees/wt/refs/bisect/bad`, `worktrees/wt/refs/heads/side` and `worktrees/nope/HEAD` missing); `resolve-ref.test.ts` (`resolveRef` through `refs/heads/x` = `ref: main-worktree/HEAD` → main HEAD → `refs/heads/main`; `readRefCandidate('main-worktree/HEAD')` found from both Contexts); `ref-write-chain.test.ts` (the guard: a fake `RefStore` whose `resolveDirect` and `resolveDirectForWrite` answer differently; `walkSymbolicChain`, `resolveWithoutDeref` and `readReferentValue` consume only `resolveDirectForWrite`); `ref-store-transaction-prepare.test.ts` (one characterization row per store-internal write reader, `checkExpected` and `refIsPresent`, on a mapped name: it reads at `writeLocation`, as today. The write-side change flips these rows); `fsck-broken-ref-chain.test.ts` (A25, B8: `symrefTargetIsNotARef` only, no `badRefOid`, exit 0); `rev-parse.test.ts` (C3 from both Contexts) |
+
+**Part 8 — interop.**
 
 | | |
 |---|---|
 | Files | new `test/integration/fsck-worktree-private-refs-interop.test.ts`; `test/integration/fsck-broken-ref-chain-interop.test.ts` |
 | New suite | Its own seeder: main repo + N linked worktrees in a given creation order + hand-made admin dirs + `files`/`links`/`restricted` keyed by gitdir-relative path; cwd `w` or a named worktree. One row per required-column row above. Content and walk lines compared as a sorted multiset, pointer lines in sequence (house rule); the die rows (P4, P5, Q7) compare the whole multiset, so a lost store shows. Store order (P6, Q7) is derived from git's own output on the same throwaway, never hard-coded (lesson 026). Every `openRepository`/`createNodeContext` goes through `test/integration/repository-lifecycle.ts` `trackedRepositories`/`trackedContexts` from the first draft. Rows needing `chmod` are POSIX + non-root only, as `UNPRIVILEGED` gates them today. |
+| Rows from Part 7 | fsck rows A25, B8 and A26/A27 (regression), from `w` and `wt`. `rev-parse --verify` rows B14/C3 from `w` and `wt`: git's `rev-parse --verify <name>` against `revParse(name)` on the same throwaway, rebuilt from structured fields: a single `object` entry prints its `id`, exit 0; `OBJECT_NOT_FOUND` rebuilds `fatal: Needed a single revision`, exit 128. Names: `main-worktree/HEAD`, `worktrees/wt/HEAD`, `worktrees/wt/refs/bisect/bad` (seeded at `.git/worktrees/wt/refs/bisect/bad`), `main-worktree/refs/heads/main`, `worktrees/wt/refs/heads/side`, `worktrees/nope/HEAD`; and B15's names on its own throwaway. |
 | Old suite | `shownRef` (L1198) is deleted: tsgit now carries the prefix. `printedPath` (L1176) follows the spelling rule above (linked cwd: absolute; main cwd: relative except a linked store's root-ref path). The body lookup in `rebuiltLines` strips the prefix before indexing `row.refs`/`row.root`. |
 
-**Part 8 — docs.**
+**Part 9 — docs.**
 
 | | |
 |---|---|
-| Files | `docs/use/commands/fsck.md` (L131, L163, L180, L270, new arm row); `docs/design/fsck.md` msg-id table (`badRefName`, `badHeadTarget` now emitted); `docs/design/fsck-broken-ref-chain-unreadable.md` L616 (replace the unpinned assumption with a pointer to this design's A1/B12/B13) |
+| Files | `docs/use/commands/fsck.md` (L131, L163, L180, L270, new arm row); `docs/design/fsck.md` msg-id table (`badRefName`, `badHeadTarget` now emitted); `docs/design/fsck-broken-ref-chain-unreadable.md` L616 (replace the unpinned assumption with a pointer to this design's A1/B12/B13); `docs/use/commands/rev-parse.md` (`main-worktree/<per-worktree ref>` and `worktrees/<id>/<per-worktree ref>` resolve; other names under those prefixes do not); `docs/BACKLOG.md` ticks rows 32.48 and 32.49 (the documentation phase does the tick) |
+
+## Decisions
+
+Every candidate of the first draft is settled. The planning phase reads these rows, not the
+earlier alternatives, which live in each ADR.
+
+| # | Choice | ADR | Outcome | Settled as |
+|---|---|---|---|---|
+| DC-1 | Walk scope and store enumeration | ADR-1150 | adopted as recommended | every store from any cwd, through `linkedWorktreeAdmins` (id, admin dir, OS order, `gitdir` skip rule), which `worktreeContexts` also builds on |
+| DC-2 | Where the store loop lives | ADR-1151 | adopted as recommended | inside `verifyIntegrity()`, no signature change, one `IntegrityRun` across stores |
+| DC-3 | Display names | ADR-1152 | ratified by the user | `worktrees/<id>/` + bare name in `ref` for every linked store, the current one included; bare for the main store; `badRefOid` keeps the current view's bare names; P2's `ref` becomes `HEAD`; breaking data change named in the changelog |
+| DC-4 | A store root that is not a directory | ADR-1153 | adopted as recommended | `refs-walk-failed` with `reason: 'NOT_A_DIRECTORY'`, no `unreadable-ref-path` |
+| DC-5 | A store gitdir whose root refs cannot be listed | ADR-1154 | adopted as recommended | integrity finding `rootRefsUnreadable` → arm `{ type: 'unreadable-root-refs'; path; reason: 'PERMISSION_DENIED' }`, bit 8, gated by `checkReferences`, rendered as no line |
+| DC-6 | Source of an unreadable HEAD's `cannotReadRef` | ADR-1155 | adopted as recommended | the store walk's root-ref step; `UnreadableHead`, `WorktreeHeadSnapshot.unreadable` and `unreadableHeadFinding` are retired |
+| DC-7 | Garbage HEAD in the snapshot | ADR-1156 | adopted as recommended | `headOf` treats `INVALID_OBJECT_ID` as "names nothing"; the shared HEAD reader is unchanged |
+| DC-8 | Worktree order | ADR-1157 | adopted as recommended | OS `readdir` order in `linkedWorktreeAdmins`, inherited by every `worktreeContexts` caller |
+| DC-9 | 32.49 (`main-worktree/` resolution) | ADR-1158 | ratified by the user **against** the recommendation | the read side folds in: requirement 12, Part 7, the A25/B8/B14/B15/C3 rows; write routes stay out (requirement 13, DC-14) |
+| DC-10 | `badHeadTarget` | ADR-1159 | adopted as recommended | one fact on every store's `HEAD`, graded by `fsck.badHeadTarget`; when error it shadows `badReferentName` and `symrefTargetIsNotARef` |
+| DC-11 | `.lock` and dot-led names | ADR-1160 | ratified by the user | both halves: `isSkippedByRefsVerify` in the integrity walk, `isSkippedByLooseIterator` in `walkRefDir` |
+| DC-12 | `badRefName` | ADR-1161 | adopted as recommended | the content fact on the prefixed name with `isSafeRefName`, plus a zero pointer in `snapshotTargets` for a listed name failing it |
+| DC-13 | Interop layout | ADR-1162 | adopted as recommended | new suite `test/integration/fsck-worktree-private-refs-interop.test.ts` with a multi-worktree seeder; the old suite drops `shownRef` and fixes `printedPath` |
 
 ## Decision candidates
 
+The fold of ADR-1158 raises one new load-bearing choice. Two others it might have raised are
+pinned and leave nothing to choose:
+
+- From the main worktree, `main-worktree/<pw>` is located at `<common>/<pw>`, its own gitdir
+  (B14 from `w`).
+- `worktrees/<id>/<pw>` whose admin dir is missing reads at a path that does not exist and
+  stays unresolved (B14 `worktrees/nope/HEAD`). `worktrees/<id>` with no slash is unresolved
+  too (B15).
+
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC-1 | Walk scope and store enumeration | (a) every store from any cwd; a lightweight primitive `linkedWorktreeAdmins` (id, admin dir, OS order, `gitdir` skip rule) that `worktreeContexts` also builds on; (b) every store through `worktreeContexts`' derived Contexts and `getRefStore(worktreeCtx)` per store; (c) the current worktree only, prefix added | **(a)** | git walks every store from any cwd (A1, A2, A16, A20, C4). (b) needs the cwd's gitdir for stripping (A1 from `w` would turn into an error), mints a Context per store (lesson 030) and pulls a command-layer helper into primitives. (c) stays red on A1, A2, A16, A20 and C4 from `w`. |
-| DC-2 | Where the store loop lives | (a) inside `verifyIntegrity()`, no signature change, one `IntegrityRun` across stores; (b) `verifyIntegrity(store)` per store, looped in `refs-verify.ts` | **(a)** | `RefStore.verifyIntegrity` keeps meaning "git's `refs verify`". The run's end crosses stores for free (P4, P5, Q7). The reftable backend keeps its no-argument method and is not walked N times. |
-| DC-3 | Display names | (a) prefix in `ref` (`worktrees/<id>/…` for every linked store, the current one included; bare for main), as git's refname namespace and `unreadableHeadFinding` already do; (b) bare `ref` + `worktree?: string`; (c) both | **(a)** | git's name is the datum (A2 from `wt`). Names are unique across stores. The interop drops `shownRef`. Consequence: from a linked cwd, the own garbage ref reports `worktrees/wt/refs/bisect/bad badRefContent` beside `refs/bisect/bad badRefOid`, exactly git's pair. This changes the `ref` a consumer sees on a linked cwd today: a breaking data change to name in the changelog. |
-| DC-4 | A store root that is not a directory (B6, P10, S9) | (a) `refs-walk-failed` with `reason: 'NOT_A_DIRECTORY'`, no `unreadable-ref-path`, rendered `error: cannot open directory <p>: Not a directory`; (b) a new arm `refs-root-not-directory` | **(a)** | It is the same git outcome (the iteration over a root failed, bit 8). The reason already discriminates the line. One arm stays one arm. |
-| DC-5 | A store gitdir whose root refs cannot be listed (H: bit 8, no line) | (a) a new arm `{ type: 'unlistable-root-refs'; path; reason: 'PERMISSION_DENIED' }`, bit 8, gated, rendered as no line; (b) bit 8 with no finding (the cache-tree precedent in the exit table); (c) map it onto `refs-walk-failed` | **(a)** | ADR-249 wants the data behind every bit. (b) leaves an exit code no finding explains. (c) would render `failed to iterate over`, which git never prints here. |
-| DC-6 | The source of an unreadable HEAD's `cannotReadRef` | (a) the store walk's root refs; the snapshot's `UnreadableHead` is retired; P2's `ref` becomes `HEAD`; (b) keep the snapshot as the source and skip `HEAD` in the root-ref walk | **(a)** | git's line is the child's (`git refs verify` alone prints it: P1, P2). Under (a) the error also ends that store's root check as git's does. (b) would let later root refs of that store report where git stops. |
-| DC-7 | Garbage foreign HEAD in the snapshot (A7, A8) | (a) `headOf` treats `INVALID_OBJECT_ID` as "names nothing"; (b) the HEAD reader (`resolveHeadDirect` → `parseLooseRef`) throws `INVALID_REF` for an unparseable body | **(a)** | It is local to fsck's snapshot. (b) changes a shared reader on every HEAD route (gc retention, rev-list, …), none of them pinned for this. |
-| DC-8 | Worktree order | (a) OS `readdir` order in `linkedWorktreeAdmins`, which every `worktreeContexts` caller inherits (the reflog pass, the index pass, `rev-list` other-HEAD tips, the snapshot); (b) OS order for the store walk only, `worktreeContexts` stays sorted | **(a)** | Q7 (×3) pins it for the store walk and R1/R2 (×2) for the reflog pass. git has one `get_worktrees`. (b) keeps a proven wrong order (R1) and two enumerations. Risk: `rev-list`'s "first absent other HEAD dies" now follows OS order. That is git's order, but no row pins it. |
-| DC-9 | 32.49 (`main-worktree/` resolution) | (a) keep it separate: ship next in the same release-order row; (b) fold the read side: `resolveDirect` maps `main-worktree/<per-worktree>` to the main worktree's store (and its HEAD reader), plus the A25/B8/B14 interop rows | **(a)** | Its locus is the shared resolver, which reaches `rev-parse`, `log`, symbolic-ref chains and the write routes (`perWorktreeRefDir` serves writes too), and each needs pins of its own. `worktrees/<id>/…` already resolves where git does (A26, A27, B14). This change shares no code with it: the store walk knows each bare name without parsing. |
-| DC-10 | `badHeadTarget` (B3 in family, C1 the main-store twin) | (a) fold: one fact in the walk, a grade, a shadow rule; (b) leave it out | **(a)** | It is the same code line for every store's `HEAD`, so folding B3 folds C1. The cost is one msgId already catalogued, plus 2 unit and 3 interop rows. |
-| DC-11 | `.lock` and dot names (B7 in family; C2, Q8 and Q9 the rest) | (a) fold both halves: the integrity walk skips `*.lock` unless dot-led, and the listing skips dot-led and `*.lock`; (b) the walk only; (c) leave it out | **(a)** | (b) leaves B7 at exit 2, because the listing still zero-points `bad.lock`. The listing half is git's `loose_fill_ref_dir`: `for-each-ref` and `branch` hide `y.lock` (Q8). It reaches every listing consumer, faithfully. The cost is two predicates and two call sites. |
-| DC-12 | `badRefName` (A24 in family; B1 and Q9 the rest) | (a) fold: the content fact on the prefixed name with `isSafeRefName`, plus a zero pointer in fsck's snapshot for a listed name failing it; (b) the content fact only; (c) leave it out | **(a)** | Both halves are fsck-local. (b) leaves A24 from `wt` and B1 at 8 where git gives 10. Hiding broken names from `branch`/`for-each-ref` (E1) is outside the perimeter and stays out. Risk: `isSafeRefName` also rejects the Unicode direction overrides, which git's `check_refname_format` may accept (see Risks). |
-| DC-13 | Interop layout | (a) a new suite `fsck-worktree-private-refs-interop.test.ts` with a multi-worktree seeder, plus the minimal harness edits to the old one; (b) extend `fsck-broken-ref-chain-interop.test.ts` | **(a)** | The old suite (1461 lines) seeds one linked worktree. These rows need several, in a set creation order, plus hand-made admin dirs. The old suite still has to drop `shownRef` and fix `printedPath`, because its linked rows change names. |
+| DC-14 | How the write side is kept off the read-side mapping (requirement 13) | (a) two locators in the files store: `resolveDirect` reads at `readLocation`, a new port method `resolveDirectForWrite` reads at today's `writeLocation`; every write-route reader that can meet a mapped name takes it (`checkExpected`, `refIsPresent`, `ref-write-chain.ts`), and `resolveDirectChain` narrows to `Pick<RefStore, 'resolveDirect'>` so the write chain hands it the write view; (b) map inside `resolveDirect` for every caller and leave the write path builders on `refDir` | **(a)** | (a) keeps every write route byte-identical to today (W14 unchanged) until the write side is pinned, as ADR-1158 requires. The guard is the routed call sites, each pinned by a test. (b) is one edit, but a write would then read at one path and write at another. With a detached main HEAD, `updateRef('main-worktree/HEAD')` would compare against `<common>/HEAD` and write the stray `<common>/main-worktree/HEAD`. With a symbolic main HEAD the chain would follow it to `refs/heads/main`. That matches W14's git row, but only by accident, and the rest of the write side would change without pins. A refusal of these names on the write routes is not an option: git accepts all three writes (W14), and an unpinned refusal is the regression the house rules forbid. |
 
-Pinned, no choice left (recorded so the decisions phase does not reopen them):
+Pinned, no choice left:
 
 - the cwd-relative referent strip (requirement 7: A1, A6, B12, B13);
 - the exit bits of requirement 5;
@@ -465,15 +607,23 @@ Pinned, no choice left (recorded so the decisions phase does not reopen them):
 - **Order tests** use a fake `readdirInOsOrder` that returns a non-sorted order, and assert
   that the findings follow it (DC-8). One more test proves the fallback to `readdir` when
   the capability is absent.
-- **Interop** (Part 7). Every row of the matrix that is not n/a, from each cwd it was pinned
-  from. Git's lines are the oracle; tsgit's are rebuilt from structured fields (ADR-249).
+- **Resolver unit rows** (Part 7). One test per locator branch: a mapped name, a
+  `main-worktree/` name whose remainder is shared, a name without the prefix, and the
+  `worktrees/<id>/` path identity. One test per write-route reader proves it reads at
+  `writeLocation`: through a fake store for the write chain, and as characterization rows
+  for the store's own readers. Run on both a main and a derived worktree Context.
+- **Interop** (Part 8). Every row of the matrix that is not n/a or out of scope (E1, W14),
+  from each cwd it was pinned from. That includes the `rev-parse --verify` rows (B14, B15,
+  C3), rebuilt from `revParse`'s structured result. Git's lines are the oracle; tsgit's are rebuilt from structured fields (ADR-249).
   OS-order rows derive their expectation from git's output on the same throwaway, and run on
   fresh fixtures several times per lesson 022/023 (the suite's `it` repeats the arrange; no
   hard-coded order).
 - **Mutation.** Run Stryker narrowed per mutated file, on its own suites
   (`.claude/workflow/mutation.md`). The likely survivors are the prefix-key reset in
-  `collectContentNotices` and the dot-led exception in `isSkippedByRefsVerify`; each has an
-  isolated test.
+  `collectContentNotices`, the dot-led exception in `isSkippedByRefsVerify`, the
+  `isPerWorktreeRef` conjunct in `mainWorktreeBareName`, and the `readLocation` branch (its
+  `dir` matters only to the packed probe and the `ENOTDIR` climb, so B15's packed pair and a
+  blocked-path row kill it). Each has an isolated test.
 - **Coverage** 100% on the touched files; no ignore directives.
 
 ## Risks
@@ -490,11 +640,30 @@ Pinned, no choice left (recorded so the decisions phase does not reopen them):
 - **Platform.** Every row was pinned on APFS. OS order differs on ext4, and the interop derives
   it from git on the same directory. Windows has no 000 modes, so the chmod rows are POSIX-only.
 - **Cost.** One `readdir` of `.git/worktrees`, one `gitdir` read per entry, and one walk per
-  linked store's `refs`. Linked stores hold few refs; the main-store walk is unchanged.
+  linked store's `refs`. Linked stores hold few refs; the main-store walk is unchanged. The
+  read locator adds one `startsWith` per `resolveDirect` call that misses the prefix.
+- **Read and write disagree on `main-worktree/<pw>`.** After Part 7 a read of
+  `main-worktree/HEAD` answers the main HEAD, while `updateRef('main-worktree/HEAD')` still
+  writes the stray `<common>/main-worktree/HEAD` (W14, as today). DC-14 keeps that gap
+  self-consistent on the write side (the write side reads and writes the same path); closing
+  it needs the write-side pins.
+- **`RefStore` port grows** `resolveDirectForWrite`. The interface is internal:
+  `reports/api.json` carries no `RefStore` symbol.
+- **Reftable** resolves `main-worktree/…` as it does today: `stackFor(perWorktreeRefDir)` looks
+  the full name up in the common stack. git's reftable backend also runs
+  `parse_worktree_ref`. Unpinned here; requirement 11 keeps it as it is.
 
 ## Out of scope
 
-- `main-worktree/` and `worktrees/<id>/` resolution in the shared resolver (32.49, DC-9).
+- **Writes** through `main-worktree/<pw>` and `worktrees/<id>/<pw>` (W14): git routes them
+  through `files_ref_path` as it routes reads. tsgit's write routes (`refDir` in every path
+  builder, the write chain, reflog paths in `record-ref-update.ts` and `reflog-store.ts`) stay
+  as they are, because no write row beyond W14 is pinned (ADR-1158). DC-14 keeps the read
+  mapping out of them.
+- `main-worktree/` resolution in the reftable backend (unpinned, see Risks).
+- Reflog reads of `main-worktree/<pw>` and `worktrees/<id>/<pw>` (`main-worktree/HEAD@{0}`):
+  `reflog-store.ts` keeps `perWorktreeRefDir`. No row pins them, and ADR-1158 names only the
+  ref resolver.
 - `branch` and `for-each-ref` hiding broken-named refs with `ignoring ref with broken name`
   (E1): a listing-consumer change outside fsck.
 - `badRefFiletype` (a FIFO or socket under `refs/`): unpinned here, same pass, no row needs it.
