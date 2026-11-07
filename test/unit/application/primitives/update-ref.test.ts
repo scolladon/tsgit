@@ -1182,7 +1182,7 @@ describe('updateRef', () => {
       });
     });
 
-    describe('Given HEAD symbolically points at the branch being deleted', () => {
+    describe('Given HEAD symbolically points at the branch being deleted and the store records its updates', () => {
       describe('When updateRef deletes it', () => {
         it('Then the deletion and the coupled HEAD entry land in one applyRefUpdates call', async () => {
           // Arrange — a delete's write target is the null id, so the seeded
