@@ -9,6 +9,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { permissionDenied } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeRawObjectBytes } from '../primitives/fixtures.js';
 
 const ZERO_POINTER = '0'.repeat(40);
 const EXIT_MISSING_AND_CONTENT = 10;
@@ -218,6 +219,40 @@ describe('Given a symbolic ref whose target does not exist', () => {
         // Assert
         expect(pointersOf(result)).toEqual(pointers(from));
         expect(result.exitCode).toBe(EXIT_MISSING);
+      });
+    });
+  });
+});
+
+describe('Given a symbolic ref targeting a main-worktree/ per-worktree ref', () => {
+  describe.each([
+    { target: 'main-worktree/HEAD', planted: 'HEAD' },
+    { target: 'main-worktree/refs/bisect/bad', planted: 'refs/bisect/bad' },
+  ])('$target', ({ target, planted }) => {
+    describe('When fsck runs', () => {
+      it('Then only symrefTargetIsNotARef is reported and the exit code is 0', async () => {
+        // Arrange
+        const ctx = await repository();
+        const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+        const commit = await writeRawObjectBytes(
+          ctx,
+          'commit',
+          new TextEncoder().encode(
+            `tree ${tree}\nauthor A <a@a> 1 +0000\ncommitter A <a@a> 1 +0000\n\nc\n`,
+          ),
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${planted}`, `${commit}\n`);
+        await plant(ctx, 'x', `ref: ${target}\n`);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(
+          result.findings.flatMap((finding) => (finding.type === 'bad-ref' ? [finding.msgId] : [])),
+        ).toEqual(['symrefTargetIsNotARef']);
+        expect(result.exitCode).toBe(0);
       });
     });
   });

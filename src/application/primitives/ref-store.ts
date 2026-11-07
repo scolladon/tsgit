@@ -47,6 +47,7 @@ import {
   bareStoreRefName,
   isPseudoRef,
   linkedWorktreeRefPrefix,
+  mainWorktreeBareName,
   PER_WORKTREE_PREFIXES,
 } from '../../domain/refs/per-worktree-ref.js';
 import {
@@ -1063,8 +1064,21 @@ function createFilesRefStore(ctx: Context): RefStore {
     return { dir, path: looseRefPath(dir, name) };
   };
 
+  /**
+   * Where a read looks. A `main-worktree/<per-worktree ref>` name reads the
+   * main worktree's own ref in the common dir while the packed fallback keeps
+   * the full name, as git does. `dir` is the common dir on both branches, so
+   * only `path` differs from `writeLocation`.
+   */
+  const readLocation = (name: RefName): LooseLocation => {
+    const bare = mainWorktreeBareName(name);
+    if (bare === undefined) return writeLocation(name);
+    const dir = commonGitDir(ctx);
+    return { dir, path: looseRefPath(dir, bare) };
+  };
+
   const resolveDirect = (name: RefName): Promise<ResolveDirectResult> =>
-    resolveDirectAt(name, writeLocation(name));
+    resolveDirectAt(name, readLocation(name));
 
   const resolveDirectForWrite = (name: RefName): Promise<ResolveDirectResult> =>
     resolveDirectAt(name, writeLocation(name));

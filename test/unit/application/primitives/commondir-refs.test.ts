@@ -155,3 +155,102 @@ describe('common-dir ref + reflog split', () => {
     });
   });
 });
+
+const both = [
+  { viewer: 'the main Context', view: (ctx: Context): Context => ctx },
+  { viewer: 'the child Context', view: asWorktreeChild },
+];
+
+describe.each(both)('Given main-worktree/ names read from $viewer', ({ view }) => {
+  describe('When main-worktree/HEAD is resolved with a detached main HEAD', () => {
+    it('Then it answers the main HEAD', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${OID_A}\n`);
+      const sut = getRefStore(view(ctx));
+
+      // Act
+      const result = await sut.resolveDirect('main-worktree/HEAD' as RefName);
+
+      // Assert
+      expect(result).toEqual({ kind: 'direct', id: OID_A });
+    });
+  });
+
+  describe('When main-worktree/refs/bisect/bad is resolved with a loose main refs/bisect/bad', () => {
+    it('Then it is found', async () => {
+      // Arrange
+      const ctx = await buildSeededContext({
+        refs: [{ name: 'refs/bisect/bad' as RefName, id: OID_B }],
+      });
+      const sut = getRefStore(view(ctx));
+
+      // Act
+      const result = await sut.resolveDirect('main-worktree/refs/bisect/bad' as RefName);
+
+      // Assert
+      expect(result).toEqual({ kind: 'direct', id: OID_B });
+    });
+  });
+
+  describe('When names the main worktree does not own are resolved', () => {
+    it.each([
+      'main-worktree/refs/heads/main',
+      'main-worktree/ORIG_HEAD',
+      'worktrees/wt/refs/heads/side',
+      'worktrees/nope/HEAD',
+      'main-worktree/refs/bisect/packed',
+    ])('Then %s is missing', async (name) => {
+      // Arrange
+      const ctx = await buildSeededContext({
+        refs: [{ name: 'refs/heads/main' as RefName, id: OID_A }],
+        packedRefs: [{ name: 'refs/bisect/packed' as RefName, id: OID_A }],
+      });
+      const sut = getRefStore(view(ctx));
+
+      // Act
+      const result = await sut.resolveDirect(name as RefName);
+
+      // Assert
+      expect(result).toEqual({ kind: 'missing' });
+    });
+  });
+
+  describe('When linked worktree names are resolved from the common dir', () => {
+    it.each(['worktrees/wt/HEAD', 'worktrees/wt/refs/bisect/bad'])(
+      'Then %s is found',
+      async (name) => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'worktrees/wt/HEAD' as RefName, id: OID_A },
+            { name: 'worktrees/wt/refs/bisect/bad' as RefName, id: OID_A },
+          ],
+        });
+        const sut = getRefStore(view(ctx));
+
+        // Act
+        const result = await sut.resolveDirect(name as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: OID_A });
+      },
+    );
+  });
+
+  describe('When a packed main-worktree/refs/bisect/fullname is resolved', () => {
+    it('Then the packed fallback matches the full name', async () => {
+      // Arrange
+      const ctx = await buildSeededContext({
+        packedRefs: [{ name: 'main-worktree/refs/bisect/fullname' as RefName, id: OID_B }],
+      });
+      const sut = getRefStore(view(ctx));
+
+      // Act
+      const result = await sut.resolveDirect('main-worktree/refs/bisect/fullname' as RefName);
+
+      // Assert
+      expect(result).toEqual({ kind: 'direct', id: OID_B });
+    });
+  });
+});
