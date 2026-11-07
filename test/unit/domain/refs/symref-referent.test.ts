@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isBranchReferent,
   isOutsideRefsNamespace,
   isRootRefName,
   isValidSymrefReferent,
@@ -166,6 +167,30 @@ describe('isOutsideRefsNamespace', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('isBranchReferent', () => {
+  describe('Given a symref referent', () => {
+    describe('When isBranchReferent runs', () => {
+      it.each([
+        ['refs/heads/main', true],
+        ['refs/heads/a/b', true],
+        ['refs/tags/x', false],
+        ['refs/heads', false],
+        ['HEAD', false],
+        ['heads/main', false],
+      ])('Then %s is a branch referent: %s', (referent, expected) => {
+        // Arrange
+        const sut = isBranchReferent;
+
+        // Act
+        const result = sut(referent);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

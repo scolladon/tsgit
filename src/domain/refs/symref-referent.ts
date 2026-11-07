@@ -9,6 +9,7 @@ const HEAD_NAME = 'HEAD';
 const HEAD_SUFFIX = '_HEAD';
 const REFS_PREFIX = 'refs/';
 const WORKTREES_PREFIX = 'worktrees/';
+const BRANCH_PREFIX = 'refs/heads/';
 
 /** Root refs whose names do not follow the `_HEAD` convention. */
 const IRREGULAR_ROOT_REFS: ReadonlySet<string> = new Set([
@@ -38,3 +39,6 @@ export const isOutsideRefsNamespace = (referent: string): boolean =>
   !isRootRefName(referent) &&
   !referent.startsWith(REFS_PREFIX) &&
   !referent.startsWith(WORKTREES_PREFIX);
+
+/** git's `refs_fsck_symref` HEAD rule: HEAD may only point at a branch. */
+export const isBranchReferent = (referent: string): boolean => referent.startsWith(BRANCH_PREFIX);
