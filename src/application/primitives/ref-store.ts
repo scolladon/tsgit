@@ -37,6 +37,10 @@ import {
   serializePackedRefs,
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
+import {
+  isSkippedByLooseIterator,
+  isSkippedByRefsVerify,
+} from '../../domain/refs/loose-entry-name.js';
 import { type LooseBody, readLooseBody } from '../../domain/refs/loose-ref.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
 import {
@@ -399,6 +403,13 @@ const HEAD_NAME: RefName = 'HEAD' as RefName;
 const errorCodeOf = (err: unknown): string => errorDataCode(err) ?? '';
 
 const PERMISSION_DENIED_CODE = 'PERMISSION_DENIED';
+const NOT_A_DIRECTORY_CODE = 'NOT_A_DIRECTORY';
+
+/** What a worktree's own refs namespace answers when git cannot search it. */
+const UNSEARCHABLE_OWN_CODES: ReadonlySet<string> = new Set([
+  PERMISSION_DENIED_CODE,
+  NOT_A_DIRECTORY_CODE,
+]);
 
 /** What reading one loose ref file for the integrity walk met. */
 type LooseReadOutcome =
@@ -1080,7 +1091,7 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** Recursively walk one `refs/**` root, composing slash-joined ref names as it descends. */
   async function walkRefDir(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
-    const entries = await readdirOrSkip(dir);
+    const entries = (await readdirOrSkip(dir)).filter((e) => !isSkippedByLooseIterator(e.name));
     const names: RefName[] = [];
     for (const entry of entries) {
       const path = `${dir}/${entry.name}`;
@@ -1222,7 +1233,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       if (!(await ancestorsReadable(target))) return [];
       return await walkRefsRoot(target.root, target.relative, prefix);
     } catch (err) {
-      if (target.ownNamespace && errorCodeOf(err) === PERMISSION_DENIED_CODE) return [];
+      if (target.ownNamespace && UNSEARCHABLE_OWN_CODES.has(errorCodeOf(err))) return [];
       throw err;
     }
   }
@@ -1360,7 +1371,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     entries: ReadonlyArray<DirEntry>,
     run: IntegrityRun,
   ): Promise<void> {
-    for (const entry of entries) {
+    for (const entry of entries.filter(isWalkedByRefsVerify)) {
       if (run.ended) return;
       const name = `${prefix}/${entry.name}` as RefName;
       if (await statRefusedUpFront(entry, `${dir}/${entry.name}`, run.findings)) continue;
@@ -1377,6 +1388,9 @@ function createFilesRefStore(ctx: Context): RefStore {
       run.findings.push(...(await looseBodyFindingsAt(name, `${dir}/${entry.name}`)));
     }
   }
+
+  const isWalkedByRefsVerify = (entry: DirEntry): boolean =>
+    entry.isDirectory || !isSkippedByRefsVerify(entry.name);
 
   const refNameFindings = (entry: DirEntry, name: RefName): readonly RefIntegrityFinding[] =>
     entry.isDirectory || isSafeRefName(name) ? [] : [{ ref: name, msgId: 'badRefName' }];

@@ -6238,3 +6238,143 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
     );
   });
 });
+
+describe('ref-store — lock files and dot-led names', () => {
+  const OID = 'a'.repeat(40);
+  const ADMIN = '/repo/.git/worktrees/wt';
+  const GARBAGE = 'garbage\n';
+
+  const fromLinked = async (): Promise<Context> => {
+    const base = await buildSeededContext();
+    await base.fs.writeUtf8(`${ADMIN}/HEAD`, 'ref: refs/heads/main\n');
+    await base.fs.writeUtf8(`${ADMIN}/gitdir`, '/work/wt/.git\n');
+    await base.fs.writeUtf8(`${ADMIN}/commondir`, '../..\n');
+    return { ...base, layout: { ...base.layout, gitDir: ADMIN, commonDir: base.layout.gitDir } };
+  };
+
+  describe('Given a linked store holding refs/bisect/bad.lock with garbage', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then nothing is reported for it', async () => {
+        // Arrange
+        const ctx = await fromLinked();
+        await ctx.fs.writeUtf8(`${ADMIN}/refs/bisect/bad.lock`, GARBAGE);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result.filter((f) => 'ref' in f && f.ref.endsWith('bad.lock'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a main refs/heads/x.lock with garbage', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then nothing is reported for it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/x.lock', GARBAGE);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result.filter((f) => 'ref' in f && f.ref.endsWith('x.lock'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a directory refs/heads/d.lock holding a garbage ref', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the ref inside it is still walked', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/d.lock/inner', GARBAGE);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({ ref: 'refs/heads/d.lock/inner', msgId: 'badRefContent' });
+      });
+    });
+  });
+
+  describe('Given main refs/heads/x.lock (garbage) and refs/heads/y.lock (a valid oid)', () => {
+    describe('When listRefNames and listRefs run', () => {
+      it('Then neither is listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/x.lock', GARBAGE);
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/y.lock', `${OID}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const names = await sut.listRefNames('refs/heads/' as RefName);
+        const refs = await sut.listRefs('refs/heads/' as RefName);
+
+        // Assert
+        expect(names.filter((n) => n.endsWith('.lock'))).toEqual([]);
+        expect(refs.map((r) => r.name).filter((n) => n.endsWith('.lock'))).toEqual([]);
+      });
+    });
+  });
+
+  describe("Given a linked worktree's refs/bisect/.x.lock", () => {
+    describe('When listRefNames runs from it', () => {
+      it('Then it is not listed', async () => {
+        // Arrange
+        const ctx = await fromLinked();
+        await ctx.fs.writeUtf8(`${ADMIN}/refs/bisect/.x.lock`, `${OID}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames('refs/bisect/' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a directory refs/heads/.hidden holding a ref', () => {
+    describe('When listRefNames runs', () => {
+      it('Then nothing under it is listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/.hidden/inner', `${OID}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames('refs/heads/' as RefName);
+
+        // Assert
+        expect(result.filter((n) => n.includes('.hidden'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given refs/heads/x a regular file', () => {
+    describe('When listRefNames runs with the prefix refs/heads/x/y/ from the main worktree', () => {
+      it('Then the NOT_A_DIRECTORY of the shared target propagates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/x', `${OID}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const outcome = await sut
+          .listRefNames('refs/heads/x/y/' as RefName)
+          .then(() => undefined)
+          .catch((err: unknown) => err);
+
+        // Assert
+        expect(outcome).toBeInstanceOf(TsgitError);
+        expect((outcome as TsgitError).data).toMatchObject({ code: 'NOT_A_DIRECTORY' });
+      });
+    });
+  });
+});
