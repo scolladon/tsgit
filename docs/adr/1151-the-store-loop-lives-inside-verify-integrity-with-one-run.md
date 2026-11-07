@@ -30,7 +30,7 @@ or in `refs-verify.ts`, calling a per-store method.
 
 **Adopted-as-recommended (no user judgment) — no trade-off beyond mechanics: option 1.**
 `verifyIntegrity()` keeps its signature. Internally it iterates an `IntegrityStore` list
-(`gitDir`, `prefix`, `linked`) under one `IntegrityRun`; a `refsVerifyEnded` finding in one
+(`gitDir`, `prefix`) under one `IntegrityRun`; a `refsVerifyEnded` finding in one
 store stops the loop.
 
 ## Consequences
