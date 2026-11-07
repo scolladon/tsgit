@@ -9,3 +9,10 @@ design can apply without reopening the conversation. Each entry cites the ADR th
 - **Rule:** fold the pinned read side into the current change with its interop rows; leave the unpinned write routes out until pinned; never park a pinned row behind "needs its own pins" when the pins exist.
 - **Evidence:** ADR-1158
 - **Counter-cases:** none
+
+## D-2 — A faithfulness fix is folded whole even when its second half reaches past the command under change
+
+- **Trigger:** a pinned git divergence has one half inside the command's perimeter and one half in a shared primitive every consumer uses (the loose-ref listing, for one), and folding only the inner half leaves the pinned row red.
+- **Rule:** fold both halves in the same change, cover the shared half with its own unit rows and an interop pin per affected consumer; a half-fix that leaves the row red is not a fix.
+- **Evidence:** ADR-1160
+- **Counter-cases:** none
