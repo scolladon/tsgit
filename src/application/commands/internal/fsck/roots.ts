@@ -7,13 +7,21 @@ import { parseResolveUndo } from '../../../../domain/git-index/resolve-undo.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { FILE_MODE, zeroOid } from '../../../../domain/objects/index.js';
 import type { ReflogEntry } from '../../../../domain/reflog/reflog-entry.js';
-import { isPerWorktreeRef } from '../../../../domain/refs/per-worktree-ref.js';
+import {
+  isPerWorktreeRef,
+  linkedWorktreeRefPrefix,
+} from '../../../../domain/refs/per-worktree-ref.js';
 import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
 import { listLooseObjectIds } from '../../../primitives/enumerate-objects.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
+import {
+  isUnopenableFile,
+  type LinkedWorktreeAdmin,
+  linkedWorktreeAdmins,
+} from '../../../primitives/internal/linked-worktrees.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
 import { getObjectStore } from '../../../primitives/object-store.js';
 import { commonGitDir, indexPath } from '../../../primitives/path-layout.js';
@@ -188,24 +196,6 @@ function addReflogEntryRoots(
     if (entry.newId !== zero) roots.add(entry.newId);
   }
 }
-
-/**
- * The open failures git's reflog and `gitdir` reads stop at without a word:
- * `files_for_each_reflog_ent` returns -1 when it cannot open the log, which every
- * caller discards, and `get_linked_worktree` skips a worktree whose `gitdir`
- * `strbuf_read_file` fails. Each reads as "no such file". Anything else — the
- * reflog size cap, an unclassified I/O fault — means the read never happened
- * and is rethrown.
- */
-const UNOPENABLE_FILE_CODES: ReadonlySet<string> = new Set([
-  'FILE_NOT_FOUND',
-  'PERMISSION_DENIED',
-  'NOT_A_DIRECTORY',
-]);
-
-export const isUnopenableFile = (err: unknown): boolean =>
-  // Stryker disable next-line StringLiteral: equivalent — the fallback only types the lookup; no UNOPENABLE_FILE_CODES member is '' or any other literal, so every fallback misses alike.
-  UNOPENABLE_FILE_CODES.has(errorDataCode(err) ?? '');
 
 /**
  * `ref`'s reflog read LINE-grained-leniently (`readReflogLenient`: a
@@ -838,14 +828,9 @@ function mainWorktreeContext(ctx: Context): Context {
  * git's `get_linked_worktree` skips it.
  */
 async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
-  const root = `${commonGitDir(ctx)}/worktrees`;
-  if (!(await ctx.fs.exists(root))) return;
-  for (const entry of await ctx.fs.readdir(root)) {
-    if (!entry.isDirectory) continue;
-    const adminDir = `${root}/${entry.name}`;
-    if (adminDir === ctx.layout.gitDir) continue;
-    const worktreeCtx = await linkedWorktreeContext(ctx, entry.name, adminDir);
-    if (worktreeCtx !== undefined) await addNonCurrentWorktreeRoots(worktreeCtx, roots);
+  for (const admin of await linkedWorktreeAdmins(ctx)) {
+    if (admin.adminDir === ctx.layout.gitDir) continue;
+    await addNonCurrentWorktreeRoots(linkedWorktreeContext(ctx, admin), roots);
   }
 }
 
@@ -916,26 +901,12 @@ async function headOf(worktreeCtx: Context): Promise<HeadRead> {
   }
 }
 
-/** A linked worktree's Context, or `undefined` when its `gitdir` file is
- *  missing, unreadable or empty — git's `get_linked_worktree` skips it then. */
-async function linkedWorktreeContext(
-  ctx: Context,
-  id: string,
-  adminDir: string,
-): Promise<Context | undefined> {
-  if (adminDir === ctx.layout.gitDir) return ctx;
-  let raw: string;
-  try {
-    raw = await ctx.fs.readUtf8(`${adminDir}/gitdir`);
-  } catch (err) {
-    if (isUnopenableFile(err)) return undefined;
-    throw err;
-  }
-  // git skips only a zero-byte file; one holding just whitespace still lists the worktree.
-  if (raw === '') return undefined;
+/** A linked worktree's Context; the current worktree's own when `admin` is it. */
+function linkedWorktreeContext(ctx: Context, admin: LinkedWorktreeAdmin): Context {
+  if (admin.adminDir === ctx.layout.gitDir) return ctx;
   // Stryker disable next-line MethodExpression: equivalent — the trimmed pointer only sets the derived Context's workDir and fs confinement, while every reader of linkedWorktreeContext touches only commonDir-rooted admin files.
-  const pointer = resolveWorktreePath(adminDir, raw.trim());
-  return deriveWorktreeContext(ctx, id, stripGitSuffix(pointer));
+  const pointer = resolveWorktreePath(admin.adminDir, admin.gitdirPointer.trim());
+  return deriveWorktreeContext(ctx, admin.id, stripGitSuffix(pointer));
 }
 
 /** git's `get_worktrees` order: the main worktree, then each admin entry as listed. */
@@ -944,12 +915,12 @@ export async function worktreeContexts(
 ): Promise<ReadonlyArray<{ readonly ref: RefName; readonly worktreeCtx: Context }>> {
   const main = isMainWorktreeCtx(ctx) ? ctx : mainWorktreeContext(ctx);
   const all = [{ ref: refFor(ctx, main, 'main-worktree/HEAD'), worktreeCtx: main }];
-  const root = `${commonGitDir(ctx)}/worktrees`;
-  if (!(await ctx.fs.exists(root))) return all;
-  for (const entry of await ctx.fs.readdir(root)) {
-    const worktreeCtx = await linkedWorktreeContext(ctx, entry.name, `${root}/${entry.name}`);
-    if (worktreeCtx === undefined) continue;
-    all.push({ ref: refFor(ctx, worktreeCtx, `worktrees/${entry.name}/HEAD`), worktreeCtx });
+  for (const admin of await linkedWorktreeAdmins(ctx)) {
+    const worktreeCtx = linkedWorktreeContext(ctx, admin);
+    all.push({
+      ref: refFor(ctx, worktreeCtx, `${linkedWorktreeRefPrefix(admin.id)}HEAD`),
+      worktreeCtx,
+    });
   }
   return all;
 }

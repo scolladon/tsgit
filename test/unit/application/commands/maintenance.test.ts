@@ -1557,18 +1557,11 @@ describe('maintenance', () => {
 
   describe('Given a non-directory entry sitting in the worktrees registry', () => {
     describe('When gc runs the retention-root scan', () => {
-      it('Then it is skipped without ever being read as a worktree admin dir', async () => {
-        // Arrange — only directories are worktree admin dirs; a stray file
-        // must never be walked as one.
+      it('Then it is skipped, its gitdir read failing as an unopenable file', async () => {
+        // Arrange — a stray file is not a worktree admin dir; reading
+        // `<file>/gitdir` fails NOT_A_DIRECTORY and git skips it then.
         const ctx = await seedOneCommit();
-        const strayFile = `${ctx.layout.gitDir}/worktrees/stray-file`;
-        await ctx.fs.writeUtf8(strayFile, 'not a worktree');
-        const readCalls: string[] = [];
-        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
-        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
-          readCalls.push(path);
-          return originalReadUtf8(path);
-        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/stray-file`, 'not a worktree');
         const sut = maintenance;
 
         // Act
@@ -1576,7 +1569,6 @@ describe('maintenance', () => {
 
         // Assert
         expect(result.packId).toBeDefined();
-        expect(readCalls).not.toContain(`${strayFile}/gitdir`);
       });
     });
   });
@@ -1603,10 +1595,11 @@ describe('maintenance', () => {
         // Act
         await sut(wtCtx, { tasks: ['gc'] });
 
-        // Assert — the one read is gc's worktree-prune step, which reads every
-        // admin entry's gitdir as git's `should_prune_worktree` does; the
-        // retention scan itself adds none.
-        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(1);
+        // Assert — gc's worktree-prune step reads every admin entry's gitdir as
+        // git's `should_prune_worktree` does, and the retention scan's listing
+        // reads it once more for the skip rule; the scan never re-walks the
+        // admin dir itself, whose HEAD is read once.
+        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(2);
       });
     });
   });

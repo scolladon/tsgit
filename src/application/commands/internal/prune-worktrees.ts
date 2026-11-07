@@ -27,10 +27,11 @@ import type { Context } from '../../../ports/context.js';
 import type { DirEntry, FileStat } from '../../../ports/file-system.js';
 import { realpathAllowingMissingLeaf } from '../../primitives/internal/alternate-chain.js';
 import { gitPathSyntaxOf } from '../../primitives/internal/git-path-syntax.js';
+import { isUnopenableFile } from '../../primitives/internal/linked-worktrees.js';
 import { worktreeScopedFs } from '../../primitives/internal/worktree-context.js';
 import { narrowAlternatePathProbe } from '../../primitives/object-store.js';
 import { commonGitDir } from '../../primitives/path-layout.js';
-import { isUnopenableFile, stripGitSuffix } from './fsck/roots.js';
+import { stripGitSuffix } from './fsck/roots.js';
 
 export interface PruneWorktreesOptions {
   /** Unix-seconds expiry: a vanished worktree whose `index` mtime is at or before it is pruned. */
