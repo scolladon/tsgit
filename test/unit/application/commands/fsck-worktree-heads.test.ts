@@ -312,7 +312,7 @@ const refuseRead = (ctx: Context, refused: string): void => {
 
 describe('Given a HEAD naming a branch the permissions refuse', () => {
   describe('When the worktree heads are snapshotted', () => {
-    it('Then that HEAD is skipped and not listed as an unreadable file', async () => {
+    it('Then that HEAD is skipped', async () => {
       // Arrange
       const ctx = await repoWithWorktrees();
       const targetPath = `${ctx.layout.gitDir}/refs/heads/main`;
@@ -323,11 +323,105 @@ describe('Given a HEAD naming a branch the permissions refuse', () => {
       const result = await sut(ctx);
 
       // Assert
-      expect(result.unreadable).toEqual([]);
       expect(result.heads.map((head) => head.ref)).toEqual([
         'worktrees/wt1/HEAD',
         'worktrees/wt2/HEAD',
       ]);
+    });
+  });
+});
+
+describe("Given the main worktree's HEAD file refused for permission", () => {
+  describe('When fsck runs from a linked worktree', () => {
+    it('Then one cannotReadRef names HEAD at the main path with bit 8', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const path = `${ctx.layout.gitDir}/HEAD`;
+      refuseRead(ctx, path);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(deriveWorktreeContext(ctx, 'wt1', '/work/wt1'));
+
+      // Assert
+      expect(cannotReadFindings(result.findings)).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'HEAD',
+          msgId: 'cannotReadRef',
+          severity: 'error',
+          path,
+          reason: 'PERMISSION_DENIED',
+        },
+      ]);
+      expect(result.exitCode & EXIT_REFS_CONTENT).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+});
+
+const badContentRefs = (findings: ReadonlyArray<FsckFinding>) =>
+  findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.msgId === 'badRefContent' ? [finding.ref] : [],
+  );
+
+describe("Given garbage in the main ORIG_HEAD and in the wt1 admin's CHERRY_PICK_HEAD and REBASE_HEAD", () => {
+  describe('When fsck runs', () => {
+    it("Then each store's root check stops at its own first error", async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, 'garbage\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/CHERRY_PICK_HEAD`, 'garbage\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/REBASE_HEAD`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual([
+        'ORIG_HEAD',
+        'worktrees/wt1/CHERRY_PICK_HEAD',
+      ]);
+    });
+  });
+});
+
+describe("Given garbage in the main ORIG_HEAD and in a wt1 store's refs/bisect/bad", () => {
+  describe('When fsck runs', () => {
+    it('Then both are reported, a prefixed refs name not being a root ref', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, 'garbage\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/refs/bisect/bad`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual([
+        'ORIG_HEAD',
+        'worktrees/wt1/refs/bisect/bad',
+      ]);
+    });
+  });
+});
+
+describe('Given garbage in a linked store and references not checked', () => {
+  describe('When fsck runs', () => {
+    it('Then no content finding is reported', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/refs/bisect/bad`, 'garbage\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/ORIG_HEAD`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual([]);
+      expect(result.exitCode).toBe(0);
     });
   });
 });

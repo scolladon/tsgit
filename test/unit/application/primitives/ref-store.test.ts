@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { lstatIfPresent } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { validateHead } from '../../../../src/application/primitives/internal/head-file.js';
@@ -28,6 +28,10 @@ import {
 } from '../../../fixtures/refs/reftable-writers.js';
 import { buildSeededContext, instrumentedContext, writeForgedTag } from './fixtures.js';
 import { commonReftableDir, withReftableStorage, writeReftableFiles } from './reftable-fixtures.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 /** Makes listing the given directories fail as the permissions do. */
 function refuseListing(ctx: Context, dirs: ReadonlyArray<string>): void {
@@ -5081,11 +5085,16 @@ describe('ref-store — the integrity walk of a linked worktree', () => {
       it('Then the shared refs are reported before the own ones, as git checks them', async () => {
         // Arrange
         const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/.git/worktrees/wt/gitdir', '/work/wt/.git\n');
         const ctx: Context = {
           ...base,
-          layout: { ...base.layout, gitDir: '/repo/wt', commonDir: base.layout.gitDir },
+          layout: {
+            ...base.layout,
+            gitDir: '/repo/.git/worktrees/wt',
+            commonDir: base.layout.gitDir,
+          },
         };
-        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/bad', 'garbage\n');
+        await ctx.fs.writeUtf8('/repo/.git/worktrees/wt/refs/bisect/bad', 'garbage\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/zzz', 'garbage\n');
         const sut = createRefStore(ctx);
 
@@ -5095,7 +5104,7 @@ describe('ref-store — the integrity walk of a linked worktree', () => {
         // Assert
         expect(result.flatMap((finding) => ('ref' in finding ? [finding.ref] : []))).toEqual([
           'refs/heads/zzz',
-          'refs/bisect/bad',
+          'worktrees/wt/refs/bisect/bad',
         ]);
       });
     });
@@ -5108,15 +5117,20 @@ describe('ref-store — the integrity walk of a linked worktree that ends early'
       it('Then the walk ends there and the own refs root is never opened', async () => {
         // Arrange
         const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/.git/worktrees/wt/gitdir', '/work/wt/.git\n');
         const ctx: Context = {
           ...base,
-          layout: { ...base.layout, gitDir: '/repo/wt', commonDir: base.layout.gitDir },
+          layout: {
+            ...base.layout,
+            gitDir: '/repo/.git/worktrees/wt',
+            commonDir: base.layout.gitDir,
+          },
         };
         await ctx.fs.symlink('missing/x', '/repo/.git/refs/heads/z');
-        await ctx.fs.writeUtf8('/repo/wt/refs/bisect/bad', 'garbage\n');
+        await ctx.fs.writeUtf8('/repo/.git/worktrees/wt/refs/bisect/bad', 'garbage\n');
         const readdir = ctx.fs.readdir.bind(ctx.fs);
         vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path) => {
-          if (path === '/repo/wt/refs') throw permissionDenied(path);
+          if (path === '/repo/.git/worktrees/wt/refs') throw permissionDenied(path);
           return readdir(path);
         });
         const sut = createRefStore(ctx).verifyIntegrity;
@@ -5441,7 +5455,10 @@ describe('ref-store — the integrity walk reads each file where it found it', (
         const result = await sut.verifyIntegrity();
 
         // Assert
-        expect(result).toContainEqual({ ref: 'refs/heads/stray', msgId: 'badRefContent' });
+        expect(result).toContainEqual({
+          ref: 'worktrees/wt/refs/heads/stray',
+          msgId: 'badRefContent',
+        });
       });
     });
   });
@@ -5463,13 +5480,466 @@ describe('ref-store — the integrity walk reads each file where it found it', (
           result.filter(
             (finding) =>
               'ref' in finding &&
-              finding.ref === 'refs/bisect/bad' &&
+              finding.ref.endsWith('refs/bisect/bad') &&
               finding.msgId !== 'badRefOid',
           ),
         ).toEqual([
           { ref: 'refs/bisect/bad', msgId: 'badRefContent' },
-          { ref: 'refs/bisect/bad', msgId: 'refMissingNewline' },
+          { ref: 'worktrees/wt/refs/bisect/bad', msgId: 'refMissingNewline' },
         ]);
+      });
+    });
+  });
+});
+
+describe("ref-store — the integrity walk of every worktree's ref store", () => {
+  const OID = 'a'.repeat(40);
+  const ADMIN = '/repo/.git/worktrees';
+  const GARBAGE = 'garbage\n';
+
+  const writeAdmins = async (ctx: Context, ids: ReadonlyArray<string>): Promise<void> => {
+    for (const id of ids) {
+      await ctx.fs.writeUtf8(`${ADMIN}/${id}/HEAD`, 'ref: refs/heads/main\n');
+      await ctx.fs.writeUtf8(`${ADMIN}/${id}/gitdir`, `/work/${id}/.git\n`);
+      await ctx.fs.writeUtf8(`${ADMIN}/${id}/commondir`, '../..\n');
+    }
+  };
+
+  const fromMain = async (ids: ReadonlyArray<string> = ['wt']): Promise<Context> => {
+    const ctx = await buildSeededContext();
+    await writeAdmins(ctx, ids);
+    return ctx;
+  };
+
+  const fromLinked = async (ids: ReadonlyArray<string> = ['wt']): Promise<Context> => {
+    const base = await fromMain(ids);
+    return {
+      ...base,
+      layout: { ...base.layout, gitDir: `${ADMIN}/wt`, commonDir: base.layout.gitDir },
+    };
+  };
+
+  const worktreeViews = [
+    { label: 'main', build: fromMain },
+    { label: 'linked', build: fromLinked },
+  ];
+
+  const refsOf = (findings: ReadonlyArray<{ readonly msgId: string }>): ReadonlyArray<unknown> =>
+    findings.map((finding) => ('ref' in finding ? finding.ref : undefined));
+
+  const refuseOpening = (ctx: Context, refused: string): void => {
+    const openWithNoFollow = ctx.fs.openWithNoFollow.bind(ctx.fs);
+    const readUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'openWithNoFollow').mockImplementation(async (path, mode) => {
+      if (path === refused) throw permissionDenied(path);
+      return openWithNoFollow(path, mode);
+    });
+    vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+      if (path === refused) throw permissionDenied(path);
+      return readUtf8(path);
+    });
+  };
+
+  describe("Given garbage in a linked worktree's refs/bisect/bad and refs/heads/stray", () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then each is reported under worktrees/wt/', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/bad`, GARBAGE);
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/heads/stray`, GARBAGE);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({
+            ref: 'worktrees/wt/refs/bisect/bad',
+            msgId: 'badRefContent',
+          });
+          expect(result).toContainEqual({
+            ref: 'worktrees/wt/refs/heads/stray',
+            msgId: 'badRefContent',
+          });
+        });
+      },
+    );
+  });
+
+  describe('Given garbage at refs/bisect/bad in the main store and in the wt and vt stores', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then the three are reported, the main one bare', async () => {
+          // Arrange
+          const ctx = await build(['wt', 'vt']);
+          await ctx.fs.writeUtf8('/repo/.git/refs/bisect/bad', GARBAGE);
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/bad`, GARBAGE);
+          await ctx.fs.writeUtf8(`${ADMIN}/vt/refs/bisect/bad`, GARBAGE);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect([...refsOf(result)].sort()).toEqual([
+            'refs/bisect/bad',
+            'worktrees/vt/refs/bisect/bad',
+            'worktrees/wt/refs/bisect/bad',
+          ]);
+        });
+      },
+    );
+  });
+
+  describe("Given a link in the wt store's refs/bisect/bad to the main refs/heads/main", () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ label, build }) => {
+        it('Then the referent is judged against the cwd gitdir', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${OID}\n`);
+          await ctx.fs.symlink('../../../../refs/heads/main', `${ADMIN}/wt/refs/bisect/bad`);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          const ref = 'worktrees/wt/refs/bisect/bad';
+          const absolute =
+            label === 'linked'
+              ? [
+                  { ref, msgId: 'badReferentName', referent: '/repo/.git/refs/heads/main' },
+                  { ref, msgId: 'symrefTargetIsNotARef', referent: '/repo/.git/refs/heads/main' },
+                ]
+              : [];
+          expect(result.filter((finding) => 'ref' in finding && finding.ref === ref)).toEqual([
+            { ref, msgId: 'symlinkRef' },
+            ...absolute,
+          ]);
+        });
+      },
+    );
+  });
+
+  describe("Given a link in the wt store's refs/bisect/bad to the wt HEAD", () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then only the symlinkRef is reported', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.symlink('../../HEAD', `${ADMIN}/wt/refs/bisect/bad`);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([{ ref: 'worktrees/wt/refs/bisect/bad', msgId: 'symlinkRef' }]);
+        });
+      },
+    );
+  });
+
+  describe("Given a link in the wt store's refs/bisect/bad to a path outside the repository", () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then the referent is that absolute path', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.mkdir('/repo/outside');
+          await ctx.fs.symlink('/repo/outside/place', `${ADMIN}/wt/refs/bisect/bad`);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({
+            ref: 'worktrees/wt/refs/bisect/bad',
+            msgId: 'badReferentName',
+            referent: '/repo/outside/place',
+          });
+        });
+      },
+    );
+  });
+
+  describe.each([['refs/worktree/x'], ['refs/rewritten/x']])(
+    'Given garbage at the wt store %s',
+    (name) => {
+      describe.each(worktreeViews)(
+        'When verifyIntegrity runs from the $label worktree',
+        ({ build }) => {
+          it('Then it is reported under worktrees/wt/', async () => {
+            // Arrange
+            const ctx = await build();
+            await ctx.fs.writeUtf8(`${ADMIN}/wt/${name}`, GARBAGE);
+            const sut = createRefStore(ctx);
+
+            // Act
+            const result = await sut.verifyIntegrity();
+
+            // Assert
+            expect(result).toEqual([{ ref: `worktrees/wt/${name}`, msgId: 'badRefContent' }]);
+          });
+        },
+      );
+    },
+  );
+
+  describe('Given the main refs/worktree/x a link to ../heads/main', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then every finding is named bare', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.symlink('../heads/main', '/repo/.git/refs/worktree/x');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({ ref: 'refs/worktree/x', msgId: 'symlinkRef' });
+          expect(new Set(refsOf(result))).toEqual(new Set(['refs/worktree/x']));
+        });
+      },
+    );
+  });
+
+  describe("Given the wt store's refs/bisect/bad refused for reading", () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then cannotReadRef carries the prefixed name and the admin path', async () => {
+          // Arrange
+          const ctx = await build();
+          const path = `${ADMIN}/wt/refs/bisect/bad`;
+          await ctx.fs.writeUtf8(path, `${OID}\n`);
+          refuseOpening(ctx, path);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            {
+              ref: 'worktrees/wt/refs/bisect/bad',
+              msgId: 'cannotReadRef',
+              path,
+              reason: 'PERMISSION_DENIED',
+            },
+          ]);
+        });
+      },
+    );
+  });
+
+  describe('Given an own oid without newline and a ref: foo in the wt store', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then each is reported on its prefixed name', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/bad`, OID);
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/good`, 'ref: foo\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({
+            ref: 'worktrees/wt/refs/bisect/bad',
+            msgId: 'refMissingNewline',
+          });
+          expect(result).toContainEqual({
+            ref: 'worktrees/wt/refs/bisect/good',
+            msgId: 'badReferentName',
+            referent: 'foo',
+          });
+        });
+      },
+    );
+  });
+
+  describe('Given the current worktree gitdir file emptied', () => {
+    describe('When verifyIntegrity runs from that worktree', () => {
+      it('Then its store is not walked', async () => {
+        // Arrange
+        const ctx = await fromLinked();
+        await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/bad`, GARBAGE);
+        await ctx.fs.writeUtf8(`${ADMIN}/wt/gitdir`, '');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given garbage root refs in the main gitdir and in the wt admin dir', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it("Then each store's root refs are read from its own gitdir under its own prefix", async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/ORIG_HEAD', GARBAGE);
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/CHERRY_PICK_HEAD`, GARBAGE);
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/REBASE_HEAD`, GARBAGE);
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/AUTO_MERGE`, OID);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          const named = result.filter(
+            (finding) => 'ref' in finding && finding.msgId !== 'badRefOid',
+          );
+          expect(named).toEqual(
+            expect.arrayContaining([
+              { ref: 'ORIG_HEAD', msgId: 'badRefContent' },
+              { ref: 'worktrees/wt/AUTO_MERGE', msgId: 'refMissingNewline' },
+              { ref: 'worktrees/wt/CHERRY_PICK_HEAD', msgId: 'badRefContent' },
+              { ref: 'worktrees/wt/REBASE_HEAD', msgId: 'badRefContent' },
+            ]),
+          );
+          expect(named).toHaveLength(4);
+        });
+      },
+    );
+  });
+
+  describe('Given the wt HEAD as ref: refs/heads/side without newline', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then refMissingNewline names worktrees/wt/HEAD', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/HEAD`, 'ref: refs/heads/side');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([{ ref: 'worktrees/wt/HEAD', msgId: 'refMissingNewline' }]);
+        });
+      },
+    );
+  });
+
+  describe('Given the main ORIG_HEAD refused for reading', () => {
+    describe('When verifyIntegrity runs from the linked worktree', () => {
+      it('Then cannotReadRef names ORIG_HEAD at the main path', async () => {
+        // Arrange
+        const ctx = await fromLinked();
+        const path = '/repo/.git/ORIG_HEAD';
+        await ctx.fs.writeUtf8(path, `${OID}\n`);
+        refuseOpening(ctx, path);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { ref: 'ORIG_HEAD', msgId: 'cannotReadRef', path, reason: 'PERMISSION_DENIED' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a main link whose realpath dies and garbage in the wt store', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then the walk ends at the link and the wt store is never read', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.symlink('missing/x', '/repo/.git/refs/heads/z');
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/bad`, GARBAGE);
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/ORIG_HEAD`, GARBAGE);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result.map((finding) => finding.msgId)).toEqual(['symlinkRef', 'refsVerifyEnded']);
+          expect(refsOf(result)).toEqual(['refs/heads/z', 'refs/heads/z']);
+        });
+      },
+    );
+  });
+
+  describe('Given main garbage and a wt link that dies', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then the main finding, the wt symlinkRef and the end are reported, in that order', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/refs/heads/stray', GARBAGE);
+          await ctx.fs.symlink('missing/x', `${ADMIN}/wt/refs/heads/z`);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result.map((finding) => finding.msgId)).toEqual([
+            'badRefContent',
+            'symlinkRef',
+            'refsVerifyEnded',
+          ]);
+          expect(refsOf(result)).toEqual([
+            'refs/heads/stray',
+            'worktrees/wt/refs/heads/z',
+            'worktrees/wt/refs/heads/z',
+          ]);
+        });
+      },
+    );
+  });
+
+  describe('Given linked stores zz, aa and mm, each with garbage, and a reversed OS order', () => {
+    describe('When verifyIntegrity runs from the main worktree', () => {
+      it("Then their findings follow the adapter's listing order", async () => {
+        // Arrange
+        const ctx = await fromMain(['zz', 'aa', 'mm']);
+        for (const id of ['zz', 'aa', 'mm']) {
+          await ctx.fs.writeUtf8(`${ADMIN}/${id}/refs/bisect/bad`, GARBAGE);
+        }
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        const readdirInOsOrder = async (p: string) => [...(await readdir(p))].reverse();
+        Object.assign(ctx.fs, { readdirInOsOrder });
+        const expected = (await readdirInOsOrder(ADMIN)).map(
+          (entry) => `worktrees/${entry.name}/refs/bisect/bad`,
+        );
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(refsOf(result)).toEqual(expected);
       });
     });
   });

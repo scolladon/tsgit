@@ -39,7 +39,11 @@ import {
 } from '../../domain/refs/index.js';
 import { type LooseBody, readLooseBody } from '../../domain/refs/loose-ref.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
-import { isPseudoRef, PER_WORKTREE_PREFIXES } from '../../domain/refs/per-worktree-ref.js';
+import {
+  isPseudoRef,
+  linkedWorktreeRefPrefix,
+  PER_WORKTREE_PREFIXES,
+} from '../../domain/refs/per-worktree-ref.js';
 import {
   firstRefNameConflict,
   type RefNameFacts,
@@ -61,6 +65,7 @@ import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
 import { lstatIfPresent, lstatIfReachable } from './internal/fs-probes.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
+import { linkedWorktreeAdmins } from './internal/linked-worktrees.js';
 import { realPathOutcomeOf } from './internal/real-path.js';
 import {
   isCheckedWhenAbsent,
@@ -659,6 +664,13 @@ interface IntegrityRun {
   strippedGitDir?: Promise<string>;
 }
 
+/** One ref store git's refs verify checks. `gitDir` is the common dir for the main store, the admin
+ *  dir otherwise; `prefix` is "" or "worktrees/<id>/". */
+interface IntegrityStore {
+  readonly gitDir: string;
+  readonly prefix: string;
+}
+
 const BACKSLASH = /\\/g;
 
 /** The spelling a path is compared in: the realpath walk speaks `/`, a Windows gitdir may speak `\`
@@ -1104,15 +1116,6 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) ? HEAD_NAME : undefined;
   }
 
-  /** The common dir's and the worktree's own `refs` roots in the order git checks them — the
-   *  shared refs first — collapsed into one when both name the same directory (a normal
-   *  repository or the main worktree). */
-  function refsWalkRoots(): ReadonlyArray<string> {
-    const own = `${ctx.layout.gitDir}/${REFS_DIR}`;
-    const common = `${commonGitDir(ctx)}/${REFS_DIR}`;
-    return own === common ? [own] : [common, own];
-  }
-
   /** The directories to walk for `relative`: the common dir's copy and, in a linked worktree,
    *  the own gitdir's per-worktree namespaces only — git opens `refs/bisect`, `refs/rewritten`
    *  and `refs/worktree` there directly and never reads the own `refs` root. */
@@ -1314,13 +1317,14 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** The `refs` root git iterates as a whole: when it cannot be opened the iteration itself
    *  fails, where a directory below it is only warned about. */
-  async function walkIntegrityRoot(root: string, run: IntegrityRun): Promise<void> {
+  async function walkIntegrityRoot(store: IntegrityStore, run: IntegrityRun): Promise<void> {
+    const root = `${store.gitDir}/${REFS_DIR}`;
     const entries = await readdirForIntegrity(root, run.findings);
     if (entries === undefined) {
       run.findings.push({ msgId: 'refsWalkFailed', path: root });
       return;
     }
-    await walkIntegrityEntries(root, REFS_DIR, entries, run);
+    await walkIntegrityEntries(root, `${store.prefix}${REFS_DIR}`, entries, run);
   }
 
   async function walkIntegrityEntries(
@@ -1508,21 +1512,33 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
     const run: IntegrityRun = { findings: [], ended: false };
-    for (const root of refsWalkRoots()) {
+    for (const store of await integrityStores()) {
       if (run.ended) break;
-      if (await isDirectoryPath(root)) await walkIntegrityRoot(root, run);
+      if (await isDirectoryPath(`${store.gitDir}/${REFS_DIR}`)) await walkIntegrityRoot(store, run);
+      if (!run.ended) run.findings.push(...(await rootRefFindings(store)));
     }
-    if (!run.ended) run.findings.push(...(await rootRefFindings()));
     return run.findings;
   }
 
+  /** The main store first, then every linked worktree's, in the order git lists them. */
+  async function integrityStores(): Promise<ReadonlyArray<IntegrityStore>> {
+    const linked = (await linkedWorktreeAdmins(ctx)).map(({ id, adminDir }) => ({
+      gitDir: adminDir,
+      prefix: linkedWorktreeRefPrefix(id),
+    }));
+    return [{ gitDir: commonGitDir(ctx), prefix: '' }, ...linked];
+  }
+
   /** git checks every root ref after the `refs/` walk, in the gitdir's listing order. */
-  async function rootRefFindings(): Promise<readonly RefIntegrityFinding[]> {
+  async function rootRefFindings(store: IntegrityStore): Promise<readonly RefIntegrityFinding[]> {
     const findings: RefIntegrityFinding[] = [];
-    for (const entry of await readdirInOsOrder(ctx.layout.gitDir)) {
+    for (const entry of await readdirInOsOrder(store.gitDir)) {
       if (!isRootRefName(entry.name)) continue;
       findings.push(
-        ...(await looseBodyFindingsAt(entry.name as RefName, `${ctx.layout.gitDir}/${entry.name}`)),
+        ...(await looseBodyFindingsAt(
+          `${store.prefix}${entry.name}` as RefName,
+          `${store.gitDir}/${entry.name}`,
+        )),
       );
     }
     return findings;

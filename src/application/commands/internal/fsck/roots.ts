@@ -872,30 +872,16 @@ export interface WorktreeHead {
 }
 
 /** A HEAD file git could not read: its `cannot read ref file '<path>'` error. */
-export interface UnreadableHead {
-  readonly ref: RefName;
-  readonly path: string;
-}
-
-type HeadRead =
-  | { readonly kind: 'named'; readonly id: ObjectId }
-  | { readonly kind: 'none' }
-  | { readonly kind: 'unreadable'; readonly path: string };
+type HeadRead = { readonly kind: 'named'; readonly id: ObjectId } | { readonly kind: 'none' };
 
 const NO_HEAD: HeadRead = { kind: 'none' };
 
-/** git reports only the file it could not read; a refused target down the chain ends it silently. */
-const isPermissionRefusalOf = (err: unknown, file: string): boolean =>
-  err instanceof TsgitError && err.data.code === PERMISSION_DENIED_CODE && err.data.path === file;
-
-/** What `worktreeCtx`'s HEAD yields: the object it names, nothing, or a refusal to be read. */
+/** What `worktreeCtx`'s HEAD yields: the object it names, or nothing. */
 async function headOf(worktreeCtx: Context): Promise<HeadRead> {
   try {
     // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
     return { kind: 'named', id: await resolveRef(worktreeCtx, HEAD_REF, { peel: false }) };
   } catch (err) {
-    const ownFile = `${worktreeCtx.layout.gitDir}/HEAD`;
-    if (isPermissionRefusalOf(err, ownFile)) return { kind: 'unreadable', path: ownFile };
     if (!isSkippedRefReadFault(err)) throw err;
     return NO_HEAD;
   }
@@ -928,28 +914,24 @@ export async function worktreeContexts(
 const refFor = (ctx: Context, worktreeCtx: Context, foreign: string): RefName =>
   (worktreeCtx === ctx ? HEAD_REF : foreign) as RefName;
 
-/** Every worktree's HEAD, split into the ones that name an object and the ones git could not read. */
+/** Every worktree's HEAD that names an object. */
 export interface WorktreeHeadSnapshot {
   readonly heads: ReadonlyArray<WorktreeHead>;
-  readonly unreadable: ReadonlyArray<UnreadableHead>;
 }
 
 /**
  * Every worktree's HEAD that names an object — git's `snapshot_refs` worktree
  * loop: the current one as `HEAD`, the others under their per-worktree
- * prefix. A HEAD naming nothing (unborn, unresolvable) is skipped as git's
- * `refs_resolve_ref_unsafe` returning NULL is; one whose file is refused to
- * be read is skipped too, and listed apart because git reports it.
+ * prefix. A HEAD naming nothing (unborn, unresolvable, refused for reading) is
+ * skipped as git's `refs_resolve_ref_unsafe` returning NULL is.
  */
 export async function snapshotWorktreeHeads(ctx: Context): Promise<WorktreeHeadSnapshot> {
   const heads: WorktreeHead[] = [];
-  const unreadable: UnreadableHead[] = [];
   for (const { ref, worktreeCtx } of await worktreeContexts(ctx)) {
     const read = await headOf(worktreeCtx);
     if (read.kind === 'named') heads.push({ ref, id: read.id });
-    if (read.kind === 'unreadable') unreadable.push({ ref, path: read.path });
   }
-  return { heads, unreadable };
+  return { heads };
 }
 
 export async function worktreeHeads(ctx: Context): Promise<ReadonlyArray<WorktreeHead>> {
