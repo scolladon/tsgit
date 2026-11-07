@@ -6076,4 +6076,165 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
       });
     });
   });
+
+  describe('Given a ref whose name git refuses', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then badRefName is reported on a main ref holding a valid oid', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/refs/heads/a..b', `${OID}\n`);
+          await ctx.fs.writeUtf8(`/repo/.git/objects/${OID.slice(0, 2)}/${OID.slice(2)}`, 'x');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({ ref: 'refs/heads/a..b', msgId: 'badRefName' });
+        });
+
+        it('Then badRefName names the prefixed name of a linked store ref', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/a..b`, `${OID}\n`);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({
+            ref: 'worktrees/wt/refs/bisect/a..b',
+            msgId: 'badRefName',
+          });
+        });
+
+        it('Then badRefName comes before badRefContent on a garbage dot-lock ref', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/refs/bisect/.x.lock`, GARBAGE);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            { ref: 'worktrees/wt/refs/bisect/.x.lock', msgId: 'badRefName' },
+            { ref: 'worktrees/wt/refs/bisect/.x.lock', msgId: 'badRefContent' },
+          ]);
+        });
+
+        it('Then badRefName comes before symlinkRef on a link named refs/heads/a..b', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.symlink('main', '/repo/.git/refs/heads/a..b');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          const ids = result.filter((f) => 'ref' in f && f.ref === 'refs/heads/a..b');
+          expect(ids.slice(0, 2).map((f) => f.msgId)).toEqual(['badRefName', 'symlinkRef']);
+        });
+      },
+    );
+  });
+
+  describe('Given a HEAD whose symbolic target is not a branch', () => {
+    describe.each(worktreeViews)(
+      'When verifyIntegrity runs from the $label worktree',
+      ({ build }) => {
+        it('Then badHeadTarget names the main HEAD referent ahead of the referent facts', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/tags/x\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            { ref: 'HEAD', msgId: 'badHeadTarget', referent: 'refs/tags/x' },
+          ]);
+        });
+
+        it('Then badHeadTarget names the linked HEAD under its worktree prefix', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8(`${ADMIN}/wt/HEAD`, 'ref: refs/tags/x\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            { ref: 'worktrees/wt/HEAD', msgId: 'badHeadTarget', referent: 'refs/tags/x' },
+          ]);
+        });
+
+        it('Then badHeadTarget precedes the referent facts of a target outside refs/', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: elsewhere\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result.map((f) => f.msgId)).toEqual([
+            'badHeadTarget',
+            'badReferentName',
+            'symrefTargetIsNotARef',
+          ]);
+        });
+
+        it('Then a HEAD targeting a branch reports nothing', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+
+        it('Then a detached HEAD reports nothing', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/HEAD', `${OID}\n`);
+          await ctx.fs.writeUtf8(`/repo/.git/objects/${OID.slice(0, 2)}/${OID.slice(2)}`, 'x');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result.filter((f) => f.msgId === 'badHeadTarget')).toEqual([]);
+        });
+
+        it('Then a non-HEAD symbolic ref to a tag reports no badHeadTarget', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8('/repo/.git/refs/heads/x', 'ref: refs/tags/y\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result.filter((f) => f.msgId === 'badHeadTarget')).toEqual([]);
+        });
+      },
+    );
+  });
 });

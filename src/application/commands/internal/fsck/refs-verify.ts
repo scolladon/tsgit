@@ -76,18 +76,20 @@ interface PassResult {
 
 const REFS_PREFIX = 'refs/';
 
+type ContentMsgId =
+  | 'badRefContent'
+  | 'cannotReadRef'
+  | 'badReferentName'
+  | 'symrefTargetIsNotARef'
+  | 'trailingRefContent'
+  | 'refMissingNewline';
+
 type ContentFinding = Extract<
   RefIntegrityFinding,
-  {
-    readonly msgId:
-      | 'badRefContent'
-      | 'cannotReadRef'
-      | 'badReferentName'
-      | 'symrefTargetIsNotARef'
-      | 'trailingRefContent'
-      | 'refMissingNewline';
-  }
->;
+  { readonly msgId: ContentMsgId | 'badHeadTarget' }
+> & {
+  readonly msgId: ContentMsgId;
+};
 
 /** The configured grade of each message the content pass reports. */
 interface ContentGrades {

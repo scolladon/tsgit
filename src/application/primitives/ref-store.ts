@@ -40,6 +40,7 @@ import {
 import { type LooseBody, readLooseBody } from '../../domain/refs/loose-ref.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
 import {
+  bareStoreRefName,
   isPseudoRef,
   linkedWorktreeRefPrefix,
   PER_WORKTREE_PREFIXES,
@@ -51,6 +52,7 @@ import {
   type TransactionNames,
 } from '../../domain/refs/ref-name-conflict.js';
 import {
+  isBranchReferent,
   isOutsideRefsNamespace,
   isRootRefName,
   isValidSymrefReferent,
@@ -252,6 +254,7 @@ export type RefsVerifyEndReason =
 export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
+  | { readonly ref: RefName; readonly msgId: 'badRefName' }
   | {
       readonly ref: RefName;
       readonly msgId: 'cannotReadRef';
@@ -261,7 +264,7 @@ export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
   | {
       readonly ref: RefName;
-      readonly msgId: 'badReferentName' | 'symrefTargetIsNotARef';
+      readonly msgId: 'badReferentName' | 'symrefTargetIsNotARef' | 'badHeadTarget';
       readonly referent: string;
     }
   | { readonly ref: RefName; readonly msgId: 'refMissingNewline' }
@@ -1361,6 +1364,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       if (run.ended) return;
       const name = `${prefix}/${entry.name}` as RefName;
       if (await statRefusedUpFront(entry, `${dir}/${entry.name}`, run.findings)) continue;
+      run.findings.push(...refNameFindings(entry, name));
       if (entry.isSymbolicLink) {
         run.findings.push({ ref: name, msgId: 'symlinkRef' });
         await linkReferentFindings(run, name, `${dir}/${entry.name}`);
@@ -1373,6 +1377,9 @@ function createFilesRefStore(ctx: Context): RefStore {
       run.findings.push(...(await looseBodyFindingsAt(name, `${dir}/${entry.name}`)));
     }
   }
+
+  const refNameFindings = (entry: DirEntry, name: RefName): readonly RefIntegrityFinding[] =>
+    entry.isDirectory || isSafeRefName(name) ? [] : [{ ref: name, msgId: 'badRefName' }];
 
   /** A regular file's `lstat` is left to the read that follows it: its refusal ends in the
    *  same `failed to stat` at the same position, without a second call per ref. */
@@ -1497,7 +1504,11 @@ function createFilesRefStore(ctx: Context): RefStore {
     const body = readLooseBody(outcome.raw, ctx.hashConfig.hexLength);
     if (body.kind === 'unparseable') return [{ ref: name, msgId: 'badRefContent' }];
     if (body.kind === 'symbolic') {
-      return [...symbolicBodyNotices(name, body), ...referentFindings(name, body.referent)];
+      return [
+        ...symbolicBodyNotices(name, body),
+        ...headTargetFindings(name, body.referent),
+        ...referentFindings(name, body.referent),
+      ];
     }
     const notices = directBodyNotices(name, body);
     if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), body.id))) return notices;
@@ -1512,6 +1523,11 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (body.missingNewline) notices.push({ ref, msgId: 'refMissingNewline' });
     if (body.trailingWhitespace) notices.push({ ref, msgId: 'trailingRefContent' });
     return notices;
+  }
+
+  function headTargetFindings(ref: RefName, referent: string): readonly RefIntegrityFinding[] {
+    if (bareStoreRefName(ref) !== 'HEAD' || isBranchReferent(referent)) return [];
+    return [{ ref, msgId: 'badHeadTarget', referent }];
   }
 
   function directBodyNotices(
