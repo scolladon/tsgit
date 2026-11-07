@@ -203,7 +203,7 @@ const finalizeOutcome = (
  * second `getRefStore` lookup.
  */
 export async function resolveDirectChain(
-  refStore: RefStore,
+  refStore: Pick<RefStore, 'resolveDirect'>,
   initial: RefName | 'HEAD',
   maxDepth: number,
 ): Promise<ChainOutcome> {

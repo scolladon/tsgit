@@ -446,10 +446,10 @@ describe('resolveWriteChain', () => {
         const ctx = await seedBrokenReferent('garbage\n');
         const store = getRefStore(ctx);
         const denied = new TsgitError({ code: 'PERMISSION_DENIED', path: 'refs/heads/g' });
-        const original = store.resolveDirect.bind(store);
+        const original = store.resolveDirectForWrite.bind(store);
         const failingStore = {
           ...store,
-          resolveDirect: async (name: RefName) => {
+          resolveDirectForWrite: async (name: RefName) => {
             if (name === 'refs/heads/g') throw denied;
             return original(name);
           },
@@ -477,7 +477,7 @@ describe('resolveWriteChain', () => {
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/bad`, 'ref: ../../etc/passwd\n');
         const store = getRefStore(ctx);
-        const spy = vi.spyOn(store, 'resolveDirect');
+        const spy = vi.spyOn(store, 'resolveDirectForWrite');
 
         // Act + Assert
         try {
@@ -488,6 +488,77 @@ describe('resolveWriteChain', () => {
         }
         expect(spy).toHaveBeenCalledTimes(1);
         spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a store whose read view and write view answer differently', () => {
+    const storeWithBrokenReadView = (ctx: Context) => ({
+      ...getRefStore(ctx),
+      resolveDirect: async (): Promise<never> => {
+        throw new Error('read view');
+      },
+    });
+
+    describe('When resolveWriteChain dereferences a symbolic ref', () => {
+      it('Then it reads only the write view', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setDirect(ctx, ref('refs/heads/x'), ID_A);
+        await writeSymbolicRef(ctx, ref('refs/heads/s'), ref('refs/heads/x'));
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(storeWithBrokenReadView(ctx), ref('refs/heads/s'), WRITE_OPTS);
+
+        // Assert
+        expect(result.links).toEqual(['refs/heads/s']);
+        expect(result.terminal).toBe('refs/heads/x');
+        expect(result.old).toBe(ID_A);
+      });
+    });
+
+    describe('When resolveWriteChain runs with noDeref on a direct ref', () => {
+      it('Then the ref is read through the write view', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setDirect(ctx, ref('refs/heads/x'), ID_A);
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(storeWithBrokenReadView(ctx), ref('refs/heads/x'), NO_DEREF_OPTS);
+
+        // Assert
+        expect(result.terminal).toBe('refs/heads/x');
+        expect(result.old).toBe(ID_A);
+        expect(result.terminalIsSymbolic).toBe(false);
+      });
+    });
+
+    describe('When resolveWriteChain runs with noDeref on a symbolic ref', () => {
+      it('Then the referent is read through the write view', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setDirect(ctx, ref('refs/heads/x'), ID_A);
+        await writeSymbolicRef(ctx, ref('refs/heads/s'), ref('refs/heads/x'));
+        const real = getRefStore(ctx);
+        const reads: RefName[] = [];
+        const store = {
+          ...storeWithBrokenReadView(ctx),
+          resolveDirectForWrite: async (name: RefName) => {
+            reads.push(name);
+            return real.resolveDirectForWrite(name);
+          },
+        };
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(store, ref('refs/heads/s'), NO_DEREF_OPTS);
+
+        // Assert
+        expect(reads).toEqual(['refs/heads/s', 'refs/heads/x']);
+        expect(result.old).toBe(ID_A);
+        expect(result.terminalIsSymbolic).toBe(true);
       });
     });
   });
