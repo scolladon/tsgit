@@ -55,6 +55,25 @@ describe('Given a symbolic ref whose first chain read faults with a permission e
   });
 });
 
+describe("Given the worktree snapshot's HEAD read faulting with an unclassified error", () => {
+  describe('When fsck runs', () => {
+    it('Then the fault propagates rather than reading as no HEAD', async () => {
+      // Arrange — with HEAD the only ref, the worktree snapshot reads it first.
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      const fault = new Error('EIO: i/o error');
+      vi.mocked(resolveRef).mockRejectedValueOnce(fault);
+      const sut = fsck;
+
+      // Act
+      const result = sut(ctx);
+
+      // Assert
+      await expect(result).rejects.toBe(fault);
+    });
+  });
+});
+
 describe('Given a symbolic ref whose first chain read faults with an unclassified error', () => {
   describe('When fsck runs', () => {
     it('Then the fault propagates', async () => {

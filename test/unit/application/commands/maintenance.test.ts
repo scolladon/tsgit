@@ -1580,12 +1580,13 @@ describe('maintenance', () => {
   describe('Given gc runs from a linked worktree whose own admin dir is listed in the registry', () => {
     describe('When the retention-root scan enumerates other worktrees', () => {
       it('Then it skips re-walking its own admin dir', async () => {
-        // Arrange — re-walking the CURRENT worktree via `addOneWorktreeRoots`
+        // Arrange — re-walking the CURRENT worktree via `addNonCurrentWorktreeRoots`
         // would be a redundant read: `collectRetentionRoots`'s own direct
         // calls against `ctx` already cover it.
         const ctx = await seedOneCommit();
         const wtCtx = deriveWorktreeContext(ctx, 'wt-self', '/tmp/self-worktree');
         const selfGitdirPath = `${wtCtx.layout.gitDir}/gitdir`;
+        const selfIndexPath = `${wtCtx.layout.gitDir}/index`;
         await ctx.fs.writeUtf8(selfGitdirPath, '/tmp/self-worktree/.git\n');
         await ctx.fs.writeUtf8(`${wtCtx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const readCalls: string[] = [];
@@ -1593,6 +1594,12 @@ describe('maintenance', () => {
         vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
           readCalls.push(path);
           return originalReadUtf8(path);
+        });
+        const existsCalls: string[] = [];
+        const originalExists = ctx.fs.exists.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'exists').mockImplementation(async (path: string) => {
+          existsCalls.push(path);
+          return originalExists(path);
         });
         const sut = maintenance;
 
@@ -1602,8 +1609,9 @@ describe('maintenance', () => {
         // Assert — gc's worktree-prune step reads every admin entry's gitdir as
         // git's `should_prune_worktree` does, and the retention scan's listing
         // reads it once more for the skip rule; the scan never re-walks the
-        // admin dir itself, whose HEAD is read once.
+        // admin dir itself, whose index is probed once.
         expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(2);
+        expect(existsCalls.filter((p) => p === selfIndexPath).length).toBe(1);
       });
     });
   });
