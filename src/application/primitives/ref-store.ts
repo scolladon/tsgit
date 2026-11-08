@@ -1078,16 +1078,15 @@ function createFilesRefStore(ctx: Context): RefStore {
   };
 
   const resolveDirect = (name: RefName): Promise<ResolveDirectResult> =>
-    resolveDirectAt(name, readLocation(name));
+    name === HEAD_NAME ? resolveHeadDirect() : resolveDirectAt(name, readLocation(name));
 
   const resolveDirectForWrite = (name: RefName): Promise<ResolveDirectResult> =>
-    resolveDirectAt(name, writeLocation(name));
+    name === HEAD_NAME ? resolveHeadDirect() : resolveDirectAt(name, writeLocation(name));
 
   async function resolveDirectAt(
     name: RefName,
     { dir, path }: LooseLocation,
   ): Promise<ResolveDirectResult> {
-    if (name === HEAD_NAME) return resolveHeadDirect();
     if (await isLooseMiss(path)) return resolveAfterLooseMiss(name, dir, path);
     const leaf = await readLooseLeaf(path);
     if (leaf.kind === 'symlink') {
