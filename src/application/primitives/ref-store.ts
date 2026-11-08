@@ -1107,11 +1107,13 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /** git's loose iterator takes a symbolic link entry's followed type: a
-   *  directory is descended, anything else listed, and a link that does not
-   *  resolve dropped. */
+   *  directory is descended, a regular file listed, and a link that does not
+   *  resolve or reaches anything else dropped. */
   async function followedEntryKind(path: string): Promise<ListedKind> {
     try {
-      return (await ctx.fs.stat(path)).isDirectory ? 'directory' : 'ref';
+      const target = await ctx.fs.stat(path);
+      if (target.isDirectory) return 'directory';
+      return target.isFile ? 'ref' : 'unlisted';
     } catch (err) {
       if (UNRESOLVABLE_LINK_CODES.has(errorCodeOf(err))) return 'unlisted';
       throw err;

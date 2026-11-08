@@ -6760,3 +6760,30 @@ describe('ref-store — lock files and dot-led names', () => {
     });
   });
 });
+
+describe('ref-store — a symbolic link under refs whose target is neither a file nor a directory', () => {
+  describe('Given a link under refs/heads whose followed stat is a pipe', () => {
+    describe('When listRefNames runs', () => {
+      it('Then the link is not listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const linkPath = `${ctx.layout.gitDir}/refs/heads/pipe`;
+        await ctx.fs.symlink('main', linkPath);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          const stat = await originalStat(path);
+          return path === linkPath ? { ...stat, isFile: false, isDirectory: false } : stat;
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames();
+
+        // Assert
+        expect(result).not.toContain('refs/heads/pipe');
+      });
+    });
+  });
+});

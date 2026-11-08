@@ -474,6 +474,12 @@ const rows: ReadonlyArray<Row> = [
     origins: FROM_MAIN,
   },
   {
+    given: "a symbolic link to a named pipe as a linked worktree's bisect ref",
+    fifos: [FIFO_TARGET],
+    links: { [FIFO_BAD]: `../../../../${FIFO_TARGET}` },
+    origins: BOTH,
+  },
+  {
     given: `a linked worktree renamed to ${RENAMED_ADMIN} holding refs and root refs`,
     files: {
       [`worktrees/${LINKED}/${BISECT_BAD.replace('bad', 'good')}`]: COMMIT_LINE,
@@ -571,6 +577,15 @@ const listingRows: ReadonlyArray<ListingRow> = [
     given: 'a hand-made worktree admin dir whose refs is a file',
     shape: { given: 'x', handMade: { [VT]: { workDir: true, refsFile: true } } },
     origins: [VT],
+  },
+  {
+    given: 'a symbolic link to a named pipe among the main store heads',
+    shape: {
+      given: 'x',
+      fifos: [FIFO_TARGET],
+      links: { 'refs/heads/pipe': `../../${FIFO_TARGET}` },
+    },
+    origins: FROM_MAIN,
   },
 ];
 
