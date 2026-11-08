@@ -101,7 +101,15 @@ interface RefusalRow extends Shape {
 interface MissingStoreRow extends Shape {
   /** The path tsgit reports missing, relative to the common dir. */
   readonly missing: string;
+  /** Why the path cannot be created, when not because a component is absent. */
+  readonly refusal?: 'NOT_A_DIRECTORY';
 }
+
+/** The system message git prints after each refusal a lock path can carry. */
+const LOCK_PATH_MESSAGES = {
+  FILE_NOT_FOUND: 'No such file or directory',
+  NOT_A_DIRECTORY: 'Not a directory',
+} as const;
 
 /** A delete or a symbolic-ref write, both gated on git's refname_is_safe alone. */
 interface GatedRow extends Shape {
@@ -362,6 +370,14 @@ const missingStoreRows: ReadonlyArray<MissingStoreRow> = [
     from: 'main',
     runs: REPEATS,
     missing: 'worktrees/nope/.lock',
+  },
+  {
+    given: `${BRANCHES} and a regular file at worktrees/nope`,
+    name: 'worktrees/nope',
+    from: 'main',
+    extraFiles: { 'worktrees/nope': 'x\n' },
+    missing: 'worktrees/nope/.lock',
+    refusal: 'NOT_A_DIRECTORY',
   },
   ...['worktrees/nope', 'worktrees/nope/HEAD', 'worktrees/nope/refs/bisect/z'].map(
     (name): MissingStoreRow => ({
@@ -685,12 +701,14 @@ const lockedLine = (error: unknown, lock: string): string => {
 };
 
 /** git's line for a lock or a stack it cannot create: the files backend's lock names the path and
- *  its `ENOENT`, the reftable backend's stack lock only the I/O fault. */
+ *  its `errno`, the reftable backend's stack lock only the I/O fault. */
 const missingStoreLine = (error: unknown, row: MissingStoreRow): string => {
-  if (!(error instanceof TsgitError) || error.data.code !== 'FILE_NOT_FOUND') return String(error);
+  if (!(error instanceof TsgitError)) return String(error);
+  const { data } = error;
+  if (data.code !== 'FILE_NOT_FOUND' && data.code !== 'NOT_A_DIRECTORY') return String(error);
   const failed = `fatal: update_ref failed for ref '${row.name}'`;
   if (row.reftable) return `${failed}: reftable: transaction prepare: I/O error`;
-  return `${failed}: cannot lock ref '${row.name}': Unable to create '${error.data.path}': No such file or directory`;
+  return `${failed}: cannot lock ref '${row.name}': Unable to create '${data.path}': ${LOCK_PATH_MESSAGES[data.code]}`;
 };
 
 /** INVALID_REF carries no name: the caller holds the one it passed, and git's line names it. */
@@ -802,7 +820,7 @@ describe('worktree ref namespace write interop', () => {
             // Assert
             expect(expected.exitCode).toBe(FATAL_EXIT);
             expect((error as TsgitError).data).toEqual({
-              code: 'FILE_NOT_FOUND',
+              code: row.refusal ?? 'FILE_NOT_FOUND',
               path: path.join(ours.common, row.missing),
             });
             expect(rooted(missingStoreLine(error, row), ours)).toBe(

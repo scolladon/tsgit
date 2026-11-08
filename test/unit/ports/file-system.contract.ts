@@ -141,6 +141,14 @@ const beneathFileCalls: ReadonlyArray<PathCall> = [
   { name: 'exists', invoke: (e, p) => e.fs.exists(p) },
 ];
 
+/** The surfaces that read or stat a path, refusing a regular file named with a trailing slash. */
+const trailingSlashFileCalls: ReadonlyArray<PathCall> = [
+  { name: 'read', invoke: (e, p) => e.fs.read(p) },
+  { name: 'readUtf8', invoke: (e, p) => e.fs.readUtf8(p) },
+  { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
+  { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
+];
+
 /** The intermediate segments that stand where a directory is needed but hold a regular file. */
 const fileSegments: ReadonlyArray<{ readonly label: string; readonly segment: string }> = [
   { label: 'a regular file', segment: 'refusal-file.bin' },
@@ -1743,6 +1751,29 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           // Assert
           assertFileNotFound(caught);
         });
+      });
+
+      describe('Given a regular file named with a trailing slash', () => {
+        for (const { name, invoke } of trailingSlashFileCalls) {
+          it(`Then ${name} refuses NOT_A_DIRECTORY`, async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+            // Arrange
+            await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env, `${env.rootDir}/refusal-file.bin/`);
+              expect.fail('expected NOT_A_DIRECTORY');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertNotADirectory(caught);
+          });
+        }
       });
 
       for (const { label, segment } of fileSegments) {

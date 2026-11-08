@@ -560,7 +560,14 @@ export class MemoryFileSystem implements FileSystem {
    * surface whose parent chain cannot hold the entry. More than `SYMLINK_FOLLOW_LIMIT` hops
    * refuses PERMISSION_DENIED, as Node's ELOOP does.
    */
+  /** A trailing slash asks for a directory: POSIX refuses it `ENOTDIR` on a regular file. */
   private walk(path: string, mode: WalkMode): string {
+    const target = this.walkToTarget(path, mode);
+    if (path.endsWith('/') && this.files.has(target)) throw notADirectory(path);
+    return target;
+  }
+
+  private walkToTarget(path: string, mode: WalkMode): string {
     const resolved = this.resolve(path);
     // A file or directory filed at the lexical key proves nothing on its chain needs resolving:
     // `directories` is prefix-closed and every create files its key at the walked path, so no

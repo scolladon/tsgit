@@ -712,6 +712,24 @@ describe('common-dir per-worktree-ref sweep', () => {
         });
       });
 
+      describe('When updateRef writes worktrees/nope while a regular file sits at that admin path, from the main worktree', () => {
+        it('Then it refuses NOT_A_DIRECTORY on the lock inside that path and leaves the file alone', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const blocker = `${ctx.layout.gitDir}/worktrees/nope`;
+          await ctx.fs.writeUtf8(blocker, 'x\n');
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() => sut(ctx, 'worktrees/nope' as RefName, b, OPTIONS));
+
+          // Assert
+          expect(refusal).toEqual({ code: 'NOT_A_DIRECTORY', path: `${blocker}/.lock` });
+          expect(await ctx.fs.readUtf8(blocker)).toBe('x\n');
+        });
+      });
+
       describe('When updateRef writes worktrees/wt, the linked admin dir with no name after it, from the main worktree', () => {
         it('Then it refuses FILE_EXISTS on the smallest ref under that dir and leaves its HEAD alone', async () => {
           // Arrange
