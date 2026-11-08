@@ -799,7 +799,7 @@ const resolution = async (
   }
 };
 
-describe.skipIf(!GIT_AVAILABLE)('Given a repository whose worktrees keep private refs', () => {
+describe.skipIf(!GIT_AVAILABLE)('fsck worktree private refs interop', () => {
   describe.each(rows.filter((row) => row.fatal === undefined))('Given $given', (row) => {
     describe.each(originsOf(row))('When fsck runs from $label', ({ from }) => {
       it.skipIf(needsPrivilege(row)).each(attemptsOf(row))(
