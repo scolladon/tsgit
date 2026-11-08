@@ -49,14 +49,12 @@ export const commonGitDir = (ctx: Context): string => commonDirOf(ctx.layout);
 export const perWorktreeRefDir = (ctx: Context, name: RefName): string =>
   isPerWorktreeRef(name) ? ctx.layout.gitDir : commonGitDir(ctx);
 
-/** Where a name's loose file, its lock and its log live — git's `files_ref_path` and `files_reflog_path`. */
+/** Where a name's loose file and its lock live — git's `files_ref_path`. */
 export interface RefLocation {
   /** The packed-refs probe root, and the `refs/` root a file-in-the-way climb stops at. */
   readonly dir: string;
   /** The loose file; its lock is this path plus `.lock`. */
   readonly loose: string;
-  /** The log file. */
-  readonly reflog: string;
 }
 
 /** The gitdir whose store a parsed name selects — git's `backend_for` root on reftable, `files_ref_path`'s on files. */
@@ -69,12 +67,16 @@ export const worktreeStoreDir = (ctx: Context, target: WorktreeRefTarget): strin
 /** The files a ref name selects, after git's `parse_worktree_ref` picks its store. */
 export const refLocation = (ctx: Context, name: RefName): RefLocation => {
   const target = parseWorktreeRef(name);
-  const store = worktreeStoreDir(ctx, target);
   return {
     dir: target.kind === 'current' ? ctx.layout.gitDir : commonGitDir(ctx),
-    loose: looseRefPath(store, target.bare),
-    reflog: reflogPath(store, target.bare),
+    loose: looseRefPath(worktreeStoreDir(ctx, target), target.bare),
   };
+};
+
+/** The log file a ref name selects, in the same store as its loose file — git's `files_reflog_path`. */
+export const refReflogPath = (ctx: Context, name: RefName): string => {
+  const target = parseWorktreeRef(name);
+  return reflogPath(worktreeStoreDir(ctx, target), target.bare);
 };
 
 /** A repository's own `objects` directory — the primary object store. */

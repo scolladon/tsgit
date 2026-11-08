@@ -19,9 +19,9 @@ import {
   packedRefsPath,
   packsDir,
   packsDirIn,
-  type RefLocation,
   refLocation,
   reflogPath,
+  refReflogPath,
   reftableDir,
   reftableTableLockPath,
   sparseCheckoutPath,
@@ -397,9 +397,16 @@ describe('getSpawnCwd', () => {
   });
 });
 
-describe('refLocation', () => {
+/** git's `files_ref_path` (`dir`, `loose`) and `files_reflog_path` (`reflog`) for one name. */
+interface LocatedPaths {
+  readonly dir: string;
+  readonly loose: string;
+  readonly reflog: string;
+}
+
+describe('refLocation and refReflogPath', () => {
   const locatorContexts: ReadonlyArray<
-    [string, Context, ReadonlyArray<readonly [string, RefLocation]>]
+    [string, Context, ReadonlyArray<readonly [string, LocatedPaths]>]
   > = [
     [
       "the main worktree's Context",
@@ -431,6 +438,10 @@ describe('refLocation', () => {
             loose: '/g/main-worktree/refs/heads/main',
             reflog: '/g/logs/main-worktree/refs/heads/main',
           },
+        ],
+        [
+          'worktrees/nope',
+          { dir: '/g', loose: '/g/worktrees/nope/', reflog: '/g/worktrees/nope/logs/' },
         ],
       ],
     ],
@@ -469,7 +480,7 @@ describe('refLocation', () => {
   ];
   describe.each(locatorContexts)('Given %s', (_context, ctx, rows) => {
     describe.each(rows)('When %s is located', (name, expected) => {
-      it("Then dir, loose and reflog are git's paths", () => {
+      it("Then dir and loose are git's paths", () => {
         // Arrange
         const sut = refLocation;
 
@@ -477,7 +488,18 @@ describe('refLocation', () => {
         const result = sut(ctx, name as RefName);
 
         // Assert
-        expect(result).toEqual(expected);
+        expect(result).toEqual({ dir: expected.dir, loose: expected.loose });
+      });
+
+      it("Then its reflog path is git's", () => {
+        // Arrange
+        const sut = refReflogPath;
+
+        // Act
+        const result = sut(ctx, name as RefName);
+
+        // Assert
+        expect(result).toBe(expected.reflog);
       });
     });
   });

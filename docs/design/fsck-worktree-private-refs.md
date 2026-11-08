@@ -582,9 +582,10 @@ refs-verify.ts runRefsVerifyPass
 resolve-ref.ts resolveDirectChain ─┐
 ref-write-chain.ts, checkExpected,  ├─ RefStore.resolveDirect(name)
 refIsPresent, every write path     ─┘   one locator: refLocation(ctx, name)   (ADR-1164)
-                                          { dir, loose, reflog } = git's files_ref_path
-                                          + files_reflog_path over parseWorktreeRef(name)
-record-ref-update.ts, reflog-store.ts ── refLocation(ctx, name).reflog
+                                          { dir, loose } = git's files_ref_path
+                                          over parseWorktreeRef(name)
+record-ref-update.ts, reflog-store.ts ── refReflogPath(ctx, name) = files_reflog_path,
+  the store's reflog routes                same parse, same store
 update-ref.ts updateRef / deleteRefs ── refname_is_safe gate on deletes (requirement 16)
                                      ── shared-lock refusal over the chain + coupled HEAD
 ```
@@ -739,9 +740,10 @@ the outside-`refs/` arm can fail on a name that passed it.
 export interface RefLocation {
   readonly dir: string; // packed-refs probe root and `${dir}/refs` file-in-the-way climb root
   readonly loose: string; // files_ref_path: the loose file and its `.lock`
-  readonly reflog: string; // files_reflog_path
 }
 export const refLocation = (ctx: Context, name: RefName): RefLocation
+export const refReflogPath = (ctx: Context, name: RefName): string // files_reflog_path
+// Each parses the name once; a loose read composes no log path.
 //   current → { gitDir,  `${gitDir}/${name}`,                 `${gitDir}/logs/${name}` }
 //   shared  → { common,  `${common}/${name}`,                 `${common}/logs/${name}` }
 //   main    → { common,  `${common}/${bare}`,                 `${common}/logs/${bare}` }
@@ -774,7 +776,7 @@ packing, the reftable listing), which never carry a prefix.
 
 **Reflog writer and store.** `record-ref-update.ts` (`prepareRefUpdate`,
 `appendReflogFile`) and `reflog-store.ts` (`appendReflog`, `reflogExists`, `deleteReflog`)
-take `refLocation(ctx, ref).reflog`. The auto-create gate keeps `shouldAutocreateReflog(ref)`
+take `refReflogPath(ctx, ref)`. The auto-create gate keeps `shouldAutocreateReflog(ref)`
 on the full name, as `should_autocreate_reflog` does (W5, W2's `logs/HEAD` append).
 
 **Write chain** (`internal/ref-write-chain.ts`):

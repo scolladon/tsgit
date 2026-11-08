@@ -10,13 +10,13 @@ import type { RefName } from '../../domain/objects/object-id.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { serializeReflogLine } from '../../domain/reflog/reflog-format.js';
 import type { Context } from '../../ports/context.js';
-import { refLocation } from './path-layout.js';
+import { refReflogPath } from './path-layout.js';
 import { getRefStore } from './ref-store.js';
 
 /** Append one entry to `ref`'s reflog, creating the file and parents as needed. */
 export async function appendReflog(ctx: Context, ref: RefName, entry: ReflogEntry): Promise<void> {
   await ctx.fs.appendUtf8(
-    refLocation(ctx, ref).reflog,
+    refReflogPath(ctx, ref),
     serializeReflogLine(entry, ctx.hashConfig.hexLength),
   );
 }
@@ -36,7 +36,7 @@ export async function readReflogLenient(
 
 /** Whether `ref` has a reflog file at all. */
 export async function reflogExists(ctx: Context, ref: RefName): Promise<boolean> {
-  return ctx.fs.exists(refLocation(ctx, ref).reflog);
+  return ctx.fs.exists(refReflogPath(ctx, ref));
 }
 
 /**
@@ -55,7 +55,7 @@ export async function writeReflog(
 
 /** Remove `ref`'s reflog file. A no-op when the file is already absent. */
 export async function deleteReflog(ctx: Context, ref: RefName): Promise<void> {
-  const path = refLocation(ctx, ref).reflog;
+  const path = refReflogPath(ctx, ref);
   if (await ctx.fs.exists(path)) {
     await ctx.fs.rm(path);
   }

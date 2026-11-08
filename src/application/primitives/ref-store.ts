@@ -91,6 +91,7 @@ import {
   perWorktreeRefDir,
   type RefLocation,
   refLocation,
+  refReflogPath,
 } from './path-layout.js';
 import { readObject, readObjectMetadata } from './read-object.js';
 import {
@@ -1073,6 +1074,9 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   const location = (name: RefName): RefLocation => refLocation(ctx, name);
 
+  /** The log file every reflog route reads and writes, in the store `location` picks. */
+  const reflogOf = (name: RefName): string => refReflogPath(ctx, name);
+
   /** Whether `loose` is this worktree's `HEAD` file, whichever name reached it. */
   const isHeadFile = (loose: string): boolean => loose === `${ctx.layout.gitDir}/HEAD`;
 
@@ -1736,7 +1740,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** Remove `name`'s reflog file. A no-op when the file is absent, or when
    *  a directory — the logs of refs under `name` — sits at its path. */
   async function removeReflogFile(name: RefName): Promise<void> {
-    await rmUnlessDirectory(location(name).reflog);
+    await rmUnlessDirectory(reflogOf(name));
   }
 
   /** Removes the file or link at `path`; nothing when the path is absent or
@@ -1792,7 +1796,7 @@ function createFilesRefStore(ctx: Context): RefStore {
         serializeReflogRewriteLineBytes(entry, ctx.hashConfig.hexLength),
       ),
     );
-    await atomicWriteFile(ctx, location(update.name).reflog, content, () => refLocked(update.name));
+    await atomicWriteFile(ctx, reflogOf(update.name), content, () => refLocked(update.name));
   }
 
   /** `name`'s reflog bytes, or `undefined` when the file is absent. Refuses
@@ -1801,7 +1805,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  enforced exactly once regardless of which parse strictness the caller
    *  wants. */
   async function readReflogBytes(name: RefName): Promise<Uint8Array | undefined> {
-    const path = location(name).reflog;
+    const path = reflogOf(name);
     // One stat instead of an exists probe (itself a stat) + stat: absent is
     // the common miss, and a DIRECTORY at the path — the D/F shape a sibling
     // `<name>/x` log creates — reads as "no reflog", the same answer
@@ -1857,7 +1861,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function moveReflog(from: RefName, to: RefName): Promise<void> {
     if (!(await hasReflog(from))) return;
-    await ctx.fs.rename(location(from).reflog, location(to).reflog);
+    await ctx.fs.rename(reflogOf(from), reflogOf(to));
   }
 
   /**
@@ -1867,8 +1871,8 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function copyReflog(from: RefName, to: RefName): Promise<void> {
     if (!(await hasReflog(from))) return;
-    const bytes = await ctx.fs.read(location(from).reflog);
-    await ctx.fs.write(location(to).reflog, bytes);
+    const bytes = await ctx.fs.read(reflogOf(from));
+    await ctx.fs.write(reflogOf(to), bytes);
   }
 
   /** Whether `name` has a reflog FILE — never a directory. `ctx.fs.exists`
@@ -1880,7 +1884,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  regular file (`S_ISREG`) and reports absent for that same directory
    *  shape. */
   async function hasReflog(name: RefName): Promise<boolean> {
-    const path = location(name).reflog;
+    const path = reflogOf(name);
     try {
       return (await ctx.fs.stat(path)).isFile;
     } catch (err) {
@@ -1933,8 +1937,9 @@ function createFilesRefStore(ctx: Context): RefStore {
     content: Uint8Array,
     reflog: ReflogAppend | undefined,
   ): Promise<void> {
-    const write = await writeLooseRef(name, content, () => prepareReflog(name, reflog));
-    if (isHeadFile(location(name).loose)) invalidateHeadSlot(ctx);
+    const { loose } = location(name);
+    const write = await writeLooseRef(name, loose, content, () => prepareReflog(name, reflog));
+    if (isHeadFile(loose)) invalidateHeadSlot(ctx);
     if (reflog === undefined || write === undefined) return;
     await commitRefUpdate(ctx, name, write, reflog.oldId, reflog.newId, reflog.message);
   }
@@ -2000,7 +2005,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (blocking !== undefined) throw notADirectory(blocking);
   }
 
-  /** `atomicWriteRef` onto `name`'s loose file, with `prepareLog` run under
+  /** `atomicWriteRef` onto `name`'s loose file `path`, with `prepareLog` run under
    *  the held lock between the lock's own refusals and the rename — git's
    *  lock-then-log-then-rename order. A lock that cannot be created for a
    *  path reason checks for a file in the way, so a normal write pays no
@@ -2008,10 +2013,10 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  commit once the ref is in place. */
   async function writeLooseRef(
     name: RefName,
+    path: string,
     content: Uint8Array,
     prepareLog: () => Promise<ReflogWrite | undefined>,
   ): Promise<ReflogWrite | undefined> {
-    const path = location(name).loose;
     await assertLockDirExists(path);
     let prepared: ReflogWrite | undefined;
     try {
@@ -2258,10 +2263,10 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** A delete's target, refusing a file in the way before any lock. */
   async function deleteTargetFor(update: DeleteUpdate): Promise<DeleteTarget> {
-    const { dir, loose, reflog } = location(update.name);
+    const { dir, loose } = location(update.name);
     const looseDirExists = await isDirectoryPath(dirname(loose));
     if (!looseDirExists) await assertNoFileInTheWay(update.name, loose);
-    return { name: update.name, dir, loose, reflog, looseDirExists };
+    return { name: update.name, dir, loose, reflog: reflogOf(update.name), looseDirExists };
   }
 
   /** Both trees' empty-parent pruning, each distinct parent once, for the
