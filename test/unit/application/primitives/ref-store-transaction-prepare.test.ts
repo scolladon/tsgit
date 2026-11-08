@@ -119,25 +119,19 @@ describe('createRefStore().applyRefUpdates', () => {
 
 describe('Given a detached main HEAD and a write addressed through main-worktree/', () => {
   describe('When applyRefUpdates sets main-worktree/HEAD expecting the HEAD oid', () => {
-    it('Then it refuses with the expectation unmet, the name absent', async () => {
+    it('Then it writes the main HEAD', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${ID}\n`);
       const name = 'main-worktree/HEAD' as RefName;
+      const next = 'b'.repeat(40) as ObjectId;
       const sut = createRefStore(ctx);
 
       // Act
-      const refusal = await sut
-        .applyRefUpdates([{ kind: 'set', name, id: ID, expected: ID }])
-        .catch((error: unknown) => (error as { data: unknown }).data);
+      await sut.applyRefUpdates([{ kind: 'set', name, id: next, expected: ID }]);
 
       // Assert
-      expect(refusal).toEqual({
-        code: 'REF_UPDATE_CONFLICT',
-        name,
-        expected: ID,
-        actual: 'absent',
-      });
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${next}\n`);
     });
   });
 
@@ -153,7 +147,7 @@ describe('Given a detached main HEAD and a write addressed through main-worktree
       await sut.applyRefUpdates([{ kind: 'set', name, id: ID }]);
 
       // Assert
-      expect(await sut.resolveDirectForWrite(name)).toEqual({ kind: 'direct', id: ID });
+      expect(await sut.resolveDirect(name)).toEqual({ kind: 'direct', id: ID });
     });
   });
 });

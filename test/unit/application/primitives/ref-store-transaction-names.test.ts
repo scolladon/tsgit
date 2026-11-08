@@ -630,3 +630,31 @@ describe('ref-store — names that collide inside one transaction', () => {
     });
   });
 });
+
+describe('Given a files repository', () => {
+  describe('When applyRefUpdates sets main-worktree/refs/bisect/x and main-worktree/refs/bisect/x/y in one transaction', () => {
+    it("Then the refusal names the common dir's refs/bisect/x/y, as the bare twin does", async () => {
+      // Arrange
+      const transaction = (prefix: string): RefUpdate[] =>
+        ['refs/bisect/x', 'refs/bisect/x/y'].map((name) => ({
+          kind: 'set',
+          name: `${prefix}${name}` as RefName,
+          id: ID,
+        }));
+      const bareCtx = createMemoryContext();
+      const bare = await refusalOf(() => createRefStore(bareCtx).applyRefUpdates(transaction('')));
+      const ctx = createMemoryContext();
+      const sut = createRefStore(ctx);
+
+      // Act
+      const data = await refusalOf(() => sut.applyRefUpdates(transaction('main-worktree/')));
+
+      // Assert
+      expect(bare).toEqual({
+        code: 'FILE_EXISTS',
+        path: `${bareCtx.layout.gitDir}/refs/bisect/x/y`,
+      });
+      expect(data).toEqual(bare);
+    });
+  });
+});

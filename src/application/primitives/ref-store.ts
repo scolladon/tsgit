@@ -87,6 +87,7 @@ import {
   looseRefPath,
   packedRefsPath,
   perWorktreeRefDir,
+  type RefLocation,
   refLocation,
   reflogPath,
 } from './path-layout.js';
@@ -533,7 +534,7 @@ const byDescendingName = (a: LooseDuplicate, b: LooseDuplicate): number =>
 /** One delete's loose-file footprint, resolved before any lock is taken. */
 interface DeleteTarget {
   readonly name: RefName;
-  readonly gitDir: string;
+  readonly dir: string;
   readonly loose: string;
   /** Whether the loose file's parent is a directory: the loose lock is
    *  taken, and the refs tree pruned, only then. */
@@ -613,13 +614,13 @@ function smallestDuplicateName(updates: readonly DeleteUpdate[]): RefName | unde
  *  with the root it must stay below. */
 const refsTreeParent = (target: DeleteTarget): readonly [string, string] => [
   dirname(target.loose),
-  `${target.gitDir}/${REFS_DIR}`,
+  `${target.dir}/${REFS_DIR}`,
 ];
 
 /** {@link refsTreeParent} for the target's reflog in the logs tree. */
 const logsTreeParent = (target: DeleteTarget): readonly [string, string] => [
-  dirname(reflogPath(target.gitDir, target.name)),
-  `${logsDir(target.gitDir)}/${REFS_DIR}`,
+  dirname(reflogPath(target.dir, target.name)),
+  `${logsDir(target.dir)}/${REFS_DIR}`,
 ];
 
 const holdsAnyName = (index: PackedNameIndex, names: ReadonlySet<RefName>): boolean =>
@@ -751,12 +752,6 @@ const withPseudoRefFiles = (backend: RefStore, files: RefStore): RefStore => ({
   resolveDirectForWrite: (name) =>
     (isPseudoRef(name) ? files : backend).resolveDirectForWrite(name),
 });
-
-/** Where a ref's loose file lives: its directory and its full path. */
-interface LooseLocation {
-  readonly dir: string;
-  readonly path: string;
-}
 
 /** A packed snapshot's point lookup — git's `find_reference_location`. */
 interface PackedNameIndex {
@@ -1076,34 +1071,29 @@ function createFilesRefStore(ctx: Context): RefStore {
     return { kind: 'direct', id: entry.id };
   }
 
-  const writeLocation = (name: RefName): LooseLocation => {
-    const dir = refDir(name);
-    return { dir, path: looseRefPath(dir, name) };
-  };
-
   /**
-   * Where a read looks: the loose file in the store the name selects, while the
-   * packed fallback keeps the full name, as git does.
+   * Where every read and write route looks: the loose file and its lock in the
+   * store the name selects, while the packed fallback keeps the full name, as
+   * git does.
    */
-  const readLocation = (name: RefName): LooseLocation => {
-    const at = refLocation(ctx, name);
-    return { dir: at.dir, path: at.loose };
-  };
+  const location = (name: RefName): RefLocation => refLocation(ctx, name);
+
+  /** Whether `loose` is this worktree's `HEAD` file, whichever name reached it. */
+  const isHeadFile = (loose: string): boolean => loose === `${ctx.layout.gitDir}/HEAD`;
 
   const resolveDirect = (name: RefName): Promise<ResolveDirectResult> =>
-    name === HEAD_NAME ? resolveHeadDirect() : resolveDirectAt(name, readLocation(name));
+    name === HEAD_NAME ? resolveHeadDirect() : resolveDirectAt(name, location(name));
 
-  const resolveDirectForWrite = (name: RefName): Promise<ResolveDirectResult> =>
-    name === HEAD_NAME ? resolveHeadDirect() : resolveDirectAt(name, writeLocation(name));
+  const resolveDirectForWrite = resolveDirect;
 
   async function resolveDirectAt(
     name: RefName,
-    { dir, path }: LooseLocation,
+    { dir, loose }: RefLocation,
   ): Promise<ResolveDirectResult> {
-    if (await isLooseMiss(path)) return resolveAfterLooseMiss(name, dir, path);
-    const leaf = await readLooseLeaf(path);
+    if (await isLooseMiss(loose)) return resolveAfterLooseMiss(name, dir, loose);
+    const leaf = await readLooseLeaf(loose);
     if (leaf.kind === 'symlink') {
-      return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
+      return resolveSymlinkedRef(name, loose, await ctx.fs.readlink(loose));
     }
     if (leaf.kind === 'content') {
       return fromNamedContent(
@@ -1954,7 +1944,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     reflog: ReflogAppend | undefined,
   ): Promise<void> {
     const write = await writeLooseRef(name, content, () => prepareReflog(name, reflog));
-    if (name === HEAD_NAME) invalidateHeadSlot(ctx);
+    if (isHeadFile(location(name).loose)) invalidateHeadSlot(ctx);
     if (reflog === undefined || write === undefined) return;
     await commitRefUpdate(ctx, name, write, reflog.oldId, reflog.newId, reflog.message);
   }
@@ -2016,7 +2006,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    * same data on every adapter, whatever each reports for a path under it.
    */
   async function assertNoFileInTheWay(name: RefName, loose: string): Promise<void> {
-    const blocking = await fileInTheWay(dirname(loose), `${refDir(name)}/${REFS_DIR}`);
+    const blocking = await fileInTheWay(dirname(loose), `${location(name).dir}/${REFS_DIR}`);
     if (blocking !== undefined) throw notADirectory(blocking);
   }
 
@@ -2031,7 +2021,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     content: Uint8Array,
     prepareLog: () => Promise<ReflogWrite | undefined>,
   ): Promise<ReflogWrite | undefined> {
-    const path = looseRefPath(refDir(name), name);
+    const path = location(name).loose;
     let prepared: ReflogWrite | undefined;
     try {
       await atomicWriteRef(ctx, name, path, content, (rename) =>
@@ -2113,7 +2103,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** The byte-smallest loose ref under `name`'s loose path, when a directory
    *  sits there. */
   async function smallestLooseRefUnder(name: RefName): Promise<RefName | undefined> {
-    const dir = looseRefPath(refDir(name), name);
+    const dir = location(name).loose;
     if ((await pathKind(dir)) !== 'directory') return undefined;
     return smallestLooseRefIn(dir, name);
   }
@@ -2129,7 +2119,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       await smallestPackedRefUnder(name),
       await smallestLooseRefUnder(name),
     );
-    if (under !== undefined) throw fileExists(looseRefPath(refDir(under), under));
+    if (under !== undefined) throw fileExists(location(under).loose);
   }
 
   async function smallestPackedRefUnder(name: RefName): Promise<RefName | undefined> {
@@ -2231,7 +2221,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function removeLooseAndLog(target: DeleteTarget, kind: PathKind): Promise<void> {
     if (kind === 'file') await ctx.fs.rm(target.loose);
     await removeReflogFile(target.name);
-    if (target.name === HEAD_NAME) invalidateHeadSlot(ctx);
+    if (isHeadFile(target.loose)) invalidateHeadSlot(ctx);
   }
 
   /** `target`'s loose leaf kind, after git's lock over an absent ref has
@@ -2270,11 +2260,10 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** A delete's target, refusing a file in the way before any lock. */
   async function deleteTargetFor(update: DeleteUpdate): Promise<DeleteTarget> {
-    const gitDir = refDir(update.name);
-    const loose = looseRefPath(gitDir, update.name);
+    const { dir, loose } = location(update.name);
     const looseDirExists = await isDirectoryPath(dirname(loose));
     if (!looseDirExists) await assertNoFileInTheWay(update.name, loose);
-    return { name: update.name, gitDir, loose, looseDirExists };
+    return { name: update.name, dir, loose, looseDirExists };
   }
 
   /** Both trees' empty-parent pruning, each distinct parent once, for the
@@ -2336,7 +2325,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   async function looseFileAt(name: RefName): Promise<boolean> {
-    return (await pathKind(looseRefPath(refDir(name), name))) === 'file';
+    return (await pathKind(location(name).loose)) === 'file';
   }
 
   /**
@@ -2394,10 +2383,9 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function nameCheckFor(name: RefName, pass: PreparePass): Promise<NameCheck> {
     const prefixes = refNamePrefixes(name);
     // One `pathKind` answers both questions the lock would ask at this path.
-    const looseDirectory = (await pathKind(looseRefPath(refDir(name), name))) === 'directory';
-    const looseUnder = looseDirectory
-      ? await smallestLooseRefIn(looseRefPath(refDir(name), name), name)
-      : undefined;
+    const { loose } = location(name);
+    const looseDirectory = (await pathKind(loose)) === 'directory';
+    const looseUnder = looseDirectory ? await smallestLooseRefIn(loose, name) : undefined;
     const smallestExistingUnder = smallerName(await smallestPackedRefUnder(name), looseUnder);
     const checkedUnderLock =
       looseUnder !== undefined ||
@@ -2477,7 +2465,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (check === undefined) return;
     if (check.checkedUnderLock) refuseFirstConflict([check], transaction);
     if (!check.looseDirectory) return;
-    await clearDirectory(check.name, looseRefPath(refDir(check.name), check.name));
+    await clearDirectory(check.name, location(check.name).loose);
   }
 
   /** Applies `updates` in order, each consecutive run of deletes as one

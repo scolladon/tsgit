@@ -17,6 +17,8 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { tagDelete } from '../../../../src/application/commands/tag.js';
+import { validateHead } from '../../../../src/application/primitives/internal/head-file.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
@@ -208,6 +210,368 @@ describe('common-dir per-worktree-ref sweep', () => {
           // Assert
           expect(await ctx.fs.exists(`${sut.layout.gitDir}/refs/bisect/bad`)).toBe(true);
           expect(await ctx.fs.exists(`${sut.layout.commonDir}/refs/bisect/bad`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a main worktree and a linked worktree wt with their own HEADs', () => {
+      type HeadShape = 'branch' | 'detached';
+      interface WorktreePair {
+        readonly a: ObjectId;
+        readonly b: ObjectId;
+      }
+
+      const headContent = (shape: HeadShape, branch: string, id: ObjectId): string =>
+        shape === 'branch' ? `ref: refs/heads/${branch}\n` : `${id}\n`;
+
+      async function seedWorktreePair(
+        ctx: Context,
+        heads: { readonly main: HeadShape; readonly wt: HeadShape },
+      ): Promise<WorktreePair> {
+        const a = await writeCommit(ctx, 'A');
+        const b = await writeCommit(ctx, 'B');
+        await getRefStore(ctx).applyRefUpdates(
+          ['refs/heads/main', 'refs/heads/side', 'refs/bisect/s'].map((name) => ({
+            kind: 'set' as const,
+            name: name as RefName,
+            id: a,
+          })),
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, headContent(heads.main, 'main', a));
+        await ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, headContent(heads.wt, 'side', a));
+        await ctx.fs.writeUtf8(`${adminDir(ctx)}/gitdir`, `${ctx.layout.workDir}/wt/.git\n`);
+        await ctx.fs.writeUtf8(`${adminDir(ctx)}/refs/bisect/t`, `${a}\n`);
+        return { a, b };
+      }
+
+      const refValue = (ctx: Context, name: string) =>
+        getRefStore(ctx).resolveDirect(name as RefName);
+      const direct = (id: ObjectId) => ({ kind: 'direct', id });
+      const strayDirExists = (ctx: Context): Promise<boolean> =>
+        ctx.fs.exists(`${ctx.layout.gitDir}/main-worktree`);
+      const OPTIONS = { reflogMessage: 'probe' };
+
+      describe('When updateRef writes main-worktree/HEAD from the linked worktree with both HEADs on branches', () => {
+        it('Then refs/heads/main holds B, refs/heads/side keeps A and nothing is written under main-worktree/', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(asWorktreeChild(ctx), 'main-worktree/HEAD' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await refValue(ctx, 'refs/heads/main')).toEqual(direct(b));
+          expect(await refValue(ctx, 'refs/heads/side')).toEqual(direct(a));
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes main-worktree/HEAD from the main worktree with the main HEAD detached', () => {
+        it('Then the common HEAD file holds B, refs/heads/main keeps A and nothing is written under main-worktree/', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'detached', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, 'main-worktree/HEAD' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${b}\n`);
+          expect(await refValue(ctx, 'refs/heads/main')).toEqual(direct(a));
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes main-worktree/HEAD from the linked worktree with the main HEAD detached', () => {
+        it('Then the common HEAD file holds B, refs/heads/main keeps A and nothing is written under main-worktree/', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'detached', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(asWorktreeChild(ctx), 'main-worktree/HEAD' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${b}\n`);
+          expect(await refValue(ctx, 'refs/heads/main')).toEqual(direct(a));
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes main-worktree/refs/bisect/x from the main worktree', () => {
+        it('Then the common refs/bisect/x holds B and nothing is written under main-worktree/', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, 'main-worktree/refs/bisect/x' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await refValue(ctx, 'refs/bisect/x')).toEqual(direct(b));
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes main-worktree/refs/bisect/x from the linked worktree', () => {
+        it('Then the common refs/bisect/x holds B and nothing is written under main-worktree/', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(asWorktreeChild(ctx), 'main-worktree/refs/bisect/x' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await refValue(ctx, 'refs/bisect/x')).toEqual(direct(b));
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes main-worktree/HEAD with noDeref from the linked worktree', () => {
+        it('Then the common HEAD file holds B detached, refs/heads/main keeps A and nothing is written under main-worktree/', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(asWorktreeChild(ctx), 'main-worktree/HEAD' as RefName, b, {
+            ...OPTIONS,
+            noDeref: true,
+          });
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${b}\n`);
+          expect(await refValue(ctx, 'refs/heads/main')).toEqual(direct(a));
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes main-worktree/HEAD with noDeref from the main worktree', () => {
+        it('Then the common HEAD file holds B detached, refs/heads/main keeps A and nothing is written under main-worktree/', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, 'main-worktree/HEAD' as RefName, b, { ...OPTIONS, noDeref: true });
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${b}\n`);
+          expect(await refValue(ctx, 'refs/heads/main')).toEqual(direct(a));
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes refs/heads/x, a common file naming main-worktree/HEAD, from the linked worktree', () => {
+        it('Then refs/heads/main holds B, x stays symbolic and nothing is written under main-worktree/', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, 'ref: main-worktree/HEAD\n');
+          const sut = updateRef;
+
+          // Act
+          await sut(asWorktreeChild(ctx), 'refs/heads/x' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await refValue(ctx, 'refs/heads/main')).toEqual(direct(b));
+          expect(await refValue(ctx, 'refs/heads/x')).toEqual({
+            kind: 'symbolic',
+            target: 'main-worktree/HEAD',
+          });
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt/refs/bisect/y from the main worktree', () => {
+        it("Then the admin dir's refs/bisect/y holds B", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, 'worktrees/wt/refs/bisect/y' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${adminDir(ctx)}/refs/bisect/y`)).toBe(`${b}\n`);
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt/refs/bisect/y from the linked worktree', () => {
+        it("Then the admin dir's refs/bisect/y holds B", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(asWorktreeChild(ctx), 'worktrees/wt/refs/bisect/y' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${adminDir(ctx)}/refs/bisect/y`)).toBe(`${b}\n`);
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt/HEAD from the main worktree with both HEADs on branches', () => {
+        it('Then refs/heads/side holds B', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, 'worktrees/wt/HEAD' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await refValue(ctx, 'refs/heads/side')).toEqual(direct(b));
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt/HEAD from the linked worktree with its HEAD detached', () => {
+        it('Then the admin HEAD file holds B', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'detached' });
+          const sut = updateRef;
+
+          // Act
+          await sut(asWorktreeChild(ctx), 'worktrees/wt/HEAD' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${adminDir(ctx)}/HEAD`)).toBe(`${b}\n`);
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt/HEAD with noDeref from the linked worktree', () => {
+        it('Then the admin HEAD file holds B and refs/heads/side keeps A', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          await sut(asWorktreeChild(ctx), 'worktrees/wt/HEAD' as RefName, b, {
+            ...OPTIONS,
+            noDeref: true,
+          });
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${adminDir(ctx)}/HEAD`)).toBe(`${b}\n`);
+          expect(await refValue(ctx, 'refs/heads/side')).toEqual(direct(a));
+        });
+      });
+
+      describe.each([
+        { name: 'main-worktree/refs/heads/main', cwd: 'the linked worktree', child: true },
+        { name: 'worktrees/wt/refs/heads/side', cwd: 'the main worktree', child: false },
+        { name: 'worktrees/nope/HEAD', cwd: 'the main worktree', child: false },
+        { name: 'worktrees/nope/refs/bisect/z', cwd: 'the main worktree', child: false },
+      ])('When updateRef writes $name from $cwd', ({ name, child }) => {
+        it('Then a new common-dir file at that spelled path holds B', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const cwd = child ? asWorktreeChild(ctx) : ctx;
+          const sut = updateRef;
+
+          // Act
+          await sut(cwd, name as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/${name}`)).toBe(`${b}\n`);
+        });
+      });
+
+      describe('When updateRef writes main-worktree/HEAD from the main worktree after the detached main HEAD was read once', () => {
+        it("Then a later resolveDirect('HEAD') answers B", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'detached', wt: 'branch' });
+          await validateHead(ctx);
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, 'main-worktree/HEAD' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await refValue(ctx, 'HEAD')).toEqual(direct(b));
+        });
+      });
+
+      describe('When updateRef writes main-worktree/HEAD with noDeref from the main worktree after its HEAD was read once', () => {
+        it("Then a later resolveDirect('HEAD') answers B directly", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          await validateHead(ctx);
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, 'main-worktree/HEAD' as RefName, b, { ...OPTIONS, noDeref: true });
+
+          // Assert
+          expect(await refValue(ctx, 'HEAD')).toEqual(direct(b));
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt/HEAD from the linked worktree after its detached HEAD was read once', () => {
+        it("Then a later resolveDirect('HEAD') of the linked worktree answers B", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'detached' });
+          const child = asWorktreeChild(ctx);
+          await validateHead(child);
+          const sut = updateRef;
+
+          // Act
+          await sut(child, 'worktrees/wt/HEAD' as RefName, b, OPTIONS);
+
+          // Assert
+          expect(await refValue(child, 'HEAD')).toEqual(direct(b));
+        });
+      });
+
+      describe('When applyRefUpdates deletes worktrees/wt/HEAD from the linked worktree after its HEAD was read once', () => {
+        it("Then a later resolveDirect('HEAD') of the linked worktree answers missing", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await seedWorktreePair(ctx, { main: 'branch', wt: 'detached' });
+          const child = asWorktreeChild(ctx);
+          await validateHead(child);
+          const sut = getRefStore(child);
+
+          // Act
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'worktrees/wt/HEAD' as RefName }]);
+
+          // Assert
+          expect(await sut.resolveDirect('HEAD' as RefName)).toEqual({ kind: 'missing' });
+        });
+      });
+
+      describe('When applyRefUpdates deletes main-worktree/refs/bisect/s from the main worktree', () => {
+        it('Then the common refs/bisect/s is gone', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = getRefStore(ctx);
+
+          // Act
+          await sut.applyRefUpdates([
+            { kind: 'delete', name: 'main-worktree/refs/bisect/s' as RefName },
+          ]);
+
+          // Assert
+          expect(await refValue(ctx, 'refs/bisect/s')).toEqual({ kind: 'missing' });
         });
       });
     });
