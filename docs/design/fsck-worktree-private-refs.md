@@ -247,6 +247,11 @@ findings as `type ref msgId severity` (`bad-ref` is implied when the type is omi
 | B15 | MAIN loose `refs/bisect/bad`; `packed-refs` holds `refs/bisect/packed` and `main-worktree/refs/bisect/fullname`; `rev-parse --verify` of `main-worktree/refs/bisect/bad`, `…/packed`, `…/fullname`, `main-worktree/ORIG_HEAD` (absent), `worktrees/wt` | w, wt | — ; `bad` and `fullname` resolve; `packed`, `ORIG_HEAD` and `worktrees/wt` → `fatal: Needed a single revision` 128: the packed fallback uses the full name | — | ✗ `bad` throws `OBJECT_NOT_FOUND`; the rest ✓ | `bad` resolves; the rest as today (ADR-1158) |
 | E1 | MAIN `refs/heads/a..b` = oid | w | `for-each-ref` and `branch`: `warning: ignoring ref with broken name refs/heads/a..b`, name omitted | 0 | ✗ `listRefs` includes it | out of perimeter (listing consumers) |
 | W14 | `update-ref <name> <older oid>` for `main-worktree/HEAD`, `main-worktree/refs/bisect/x`, `worktrees/wt/refs/bisect/y` (write side, git and tsgit each on a fresh throwaway) | wt | — ; git moves `refs/heads/main` through the main HEAD, writes `<common>/refs/bisect/x`, writes `<common>/worktrees/wt/refs/bisect/y` | 0 | ✗ the first two write the stray files `<common>/main-worktree/HEAD` and `<common>/main-worktree/refs/bisect/x`; the third ✓ | unchanged: the write side is out of this change (ADR-1158) and must not see the read-side mapping (DC-14) |
+| X1 | linked admin dir renamed to `w:t` (its work tree's `.git` file rewritten) holding `refs/bisect/good`, `ORIG_HEAD`, `BISECT_HEAD`, all valid ids | w, wt | `error: worktrees/w:t/refs/bisect/good: badRefName: invalid refname format` and `error: worktrees/w:t/BISECT_HEAD: badRefName: invalid refname format` (`ORIG_HEAD` unreported: the per-store root-ref check stops at its first error, `BISECT_HEAD` listed first) | 8 | ✗ no name fact on a root ref | `badRefName` on the prefixed name of a linked store's root ref, before its body facts; the main store's bare root names are exempt |
+| X2 | `mkfifo worktrees/wt/refs/bisect/bad` | w, wt | `error: worktrees/wt/refs/bisect/bad: badRefFiletype: unexpected file type` (never opened; name and content checks do not run) | 8 | ✗ opens it, hangs | `worktrees/wt/refs/bisect/bad badRefFiletype error`, never read, never listed |
+| X3 | `mkfifo BISECT_HEAD` in the main gitdir and in `worktrees/wt` | w, wt | — | 0 | ✗ opens it, hangs | nothing: a root ref that is not a regular file is passed over |
+| X4 | main gitdir `BISECT_HEAD` a symbolic link to a named pipe | w | — | 0 | ✗ opens it, hangs | nothing: a root-ref link is followed by a stat, and a target that is not a regular file is passed over |
+| X5 | `mkfifo refs/bisect/bad` in the main store | w | `error: refs/bisect/bad: badRefFiletype: unexpected file type` | 8 | ✗ opens it, hangs | `refs/bisect/bad badRefFiletype error` |
 
 **Path spelling in git's lines** (the interop harness rebuilds it; tsgit always reports the
 absolute path it opened):
@@ -666,6 +671,5 @@ Pinned, no choice left:
   ref resolver.
 - `branch` and `for-each-ref` hiding broken-named refs with `ignoring ref with broken name`
   (E1): a listing-consumer change outside fsck.
-- `badRefFiletype` (a FIFO or socket under `refs/`): unpinned here, same pass, no row needs it.
 - Reftable linked-worktree stores: tsgit's reftable `verifyIntegrity` is unchanged.
 - The fsck file-system call count (32.50).

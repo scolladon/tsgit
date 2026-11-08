@@ -12,6 +12,7 @@
  *   unique:         tsgit checks and names every worktree's private refs as git does
  *   interopSurface: fsck
  */
+import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -71,6 +72,10 @@ interface Shape {
   readonly removed?: ReadonlyArray<string>;
   /** Gitdir-relative paths renamed (source to destination) once seeded, before links are made. */
   readonly moved?: Readonly<Record<string, string>>;
+  /** Gitdir-relative paths made into named pipes. */
+  readonly fifos?: ReadonlyArray<string>;
+  /** Linked worktree ids renamed to a new id once seeded, their work tree's `.git` file following. */
+  readonly renamedAdmins?: Readonly<Record<string, string>>;
   /** Gitdir-relative paths given a mode once seeded. */
   readonly restricted?: Readonly<Record<string, number>>;
   readonly packed?: ReadonlyArray<string>;
@@ -121,6 +126,11 @@ const unreadableAt = (given: string, relative: string, mode: number): Shape => (
   restricted: { [relative]: mode },
 });
 const NO_ADMIN_ACCESS = `worktrees/${LINKED}`;
+
+const FIFO_BAD = `worktrees/${LINKED}/${BISECT_BAD}`;
+const FIFO_TARGET = 'fifo-target';
+const WINDOWS = process.platform === 'win32';
+const RENAMED_ADMIN = 'w:t';
 
 const rows: ReadonlyArray<Row> = [
   { given: 'a clean repository', origins: BOTH },
@@ -439,6 +449,38 @@ const rows: ReadonlyArray<Row> = [
     files: { 'refs/heads/x': 'ref: main-worktree/refs/bisect/bad\n', [BISECT_BAD]: COMMIT_LINE },
     origins: BOTH,
   },
+  {
+    given: "a named pipe as a linked worktree's bisect ref",
+    fifos: [FIFO_BAD],
+    origins: BOTH,
+  },
+  {
+    given: "a named pipe as the main store's bisect ref",
+    fifos: [BISECT_BAD],
+    origins: FROM_MAIN,
+  },
+  {
+    given: 'a named pipe as the root ref of the main store and of a linked worktree',
+    fifos: ['BISECT_HEAD', `worktrees/${LINKED}/BISECT_HEAD`],
+    origins: BOTH,
+  },
+  {
+    given: 'a symbolic link to a named pipe as the main store root ref',
+    fifos: [FIFO_TARGET],
+    links: { BISECT_HEAD: FIFO_TARGET },
+    origins: FROM_MAIN,
+  },
+  {
+    given: `a linked worktree renamed to ${RENAMED_ADMIN} holding refs and root refs`,
+    files: {
+      [`worktrees/${LINKED}/${BISECT_BAD.replace('bad', 'good')}`]: COMMIT_LINE,
+      [`worktrees/${LINKED}/ORIG_HEAD`]: COMMIT_LINE,
+      [`worktrees/${LINKED}/BISECT_HEAD`]: COMMIT_LINE,
+    },
+    renamedAdmins: { [LINKED]: RENAMED_ADMIN },
+    runs: ORDER_RUNS,
+    origins: BOTH,
+  },
 ];
 
 const SEPARATE_BISECT_NAMES = [
@@ -569,6 +611,25 @@ const seedMoves = async (gitDir: string, moved: Readonly<Record<string, string>>
   }
 };
 
+const seedFifos = async (gitDir: string, fifos: ReadonlyArray<string>) => {
+  for (const relative of fifos) {
+    await mkdir(path.dirname(path.join(gitDir, relative)), { recursive: true });
+    execFileSync('mkfifo', [path.join(gitDir, relative)]);
+  }
+};
+
+const seedAdminRenames = async (
+  root: string,
+  gitDir: string,
+  renamed: Readonly<Record<string, string>>,
+) => {
+  for (const [id, newId] of Object.entries(renamed)) {
+    const admin = path.join(gitDir, 'worktrees', newId);
+    await rename(path.join(gitDir, 'worktrees', id), admin);
+    await writeFile(path.join(root, MAIN, id, '.git'), `${GITFILE_PREFIX}${admin}\n`);
+  }
+};
+
 const seedModes = async (gitDir: string, restricted: Readonly<Record<string, number>>) => {
   for (const [relative, mode] of Object.entries(restricted)) {
     refusedPaths.unshift(path.join(gitDir, relative));
@@ -588,7 +649,9 @@ const seedStores = async (arranged: Arranged, commit: string): Promise<void> => 
   for (const [relative, body] of Object.entries(shape.files ?? {})) {
     await writeUnder(gitDir, relative, fill(body));
   }
+  await seedFifos(gitDir, shape.fifos ?? []);
   for (const relative of shape.removed ?? []) await rm(path.join(gitDir, relative));
+  await seedAdminRenames(root, gitDir, shape.renamedAdmins ?? {});
   await seedMoves(gitDir, shape.moved ?? {});
   await seedLinks(gitDir, shape.links ?? {}, fill);
   if (shape.packed !== undefined) {
@@ -664,6 +727,8 @@ const detailOf = (finding: BadRef, arranged: Arranged): string => {
       return 'misses LF at the end';
     case 'badRefName':
       return 'invalid refname format';
+    case 'badRefFiletype':
+      return 'unexpected file type';
     case 'badHeadTarget':
       return `HEAD points to non-branch '${referent}'`;
     case 'badReferentName':
@@ -739,6 +804,11 @@ const attemptsOf = (row: Row): ReadonlyArray<number> =>
 
 const needsPrivilege = (row: Row): boolean => row.restricted !== undefined && !UNPRIVILEGED;
 
+const needsPosix = (row: Row): boolean =>
+  WINDOWS && (row.fifos !== undefined || row.renamedAdmins !== undefined);
+
+const unrunnable = (row: Row): boolean => needsPrivilege(row) || needsPosix(row);
+
 const gitArgs = (arranged: Arranged): ReadonlyArray<string> => [
   '-c',
   'commit.gpgsign=false',
@@ -804,7 +874,7 @@ const resolution = async (
 describe.skipIf(!GIT_AVAILABLE)('fsck worktree private refs interop', () => {
   describe.each(rows.filter((row) => row.fatal === undefined))('Given $given', (row) => {
     describe.each(originsOf(row))('When fsck runs from $label', ({ from }) => {
-      it.skipIf(needsPrivilege(row)).each(attemptsOf(row))(
+      it.skipIf(unrunnable(row)).each(attemptsOf(row))(
         'Then tsgit reports git’s lines and exit code (throwaway %i)',
         async () => {
           // Arrange

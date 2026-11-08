@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { snapshotWorktreeHeads } from '../../../../src/application/commands/internal/fsck/roots.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied } from '../../../../src/domain/error.js';
@@ -708,6 +709,85 @@ describe('Given a linked worktree whose admin dir lists nothing and nothing else
 
       // Assert
       expect(refsOnly(result.findings)).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+const withFifoUnderLinkedRefs = async (): Promise<Context> => {
+  const ctx = await repoWithWorktrees();
+  const dir = `${ctx.layout.gitDir}/worktrees/wt1/refs/bisect`;
+  await ctx.fs.mkdir(dir);
+  const readdir = ctx.fs.readdir.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+    const real = await readdir(path);
+    const fifo = { name: 'bad', isFile: false, isDirectory: false, isSymbolicLink: false };
+    return path === dir ? [...real, fifo] : real;
+  });
+  return ctx;
+};
+
+const filetypeFindings = (findings: ReadonlyArray<FsckFinding>) =>
+  findings.filter((finding) => finding.type === 'bad-ref' && finding.msgId === 'badRefFiletype');
+
+describe('Given a non-regular entry under a linked worktree refs/bisect/', () => {
+  describe('When fsck runs', () => {
+    it('Then badRefFiletype is an error on the prefixed name with bit 8', async () => {
+      // Arrange
+      const ctx = await withFifoUnderLinkedRefs();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(filetypeFindings(result.findings)).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'worktrees/wt1/refs/bisect/bad',
+          msgId: 'badRefFiletype',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+
+  describe('When fsck runs with checkReferences false', () => {
+    it('Then nothing is reported', async () => {
+      // Arrange
+      const ctx = await withFifoUnderLinkedRefs();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(filetypeFindings(result.findings)).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When fsck runs with fsck.badRefFiletype set to warn', () => {
+    it('Then it is a warning and the exit code is clean', async () => {
+      // Arrange
+      const ctx = await withFifoUnderLinkedRefs();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tbadRefFiletype = warn\n');
+      __resetConfigCacheForTests();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(filetypeFindings(result.findings)).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'worktrees/wt1/refs/bisect/bad',
+          msgId: 'badRefFiletype',
+          severity: 'warning',
+        },
+      ]);
       expect(result.exitCode).toBe(0);
     });
   });

@@ -13,6 +13,7 @@ import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.j
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   fileNotFound,
+  notADirectory,
   permissionDenied,
   TsgitError,
   unsupportedOperation,
@@ -20,7 +21,7 @@ import {
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import type { DirEntry } from '../../../../src/ports/file-system.js';
+import type { DirEntry, FileStat } from '../../../../src/ports/file-system.js';
 import {
   buildRefBlock,
   buildReftable,
@@ -6293,6 +6294,254 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
         });
       },
     );
+  });
+
+  describe('non-regular entries and root refs', () => {
+    const FIFO: Omit<DirEntry, 'name'> = {
+      isFile: false,
+      isDirectory: false,
+      isSymbolicLink: false,
+    };
+
+    const listWithExtra = (ctx: Context, dir: string, extra: DirEntry): void => {
+      const readdir = ctx.fs.readdir.bind(ctx.fs);
+      vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+        const real = await readdir(path);
+        return path === dir ? [...real, extra] : real;
+      });
+    };
+
+    const opened = (ctx: Context): ReadonlyArray<string> =>
+      [
+        ...vi.mocked(ctx.fs.readUtf8).mock.calls,
+        ...vi.mocked(ctx.fs.openWithNoFollow).mock.calls,
+      ].map(([path]) => path);
+
+    const watchOpens = (ctx: Context): void => {
+      vi.spyOn(ctx.fs, 'readUtf8');
+      vi.spyOn(ctx.fs, 'openWithNoFollow');
+    };
+
+    describe.each([
+      {
+        label: 'linked store',
+        dir: `${ADMIN}/wt/refs/bisect`,
+        ref: 'worktrees/wt/refs/bisect/bad',
+      },
+      { label: 'main store', dir: '/repo/.git/refs/bisect', ref: 'refs/bisect/bad' },
+    ])('Given a non-regular entry under the $label refs/bisect/', ({ dir, ref }) => {
+      describe('When verifyIntegrity runs', () => {
+        it('Then it is badRefFiletype and never opened', async () => {
+          // Arrange
+          const ctx = await fromMain();
+          await ctx.fs.mkdir(dir);
+          listWithExtra(ctx, dir, { name: 'bad', ...FIFO });
+          watchOpens(ctx);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([{ ref, msgId: 'badRefFiletype' }]);
+          expect(opened(ctx).filter((path) => path.startsWith(dir))).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a non-regular entry under the linked store refs/bisect/', () => {
+      describe('When listRefNames runs from it', () => {
+        it('Then the entry is not listed and never opened', async () => {
+          // Arrange
+          const ctx = await fromLinked();
+          const dir = `${ADMIN}/wt/refs/bisect`;
+          await ctx.fs.mkdir(dir);
+          await ctx.fs.writeUtf8(`${dir}/good`, `${OID}\n`);
+          listWithExtra(ctx, dir, { name: 'bad', ...FIFO });
+          watchOpens(ctx);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.listRefNames('refs/bisect/' as RefName);
+
+          // Assert
+          expect(result).toEqual(['refs/bisect/good']);
+          expect(opened(ctx).filter((path) => path.endsWith('/bad'))).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a non-regular entry whose name is also invalid', () => {
+      describe('When verifyIntegrity runs', () => {
+        it('Then only badRefFiletype is reported', async () => {
+          // Arrange
+          const ctx = await fromMain();
+          const dir = `${ADMIN}/wt/refs/bisect`;
+          await ctx.fs.mkdir(dir);
+          listWithExtra(ctx, dir, { name: 'a..b', ...FIFO });
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([
+            { ref: 'worktrees/wt/refs/bisect/a..b', msgId: 'badRefFiletype' },
+          ]);
+        });
+      });
+    });
+
+    describe.each([
+      { label: 'main gitdir', dir: '/repo/.git' },
+      { label: 'linked admin dir', dir: `${ADMIN}/wt` },
+    ])('Given a non-regular BISECT_HEAD in the $label', ({ dir }) => {
+      describe('When verifyIntegrity runs', () => {
+        it('Then it is passed over and never opened', async () => {
+          // Arrange
+          const ctx = await fromMain();
+          listWithExtra(ctx, dir, { name: 'BISECT_HEAD', ...FIFO });
+          watchOpens(ctx);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([]);
+          expect(opened(ctx).filter((path) => path.endsWith('BISECT_HEAD'))).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a symlinked root ref', () => {
+      const path = '/repo/.git/BISECT_HEAD';
+      const linkedTo = async (): Promise<Context> => {
+        const ctx = await fromMain();
+        await ctx.fs.writeUtf8('/repo/.git/target', 'garbage\n');
+        await ctx.fs.symlink('target', path);
+        return ctx;
+      };
+      const statReports = (ctx: Context, outcome: () => Promise<FileStat>): void => {
+        const stat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation((p: string) =>
+          p === path ? outcome() : stat(p),
+        );
+      };
+      const refFindings = (result: ReadonlyArray<{ readonly msgId: string }>) =>
+        result.filter((finding) => 'ref' in finding && finding.ref === 'BISECT_HEAD');
+
+      describe('When its target is a regular file', () => {
+        it('Then the target is judged', async () => {
+          // Arrange
+          const ctx = await linkedTo();
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(refFindings(result)).toEqual([{ ref: 'BISECT_HEAD', msgId: 'badRefContent' }]);
+        });
+      });
+
+      describe('When its target is not a regular file', () => {
+        it('Then it is passed over', async () => {
+          // Arrange
+          const ctx = await linkedTo();
+          const real = await ctx.fs.stat('/repo/.git/target');
+          statReports(ctx, async () => ({ ...real, isFile: false }));
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(refFindings(result)).toEqual([]);
+        });
+      });
+
+      describe.each([
+        ['FILE_NOT_FOUND', () => fileNotFound(path)],
+        ['PERMISSION_DENIED', () => permissionDenied(path)],
+        ['NOT_A_DIRECTORY', () => notADirectory(path)],
+      ])('When its stat fails with %s', (_code, fault) => {
+        it('Then it is passed over', async () => {
+          // Arrange
+          const ctx = await linkedTo();
+          statReports(ctx, () => Promise.reject(fault()));
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(refFindings(result)).toEqual([]);
+        });
+      });
+
+      describe('When its stat fails with another fault', () => {
+        it('Then the fault propagates', async () => {
+          // Arrange
+          const ctx = await linkedTo();
+          statReports(ctx, () => Promise.reject(unsupportedOperation('stat', 'broken')));
+          const sut = createRefStore(ctx);
+
+          // Act
+          const outcome = await sut.verifyIntegrity().catch((err: unknown) => err);
+
+          // Assert
+          expect(outcome).toBeInstanceOf(TsgitError);
+          expect((outcome as TsgitError).data).toMatchObject({ code: 'UNSUPPORTED_OPERATION' });
+        });
+      });
+    });
+
+    describe('Given a linked store whose admin dir is w:t holding ORIG_HEAD and refs/bisect/good', () => {
+      describe('When verifyIntegrity runs', () => {
+        it('Then both carry badRefName on the prefixed name, the root ref before its body facts', async () => {
+          // Arrange
+          const ctx = await fromMain(['w:t']);
+          await ctx.fs.writeUtf8(`${ADMIN}/w:t/ORIG_HEAD`, GARBAGE);
+          await ctx.fs.writeUtf8(`${ADMIN}/w:t/refs/bisect/good`, `${OID}\n`);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          const named = (ref: string) =>
+            result.filter((finding) => 'ref' in finding && finding.ref === ref);
+          expect(named('worktrees/w:t/ORIG_HEAD')).toEqual([
+            { ref: 'worktrees/w:t/ORIG_HEAD', msgId: 'badRefName' },
+            { ref: 'worktrees/w:t/ORIG_HEAD', msgId: 'badRefContent' },
+          ]);
+          expect(result).toContainEqual({
+            ref: 'worktrees/w:t/refs/bisect/good',
+            msgId: 'badRefName',
+          });
+        });
+      });
+    });
+
+    describe('Given a main ORIG_HEAD holding garbage', () => {
+      describe('When verifyIntegrity runs', () => {
+        it('Then it carries no name fact', async () => {
+          // Arrange
+          const ctx = await fromMain();
+          await ctx.fs.writeUtf8('/repo/.git/ORIG_HEAD', GARBAGE);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(
+            result.filter((finding) => 'ref' in finding && finding.ref === 'ORIG_HEAD'),
+          ).toEqual([{ ref: 'ORIG_HEAD', msgId: 'badRefContent' }]);
+        });
+      });
+    });
   });
 });
 

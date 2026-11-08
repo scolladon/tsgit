@@ -85,6 +85,7 @@ type ContentMsgId =
   | 'trailingRefContent'
   | 'refMissingNewline'
   | 'badRefName'
+  | 'badRefFiletype'
   | 'badHeadTarget';
 
 type ContentFinding = Extract<RefIntegrityFinding, { readonly msgId: ContentMsgId }>;
@@ -97,6 +98,7 @@ interface ContentGrades {
   readonly trailing: FsckConfiguredSeverity;
   readonly missingNewline: FsckConfiguredSeverity;
   readonly badName: FsckConfiguredSeverity;
+  readonly badFiletype: FsckConfiguredSeverity;
   readonly badHeadTarget: FsckConfiguredSeverity;
 }
 
@@ -107,6 +109,7 @@ const gradesOf = (severities: FsckSeverityTable): ContentGrades => ({
   trailing: retypeSeverity(severities, 'trailingRefContent', 'info'),
   missingNewline: retypeSeverity(severities, 'refMissingNewline', 'info'),
   badName: retypeSeverity(severities, 'badRefName', 'error'),
+  badFiletype: retypeSeverity(severities, 'badRefFiletype', 'error'),
   badHeadTarget: retypeSeverity(severities, 'badHeadTarget', 'error'),
 });
 
@@ -165,6 +168,7 @@ const CONTENT_MSG_IDS: ReadonlySet<string> = new Set([
   'trailingRefContent',
   'refMissingNewline',
   'badRefName',
+  'badRefFiletype',
   'badHeadTarget',
 ]);
 
@@ -215,6 +219,7 @@ const ownGrade = (
   if (msgId === 'refMissingNewline') return grades.missingNewline;
   if (msgId === 'symrefTargetIsNotARef') return grades.notARef;
   if (msgId === 'badRefName') return grades.badName;
+  if (msgId === 'badRefFiletype') return grades.badFiletype;
   if (msgId === 'badHeadTarget') return grades.badHeadTarget;
   return grades.badContent;
 };
@@ -232,6 +237,9 @@ function contentFinding(
   }
   if (finding.msgId === 'badRefName') {
     return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefName', severity };
+  }
+  if (finding.msgId === 'badRefFiletype') {
+    return { type: 'bad-ref', ref: finding.ref, msgId: 'badRefFiletype', severity };
   }
   if (finding.msgId === 'refMissingNewline') {
     return { type: 'bad-ref', ref: finding.ref, msgId: 'refMissingNewline', severity };

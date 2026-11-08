@@ -72,7 +72,7 @@ import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
 import { lstatIfPresent, lstatIfReachable } from './internal/fs-probes.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
-import { linkedWorktreeAdmins } from './internal/linked-worktrees.js';
+import { isUnopenableFile, linkedWorktreeAdmins } from './internal/linked-worktrees.js';
 import { realPathOutcomeOf } from './internal/real-path.js';
 import {
   isCheckedWhenAbsent,
@@ -267,6 +267,7 @@ export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
   | { readonly ref: RefName; readonly msgId: 'badRefName' }
+  | { readonly ref: RefName; readonly msgId: 'badRefFiletype' }
   | {
       readonly ref: RefName;
       readonly msgId: 'cannotReadRef';
@@ -1117,7 +1118,11 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
-  const entryKind = (entry: DirEntry): ListedKind => (entry.isDirectory ? 'directory' : 'ref');
+  /** git's loose iterator lists a regular file only: a pipe or socket is never a ref. */
+  const entryKind = (entry: DirEntry): ListedKind => {
+    if (entry.isDirectory) return 'directory';
+    return entry.isFile ? 'ref' : 'unlisted';
+  };
 
   /** git's loose iterator drops a directory it cannot open, a refs root included, and carries
    *  on; the opening routes already refuse the repositories git refuses. */
@@ -1414,27 +1419,37 @@ function createFilesRefStore(ctx: Context): RefStore {
   ): Promise<void> {
     for (const entry of entries.filter(isWalkedByRefsVerify)) {
       if (run.ended) return;
+      const path = `${dir}/${entry.name}`;
+      if (await statRefusedUpFront(entry, path, run.findings)) continue;
       const name = `${prefix}/${entry.name}` as RefName;
-      if (await statRefusedUpFront(entry, `${dir}/${entry.name}`, run.findings)) continue;
-      run.findings.push(...refNameFindings(entry, name));
-      if (entry.isSymbolicLink) {
-        run.findings.push({ ref: name, msgId: 'symlinkRef' });
-        await linkReferentFindings(run, name, `${dir}/${entry.name}`);
-        continue;
-      }
-      if (entry.isDirectory) {
-        await walkIntegrity(`${dir}/${entry.name}`, name, run);
-        continue;
-      }
-      run.findings.push(...(await looseBodyFindingsAt(name, `${dir}/${entry.name}`)));
+      if (entry.isDirectory) await walkIntegrity(path, name, run);
+      else await judgeEntry(entry, name, path, run);
     }
   }
 
   const isWalkedByRefsVerify = (entry: DirEntry): boolean =>
     entry.isDirectory || !isSkippedByRefsVerify(entry.name);
 
-  const refNameFindings = (entry: DirEntry, name: RefName): readonly RefIntegrityFinding[] =>
-    entry.isDirectory || isSafeRefName(name) ? [] : [{ ref: name, msgId: 'badRefName' }];
+  /** git's `files_fsck_ref` on one entry: a file type it never opens, then the name, then the
+   *  content — a link's content being its referent. */
+  async function judgeEntry(
+    entry: DirEntry,
+    name: RefName,
+    path: string,
+    run: IntegrityRun,
+  ): Promise<void> {
+    if (!entry.isFile && !entry.isSymbolicLink) {
+      run.findings.push({ ref: name, msgId: 'badRefFiletype' });
+      return;
+    }
+    if (!isSafeRefName(name)) run.findings.push({ ref: name, msgId: 'badRefName' });
+    if (!entry.isSymbolicLink) {
+      run.findings.push(...(await looseBodyFindingsAt(name, path)));
+      return;
+    }
+    run.findings.push({ ref: name, msgId: 'symlinkRef' });
+    await linkReferentFindings(run, name, path);
+  }
 
   /** A regular file's `lstat` is left to the read that follows it: its refusal ends in the
    *  same `failed to stat` at the same position, without a second call per ref. */
@@ -1630,15 +1645,36 @@ function createFilesRefStore(ctx: Context): RefStore {
     const entries = await listRootEntries(store.gitDir);
     if (entries === undefined) return [{ msgId: 'rootRefsUnreadable', path: store.gitDir }];
     for (const entry of entries) {
-      if (!isRootRefName(entry.name)) continue;
-      findings.push(
-        ...(await looseBodyFindingsAt(
-          `${store.prefix}${entry.name}` as RefName,
-          `${store.gitDir}/${entry.name}`,
-        )),
-      );
+      const path = `${store.gitDir}/${entry.name}`;
+      if (!isRootRefName(entry.name) || !(await isRegularRootRef(entry, path))) continue;
+      findings.push(...(await rootRefFacts(store, entry.name, path)));
     }
     return findings;
+  }
+
+  /** git's entry-type probe with links followed: a regular file, or a link whose target is one; a
+   *  target the stat cannot reach is passed over. */
+  async function isRegularRootRef(entry: DirEntry, path: string): Promise<boolean> {
+    if (!entry.isSymbolicLink) return entry.isFile;
+    try {
+      return (await ctx.fs.stat(path)).isFile;
+    } catch (err) {
+      if (isUnopenableFile(err)) return false;
+      throw err;
+    }
+  }
+
+  /** A linked store's root ref carries its `worktrees/<id>/` prefix into git's name check; the
+   *  main store's bare root names are exempt. */
+  async function rootRefFacts(
+    store: IntegrityStore,
+    entryName: string,
+    path: string,
+  ): Promise<readonly RefIntegrityFinding[]> {
+    const ref = `${store.prefix}${entryName}` as RefName;
+    const nameFacts: RefIntegrityFinding[] =
+      store.prefix !== '' && !isSafeRefName(ref) ? [{ ref, msgId: 'badRefName' }] : [];
+    return [...nameFacts, ...(await looseBodyFindingsAt(ref, path))];
   }
 
   async function listRootEntries(gitDir: string): Promise<ReadonlyArray<DirEntry> | undefined> {
