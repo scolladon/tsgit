@@ -386,7 +386,7 @@
   {
     "name": "Chunks: primitives",
     "path": "dist/esm/chunks/primitives-*.js",
-    "limit": "115 kB",
+    "limit": "115.5 kB",
     "gzip": true
   },
   {

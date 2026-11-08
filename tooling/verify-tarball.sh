@@ -467,7 +467,10 @@ done
 # writes, the shared-lock refusal with its coupled-HEAD rule, and the reftable
 # stack selection with its bare-name log gate — runtime code in every
 # distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((1518 * 1024))
+# Raised 1518 -> 1519 KiB by the admin-path lock refusals (a regular file at or
+# above <common>/worktrees/<id>) and the memory adapter's trailing-slash lookup
+# refusal: the measured pack landed at 1 554 512 B, 80 B over the old cap.
+SIZE_CAP=$((1519 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
