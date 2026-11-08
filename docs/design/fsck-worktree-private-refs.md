@@ -15,7 +15,7 @@
 > **Revision** (2026-11-08): folds ADR-1164. Writes through `main-worktree/<per-worktree
 > name>` and `worktrees/<id>/<per-worktree name>` go to the store the prefix selects, through
 > the one locator reads already use. ADR-1163's second locator (`resolveDirectForWrite`) is
-> retired. The write side is pinned in rows W1–W53 ("Write-side matrix"), against git's
+> retired. The write side is pinned in rows W1–W54 ("Write-side matrix"), against git's
 > source for the refusals. Requirement 13 is replaced, and requirements 14–17 are new. DC-9 and
 > DC-14 are superseded. The pins leave five decision candidates (DC-15 to DC-19). The largest
 > is the reftable backend: git selects the store there but keys the record by the full
@@ -459,6 +459,7 @@ isolation; W50 adds `-c core.logAllRefUpdates=false` to `git worktree add`, W53 
 | W51 ×3 | `main-worktree/refs/bisect/x`, the main `HEAD` = `ref: refs/bisect/x` | reftable | —, 0 | main stack: ref record `main-worktree/refs/bisect/x` = B; `HEAD` log +1 | ✗ no `HEAD` log record → ✓ | git's records: the referent matches the bare name |
 | W52 | same | files | —, 0 | `<common>/refs/bisect/x` = B; `logs/HEAD` unchanged | ✓ | — (the literal name does not match) |
 | W53 | `main-worktree/HEAD`, `noDeref`, the main `HEAD` with no log | reftable | —, 0 | main stack: ref record `main-worktree/HEAD` = B, no log record | ✗ a `main-worktree/HEAD` log record → ✓ | git's records |
+| W54 | `update-ref -d` and `symbolic-ref` of `refs/a/`; of `refs/.x` and `refs/a/.x` | files | `refs/a/`: `error: refusing to update ref with bad name 'refs/a/'`, 1; `refs/.x`, `refs/a/.x`: —, 0 (the delete is a no-op, `symbolic-ref` writes the file) | `refs/.x`, `refs/a/.x` written by `symbolic-ref` | `isRefnameSafe` matches git on all three. The public routes refuse all three earlier, in `validateRefName`: `INVALID_REF` `ref name must not start or end with /` and `ref name component must not start with .` | out of perimeter: the order of `validateRefName` and the `refname_is_safe` gate on deletes and symbolic writes |
 
 ## Requirements
 
@@ -728,11 +729,13 @@ export const isRefnameSafe = (name: RefName): boolean
 `parse_worktree_ref` does (refs.c L963). The files locator then spells
 `<common>/worktrees/<id>/` and its lock `<common>/worktrees/<id>/.lock`. git creates no
 directory a trailing slash ends, so the lock refuses `FILE_NOT_FOUND` when the admin dir is
-missing (W45). The reftable backend selects that worktree's stack (W47, W49). A name such as `worktrees/<id>/refs/heads/x`, whose
-bare form is not per-worktree, parses as `shared` too, as git's does. `isRefnameSafe`'s root
-arm is `[A-Z_]+`. It is narrower than `isPerWorktreeRef`'s root syntax, which also admits
-`-`. Note that `validateRefName` already refuses a `..`, `//` or `.`-led component, so only
-the outside-`refs/` arm can fail on a name that passed it.
+missing (W45). The reftable backend selects that worktree's stack (W47, W49). A name such as
+`worktrees/<id>/refs/heads/x`, whose bare form is not per-worktree, parses as `shared` too, as
+git's does. `isRefnameSafe`'s root arm is `[A-Z_]+`. It is narrower than `isPerWorktreeRef`'s
+root syntax, which also admits `-`. Its `refs/` arm refuses a rest that ends in `/`
+(refs.c L393) and keeps a `.`-led component such as `.x`, which `normalize_path_copy` leaves
+alone (W54). Note that `validateRefName` already refuses a `..`, `//` or `.`-led component, so
+only the outside-`refs/` arm can fail on a name that passed it.
 
 **Locator** (`path-layout.ts`, beside `perWorktreeRefDir`):
 
@@ -760,10 +763,13 @@ packing, the reftable listing), which never carry a prefix.
   location(name))`. `resolveDirectForWrite` leaves the files store, `withPseudoRefFiles`
   and the reftable store.
 - `checkExpected` and `refIsPresent` call `resolveDirect`.
-- Every path built from `refDir(x)` on a write or reflog route takes `location(x)`:
+- Every path built from `refDir(x)` on a write or reflog route takes `location(x)`, and so do
+  the loose-file walk filter, `refusePackedNameConflict`, `prunePackedLooseParents` and
+  `looseDuplicates`; `refDir` is gone from `ref-store.ts`:
   - `looseRefPath(refDir(x), x)` becomes `.loose`, and `${refDir(x)}/${REFS_DIR}` becomes
     `${location(x).dir}/${REFS_DIR}`;
-  - `reflogPath(refDir(x), x)` becomes `.reflog`, and `DeleteTarget.gitDir` becomes `.dir`;
+  - `reflogPath(refDir(x), x)` becomes `refReflogPath(ctx, x)`, and `DeleteTarget.gitDir`
+    becomes `.dir`;
   - the routes: `writeLooseRef`, `assertNoFileInTheWay`, `deleteTargetFor`,
     `nameCheckFor`, `raiseLockRefusals`, `refuseRefsUnder`, `looseFileAt`,
     `smallestLooseRefUnder`, `removeReflogFile`, `applyReflogReplace`, `readReflogBytes`,

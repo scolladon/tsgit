@@ -79,19 +79,16 @@ const REFS_PREFIX = 'refs/';
 const ROOT_REF_SYNTAX = /^[A-Z_]+$/;
 const BAD_NAME_REFUSAL = 'refusing to update ref with bad name';
 
-/** Whether `rest` is its own `normalize_path_copy` image: no `.` or `..`
- *  component, and no empty component but a kept trailing slash. */
-const isNormalizedPath = (rest: string): boolean => {
-  const components = rest.split('/');
-  const last = components.length - 1;
-  return components.every(
-    (component, index) =>
-      component !== '.' && component !== '..' && (component !== '' || index === last),
-  );
-};
+/** Components `normalize_path_copy` rewrites; a `.`-led name such as `.x` is kept. */
+const REWRITTEN_COMPONENTS: ReadonlySet<string> = new Set(['', '.', '..']);
 
+/** Whether `rest` is its own `normalize_path_copy` image: no empty, `.` or `..` component. */
+const isNormalizedPath = (rest: string): boolean =>
+  rest.split('/').every((component) => !REWRITTEN_COMPONENTS.has(component));
+
+/** git refuses an empty rest and one that starts or ends with `/` before normalizing it. */
 const isSafeRefsRest = (rest: string): boolean => {
-  if (rest === '' || rest.startsWith('/') || rest.startsWith('.')) return false;
+  if (rest === '' || rest.startsWith('/') || rest.endsWith('/')) return false;
   return isNormalizedPath(rest);
 };
 

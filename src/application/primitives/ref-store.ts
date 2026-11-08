@@ -86,9 +86,7 @@ import {
   lockSuffix,
   logsDir,
   looseObjectPath,
-  looseRefPath,
   packedRefsPath,
-  perWorktreeRefDir,
   type RefLocation,
   refLocation,
   refReflogPath,
@@ -850,8 +848,6 @@ interface WalkTarget {
 function createFilesRefStore(ctx: Context): RefStore {
   let packedCache: { readonly loaded: LoadedPackedRefs; readonly mtimeKey: string } | undefined;
 
-  const refDir = (name: RefName): string => perWorktreeRefDir(ctx, name);
-
   /** `packed-refs`' followed `stat`, `undefined` when absent. The no-follow probe
    *  answers a regular file — and an absence — itself, with no refusal; only a
    *  symbolic link pays the following `stat`. */
@@ -1292,7 +1288,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    * subdirectory rather than always walking the whole tree and filtering
    * every name afterward — `branchList`/`tagList`'s own single-level
    * `readdir` shape, generalised to an arbitrary prefix depth. A name found
-   * under a root other than the one {@link refDir} serves it from is no ref
+   * under a root other than the one {@link location} serves it from is no ref
    * of this worktree and is dropped.
    */
   async function walkAllLooseRefNames(
@@ -1309,7 +1305,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       // counts (~10^5), which a large unpacked ref space (a mirror's
       // `refs/pull/*`, a fetch not yet followed by `pack-refs`) can exceed.
       for (const name of await walkTarget(target, prefix)) {
-        if (target.root === `${refDir(name)}/${target.relative}`) names.push(name);
+        if (target.root === `${location(name).dir}/${target.relative}`) names.push(name);
       }
     }
     return names;
@@ -2147,7 +2143,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const above = refNamePrefixes(name).find((prefix) => packed.byName().has(prefix));
     if (above === undefined && !packed.smallestUnder().has(name)) return;
     if (await refIsPresent(name)) return;
-    if (above !== undefined) throw notADirectory(looseRefPath(refDir(above), above));
+    if (above !== undefined) throw notADirectory(location(above).loose);
     await refuseRefsUnder(name);
   }
 
@@ -2487,10 +2483,10 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  the order changes nothing but the attempts. */
   async function prunePackedLooseParents(names: readonly RefName[]): Promise<void> {
     const parents = new Map(
-      names.map((name) => [
-        dirname(looseRefPath(refDir(name), name)),
-        `${refDir(name)}/${REFS_DIR}`,
-      ]),
+      names.map((name) => {
+        const { dir, loose } = location(name);
+        return [dirname(loose), `${dir}/${REFS_DIR}`];
+      }),
     );
     for (const [dir, root] of parents) await pruneEmptyParents(dir, root);
   }
@@ -2551,15 +2547,14 @@ function createFilesRefStore(ctx: Context): RefStore {
     // Pooled through the same `ioBound` bucket `buildPackedEntry` uses — each
     // probe is an independent read, and `boundedMapFor`'s input-order result
     // keeps the duplicates in packable (ascending name) order.
-    const kinds = await boundedMapFor(ctx, 'ioBound', packable, (entry) =>
-      looseLeafKind(looseRefPath(refDir(entry.name), entry.name)),
-    );
-    return packable.flatMap((entry, index) => {
+    const located = packable.map((entry) => ({ entry, loose: location(entry.name).loose }));
+    const kinds = await boundedMapFor(ctx, 'ioBound', located, ({ loose }) => looseLeafKind(loose));
+    return located.flatMap(({ entry, loose }, index) => {
       const kind = kinds[index];
       if (kind !== 'file' && kind !== 'link') return [];
       // `packableEntries` already narrowed to the `'direct'` arm.
       const { id } = entry.value as Extract<ResolveDirectResult, { kind: 'direct' }>;
-      return [{ name: entry.name, loose: looseRefPath(refDir(entry.name), entry.name), id, kind }];
+      return [{ name: entry.name, loose, id, kind }];
     });
   }
 

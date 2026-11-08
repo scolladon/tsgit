@@ -333,7 +333,7 @@ describe('isSafeRefName', () => {
 describe('isRefnameSafe', () => {
   describe('Given a name git deletes or symbolic-writes', () => {
     describe('When checking it', () => {
-      it.each(['refs/heads/main', 'refs/a/', 'refs/a/.x', 'HEAD', 'ORIG_HEAD', 'AUTO_MERGE', '_'])(
+      it.each(['refs/heads/main', 'refs/.x', 'refs/a/.x', 'HEAD', 'ORIG_HEAD', 'AUTO_MERGE', '_'])(
         'Then %j is safe',
         (name) => {
           // Arrange
@@ -354,7 +354,7 @@ describe('isRefnameSafe', () => {
       it.each([
         'refs/',
         'refs//x',
-        'refs/.x',
+        'refs/a/',
         'refs/a//b',
         'refs/a/b//',
         'refs/a/./b',
@@ -377,6 +377,40 @@ describe('isRefnameSafe', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given any arbRefName under refs/ followed by a slash', () => {
+    describe('When checking it', () => {
+      it('Then it is unsafe', () => {
+        // Arrange
+        const sut = isRefnameSafe;
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbRefName(), (name) => {
+            expect(sut(`refs/${name}/` as RefName)).toBe(false);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given any arbRefName under refs/ with a dot-led component appended', () => {
+    describe('When checking it', () => {
+      it('Then it is safe', () => {
+        // Arrange
+        const sut = isRefnameSafe;
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbRefName(), (name) => {
+            expect(sut(`refs/${name}/.${name}` as RefName)).toBe(true);
+          }),
+          { numRuns: 200 },
+        );
       });
     });
   });
