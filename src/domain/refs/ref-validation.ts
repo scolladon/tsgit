@@ -82,13 +82,18 @@ const BAD_NAME_REFUSAL = 'refusing to update ref with bad name';
 /** Components `normalize_path_copy` rewrites; a `.`-led name such as `.x` is kept. */
 const REWRITTEN_COMPONENTS: ReadonlySet<string> = new Set(['', '.', '..']);
 
+/** The separators git-for-Windows' `is_dir_sep` knows; a Windows delete must never leave the store. */
+const DIR_SEPARATORS = /[/\\]/;
+
 /**
  * Whether `rest` is its own `normalize_path_copy` image: no empty, `.` or `..` component.
  * An empty rest, and one that starts or ends with `/`, which git refuses before normalizing,
- * each hold an empty component.
+ * each hold an empty component. A backslash counts as a separator on every platform: the
+ * POSIX git deletes a broken `a\..\b` name that this refuses, a corner traded for the
+ * guarantee that no delete or symbolic write can climb out of the store on Windows.
  */
 const isNormalizedPath = (rest: string): boolean =>
-  rest.split('/').every((component) => !REWRITTEN_COMPONENTS.has(component));
+  rest.split(DIR_SEPARATORS).every((component) => !REWRITTEN_COMPONENTS.has(component));
 
 /** git's refname_is_safe: refs/ plus a rest that normalizes to itself, or [A-Z_]+. */
 export const isRefnameSafe = (name: RefName): boolean => {

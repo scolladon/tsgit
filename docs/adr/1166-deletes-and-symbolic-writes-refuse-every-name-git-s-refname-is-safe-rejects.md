@@ -43,3 +43,7 @@ transaction does. Every internal delete caller passes the same predicate.
   deletes of W25 and W27 are gone.
 - The predicate lives in the domain beside `parseWorktreeRef` and is reused by the write
   routes.
+- Deliberate divergence, for safety: the predicate reads a backslash as a path separator on
+  every platform, as git-for-Windows' `is_dir_sep` does, so `refs/a\..\x` is refused where
+  POSIX git would delete a broken ref of that name; without it a Windows delete or symbolic
+  write through such a name could leave the ref store.

@@ -333,19 +333,25 @@ describe('isSafeRefName', () => {
 describe('isRefnameSafe', () => {
   describe('Given a name git deletes or symbolic-writes', () => {
     describe('When checking it', () => {
-      it.each(['refs/heads/main', 'refs/.x', 'refs/a/.x', 'HEAD', 'ORIG_HEAD', 'AUTO_MERGE', '_'])(
-        'Then %j is safe',
-        (name) => {
-          // Arrange
-          const sut = isRefnameSafe;
+      it.each([
+        'refs/heads/main',
+        'refs/.x',
+        'refs/a/.x',
+        'refs/heads/with\\back',
+        'HEAD',
+        'ORIG_HEAD',
+        'AUTO_MERGE',
+        '_',
+      ])('Then %j is safe', (name) => {
+        // Arrange
+        const sut = isRefnameSafe;
 
-          // Act
-          const result = sut(name as RefName);
+        // Act
+        const result = sut(name as RefName);
 
-          // Assert
-          expect(result).toBe(true);
-        },
-      );
+        // Assert
+        expect(result).toBe(true);
+      });
     });
   });
 
@@ -368,6 +374,9 @@ describe('isRefnameSafe', () => {
         'HEAD1',
         'main-worktree/HEAD',
         'worktrees/wt/HEAD',
+        'refs/a\\..\\x',
+        'refs/heads\\.\\x',
+        'refs/heads/a\\\\b',
       ])('Then %j is unsafe', (name) => {
         // Arrange
         const sut = isRefnameSafe;
