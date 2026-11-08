@@ -6,7 +6,9 @@ subjects:
 ---
 # 1158 — the main-worktree/ namespace resolves on the read side in this change
 
-- **Status:** accepted
+> **Superseded by [ADR-1164](1164-the-per-worktree-ref-namespace-routes-writes-to-the-store-the-name-selects.md)** for the write-side scope: the write routes no longer stay out "until pinned" — the run's impact triage pinned them on nine rows and the namespace now routes writes to the store the name selects. The read-side rule (`parse_worktree_ref` on reads, the shared lookup for a name that is not per-worktree) is carried forward.
+
+- **Status:** superseded by ADR-1164
 - **Date:** 2026-11-07
 - **Design:** docs/design/fsck-worktree-private-refs.md · **Supersedes/Refines:** refines ADR-294
 

@@ -6,7 +6,9 @@ subjects:
 ---
 # 1163 — write routes read refs at today's location through resolveDirectForWrite
 
-- **Status:** accepted
+> **Superseded by [ADR-1164](1164-the-per-worktree-ref-namespace-routes-writes-to-the-store-the-name-selects.md)** for the two-locator guard: `resolveDirectForWrite` no longer reads at today's `writeLocation`; the write-route readers take the same store mapping as the writers. The inventory of write-route readers and the fake-store test proving which locator each consumes are carried forward.
+
+- **Status:** superseded by ADR-1164
 - **Date:** 2026-11-07
 - **Design:** docs/design/fsck-worktree-private-refs.md · **Supersedes/Refines:** refines ADR-1158
 
