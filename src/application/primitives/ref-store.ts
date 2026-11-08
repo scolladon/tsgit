@@ -691,10 +691,11 @@ interface IntegrityRun {
   strippedGitDir?: Promise<string>;
 }
 
-/** One ref store git's refs verify checks. `gitDir` is the common dir for the main store, the admin
- *  dir otherwise; `prefix` is "" or "worktrees/<id>/". */
+/** What the `lstat` of a store's `refs` root says: walkable, missing, or a file or link git refuses. */
 type RootKind = 'directory' | 'absent' | 'not-a-directory';
 
+/** One ref store git's refs verify checks. `gitDir` is the common dir for the main store, the admin
+ *  dir otherwise; `prefix` is "" or "worktrees/<id>/". */
 interface IntegrityStore {
   readonly gitDir: string;
   readonly prefix: string;

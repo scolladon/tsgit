@@ -871,7 +871,7 @@ export interface WorktreeHead {
   readonly id: ObjectId;
 }
 
-/** A HEAD file git could not read: its `cannot read ref file '<path>'` error. */
+/** What a worktree's HEAD names: an object, or nothing. */
 type HeadRead = { readonly kind: 'named'; readonly id: ObjectId } | { readonly kind: 'none' };
 
 const NO_HEAD: HeadRead = { kind: 'none' };
