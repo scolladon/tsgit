@@ -90,7 +90,7 @@ export class MemoryFileSystem implements FileSystem {
   systemConfigPath = (): string => this.systemPath;
 
   read = async (path: string): Promise<Uint8Array> => {
-    const normalized = this.walk(path, 'follow');
+    const normalized = this.walkLookup(path, 'follow');
     const stored = this.files.get(normalized);
     if (stored === undefined) {
       throw this.absentFileRefusal(normalized, path);
@@ -102,7 +102,7 @@ export class MemoryFileSystem implements FileSystem {
     if (offset < 0 || length < 0) {
       throw permissionDenied(path);
     }
-    const normalized = this.walk(path, 'follow');
+    const normalized = this.walkLookup(path, 'follow');
     const stored = this.files.get(normalized);
     if (stored === undefined) {
       throw this.absentFileRefusal(normalized, path);
@@ -126,7 +126,7 @@ export class MemoryFileSystem implements FileSystem {
    * on its not-found arm instead of a refusal. A directory still refuses PERMISSION_DENIED.
    */
   tryReadUtf8 = async (path: string): Promise<string | undefined> => {
-    const normalized = this.walk(path, 'follow');
+    const normalized = this.walkLookup(path, 'follow');
     const stored = this.files.get(normalized);
     if (stored !== undefined) return new TextDecoder().decode(stored);
     if (this.directories.has(normalized)) throw permissionDenied(path);
@@ -199,12 +199,12 @@ export class MemoryFileSystem implements FileSystem {
   private static readonly SYMLINK_FOLLOW_LIMIT = 40;
 
   stat = async (path: string): Promise<FileStat> => {
-    const normalized = this.walk(path, 'follow');
+    const normalized = this.walkLookup(path, 'follow');
     return this.buildStat(normalized, path);
   };
 
   lstat = async (path: string): Promise<FileStat> => {
-    const normalized = this.walk(path, 'no-follow');
+    const normalized = this.walkLookup(path, 'no-follow');
     const record = this.lstatEntry(normalized);
     if (record === undefined) throw fileNotFound(path);
     return record;
@@ -212,14 +212,14 @@ export class MemoryFileSystem implements FileSystem {
 
   /** `tryLstat`'s twin of `lstat`: `undefined` on the not-found arm instead of a refusal. */
   tryLstat = async (path: string): Promise<FileStat | undefined> => {
-    const normalized = this.walk(path, 'no-follow');
+    const normalized = this.walkLookup(path, 'no-follow');
     return this.lstatEntry(normalized);
   };
 
   /** `tryLstat` blind to the miss's cause: a regular file in the path answers `undefined` too. */
   lstatIfReachable = async (path: string): Promise<FileStat | undefined> => {
     try {
-      return this.lstatEntry(this.walk(path, 'no-follow'));
+      return this.lstatEntry(this.walkLookup(path, 'no-follow'));
     } catch (err) {
       if (errorDataCode(err) === 'NOT_A_DIRECTORY') return undefined;
       throw err;
@@ -241,10 +241,11 @@ export class MemoryFileSystem implements FileSystem {
     return this.statEntry(normalized);
   }
 
-  lexists = async (path: string): Promise<boolean> => this.occupied(this.walk(path, 'no-follow'));
+  lexists = async (path: string): Promise<boolean> =>
+    this.occupied(this.walkLookup(path, 'no-follow'));
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
-    const normalized = this.walk(path, 'follow');
+    const normalized = this.walkLookup(path, 'follow');
     if (this.files.has(normalized)) {
       throw notADirectory(path);
     }
@@ -426,7 +427,7 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   readlink = async (path: string): Promise<string> => {
-    const normalized = this.walk(path, 'no-follow');
+    const normalized = this.walkLookup(path, 'no-follow');
     const target = this.symlinks.get(normalized);
     if (target === undefined) {
       throw fileNotFound(path);
@@ -550,6 +551,15 @@ export class MemoryFileSystem implements FileSystem {
     return normalized;
   }
 
+  /** `walk` for the surfaces that look a path up: a trailing slash asks for a directory, so a
+   *  regular file there refuses NOT_A_DIRECTORY, as POSIX's `ENOTDIR`. Create and remove
+   *  surfaces keep `walk`, where Node accepts or refuses such a path on its own terms. */
+  private walkLookup(path: string, mode: WalkMode): string {
+    const target = this.walk(path, mode);
+    if (path.endsWith('/') && this.files.has(target)) throw notADirectory(path);
+    return target;
+  }
+
   /**
    * POSIX resolution over the in-memory tree: every symlinked path component is followed — a
    * relative link text resolves against the link's own directory — and the leaf too under
@@ -560,14 +570,7 @@ export class MemoryFileSystem implements FileSystem {
    * surface whose parent chain cannot hold the entry. More than `SYMLINK_FOLLOW_LIMIT` hops
    * refuses PERMISSION_DENIED, as Node's ELOOP does.
    */
-  /** A trailing slash asks for a directory: POSIX refuses it `ENOTDIR` on a regular file. */
   private walk(path: string, mode: WalkMode): string {
-    const target = this.walkToTarget(path, mode);
-    if (path.endsWith('/') && this.files.has(target)) throw notADirectory(path);
-    return target;
-  }
-
-  private walkToTarget(path: string, mode: WalkMode): string {
     const resolved = this.resolve(path);
     // A file or directory filed at the lexical key proves nothing on its chain needs resolving:
     // `directories` is prefix-closed and every create files its key at the walked path, so no

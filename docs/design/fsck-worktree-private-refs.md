@@ -15,7 +15,7 @@
 > **Revision** (2026-11-08): folds ADR-1164. Writes through `main-worktree/<per-worktree
 > name>` and `worktrees/<id>/<per-worktree name>` go to the store the prefix selects, through
 > the one locator reads already use. ADR-1163's second locator (`resolveDirectForWrite`) is
-> retired. The write side is pinned in rows W1–W58 ("Write-side matrix"), against git's
+> retired. The write side is pinned in rows W1–W59 ("Write-side matrix"), against git's
 > source for the refusals. Requirement 13 is replaced, and requirements 14–17 are new. DC-9 and
 > DC-14 are superseded. The pins leave five decision candidates (DC-15 to DC-19). The largest
 > is the reftable backend: git selects the store there but keys the record by the full
@@ -463,7 +463,8 @@ isolation; W50 adds `-c core.logAllRefUpdates=false` to `git worktree add`, W53 
 | W55 | `update-ref -d refs/heads/bad..name`, a loose file of that name at A | files | —, 0 | `<common>/refs/heads/bad..name` removed | ✗ `INVALID_REF` `ref name must not contain ..` → ✓ | git's outcome: `check_refname_format` does not gate a delete |
 | W56 | `update-ref -d refs/heads/x.lock`, a loose file of that name at A | files | —, 0 | `<common>/refs/heads/x.lock` removed | ✗ `INVALID_REF` `ref name component must not end with .lock` → ✓ | as W55 |
 | W57 | `update-ref -d 'refs/heads/@{'`, a loose file of that name at A | files | —, 0 | `<common>/refs/heads/@{` removed | ✗ `INVALID_REF` `ref name must not contain @{` → ✓ | as W55. `update-ref --stdin` refuses these names in its own parser (`fatal: invalid ref format`, 128), which is the command's, not the transaction's: `deleteRefs` follows `refs_delete_refs` and deletes them |
-| W58 | `worktrees/nope` with a regular file at `<common>/worktrees/nope` | files | `fatal: update_ref failed for ref 'worktrees/nope': cannot lock ref 'worktrees/nope': Unable to create '<RB>/repo/.git/worktrees/nope/.lock': Not a directory`, 128 | nothing | ✗ `FILE_NOT_FOUND` on the same lock (at 5058cc87) → ✓ | `NOT_A_DIRECTORY { path: '<common>/worktrees/nope/.lock' }`, the file left as it was. The memory adapter read a regular file named with a trailing slash as the file; it now refuses `NOT_A_DIRECTORY` as POSIX does, pinned by the shared file-system contract |
+| W58 | `worktrees/nope` with a regular file at `<common>/worktrees/nope` | files | `fatal: update_ref failed for ref 'worktrees/nope': cannot lock ref 'worktrees/nope': Unable to create '<RB>/repo/.git/worktrees/nope/.lock': Not a directory`, 128 | nothing | ✗ `FILE_NOT_FOUND` on the same lock (at 5058cc87) → ✓ | `NOT_A_DIRECTORY { path: '<common>/worktrees/nope/.lock' }`, the file left as it was. The memory adapter read a regular file named with a trailing slash as the file; its lookup surfaces (`read`, `readSlice`, `readUtf8`, `stat`, `lstat`, `readdir`, `readlink` and their `try` forms) now refuse `NOT_A_DIRECTORY` as POSIX does, while its create surfaces keep `FILE_EXISTS`, both pinned by the shared file-system contract on the two adapters |
+| W59 | `worktrees/nope` with a regular file at `<common>/worktrees` (no linked worktree) | files | `fatal: update_ref failed for ref 'worktrees/nope': cannot lock ref 'worktrees/nope': unable to create lock file .git/worktrees/nope/.lock; non-directory in the way`, 128 | nothing | ✗ `FILE_NOT_FOUND` on the same lock (at cad609f0) → ✓ | `NOT_A_DIRECTORY { path: '<common>/worktrees/nope/.lock' }`, the file left as it was — the shape `worktrees/nope/HEAD` already refuses in that layout. Pinned by a unit row: the interop fixture always holds a linked worktree |
 
 ## Requirements
 
@@ -736,7 +737,7 @@ export const isRefnameSafe = (name: RefName): boolean
 `parse_worktree_ref` does (refs.c L963). The files locator then spells
 `<common>/worktrees/<id>/` and its lock `<common>/worktrees/<id>/.lock`. git creates no
 directory a trailing slash ends, so the lock refuses `FILE_NOT_FOUND` when the admin dir is
-missing (W45) and `NOT_A_DIRECTORY` when a regular file sits at its path (W58). The reftable backend selects that worktree's stack (W47, W49). A name such as
+missing (W45) and `NOT_A_DIRECTORY` when a regular file sits at its path or above it (W58, W59). The reftable backend selects that worktree's stack (W47, W49). A name such as
 `worktrees/<id>/refs/heads/x`, whose bare form is not per-worktree, parses as `shared` too, as
 git's does. `isRefnameSafe`'s root arm is `[A-Z_]+`. It is narrower than `isPerWorktreeRef`'s
 root syntax, which also admits `-`. Its `refs/` arm refuses a rest that ends in `/`

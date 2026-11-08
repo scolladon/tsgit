@@ -218,6 +218,31 @@ describe('common-dir per-worktree-ref sweep', () => {
       });
     });
 
+    describe('Given a repository whose worktrees path is a regular file', () => {
+      describe('When updateRef writes worktrees/nope', () => {
+        it('Then it refuses NOT_A_DIRECTORY on the lock beneath that file and leaves it alone', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const b = await writeCommit(ctx, 'B');
+          const blocker = `${ctx.layout.gitDir}/worktrees`;
+          await ctx.fs.writeUtf8(blocker, 'x\n');
+          const sut = updateRef;
+
+          // Act
+          let refusal: unknown;
+          try {
+            await sut(ctx, 'worktrees/nope' as RefName, b, { reflogMessage: 'probe' });
+          } catch (error) {
+            refusal = (error as TsgitError).data;
+          }
+
+          // Assert
+          expect(refusal).toEqual({ code: 'NOT_A_DIRECTORY', path: `${blocker}/nope/.lock` });
+          expect(await ctx.fs.readUtf8(blocker)).toBe('x\n');
+        });
+      });
+    });
+
     describe('Given a main worktree and a linked worktree wt with their own HEADs', () => {
       type HeadShape = 'branch' | 'detached';
       interface WorktreePair {

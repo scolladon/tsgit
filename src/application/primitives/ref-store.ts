@@ -2037,13 +2037,23 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** git creates no directory a trailing slash ends: `worktrees/<id>` with no
    *  name after it locks `<id>/.lock`, which only an existing admin dir holds;
-   *  a regular file there refuses the lock `ENOTDIR`, nothing there `ENOENT`. */
+   *  a regular file there or above it refuses the lock `ENOTDIR`, nothing there
+   *  `ENOENT`. */
   async function assertLockDirExists(path: string): Promise<void> {
     if (!path.endsWith('/')) return;
-    const kind = await pathKind(path.slice(0, -1));
-    if (kind === 'directory') return;
-    const lock = `${path}${lockSuffix}`;
-    throw kind === 'file' ? notADirectory(lock) : fileNotFound(lock);
+    const refusal = await lockDirRefusal(path.slice(0, -1), `${path}${lockSuffix}`);
+    if (refusal !== undefined) throw refusal;
+  }
+
+  async function lockDirRefusal(dir: string, lock: string): Promise<TsgitError | undefined> {
+    try {
+      return (await ctx.fs.stat(dir)).isDirectory ? undefined : notADirectory(lock);
+    } catch (err) {
+      const code = errorCodeOf(err);
+      if (code === NOT_A_DIRECTORY_CODE) return notADirectory(lock);
+      if (code === 'FILE_NOT_FOUND') return fileNotFound(lock);
+      throw err;
+    }
   }
 
   /** Commits `name`'s held lock: refuses refs packed under it, then renames —
