@@ -60,16 +60,11 @@ export async function updateRef(
   newId: ObjectId,
   options: UpdateRefOptions,
 ): Promise<void> {
-  // validateRefName rejects `..`, absolute paths, and every character class
-  // that could let `${gitDir}/${name}` escape the repo — no separate path
-  // containment check is needed.
-  validateRefName(name);
-  // git refuses a delete of a name its refname_is_safe rejects before any
-  // lock or read.
+  // git's transaction_refname_valid: a delete is gated on refname_is_safe
+  // alone, which is how a broken-named ref stays deletable, and is never
+  // verified; a write must pass the full ref grammar first.
   if (isDelete(ctx, newId, options)) assertRefnameSafe(name);
-  // Verification precedes chain resolution and the compare-and-swap (git's
-  // own order); a delete is never verified.
-  if (!isDelete(ctx, newId, options)) await assertRefTargetValid(ctx, name, newId);
+  else await assertWritable(ctx, name, newId);
 
   const store = getRefStore(ctx);
   const plan = await planTransaction(ctx, store, name, options);
@@ -78,6 +73,14 @@ export async function updateRef(
   await store.applyRefUpdates(
     isDelete(ctx, newId, options) ? deleteUpdates(plan, options) : writeUpdates(plan, newId),
   );
+}
+
+/** Refuses a name outside git's ref grammar, then verifies the target. Both
+ *  keep `${gitDir}/${name}` inside the repo; verification precedes chain
+ *  resolution and the compare-and-swap, git's own order. */
+async function assertWritable(ctx: Context, name: RefName, newId: ObjectId): Promise<void> {
+  validateRefName(name);
+  await assertRefTargetValid(ctx, name, newId);
 }
 
 /** What a {@link deleteRefs} run carries to every delete it plans. */
@@ -99,10 +102,7 @@ export async function deleteRefs(
   names: readonly RefName[],
   options: DeleteRefsOptions,
 ): Promise<void> {
-  for (const name of names) {
-    validateRefName(name);
-    assertRefnameSafe(name);
-  }
+  for (const name of names) assertRefnameSafe(name);
   const store = getRefStore(ctx);
   const deleteOptions = { ...options, delete: true } as const;
   const updates: RefUpdate[] = [];

@@ -130,4 +130,39 @@ describe('writeSymbolicRef', () => {
       });
     });
   });
+  describe("Given the name refs/.x, which git's refname_is_safe accepts", () => {
+    describe('When writeSymbolicRef points it at refs/heads/main', () => {
+      it('Then the loose file holds the symbolic ref', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = writeSymbolicRef;
+
+        // Act
+        await sut(ctx, 'refs/.x' as RefName, 'refs/heads/main' as RefName);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/.x`)).toBe(
+          'ref: refs/heads/main\n',
+        );
+      });
+    });
+  });
+
+  describe('Given the name refs/a/', () => {
+    describe('When writeSymbolicRef points it at refs/heads/main', () => {
+      it('Then it refuses with the bad-name reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = writeSymbolicRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, 'refs/a/' as RefName, 'refs/heads/main' as RefName),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+      });
+    });
+  });
 });

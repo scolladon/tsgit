@@ -720,6 +720,87 @@ describe('updateRef', () => {
     });
   });
 
+  describe("Given names git's check_refname_format rejects", () => {
+    const UNVERIFIED = 'a'.repeat(40) as ObjectId;
+
+    describe('When updateRef deletes the absent refs/.x', () => {
+      it('Then it resolves and creates nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const before = await snapshotDir(ctx, '/repo/.git');
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'refs/.x' as RefName, UNVERIFIED, { delete: true });
+
+        // Assert
+        expect(await snapshotDir(ctx, '/repo/.git')).toEqual(before);
+      });
+    });
+
+    describe('When updateRef deletes the loose refs/heads/bad..name', () => {
+      it('Then the loose file is removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedRef(ctx, 'refs/heads/bad..name' as RefName, UNVERIFIED);
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'refs/heads/bad..name' as RefName, ZERO, { reflogMessage: REASON });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/bad..name')).toBe(false);
+      });
+    });
+
+    describe('When deleteRefs deletes the loose refs/heads/x.lock and refs/heads/@{', () => {
+      it('Then both loose files are removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const names = ['refs/heads/x.lock', 'refs/heads/@{'] as RefName[];
+        for (const name of names) await seedRef(ctx, name, UNVERIFIED);
+        const sut = deleteRefs;
+
+        // Act
+        await sut(ctx, names, {});
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/x.lock')).toBe(false);
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/@{')).toBe(false);
+      });
+    });
+
+    describe('When updateRef deletes refs/a/', () => {
+      it('Then it refuses with the bad-name reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, 'refs/a/' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+      });
+    });
+
+    describe('When deleteRefs deletes refs/a/', () => {
+      it('Then it refuses with the bad-name reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = deleteRefs;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['refs/a/' as RefName], {}));
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+      });
+    });
+  });
+
   describe('Given a null object id as the new value', () => {
     describe('When updateRef is called on an existing loose ref with a reflog', () => {
       it('Then the ref file and its reflog file are both gone', async () => {
@@ -2665,7 +2746,7 @@ describe('deleteRefs', () => {
     });
   });
 
-  describe('Given an invalid name after a valid one', () => {
+  describe("Given a name git's refname_is_safe rejects after a valid one", () => {
     describe('When deleteRefs runs', () => {
       it('Then it refuses the name before deleting anything', async () => {
         // Arrange
@@ -2676,16 +2757,13 @@ describe('deleteRefs', () => {
 
         // Act
         try {
-          await deleteRefs(ctx, [MAIN, 'refs/heads/a..b' as RefName], {});
+          await deleteRefs(ctx, [MAIN, 'refs/heads/a/' as RefName], {});
         } catch (err) {
           caught = err;
         }
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_REF',
-          reason: 'ref name must not contain ..',
-        });
+        expect((caught as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
         expect(batches).toEqual([]);
         expect(await getRefStore(ctx).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: mainId });
       });

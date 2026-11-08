@@ -18,19 +18,16 @@ import { getRefStore } from './ref-store.js';
  * to set the initial HEAD.
  *
  * Single-level only in v1: target MUST be a direct ref name (no chained
- * symrefs). Validation runs through `validateRefName` for both `name` and
- * `target` — invalid inputs throw INVALID_REF before any I/O. A `name` git's
- * refname_is_safe rejects is refused the same way.
+ * symrefs). `name` is gated on git's refname_is_safe alone, as git's
+ * transaction does for an update without a new id; `target` runs through
+ * `validateRefName`. Either refuses INVALID_REF before any I/O.
  */
 export const writeSymbolicRef = async (
   ctx: Context,
   name: RefName,
   target: RefName,
 ): Promise<void> => {
-  const validatedName = validateRefName(name);
-  assertRefnameSafe(validatedName);
+  assertRefnameSafe(name);
   const validatedTarget = validateRefName(target);
-  await getRefStore(ctx).applyRefUpdates([
-    { kind: 'setSymbolic', name: validatedName, target: validatedTarget },
-  ]);
+  await getRefStore(ctx).applyRefUpdates([{ kind: 'setSymbolic', name, target: validatedTarget }]);
 };

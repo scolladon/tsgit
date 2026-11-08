@@ -15,7 +15,7 @@
 > **Revision** (2026-11-08): folds ADR-1164. Writes through `main-worktree/<per-worktree
 > name>` and `worktrees/<id>/<per-worktree name>` go to the store the prefix selects, through
 > the one locator reads already use. ADR-1163's second locator (`resolveDirectForWrite`) is
-> retired. The write side is pinned in rows W1–W54 ("Write-side matrix"), against git's
+> retired. The write side is pinned in rows W1–W57 ("Write-side matrix"), against git's
 > source for the refusals. Requirement 13 is replaced, and requirements 14–17 are new. DC-9 and
 > DC-14 are superseded. The pins leave five decision candidates (DC-15 to DC-19). The largest
 > is the reftable backend: git selects the store there but keys the record by the full
@@ -459,7 +459,10 @@ isolation; W50 adds `-c core.logAllRefUpdates=false` to `git worktree add`, W53 
 | W51 ×3 | `main-worktree/refs/bisect/x`, the main `HEAD` = `ref: refs/bisect/x` | reftable | —, 0 | main stack: ref record `main-worktree/refs/bisect/x` = B; `HEAD` log +1 | ✗ no `HEAD` log record → ✓ | git's records: the referent matches the bare name |
 | W52 | same | files | —, 0 | `<common>/refs/bisect/x` = B; `logs/HEAD` unchanged | ✓ | — (the literal name does not match) |
 | W53 | `main-worktree/HEAD`, `noDeref`, the main `HEAD` with no log | reftable | —, 0 | main stack: ref record `main-worktree/HEAD` = B, no log record | ✗ a `main-worktree/HEAD` log record → ✓ | git's records |
-| W54 | `update-ref -d` and `symbolic-ref` of `refs/a/`; of `refs/.x` and `refs/a/.x` | files | `refs/a/`: `error: refusing to update ref with bad name 'refs/a/'`, 1; `refs/.x`, `refs/a/.x`: —, 0 (the delete is a no-op, `symbolic-ref` writes the file) | `refs/.x`, `refs/a/.x` written by `symbolic-ref` | `isRefnameSafe` matches git on all three. The public routes refuse all three earlier, in `validateRefName`: `INVALID_REF` `ref name must not start or end with /` and `ref name component must not start with .` | out of perimeter: the order of `validateRefName` and the `refname_is_safe` gate on deletes and symbolic writes |
+| W54 | `update-ref -d` and `symbolic-ref` of `refs/a/`; of `refs/.x` and `refs/a/.x` | files | `refs/a/`: `error: refusing to update ref with bad name 'refs/a/'`, 1; `refs/.x`, `refs/a/.x`: —, 0 (the delete is a no-op, `symbolic-ref` writes the file) | `refs/.x`, `refs/a/.x` written by `symbolic-ref` | ✗ the public routes refuse all three earlier, in `validateRefName`: `INVALID_REF` `ref name must not start or end with /` and `ref name component must not start with .` → ✓ | git's outcome: a delete and a symbolic write are gated on `refname_is_safe` alone (requirement 16) |
+| W55 | `update-ref -d refs/heads/bad..name`, a loose file of that name at A | files | —, 0 | `<common>/refs/heads/bad..name` removed | ✗ `INVALID_REF` `ref name must not contain ..` → ✓ | git's outcome: `check_refname_format` does not gate a delete |
+| W56 | `update-ref -d refs/heads/x.lock`, a loose file of that name at A | files | —, 0 | `<common>/refs/heads/x.lock` removed | ✗ `INVALID_REF` `ref name component must not end with .lock` → ✓ | as W55 |
+| W57 | `update-ref -d 'refs/heads/@{'`, a loose file of that name at A | files | —, 0 | `<common>/refs/heads/@{` removed | ✗ `INVALID_REF` `ref name must not contain @{` → ✓ | as W55. `update-ref --stdin` refuses these names in its own parser (`fatal: invalid ref format`, 128), which is the command's, not the transaction's: `deleteRefs` follows `refs_delete_refs` and deletes them |
 
 ## Requirements
 
@@ -559,6 +562,9 @@ isolation; W50 adds `-c core.logAllRefUpdates=false` to `git worktree add`, W53 
     id, `updateRef` and `deleteRefs`) and a `writeSymbolicRef` are refused with
     `INVALID_REF` before any I/O when the name fails git's `refname_is_safe` (W24–W30, W34,
     W44). `deleteRefs` checks every name before it plans any (W34). DC-16 sets the scope.
+    That gate is the only name check on these routes, as in git's
+    `transaction_refname_valid`: a name `check_refname_format` refuses but `refname_is_safe`
+    accepts is deleted or written (W54–W57). Writes with a new id keep `validateRefName`.
 17. **Reftable** (DC-15). The stack follows git's `backend_for`: `main-worktree/<pw>` → the
     main stack, `worktrees/<id>/<pw>` → `<common>/worktrees/<id>`'s stack. Reads and the
     symref walk use the bare name, while writes key the ref and log records by the full
@@ -734,8 +740,10 @@ missing (W45). The reftable backend selects that worktree's stack (W47, W49). A 
 git's does. `isRefnameSafe`'s root arm is `[A-Z_]+`. It is narrower than `isPerWorktreeRef`'s
 root syntax, which also admits `-`. Its `refs/` arm refuses a rest that ends in `/`
 (refs.c L393) and keeps a `.`-led component such as `.x`, which `normalize_path_copy` leaves
-alone (W54). Note that `validateRefName` already refuses a `..`, `//` or `.`-led component, so
-only the outside-`refs/` arm can fail on a name that passed it.
+alone (W54). An empty rest and a leading or trailing `/` each leave an empty component, so
+the one component check covers git's three pre-checks. It refuses every `.`, `..` and empty
+component, so a name it accepts keeps the loose file, its lock and its log inside the store;
+deletes and symbolic writes rely on that alone (W54–W57).
 
 **Locator** (`path-layout.ts`, beside `perWorktreeRefDir`):
 

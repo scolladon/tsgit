@@ -173,7 +173,10 @@ hop of the symbolic walk read the file the write lands on.
 - **A name git's `refname_is_safe` rejects is refused** before anything is read or locked, on
   both backends: `INVALID_REF { reason: 'refusing to update ref with bad name' }`. That is any
   name outside `refs/` other than uppercase letters and underscores — every `main-worktree/…`
-  and `worktrees/<id>/…` name, and a name such as `foo/bar` even when it exists. The internal
+  and `worktrees/<id>/…` name, and a name such as `foo/bar` even when it exists — and any
+  `refs/` name with an empty, `.` or `..` component, such as `refs/a/`. It is the only name
+  check a delete runs, as in git: a ref whose name the write grammar refuses
+  (`refs/heads/bad..name`, `refs/heads/x.lock`, `refs/.x`) can still be deleted. The internal
   `deleteRefs` (one transaction over several names, used by `fetch`, `push` and `remote`) checks every
   name before it plans any, so one unsafe name deletes nothing; the refusal does not say which
   name failed.
@@ -231,7 +234,7 @@ await repo.primitives.updateRef('refs/heads/stale', zeroOid, {
 - `RESOURCE_LOCKED` — a held `packed-refs.lock`; `resource` is `'ref'`.
 - `NOT_A_DIRECTORY` / `FILE_EXISTS` — git's name-availability check, run over every name the transaction creates or rewrites without requiring a current value: a name blocked by refs **beneath** it (`refs/heads/a` while `refs/heads/a/b` exists) is `FILE_EXISTS`; one blocked by a ref **above** it (`refs/heads/a/b` while `refs/heads/a` exists) is `NOT_A_DIRECTORY`. `path` names the blocking ref's loose path on both backends, even when the blocker is packed or held in a reftable.
 - `DIRECTORY_NOT_EMPTY` — the ref's reflog path is occupied by a directory holding real logs; an all-empty directory tree there is removed and the write proceeds.
-- `INVALID_REF` — `name` violates git ref syntax, or a delete names a ref git's `refname_is_safe` rejects (`reason: 'refusing to update ref with bad name'`).
+- `INVALID_REF` — a write's `name` violates git ref syntax, or a delete names a ref git's `refname_is_safe` rejects (`reason: 'refusing to update ref with bad name'`).
 
 ## See also
 

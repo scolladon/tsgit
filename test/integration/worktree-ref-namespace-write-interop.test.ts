@@ -74,6 +74,8 @@ interface Shape {
   readonly extraFiles?: Readonly<Record<string, string>>;
   /** Refs git sets to A from the main worktree once seeded. */
   readonly extraRefs?: ReadonlyArray<string>;
+  /** Loose files at names git's ref grammar refuses, written holding A once seeded. */
+  readonly brokenRefs?: ReadonlyArray<string>;
   readonly reftable?: true;
   /** The linked worktree is added with `core.logAllRefUpdates=false`, so its HEAD has no log. */
   readonly unloggedWorktree?: true;
@@ -101,11 +103,17 @@ interface MissingStoreRow extends Shape {
   readonly missing: string;
 }
 
-interface BadNameRow extends Shape {
+/** A delete or a symbolic-ref write, both gated on git's refname_is_safe alone. */
+interface GatedRow extends Shape {
   /** The symbolic-ref target; absent for a delete. */
   readonly target?: string;
   /** Names deleted ahead of `name` in the same transaction (`update-ref --stdin`). */
   readonly deletedFirst?: ReadonlyArray<string>;
+}
+
+interface SafeNameRow extends GatedRow {
+  /** The common-dir keys git's write changes, sorted. */
+  readonly changes: ReadonlyArray<string>;
 }
 
 interface ReflogRow extends Shape {
@@ -393,7 +401,7 @@ const refusalRows: ReadonlyArray<RefusalRow> = [
   },
 ];
 
-const badNameRows: ReadonlyArray<BadNameRow> = [
+const badNameRows: ReadonlyArray<GatedRow> = [
   { given: BRANCHES, name: 'main-worktree/refs/bisect/s', from: 'main', runs: REPEATS },
   { given: BRANCHES, name: 'main-worktree/refs/bisect/s', from: 'wt', runs: REPEATS },
   { given: BRANCHES, name: 'worktrees/wt/refs/bisect/t', from: 'main' },
@@ -404,6 +412,8 @@ const badNameRows: ReadonlyArray<BadNameRow> = [
   { given: BRANCHES, name: 'main-worktree/HEAD', from: 'main', target: 'refs/heads/side' },
   { given: BRANCHES, name: 'main-worktree/HEAD', from: 'wt', target: 'refs/heads/side' },
   { given: BRANCHES, name: 'worktrees/wt/HEAD', from: 'main', target: 'refs/heads/main' },
+  { given: BRANCHES, name: 'refs/a/', from: 'main' },
+  { given: BRANCHES, name: 'refs/a/', from: 'main', target: 'refs/heads/main' },
   {
     given: BRANCHES,
     name: 'main-worktree/refs/bisect/s',
@@ -422,6 +432,36 @@ const badNameRows: ReadonlyArray<BadNameRow> = [
     from: 'main',
     reftable: true,
   },
+];
+
+const brokenRefRow = (name: string): SafeNameRow => ({
+  given: `${BRANCHES} and a loose ${name} at A`,
+  name,
+  from: 'main',
+  brokenRefs: [name],
+  changes: [name],
+});
+
+const safeNameRows: ReadonlyArray<SafeNameRow> = [
+  { given: BRANCHES, name: 'refs/.x', from: 'main', changes: [] },
+  { given: BRANCHES, name: 'refs/a/.x', from: 'wt', changes: [] },
+  {
+    given: BRANCHES,
+    name: 'refs/.x',
+    from: 'main',
+    target: 'refs/heads/main',
+    changes: ['refs/.x'],
+  },
+  {
+    given: BRANCHES,
+    name: 'refs/a/.x',
+    from: 'wt',
+    target: 'refs/heads/main',
+    changes: ['refs/a/.x'],
+  },
+  brokenRefRow('refs/heads/bad..name'),
+  brokenRefRow('refs/heads/x.lock'),
+  brokenRefRow('refs/heads/@{'),
 ];
 
 const reflogRows: ReadonlyArray<ReflogRow> = [
@@ -493,6 +533,10 @@ const buildFixture = async (shape: Shape): Promise<Fixture> => {
     git(dirs.main, 'symbolic-ref', 'HEAD', shape.mainHeadTarget);
   const common = path.join(main, '.git');
   await writeExtraFiles(common, shape.extraFiles);
+  await writeExtraFiles(
+    common,
+    Object.fromEntries((shape.brokenRefs ?? []).map((name) => [name, `${a}\n`])),
+  );
   return { root, common, cwd: dirs[shape.from], dirs, reftable: shape.reftable ?? false, b };
 };
 
@@ -591,10 +635,7 @@ const tsgitWrite = (repo: Repository, fixture: Fixture, shape: Shape): Promise<v
     ...(shape.noDeref ? { noDeref: true } : {}),
   });
 
-const gitBadNameWrite = (
-  fixture: Fixture,
-  row: BadNameRow,
-): ReturnType<typeof tryRunGitWithExit> => {
+const gitGatedWrite = (fixture: Fixture, row: GatedRow): ReturnType<typeof tryRunGitWithExit> => {
   if (row.target !== undefined)
     return tryRunGitWithExit([
       ...gitIn(fixture),
@@ -610,7 +651,7 @@ const gitBadNameWrite = (
   return tryRunGitWithExit([...gitIn(fixture), 'update-ref', '-m', MESSAGE, '--stdin'], { input });
 };
 
-const tsgitBadNameWrite = (repo: Repository, row: BadNameRow): Promise<void> => {
+const tsgitGatedWrite = (repo: Repository, row: GatedRow): Promise<void> => {
   if (row.target !== undefined)
     return writeSymbolicRef(repo.ctx, row.name as RefName, row.target as RefName);
   if (row.deletedFirst === undefined)
@@ -623,7 +664,7 @@ const tsgitBadNameWrite = (repo: Repository, row: BadNameRow): Promise<void> => 
 };
 
 /** git dies on a bad name inside `--stdin`, and reports it as an error otherwise. */
-const refusalOf = (row: BadNameRow): { readonly severity: string; readonly exitCode: number } =>
+const refusalOf = (row: GatedRow): { readonly severity: string; readonly exitCode: number } =>
   row.deletedFirst === undefined
     ? { severity: 'error', exitCode: ERROR_EXIT }
     : { severity: 'fatal', exitCode: FATAL_EXIT };
@@ -669,7 +710,7 @@ const firstLine = (stderr: string): string => stderr.split('\n')[0] ?? '';
 const whenClauseOf = (shape: Shape): string =>
   `${shape.name} is written${shape.noDeref ? ' without dereferencing' : ''} from the ${shape.from} worktree`;
 
-const badNameWhenClauseOf = (row: BadNameRow): string => {
+const gatedWhenClauseOf = (row: GatedRow): string => {
   const origin = `from the ${row.from} worktree`;
   if (row.target !== undefined) return `${row.name} is pointed at ${row.target} ${origin}`;
   if (row.deletedFirst === undefined) return `${row.name} is deleted ${origin}`;
@@ -809,7 +850,7 @@ describe('worktree ref namespace write interop', () => {
     });
 
     describe.each(badNameRows)('Given $given', (row) => {
-      describe(`When ${badNameWhenClauseOf(row)}`, () => {
+      describe(`When ${gatedWhenClauseOf(row)}`, () => {
         it.each(runsOf(row))(
           'Then tsgit refuses the bad name with git’s line and neither twin changes (throwaway %i)',
           async () => {
@@ -817,11 +858,11 @@ describe('worktree ref namespace write interop', () => {
             const theirs = await buildFixture(row);
             const ours = await buildFixture(row);
             const [theirsBefore, oursBefore] = [await snapshotOf(theirs), await snapshotOf(ours)];
-            const expected = gitBadNameWrite(theirs, row);
+            const expected = gitGatedWrite(theirs, row);
             const sut = await open({ cwd: ours.cwd });
 
             // Act
-            const error = await rejectionOf(tsgitBadNameWrite(sut, row));
+            const error = await rejectionOf(tsgitGatedWrite(sut, row));
 
             // Assert
             const { severity, exitCode } = refusalOf(row);
@@ -829,6 +870,32 @@ describe('worktree ref namespace write interop', () => {
             expect(badNameLine(error, severity, row.name)).toBe(firstLine(expected.stderr));
             expect(deltaOf(theirsBefore, await snapshotOf(theirs))).toEqual({});
             expect(deltaOf(oursBefore, await snapshotOf(ours))).toEqual({});
+          },
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(safeNameRows)('Given $given', (row) => {
+      describe(`When ${gatedWhenClauseOf(row)}`, () => {
+        it(
+          'Then tsgit changes the common dir as git does',
+          async () => {
+            // Arrange
+            const theirs = await buildFixture(row);
+            const ours = await buildFixture(row);
+            const [theirsBefore, oursBefore] = [await snapshotOf(theirs), await snapshotOf(ours)];
+            const expected = gitGatedWrite(theirs, row);
+            const sut = await open({ cwd: ours.cwd });
+
+            // Act
+            await tsgitGatedWrite(sut, row);
+
+            // Assert
+            const gitDelta = deltaOf(theirsBefore, await snapshotOf(theirs));
+            expect(expected.exitCode).toBe(0);
+            expect(Object.keys(gitDelta)).toEqual(row.changes);
+            expect(deltaOf(oursBefore, await snapshotOf(ours))).toEqual(gitDelta);
           },
           SETUP_TIMEOUT,
         );
