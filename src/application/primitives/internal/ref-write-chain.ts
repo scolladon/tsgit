@@ -6,10 +6,13 @@
  */
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
-import { refCycleDetected } from '../../../domain/refs/error.js';
+import { refCycleDetected, refLocked } from '../../../domain/refs/error.js';
+import type { Context } from '../../../ports/context.js';
+import { refLocation } from '../path-layout.js';
 import type { RefStore, ResolveDirectResult } from '../ref-store.js';
 import { resolveDirectChain } from '../resolve-ref.js';
 import { MAX_SYMBOLIC_REF_DEPTH } from '../types.js';
+import { transactionLogging } from './ref-transaction-logging.js';
 
 export interface RefWriteChain {
   /** Symbolic refs walked from the given name, in order; empty for a direct
@@ -30,8 +33,28 @@ export interface RefWriteChain {
   readonly terminalIsSymbolic: boolean;
 }
 
+/** The loose file a name's lock is taken on, or `undefined` where the
+ *  backend takes no per-ref lock. */
+export type LooseFileOf = (name: RefName) => string | undefined;
+
+const NO_LOOSE_FILE: LooseFileOf = () => undefined;
+
+export const looseFileOf = (ctx: Context): LooseFileOf =>
+  transactionLogging(ctx).sharedLooseFile === 'refused'
+    ? (name) => refLocation(ctx, name).loose
+    : NO_LOOSE_FILE;
+
 const directIdOrAbsent = (value: ResolveDirectResult): ObjectId | 'absent' =>
   value.kind === 'direct' ? value.id : 'absent';
+
+/** git's `lock_ref_for_update` keys its locks by refname, so a second name
+ *  on a file an earlier hop already locks meets `EEXIST`; git reports it
+ *  against the name the caller gave (`ref_update_original_update_refname`). */
+function claimLooseFile(held: Set<string>, file: string | undefined, given: RefName): void {
+  if (file === undefined) return;
+  if (held.has(file)) throw refLocked(given);
+  held.add(file);
+}
 
 /** git's split loop: follow every symbolic hop; a name met twice is git's
  *  "multiple updates" refusal. The walk has no depth cap because git's own
@@ -39,13 +62,19 @@ const directIdOrAbsent = (value: ResolveDirectResult): ObjectId | 'absent' =>
  *  through a fifty-hop chain still lands on that chain's end (measured, git
  *  2.55.0), where a READ of the same chain stops at five. A `Set` keeps
  *  membership O(1), so an uncapped chain costs no O(n²) scan. */
-async function walkSymbolicChain(store: RefStore, name: RefName): Promise<RefWriteChain> {
+async function walkSymbolicChain(
+  store: RefStore,
+  name: RefName,
+  fileOf: LooseFileOf,
+): Promise<RefWriteChain> {
   const links: RefName[] = [];
   const seen = new Set<RefName>();
+  const held = new Set<string>();
   let current = name;
   for (;;) {
     if (seen.has(current)) throw refCycleDetected([...links, current]);
     seen.add(current);
+    claimLooseFile(held, fileOf(current), name);
     const value = await store.resolveDirect(current);
     if (value.kind !== 'symbolic') {
       return {
@@ -127,8 +156,9 @@ export function resolveWriteChain(
   store: RefStore,
   name: RefName,
   options: { readonly noDeref?: boolean; readonly expected?: ObjectId | 'absent' },
+  fileOf: LooseFileOf,
 ): Promise<RefWriteChain> {
   return options.noDeref === true
     ? resolveWithoutDeref(store, name, options.expected)
-    : walkSymbolicChain(store, name);
+    : walkSymbolicChain(store, name, fileOf);
 }

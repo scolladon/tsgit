@@ -22,7 +22,7 @@ import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { assertRefTargetValid } from './internal/ref-target.js';
 import { type TransactionLogging, transactionLogging } from './internal/ref-transaction-logging.js';
-import { type RefWriteChain, resolveWriteChain } from './internal/ref-write-chain.js';
+import { looseFileOf, type RefWriteChain, resolveWriteChain } from './internal/ref-write-chain.js';
 import {
   getRefStore,
   type RefStore,
@@ -112,7 +112,7 @@ async function planTransaction(
   name: RefName,
   options: UpdateRefOptions,
 ): Promise<TransactionPlan> {
-  const chain = await resolveWriteChain(store, name, options);
+  const chain = await resolveWriteChain(store, name, options, looseFileOf(ctx));
   // Resolved before any write so a genuine I/O error refuses the whole
   // update instead of leaving a committed ref, a written reflog, and a
   // thrown call. A chain that walks HEAD already read it, and never couples.

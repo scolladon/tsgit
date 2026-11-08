@@ -125,4 +125,34 @@ describe('transactionLogging', () => {
       });
     });
   });
+
+  describe('Given a files-backend Context', () => {
+    describe('When transactionLogging is called', () => {
+      it('Then sharedLooseFile is "refused"', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const result = transactionLogging(ctx);
+
+        // Assert
+        expect(result.sharedLooseFile).toBe('refused');
+      });
+    });
+  });
+
+  describe('Given a reftable-backend Context', () => {
+    describe('When transactionLogging is called', () => {
+      it('Then sharedLooseFile is "allowed"', () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+
+        // Act
+        const result = transactionLogging(ctx);
+
+        // Assert
+        expect(result.sharedLooseFile).toBe('allowed');
+      });
+    });
+  });
 });
