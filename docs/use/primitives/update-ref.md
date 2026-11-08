@@ -88,6 +88,46 @@ and no link entries are logged. The current value it compares `expected` against
 referent that cannot be read at all reads as `'absent'` when no `expected` was given, and
 propagates its own refusal when one was.
 
+### Names that select another worktree's store
+
+A `name` in git's per-worktree namespace writes to the store its prefix selects, the way git's
+`parse_worktree_ref` does, from the main or a linked working directory alike (`<common>` is the
+common git directory):
+
+| `name` | Loose file (files backend) | Its log |
+|---|---|---|
+| `main-worktree/<per-worktree ref>` (`main-worktree/HEAD`, `main-worktree/refs/bisect/x`) | `<common>/<per-worktree ref>` | `<common>/logs/<per-worktree ref>` |
+| `worktrees/<id>/<per-worktree ref>` (`worktrees/wt/HEAD`) | `<common>/worktrees/<id>/<per-worktree ref>` | `<common>/worktrees/<id>/logs/<per-worktree ref>` |
+| any other name (`main-worktree/refs/heads/main`, `worktrees/wt/refs/heads/side`) | as without a prefix: the path the name spells, in the current worktree's directory for a per-worktree name and in `<common>` otherwise | under `logs/` in that same directory |
+
+The `<id>` need not name a registered worktree: `worktrees/nope/HEAD` creates
+`<common>/worktrees/nope/HEAD`, as git does. On the files backend the compare-and-swap and every
+hop of the symbolic walk read the file the write lands on.
+
+- **`main-worktree/HEAD` and `worktrees/<id>/HEAD` dereference like that worktree's `HEAD`.** On a
+  branch, the write moves the branch and logs it, and that `HEAD`'s log gains the link entry.
+  Detached, or under `noDeref`, the write replaces that `HEAD` file itself, and its existing log
+  gains the entry. A symbolic ref whose content names a prefixed name (`ref: main-worktree/HEAD`) is
+  followed the same way. A write that lands on the current worktree's own `HEAD` file is seen by
+  the next `HEAD` read, whichever name it came through.
+- **The reflog auto-create rule judges the name as given** on the files backend: a prefixed name
+  is neither `HEAD` nor under `refs/heads/`, so its own log is appended to only when it already
+  exists (`main-worktree/refs/bisect/x` gains none). The reftable backend judges the bare name.
+- **Two names of one write on one loose file refuse `REF_LOCKED`** on the files backend, as
+  git's per-name lock does (see [Locks](#locks)). Writing `main-worktree/HEAD` from the main
+  worktree, or `worktrees/<id>/HEAD` from that worktree, while its `HEAD` is on a branch is
+  refused this way, and so is a ref whose content names `main-worktree/HEAD`, written from the main
+  worktree: the coupled `HEAD` entry would lock the same `HEAD` file a second time. With
+  `HEAD` detached, or under `noDeref`, no coupled entry is added and the write proceeds.
+- **A delete, and a symbolic-ref write, of any of these names refuses `INVALID_REF`** (see
+  [Deletes](#deletes)).
+- **On the reftable backend** the prefix selects the stack: `main-worktree/…` the main
+  worktree's, `worktrees/<id>/…` that worktree's. The lookup reads the bare name in that stack,
+  while the written ref and log records keep the full name, as git's do: writing
+  `main-worktree/HEAD` with the main `HEAD` detached, or under `noDeref`, stores a ref record
+  named `main-worktree/HEAD` and leaves `HEAD` itself unchanged. Nothing is refused for a shared
+  lock, and a hop whose bare name is `HEAD` adds no coupled `HEAD` log record.
+
 ### Reflog entries
 
 - **Every walked symbolic ref gains an entry, unconditionally** — even when the value it
@@ -119,6 +159,13 @@ propagates its own refusal when one was.
   is git's own: locks, then `packed-refs`, then each loose file, then its reflog — so a crash
   between them can leave a loose file holding the ref's current value, never an older packed
   value resurrected.
+- **A name git's `refname_is_safe` rejects is refused** before anything is read or locked, on
+  both backends: `INVALID_REF { reason: 'refusing to update ref with bad name' }`. That is any
+  name outside `refs/` other than uppercase letters and underscores — every `main-worktree/…`
+  and `worktrees/<id>/…` name, and a name such as `foo/bar` even when it exists. The internal
+  `deleteRefs` (one transaction over several names, used by `fetch`, `push` and `remote`) checks every
+  name before it plans any, so one unsafe name deletes nothing; the refusal does not say which
+  name failed.
 - **Deleting the ref `HEAD` names appends one entry to `logs/HEAD`** on every delete path —
   `<old> 0{40} <identity>` plus the message, tab-separated. With no `reflogMessage` the message
   is empty and the line carries no tab at all.
@@ -133,6 +180,13 @@ propagates its own refusal when one was.
   leaves no directory behind.
 - Naming the same ref twice inside one transaction refuses `REF_CYCLE_DETECTED { chain }` —
   git's "multiple updates" — before any lock or mismatched `expected` is even reached.
+- Two **different** names of one write on one loose file refuse `REF_LOCKED { name }` on the
+  files backend, with `name` the name you passed, and nothing is written. A symbolic hop whose
+  file an earlier hop already holds is refused during the walk (`refs/bisect/c` holding
+  `ref: main-worktree/refs/bisect/c` names its own file: `REF_LOCKED`, not `REF_CYCLE_DETECTED`).
+  A coupled `HEAD` entry whose file a hop or the terminal already holds is refused after the
+  compare-and-swap, so a mismatched `expected` reports `REF_UPDATE_CONFLICT` first. The reftable
+  backend takes no per-ref lock and refuses neither.
 
 ## Example
 
@@ -162,11 +216,11 @@ await repo.primitives.updateRef('refs/heads/stale', zeroOid, {
 - `UNEXPECTED_OBJECT_TYPE` — a non-commit written to `HEAD` or `refs/heads/*`, typed by the name given.
 - `REF_UPDATE_CONFLICT` — `expected` does not match the terminal's current value; `name` is the ref you passed.
 - `REF_CYCLE_DETECTED` — a symbolic chain that meets a name twice, or the same ref named twice in one transaction; `chain` lists the names walked.
-- `REF_LOCKED` — a held `<ref>.lock`.
+- `REF_LOCKED` — a held `<ref>.lock`, or (files backend) two different names of one write on one loose file; `name` is the ref you passed.
 - `RESOURCE_LOCKED` — a held `packed-refs.lock`; `resource` is `'ref'`.
 - `NOT_A_DIRECTORY` / `FILE_EXISTS` — git's name-availability check, run over every name the transaction creates or rewrites without requiring a current value: a name blocked by refs **beneath** it (`refs/heads/a` while `refs/heads/a/b` exists) is `FILE_EXISTS`; one blocked by a ref **above** it (`refs/heads/a/b` while `refs/heads/a` exists) is `NOT_A_DIRECTORY`. `path` names the blocking ref's loose path on both backends, even when the blocker is packed or held in a reftable.
 - `DIRECTORY_NOT_EMPTY` — the ref's reflog path is occupied by a directory holding real logs; an all-empty directory tree there is removed and the write proceeds.
-- `INVALID_REF` — `name` violates git ref syntax.
+- `INVALID_REF` — `name` violates git ref syntax, or a delete names a ref git's `refname_is_safe` rejects (`reason: 'refusing to update ref with bad name'`).
 
 ## See also
 

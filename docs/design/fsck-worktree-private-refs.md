@@ -370,6 +370,8 @@ isolation as above.
   `objects/`: the ref values and each log's line count and last entry. The reftable rows
   list every ref and log record by name, decoded with tsgit's reftable reader. Rows marked
   ×3 were re-run on two more fresh throwaways with the same outcome.
+  "→ ✓" marks a row the write-side parts turned green;
+  test/integration/worktree-ref-namespace-write-interop.test.ts pins it.
 - **Expected column.** It assumes the recommendation of each decision candidate that
   governs the row (DC-15 to DC-19).
 - **W14** keeps its id in the matrix above. Its three writes are W2, W6 and W8.
@@ -378,23 +380,23 @@ Files backend, `updateRef`:
 
 | id | name | cwd | HEAD (main / wt) | git line, exit | git changes | tsgit at f36503d0 | expected |
 |---|---|---|---|---|---|---|---|
-| W1 ×3 | `main-worktree/HEAD` | main | branch / branch | `fatal: update_ref failed for ref 'main-worktree/HEAD': cannot lock ref 'main-worktree/HEAD': Unable to create '<RB>/repo/.git/HEAD.lock': File exists.` + the `Another git process…` hint, 128 | nothing | ✗ ok; stray `<common>/main-worktree/HEAD` | `REF_LOCKED { name: 'main-worktree/HEAD' }`, nothing written (requirement 15) |
-| W2 ×3 | `main-worktree/HEAD` | wt | branch / branch | —, 0 | `refs/heads/main` = B; `logs/refs/heads/main` and `logs/HEAD` each gain `A B probe` | ✗ ok; stray `<common>/main-worktree/HEAD`; `main` unmoved | git's changes |
-| W3 ×3 | `main-worktree/HEAD` | main | detached / branch | —, 0 | `<common>/HEAD` = B; `logs/HEAD` gains `A B probe` | ✗ stray file | git's changes; the cached `HEAD` is dropped |
-| W4 | `main-worktree/HEAD` | wt | detached / branch | —, 0 | as W3 | ✗ stray file | git's changes |
-| W5 | `main-worktree/refs/bisect/x` | main | branch / branch | —, 0 | new `<common>/refs/bisect/x` = B, no log | ✗ stray `<common>/main-worktree/refs/bisect/x` | git's changes |
-| W6 | `main-worktree/refs/bisect/x` | wt | branch / branch | —, 0 | as W5 | ✗ stray file | git's changes |
+| W1 ×3 | `main-worktree/HEAD` | main | branch / branch | `fatal: update_ref failed for ref 'main-worktree/HEAD': cannot lock ref 'main-worktree/HEAD': Unable to create '<RB>/repo/.git/HEAD.lock': File exists.` + the `Another git process…` hint, 128 | nothing | ✗ ok; stray `<common>/main-worktree/HEAD` → ✓ | `REF_LOCKED { name: 'main-worktree/HEAD' }`, nothing written (requirement 15) |
+| W2 ×3 | `main-worktree/HEAD` | wt | branch / branch | —, 0 | `refs/heads/main` = B; `logs/refs/heads/main` and `logs/HEAD` each gain `A B probe` | ✗ ok; stray `<common>/main-worktree/HEAD`; `main` unmoved → ✓ | git's changes |
+| W3 ×3 | `main-worktree/HEAD` | main | detached / branch | —, 0 | `<common>/HEAD` = B; `logs/HEAD` gains `A B probe` | ✗ stray file → ✓ | git's changes; the cached `HEAD` is dropped |
+| W4 | `main-worktree/HEAD` | wt | detached / branch | —, 0 | as W3 | ✗ stray file → ✓ | git's changes |
+| W5 | `main-worktree/refs/bisect/x` | main | branch / branch | —, 0 | new `<common>/refs/bisect/x` = B, no log | ✗ stray `<common>/main-worktree/refs/bisect/x` → ✓ | git's changes |
+| W6 | `main-worktree/refs/bisect/x` | wt | branch / branch | —, 0 | as W5 | ✗ stray file → ✓ | git's changes |
 | W7 | `worktrees/wt/refs/bisect/y` | main | branch / branch | —, 0 | new `<common>/worktrees/wt/refs/bisect/y` = B | ✓ | — |
 | W8 | `worktrees/wt/refs/bisect/y` | wt | branch / branch | —, 0 | as W7 | ✓ | — |
-| W9 ×3 | `worktrees/wt/HEAD` | main | branch / branch | —, 0 | `refs/heads/side` = B; `logs/refs/heads/side` and `<common>/worktrees/wt/logs/HEAD` each gain `A B probe` | ✗ no `worktrees/wt/logs/HEAD` entry (the log is looked up at `<common>/logs/worktrees/wt/HEAD`) | git's changes |
-| W10 ×3 | `worktrees/wt/HEAD` | wt | branch / branch | `fatal: update_ref failed for ref 'worktrees/wt/HEAD': cannot lock ref 'worktrees/wt/HEAD': Unable to create '<RB>/repo/.git/worktrees/wt/HEAD.lock': File exists.` + hint, 128 | nothing | ✗ ok; moves `side`, logs `side` and `wt`'s `HEAD` | `REF_LOCKED { name: 'worktrees/wt/HEAD' }` |
-| W11 ×3 | `worktrees/wt/HEAD` | wt | branch / detached | —, 0 | `<common>/worktrees/wt/HEAD` = B; `worktrees/wt/logs/HEAD` gains `A B probe` | ✗ no log entry | git's changes; the cached `HEAD` is dropped |
-| W12 | `main-worktree/HEAD`, `noDeref` | wt | branch / branch | —, 0 | `<common>/HEAD` = B (detached); `logs/HEAD` gains `A B probe` | ✗ stray file | git's changes |
-| W13 ×3 | `main-worktree/HEAD`, `noDeref` | main | branch / branch | —, 0 | as W12: no refusal, since the update's name is not `HEAD`'s referent | ✗ stray file | git's changes; the cached `HEAD` is dropped |
-| W15 ×3 | `worktrees/wt/HEAD`, `noDeref` | wt | branch / branch | —, 0 | `wt`'s `HEAD` = B; `worktrees/wt/logs/HEAD` gains `A B probe` | ✗ no log entry | git's changes |
-| W16 | `refs/heads/x` = `ref: main-worktree/HEAD` (hand-written) | main | branch / branch | `fatal: update_ref failed for ref 'refs/heads/x': cannot lock ref 'refs/heads/x': Unable to create '<RB>/repo/.git/HEAD.lock': File exists.` + hint, 128 | nothing | ✗ ok; stray `main-worktree/HEAD`; new `logs/refs/heads/x` `0{40} B` | `REF_LOCKED { name: 'refs/heads/x' }` |
-| W17 | same | wt | branch / branch | —, 0 | `main` = B; new `logs/refs/heads/x` `A B probe`; `logs/HEAD`, `logs/refs/heads/main` each gain `A B probe` | ✗ stray file; `x`'s log `0{40} B` | git's changes |
-| W18 | `refs/bisect/c` = `ref: main-worktree/refs/bisect/c` (one file naming itself) | main | branch / branch | `fatal: update_ref failed for ref 'refs/bisect/c': cannot lock ref 'refs/bisect/c': Unable to create '<RB>/repo/.git/refs/bisect/c.lock': File exists.` + hint, 128 | nothing | ✗ ok; stray `<common>/main-worktree/refs/bisect/c` | `REF_LOCKED { name: 'refs/bisect/c' }`, not `REF_CYCLE_DETECTED` |
+| W9 ×3 | `worktrees/wt/HEAD` | main | branch / branch | —, 0 | `refs/heads/side` = B; `logs/refs/heads/side` and `<common>/worktrees/wt/logs/HEAD` each gain `A B probe` | ✗ no `worktrees/wt/logs/HEAD` entry (the log is looked up at `<common>/logs/worktrees/wt/HEAD`) → ✓ | git's changes |
+| W10 ×3 | `worktrees/wt/HEAD` | wt | branch / branch | `fatal: update_ref failed for ref 'worktrees/wt/HEAD': cannot lock ref 'worktrees/wt/HEAD': Unable to create '<RB>/repo/.git/worktrees/wt/HEAD.lock': File exists.` + hint, 128 | nothing | ✗ ok; moves `side`, logs `side` and `wt`'s `HEAD` → ✓ | `REF_LOCKED { name: 'worktrees/wt/HEAD' }` |
+| W11 ×3 | `worktrees/wt/HEAD` | wt | branch / detached | —, 0 | `<common>/worktrees/wt/HEAD` = B; `worktrees/wt/logs/HEAD` gains `A B probe` | ✗ no log entry → ✓ | git's changes; the cached `HEAD` is dropped |
+| W12 | `main-worktree/HEAD`, `noDeref` | wt | branch / branch | —, 0 | `<common>/HEAD` = B (detached); `logs/HEAD` gains `A B probe` | ✗ stray file → ✓ | git's changes |
+| W13 ×3 | `main-worktree/HEAD`, `noDeref` | main | branch / branch | —, 0 | as W12: no refusal, since the update's name is not `HEAD`'s referent | ✗ stray file → ✓ | git's changes; the cached `HEAD` is dropped |
+| W15 ×3 | `worktrees/wt/HEAD`, `noDeref` | wt | branch / branch | —, 0 | `wt`'s `HEAD` = B; `worktrees/wt/logs/HEAD` gains `A B probe` | ✗ no log entry → ✓ | git's changes |
+| W16 | `refs/heads/x` = `ref: main-worktree/HEAD` (hand-written) | main | branch / branch | `fatal: update_ref failed for ref 'refs/heads/x': cannot lock ref 'refs/heads/x': Unable to create '<RB>/repo/.git/HEAD.lock': File exists.` + hint, 128 | nothing | ✗ ok; stray `main-worktree/HEAD`; new `logs/refs/heads/x` `0{40} B` → ✓ | `REF_LOCKED { name: 'refs/heads/x' }` |
+| W17 | same | wt | branch / branch | —, 0 | `main` = B; new `logs/refs/heads/x` `A B probe`; `logs/HEAD`, `logs/refs/heads/main` each gain `A B probe` | ✗ stray file; `x`'s log `0{40} B` → ✓ | git's changes |
+| W18 | `refs/bisect/c` = `ref: main-worktree/refs/bisect/c` (one file naming itself) | main | branch / branch | `fatal: update_ref failed for ref 'refs/bisect/c': cannot lock ref 'refs/bisect/c': Unable to create '<RB>/repo/.git/refs/bisect/c.lock': File exists.` + hint, 128 | nothing | ✗ ok; stray `<common>/main-worktree/refs/bisect/c` → ✓ | `REF_LOCKED { name: 'refs/bisect/c' }`, not `REF_CYCLE_DETECTED` |
 | W19 | `main-worktree/refs/heads/main` (shared bare name) | wt | branch / branch | —, 0 | new `<common>/main-worktree/refs/heads/main` (git's `SHARED` path) | ✓ | — |
 | W20 | `worktrees/wt/refs/heads/side` | main | branch / branch | —, 0 | new `<common>/worktrees/wt/refs/heads/side` | ✓ | — |
 | W21 | `worktrees/nope/HEAD` (no such worktree) | main | branch / branch | —, 0 | new `<common>/worktrees/nope/HEAD` | ✓ | — |
@@ -405,13 +407,13 @@ Files backend, refusals of the delete and symbolic-ref gate (`refs.c` `transacti
 
 | id | shape | cwd | git line, exit | tsgit at f36503d0 | expected |
 |---|---|---|---|---|---|
-| W24 ×3 | delete `main-worktree/refs/bisect/s` | main, wt | `error: refusing to update ref with bad name 'main-worktree/refs/bisect/s'`, 1 | ✗ ok, no-op (absent at the spelled path) | `INVALID_REF`, nothing removed (requirement 16) |
-| W25 | delete `worktrees/wt/refs/bisect/t` | main, wt | the same line on that name, 1 | ✗ **deletes** `wt`'s `refs/bisect/t` | `INVALID_REF` |
-| W26 | delete `main-worktree/HEAD` | wt | the same line, 1 | ✗ ok, no-op | `INVALID_REF` |
-| W27 ×3 | delete `worktrees/wt/HEAD` | main | the same line, 1 | ✗ **deletes** `refs/heads/side` and its log | `INVALID_REF` |
-| W28 | delete `foo/bar` (created by `update-ref foo/bar A`) | main | `error: refusing to update ref with bad name 'foo/bar'`, 1 | ✗ deletes it | `INVALID_REF` (DC-16) |
-| W29 | `symbolic-ref main-worktree/HEAD refs/heads/side` | main, wt | `error: refusing to update ref with bad name 'main-worktree/HEAD'`, 1 | ✗ writes the stray `<common>/main-worktree/HEAD` | `INVALID_REF` from `writeSymbolicRef` |
-| W30 | `symbolic-ref worktrees/wt/HEAD refs/heads/main` | main | the same line on that name, 1 | ✗ rewrites `wt`'s `HEAD` to `ref: refs/heads/main` | `INVALID_REF` |
+| W24 ×3 | delete `main-worktree/refs/bisect/s` | main, wt | `error: refusing to update ref with bad name 'main-worktree/refs/bisect/s'`, 1 | ✗ ok, no-op (absent at the spelled path) → ✓ | `INVALID_REF`, nothing removed (requirement 16) |
+| W25 | delete `worktrees/wt/refs/bisect/t` | main, wt | the same line on that name, 1 | ✗ **deletes** `wt`'s `refs/bisect/t` → ✓ | `INVALID_REF` |
+| W26 | delete `main-worktree/HEAD` | wt | the same line, 1 | ✗ ok, no-op → ✓ | `INVALID_REF` |
+| W27 ×3 | delete `worktrees/wt/HEAD` | main | the same line, 1 | ✗ **deletes** `refs/heads/side` and its log → ✓ | `INVALID_REF` |
+| W28 | delete `foo/bar` (created by `update-ref foo/bar A`) | main | `error: refusing to update ref with bad name 'foo/bar'`, 1 | ✗ deletes it → ✓ | `INVALID_REF` (DC-16) |
+| W29 | `symbolic-ref main-worktree/HEAD refs/heads/side` | main, wt | `error: refusing to update ref with bad name 'main-worktree/HEAD'`, 1 | ✗ writes the stray `<common>/main-worktree/HEAD` → ✓ | `INVALID_REF` from `writeSymbolicRef` |
+| W30 | `symbolic-ref worktrees/wt/HEAD refs/heads/main` | main | the same line on that name, 1 | ✗ rewrites `wt`'s `HEAD` to `ref: refs/heads/main` → ✓ | `INVALID_REF` |
 
 Files backend, transactions (`update-ref --stdin`):
 
@@ -420,27 +422,27 @@ Files backend, transactions (`update-ref --stdin`):
 | W31 ×3 | `update refs/bisect/x B`, `update main-worktree/refs/bisect/x B` | main | `fatal: cannot lock ref 'main-worktree/refs/bisect/x': Unable to create '<RB>/repo/.git/refs/bisect/x.lock': File exists.` + hint, 128 | store level: writes both, one at the stray path | no tsgit surface; store level unchanged (DC-17) |
 | W32 | `update main-worktree/HEAD B`, `update refs/heads/main B`, either order | wt | `fatal: multiple updates for 'refs/heads/main' (including one via symref 'main-worktree/HEAD') are not allowed`, 128 | store level: writes both | no tsgit surface |
 | W33 ×3 | `update worktrees/wt/refs/bisect/y B`, `update refs/bisect/y B` | wt | `fatal: cannot lock ref 'refs/bisect/y': Unable to create '<RB>/repo/.git/worktrees/wt/refs/bisect/y.lock': File exists.` + hint, 128 (the name is the **later** update's) | store level: writes the first | no tsgit surface |
-| W34 | `delete refs/bisect/s`, `delete main-worktree/refs/bisect/s` | main | `fatal: refusing to update ref with bad name 'main-worktree/refs/bisect/s'`, 128; nothing deleted | ✗ `deleteRefs` removes `refs/bisect/s` | `deleteRefs` refuses `INVALID_REF` before any write |
+| W34 | `delete refs/bisect/s`, `delete main-worktree/refs/bisect/s` | main | `fatal: refusing to update ref with bad name 'main-worktree/refs/bisect/s'`, 128; nothing deleted | ✗ `deleteRefs` removes `refs/bisect/s` → ✓ | `deleteRefs` refuses `INVALID_REF` before any write |
 
 Reflog reads:
 
 | id | read | cwd | git | tsgit at f36503d0 | expected |
 |---|---|---|---|---|---|
-| W35 | `git reflog main-worktree/HEAD`; `RefStore.readReflog` | wt | the main `HEAD`'s log, `<common>/logs/HEAD` (on reftable too) | ✗ 0 entries, on both backends | the main `HEAD`'s log (DC-18) |
-| W36 | `git reflog worktrees/wt/HEAD` | main | `wt`'s log, `<common>/worktrees/wt/logs/HEAD` | ✗ 0 entries | `wt`'s log (DC-18) |
+| W35 | `git reflog main-worktree/HEAD`; `RefStore.readReflog` | wt | the main `HEAD`'s log, `<common>/logs/HEAD` (on reftable too) | ✗ 0 entries, on both backends → ✓ | the main `HEAD`'s log (DC-18) |
+| W36 | `git reflog worktrees/wt/HEAD` | main | `wt`'s log, `<common>/worktrees/wt/logs/HEAD` | ✗ 0 entries → ✓ | `wt`'s log (DC-18) |
 
 Reftable backend (`git init --ref-format=reftable`; records listed by stack):
 
 | id | write | cwd | HEAD (main / wt) | git line, exit | git records | tsgit at f36503d0 | expected |
 |---|---|---|---|---|---|---|---|
-| W37 | `main-worktree/HEAD` | main, wt | branch / branch | —, 0 (no refusal from main) | main stack: `refs/heads/main` = B, its log +1, log record `main-worktree/HEAD` +1, no `HEAD` log record | ✗ ref record `main-worktree/HEAD` = B in the main stack; `main` unmoved | git's records (DC-15) |
-| W38 | `main-worktree/HEAD` with the main `HEAD` detached, and `noDeref` from main | main | detached or branch / branch | —, 0 | main stack: ref record **and** log record `main-worktree/HEAD`; `HEAD` itself unchanged (`rev-parse HEAD` = A) | ✗ the ref record only | git's records (DC-15) |
+| W37 | `main-worktree/HEAD` | main, wt | branch / branch | —, 0 (no refusal from main) | main stack: `refs/heads/main` = B, its log +1, log record `main-worktree/HEAD` +1, no `HEAD` log record | ✗ ref record `main-worktree/HEAD` = B in the main stack; `main` unmoved → ✓ | git's records (DC-15) |
+| W38 | `main-worktree/HEAD` with the main `HEAD` detached, and `noDeref` from main | main | detached or branch / branch | —, 0 | main stack: ref record **and** log record `main-worktree/HEAD`; `HEAD` itself unchanged (`rev-parse HEAD` = A) | ✗ the ref record only → ✓ | git's records (DC-15) |
 | W39 | `main-worktree/refs/bisect/x` | main, wt | branch / branch | —, 0 | main stack: ref record `main-worktree/refs/bisect/x`; `refs/bisect/x` absent | ✓ same record | — |
-| W40 | `worktrees/wt/refs/bisect/y` | main, wt | branch / branch | —, 0 | **`wt`'s stack**: ref record `worktrees/wt/refs/bisect/y` | ✗ the record lands in the main stack | git's stack (DC-15) |
-| W41 | `worktrees/wt/HEAD` | main, wt | branch / branch | —, 0 (no refusal from `wt`) | main stack: `refs/heads/side` = B and its log +1; `wt`'s stack: log record `worktrees/wt/HEAD` | ✗ ref record `worktrees/wt/HEAD` in the main stack; `side` unmoved | git's records (DC-15) |
-| W42 | `worktrees/wt/HEAD` | wt | branch / detached | —, 0 | `wt`'s stack: ref and log record `worktrees/wt/HEAD`; `wt`'s `HEAD` unchanged | ✗ ref record in the main stack | git's records (DC-15) |
+| W40 | `worktrees/wt/refs/bisect/y` | main, wt | branch / branch | —, 0 | **`wt`'s stack**: ref record `worktrees/wt/refs/bisect/y` | ✗ the record lands in the main stack → ✓ | git's stack (DC-15) |
+| W41 | `worktrees/wt/HEAD` | main, wt | branch / branch | —, 0 (no refusal from `wt`) | main stack: `refs/heads/side` = B and its log +1; `wt`'s stack: log record `worktrees/wt/HEAD` | ✗ ref record `worktrees/wt/HEAD` in the main stack; `side` unmoved → ✓ | git's records (DC-15) |
+| W42 | `worktrees/wt/HEAD` | wt | branch / detached | —, 0 | `wt`'s stack: ref and log record `worktrees/wt/HEAD`; `wt`'s `HEAD` unchanged | ✗ ref record in the main stack → ✓ | git's records (DC-15) |
 | W43 | W31's transaction | main | branch / branch | —, 0 | main stack: both `refs/bisect/x` and `main-worktree/refs/bisect/x` | ✓ (store level) | — |
-| W44 | delete `main-worktree/refs/bisect/s`, `worktrees/wt/refs/bisect/t` | main | branch / branch | `error: refusing to update ref with bad name '…'`, 1 | nothing | ✗ ok, no-op | `INVALID_REF` |
+| W44 | delete `main-worktree/refs/bisect/s`, `worktrees/wt/refs/bisect/t` | main | branch / branch | `error: refusing to update ref with bad name '…'`, 1 | nothing | ✗ ok, no-op → ✓ | `INVALID_REF` |
 
 ## Requirements
 
@@ -799,6 +801,9 @@ readonly viaHeadName: 'literal' | 'bare';
   record and log name as given: `main-worktree/HEAD`'s log record lands in the main stack
   (W37, W38), and `worktrees/wt/refs/bisect/y`'s ref record lands in `wt`'s stack (W40).
 - `readReflog` and `hasReflog` read the bare name in the selected stack (W35 on reftable).
+- The reftable log gate (`isReftableLoggable`, the existing-log probe and
+  `shouldAutocreateReflog`) judges the bare name in the selected stack, where the files gate
+  judges the full name (requirement 14); the implementation diverged from the plan here.
 
 **API changes.** `repo.primitives.updateRef` keeps its signature. Its new refusals reuse
 existing codes, and `reports/api.json` carries none of the internal symbols below.
