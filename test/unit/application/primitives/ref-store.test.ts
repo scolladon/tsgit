@@ -14,6 +14,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import {
   fileNotFound,
   notADirectory,
+  pathTooLong,
   permissionDenied,
   TsgitError,
   unsupportedOperation,
@@ -6309,6 +6310,14 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
         const real = await readdir(path);
         return path === dir ? [...real, extra] : real;
       });
+      // The walk stats the extra entry before judging it; it has no file behind it, so its
+      // stat answers with the directory's own, re-typed to the entry's kind.
+      const lstat = ctx.fs.lstat.bind(ctx.fs);
+      vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path: string) => {
+        if (path !== `${dir}/${extra.name}`) return lstat(path);
+        const { isFile, isDirectory, isSymbolicLink } = extra;
+        return { ...(await lstat(dir)), isFile, isDirectory, isSymbolicLink };
+      });
     };
 
     const opened = (ctx: Context): ReadonlyArray<string> =>
@@ -6600,21 +6609,21 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
       });
     });
 
-    describe('Given a main ORIG_HEAD holding garbage', () => {
+    describe('Given a main -_HEAD holding garbage, a root name the ref grammar rejects', () => {
       describe('When verifyIntegrity runs', () => {
         it('Then it carries no name fact', async () => {
           // Arrange
           const ctx = await fromMain();
-          await ctx.fs.writeUtf8('/repo/.git/ORIG_HEAD', GARBAGE);
+          await ctx.fs.writeUtf8('/repo/.git/-_HEAD', GARBAGE);
           const sut = createRefStore(ctx);
 
           // Act
           const result = await sut.verifyIntegrity();
 
           // Assert
-          expect(
-            result.filter((finding) => 'ref' in finding && finding.ref === 'ORIG_HEAD'),
-          ).toEqual([{ ref: 'ORIG_HEAD', msgId: 'badRefContent' }]);
+          expect(result.filter((finding) => 'ref' in finding && finding.ref === '-_HEAD')).toEqual([
+            { ref: '-_HEAD', msgId: 'badRefContent' },
+          ]);
         });
       });
     });
@@ -6782,7 +6791,119 @@ describe('ref-store — a symbolic link under refs whose target is neither a fil
         const result = await sut.listRefNames();
 
         // Assert
-        expect(result).not.toContain('refs/heads/pipe');
+        expect(result).toEqual(['refs/heads/main']);
+      });
+    });
+  });
+});
+
+describe('ref-store — the walk stats a doubtful entry before judging it', () => {
+  const OID = 'a'.repeat(40);
+  const ADMIN = '/repo/.git/worktrees/wt';
+  const seeded = async (): Promise<Context> => {
+    const ctx = await buildSeededContext();
+    await ctx.fs.mkdir(`${ADMIN}/refs/bisect`);
+    await ctx.fs.writeUtf8(`${ADMIN}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ADMIN}/gitdir`, '/work/wt/.git\n');
+    await ctx.fs.writeUtf8(`${ADMIN}/commondir`, '../..\n');
+    return ctx;
+  };
+  const refuseLstatOf = (ctx: Context, refused: string): void => {
+    const original = ctx.fs.lstat.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path: string) => {
+      if (path === refused) throw permissionDenied(refused);
+      return original(path);
+    });
+  };
+
+  describe('Given a non-regular entry under a linked store whose lstat is refused', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then only the stat refusal is reported and the entry is never judged', async () => {
+        // Arrange
+        const ctx = await seeded();
+        const pipePath = `${ADMIN}/refs/bisect/pipe`;
+        const originalReaddir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (dir: string) => {
+          const entries = await originalReaddir(dir);
+          const pipe = { name: 'pipe', isFile: false, isDirectory: false, isSymbolicLink: false };
+          return dir === `${ADMIN}/refs/bisect` ? [...entries, pipe] : entries;
+        });
+        refuseLstatOf(ctx, pipePath);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: pipePath }]);
+      });
+    });
+  });
+
+  describe('Given a regular file with a name the ref grammar rejects whose lstat is refused', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then only the stat refusal is reported, before any name fact', async () => {
+        // Arrange
+        const ctx = await seeded();
+        const badPath = '/repo/.git/refs/heads/b@{';
+        await ctx.fs.writeUtf8(badPath, `${OID}\n`);
+        refuseLstatOf(ctx, badPath);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: badPath }]);
+      });
+    });
+  });
+
+  describe('Given a root ref link whose resolution is too long for the file system', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the link is passed over without a read', async () => {
+        // Arrange
+        const ctx = await seeded();
+        const linkPath = '/repo/.git/LONG_HEAD';
+        await ctx.fs.symlink('refs/heads/main', linkPath);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === linkPath) throw pathTooLong(linkPath);
+          return originalStat(path);
+        });
+        const read = vi.spyOn(ctx.fs, 'readUtf8');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(read).not.toHaveBeenCalledWith(linkPath);
+      });
+    });
+  });
+
+  describe('Given a link under refs whose resolution is too long for the file system', () => {
+    describe('When listRefNames runs', () => {
+      it('Then the link is not listed', async () => {
+        // Arrange
+        const ctx = await seeded();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${OID}\n`);
+        const linkPath = '/repo/.git/refs/heads/long';
+        await ctx.fs.symlink('main', linkPath);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === linkPath) throw pathTooLong(linkPath);
+          return originalStat(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames();
+
+        // Assert
+        expect(result).toEqual(['refs/heads/main']);
       });
     });
   });

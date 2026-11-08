@@ -480,6 +480,28 @@ const rows: ReadonlyArray<Row> = [
     origins: BOTH,
   },
   {
+    given: 'a main root ref whose name the ref grammar rejects, holding garbage',
+    files: { '-_HEAD': GARBAGE },
+    origins: FROM_MAIN,
+  },
+  {
+    given: 'a main root ref link whose resolution is too long for the file system',
+    links: { t1: './'.repeat(450), LONG_HEAD: `t1/${'a'.repeat(600)}` },
+    origins: FROM_MAIN,
+  },
+  {
+    given: 'a named pipe inside a main heads directory that cannot be searched',
+    fifos: ['refs/heads/sub/f'],
+    restricted: { 'refs/heads/sub': READ_ONLY },
+    origins: FROM_MAIN,
+  },
+  {
+    given: 'a main ref whose name the grammar rejects inside a directory that cannot be searched',
+    files: { 'refs/heads/sub/b@{': COMMIT_LINE },
+    restricted: { 'refs/heads/sub': READ_ONLY },
+    origins: FROM_MAIN,
+  },
+  {
     given: `a linked worktree renamed to ${RENAMED_ADMIN} holding refs and root refs`,
     files: {
       [`worktrees/${LINKED}/${BISECT_BAD.replace('bad', 'good')}`]: COMMIT_LINE,
@@ -584,6 +606,14 @@ const listingRows: ReadonlyArray<ListingRow> = [
       given: 'x',
       fifos: [FIFO_TARGET],
       links: { 'refs/heads/pipe': `../../${FIFO_TARGET}` },
+    },
+    origins: FROM_MAIN,
+  },
+  {
+    given: 'a link among the main store heads whose resolution is too long for the file system',
+    shape: {
+      given: 'x',
+      links: { t1: './'.repeat(450), 'refs/heads/n/long': `../../../t1/${'b'.repeat(600)}` },
     },
     origins: FROM_MAIN,
   },
@@ -981,7 +1011,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck worktree private refs interop', () => {
 
   describe.each(listingRows)('Given $given', ({ shape, origins }) => {
     describe.each(origins)('When refs are listed from %s', (from) => {
-      it(
+      it.skipIf(WINDOWS && shape.fifos !== undefined)(
         'Then tsgit lists the names git lists',
         async () => {
           // Arrange

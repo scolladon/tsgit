@@ -72,7 +72,7 @@ import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
 import { lstatIfPresent, lstatIfReachable } from './internal/fs-probes.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
-import { isUnopenableFile, linkedWorktreeAdmins } from './internal/linked-worktrees.js';
+import { linkedWorktreeAdmins } from './internal/linked-worktrees.js';
 import { realPathOutcomeOf } from './internal/real-path.js';
 import {
   isCheckedWhenAbsent,
@@ -483,12 +483,13 @@ type LeafProbe = (fs: FileSystem, path: string) => Promise<FileStat | undefined>
 type ListedKind = 'directory' | 'ref' | 'unlisted';
 
 /** The `stat` failures that drop a symbolic link from the loose walk, as a
- *  failed `stat` drops it from git's: dangling, through a regular file, or
- *  a loop. */
+ *  failed `stat` drops it from git's: dangling, through a regular file, a
+ *  loop, or a resolution longer than the file system allows. */
 const UNRESOLVABLE_LINK_CODES: ReadonlySet<string> = new Set([
   'FILE_NOT_FOUND',
   'NOT_A_DIRECTORY',
   'PERMISSION_DENIED',
+  'PATH_TOO_LONG',
 ]);
 /** The no-follow open refusals the plain loose reader decides instead: an
  *  adapter without the open, a regular file in the path, or an unreadable
@@ -1421,26 +1422,38 @@ function createFilesRefStore(ctx: Context): RefStore {
   ): Promise<void> {
     for (const entry of entries) {
       if (run.ended) return;
-      const path = `${dir}/${entry.name}`;
-      if (await statRefusedUpFront(entry, path, run.findings)) continue;
-      if (await skippedLockEntry(entry, path, run.findings)) continue;
-      const name = `${prefix}/${entry.name}` as RefName;
-      if (entry.isDirectory) await walkIntegrity(path, name, run);
-      else await judgeEntry(entry, name, path, run);
+      await walkIntegrityEntry(entry, dir, prefix, run);
     }
   }
 
-  /** git's refs-verify walk skips a `.lock` file by its name, after the iterator's `lstat` of
-   *  it: a stat the permissions refuse is still warned. A directory of that name is walked. */
-  async function skippedLockEntry(
+  /** One entry of git's walk: its `lstat` where git takes one up front, the `.lock` skip, then
+   *  a directory descended or a file judged. */
+  async function walkIntegrityEntry(
     entry: DirEntry,
-    path: string,
-    findings: RefIntegrityFinding[],
-  ): Promise<boolean> {
-    if (entry.isDirectory || !isSkippedByRefsVerify(entry.name)) return false;
-    if (!entry.isSymbolicLink) await entryStatRefused(path, findings);
-    return true;
+    dir: string,
+    prefix: string,
+    run: IntegrityRun,
+  ): Promise<void> {
+    const path = `${dir}/${entry.name}`;
+    const name = `${prefix}/${entry.name}` as RefName;
+    if (!isStatDeferred(entry, name) && (await entryStatRefused(path, run.findings))) return;
+    if (isSkippedLockFile(entry)) return;
+    if (entry.isDirectory) await walkIntegrity(path, name, run);
+    else await judgeEntry(entry, name, path, run);
   }
+
+  /** git's directory iterator `lstat`s every entry before judging it. A regular file whose
+   *  name passes the check is left to the read that follows: its refusal is the same
+   *  `failed to stat` at the same position, without a second call per ref. Anything else — a
+   *  directory, a link, a file of another type, a name the check rejects (a `.lock` name among
+   *  them) — is stat'd here, so the refusal comes before a verdict git never reaches. */
+  const isStatDeferred = (entry: DirEntry, name: RefName): boolean =>
+    entry.isFile && isSafeRefName(name);
+
+  /** git's refs-verify walk skips a `.lock` file by its name once the iterator has stat'd it;
+   *  a directory of that name is walked. */
+  const isSkippedLockFile = (entry: DirEntry): boolean =>
+    !entry.isDirectory && isSkippedByRefsVerify(entry.name);
 
   /** git's `files_fsck_ref` on one entry: a file type it never opens, then the name, then the
    *  content — a link's content being its referent. */
@@ -1462,17 +1475,6 @@ function createFilesRefStore(ctx: Context): RefStore {
     run.findings.push({ ref: name, msgId: 'symlinkRef' });
     await linkReferentFindings(run, name, path);
   }
-
-  /** A regular file's `lstat` is left to the read that follows it: its refusal ends in the
-   *  same `failed to stat` at the same position, without a second call per ref. */
-  const statRefusedUpFront = (
-    entry: DirEntry,
-    path: string,
-    findings: RefIntegrityFinding[],
-  ): Promise<boolean> =>
-    entry.isDirectory || entry.isSymbolicLink
-      ? entryStatRefused(path, findings)
-      : Promise.resolve(false);
 
   /** git's directory iterator `lstat`s every entry before judging it: a refusal is
    *  `failed to stat`, and the entry is skipped whatever it is. */
@@ -1671,7 +1673,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       return (await ctx.fs.stat(path)).isFile;
     } catch (err) {
-      if (isUnopenableFile(err)) return false;
+      if (UNRESOLVABLE_LINK_CODES.has(errorCodeOf(err))) return false;
       throw err;
     }
   }

@@ -724,6 +724,14 @@ const withFifoUnderLinkedRefs = async (): Promise<Context> => {
     const fifo = { name: 'bad', isFile: false, isDirectory: false, isSymbolicLink: false };
     return path === dir ? [...real, fifo] : real;
   });
+  // The walk stats the pipe before judging it; nothing sits behind the faked entry, so its
+  // stat answers with the directory's own, re-typed to a pipe.
+  const lstat = ctx.fs.lstat.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path: string) =>
+    path === `${dir}/bad`
+      ? { ...(await lstat(dir)), isFile: false, isDirectory: false, isSymbolicLink: false }
+      : lstat(path),
+  );
   return ctx;
 };
 

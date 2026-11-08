@@ -254,6 +254,11 @@ findings as `type ref msgId severity` (`bad-ref` is implied when the type is omi
 | X5 | `mkfifo refs/bisect/bad` in the main store | w | `error: refs/bisect/bad: badRefFiletype: unexpected file type` | 8 | ✗ opens it, hangs | `refs/bisect/bad badRefFiletype error` |
 | C | main `refs/heads/sub/x.lock` = oid, `refs/heads/sub` mode 0444 | w | `warning: failed to stat '.git/refs/heads/sub/x.lock': Permission denied` (the iterator lstats every entry before a `.lock` basename is skipped) | 0 | ✗ the entry is filtered before any lstat, nothing reported | `unreadable-ref-path` with `operation: 'stat'` for the lock file, no content finding |
 | D | `.git/worktrees` a regular file, or mode 000 with a linked `wt` inside | w | — (a directory that cannot be opened lists no linked worktree) | 0 | ✗ throws `NOT_A_DIRECTORY` / `PERMISSION_DENIED` | no linked store listed, nothing reported |
+| V1 | main `LONG_HEAD` a link whose resolution exceeds the path length limit (`t1` → 450 `./` components, `LONG_HEAD` → `t1/` + 600 chars) | w | — (the failed `stat` passes the entry over) | 0 | ✗ rejects `PATH_TOO_LONG` | nothing; the link is never read |
+| V2 | main `refs/heads/n/long` such a link; `for-each-ref` | w | lists the other refs, exit 0 (`fsck` itself dies `fatal: Invalid path …`, exit 8, as before) | 0 | ✗ `listRefs`/`listRefNames` reject `PATH_TOO_LONG` | the link is not listed |
+| V3 | main `-_HEAD` = `garbage` (a root name the ref grammar rejects) | w | `error: -_HEAD: badRefContent: garbage` | 8 | ✓ | `badRefContent` only: the main store's root names are exempt from the name check |
+| V4 | `mkfifo refs/heads/sub/f`, `refs/heads/sub` mode 0444 | w | `warning: failed to stat '.git/refs/heads/sub/f': Permission denied` | 0 | ✗ `badRefFiletype` error, 8 | `unreadable-ref-path` (stat) only: the iterator's `lstat` comes before the file-type verdict |
+| V5 | `refs/heads/sub/b@{` = oid, `refs/heads/sub` mode 0444 | w | the same warning on `b@{` + `error: refs/heads/sub/b@{: invalid sha1 pointer 0{40}` | 2 | ✗ `badRefName` + stat + pointer, 10 | the stat finding and the pointer only: the `lstat` comes before the name verdict |
 
 **Path spelling in git's lines** (the interop harness rebuilds it; tsgit always reports the
 absolute path it opened):
