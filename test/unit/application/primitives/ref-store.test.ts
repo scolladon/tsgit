@@ -2927,6 +2927,7 @@ describe('ref-store', () => {
           msgId: 'unreadableRefPath',
           operation: 'stat',
           path: refPath,
+          reason: 'PERMISSION_DENIED',
         });
       });
     });
@@ -2959,7 +2960,12 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toEqual([
-          { msgId: 'unreadableRefPath', operation: 'stat', path: entryPath },
+          {
+            msgId: 'unreadableRefPath',
+            operation: 'stat',
+            path: entryPath,
+            reason: 'PERMISSION_DENIED',
+          },
         ]);
       });
     });
@@ -3016,6 +3022,7 @@ describe('ref-store', () => {
             msgId: 'unreadableRefPath',
             operation: 'open-directory',
             path: `${heads}/${refused}`,
+            reason: 'PERMISSION_DENIED',
           });
           expect(result).toContainEqual({ ref: `refs/heads/${sibling}`, msgId: 'badRefContent' });
         });
@@ -3042,7 +3049,12 @@ describe('ref-store', () => {
 
           // Assert
           expect(result).toEqual([
-            { msgId: 'unreadableRefPath', operation: 'open-directory', path: dir },
+            {
+              msgId: 'unreadableRefPath',
+              operation: 'open-directory',
+              path: dir,
+              reason: 'PERMISSION_DENIED',
+            },
           ]);
         });
       });
@@ -3087,7 +3099,12 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toEqual([
-          { msgId: 'unreadableRefPath', operation: 'open-directory', path: root },
+          {
+            msgId: 'unreadableRefPath',
+            operation: 'open-directory',
+            path: root,
+            reason: 'PERMISSION_DENIED',
+          },
           { msgId: 'refsWalkFailed', path: root, reason: 'PERMISSION_DENIED' },
         ]);
       });
@@ -3211,7 +3228,14 @@ describe('ref-store', () => {
         const result = await sut.verifyIntegrity();
 
         // Assert
-        expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: refPath }]);
+        expect(result).toEqual([
+          {
+            msgId: 'unreadableRefPath',
+            operation: 'stat',
+            path: refPath,
+            reason: 'PERMISSION_DENIED',
+          },
+        ]);
       });
     });
   });
@@ -6403,7 +6427,14 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
           const result = await sut.verifyIntegrity();
 
           // Assert
-          expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: lock }]);
+          expect(result).toEqual([
+            {
+              msgId: 'unreadableRefPath',
+              operation: 'stat',
+              path: lock,
+              reason: 'PERMISSION_DENIED',
+            },
+          ]);
         });
       });
 
@@ -6419,7 +6450,14 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
           const result = await sut.verifyIntegrity();
 
           // Assert
-          expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: lock }]);
+          expect(result).toEqual([
+            {
+              msgId: 'unreadableRefPath',
+              operation: 'stat',
+              path: lock,
+              reason: 'PERMISSION_DENIED',
+            },
+          ]);
         });
       });
 
@@ -6835,7 +6873,14 @@ describe('ref-store — the walk stats a doubtful entry before judging it', () =
         const result = await sut.verifyIntegrity();
 
         // Assert
-        expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: pipePath }]);
+        expect(result).toEqual([
+          {
+            msgId: 'unreadableRefPath',
+            operation: 'stat',
+            path: pipePath,
+            reason: 'PERMISSION_DENIED',
+          },
+        ]);
       });
     });
   });
@@ -6854,7 +6899,14 @@ describe('ref-store — the walk stats a doubtful entry before judging it', () =
         const result = await sut.verifyIntegrity();
 
         // Assert
-        expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: badPath }]);
+        expect(result).toEqual([
+          {
+            msgId: 'unreadableRefPath',
+            operation: 'stat',
+            path: badPath,
+            reason: 'PERMISSION_DENIED',
+          },
+        ]);
       });
     });
   });
@@ -6998,6 +7050,116 @@ describe('ref-store — an entry gone by the time the walk stats it', () => {
 
         // Assert
         expect(result).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('ref-store — the walk meets a path that changed under it', () => {
+  const OID = 'a'.repeat(40);
+
+  describe('Given a directory gone between its stat and its listing', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then it is passed over without a word and the walk carries on', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const gone = '/repo/.git/refs/heads/gone';
+        await ctx.fs.writeUtf8(`${gone}/x`, `${OID}\n`);
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/zzz', 'garbage\n');
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          if (path === gone) throw fileNotFound(gone);
+          return readdir(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ ref: 'refs/heads/zzz', msgId: 'badRefContent' }]);
+      });
+    });
+  });
+
+  describe('Given an entry whose parent became a file before its stat', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the stat refusal is reported with its reason and the entry skipped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const entry = '/repo/.git/refs/heads/sub/x.lock';
+        await ctx.fs.writeUtf8(entry, `${OID}\n`);
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path: string) => {
+          if (path === entry) throw notADirectory(entry);
+          return lstat(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { msgId: 'unreadableRefPath', operation: 'stat', path: entry, reason: 'NOT_A_DIRECTORY' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a directory that became a file before its listing', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the opening is warned with its reason and the walk carries on', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const dir = '/repo/.git/refs/heads/sub';
+        await ctx.fs.writeUtf8(`${dir}/x`, `${OID}\n`);
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/zzz', 'garbage\n');
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          if (path === dir) throw notADirectory(dir);
+          return readdir(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          {
+            msgId: 'unreadableRefPath',
+            operation: 'open-directory',
+            path: dir,
+            reason: 'NOT_A_DIRECTORY',
+          },
+          { ref: 'refs/heads/zzz', msgId: 'badRefContent' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a ref file whose parent became a file before its read', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the stat refusal git would have met is reported with its reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const entry = '/repo/.git/refs/heads/sub/x';
+        await ctx.fs.writeUtf8(entry, `${OID}\n`);
+        const readUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === entry) throw notADirectory(entry);
+          return readUtf8(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([
+          { msgId: 'unreadableRefPath', operation: 'stat', path: entry, reason: 'NOT_A_DIRECTORY' },
+        ]);
       });
     });
   });

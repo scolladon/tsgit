@@ -263,6 +263,10 @@ export type RefsVerifyEndReason =
   | 'PERMISSION_DENIED'
   | 'SYMLINK_LOOP';
 
+/** Why git's walk could not open or stat a path and warned instead of judging it: the
+ *  permissions refused, or a component turned into a regular file under the walk. */
+export type UnreadablePathReason = 'PERMISSION_DENIED' | 'NOT_A_DIRECTORY';
+
 export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
@@ -292,11 +296,12 @@ export type RefIntegrityFinding =
       readonly msgId: 'unreadableRefPath';
       readonly operation: 'open-directory' | 'stat';
       readonly path: string;
+      readonly reason: UnreadablePathReason;
     }
   | {
       readonly msgId: 'refsWalkFailed';
       readonly path: string;
-      readonly reason: 'PERMISSION_DENIED' | 'NOT_A_DIRECTORY';
+      readonly reason: UnreadablePathReason;
     }
   | { readonly msgId: 'rootRefsUnreadable'; readonly path: string }
   | {
@@ -427,6 +432,11 @@ type LooseReadOutcome =
   | { readonly kind: 'refused'; readonly finding: RefIntegrityFinding };
 
 const ABSENT_READ: LooseReadOutcome = { kind: 'absent' };
+
+const statRefusalOf = (path: string, reason: UnreadablePathReason): LooseReadOutcome => ({
+  kind: 'refused',
+  finding: { msgId: 'unreadableRefPath', operation: 'stat', path, reason },
+});
 
 /** The stat failures that mean "no directory here": the path, or a
  *  component above it, is absent or a regular file. */
@@ -888,13 +898,17 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       return await ctx.fs.readUtf8(path);
     } catch (err) {
-      // Absent, and a regular file in the path, both read as no loose ref —
-      // git's `ENOENT` and `ENOTDIR` alike; so does a directory at the path
-      // (`EISDIR`), which costs the one `stat` below.
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return undefined;
-      if ((await pathKind(path)) === 'directory') return undefined;
+      if (await readsAsNoLooseRef(path, err)) return undefined;
       throw err;
     }
+  }
+
+  /** Absent, and a regular file in the path, both read as no loose ref — git's `ENOENT`
+   *  and `ENOTDIR` alike; so does a directory at the path (`EISDIR`), which costs the one
+   *  `stat` here. */
+  async function readsAsNoLooseRef(path: string, err: unknown): Promise<boolean> {
+    if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return true;
+    return (await pathKind(path)) === 'directory';
   }
 
   /**
@@ -1477,19 +1491,30 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /** git's directory iterator `lstat`s every entry before judging it, and skips the entry
-   *  whatever it is when that fails: a refusal is warned as `failed to stat`; an entry gone by
-   *  then — a lock file a concurrent writer removed — is passed over without a word. */
+   *  whatever it is when that fails: a refusal, or a parent that became a file meanwhile, is
+   *  warned as `failed to stat`; an entry gone by then — a lock file a concurrent writer
+   *  removed — is passed over without a word. */
   async function statSkipsEntry(path: string, findings: RefIntegrityFinding[]): Promise<boolean> {
     try {
       await ctx.fs.lstat(path);
       return false;
     } catch (err) {
-      const code = errorCodeOf(err);
-      if (code === 'FILE_NOT_FOUND') return true;
-      if (code !== PERMISSION_DENIED_CODE) throw err;
-      findings.push({ msgId: 'unreadableRefPath', operation: 'stat', path });
+      const reason = warnedPathReasonOf(err);
+      if (reason === undefined) return true;
+      findings.push({ msgId: 'unreadableRefPath', operation: 'stat', path, reason });
       return true;
     }
+  }
+
+  /** The faults git's iterator warns about and walks past: a refusal, or a path component that
+   *  is no longer a directory. `undefined` for an entry that vanished, passed over in silence;
+   *  anything else is rethrown — git skips it too, but a fault this store cannot name is not
+   *  one it reports as a warning. */
+  function warnedPathReasonOf(err: unknown): UnreadablePathReason | undefined {
+    const code = errorCodeOf(err);
+    if (code === 'FILE_NOT_FOUND') return undefined;
+    if (code === PERMISSION_DENIED_CODE || code === NOT_A_DIRECTORY_CODE) return code;
+    throw err;
   }
 
   /** git strips its gitdir as spelled, never resolved: a gitdir reached through a link, or
@@ -1533,8 +1558,9 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (ctx.fs.readdirInOsOrder ?? ctx.fs.readdir).call(ctx.fs, dir);
   }
 
-  /** git warns `error opening directory` for a directory the permissions refuse and
-   *  carries on with its siblings; `undefined` says the directory could not be opened. */
+  /** git warns `error opening directory` for a directory the permissions refuse, or that
+   *  became a file meanwhile, and carries on with its siblings; one gone by then is passed
+   *  over in silence. `undefined` says the directory could not be opened. */
   async function readdirForIntegrity(
     dir: string,
     findings: RefIntegrityFinding[],
@@ -1542,36 +1568,41 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       return await readdirInOsOrder(dir);
     } catch (err) {
-      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
-      findings.push({ msgId: 'unreadableRefPath', operation: 'open-directory', path: dir });
+      const reason = warnedPathReasonOf(err);
+      if (reason === undefined) return [];
+      findings.push({ msgId: 'unreadableRefPath', operation: 'open-directory', path: dir, reason });
       return undefined;
     }
   }
 
-  /** git's `cannot read ref file`: a file whose open the permissions refuse is a finding
-   *  and the walk carries on; the `lstat` proves the entry exists, as the open's refusal
-   *  alone cannot tell a denied file from a denied directory above it; an `lstat` the
-   *  permissions refuse too is git's `failed to stat`. */
+  /** git `lstat`s a ref file before reading it; this store reads a safe regular file first
+   *  and reconstructs the verdict from the failure: one gone is passed over, a parent turned
+   *  file meanwhile is git's `failed to stat`, and a refused read is its `cannot read ref
+   *  file` — unless the `lstat` is refused too, which alone can tell a denied file from a
+   *  denied directory above it. */
   async function readLooseContentOrRefusal(name: RefName, path: string): Promise<LooseReadOutcome> {
     try {
-      const raw = await readLooseContentAt(path);
-      return raw === undefined ? ABSENT_READ : { kind: 'read', raw };
+      return { kind: 'read', raw: await ctx.fs.readUtf8(path) };
     } catch (err) {
-      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
-      try {
-        await ctx.fs.lstat(path);
-      } catch (statErr) {
-        if (errorCodeOf(statErr) !== PERMISSION_DENIED_CODE) throw statErr;
-        return {
-          kind: 'refused',
-          finding: { msgId: 'unreadableRefPath', operation: 'stat', path },
-        };
-      }
-      return {
-        kind: 'refused',
-        finding: { ref: name, msgId: 'cannotReadRef', path, reason: PERMISSION_DENIED_CODE },
-      };
+      const code = errorCodeOf(err);
+      if (code === NOT_A_DIRECTORY_CODE) return statRefusalOf(path, code);
+      if (code === PERMISSION_DENIED_CODE) return refusedReadOf(name, path);
+      if (await readsAsNoLooseRef(path, err)) return ABSENT_READ;
+      throw err;
     }
+  }
+
+  async function refusedReadOf(name: RefName, path: string): Promise<LooseReadOutcome> {
+    try {
+      await ctx.fs.lstat(path);
+    } catch (statErr) {
+      if (errorCodeOf(statErr) !== PERMISSION_DENIED_CODE) throw statErr;
+      return statRefusalOf(path, PERMISSION_DENIED_CODE);
+    }
+    return {
+      kind: 'refused',
+      finding: { ref: name, msgId: 'cannotReadRef', path, reason: PERMISSION_DENIED_CODE },
+    };
   }
 
   /** `name`'s loose-body verdicts, in git's order. A malformed body is `badRefContent`;

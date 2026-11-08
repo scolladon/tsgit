@@ -69,7 +69,9 @@ export type FsckFinding =
       /** Absolute, as opened. */
       readonly path: string;
       readonly operation: 'open-directory' | 'stat';
-      readonly reason: 'PERMISSION_DENIED';
+      /** git's errno text: `Permission denied`, or `Not a directory` for a path component
+       *  that turned into a regular file under the walk. */
+      readonly reason: 'PERMISSION_DENIED' | 'NOT_A_DIRECTORY';
     }
   | {
       /** git's iteration of a `refs` root that could not be opened — `failed to iterate over`,

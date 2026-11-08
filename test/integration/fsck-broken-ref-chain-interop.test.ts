@@ -1210,8 +1210,8 @@ const rebuiltLines = (
     if (finding.type === 'unreadable-ref-path') {
       const shown = printedPath(dir, finding.path, row);
       return finding.operation === 'open-directory'
-        ? [`warning: error opening directory '${shown}${path.sep}': Permission denied`]
-        : [`warning: failed to stat '${shown}': Permission denied`];
+        ? [`warning: error opening directory '${shown}${path.sep}': ${END_TEXT[finding.reason]}`]
+        : [`warning: failed to stat '${shown}': ${END_TEXT[finding.reason]}`];
     }
     if (finding.type === 'refs-walk-failed') {
       return [`error: failed to iterate over '${printedPath(dir, finding.path, row)}'`];

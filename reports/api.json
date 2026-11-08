@@ -146434,9 +146434,42 @@
 											"flags": {
 												"isReadonly": true
 											},
+											"comment": {
+												"summary": [
+													{
+														"kind": "text",
+														"text": "git's errno text: "
+													},
+													{
+														"kind": "code",
+														"text": "`Permission denied`"
+													},
+													{
+														"kind": "text",
+														"text": ", or "
+													},
+													{
+														"kind": "code",
+														"text": "`Not a directory`"
+													},
+													{
+														"kind": "text",
+														"text": " for a path component\n that turned into a regular file under the walk."
+													}
+												]
+											},
 											"type": {
-												"type": "literal",
-												"value": "PERMISSION_DENIED"
+												"type": "union",
+												"types": [
+													{
+														"type": "literal",
+														"value": "PERMISSION_DENIED"
+													},
+													{
+														"type": "literal",
+														"value": "NOT_A_DIRECTORY"
+													}
+												]
 											}
 										},
 										{

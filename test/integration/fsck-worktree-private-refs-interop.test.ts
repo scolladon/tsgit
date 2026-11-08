@@ -826,8 +826,8 @@ const walkLines = (finding: FsckFinding, arranged: Arranged): ReadonlyArray<stri
   if (finding.type === 'unreadable-ref-path') {
     const shown = printedPath(arranged, finding.path);
     return finding.operation === 'open-directory'
-      ? [`warning: error opening directory '${shown}${path.sep}': Permission denied`]
-      : [`warning: failed to stat '${shown}': Permission denied`];
+      ? [`warning: error opening directory '${shown}${path.sep}': ${ENDED_TEXT[finding.reason]}`]
+      : [`warning: failed to stat '${shown}': ${ENDED_TEXT[finding.reason]}`];
   }
   if (finding.type !== 'refs-walk-failed') return [];
   const shown = printedPath(arranged, finding.path);

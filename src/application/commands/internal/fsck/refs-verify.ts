@@ -116,6 +116,7 @@ const gradesOf = (severities: FsckSeverityTable): ContentGrades => ({
 const unreadablePathFinding = ({
   path,
   operation,
+  reason,
 }: Extract<
   RefIntegrityFinding,
   { readonly msgId: 'unreadableRefPath' }
@@ -123,7 +124,7 @@ const unreadablePathFinding = ({
   type: 'unreadable-ref-path',
   path,
   operation,
-  reason: 'PERMISSION_DENIED',
+  reason,
 });
 
 const refsWalkFailedFinding = ({
