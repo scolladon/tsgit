@@ -137,7 +137,9 @@ hop of the symbolic walk read the file the write lands on.
   On the files backend `worktrees/<id>/…` is written under `<common>/worktrees/<id>/`, as git
   does, but `worktrees/<id>` with nothing after the id locks `<common>/worktrees/<id>/.lock`:
   it refuses `FILE_NOT_FOUND` on that lock when the admin dir is missing, as git's `Unable to
-  create … No such file or directory` does.
+  create … No such file or directory` does, and `NOT_A_DIRECTORY` on it when a regular file
+  stands at `<common>/worktrees/<id>` or at `<common>/worktrees`, where git reports `Not a
+  directory` or `non-directory in the way`.
 
 ### Reflog entries
 
