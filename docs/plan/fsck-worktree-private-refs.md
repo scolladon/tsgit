@@ -1102,7 +1102,7 @@ Files:
 - `docs/use/errors.md` — the code table rows `INVALID_REF` (L93) and `REF_LOCKED` (L99) gain the new cases in one clause each.
 - `docs/design/fsck-worktree-private-refs.md` — the "Write-side matrix (ADR-1164)" tables (L351–443): in each row the interop suite now pins, append " → ✓" to the "tsgit at f36503d0" cell, and add one sentence under the "Reading the results" bullet: "→ ✓ marks a row the write-side parts turned green; test/integration/worktree-ref-namespace-write-interop.test.ts pins it." Rows W23, W31–W33 and W43 keep their cells.
 
-No row ids or ADR numbers in the user docs (docs/use); the design doc may cite them. The BACKLOG ticks are the documentation phase's (row 32.56 stays unfiled, ADR-1164). docs/use/commands/reflog.md carries no prefixed-name claim and stays as it is.
+No row ids or ADR numbers in the user docs (docs/use); the design doc may cite them. The BACKLOG ticks are the documentation phase's (row 32.56 is not filed, ADR-1164). docs/use/commands/reflog.md carries no prefixed-name claim and stays as it is.
 
 ### TDD steps
 
