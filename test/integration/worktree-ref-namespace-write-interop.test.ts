@@ -569,14 +569,14 @@ const rooted = (line: string, fixture: Fixture): string =>
 
 const firstLine = (stderr: string): string => stderr.split('\n')[0] ?? '';
 
-const whenOf = (shape: Shape): string =>
-  `When ${shape.name} is written${shape.noDeref ? ' without dereferencing' : ''} from the ${shape.from} worktree`;
+const whenClauseOf = (shape: Shape): string =>
+  `${shape.name} is written${shape.noDeref ? ' without dereferencing' : ''} from the ${shape.from} worktree`;
 
-const whenOfBadName = (row: BadNameRow): string => {
+const badNameWhenClauseOf = (row: BadNameRow): string => {
   const origin = `from the ${row.from} worktree`;
-  if (row.target !== undefined) return `When ${row.name} is pointed at ${row.target} ${origin}`;
-  if (row.deletedFirst === undefined) return `When ${row.name} is deleted ${origin}`;
-  return `When ${[...row.deletedFirst, row.name].join(' and ')} are deleted in one transaction ${origin}`;
+  if (row.target !== undefined) return `${row.name} is pointed at ${row.target} ${origin}`;
+  if (row.deletedFirst === undefined) return `${row.name} is deleted ${origin}`;
+  return `${[...row.deletedFirst, row.name].join(' and ')} are deleted in one transaction ${origin}`;
 };
 
 const runsOf = (shape: Shape): ReadonlyArray<number> =>
@@ -585,7 +585,7 @@ const runsOf = (shape: Shape): ReadonlyArray<number> =>
 describe('worktree ref namespace write interop', () => {
   describe.skipIf(!GIT_AVAILABLE)('against git', () => {
     describe.each(writeRows)('Given $given', (row) => {
-      describe(whenOf(row), () => {
+      describe(`When ${whenClauseOf(row)}`, () => {
         it.each(runsOf(row))(
           'Then tsgit changes the common dir as git does (throwaway %i)',
           async () => {
@@ -615,7 +615,7 @@ describe('worktree ref namespace write interop', () => {
     });
 
     describe.each(refusalRows)('Given $given', (row) => {
-      describe(whenOf(row), () => {
+      describe(`When ${whenClauseOf(row)}`, () => {
         it.each(runsOf(row))(
           'Then tsgit refuses with git’s lock line and neither twin changes (throwaway %i)',
           async () => {
@@ -647,7 +647,7 @@ describe('worktree ref namespace write interop', () => {
     });
 
     describe.each(badNameRows)('Given $given', (row) => {
-      describe(whenOfBadName(row), () => {
+      describe(`When ${badNameWhenClauseOf(row)}`, () => {
         it.each(runsOf(row))(
           'Then tsgit refuses the bad name with git’s line and neither twin changes (throwaway %i)',
           async () => {

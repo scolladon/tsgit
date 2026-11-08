@@ -80,10 +80,11 @@ describe('reflog-store', () => {
           // Arrange
           const ctx = createMemoryContext();
           const reflogEntry = entry();
-          const sut = from(ctx);
+          const viewer = from(ctx);
+          const sut = appendReflog;
 
           // Act
-          await appendReflog(sut, name, reflogEntry);
+          await sut(viewer, name, reflogEntry);
 
           // Assert
           const raw = await ctx.fs.readUtf8(`${owner(ctx).layout.gitDir}/logs/HEAD`);
@@ -283,10 +284,11 @@ describe('reflog-store', () => {
             // Arrange
             const ctx = createMemoryContext();
             await appendReflog(owner(ctx), HEAD, entry());
-            const sut = from(ctx);
+            const viewer = from(ctx);
+            const sut = reflogExists;
 
             // Act
-            const result = await reflogExists(sut, name);
+            const result = await sut(viewer, name);
 
             // Assert
             expect(result).toBe(true);
@@ -393,10 +395,11 @@ describe('reflog-store', () => {
             // Arrange
             const ctx = createMemoryContext();
             await appendReflog(owner(ctx), HEAD, entry());
-            const sut = from(ctx);
+            const viewer = from(ctx);
+            const sut = deleteReflog;
 
             // Act
-            await deleteReflog(sut, name);
+            await sut(viewer, name);
 
             // Assert
             expect(await reflogExists(owner(ctx), HEAD)).toBe(false);

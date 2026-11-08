@@ -398,9 +398,11 @@ describe('getSpawnCwd', () => {
 });
 
 describe('refLocation', () => {
-  describe.each<[string, Context, ReadonlyArray<readonly [string, RefLocation]>]>([
+  const locatorContexts: ReadonlyArray<
+    [string, Context, ReadonlyArray<readonly [string, RefLocation]>]
+  > = [
     [
-      "Given the main worktree's Context",
+      "the main worktree's Context",
       ctxWithLayout('/g'),
       [
         ['HEAD', { dir: '/g', loose: '/g/HEAD', reflog: '/g/logs/HEAD' }],
@@ -433,7 +435,7 @@ describe('refLocation', () => {
       ],
     ],
     [
-      "Given a linked worktree's Context",
+      "a linked worktree's Context",
       ctxWithLayout('/g/worktrees/wt', '/g'),
       [
         [
@@ -464,7 +466,8 @@ describe('refLocation', () => {
         ],
       ],
     ],
-  ])('%s', (_context, ctx, rows) => {
+  ];
+  describe.each(locatorContexts)('Given %s', (_context, ctx, rows) => {
     describe.each(rows)('When %s is located', (name, expected) => {
       it("Then dir, loose and reflog are git's paths", () => {
         // Arrange

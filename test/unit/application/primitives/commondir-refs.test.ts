@@ -333,10 +333,11 @@ describe.each(both)(
         const ctx = await buildSeededContext();
         await appendReflog(ctx, 'HEAD' as RefName, ENTRY);
         const rewritten = { ...ENTRY, oldId: OID_A, newId: OID_B, message: 'reset: moving' };
-        const sut = view(ctx);
+        const viewer = view(ctx);
+        const sut = writeReflog;
 
         // Act
-        await writeReflog(sut, 'main-worktree/HEAD' as RefName, [rewritten]);
+        await sut(viewer, 'main-worktree/HEAD' as RefName, [rewritten]);
 
         // Assert
         expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual([

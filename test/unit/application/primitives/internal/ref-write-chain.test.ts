@@ -741,10 +741,10 @@ describe('looseFileOf', () => {
       it("Then it is the gitdir's HEAD", () => {
         // Arrange
         const ctx = createMemoryContext();
-        const sut = looseFileOf(ctx);
+        const sut = looseFileOf;
 
         // Act
-        const result = sut(ref('main-worktree/HEAD'));
+        const result = sut(ctx)(ref('main-worktree/HEAD'));
 
         // Assert
         expect(result).toBe(`${ctx.layout.gitDir}/HEAD`);
@@ -757,10 +757,10 @@ describe('looseFileOf', () => {
       it('Then it is undefined', () => {
         // Arrange
         const ctx = withReftableStorage(createMemoryContext());
-        const sut = looseFileOf(ctx);
+        const sut = looseFileOf;
 
         // Act
-        const result = sut(ref('main-worktree/HEAD'));
+        const result = sut(ctx)(ref('main-worktree/HEAD'));
 
         // Assert
         expect(result).toBeUndefined();

@@ -700,13 +700,14 @@ describe('updateRef', () => {
     describe('When the reftable main worktree deletes worktrees/wt/refs/bisect/t', () => {
       it('Then it refuses INVALID_REF and removes nothing', async () => {
         // Arrange
-        const sut = withReftableStorage(createMemoryContext());
-        const child = asWorktreeChild(sut);
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = updateRef;
+        const child = asWorktreeChild(ctx);
         await getRefStore(child).applyRefUpdates([{ kind: 'set', name: BISECT_T, id: UNVERIFIED }]);
 
         // Act
         const refusal = await refusalOf(() =>
-          updateRef(sut, 'worktrees/wt/refs/bisect/t' as RefName, UNVERIFIED, { delete: true }),
+          sut(ctx, 'worktrees/wt/refs/bisect/t' as RefName, UNVERIFIED, { delete: true }),
         );
 
         // Assert
