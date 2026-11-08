@@ -17,12 +17,17 @@
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
-import { refUpdateConflict } from '../../domain/refs/error.js';
+import { refLocked, refUpdateConflict } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { assertRefTargetValid } from './internal/ref-target.js';
 import { type TransactionLogging, transactionLogging } from './internal/ref-transaction-logging.js';
-import { looseFileOf, type RefWriteChain, resolveWriteChain } from './internal/ref-write-chain.js';
+import {
+  type LooseFileOf,
+  looseFileOf,
+  type RefWriteChain,
+  resolveWriteChain,
+} from './internal/ref-write-chain.js';
 import {
   getRefStore,
   type RefStore,
@@ -36,11 +41,13 @@ const HEAD: RefName = 'HEAD' as RefName;
 const UNCOUPLED_HEAD: ResolveDirectResult = { kind: 'missing' };
 
 /** What every entry of one update's transaction shares: the walked chain,
- *  the `HEAD` value it may couple with, the backend's logging shape, the
- *  null id, and the reflog message (empty when a delete carries none). */
+ *  the `HEAD` value it may couple with, the loose file each name locks, the
+ *  backend's logging shape, the null id, and the reflog message (empty when
+ *  a delete carries none). */
 interface TransactionPlan {
   readonly chain: RefWriteChain;
   readonly head: ResolveDirectResult;
+  readonly fileOf: LooseFileOf;
   readonly logging: TransactionLogging;
   readonly zero: ObjectId;
   readonly message: string;
@@ -63,6 +70,7 @@ export async function updateRef(
   const store = getRefStore(ctx);
   const plan = await planTransaction(ctx, store, name, options);
   assertExpected(name, options.expected, plan.chain);
+  assertNoSharedHeadLock(plan, name);
   await store.applyRefUpdates(
     isDelete(ctx, newId, options) ? deleteUpdates(plan, options) : writeUpdates(plan, newId),
   );
@@ -112,14 +120,15 @@ async function planTransaction(
   name: RefName,
   options: UpdateRefOptions,
 ): Promise<TransactionPlan> {
-  const chain = await resolveWriteChain(store, name, options, looseFileOf(ctx));
+  const fileOf = looseFileOf(ctx);
+  const chain = await resolveWriteChain(store, name, options, fileOf);
   // Resolved before any write so a genuine I/O error refuses the whole
   // update instead of leaving a committed ref, a written reflog, and a
   // thrown call. A chain that walks HEAD already read it, and never couples.
   const head = walksHead(name, chain) ? UNCOUPLED_HEAD : await resolveHeadForCoupling(store);
   const logging = transactionLogging(ctx);
   const message = options.reflogMessage ?? '';
-  return { chain, head, logging, zero: zeroOid(ctx.hashConfig), message };
+  return { chain, head, fileOf, logging, zero: zeroOid(ctx.hashConfig), message };
 }
 
 /** git marks a null new object id `REF_DELETING` and takes the delete path
@@ -180,12 +189,31 @@ const walksHead = (name: RefName, chain: RefWriteChain): boolean =>
  */
 function coupledHeadEntry(plan: TransactionPlan, newId: ObjectId): RefUpdate | undefined {
   const { chain, head, logging, zero, message } = plan;
-  if (head.kind !== 'symbolic') return undefined;
+  if (head.kind !== 'symbolic' || !couplesHead(plan)) return undefined;
   const namesLink = chain.links.includes(head.target);
-  if (head.target !== chain.terminal && !namesLink) return undefined;
   const oldId =
     namesLink && logging.headOldThroughLink === 'null-id' ? zero : oldOrZero(chain.old, zero);
   return { kind: 'reflogOnly', name: HEAD, reflog: { oldId, newId, message } };
+}
+
+/** Whether the transaction gains the coupled `HEAD` entry: `HEAD` symbolically
+ *  names the chain's terminal or one of its walked links — git's
+ *  `split_head_update`, which compares the referent by its literal name. */
+function couplesHead({ chain, head }: TransactionPlan): boolean {
+  if (head.kind !== 'symbolic') return false;
+  return head.target === chain.terminal || chain.links.includes(head.target);
+}
+
+/** git locks the coupled `HEAD` update's file after the chain's own: when a
+ *  walked link or the terminal already holds `HEAD`'s loose file under
+ *  another name, `lock_ref_for_update` meets `EEXIST` and git reports it
+ *  against the name the caller gave. */
+function assertNoSharedHeadLock(plan: TransactionPlan, name: RefName): void {
+  if (!couplesHead(plan)) return;
+  const headFile = plan.fileOf(HEAD);
+  if (headFile === undefined) return;
+  const chainNames = [...plan.chain.links, plan.chain.terminal];
+  if (chainNames.some((link) => plan.fileOf(link) === headFile)) throw refLocked(name);
 }
 
 /** The entries git's transaction splits off at each symbolic hop: one

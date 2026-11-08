@@ -1817,6 +1817,30 @@ describe('updateRef', () => {
     });
   });
 
+  describe('Given a reftable repository with refs/heads/s = ref: refs/heads/main and HEAD on main', () => {
+    describe('When updateRef writes s', () => {
+      it('Then main holds B and nothing refuses', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const a = await writeCommit(ctx, 'reftable A');
+        const b = await writeCommit(ctx, 'reftable B');
+        const store = getRefStore(ctx);
+        await store.applyRefUpdates([
+          { kind: 'set', name: MAIN, id: a },
+          { kind: 'setSymbolic', name: 'refs/heads/s' as RefName, target: MAIN },
+          { kind: 'setSymbolic', name: HEAD, target: MAIN },
+        ]);
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'refs/heads/s' as RefName, b, { reflogMessage: 'through s' });
+
+        // Assert
+        expect(await store.resolveDirect(MAIN)).toEqual({ kind: 'direct', id: b });
+      });
+    });
+  });
+
   describe('branch typing', () => {
     const writeTree = async (ctx: Context): Promise<ObjectId> =>
       writeObject(ctx, {

@@ -250,6 +250,19 @@ describe('common-dir per-worktree-ref sweep', () => {
       const strayDirExists = (ctx: Context): Promise<boolean> =>
         ctx.fs.exists(`${ctx.layout.gitDir}/main-worktree`);
       const OPTIONS = { reflogMessage: 'probe' };
+      const headLogLineCount = async (ctx: Context): Promise<number> => {
+        const log = `${ctx.layout.gitDir}/logs/HEAD`;
+        if (!(await ctx.fs.exists(log))) return 0;
+        return (await ctx.fs.readUtf8(log)).split('\n').filter((line) => line !== '').length;
+      };
+      const refusalOf = async (write: () => Promise<void>): Promise<unknown> => {
+        try {
+          await write();
+        } catch (error) {
+          return (error as TsgitError).data;
+        }
+        return undefined;
+      };
 
       describe('When updateRef writes main-worktree/HEAD from the linked worktree with both HEADs on branches', () => {
         it('Then refs/heads/main holds B, refs/heads/side keeps A and nothing is written under main-worktree/', async () => {
@@ -538,6 +551,85 @@ describe('common-dir per-worktree-ref sweep', () => {
 
           // Assert
           expect(await refValue(child, 'HEAD')).toEqual(direct(b));
+        });
+      });
+
+      describe('When updateRef writes main-worktree/HEAD from the main worktree with its HEAD on main', () => {
+        it('Then it refuses REF_LOCKED naming main-worktree/HEAD and nothing changes', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const logLinesBefore = await headLogLineCount(ctx);
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() =>
+            sut(ctx, 'main-worktree/HEAD' as RefName, b, OPTIONS),
+          );
+
+          // Assert
+          expect(refusal).toEqual({ code: 'REF_LOCKED', name: 'main-worktree/HEAD' });
+          expect(await refValue(ctx, 'refs/heads/main')).toEqual(direct(a));
+          expect(await headLogLineCount(ctx)).toBe(logLinesBefore);
+          expect(await strayDirExists(ctx)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes main-worktree/HEAD from the main worktree expecting B while main holds A', () => {
+        it('Then the compare-and-swap refuses first with REF_UPDATE_CONFLICT', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() =>
+            sut(ctx, 'main-worktree/HEAD' as RefName, b, { ...OPTIONS, expected: b }),
+          );
+
+          // Assert
+          expect(refusal).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'main-worktree/HEAD',
+            expected: b,
+            actual: a,
+          });
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt/HEAD from the linked worktree with its HEAD on side', () => {
+        it('Then it refuses REF_LOCKED naming worktrees/wt/HEAD and side keeps A', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() =>
+            sut(asWorktreeChild(ctx), 'worktrees/wt/HEAD' as RefName, b, OPTIONS),
+          );
+
+          // Assert
+          expect(refusal).toEqual({ code: 'REF_LOCKED', name: 'worktrees/wt/HEAD' });
+          expect(await refValue(ctx, 'refs/heads/side')).toEqual(direct(a));
+        });
+      });
+
+      describe('When updateRef writes refs/heads/x, a common file naming main-worktree/HEAD, from the main worktree', () => {
+        it('Then it refuses REF_LOCKED naming refs/heads/x, main keeps A and x gains no log', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, 'ref: main-worktree/HEAD\n');
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() => sut(ctx, 'refs/heads/x' as RefName, b, OPTIONS));
+
+          // Assert
+          expect(refusal).toEqual({ code: 'REF_LOCKED', name: 'refs/heads/x' });
+          expect(await refValue(ctx, 'refs/heads/main')).toEqual(direct(a));
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/x`)).toBe(false);
         });
       });
 
