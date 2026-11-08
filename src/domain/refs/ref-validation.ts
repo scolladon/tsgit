@@ -73,3 +73,35 @@ export function isSafeRefName(name: string): boolean {
     throw error;
   }
 }
+
+const REFS_PREFIX = 'refs/';
+/** git's root-ref syntax outside `refs/`: uppercase letters and underscores. */
+const ROOT_REF_SYNTAX = /^[A-Z_]+$/;
+const BAD_NAME_REFUSAL = 'refusing to update ref with bad name';
+
+/** Whether `rest` is its own `normalize_path_copy` image: no `.` or `..`
+ *  component, and no empty component but a kept trailing slash. */
+const isNormalizedPath = (rest: string): boolean => {
+  const components = rest.split('/');
+  const last = components.length - 1;
+  return components.every(
+    (component, index) =>
+      component !== '.' && component !== '..' && (component !== '' || index === last),
+  );
+};
+
+const isSafeRefsRest = (rest: string): boolean => {
+  if (rest === '' || rest.startsWith('/') || rest.startsWith('.')) return false;
+  return isNormalizedPath(rest);
+};
+
+/** git's refname_is_safe: refs/ plus a rest that normalizes to itself, or [A-Z_]+. */
+export const isRefnameSafe = (name: RefName): boolean => {
+  if (name.startsWith(REFS_PREFIX)) return isSafeRefsRest(name.slice(REFS_PREFIX.length));
+  return ROOT_REF_SYNTAX.test(name);
+};
+
+/** git's transaction_refname_valid for an update without a new id: refuses an unsafe name. */
+export const assertRefnameSafe = (name: RefName): void => {
+  if (!isRefnameSafe(name)) throw invalidRef(BAD_NAME_REFUSAL);
+};

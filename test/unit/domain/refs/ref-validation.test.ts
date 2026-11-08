@@ -1,7 +1,13 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/error.js';
-import { isSafeRefName, validateRefName } from '../../../../src/domain/refs/ref-validation.js';
+import type { RefName } from '../../../../src/domain/objects/index.js';
+import {
+  assertRefnameSafe,
+  isRefnameSafe,
+  isSafeRefName,
+  validateRefName,
+} from '../../../../src/domain/refs/ref-validation.js';
 import { arbRefName } from './arbitraries.js';
 
 describe('validateRefName', () => {
@@ -319,6 +325,153 @@ describe('isSafeRefName', () => {
 
         // Assert
         expect(result).toBeInstanceOf(TypeError);
+      });
+    });
+  });
+});
+
+describe('isRefnameSafe', () => {
+  describe('Given a name git deletes or symbolic-writes', () => {
+    describe('When checking it', () => {
+      it.each(['refs/heads/main', 'refs/a/', 'refs/a/.x', 'HEAD', 'ORIG_HEAD', 'AUTO_MERGE', '_'])(
+        'Then %j is safe',
+        (name) => {
+          // Arrange
+          const sut = isRefnameSafe;
+
+          // Act
+          const result = sut(name as RefName);
+
+          // Assert
+          expect(result).toBe(true);
+        },
+      );
+    });
+  });
+
+  describe('Given a name git refuses to delete or symbolic-write', () => {
+    describe('When checking it', () => {
+      it.each([
+        'refs/',
+        'refs//x',
+        'refs/.x',
+        'refs/a//b',
+        'refs/a/b//',
+        'refs/a/./b',
+        'refs/a/../b',
+        'refs/a/..',
+        'refs/a/.',
+        '',
+        'head',
+        'foo/bar',
+        'REBASE-HEAD',
+        'HEAD1',
+        'main-worktree/HEAD',
+        'worktrees/wt/HEAD',
+      ])('Then %j is unsafe', (name) => {
+        // Arrange
+        const sut = isRefnameSafe;
+
+        // Act
+        const result = sut(name as RefName);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given any arbRefName under refs/', () => {
+    describe('When checking it', () => {
+      it('Then it is safe', () => {
+        // Arrange
+        const sut = isRefnameSafe;
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbRefName(), (name) => {
+            expect(sut(`refs/${name}` as RefName)).toBe(true);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given any non-empty run of [A-Z_]', () => {
+    describe('When checking it', () => {
+      it('Then it is safe', () => {
+        // Arrange
+        const sut = isRefnameSafe;
+
+        // Act + Assert
+        fc.assert(
+          fc.property(fc.stringMatching(/^[A-Z_]{1,16}$/), (name) => {
+            expect(sut(name as RefName)).toBe(true);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe("Given a root-syntax name carrying a '-', a digit or a lowercase letter", () => {
+    describe('When checking it', () => {
+      it('Then it is unsafe', () => {
+        // Arrange
+        const sut = isRefnameSafe;
+        const rootRun = fc.stringMatching(/^[A-Z_]{0,8}$/);
+        const outsider = fc.stringMatching(/^[-0-9a-z]$/);
+
+        // Act + Assert
+        fc.assert(
+          fc.property(rootRun, outsider, rootRun, (before, odd, after) => {
+            expect(sut(`${before}${odd}${after}` as RefName)).toBe(false);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+describe('assertRefnameSafe', () => {
+  describe("Given 'foo/bar'", () => {
+    describe('When asserting it is safe', () => {
+      it("Then it refuses INVALID_REF with git's bad-name reason", () => {
+        // Arrange
+        const sut = assertRefnameSafe;
+
+        // Act
+        const result = (() => {
+          try {
+            sut('foo/bar' as RefName);
+            return undefined;
+          } catch (error) {
+            return error;
+          }
+        })();
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'refusing to update ref with bad name',
+        });
+      });
+    });
+  });
+
+  describe("Given 'refs/heads/main'", () => {
+    describe('When asserting it is safe', () => {
+      it('Then it returns', () => {
+        // Arrange
+        const sut = assertRefnameSafe;
+
+        // Act
+        const result = sut('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

@@ -5,6 +5,19 @@ import { TsgitError } from '../../../../src/domain/error.js';
 import type { RefName } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
 
+/** The refusal git's refname_is_safe gate raises — its text without the name. */
+const BAD_NAME_REFUSAL = { code: 'INVALID_REF', reason: 'refusing to update ref with bad name' };
+
+/** Runs `act` and returns what it threw (undefined when it resolved). */
+async function refusalOf(act: () => Promise<void>): Promise<unknown> {
+  try {
+    await act();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
 describe('writeSymbolicRef', () => {
   describe('Given name=HEAD and target=refs/heads/main', () => {
     describe('When writeSymbolicRef', () => {
@@ -76,6 +89,44 @@ describe('writeSymbolicRef', () => {
           expect(err).toBeInstanceOf(TsgitError);
           expect((err as TsgitError).data.code).toBe('INVALID_REF');
         }
+      });
+    });
+  });
+
+  describe('Given the name main-worktree/HEAD', () => {
+    describe('When writeSymbolicRef points it at refs/heads/side', () => {
+      it('Then it refuses INVALID_REF and writes nothing under main-worktree/', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const refusal = await refusalOf(() =>
+          writeSymbolicRef(ctx, 'main-worktree/HEAD' as RefName, 'refs/heads/side' as RefName),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/main-worktree`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the name worktrees/wt/HEAD naming refs/heads/side', () => {
+    describe('When writeSymbolicRef points it at refs/heads/main', () => {
+      it('Then it refuses INVALID_REF and the admin HEAD keeps refs/heads/side', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const adminHead = `${ctx.layout.gitDir}/worktrees/wt/HEAD`;
+        await ctx.fs.writeUtf8(adminHead, 'ref: refs/heads/side\n');
+
+        // Act
+        const refusal = await refusalOf(() =>
+          writeSymbolicRef(ctx, 'worktrees/wt/HEAD' as RefName, 'refs/heads/main' as RefName),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await ctx.fs.readUtf8(adminHead)).toBe('ref: refs/heads/side\n');
       });
     });
   });

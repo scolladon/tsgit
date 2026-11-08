@@ -122,6 +122,28 @@ async function snapshotDir(
   return files.slice().sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
+/** The linked worktree's own (admin) gitdir under the common dir's `worktrees/`. */
+const adminDir = (ctx: Context): string => `${ctx.layout.gitDir}/worktrees/wt`;
+
+/** Reframe a seeded main-repo Context as a linked-worktree child Context. */
+const asWorktreeChild = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
+});
+
+/** The refusal git's refname_is_safe gate raises — its text without the name. */
+const BAD_NAME_REFUSAL = { code: 'INVALID_REF', reason: 'refusing to update ref with bad name' };
+
+/** Runs `act` and returns what it threw (undefined when it resolved). */
+async function refusalOf(act: () => Promise<void>): Promise<unknown> {
+  try {
+    await act();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
 describe('updateRef', () => {
   describe('Given a fresh ref', () => {
     describe('When updateRef is called', () => {
@@ -536,6 +558,161 @@ describe('updateRef', () => {
 
         // Assert
         expect(await ctx.fs.exists('/repo/.git/refs/heads/never-existed')).toBe(false);
+      });
+    });
+  });
+
+  describe("Given names git's refname_is_safe rejects", () => {
+    const UNVERIFIED = 'a'.repeat(40) as ObjectId;
+    const BISECT_S = 'refs/bisect/s' as RefName;
+    const BISECT_T = 'refs/bisect/t' as RefName;
+
+    describe('When a linked worktree deletes main-worktree/refs/bisect/s', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const main = await buildSeededContext({ refs: [{ name: BISECT_S, id: UNVERIFIED }] });
+        const sut = asWorktreeChild(main);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          updateRef(sut, 'main-worktree/refs/bisect/s' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await main.fs.exists('/repo/.git/refs/bisect/s')).toBe(true);
+      });
+    });
+
+    describe('When a linked worktree writes the null id to main-worktree/refs/bisect/s', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const main = await buildSeededContext({ refs: [{ name: BISECT_S, id: UNVERIFIED }] });
+        const sut = asWorktreeChild(main);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          updateRef(sut, 'main-worktree/refs/bisect/s' as RefName, ZERO, { reflogMessage: REASON }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await main.fs.exists('/repo/.git/refs/bisect/s')).toBe(true);
+      });
+    });
+
+    describe('When the main worktree deletes worktrees/wt/refs/bisect/t', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const sut = await buildSeededContext({
+          refs: [{ name: `worktrees/wt/${BISECT_T}` as RefName, id: UNVERIFIED }],
+        });
+
+        // Act
+        const refusal = await refusalOf(() =>
+          updateRef(sut, 'worktrees/wt/refs/bisect/t' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await sut.fs.exists('/repo/.git/worktrees/wt/refs/bisect/t')).toBe(true);
+      });
+    });
+
+    describe('When a linked worktree deletes main-worktree/HEAD', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const main = await buildSeededContext({ refs: [{ name: HEAD, id: UNVERIFIED }] });
+        const sut = asWorktreeChild(main);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          updateRef(sut, 'main-worktree/HEAD' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await main.fs.readUtf8('/repo/.git/HEAD')).toBe(`${UNVERIFIED}\n`);
+      });
+    });
+
+    describe('When the main worktree deletes worktrees/wt/HEAD', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const side = 'refs/heads/side' as RefName;
+        const sut = await buildSeededContext({ refs: [{ name: side, id: UNVERIFIED }] });
+        await sut.fs.writeUtf8('/repo/.git/worktrees/wt/HEAD', `ref: ${side}\n`);
+        await sut.fs.writeUtf8('/repo/.git/logs/refs/heads/side', `${ZERO} ${UNVERIFIED}\n`);
+        const before = await snapshotDir(sut, '/repo/.git');
+
+        // Act
+        const refusal = await refusalOf(() =>
+          updateRef(sut, 'worktrees/wt/HEAD' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await snapshotDir(sut, '/repo/.git')).toEqual(before);
+      });
+    });
+
+    describe('When it deletes foo/bar', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const sut = await buildSeededContext({
+          refs: [{ name: 'foo/bar' as RefName, id: UNVERIFIED }],
+        });
+
+        // Act
+        const refusal = await refusalOf(() =>
+          updateRef(sut, 'foo/bar' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await sut.fs.exists('/repo/.git/foo/bar')).toBe(true);
+      });
+    });
+
+    describe('When a reftable linked worktree deletes main-worktree/refs/bisect/s', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const main = withReftableStorage(createMemoryContext());
+        await getRefStore(main).applyRefUpdates([{ kind: 'set', name: BISECT_S, id: UNVERIFIED }]);
+        const sut = asWorktreeChild(main);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          updateRef(sut, 'main-worktree/refs/bisect/s' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await getRefStore(main).resolveDirect(BISECT_S)).toEqual({
+          kind: 'direct',
+          id: UNVERIFIED,
+        });
+      });
+    });
+
+    describe('When the reftable main worktree deletes worktrees/wt/refs/bisect/t', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const sut = withReftableStorage(createMemoryContext());
+        const child = asWorktreeChild(sut);
+        await getRefStore(child).applyRefUpdates([{ kind: 'set', name: BISECT_T, id: UNVERIFIED }]);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          updateRef(sut, 'worktrees/wt/refs/bisect/t' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await getRefStore(child).resolveDirect(BISECT_T)).toEqual({
+          kind: 'direct',
+          id: UNVERIFIED,
+        });
       });
     });
   });
@@ -2508,6 +2685,27 @@ describe('deleteRefs', () => {
         });
         expect(batches).toEqual([]);
         expect(await getRefStore(ctx).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: mainId });
+      });
+    });
+  });
+
+  describe('Given refs/bisect/s', () => {
+    describe('When deleteRefs deletes refs/bisect/s and main-worktree/refs/bisect/s', () => {
+      it('Then it refuses INVALID_REF and refs/bisect/s stays', async () => {
+        // Arrange
+        const bisect = 'refs/bisect/s' as RefName;
+        const bisectId = 'a'.repeat(40) as ObjectId;
+        const ctx = await buildSeededContext({ refs: [{ name: bisect, id: bisectId }] });
+        const sut = asWorktreeChild(ctx);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          deleteRefs(sut, [bisect, 'main-worktree/refs/bisect/s' as RefName], {}),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await ctx.fs.readUtf8('/repo/.git/refs/bisect/s')).toBe(`${bisectId}\n`);
       });
     });
   });

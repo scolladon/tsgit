@@ -18,7 +18,7 @@ import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
 import { refLocked, refUpdateConflict } from '../../domain/refs/error.js';
-import { validateRefName } from '../../domain/refs/ref-validation.js';
+import { assertRefnameSafe, validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { assertRefTargetValid } from './internal/ref-target.js';
 import { type TransactionLogging, transactionLogging } from './internal/ref-transaction-logging.js';
@@ -63,6 +63,9 @@ export async function updateRef(
   // that could let `${gitDir}/${name}` escape the repo — no separate path
   // containment check is needed.
   validateRefName(name);
+  // git refuses a delete of a name its refname_is_safe rejects before any
+  // lock or read.
+  if (isDelete(ctx, newId, options)) assertRefnameSafe(name);
   // Verification precedes chain resolution and the compare-and-swap (git's
   // own order); a delete is never verified.
   if (!isDelete(ctx, newId, options)) await assertRefTargetValid(ctx, name, newId);
@@ -95,7 +98,10 @@ export async function deleteRefs(
   names: readonly RefName[],
   options: DeleteRefsOptions,
 ): Promise<void> {
-  for (const name of names) validateRefName(name);
+  for (const name of names) {
+    validateRefName(name);
+    assertRefnameSafe(name);
+  }
   const store = getRefStore(ctx);
   const deleteOptions = { ...options, delete: true } as const;
   const updates: RefUpdate[] = [];
