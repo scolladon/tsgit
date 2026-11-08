@@ -12,7 +12,7 @@
  *   unique:         tsgit checks and names every worktree's private refs as git does
  *   interopSurface: fsck
  */
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -37,6 +37,10 @@ const REPORT_LINE = /^(error|warning|notice|fatal): /;
 const TRAILING_BYTES = /[ \t\r\n]+$/;
 const RESTORED = 0o755;
 const HOP_CAP = 32;
+const NO_ACCESS = 0o000;
+const SEARCH_ONLY = 0o300;
+const ORDER_RUNS = 3;
+const UNPRIVILEGED = process.platform !== 'win32' && process.getuid?.() !== 0;
 const PACKED_HEADER = '# pack-refs with: peeled fully-peeled sorted \n';
 const GITFILE_PREFIX = 'gitdir: ';
 
@@ -64,6 +68,8 @@ interface Shape {
   readonly links?: Readonly<Record<string, string>>;
   /** Gitdir-relative paths deleted once seeded. */
   readonly removed?: ReadonlyArray<string>;
+  /** Gitdir-relative paths renamed (source to destination) once seeded, before links are made. */
+  readonly moved?: Readonly<Record<string, string>>;
   /** Gitdir-relative paths given a mode once seeded. */
   readonly restricted?: Readonly<Record<string, number>>;
   readonly packed?: ReadonlyArray<string>;
@@ -75,6 +81,10 @@ interface Shape {
 interface Row extends Shape {
   /** Working directories the shape runs from: `w` or a linked worktree's id. */
   readonly origins: ReadonlyArray<string>;
+  /** Fresh throwaways the shape is run on; an order that comes from the file system needs several. */
+  readonly runs?: number;
+  /** The non-pointer lines are compared in sequence instead of as a multiset. */
+  readonly sequence?: true;
   /** git dies (exit 128) and tsgit refuses to open with this data code. */
   readonly fatal?: 'NOT_A_REPOSITORY';
 }
@@ -98,6 +108,18 @@ const garbageAt = (name: string): Shape => ({
 const BOTH = [MAIN, LINKED] as const;
 const FROM_MAIN = [MAIN] as const;
 const FROM_LINKED = [LINKED] as const;
+const deadLinkAt = (id: string): Record<string, string> => ({
+  [`worktrees/${id}/refs/bisect/dead`]: 'nope/x',
+});
+const reflogEntryAt = (id: string): Record<string, string> => ({
+  [`worktrees/${id}/logs/HEAD`]: `${ZERO_OID} ${ABSENT_OID} T <t@e> 0 +0000\tx\n`,
+});
+const unreadableAt = (given: string, relative: string, mode: number): Shape => ({
+  given,
+  files: { [relative]: COMMIT_LINE },
+  restricted: { [relative]: mode },
+});
+const NO_ADMIN_ACCESS = `worktrees/${LINKED}`;
 
 const rows: ReadonlyArray<Row> = [
   { given: 'a clean repository', origins: BOTH },
@@ -277,6 +299,129 @@ const rows: ReadonlyArray<Row> = [
     config: { 'fsck.badRefContent': 'warn' },
     origins: FROM_MAIN,
   },
+  {
+    given: "a linked worktree's refs directory without any access",
+    restricted: { [`worktrees/${LINKED}/refs`]: NO_ACCESS },
+    origins: BOTH,
+  },
+  {
+    given: "a linked worktree's admin dir without any access",
+    restricted: { [NO_ADMIN_ACCESS]: NO_ACCESS },
+    origins: FROM_MAIN,
+  },
+  {
+    ...unreadableAt(
+      "a linked worktree's bisect directory without any access",
+      `worktrees/${LINKED}/refs/bisect/bad`,
+      NO_ACCESS,
+    ),
+    restricted: { [`worktrees/${LINKED}/refs/bisect`]: NO_ACCESS },
+    origins: BOTH,
+  },
+  {
+    ...unreadableAt("an unreadable linked worktree's HEAD", `worktrees/${LINKED}/HEAD`, NO_ACCESS),
+    origins: FROM_MAIN,
+  },
+  {
+    ...unreadableAt("an unreadable main store's HEAD", 'HEAD', NO_ACCESS),
+    origins: FROM_LINKED,
+  },
+  {
+    given: "unreadable main store's head and ORIG_HEAD",
+    files: { 'refs/heads/u': COMMIT_LINE, ORIG_HEAD: COMMIT_LINE },
+    restricted: { 'refs/heads/u': NO_ACCESS, ORIG_HEAD: NO_ACCESS },
+    origins: BOTH,
+  },
+  {
+    ...unreadableAt(
+      "an unreadable linked worktree's bisect ref",
+      `worktrees/${LINKED}/refs/bisect/bad`,
+      NO_ACCESS,
+    ),
+    origins: BOTH,
+  },
+  {
+    given: 'a hand-made worktree admin dir whose refs is a file',
+    handMade: { vt: { workDir: true, refsFile: true } },
+    origins: [MAIN, 'vt'],
+  },
+  {
+    given: "a linked worktree's refs directory replaced by a symbolic link",
+    files: { [LINKED_BISECT_BAD]: GARBAGE },
+    moved: { [`worktrees/${LINKED}/refs`]: `worktrees/${LINKED}/refs.real` },
+    links: { [`worktrees/${LINKED}/refs`]: 'refs.real' },
+    origins: BOTH,
+  },
+  {
+    given: "the main store's refs directory replaced by a symbolic link",
+    moved: { refs: 'refs.real' },
+    links: { refs: 'refs.real' },
+    origins: BOTH,
+  },
+  {
+    given: 'garbage in root refs of the main store and of a linked worktree',
+    files: {
+      ORIG_HEAD: GARBAGE,
+      [`worktrees/${LINKED}/ORIG_HEAD`]: GARBAGE,
+      [`worktrees/${LINKED}/CHERRY_PICK_HEAD`]: 'garbage2\n',
+    },
+    origins: BOTH,
+  },
+  {
+    given: 'several broken root refs in a linked worktree',
+    files: {
+      [`worktrees/${LINKED}/AUTO_MERGE`]: '{commit}',
+      [`worktrees/${LINKED}/REBASE_HEAD`]: GARBAGE,
+      [`worktrees/${LINKED}/ORIG_HEAD`]: 'ref: refs/heads/main\n',
+    },
+    origins: FROM_MAIN,
+  },
+  {
+    given: "a linked worktree's admin dir that can be searched but not read, beside garbage",
+    files: { [LINKED_BISECT_BAD]: GARBAGE },
+    restricted: { [NO_ADMIN_ACCESS]: SEARCH_ONLY },
+    origins: FROM_MAIN,
+  },
+  {
+    given: "a linked worktree's admin dir that can be searched but not read",
+    restricted: { [NO_ADMIN_ACCESS]: SEARCH_ONLY },
+    origins: FROM_MAIN,
+  },
+  {
+    given: "a dying symbolic link in the main store and garbage in a linked worktree's bisect ref",
+    links: { 'refs/heads/dead': 'nope/x' },
+    files: bisectGarbage(LINKED),
+    origins: BOTH,
+  },
+  {
+    given: 'garbage in the main store and a dying symbolic link in a linked worktree',
+    files: { 'refs/heads/g': GARBAGE },
+    links: deadLinkAt(LINKED),
+    origins: BOTH,
+  },
+  {
+    given: 'garbage in the bisect refs of three linked worktrees',
+    worktrees: ['zz', 'aa', 'mm'],
+    files: { ...bisectGarbage('zz'), ...bisectGarbage('aa'), ...bisectGarbage('mm') },
+    origins: FROM_MAIN,
+    runs: ORDER_RUNS,
+    sequence: true,
+  },
+  {
+    given: 'a dying symbolic link in the bisect namespace of two linked worktrees',
+    worktrees: ['zz', 'aa'],
+    links: { ...deadLinkAt('zz'), ...deadLinkAt('aa') },
+    origins: FROM_MAIN,
+    runs: ORDER_RUNS,
+  },
+  {
+    given: 'a reflog entry naming an absent object in two linked worktrees',
+    worktrees: ['zz', 'aa'],
+    files: { ...reflogEntryAt('zz'), ...reflogEntryAt('aa') },
+    origins: FROM_MAIN,
+    runs: ORDER_RUNS,
+    sequence: true,
+  },
 ];
 
 const roots: string[] = [];
@@ -330,6 +475,19 @@ const seedLinks = async (gitDir: string, links: Readonly<Record<string, string>>
   }
 };
 
+const seedMoves = async (gitDir: string, moved: Readonly<Record<string, string>>) => {
+  for (const [from, to] of Object.entries(moved)) {
+    await rename(path.join(gitDir, from), path.join(gitDir, to));
+  }
+};
+
+const seedModes = async (gitDir: string, restricted: Readonly<Record<string, number>>) => {
+  for (const [relative, mode] of Object.entries(restricted)) {
+    refusedPaths.unshift(path.join(gitDir, relative));
+    await chmod(path.join(gitDir, relative), mode);
+  }
+};
+
 const seedStores = async (arranged: Arranged, commit: string): Promise<void> => {
   const { root, shape, fill } = arranged;
   const main = path.join(root, MAIN);
@@ -343,16 +501,14 @@ const seedStores = async (arranged: Arranged, commit: string): Promise<void> => 
     await writeUnder(gitDir, relative, fill(body));
   }
   for (const relative of shape.removed ?? []) await rm(path.join(gitDir, relative));
+  await seedMoves(gitDir, shape.moved ?? {});
   await seedLinks(gitDir, shape.links ?? {}, fill);
   if (shape.packed !== undefined) {
     const lines = shape.packed.map((line) => `${fill(line)}\n`).join('');
     await writeFile(path.join(gitDir, 'packed-refs'), `${PACKED_HEADER}${lines}`);
   }
   for (const [key, value] of Object.entries(shape.config ?? {})) git(main, 'config', key, value);
-  for (const [relative, mode] of Object.entries(shape.restricted ?? {})) {
-    refusedPaths.unshift(path.join(gitDir, relative));
-    await chmod(path.join(gitDir, relative), mode);
-  }
+  await seedModes(gitDir, shape.restricted ?? {});
 };
 
 const seed = async (shape: Shape, from: string): Promise<Arranged> => {
@@ -371,8 +527,10 @@ const seed = async (shape: Shape, from: string): Promise<Arranged> => {
 const gitReportLines = (stderr: string): ReadonlyArray<string> =>
   stderr.split('\n').filter((line) => REPORT_LINE.test(line));
 
-/** A linked store's root ref file: its parent directory is `<main>/.git/worktrees/<id>`. */
+/** A linked store's root ref file: its parent directory is `<main>/.git/worktrees/<id>`; the
+ *  store's own `refs` directory sits there too, but it is a walk path, which git prints relative. */
 const isLinkedRootRefFile = (arranged: Arranged, file: string): boolean =>
+  path.basename(file) !== 'refs' &&
   path.dirname(path.dirname(file)) === path.join(arranged.root, MAIN, '.git', 'worktrees');
 
 /** git prints a path absolute from a linked cwd; from the main one it is relative, except a linked
@@ -482,8 +640,16 @@ const rebuiltLines = (result: FsckResult, arranged: Arranged): ReadonlyArray<str
 const pointersOf = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
   lines.filter((line) => POINTER_LINE.test(line));
 
-const othersSorted = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
-  lines.filter((line) => !POINTER_LINE.test(line)).sort();
+const othersOf = (lines: ReadonlyArray<string>): ReadonlyArray<string> =>
+  lines.filter((line) => !POINTER_LINE.test(line));
+
+const othersFor = (row: Row, lines: ReadonlyArray<string>): ReadonlyArray<string> =>
+  row.sequence === true ? othersOf(lines) : [...othersOf(lines)].sort();
+
+const attemptsOf = (row: Row): ReadonlyArray<number> =>
+  Array.from({ length: row.runs ?? 1 }, (_, index) => index + 1);
+
+const needsPrivilege = (row: Row): boolean => row.restricted !== undefined && !UNPRIVILEGED;
 
 const gitArgs = (arranged: Arranged): ReadonlyArray<string> => [
   '-c',
@@ -519,8 +685,8 @@ const originsOf = (row: Row): ReadonlyArray<{ readonly from: string; readonly la
 describe.skipIf(!GIT_AVAILABLE)('Given a repository whose worktrees keep private refs', () => {
   describe.each(rows.filter((row) => row.fatal === undefined))('Given $given', (row) => {
     describe.each(originsOf(row))('When fsck runs from $label', ({ from }) => {
-      it(
-        'Then tsgit reports git’s lines and exit code',
+      it.skipIf(needsPrivilege(row)).each(attemptsOf(row))(
+        'Then tsgit reports git’s lines and exit code (throwaway %i)',
         async () => {
           // Arrange
           const arranged = await seed(row, from);
@@ -535,7 +701,7 @@ describe.skipIf(!GIT_AVAILABLE)('Given a repository whose worktrees keep private
           const theirs = gitReportLines(expected.stderr);
           expect(result.exitCode).toBe(expected.exitCode);
           expect(pointersOf(ours)).toEqual(pointersOf(theirs));
-          expect(othersSorted(ours)).toEqual(othersSorted(theirs));
+          expect(othersFor(row, ours)).toEqual(othersFor(row, theirs));
         },
         SETUP_TIMEOUT,
       );
