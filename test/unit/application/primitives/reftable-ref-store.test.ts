@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { tablesListLockPath } from '../../../../src/application/primitives/path-layout.js';
 import { createRefStore } from '../../../../src/application/primitives/ref-store.js';
@@ -118,6 +118,10 @@ async function seedCompatibilityStubs(ctx: Context): Promise<void> {
     'this repository uses the reftable format\n',
   );
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('reftable-ref-store', () => {
   describe('Given a two-table stack with a live direct ref', () => {

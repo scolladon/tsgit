@@ -67,6 +67,7 @@ const writePackAt = async (
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('Given one pack holding the .gitmodules blob before the tree naming it', () => {

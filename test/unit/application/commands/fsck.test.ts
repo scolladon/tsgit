@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { RECOVERY_HEADER_PROBE_BYTES } from '../../../../src/application/commands/internal/fsck/object-cache.js';
@@ -134,6 +134,10 @@ const initBareCtx = async (options: { readonly homeDir?: string } = {}): Promise
 // ---------------------------------------------------------------------------
 // HEALTHY REPO — no findings
 // ---------------------------------------------------------------------------
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('Given a healthy repo with reachable commits', () => {
   describe('When fsck runs', () => {
