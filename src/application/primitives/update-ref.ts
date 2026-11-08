@@ -186,10 +186,14 @@ function oldOrZero(old: ObjectId | 'absent', zero: ObjectId): ObjectId {
 const walksHead = (name: RefName, chain: RefWriteChain, logging: TransactionLogging): boolean =>
   [name, ...chain.links].some((hop) => namesHead(hop, logging));
 
-/** Whether a hop counts as `HEAD`: literally, or — under `'bare'` — by the
- *  name it reads inside the store its prefix selects. */
-const namesHead = (hop: RefName, { viaHeadName }: TransactionLogging): boolean =>
-  hop === HEAD || (viaHeadName === 'bare' && parseWorktreeRef(hop).bare === HEAD);
+/** The name a hop is compared with `HEAD` by: its literal spelling, or — under
+ *  `'bare'` — the name it reads inside the store its prefix selects. */
+const nameSeenByHead = (hop: RefName, { viaHeadName }: TransactionLogging): RefName =>
+  viaHeadName === 'bare' ? parseWorktreeRef(hop).bare : hop;
+
+/** Whether a hop counts as `HEAD`. */
+const namesHead = (hop: RefName, logging: TransactionLogging): boolean =>
+  nameSeenByHead(hop, logging) === HEAD;
 
 /**
  * The coupled `logs/HEAD` entry a write or delete produces when `HEAD`
@@ -211,11 +215,13 @@ function coupledHeadEntry(plan: TransactionPlan, newId: ObjectId): RefUpdate | u
 }
 
 /** Whether the transaction gains the coupled `HEAD` entry: `HEAD` symbolically
- *  names the chain's terminal or one of its walked links — git's
- *  `split_head_update`, which compares the referent by its literal name. */
-function couplesHead({ chain, head }: TransactionPlan): boolean {
+ *  names the chain's terminal or one of its walked links — the files backend's
+ *  `split_head_update` compares the referent with the literal name, the
+ *  reftable backend with the bare name a prefix leaves. */
+function couplesHead({ chain, head, logging }: TransactionPlan): boolean {
   if (head.kind !== 'symbolic') return false;
-  return head.target === chain.terminal || chain.links.includes(head.target);
+  const isReferent = (hop: RefName): boolean => nameSeenByHead(hop, logging) === head.target;
+  return isReferent(chain.terminal) || chain.links.some(isReferent);
 }
 
 /** git locks the coupled `HEAD` update's file after the chain's own: when a

@@ -171,7 +171,8 @@ describe('parseWorktreeRef', () => {
         ['worktrees/wt/refs/bisect/y', { kind: 'other', id: 'wt', bare: 'refs/bisect/y' }],
         ['worktrees/wt/', { kind: 'other', id: 'wt', bare: '' }],
         ['worktrees//HEAD', { kind: 'other', id: '', bare: 'HEAD' }],
-        ['worktrees/wt', { kind: 'shared', bare: 'worktrees/wt' }],
+        ['worktrees/wt', { kind: 'other', id: 'wt', bare: '' }],
+        ['worktrees/', { kind: 'other', id: '', bare: '' }],
         ['worktrees/wt/refs/heads/side', { kind: 'shared', bare: 'worktrees/wt/refs/heads/side' }],
         [
           'worktrees/wt/main-worktree/HEAD',

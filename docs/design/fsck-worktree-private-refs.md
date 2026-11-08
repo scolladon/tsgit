@@ -15,7 +15,7 @@
 > **Revision** (2026-11-08): folds ADR-1164. Writes through `main-worktree/<per-worktree
 > name>` and `worktrees/<id>/<per-worktree name>` go to the store the prefix selects, through
 > the one locator reads already use. ADR-1163's second locator (`resolveDirectForWrite`) is
-> retired. The write side is pinned in rows W1–W44 ("Write-side matrix"), against git's
+> retired. The write side is pinned in rows W1–W53 ("Write-side matrix"), against git's
 > source for the refusals. Requirement 13 is replaced, and requirements 14–17 are new. DC-9 and
 > DC-14 are superseded. The pins leave five decision candidates (DC-15 to DC-19). The largest
 > is the reftable backend: git selects the store there but keys the record by the full
@@ -444,6 +444,22 @@ Reftable backend (`git init --ref-format=reftable`; records listed by stack):
 | W43 | W31's transaction | main | branch / branch | —, 0 | main stack: both `refs/bisect/x` and `main-worktree/refs/bisect/x` | ✓ (store level) | — |
 | W44 | delete `main-worktree/refs/bisect/s`, `worktrees/wt/refs/bisect/t` | main | branch / branch | `error: refusing to update ref with bad name '…'`, 1 | nothing | ✗ ok, no-op → ✓ | `INVALID_REF` |
 
+Review follow-ups (pinned 2026-11-08 with git 2.56.0 and tsgit at d6974432, same fixture and
+isolation; W50 adds `-c core.logAllRefUpdates=false` to `git worktree add`, W53 to the
+`update-ref refs/heads/main A` seed):
+
+| id | write | backend | git line, exit | git changes | tsgit at d6974432 | expected |
+|---|---|---|---|---|---|---|
+| W45 ×3 | `worktrees/nope` (no such worktree, no name after the id) | files | `fatal: update_ref failed for ref 'worktrees/nope': cannot lock ref 'worktrees/nope': Unable to create '<RB>/repo/.git/worktrees/nope/.lock': No such file or directory`, 128 | nothing | ✗ ok; regular file `<common>/worktrees/nope` → ✓ | `FILE_NOT_FOUND { path: '<common>/worktrees/nope/.lock' }`, nothing written |
+| W46 | `worktrees/wt` (W23) | files | W23's line, 128 | nothing | `FILE_EXISTS { path: '<common>/worktrees/wt/HEAD' }`, nothing written | as is: both refuse, the data differs (Risks) |
+| W47 | `worktrees/nope`, `worktrees/nope/HEAD`, `worktrees/nope/refs/bisect/z` | reftable | `fatal: update_ref failed for ref '<name>': reftable: transaction prepare: I/O error`, 128 | nothing | ✗ ok; `worktrees/nope` lands in the main stack, the others create `<common>/worktrees/nope/reftable/` with a table → ✓ | `FILE_NOT_FOUND { path: '<common>/worktrees/nope/reftable' }`, nothing written |
+| W48 | `worktrees/nope/HEAD` with `<common>/worktrees/nope/` present but no `reftable/` in it | reftable | as W47, 128 | nothing | ✗ creates the stack → ✓ | as W47. With an empty `worktrees/nope/reftable/` present, git writes a table there, and so does tsgit |
+| W49 | `worktrees/wt` (no name after the id) | reftable | —, 0 | `wt`'s stack: ref record `worktrees/wt` = B | ✗ the record lands in the main stack → ✓ | git's records |
+| W50 ×3 | `worktrees/wt/HEAD`, `wt`'s `HEAD` with no log | reftable | —, 0 | main stack: `refs/heads/side` = B and its log; `wt`'s stack unchanged, with no `worktrees/wt/HEAD` log record | ✗ a `worktrees/wt/HEAD` log record in `wt`'s stack → ✓ | git's records: the existing-log probe reads bare `HEAD`, the auto-create rule the full name |
+| W51 ×3 | `main-worktree/refs/bisect/x`, the main `HEAD` = `ref: refs/bisect/x` | reftable | —, 0 | main stack: ref record `main-worktree/refs/bisect/x` = B; `HEAD` log +1 | ✗ no `HEAD` log record → ✓ | git's records: the referent matches the bare name |
+| W52 | same | files | —, 0 | `<common>/refs/bisect/x` = B; `logs/HEAD` unchanged | ✓ | — (the literal name does not match) |
+| W53 | `main-worktree/HEAD`, `noDeref`, the main `HEAD` with no log | reftable | —, 0 | main stack: ref record `main-worktree/HEAD` = B, no log record | ✗ a `main-worktree/HEAD` log record → ✓ | git's records |
+
 ## Requirements
 
 1. **Every store, from any cwd.** The ref-content pass walks the main store, then every
@@ -699,7 +715,7 @@ export type WorktreeRefTarget =
   | { readonly kind: 'current'; readonly bare: RefName } // per-worktree, the own store
   | { readonly kind: 'shared'; readonly bare: RefName } // the full name, the common store
   | { readonly kind: 'main'; readonly bare: RefName } // main-worktree/<pw>
-  | { readonly kind: 'other'; readonly id: string; readonly bare: RefName }; // worktrees/<id>/<pw>
+  | { readonly kind: 'other'; readonly id: string; readonly bare: RefName }; // worktrees/<id>/<pw>, or worktrees/<id> with bare ''
 export const parseWorktreeRef = (name: RefName): WorktreeRefTarget
 
 // src/domain/refs/ref-validation.ts
@@ -707,8 +723,11 @@ export const parseWorktreeRef = (name: RefName): WorktreeRefTarget
 export const isRefnameSafe = (name: RefName): boolean
 ```
 
-`worktrees/<id>` with no slash parses as `shared`. git calls it `OTHER` with an empty bare
-name, but both spell the path `<common>/worktrees/<id>`. A name such as `worktrees/<id>/refs/heads/x`, whose
+`worktrees/<id>` with no slash parses as `other` with an empty bare name, as git's
+`parse_worktree_ref` does (refs.c L963). The files locator then spells
+`<common>/worktrees/<id>/` and its lock `<common>/worktrees/<id>/.lock`. git creates no
+directory a trailing slash ends, so the lock refuses `FILE_NOT_FOUND` when the admin dir is
+missing (W45). The reftable backend selects that worktree's stack (W47, W49). A name such as `worktrees/<id>/refs/heads/x`, whose
 bare form is not per-worktree, parses as `shared` too, as git's does. `isRefnameSafe`'s root
 arm is `[A-Z_]+`. It is narrower than `isPerWorktreeRef`'s root syntax, which also admits
 `-`. Note that `validateRefName` already refuses a `..`, `//` or `.`-led component, so only
@@ -779,6 +798,10 @@ on the full name, as `should_autocreate_reflog` does (W5, W2's `logs/HEAD` appen
   terminal under another name, it throws `refLocked(name)` (W1, W10, W16).
   `coupledHeadEntry` and `walksHead` keep git's literal-name comparison on the files
   backend (W13, W15: no refusal).
+- `couplesHead` compares `HEAD`'s referent with each hop's literal name on the files backend
+  (`split_head_update`) and with its bare name on the reftable backend
+  (`!strcmp(rewritten_ref, head_referent->buf)`, refs/reftable-backend.c L1112), through the
+  same `viaHeadName` field (W51, W52).
 
 **Backend table** (`internal/ref-transaction-logging.ts`, DC-17). Two fields join the
 existing five:
@@ -800,10 +823,17 @@ readonly viaHeadName: 'literal' | 'bare';
 - `reftable-transaction.ts` (L1353) picks each update's stack the same way and keeps the
   record and log name as given: `main-worktree/HEAD`'s log record lands in the main stack
   (W37, W38), and `worktrees/wt/refs/bisect/y`'s ref record lands in `wt`'s stack (W40).
+- A stack other than the common and the own one is opened, never created: when
+  `<common>/worktrees/<id>/reftable` is missing, the write refuses `FILE_NOT_FOUND` on that
+  directory before any stack is locked. git's stack lock fails there with
+  `reftable: transaction prepare: I/O error` (W47, W48). The common and own stacks are still
+  created on first write.
 - `readReflog` and `hasReflog` read the bare name in the selected stack (W35 on reftable).
-- The reftable log gate (`isReftableLoggable`, the existing-log probe and
-  `shouldAutocreateReflog`) judges the bare name in the selected stack, where the files gate
-  judges the full name (requirement 14); the implementation diverged from the plan here.
+- The reftable log gate (`isReftableLoggable`) follows git's `should_write_log`
+  (refs/reftable-backend.c L1443, L1554): the existing-log probe reads the bare name in the
+  selected stack, and `shouldAutocreateReflog` judges the full name, as the files gate does
+  (requirement 14). A prefixed `HEAD` is therefore logged only when that `HEAD` already has a
+  log (W38, W41, W50).
 
 **API changes.** `repo.primitives.updateRef` keeps its signature. Its new refusals reuse
 existing codes, and `reports/api.json` carries none of the internal symbols below.
@@ -907,7 +937,7 @@ existing codes, and `reports/api.json` carries none of the internal symbols belo
 | Files | `src/domain/refs/per-worktree-ref.ts`; `src/domain/refs/ref-validation.ts`; `src/application/primitives/path-layout.ts`; `ref-store.ts`; `record-ref-update.ts`; `reflog-store.ts`; `internal/ref-write-chain.ts`; `internal/ref-transaction-logging.ts`; `update-ref.ts`; `write-symbolic-ref.ts` |
 | Change | See "Write-side worktree ref namespace (ADR-1164)" and its API table. It undoes Part 7's `resolveDirectForWrite`, `writeLocation` and write view. Part 7's read locator becomes `location`. |
 | Order | (1) `parseWorktreeRef` + `isRefnameSafe` (domain); (2) `refLocation` (path-layout); (3) the store on `location`, with `resolveDirectForWrite` retired and the `HEAD` slot rule; (4) the reflog writer and store on `.reflog`; (5) the write chain on `resolveDirect` with the file-key walk; (6) `update-ref.ts`/`write-symbolic-ref.ts` refusals. Each step is green on its own. |
-| Tests | `per-worktree-ref.test.ts` (one row per arm: `current`, `shared`, `main`, `other`; `worktrees/wt` with no slash, `worktrees/wt/refs/heads/x`, `main-worktree/refs/heads/main` → `shared`). `per-worktree-ref.properties.test.ts`: the round-trip and totality properties move from `mainWorktreeBareName` to `parseWorktreeRef` (`main-worktree/` + per-worktree `n` → `{ main, n }`; `worktrees/<id>/` + per-worktree `n` → `{ other, id, n }`; a shared `n` under either prefix → `shared`). `ref-validation.test.ts` + a property: `isRefnameSafe` true on `refs/` names `validateRefName` accepts and on `[A-Z_]+`, false on `-`, lowercase and digits outside `refs/`. `path-layout.test.ts` (each arm's three paths, main and linked Context). `commondir-refs.test.ts` write rows W2–W13, W15, W17 (paths and logs, both Contexts). `ref-write-chain.test.ts`: the guard's fake-store test is replaced by "every reader goes through `resolveDirect`", plus W18's file-key refusal and a same-name cycle that stays `REF_CYCLE_DETECTED`. `update-ref.test.ts`: W1, W10, W16 (`REF_LOCKED` data, nothing written, and the compare-and-swap refusal first when `expected` mismatches); W24–W28, W34 (`INVALID_REF`, nothing touched); W13, W15 not refused. `write-symbolic-ref.test.ts`: W29, W30. `ref-store-transaction-prepare.test.ts`: Part 7's characterization rows flip to the mapped location. The `HEAD` slot: a `revParse('HEAD')` after W3 or W11 returns B. |
+| Tests | `per-worktree-ref.test.ts` (one row per arm: `current`, `shared`, `main`, `other`; `worktrees/wt` with no slash → `other` with an empty bare name; `worktrees/wt/refs/heads/x`, `main-worktree/refs/heads/main` → `shared`). `per-worktree-ref.properties.test.ts`: the round-trip and totality properties move from `mainWorktreeBareName` to `parseWorktreeRef` (`main-worktree/` + per-worktree `n` → `{ main, n }`; `worktrees/<id>/` + per-worktree `n` → `{ other, id, n }`; a shared `n` under either prefix → `shared`). `ref-validation.test.ts` + a property: `isRefnameSafe` true on `refs/` names `validateRefName` accepts and on `[A-Z_]+`, false on `-`, lowercase and digits outside `refs/`. `path-layout.test.ts` (each arm's three paths, main and linked Context). `commondir-refs.test.ts` write rows W2–W13, W15, W17 (paths and logs, both Contexts). `ref-write-chain.test.ts`: the guard's fake-store test is replaced by "every reader goes through `resolveDirect`", plus W18's file-key refusal and a same-name cycle that stays `REF_CYCLE_DETECTED`. `update-ref.test.ts`: W1, W10, W16 (`REF_LOCKED` data, nothing written, and the compare-and-swap refusal first when `expected` mismatches); W24–W28, W34 (`INVALID_REF`, nothing touched); W13, W15 not refused. `write-symbolic-ref.test.ts`: W29, W30. `ref-store-transaction-prepare.test.ts`: Part 7's characterization rows flip to the mapped location. The `HEAD` slot: a `revParse('HEAD')` after W3 or W11 returns B. |
 
 **Part 11 — reftable (DC-15 (a)).**
 
@@ -1066,11 +1096,12 @@ Pinned, no choice left:
   the files backend.
 - **`RefStore` port shrinks** by `resolveDirectForWrite`. The interface is internal:
   `reports/api.json` carries no `RefStore` symbol.
-- **Out of perimeter, found while pinning (W23).** `update-ref worktrees/wt B`: git refuses
-  `cannot lock ref 'worktrees/wt': there is a non-empty directory '.git/worktrees/wt/'
+- **Out of perimeter, found while pinning (W23, W46).** `update-ref worktrees/wt B`: git
+  refuses `cannot lock ref 'worktrees/wt': there is a non-empty directory '.git/worktrees/wt/'
   blocking reference 'worktrees/wt'`, exit 128. tsgit refuses `FILE_EXISTS` on
-  `<common>/worktrees/wt/HEAD`. Both refuse, but the data differs. It is not designed here,
-  and whether to take it up is the user's call.
+  `<common>/worktrees/wt/HEAD`. Both refuse and write nothing, but the data differs: git names
+  the directory, tsgit the smallest ref under it. The interop suite pins both as they are. It is
+  not designed here, and whether to take it up is the user's call.
 
 ## Out of scope
 

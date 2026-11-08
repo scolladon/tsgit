@@ -2739,10 +2739,36 @@ describe('updateRef — a chain that walks HEAD', () => {
     });
   });
 
+  describe('Given a files repository whose HEAD names refs/bisect/x', () => {
+    describe('When updateRef writes main-worktree/refs/bisect/x from the main worktree', () => {
+      it('Then HEAD gains no log entry, its referent compared by the literal name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({});
+        const a = await writeCommit(ctx, 'A');
+        const b = await writeCommit(ctx, 'B');
+        const bisect = 'refs/bisect/x' as RefName;
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: bisect, id: a },
+          { kind: 'setSymbolic', name: 'HEAD' as RefName, target: bisect },
+        ]);
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'main-worktree/refs/bisect/x' as RefName, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual([]);
+        expect(await getRefStore(ctx).resolveDirect(bisect)).toEqual({ kind: 'direct', id: b });
+      });
+    });
+  });
+
   describe('Given a reftable repository with its main HEAD on main and wt on side', () => {
     const SIDE = 'refs/heads/side' as RefName;
     const MAIN_WORKTREE_HEAD = 'main-worktree/HEAD' as RefName;
     const WT_HEAD = 'worktrees/wt/HEAD' as RefName;
+    const BISECT_X = 'refs/bisect/x' as RefName;
+    const MAIN_WORKTREE_BISECT_X = 'main-worktree/refs/bisect/x' as RefName;
 
     interface ReftableWorktrees {
       readonly main: Context;
@@ -2751,19 +2777,25 @@ describe('updateRef — a chain that walks HEAD', () => {
       readonly b: ObjectId;
     }
 
-    /** main and side at A with one log entry each, the main HEAD on main, wt's HEAD on side. */
+    /** main and side at A with one log entry each, the main HEAD on main and wt's HEAD on
+     *  side, each HEAD with one log entry, as `git commit` and `git worktree add` leave them. */
     async function seedReftableWorktrees(): Promise<ReftableWorktrees> {
       const main = withReftableStorage(createMemoryContext());
       const wt = asWorktreeChild(main);
       const a = await writeCommit(main, 'A');
       const b = await writeCommit(main, 'B');
       const reflog = { oldId: ZERO, newId: a, message: 'seed' };
+      const headLog = { kind: 'reflogOnly', name: HEAD, reflog } as const;
       await getRefStore(main).applyRefUpdates([
         { kind: 'set', name: MAIN, id: a, reflog },
         { kind: 'set', name: SIDE, id: a, reflog },
         { kind: 'setSymbolic', name: HEAD, target: MAIN },
+        headLog,
       ]);
-      await getRefStore(wt).applyRefUpdates([{ kind: 'setSymbolic', name: HEAD, target: SIDE }]);
+      await getRefStore(wt).applyRefUpdates([
+        { kind: 'setSymbolic', name: HEAD, target: SIDE },
+        headLog,
+      ]);
       return { main, wt, a, b };
     }
 
@@ -2903,6 +2935,26 @@ describe('updateRef — a chain that walks HEAD', () => {
           target: MAIN,
         });
         expect(await getRefStore(main).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: a });
+      });
+    });
+
+    describe('When updateRef writes main-worktree/refs/bisect/x from the main worktree with HEAD naming refs/bisect/x', () => {
+      it('Then HEAD gains one log record, its referent matching the bare name', async () => {
+        // Arrange
+        const { main, a, b } = await seedReftableWorktrees();
+        await getRefStore(main).applyRefUpdates([
+          { kind: 'set', name: BISECT_X, id: a },
+          { kind: 'setSymbolic', name: HEAD, target: BISECT_X },
+        ]);
+        const common = main.layout.gitDir;
+        const headLogsBefore = await logCount(main, common, HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(main, MAIN_WORKTREE_BISECT_X, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await logCount(main, common, HEAD)).toBe(headLogsBefore + 1);
       });
     });
 

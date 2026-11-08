@@ -61,6 +61,23 @@ describe('Given a slash-free worktree id and a per-worktree name', () => {
   });
 });
 
+describe('Given a slash-free worktree id', () => {
+  describe('When it is spelled under worktrees/ with nothing after it', () => {
+    it('Then it parses as other with that id and an empty bare name', () => {
+      // Arrange
+      const sut = parseWorktreeRef;
+
+      // Act + Assert
+      fc.assert(
+        fc.property(WORKTREE_ID, (id) => {
+          expect(sut(`worktrees/${id}` as RefName)).toEqual({ kind: 'other', id, bare: '' });
+        }),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+
 describe('Given an arbitrary shared name', () => {
   describe('When it is spelled under either prefix', () => {
     it('Then it parses as shared with the full name', () => {

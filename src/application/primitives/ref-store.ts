@@ -5,6 +5,7 @@ import {
   directoryNotEmpty,
   dirname,
   fileExists,
+  fileNotFound,
   notADirectory,
   TsgitError,
 } from '../../domain/error.js';
@@ -82,6 +83,7 @@ import {
 } from './internal/transaction-names.js';
 import {
   commonGitDir,
+  lockSuffix,
   logsDir,
   looseObjectPath,
   looseRefPath,
@@ -2010,6 +2012,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     prepareLog: () => Promise<ReflogWrite | undefined>,
   ): Promise<ReflogWrite | undefined> {
     const path = location(name).loose;
+    await assertLockDirExists(path);
     let prepared: ReflogWrite | undefined;
     try {
       await atomicWriteRef(ctx, name, path, content, (rename) =>
@@ -2029,6 +2032,13 @@ function createFilesRefStore(ctx: Context): RefStore {
       }
       throw err;
     }
+  }
+
+  /** git creates no directory a trailing slash ends: `worktrees/<id>` with no
+   *  name after it locks `<id>/.lock`, which only an existing admin dir holds. */
+  async function assertLockDirExists(path: string): Promise<void> {
+    if (!path.endsWith('/') || (await isDirectoryPath(path))) return;
+    throw fileNotFound(`${path}${lockSuffix}`);
   }
 
   /** Commits `name`'s held lock: refuses refs packed under it, then renames —

@@ -51,14 +51,17 @@ export type WorktreeRefTarget =
   | { readonly kind: 'shared'; readonly bare: RefName }
   /** `main-worktree/<per-worktree ref>`: the main worktree's store. */
   | { readonly kind: 'main'; readonly bare: RefName }
-  /** `worktrees/<id>/<per-worktree ref>`: the linked worktree `id`'s store. */
+  /** `worktrees/<id>/<per-worktree ref>`: the linked worktree `id`'s store; `worktrees/<id>`
+   *  alone selects it with an empty bare name, git's error shape for its callers to meet. */
   | { readonly kind: 'other'; readonly id: string; readonly bare: RefName };
+
+const EMPTY_BARE = '' as RefName;
 
 const linkedWorktreeTarget = (name: RefName): WorktreeRefTarget | undefined => {
   if (!name.startsWith(LINKED_WORKTREES_DIR)) return undefined;
   const rest = name.slice(LINKED_WORKTREES_DIR.length);
   const slash = rest.indexOf('/');
-  if (slash < 0) return undefined;
+  if (slash < 0) return { kind: 'other', id: rest, bare: EMPTY_BARE };
   const bare = rest.slice(slash + 1) as RefName;
   return isPerWorktreeRef(bare) ? { kind: 'other', id: rest.slice(0, slash), bare } : undefined;
 };

@@ -56,6 +56,7 @@
  * this non-empty body can never confuse it.
  */
 
+import { fileNotFound } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { AuthorIdentity } from '../../domain/objects/author-identity.js';
 import { bytesEqual } from '../../domain/objects/encoding.js';
@@ -526,18 +527,18 @@ function createLoggableLookup(
 }
 
 /** The reftable counterpart to `record-ref-update.ts`'s `isLoggable`: "has a
- *  reflog" is any log record anywhere in the stack, not a physical file. A
- *  prefixed name is judged by its bare name inside the stack it selects, as
- *  git's backend sees it; the record itself keeps the full name. */
+ *  reflog" is any log record anywhere in the stack, not a physical file. git's
+ *  `should_write_log` probes that existence by the bare name inside the stack
+ *  a prefix selects, but judges auto-creation on the full name; the record
+ *  itself keeps the full name. */
 async function isReftableLoggable(
   ctx: Context,
   loggable: (name: RefName) => boolean,
   name: RefName,
 ): Promise<boolean> {
-  const { bare } = parseWorktreeRef(name);
-  if (loggable(bare)) return true;
+  if (loggable(parseWorktreeRef(name).bare)) return true;
   const config = await readConfig(ctx);
-  return shouldAutocreateReflog(bare, config.core ?? {});
+  return shouldAutocreateReflog(name, config.core ?? {});
 }
 
 /** Appends `reflog` when it applies. Does nothing when there is nothing to
@@ -1376,6 +1377,22 @@ function partitionByStack(
     .filter((bucket) => bucket.updates.length > 0);
 }
 
+/** git opens another worktree's stack without creating it: a missing
+ *  `<common>/worktrees/<id>/reftable` fails that stack's lock, so the write
+ *  refuses before any stack is locked or any directory exists. The common and
+ *  own stacks are created on first write, as git's are. */
+async function assertForeignStacksExist(
+  ctx: Context,
+  buckets: readonly StackBucket[],
+): Promise<void> {
+  const created = new Set([commonGitDir(ctx), ctx.layout.gitDir]);
+  for (const { gitDir } of buckets) {
+    if (created.has(gitDir)) continue;
+    const dir = reftableDir(gitDir);
+    if (!(await ctx.fs.exists(dir))) throw fileNotFound(dir);
+  }
+}
+
 // --- Top-level orchestration -------------------------------------------------
 
 /** Releases every lock in `locks` NOT already in `consumed` — git's own
@@ -1412,6 +1429,7 @@ export async function applyReftableUpdates(
 ): Promise<void> {
   const buckets = partitionByStack(ctx, updates);
   if (buckets.length === 0) return;
+  await assertForeignStacksExist(ctx, buckets);
   const identity = await resolveReflogIdentity(ctx);
   const locks: string[] = [];
   const consumed = new Set<string>();

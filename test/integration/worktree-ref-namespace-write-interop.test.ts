@@ -75,6 +75,12 @@ interface Shape {
   /** Refs git sets to A from the main worktree once seeded. */
   readonly extraRefs?: ReadonlyArray<string>;
   readonly reftable?: true;
+  /** The linked worktree is added with `core.logAllRefUpdates=false`, so its HEAD has no log. */
+  readonly unloggedWorktree?: true;
+  /** `main` is seeded with `core.logAllRefUpdates=false`, so the main HEAD has no log. */
+  readonly unloggedMainHead?: true;
+  /** The symbolic-ref target the main HEAD is pointed at once seeded. */
+  readonly mainHeadTarget?: string;
   /** Fresh twin pairs the row runs on. */
   readonly runs?: number;
 }
@@ -87,6 +93,12 @@ interface WriteRow extends Shape {
 interface RefusalRow extends Shape {
   /** The name whose loose file git cannot lock. */
   readonly colliding: string;
+}
+
+/** A write git refuses where the lock or the stack it selects cannot be created. */
+interface MissingStoreRow extends Shape {
+  /** The path tsgit reports missing, relative to the common dir. */
+  readonly missing: string;
 }
 
 interface BadNameRow extends Shape {
@@ -288,6 +300,78 @@ const writeRows: ReadonlyArray<WriteRow> = [
     reftable: true,
     changes: ['worktrees/wt log worktrees/wt/HEAD', 'worktrees/wt ref worktrees/wt/HEAD'],
   },
+  {
+    given: `${BRANCHES} ${ON_REFTABLE}`,
+    name: 'worktrees/wt',
+    from: 'main',
+    reftable: true,
+    changes: ['worktrees/wt ref worktrees/wt'],
+  },
+  {
+    given: `${BRANCHES}, wt added without logging, ${ON_REFTABLE}`,
+    name: 'worktrees/wt/HEAD',
+    from: 'main',
+    unloggedWorktree: true,
+    reftable: true,
+    runs: REPEATS,
+    changes: ['. log refs/heads/side', '. ref refs/heads/side'],
+  },
+  {
+    given: `${BRANCHES}, the main HEAD without a log, ${ON_REFTABLE}`,
+    name: 'main-worktree/HEAD',
+    from: 'main',
+    noDeref: true,
+    unloggedMainHead: true,
+    reftable: true,
+    changes: ['. ref main-worktree/HEAD'],
+  },
+  {
+    given: `the main HEAD naming refs/bisect/x ${ON_REFTABLE}`,
+    name: 'main-worktree/refs/bisect/x',
+    from: 'main',
+    extraRefs: ['refs/bisect/x'],
+    mainHeadTarget: 'refs/bisect/x',
+    reftable: true,
+    runs: REPEATS,
+    changes: ['. log HEAD', '. ref main-worktree/refs/bisect/x'],
+  },
+  {
+    given: 'the main HEAD naming refs/bisect/x',
+    name: 'main-worktree/refs/bisect/x',
+    from: 'main',
+    extraRefs: ['refs/bisect/x'],
+    mainHeadTarget: 'refs/bisect/x',
+    changes: ['refs/bisect/x'],
+  },
+];
+
+const NO_WORKTREE_NOPE = `${BRANCHES} and no worktree named nope`;
+
+const missingStoreRows: ReadonlyArray<MissingStoreRow> = [
+  {
+    given: NO_WORKTREE_NOPE,
+    name: 'worktrees/nope',
+    from: 'main',
+    runs: REPEATS,
+    missing: 'worktrees/nope/.lock',
+  },
+  ...['worktrees/nope', 'worktrees/nope/HEAD', 'worktrees/nope/refs/bisect/z'].map(
+    (name): MissingStoreRow => ({
+      given: `${NO_WORKTREE_NOPE} ${ON_REFTABLE}`,
+      name,
+      from: 'main',
+      reftable: true,
+      missing: 'worktrees/nope/reftable',
+    }),
+  ),
+  {
+    given: `${BRANCHES}, an empty worktrees/nope admin dir, ${ON_REFTABLE}`,
+    name: 'worktrees/nope/HEAD',
+    from: 'main',
+    extraFiles: { 'worktrees/nope/note': '' },
+    reftable: true,
+    missing: 'worktrees/nope/reftable',
+  },
 ];
 
 const refusalRows: ReadonlyArray<RefusalRow> = [
@@ -395,14 +479,18 @@ const buildFixture = async (shape: Shape): Promise<Fixture> => {
   const format = shape.reftable ? ['--ref-format=reftable'] : [];
   git(root, 'init', '-q', '-b', 'main', ...format, main);
   const { a, b } = seedCommits(main);
-  git(main, 'update-ref', 'refs/heads/main', a);
-  git(main, 'worktree', 'add', '-q', 'wt', '-b', 'side');
+  const mainLogging = shape.unloggedMainHead ? ['-c', 'core.logAllRefUpdates=false'] : [];
+  git(main, ...mainLogging, 'update-ref', 'refs/heads/main', a);
+  const worktreeLogging = shape.unloggedWorktree ? ['-c', 'core.logAllRefUpdates=false'] : [];
+  git(main, ...worktreeLogging, 'worktree', 'add', '-q', 'wt', '-b', 'side');
   const dirs: Readonly<Record<Origin, string>> = { main, wt: path.join(main, 'wt') };
   git(dirs.main, 'update-ref', 'refs/bisect/s', a);
   git(dirs.wt, 'update-ref', 'refs/bisect/t', a);
   for (const name of shape.extraRefs ?? []) git(dirs.main, 'update-ref', name, a);
   if (shape.detached !== undefined)
     git(dirs[shape.detached], 'update-ref', '--no-deref', 'HEAD', a);
+  if (shape.mainHeadTarget !== undefined)
+    git(dirs.main, 'symbolic-ref', 'HEAD', shape.mainHeadTarget);
   const common = path.join(main, '.git');
   await writeExtraFiles(common, shape.extraFiles);
   return { root, common, cwd: dirs[shape.from], dirs, reftable: shape.reftable ?? false, b };
@@ -555,6 +643,15 @@ const lockedLine = (error: unknown, lock: string): string => {
   return `fatal: update_ref failed for ref '${name}': cannot lock ref '${name}': Unable to create '${lock}': File exists.`;
 };
 
+/** git's line for a lock or a stack it cannot create: the files backend's lock names the path and
+ *  its `ENOENT`, the reftable backend's stack lock only the I/O fault. */
+const missingStoreLine = (error: unknown, row: MissingStoreRow): string => {
+  if (!(error instanceof TsgitError) || error.data.code !== 'FILE_NOT_FOUND') return String(error);
+  const failed = `fatal: update_ref failed for ref '${row.name}'`;
+  if (row.reftable) return `${failed}: reftable: transaction prepare: I/O error`;
+  return `${failed}: cannot lock ref '${row.name}': Unable to create '${error.data.path}': No such file or directory`;
+};
+
 /** INVALID_REF carries no name: the caller holds the one it passed, and git's line names it. */
 const badNameLine = (error: unknown, severity: string, name: string): string => {
   if (!(error instanceof TsgitError) || error.data.code !== 'INVALID_REF') return String(error);
@@ -640,6 +737,71 @@ describe('worktree ref namespace write interop', () => {
             );
             expect(deltaOf(theirsBefore, await listCommon(theirs.common))).toEqual({});
             expect(deltaOf(oursBefore, await listCommon(ours.common))).toEqual({});
+          },
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(missingStoreRows)('Given $given', (row) => {
+      describe(`When ${whenClauseOf(row)}`, () => {
+        it.each(runsOf(row))(
+          'Then tsgit refuses with git’s line, names the missing path and neither twin changes (throwaway %i)',
+          async () => {
+            // Arrange
+            const theirs = await buildFixture(row);
+            const ours = await buildFixture(row);
+            const [theirsBefore, oursBefore] = [await snapshotOf(theirs), await snapshotOf(ours)];
+            const expected = gitWrite(theirs, row);
+            const sut = await open({ cwd: ours.cwd });
+
+            // Act
+            const error = await rejectionOf(tsgitWrite(sut, ours, row));
+
+            // Assert
+            expect(expected.exitCode).toBe(FATAL_EXIT);
+            expect((error as TsgitError).data).toEqual({
+              code: 'FILE_NOT_FOUND',
+              path: path.join(ours.common, row.missing),
+            });
+            expect(rooted(missingStoreLine(error, row), ours)).toBe(
+              rooted(firstLine(expected.stderr), theirs),
+            );
+            expect(deltaOf(theirsBefore, await snapshotOf(theirs))).toEqual({});
+            expect(deltaOf(oursBefore, await snapshotOf(ours))).toEqual({});
+          },
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+
+    describe(`Given ${BRANCHES}`, () => {
+      describe('When worktrees/wt, the admin dir itself, is written from the main worktree', () => {
+        it(
+          'Then both refuse and neither twin changes, git naming the blocking dir and tsgit the smallest ref under it',
+          async () => {
+            // Arrange
+            const row: Shape = { given: BRANCHES, name: 'worktrees/wt', from: 'main' };
+            const theirs = await buildFixture(row);
+            const ours = await buildFixture(row);
+            const [theirsBefore, oursBefore] = [await snapshotOf(theirs), await snapshotOf(ours)];
+            const expected = gitWrite(theirs, row);
+            const sut = await open({ cwd: ours.cwd });
+
+            // Act
+            const error = await rejectionOf(tsgitWrite(sut, ours, row));
+
+            // Assert
+            expect(expected.exitCode).toBe(FATAL_EXIT);
+            expect(firstLine(expected.stderr)).toBe(
+              "fatal: update_ref failed for ref 'worktrees/wt': cannot lock ref 'worktrees/wt': there is a non-empty directory '.git/worktrees/wt/' blocking reference 'worktrees/wt'",
+            );
+            expect((error as TsgitError).data).toEqual({
+              code: 'FILE_EXISTS',
+              path: path.join(ours.common, 'worktrees/wt/HEAD'),
+            });
+            expect(deltaOf(theirsBefore, await snapshotOf(theirs))).toEqual({});
+            expect(deltaOf(oursBefore, await snapshotOf(ours))).toEqual({});
           },
           SETUP_TIMEOUT,
         );

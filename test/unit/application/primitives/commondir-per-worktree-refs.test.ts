@@ -666,6 +666,41 @@ describe('common-dir per-worktree-ref sweep', () => {
           expect(await refValue(ctx, 'refs/bisect/s')).toEqual({ kind: 'missing' });
         });
       });
+
+      describe('When updateRef writes worktrees/nope, an id with no admin dir and no name after it, from the main worktree', () => {
+        it('Then it refuses FILE_NOT_FOUND on the lock inside that dir and creates no worktrees/nope', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() => sut(ctx, 'worktrees/nope' as RefName, b, OPTIONS));
+
+          // Assert
+          expect(refusal).toEqual({
+            code: 'FILE_NOT_FOUND',
+            path: `${ctx.layout.gitDir}/worktrees/nope/.lock`,
+          });
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/worktrees/nope`)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt, the linked admin dir with no name after it, from the main worktree', () => {
+        it('Then it refuses FILE_EXISTS on the smallest ref under that dir and leaves its HEAD alone', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() => sut(ctx, 'worktrees/wt' as RefName, b, OPTIONS));
+
+          // Assert
+          expect(refusal).toEqual({ code: 'FILE_EXISTS', path: `${adminDir(ctx)}/HEAD` });
+          expect(await ctx.fs.readUtf8(`${adminDir(ctx)}/HEAD`)).toBe('ref: refs/heads/side\n');
+        });
+      });
     });
   });
 

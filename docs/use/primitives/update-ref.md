@@ -112,7 +112,9 @@ hop of the symbolic walk read the file the write lands on.
   the next `HEAD` read, whichever name it came through.
 - **The reflog auto-create rule judges the name as given** on the files backend: a prefixed name
   is neither `HEAD` nor under `refs/heads/`, so its own log is appended to only when it already
-  exists (`main-worktree/refs/bisect/x` gains none). The reftable backend judges the bare name.
+  exists (`main-worktree/refs/bisect/x` gains none). The reftable backend probes the existing
+  log by the bare name in the stack the prefix selects, and judges auto-creation on the full
+  name: `worktrees/<id>/HEAD` is logged only when that worktree's `HEAD` already has a log.
 - **Two names of one write on one loose file refuse `REF_LOCKED`** on the files backend, as
   git's per-name lock does (see [Locks](#locks)). Writing `main-worktree/HEAD` from the main
   worktree, or `worktrees/<id>/HEAD` from that worktree, while its `HEAD` is on a branch is
@@ -126,7 +128,16 @@ hop of the symbolic walk read the file the write lands on.
   while the written ref and log records keep the full name, as git's do: writing
   `main-worktree/HEAD` with the main `HEAD` detached, or under `noDeref`, stores a ref record
   named `main-worktree/HEAD` and leaves `HEAD` itself unchanged. Nothing is refused for a shared
-  lock, and a hop whose bare name is `HEAD` adds no coupled `HEAD` log record.
+  lock, and a hop whose bare name is `HEAD` adds no coupled `HEAD` log record. `HEAD`'s
+  referent is matched against the bare name too: with `HEAD` on `refs/bisect/x`, writing
+  `main-worktree/refs/bisect/x` adds a `HEAD` log record, where the files backend adds none.
+- **A worktree that does not exist refuses `FILE_NOT_FOUND`.** On the reftable backend, a name
+  under `worktrees/<id>/` whose `<common>/worktrees/<id>/reftable` is missing refuses on that
+  directory, and nothing is written; git reports `reftable: transaction prepare: I/O error`.
+  On the files backend `worktrees/<id>/…` is written under `<common>/worktrees/<id>/`, as git
+  does, but `worktrees/<id>` with nothing after the id locks `<common>/worktrees/<id>/.lock`:
+  it refuses `FILE_NOT_FOUND` on that lock when the admin dir is missing, as git's `Unable to
+  create … No such file or directory` does.
 
 ### Reflog entries
 
