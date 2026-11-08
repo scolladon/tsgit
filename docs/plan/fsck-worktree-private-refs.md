@@ -990,7 +990,7 @@ Rows (unit): the read halves of W37 and W41, W35 on reftable, W40, W42's record 
 
 ### Commit
 
-`fix(reftable): select the worktree stack a prefixed name names and read the bare name there, as git does`
+`fix(reftable): select the stack a prefixed name names and read the bare name there, as git does`
 
 ## Part 25 — Reftable: a hop whose bare name is HEAD adds no coupled HEAD entry
 
@@ -1024,7 +1024,7 @@ Size caps — this is the last part that changes runtime code. After its commit,
 
 ### Commit
 
-`fix(reftable): log no coupled HEAD entry for a hop whose bare name is HEAD, as git's reftable backend does`
+`fix(reftable): log no coupled HEAD entry for a hop whose bare name is HEAD, as git does`
 
 ## Part 26 — Interop: files-backend writes through main-worktree/ and worktrees/<id>/
 
@@ -1089,7 +1089,7 @@ A red row: a harness bug (fix it, citing the design row) or a divergence (blocke
 
 ### Commit
 
-`test(refs): pin bad-name refusals, prefixed reflog reads and the reftable worktree namespace against git`
+`test(refs): pin bad-name refusals, prefixed reflog reads and the reftable namespace against git`
 
 ## Part 28 — Docs for the write-side worktree ref namespace
 
