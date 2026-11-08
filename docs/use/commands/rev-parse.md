@@ -48,6 +48,8 @@ An argument that names no revision but reads as a pathspec (`f*`, `:(top)x`) or 
 | `^` / `^N` | `main^2` | Nth parent (1-based) |
 | Combined | `HEAD~3^2` | parent of the third ancestor |
 
+`main-worktree/<per-worktree ref>` and `worktrees/<id>/<per-worktree ref>` resolve (`main-worktree/HEAD`, `main-worktree/refs/bisect/bad`, `worktrees/wt/HEAD`), from the main or a linked working directory; a loose miss on `main-worktree/…` falls back to `packed-refs` under the full name. Other names under those prefixes (`main-worktree/refs/heads/main`, `worktrees/wt/refs/heads/side`, a worktree that does not exist) do not resolve. Writes through these names are unchanged.
+
 An abbreviated id shared by several objects is read with the hint of the operation applied to it, as git does: commit-ish under `~`, `^`, `^{commit}` and `^{/<regex>}`, tree-ish under `^{tree}` and before `:<path>`; `^{}`, `^{blob}`, `^{tag}` and `^{object}` give none.
 
 ## Behaviour

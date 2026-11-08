@@ -613,9 +613,8 @@ a zero pointer and exit 2 (the fault is synthetic, the file readable, so no
 - Assumption: Node's `fs.readdir` returns the OS order unsorted, as git's `readdir` does, so
   D8's lost-line set matches on the same filesystem (Linux CI included); the memory adapter's
   order is the unit tests' only.
-- Assumption, unpinned: for a linked worktree, git's link referent strips the worktree's
-  own gitdir; P3 uses `ctx.layout.gitDir`, which is that dir. No row exercises a symlinked
-  per-worktree ref.
+- Pinned in `docs/design/fsck-worktree-private-refs.md` (rows A1, B12, B13): git strips the
+  cwd's gitdir spelling from a link referent, whichever store is walked.
 
 ### 6. Folded findings from the revision pass
 
