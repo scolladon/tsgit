@@ -259,6 +259,7 @@ findings as `type ref msgId severity` (`bad-ref` is implied when the type is omi
 | V3 | main `-_HEAD` = `garbage` (a root name the ref grammar rejects) | w | `error: -_HEAD: badRefContent: garbage` | 8 | ✓ | `badRefContent` only: the main store's root names are exempt from the name check |
 | V4 | `mkfifo refs/heads/sub/f`, `refs/heads/sub` mode 0444 | w | `warning: failed to stat '.git/refs/heads/sub/f': Permission denied` | 0 | ✗ `badRefFiletype` error, 8 | `unreadable-ref-path` (stat) only: the iterator's `lstat` comes before the file-type verdict |
 | V5 | `refs/heads/sub/b@{` = oid, `refs/heads/sub` mode 0444 | w | the same warning on `b@{` + `error: refs/heads/sub/b@{: invalid sha1 pointer 0{40}` | 2 | ✗ `badRefName` + stat + pointer, 10 | the stat finding and the pointer only: the `lstat` comes before the name verdict |
+| V6 | an entry (a `.lock` file, an unsafe-named file, a pipe, a directory, a link) removed between the listing and the iterator's `lstat` — pinned from git's source, `dir-iterator.c` `prepare_next_entry_data` (`if (err && errno != ENOENT) warning_errno("failed to stat …")`, the entry then skipped), not from a run: the race cannot be staged against the binary | w | — (nothing; a concurrent `update-ref` creating and removing `<ref>.lock` is the realistic shape) | 0 | ✗ the up-front `lstat` throws `FILE_NOT_FOUND` and the walk aborts | nothing: the entry is passed over and the walk carries on |
 
 **Path spelling in git's lines** (the interop harness rebuilds it; tsgit always reports the
 absolute path it opened):

@@ -1436,7 +1436,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   ): Promise<void> {
     const path = `${dir}/${entry.name}`;
     const name = `${prefix}/${entry.name}` as RefName;
-    if (!isStatDeferred(entry, name) && (await entryStatRefused(path, run.findings))) return;
+    if (!isStatDeferred(entry, name) && (await statSkipsEntry(path, run.findings))) return;
     if (isSkippedLockFile(entry)) return;
     if (entry.isDirectory) await walkIntegrity(path, name, run);
     else await judgeEntry(entry, name, path, run);
@@ -1476,14 +1476,17 @@ function createFilesRefStore(ctx: Context): RefStore {
     await linkReferentFindings(run, name, path);
   }
 
-  /** git's directory iterator `lstat`s every entry before judging it: a refusal is
-   *  `failed to stat`, and the entry is skipped whatever it is. */
-  async function entryStatRefused(path: string, findings: RefIntegrityFinding[]): Promise<boolean> {
+  /** git's directory iterator `lstat`s every entry before judging it, and skips the entry
+   *  whatever it is when that fails: a refusal is warned as `failed to stat`; an entry gone by
+   *  then — a lock file a concurrent writer removed — is passed over without a word. */
+  async function statSkipsEntry(path: string, findings: RefIntegrityFinding[]): Promise<boolean> {
     try {
       await ctx.fs.lstat(path);
       return false;
     } catch (err) {
-      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
+      const code = errorCodeOf(err);
+      if (code === 'FILE_NOT_FOUND') return true;
+      if (code !== PERMISSION_DENIED_CODE) throw err;
       findings.push({ msgId: 'unreadableRefPath', operation: 'stat', path });
       return true;
     }

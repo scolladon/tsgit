@@ -6908,3 +6908,97 @@ describe('ref-store — the walk stats a doubtful entry before judging it', () =
     });
   });
 });
+
+describe('ref-store — an entry gone by the time the walk stats it', () => {
+  const OID = 'a'.repeat(40);
+  const vanishedAt = (ctx: Context, gone: string): void => {
+    const lstat = ctx.fs.lstat.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path: string) => {
+      if (path === gone) throw fileNotFound(gone);
+      return lstat(path);
+    });
+  };
+
+  describe.each([
+    { kind: 'lock file', name: 'main.lock', body: `${OID}\n` },
+    { kind: 'file whose name the ref grammar rejects', name: 'b@{', body: `${OID}\n` },
+  ])('Given a $kind that vanishes between the listing and its stat', ({ name, body }) => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then it is passed over without a word and the walk carries on', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const gone = `/repo/.git/refs/heads/${name}`;
+        await ctx.fs.writeUtf8(gone, body);
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/zzz', 'garbage\n');
+        vanishedAt(ctx, gone);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ ref: 'refs/heads/zzz', msgId: 'badRefContent' }]);
+      });
+    });
+  });
+
+  describe('Given a directory that vanishes between the listing and its stat', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then it is passed over without a word', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/gone/x', `${OID}\n`);
+        vanishedAt(ctx, '/repo/.git/refs/heads/gone');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a link that vanishes between the listing and its stat', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then it is passed over without a word', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.symlink('nowhere', '/repo/.git/refs/heads/gone');
+        vanishedAt(ctx, '/repo/.git/refs/heads/gone');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a non-regular entry that vanishes between the listing and its stat', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then it is passed over without a word', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir('/repo/.git/refs/bisect');
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          const real = await readdir(path);
+          const pipe = { name: 'gone', isFile: false, isDirectory: false, isSymbolicLink: false };
+          return path === '/repo/.git/refs/bisect' ? [...real, pipe] : real;
+        });
+        vanishedAt(ctx, '/repo/.git/refs/bisect/gone');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+});
