@@ -19,9 +19,10 @@
  * Step 11 (auto-compaction) is a later part's own protocol and best-effort
  * concern — not implemented here.
  *
- * **Cross-stack transactions.** An update list may span both the common and
- * a linked worktree's own stack. Both locks are acquired up front, in a
- * FIXED order (common first, then worktree), so two tsgit writers can never
+ * **Cross-stack transactions.** An update list may span the common stack, a
+ * linked worktree's own, and the stack a `worktrees/<id>/` name selects.
+ * Every lock is acquired up front, in a FIXED order (common first, then the
+ * own worktree, then any other in first-use order), so two tsgit writers can never
  * deadlock against each other; each stack is written and committed only
  * after every stack in the transaction has passed its own step-3 CAS check,
  * so a refusal on one stack never leaves the other mutated. Each stack keeps
@@ -78,6 +79,7 @@ import {
   serializeReftable,
   suggestCompactionSegment,
 } from '../../domain/refs/index.js';
+import { parseWorktreeRef } from '../../domain/refs/per-worktree-ref.js';
 import {
   firstRefNameConflict,
   type RefNameFacts,
@@ -103,11 +105,11 @@ import {
 } from './load-reftable-stack.js';
 import {
   commonGitDir,
-  perWorktreeRefDir,
   reftableDir,
   reftableTableLockPath,
   tablesListLockPath,
   tablesListPath,
+  worktreeStoreDir,
 } from './path-layout.js';
 import type { ReflogAppend, RefUpdate } from './ref-store.js';
 
@@ -1336,8 +1338,22 @@ interface StackBucket {
   readonly updates: readonly ReftableInternalUpdate[];
 }
 
-/** Fixed order: common dir first, then a linked worktree's own — the
- *  deadlock-avoidance rule the module JSDoc documents. */
+/** `gitDir`'s bucket, created on first use — after the pre-seeded common
+ *  and own buckets, so another worktree's stack never locks before them. */
+function bucketFor(
+  buckets: Map<string, ReftableInternalUpdate[]>,
+  gitDir: string,
+): ReftableInternalUpdate[] {
+  const existing = buckets.get(gitDir);
+  if (existing !== undefined) return existing;
+  const created: ReftableInternalUpdate[] = [];
+  buckets.set(gitDir, created);
+  return created;
+}
+
+/** Fixed order: common dir first, then a linked worktree's own, then any
+ *  other worktree's stack a prefixed name selects — the deadlock-avoidance
+ *  rule the module JSDoc documents. Records keep the full name as given. */
 function partitionByStack(
   ctx: Context,
   updates: readonly ReftableInternalUpdate[],
@@ -1350,8 +1366,7 @@ function partitionByStack(
   // anything has been pushed to it, a harmless no-op indistinguishable from skipping it.
   if (ownDir !== commonDir) buckets.set(ownDir, []);
   for (const update of updates) {
-    const gitDir = perWorktreeRefDir(ctx, update.name);
-    buckets.get(gitDir)!.push(update);
+    bucketFor(buckets, worktreeStoreDir(ctx, parseWorktreeRef(update.name))).push(update);
   }
   return [...buckets.entries()]
     .map(([gitDir, bucketUpdates]) => ({ gitDir, updates: bucketUpdates }))

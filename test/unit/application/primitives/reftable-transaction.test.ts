@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { loadReftableStack } from '../../../../src/application/primitives/load-reftable-stack.js';
 import {
+  reftableDir,
   reftableTableLockPath,
   tablesListLockPath,
   tablesListPath,
@@ -150,6 +151,10 @@ async function expectReftableLocked(
 }
 
 describe('reftable-transaction', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a stack and a two-ref update list', () => {
     describe('When the transaction commits', () => {
       it('Then both refs appear at one update index', async () => {
@@ -1109,6 +1114,51 @@ describe('reftable-transaction', () => {
           kind: 'direct',
           id: oid(0x02),
         });
+      });
+    });
+  });
+
+  describe("Given a linked worktree's stack", () => {
+    describe('When applyReftableUpdates sets worktrees/wt/refs/bisect/y from the main Context', () => {
+      it("Then wt's stack holds a record named worktrees/wt/refs/bisect/y and the common stack none, and the common lock is taken first", async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+        const name = ref('worktrees/wt/refs/bisect/y');
+
+        // Act
+        await applyReftableUpdates(mainCtx, [
+          { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
+          { kind: 'set', name, id: oid(0x02) },
+        ]);
+
+        // Assert
+        const lockCalls = writeExclusiveSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path.endsWith('tables.list.lock'));
+        expect(lockCalls).toEqual([
+          tablesListLockPath(mainCtx.layout.gitDir),
+          tablesListLockPath(adminDir(mainCtx)),
+        ]);
+        const worktreeStack = await loadReftableStack(mainCtx, reftableDir(adminDir(mainCtx)));
+        const commonStack = await loadReftableStack(mainCtx, commonReftableDir(mainCtx));
+        expect([...worktreeStack.names()]).toEqual([name]);
+        expect([...commonStack.names()]).toEqual([ref('refs/heads/shared')]);
+      });
+    });
+
+    describe('When applyReftableUpdates sets main-worktree/refs/bisect/x from the main Context', () => {
+      it('Then the common stack holds a record named main-worktree/refs/bisect/x', async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        const name = ref('main-worktree/refs/bisect/x');
+
+        // Act
+        await applyReftableUpdates(mainCtx, [{ kind: 'set', name, id: oid(0x02) }]);
+
+        // Assert
+        const commonStack = await loadReftableStack(mainCtx, commonReftableDir(mainCtx));
+        expect([...commonStack.names()]).toEqual([name]);
       });
     });
   });

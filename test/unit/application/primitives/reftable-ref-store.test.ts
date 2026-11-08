@@ -1143,6 +1143,81 @@ describe('reftable-ref-store', () => {
       });
     });
 
+    describe('When resolveDirect resolves main-worktree/HEAD from the child', () => {
+      it("Then it answers the common stack's HEAD record", async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        await writeSingleRefTable(base, commonReftableDir(base), 'HEAD', ID_MAIN);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+
+        // Act
+        const result = await sut.resolveDirect(ref('main-worktree/HEAD'));
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: hexOid(0x01) });
+      });
+    });
+
+    describe('When resolveDirect resolves worktrees/wt/HEAD from the main Context', () => {
+      it("Then it answers wt's stack HEAD record", async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        await writeSingleRefTable(base, `${adminDir(base)}/reftable`, 'HEAD', ID_TAG);
+        const sut = createReftableRefStore(base);
+
+        // Act
+        const result = await sut.resolveDirect(ref('worktrees/wt/HEAD'));
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: hexOid(0x03) });
+      });
+    });
+
+    describe('When resolveDirect resolves worktrees/wt/refs/bisect/y from the main Context', () => {
+      it("Then it answers wt's stack record of refs/bisect/y", async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        await writeSingleRefTable(base, `${adminDir(base)}/reftable`, 'refs/bisect/y', ID_TAG);
+        const sut = createReftableRefStore(base);
+
+        // Act
+        const result = await sut.resolveDirect(ref('worktrees/wt/refs/bisect/y'));
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: hexOid(0x03) });
+      });
+    });
+
+    describe('When readReflog reads main-worktree/HEAD from the child', () => {
+      it("Then it returns the common stack's HEAD log", async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        await writeSingleLogTable(base, commonReftableDir(base), 'HEAD', ID_MAIN);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+
+        // Act
+        const entries = await sut.readReflog(ref('main-worktree/HEAD'));
+
+        // Assert
+        expect(entries.map((entry) => entry.newId)).toEqual([hexOid(0x01)]);
+      });
+    });
+
+    describe('When hasReflog asks for main-worktree/HEAD from the child', () => {
+      it("Then it answers true for the common stack's HEAD log", async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        await writeSingleLogTable(base, commonReftableDir(base), 'HEAD', ID_MAIN);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+
+        // Act
+        const result = await sut.hasReflog(ref('main-worktree/HEAD'));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
     describe('When listRefs runs and a per-worktree name exists in both the common and the own stack', () => {
       it('Then it resolves the name through its own stack, not whichever stack it was seen in first', async () => {
         // Arrange — the common stack holds the MAIN worktree's own HEAD

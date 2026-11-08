@@ -59,7 +59,8 @@ export interface RefLocation {
   readonly reflog: string;
 }
 
-const worktreeStoreDir = (ctx: Context, target: WorktreeRefTarget): string => {
+/** The gitdir whose store a parsed name selects — git's `backend_for` root on reftable, `files_ref_path`'s on files. */
+export const worktreeStoreDir = (ctx: Context, target: WorktreeRefTarget): string => {
   if (target.kind === 'current') return ctx.layout.gitDir;
   if (target.kind === 'other') return `${commonGitDir(ctx)}/worktrees/${target.id}`;
   return commonGitDir(ctx);
