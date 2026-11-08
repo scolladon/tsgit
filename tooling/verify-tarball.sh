@@ -460,7 +460,14 @@ done
 # and bad-name predicates, the badRefName and badHeadTarget facts with their
 # grades and shadow, and the unreadable-root-refs arm — runtime code shipped in
 # every distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((1516 * 1024))
+# Raised 1516 -> 1518 KiB by the write side of the worktree ref namespace: the
+# measured pack landed at 1 553 893 B, 1 509 B over the old cap, attributable to
+# the parseWorktreeRef parser and the one refLocation locator every ref and
+# reflog route now shares, the refname_is_safe gate on deletes and symbolic
+# writes, the shared-lock refusal with its coupled-HEAD rule, and the reftable
+# stack selection with its bare-name log gate — runtime code in every
+# distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1518 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
