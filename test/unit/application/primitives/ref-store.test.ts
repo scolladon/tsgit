@@ -4528,6 +4528,33 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a trusted HEAD slot and a write of another ref', () => {
+    describe('When resolveDirect reads HEAD afterwards', () => {
+      it('Then the slot still answers it with no I/O — only a HEAD write drops it', async () => {
+        // Arrange — writing any name but `HEAD` leaves the bytes the slot
+        // holds still current.
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const { ctx, calls } = instrumentedContext(base);
+        await validateHead(ctx);
+        const sut = createRefStore(ctx);
+        await sut.applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/other' as RefName, id: 'b'.repeat(40) as ObjectId },
+        ]);
+        const before = calls().length;
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
+        expect(calls()).toHaveLength(before);
+      });
+    });
+  });
+
   describe('Given a Context whose layout declares refStorage: files', () => {
     describe('When createRefStore builds the backend', () => {
       it('Then it produces the files backend, ignoring a reftable stack on disk', async () => {

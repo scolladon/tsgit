@@ -22,7 +22,7 @@ import { getRefStore } from '../../../../src/application/primitives/ref-store.js
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { emptyTreeOid } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
@@ -752,6 +752,30 @@ describe('common-dir per-worktree-ref sweep', () => {
           // Assert
           expect(refusal).toEqual({ code: 'NOT_A_DIRECTORY', path: `${blocker}/.lock` });
           expect(await ctx.fs.readUtf8(blocker)).toBe('x\n');
+        });
+      });
+
+      describe('When updateRef writes worktrees/nope while the admin path refuses its stat PERMISSION_DENIED, from the main worktree', () => {
+        it('Then that refusal propagates', async () => {
+          // Arrange
+          const base = await buildSeededContext();
+          const { b } = await seedWorktreePair(base, { main: 'branch', wt: 'branch' });
+          const denied = `${base.layout.gitDir}/worktrees/nope`;
+          const ctx: Context = {
+            ...base,
+            fs: {
+              ...base.fs,
+              stat: async (p) =>
+                p === denied ? Promise.reject(permissionDenied(p)) : base.fs.stat(p),
+            },
+          };
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() => sut(ctx, 'worktrees/nope' as RefName, b, OPTIONS));
+
+          // Assert
+          expect(refusal).toEqual({ code: 'PERMISSION_DENIED', path: denied });
         });
       });
 
