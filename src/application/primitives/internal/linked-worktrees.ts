@@ -33,6 +33,7 @@ const listAdminNames = async (ctx: Context, root: string): Promise<ReadonlyArray
     const entries = await (ctx.fs.readdirInOsOrder ?? ctx.fs.readdir).call(ctx.fs, root);
     return entries.map((entry) => entry.name);
   } catch (err) {
+    // Stryker disable next-line ArrayDeclaration: equivalent — an id fabricated under a root the listing could not open (absent, denied, not a directory) names a gitdir file that cannot be opened either, which readAdmin drops.
     if (isUnopenableFile(err)) return [];
     throw err;
   }

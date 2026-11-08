@@ -1404,6 +1404,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function walkIntegrityRoot(store: IntegrityStore, run: IntegrityRun): Promise<void> {
     const root = `${store.gitDir}/${REFS_DIR}`;
     const kind = await rootKind(root);
+    // Stryker disable next-line ConditionalExpression: equivalent — an absent root's listing fails FILE_NOT_FOUND, which readdirForIntegrity passes over as an empty listing, so the walk reports nothing either way.
     if (kind === 'absent') return;
     if (kind === 'not-a-directory') {
       run.findings.push({ msgId: 'refsWalkFailed', path: root, reason: 'NOT_A_DIRECTORY' });

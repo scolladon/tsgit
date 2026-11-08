@@ -6124,6 +6124,28 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
     });
   });
 
+  describe('Given a linked store gitdir whose listing faults for another reason than permission', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then the fault propagates', async () => {
+        // Arrange
+        const ctx = await fromMain();
+        const fault = new Error('EIO');
+        const readdir = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (p: string) => {
+          if (p === `${ADMIN}/wt`) throw fault;
+          return readdir(p);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity().catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+  });
+
   describe('Given a linked store gitdir whose listing is refused', () => {
     describe('When verifyIntegrity runs', () => {
       it('Then rootRefsUnreadable names that gitdir', async () => {
@@ -7135,6 +7157,30 @@ describe('ref-store — the walk meets a path that changed under it', () => {
           },
           { ref: 'refs/heads/zzz', msgId: 'badRefContent' },
         ]);
+      });
+    });
+  });
+
+  describe('Given a ref file gone between the listing and its read', () => {
+    describe('When verifyIntegrity runs', () => {
+      it('Then it is passed over without a word and the walk carries on', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const gone = '/repo/.git/refs/heads/gone';
+        await ctx.fs.writeUtf8(gone, `${OID}\n`);
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/zzz', 'garbage\n');
+        const readUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === gone) throw fileNotFound(gone);
+          return readUtf8(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([{ ref: 'refs/heads/zzz', msgId: 'badRefContent' }]);
       });
     });
   });
