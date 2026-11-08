@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
-import { appendReflog } from '../../../../src/application/primitives/reflog-store.js';
+import {
+  appendReflog,
+  readReflog,
+  writeReflog,
+} from '../../../../src/application/primitives/reflog-store.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -254,3 +258,91 @@ describe.each(both)('Given main-worktree/ names read from $viewer', ({ view }) =
     });
   });
 });
+
+describe.each(both)(
+  'Given reflogs addressed through main-worktree/ and worktrees/<id>/ from $viewer',
+  ({ view }) => {
+    const ENTRY = { oldId: ZERO_OID, newId: OID_A, identity: IDENTITY, message: 'commit: x' };
+
+    describe('When readReflog reads main-worktree/HEAD', () => {
+      it('Then it returns the main HEAD log', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'HEAD' as RefName, ENTRY);
+        const sut = getRefStore(view(ctx));
+
+        // Act
+        const result = await sut.readReflog('main-worktree/HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual([expect.objectContaining(ENTRY)]);
+      });
+    });
+
+    describe('When hasReflog probes main-worktree/HEAD', () => {
+      it('Then it answers true', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'HEAD' as RefName, ENTRY);
+        const sut = getRefStore(view(ctx));
+
+        // Act
+        const result = await sut.hasReflog('main-worktree/HEAD' as RefName);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When readReflog reads worktrees/wt/HEAD', () => {
+      it("Then it returns wt's log", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(asWorktreeChild(ctx), 'HEAD' as RefName, ENTRY);
+        const sut = getRefStore(view(ctx));
+
+        // Act
+        const result = await sut.readReflog('worktrees/wt/HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual([expect.objectContaining(ENTRY)]);
+      });
+    });
+
+    describe('When applyRefUpdates deletes worktrees/wt/refs/bisect/t', () => {
+      it("Then the admin dir's logs/refs/bisect/t is gone", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${adminDir(ctx)}/refs/bisect/t`, `${OID_A}\n`);
+        await appendReflog(asWorktreeChild(ctx), 'refs/bisect/t' as RefName, ENTRY);
+        const sut = getRefStore(view(ctx));
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'delete', name: 'worktrees/wt/refs/bisect/t' as RefName },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.exists(`${adminDir(ctx)}/logs/refs/bisect/t`)).toBe(false);
+      });
+    });
+
+    describe('When writeReflog rewrites main-worktree/HEAD', () => {
+      it('Then the main logs/HEAD holds the new entries', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'HEAD' as RefName, ENTRY);
+        const rewritten = { ...ENTRY, oldId: OID_A, newId: OID_B, message: 'reset: moving' };
+        const sut = view(ctx);
+
+        // Act
+        await writeReflog(sut, 'main-worktree/HEAD' as RefName, [rewritten]);
+
+        // Assert
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual([
+          expect.objectContaining(rewritten),
+        ]);
+      });
+    });
+  },
+);

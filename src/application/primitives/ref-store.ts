@@ -89,7 +89,6 @@ import {
   perWorktreeRefDir,
   type RefLocation,
   refLocation,
-  reflogPath,
 } from './path-layout.js';
 import { readObject, readObjectMetadata } from './read-object.js';
 import {
@@ -531,6 +530,7 @@ interface DeleteTarget {
   readonly name: RefName;
   readonly dir: string;
   readonly loose: string;
+  readonly reflog: string;
   /** Whether the loose file's parent is a directory: the loose lock is
    *  taken, and the refs tree pruned, only then. */
   readonly looseDirExists: boolean;
@@ -614,7 +614,7 @@ const refsTreeParent = (target: DeleteTarget): readonly [string, string] => [
 
 /** {@link refsTreeParent} for the target's reflog in the logs tree. */
 const logsTreeParent = (target: DeleteTarget): readonly [string, string] => [
-  dirname(reflogPath(target.dir, target.name)),
+  dirname(target.reflog),
   `${logsDir(target.dir)}/${REFS_DIR}`,
 ];
 
@@ -1734,7 +1734,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** Remove `name`'s reflog file. A no-op when the file is absent, or when
    *  a directory — the logs of refs under `name` — sits at its path. */
   async function removeReflogFile(name: RefName): Promise<void> {
-    await rmUnlessDirectory(reflogPath(refDir(name), name));
+    await rmUnlessDirectory(location(name).reflog);
   }
 
   /** Removes the file or link at `path`; nothing when the path is absent or
@@ -1790,9 +1790,7 @@ function createFilesRefStore(ctx: Context): RefStore {
         serializeReflogRewriteLineBytes(entry, ctx.hashConfig.hexLength),
       ),
     );
-    await atomicWriteFile(ctx, reflogPath(refDir(update.name), update.name), content, () =>
-      refLocked(update.name),
-    );
+    await atomicWriteFile(ctx, location(update.name).reflog, content, () => refLocked(update.name));
   }
 
   /** `name`'s reflog bytes, or `undefined` when the file is absent. Refuses
@@ -1801,7 +1799,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  enforced exactly once regardless of which parse strictness the caller
    *  wants. */
   async function readReflogBytes(name: RefName): Promise<Uint8Array | undefined> {
-    const path = reflogPath(refDir(name), name);
+    const path = location(name).reflog;
     // One stat instead of an exists probe (itself a stat) + stat: absent is
     // the common miss, and a DIRECTORY at the path — the D/F shape a sibling
     // `<name>/x` log creates — reads as "no reflog", the same answer
@@ -1857,8 +1855,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function moveReflog(from: RefName, to: RefName): Promise<void> {
     if (!(await hasReflog(from))) return;
-    const src = reflogPath(refDir(from), from);
-    await ctx.fs.rename(src, reflogPath(refDir(to), to));
+    await ctx.fs.rename(location(from).reflog, location(to).reflog);
   }
 
   /**
@@ -1868,8 +1865,8 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function copyReflog(from: RefName, to: RefName): Promise<void> {
     if (!(await hasReflog(from))) return;
-    const bytes = await ctx.fs.read(reflogPath(refDir(from), from));
-    await ctx.fs.write(reflogPath(refDir(to), to), bytes);
+    const bytes = await ctx.fs.read(location(from).reflog);
+    await ctx.fs.write(location(to).reflog, bytes);
   }
 
   /** Whether `name` has a reflog FILE — never a directory. `ctx.fs.exists`
@@ -1881,7 +1878,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  regular file (`S_ISREG`) and reports absent for that same directory
    *  shape. */
   async function hasReflog(name: RefName): Promise<boolean> {
-    const path = reflogPath(refDir(name), name);
+    const path = location(name).reflog;
     try {
       return (await ctx.fs.stat(path)).isFile;
     } catch (err) {
@@ -2251,10 +2248,10 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** A delete's target, refusing a file in the way before any lock. */
   async function deleteTargetFor(update: DeleteUpdate): Promise<DeleteTarget> {
-    const { dir, loose } = location(update.name);
+    const { dir, loose, reflog } = location(update.name);
     const looseDirExists = await isDirectoryPath(dirname(loose));
     if (!looseDirExists) await assertNoFileInTheWay(update.name, loose);
-    return { name: update.name, dir, loose, looseDirExists };
+    return { name: update.name, dir, loose, reflog, looseDirExists };
   }
 
   /** Both trees' empty-parent pruning, each distinct parent once, for the
