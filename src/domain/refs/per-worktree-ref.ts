@@ -43,9 +43,35 @@ export const linkedWorktreeRefPrefix = (id: string): string => `${LINKED_WORKTRE
 /** Drops the display prefix that names a linked worktree's store, leaving the ref as that worktree sees it. */
 export const bareStoreRefName = (name: string): string => name.replace(LINKED_WORKTREE_PREFIX, '');
 
-/** The per-worktree ref a `main-worktree/` name stands for, or undefined when it names anything else. */
-export const mainWorktreeBareName = (name: RefName): RefName | undefined => {
+/** Which store a ref name selects and the name inside it — git's `parse_worktree_ref`. */
+export type WorktreeRefTarget =
+  /** A per-worktree ref, read in the current worktree's own store. */
+  | { readonly kind: 'current'; readonly bare: RefName }
+  /** Any other name, read in the common store under its full spelling. */
+  | { readonly kind: 'shared'; readonly bare: RefName }
+  /** `main-worktree/<per-worktree ref>`: the main worktree's store. */
+  | { readonly kind: 'main'; readonly bare: RefName }
+  /** `worktrees/<id>/<per-worktree ref>`: the linked worktree `id`'s store. */
+  | { readonly kind: 'other'; readonly id: string; readonly bare: RefName };
+
+const linkedWorktreeTarget = (name: RefName): WorktreeRefTarget | undefined => {
+  if (!name.startsWith(LINKED_WORKTREES_DIR)) return undefined;
+  const rest = name.slice(LINKED_WORKTREES_DIR.length);
+  const slash = rest.indexOf('/');
+  if (slash < 0) return undefined;
+  const bare = rest.slice(slash + 1) as RefName;
+  return isPerWorktreeRef(bare) ? { kind: 'other', id: rest.slice(0, slash), bare } : undefined;
+};
+
+const mainWorktreeTarget = (name: RefName): WorktreeRefTarget | undefined => {
   if (!name.startsWith(MAIN_WORKTREE_DIR)) return undefined;
   const bare = name.slice(MAIN_WORKTREE_DIR.length) as RefName;
-  return isPerWorktreeRef(bare) ? bare : undefined;
+  return isPerWorktreeRef(bare) ? { kind: 'main', bare } : undefined;
 };
+
+const unprefixedTarget = (name: RefName): WorktreeRefTarget =>
+  isPerWorktreeRef(name) ? { kind: 'current', bare: name } : { kind: 'shared', bare: name };
+
+/** Which store `name` selects, in git's order: a linked worktree's, the main worktree's, then the current or common one. */
+export const parseWorktreeRef = (name: RefName): WorktreeRefTarget =>
+  linkedWorktreeTarget(name) ?? mainWorktreeTarget(name) ?? unprefixedTarget(name);

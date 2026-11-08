@@ -5,7 +5,7 @@ import {
   isPerWorktreeRef,
   isPseudoRef,
   linkedWorktreeRefPrefix,
-  mainWorktreeBareName,
+  parseWorktreeRef,
 } from '../../../../src/domain/refs/per-worktree-ref.js';
 
 describe('isPerWorktreeRef', () => {
@@ -151,47 +151,42 @@ describe('bareStoreRefName', () => {
   });
 });
 
-describe('mainWorktreeBareName', () => {
-  describe('Given a per-worktree name under main-worktree/', () => {
-    describe('When the bare name is read', () => {
+describe('parseWorktreeRef', () => {
+  describe('Given a ref name', () => {
+    describe('When it is parsed', () => {
       it.each([
-        ['main-worktree/HEAD', 'HEAD'],
-        ['main-worktree/ORIG_HEAD', 'ORIG_HEAD'],
-        ['main-worktree/refs/bisect/bad', 'refs/bisect/bad'],
-        ['main-worktree/refs/worktree/x', 'refs/worktree/x'],
-        ['main-worktree/refs/rewritten/x', 'refs/rewritten/x'],
-        ['main-worktree/', ''],
-      ])('Then %s yields %j', (name, expected) => {
+        ['HEAD', { kind: 'current', bare: 'HEAD' }],
+        ['ORIG_HEAD', { kind: 'current', bare: 'ORIG_HEAD' }],
+        ['refs/bisect/bad', { kind: 'current', bare: 'refs/bisect/bad' }],
+        ['refs/heads/main', { kind: 'shared', bare: 'refs/heads/main' }],
+        ['main-worktree/HEAD', { kind: 'main', bare: 'HEAD' }],
+        ['main-worktree/refs/bisect/bad', { kind: 'main', bare: 'refs/bisect/bad' }],
+        ['main-worktree/', { kind: 'main', bare: '' }],
+        [
+          'main-worktree/refs/heads/main',
+          { kind: 'shared', bare: 'main-worktree/refs/heads/main' },
+        ],
+        ['main-worktreeX/HEAD', { kind: 'shared', bare: 'main-worktreeX/HEAD' }],
+        ['worktrees/wt/HEAD', { kind: 'other', id: 'wt', bare: 'HEAD' }],
+        ['worktrees/wt/refs/bisect/y', { kind: 'other', id: 'wt', bare: 'refs/bisect/y' }],
+        ['worktrees/wt/', { kind: 'other', id: 'wt', bare: '' }],
+        ['worktrees//HEAD', { kind: 'other', id: '', bare: 'HEAD' }],
+        ['worktrees/wt', { kind: 'shared', bare: 'worktrees/wt' }],
+        ['worktrees/wt/refs/heads/side', { kind: 'shared', bare: 'worktrees/wt/refs/heads/side' }],
+        [
+          'worktrees/wt/main-worktree/HEAD',
+          { kind: 'shared', bare: 'worktrees/wt/main-worktree/HEAD' },
+        ],
+        ['x/worktrees/wt/HEAD', { kind: 'shared', bare: 'x/worktrees/wt/HEAD' }],
+      ])('Then %s selects %j', (name, expected) => {
         // Arrange
-        const sut = mainWorktreeBareName;
+        const sut = parseWorktreeRef;
 
         // Act
         const result = sut(name as RefName);
 
         // Assert
-        expect(result).toBe(expected);
-      });
-    });
-  });
-
-  describe('Given a name that is not a main-worktree per-worktree ref', () => {
-    describe('When the bare name is read', () => {
-      it.each([
-        'main-worktree/refs/heads/main',
-        'refs/heads/main',
-        'HEAD',
-        'worktrees/wt/HEAD',
-        'main-worktreeX/HEAD',
-        'x/main-worktree/HEAD',
-      ])('Then %s yields undefined', (name) => {
-        // Arrange
-        const sut = mainWorktreeBareName;
-
-        // Act
-        const result = sut(name as RefName);
-
-        // Assert
-        expect(result).toBeUndefined();
+        expect(result).toEqual(expected);
       });
     });
   });

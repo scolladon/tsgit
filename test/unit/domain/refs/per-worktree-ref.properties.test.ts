@@ -5,7 +5,7 @@ import {
   bareStoreRefName,
   isPerWorktreeRef,
   linkedWorktreeRefPrefix,
-  mainWorktreeBareName,
+  parseWorktreeRef,
 } from '../../../../src/domain/refs/per-worktree-ref.js';
 import { arbRefName } from './arbitraries.js';
 
@@ -20,16 +20,19 @@ const arbPerWorktreeName: fc.Arbitrary<RefName> = fc.oneof(
 
 const arbSharedName: fc.Arbitrary<RefName> = arbRefName().filter((name) => !isPerWorktreeRef(name));
 
+const isUnderEitherPrefix = (name: string): boolean =>
+  name.startsWith('worktrees/') || name.startsWith('main-worktree/');
+
 describe('Given an arbitrary per-worktree name', () => {
   describe('When it is spelled under main-worktree/', () => {
-    it('Then mainWorktreeBareName returns it', () => {
+    it('Then it parses as main with that bare name', () => {
       // Arrange
-      const sut = mainWorktreeBareName;
+      const sut = parseWorktreeRef;
 
       // Act + Assert
       fc.assert(
         fc.property(arbPerWorktreeName, (name) => {
-          expect(sut(`main-worktree/${name}` as RefName)).toBe(name);
+          expect(sut(`main-worktree/${name}` as RefName)).toEqual({ kind: 'main', bare: name });
         }),
         { numRuns: 200 },
       );
@@ -37,16 +40,42 @@ describe('Given an arbitrary per-worktree name', () => {
   });
 });
 
-describe('Given an arbitrary shared ref name', () => {
-  describe('When it is spelled under main-worktree/', () => {
-    it('Then mainWorktreeBareName returns undefined', () => {
+describe('Given a slash-free worktree id and a per-worktree name', () => {
+  describe("When the name is spelled under that worktree's prefix", () => {
+    it('Then it parses as other with that id and bare name', () => {
       // Arrange
-      const sut = mainWorktreeBareName;
+      const sut = parseWorktreeRef;
 
       // Act + Assert
       fc.assert(
-        fc.property(arbSharedName, (name) => {
-          expect(sut(`main-worktree/${name}` as RefName)).toBeUndefined();
+        fc.property(WORKTREE_ID, arbPerWorktreeName, (id, name) => {
+          expect(sut(`${linkedWorktreeRefPrefix(id)}${name}` as RefName)).toEqual({
+            kind: 'other',
+            id,
+            bare: name,
+          });
+        }),
+        { numRuns: 200 },
+      );
+    });
+  });
+});
+
+describe('Given an arbitrary shared name', () => {
+  describe('When it is spelled under either prefix', () => {
+    it('Then it parses as shared with the full name', () => {
+      // Arrange
+      const sut = parseWorktreeRef;
+      const arbPrefix = fc.oneof(
+        fc.constant('main-worktree/'),
+        WORKTREE_ID.map(linkedWorktreeRefPrefix),
+      );
+
+      // Act + Assert
+      fc.assert(
+        fc.property(arbPrefix, arbSharedName, (prefix, name) => {
+          const full = `${prefix}${name}` as RefName;
+          expect(sut(full)).toEqual({ kind: 'shared', bare: full });
         }),
         { numRuns: 100 },
       );
@@ -54,16 +83,20 @@ describe('Given an arbitrary shared ref name', () => {
   });
 });
 
-describe('Given an arbitrary ref name', () => {
-  describe('When it carries no main-worktree/ prefix', () => {
-    it('Then mainWorktreeBareName returns undefined', () => {
+describe('Given a name under neither prefix', () => {
+  describe('When it is parsed', () => {
+    it('Then it is current exactly when isPerWorktreeRef accepts it', () => {
       // Arrange
-      const sut = mainWorktreeBareName;
+      const sut = parseWorktreeRef;
+      const arbUnprefixed = fc
+        .oneof(arbRefName(), arbPerWorktreeName)
+        .filter((name) => !isUnderEitherPrefix(name));
 
       // Act + Assert
       fc.assert(
-        fc.property(fc.oneof(arbRefName(), arbPerWorktreeName), (name) => {
-          expect(sut(name)).toBeUndefined();
+        fc.property(arbUnprefixed, (name) => {
+          const kind = isPerWorktreeRef(name) ? 'current' : 'shared';
+          expect(sut(name)).toEqual({ kind, bare: name });
         }),
         { numRuns: 100 },
       );
