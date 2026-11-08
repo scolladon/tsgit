@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { resolveWriteChain } from '../../../../../src/application/primitives/internal/ref-write-chain.js';
 import { getRefStore } from '../../../../../src/application/primitives/ref-store.js';
@@ -22,6 +22,10 @@ const noDerefWithExpected = (expected: ObjectId | 'absent'): UpdateRefOptions =>
   reflogMessage: 'test',
   noDeref: true,
   expected,
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('resolveWriteChain', () => {

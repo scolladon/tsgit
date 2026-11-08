@@ -25,7 +25,7 @@
  *  - refs/reflogs/index untouched; loose-oid cache invariant repair
  *  - structural: every result field is a count, boolean or enum
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -279,6 +279,10 @@ async function writePromisorPack(
   await ctx.fs.write(`${packDirOf(ctx)}/pack-${name}.promisor`, new Uint8Array(0));
   return ids as ReadonlyArray<ObjectId>;
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('maintenance gc with an alternate', () => {
   describe('Given a borrower with donor loose objects', () => {
@@ -1557,7 +1561,7 @@ describe('maintenance', () => {
 
   describe('Given a non-directory entry sitting in the worktrees registry', () => {
     describe('When gc runs the retention-root scan', () => {
-      it('Then it is skipped, its gitdir read failing as an unopenable file', async () => {
+      it('Then gc completes with the stray entry skipped', async () => {
         // Arrange — a stray file is not a worktree admin dir; reading
         // `<file>/gitdir` fails NOT_A_DIRECTORY and git skips it then.
         const ctx = await seedOneCommit();

@@ -2,7 +2,7 @@
  * A ref whose chain fails to resolve to an object is reported with a zero pointer,
  * as are the refs that lead to it: the listing difference names every one.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fsck } from '../../../../src/application/commands/fsck.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -33,6 +33,10 @@ const pointersOf = (result: Awaited<ReturnType<typeof fsck>>) =>
 
 const pointers = (...names: ReadonlyArray<string>) =>
   names.map((name) => ({ ref: `refs/heads/${name}`, target: ZERO_POINTER }));
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('Given a symbolic ref leading to a ref holding garbage', () => {
   describe.each([

@@ -361,6 +361,7 @@ const rows: ReadonlyArray<Row> = [
   },
   {
     given: 'garbage in root refs of the main store and of a linked worktree',
+    runs: ORDER_RUNS,
     files: {
       ORIG_HEAD: GARBAGE,
       [`worktrees/${LINKED}/ORIG_HEAD`]: GARBAGE,
@@ -370,6 +371,7 @@ const rows: ReadonlyArray<Row> = [
   },
   {
     given: 'several broken root refs in a linked worktree',
+    runs: ORDER_RUNS,
     files: {
       [`worktrees/${LINKED}/AUTO_MERGE`]: '{commit}',
       [`worktrees/${LINKED}/REBASE_HEAD`]: GARBAGE,

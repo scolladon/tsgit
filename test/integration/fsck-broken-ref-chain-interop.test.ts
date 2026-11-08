@@ -1172,6 +1172,7 @@ const gitReportLines = (stderr: string): ReadonlyArray<string> =>
 
 /** A root ref file of a linked store: its parent directory is `<dir>/.git/worktrees/<id>`. */
 const isLinkedRootRefFile = (dir: string, file: string): boolean =>
+  path.basename(file) !== 'refs' &&
   path.dirname(path.dirname(file)) === path.join(dir, '.git', 'worktrees');
 
 /** git prints a path from the top level, but an explicit `--git-dir`, anything seen from a linked

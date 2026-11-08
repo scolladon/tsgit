@@ -4,7 +4,7 @@
  * from a linked worktree `main-worktree/HEAD`. Each is a reachability root,
  * and one naming an absent object is an `invalid sha1 pointer` (bit 2).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { snapshotWorktreeHeads } from '../../../../src/application/commands/internal/fsck/roots.js';
@@ -60,6 +60,10 @@ const pointer = (ref: string) => ({
   msgId: 'badRefOid',
   severity: 'error',
   target: ABSENT,
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('Given a linked worktree whose detached HEAD names an absent object', () => {
