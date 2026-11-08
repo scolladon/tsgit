@@ -6,7 +6,9 @@
  * and tsgit's `updateRef` in the other, and compares what changed in the common dir: every
  * file outside the object store and the index files, log lines reduced to their ids and
  * message. A refusal rebuilds git's stderr line from tsgit's structured error and asserts
- * neither twin changed.
+ * neither twin changed. On the reftable backend the table files are left out of that listing
+ * and every stack's ref and log records, decoded by tsgit's reader, are compared instead.
+ * A reflog read compares `git log -g` against tsgit's `readReflog` on one repository.
  *
  * @proves
  *   surface:        updateRef
@@ -18,21 +20,32 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createNodeContext } from '../../src/adapters/node/index.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
-import { refLocation } from '../../src/application/primitives/path-layout.js';
+import { loadReftableStack } from '../../src/application/primitives/load-reftable-stack.js';
+import { refLocation, reftableDir } from '../../src/application/primitives/path-layout.js';
+import { readReflog } from '../../src/application/primitives/reflog-store.js';
+import { deleteRefs } from '../../src/application/primitives/update-ref.js';
+import { writeSymbolicRef } from '../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../src/domain/index.js';
-import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
+import { type ObjectId, type RefName, ZERO_OID } from '../../src/domain/objects/index.js';
+import type { ReftableRefValue } from '../../src/domain/refs/reftable/reftable-block.js';
+import { iterateReftableLogs } from '../../src/domain/refs/reftable/reftable-log.js';
+import type { ReftableStack } from '../../src/domain/refs/reftable/reftable-stack.js';
 import type { Repository } from '../../src/repository.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
-import { trackedRepositories } from './repository-lifecycle.js';
+import { trackedContexts, trackedRepositories } from './repository-lifecycle.js';
 
 const SETUP_TIMEOUT = 60_000;
 const FATAL_EXIT = 128;
+const ERROR_EXIT = 1;
 const MESSAGE = 'probe';
+const SEED_MESSAGE = 'seed';
+const MAIN_STACK = '.';
 const REPEATS = 3;
 const LOCK_SUFFIX = '.lock';
 const COMMITTER_EPOCH = 1_700_000_000;
-const SKIPPED_ENTRY = /^(objects|index|worktrees\/[^/]+\/index)$/;
+const SKIPPED_ENTRY = /^(objects|index|reftable|worktrees\/[^/]+\/(index|reftable))$/;
 const LOG_FILE = /^(logs|worktrees\/[^/]+\/logs)\//;
 const PINNED_ENV: NodeJS.ProcessEnv = {
   ...runGitEnv(),
@@ -59,6 +72,9 @@ interface Shape {
   readonly noDeref?: true;
   /** Files by path relative to the common dir, written once seeded. */
   readonly extraFiles?: Readonly<Record<string, string>>;
+  /** Refs git sets to A from the main worktree once seeded. */
+  readonly extraRefs?: ReadonlyArray<string>;
+  readonly reftable?: true;
   /** Fresh twin pairs the row runs on. */
   readonly runs?: number;
 }
@@ -73,16 +89,31 @@ interface RefusalRow extends Shape {
   readonly colliding: string;
 }
 
+interface BadNameRow extends Shape {
+  /** The symbolic-ref target; absent for a delete. */
+  readonly target?: string;
+  /** Names deleted ahead of `name` in the same transaction (`update-ref --stdin`). */
+  readonly deletedFirst?: ReadonlyArray<string>;
+}
+
+interface ReflogRow extends Shape {
+  /** The worktree whose own HEAD gains the seeded entry. */
+  readonly seededIn: Origin;
+}
+
 interface Fixture {
   readonly root: string;
   readonly common: string;
   readonly cwd: string;
+  readonly dirs: Readonly<Record<Origin, string>>;
+  readonly reftable: boolean;
   readonly b: string;
 }
 
 const BRANCHES = 'both HEADs on branches';
 const MAIN_DETACHED = 'the main HEAD detached and the linked HEAD on a branch';
 const LINKED_DETACHED = 'the main HEAD on a branch and the linked HEAD detached';
+const ON_REFTABLE = 'on the reftable backend';
 const MAIN_HEAD_LINK = { 'refs/heads/x': 'ref: main-worktree/HEAD\n' } as const;
 const SELF_LINK = { 'refs/bisect/c': 'ref: main-worktree/refs/bisect/c\n' } as const;
 
@@ -197,6 +228,66 @@ const writeRows: ReadonlyArray<WriteRow> = [
     from: 'main',
     changes: ['worktrees/nope/refs/bisect/z'],
   },
+  ...(['main', 'wt'] as const).flatMap(
+    (from): ReadonlyArray<WriteRow> => [
+      {
+        given: `${BRANCHES} ${ON_REFTABLE}`,
+        name: 'main-worktree/HEAD',
+        from,
+        reftable: true,
+        changes: ['. log main-worktree/HEAD', '. log refs/heads/main', '. ref refs/heads/main'],
+      },
+      {
+        given: `${BRANCHES} ${ON_REFTABLE}`,
+        name: 'main-worktree/refs/bisect/x',
+        from,
+        reftable: true,
+        changes: ['. ref main-worktree/refs/bisect/x'],
+      },
+      {
+        given: `${BRANCHES} ${ON_REFTABLE}`,
+        name: 'worktrees/wt/refs/bisect/y',
+        from,
+        reftable: true,
+        changes: ['worktrees/wt ref worktrees/wt/refs/bisect/y'],
+      },
+      {
+        given: `${BRANCHES} ${ON_REFTABLE}`,
+        name: 'worktrees/wt/HEAD',
+        from,
+        reftable: true,
+        changes: [
+          '. log refs/heads/side',
+          '. ref refs/heads/side',
+          'worktrees/wt log worktrees/wt/HEAD',
+        ],
+      },
+    ],
+  ),
+  {
+    given: `${MAIN_DETACHED} ${ON_REFTABLE}`,
+    name: 'main-worktree/HEAD',
+    from: 'main',
+    detached: 'main',
+    reftable: true,
+    changes: ['. log main-worktree/HEAD', '. ref main-worktree/HEAD'],
+  },
+  {
+    given: `${BRANCHES} ${ON_REFTABLE}`,
+    name: 'main-worktree/HEAD',
+    from: 'main',
+    noDeref: true,
+    reftable: true,
+    changes: ['. log main-worktree/HEAD', '. ref main-worktree/HEAD'],
+  },
+  {
+    given: `${LINKED_DETACHED} ${ON_REFTABLE}`,
+    name: 'worktrees/wt/HEAD',
+    from: 'wt',
+    detached: 'wt',
+    reftable: true,
+    changes: ['worktrees/wt log worktrees/wt/HEAD', 'worktrees/wt ref worktrees/wt/HEAD'],
+  },
 ];
 
 const refusalRows: ReadonlyArray<RefusalRow> = [
@@ -218,8 +309,52 @@ const refusalRows: ReadonlyArray<RefusalRow> = [
   },
 ];
 
+const badNameRows: ReadonlyArray<BadNameRow> = [
+  { given: BRANCHES, name: 'main-worktree/refs/bisect/s', from: 'main', runs: REPEATS },
+  { given: BRANCHES, name: 'main-worktree/refs/bisect/s', from: 'wt', runs: REPEATS },
+  { given: BRANCHES, name: 'worktrees/wt/refs/bisect/t', from: 'main' },
+  { given: BRANCHES, name: 'worktrees/wt/refs/bisect/t', from: 'wt' },
+  { given: BRANCHES, name: 'main-worktree/HEAD', from: 'wt' },
+  { given: BRANCHES, name: 'worktrees/wt/HEAD', from: 'main', runs: REPEATS },
+  { given: `${BRANCHES} and foo/bar at A`, name: 'foo/bar', from: 'main', extraRefs: ['foo/bar'] },
+  { given: BRANCHES, name: 'main-worktree/HEAD', from: 'main', target: 'refs/heads/side' },
+  { given: BRANCHES, name: 'main-worktree/HEAD', from: 'wt', target: 'refs/heads/side' },
+  { given: BRANCHES, name: 'worktrees/wt/HEAD', from: 'main', target: 'refs/heads/main' },
+  {
+    given: BRANCHES,
+    name: 'main-worktree/refs/bisect/s',
+    from: 'main',
+    deletedFirst: ['refs/bisect/s'],
+  },
+  {
+    given: `${BRANCHES} ${ON_REFTABLE}`,
+    name: 'main-worktree/refs/bisect/s',
+    from: 'main',
+    reftable: true,
+  },
+  {
+    given: `${BRANCHES} ${ON_REFTABLE}`,
+    name: 'worktrees/wt/refs/bisect/t',
+    from: 'main',
+    reftable: true,
+  },
+];
+
+const reflogRows: ReadonlyArray<ReflogRow> = [
+  { given: BRANCHES, name: 'main-worktree/HEAD', from: 'wt', seededIn: 'main' },
+  {
+    given: `${BRANCHES} ${ON_REFTABLE}`,
+    name: 'main-worktree/HEAD',
+    from: 'wt',
+    seededIn: 'main',
+    reftable: true,
+  },
+  { given: BRANCHES, name: 'worktrees/wt/HEAD', from: 'main', seededIn: 'wt' },
+];
+
 const roots: string[] = [];
 const open = trackedRepositories();
+const context = trackedContexts(createNodeContext);
 
 afterEach(async () => {
   __resetConfigCacheForTests();
@@ -231,6 +366,12 @@ const git = (dir: string, ...args: ReadonlyArray<string>): string =>
 
 const commitTree = (dir: string, tree: string, message: string, parents: string[]): string =>
   runGit(['-C', dir, 'commit-tree', tree, ...parents, '-m', message], { env: PINNED_ENV }).trim();
+
+const gitIn = (fixture: Fixture): ReadonlyArray<string> => [
+  '-C',
+  fixture.cwd,
+  ...['-c', 'commit.gpgsign=false', '-c', 'gc.auto=0'],
+];
 
 const writeExtraFiles = async (common: string, files: Shape['extraFiles']): Promise<void> => {
   for (const [relative, body] of Object.entries(files ?? {})) {
@@ -251,18 +392,20 @@ const buildFixture = async (shape: Shape): Promise<Fixture> => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-wt-ns-write-')));
   roots.push(root);
   const main = path.join(root, 'repo');
-  git(root, 'init', '-q', '-b', 'main', main);
+  const format = shape.reftable ? ['--ref-format=reftable'] : [];
+  git(root, 'init', '-q', '-b', 'main', ...format, main);
   const { a, b } = seedCommits(main);
   git(main, 'update-ref', 'refs/heads/main', a);
   git(main, 'worktree', 'add', '-q', 'wt', '-b', 'side');
   const dirs: Readonly<Record<Origin, string>> = { main, wt: path.join(main, 'wt') };
   git(dirs.main, 'update-ref', 'refs/bisect/s', a);
   git(dirs.wt, 'update-ref', 'refs/bisect/t', a);
+  for (const name of shape.extraRefs ?? []) git(dirs.main, 'update-ref', name, a);
   if (shape.detached !== undefined)
     git(dirs[shape.detached], 'update-ref', '--no-deref', 'HEAD', a);
   const common = path.join(main, '.git');
   await writeExtraFiles(common, shape.extraFiles);
-  return { root, common, cwd: dirs[shape.from], b };
+  return { root, common, cwd: dirs[shape.from], dirs, reftable: shape.reftable ?? false, b };
 };
 
 const normalisedLog = (body: string): string =>
@@ -290,6 +433,52 @@ const listCommon = async (common: string, relative = ''): Promise<Listing> => {
   return listing;
 };
 
+const refValueOf = (value: ReftableRefValue): string => {
+  if (value.kind === 'symbolic') return `ref: ${value.target}`;
+  if (value.kind === 'peeled') return `${value.id} ^${value.peeled}`;
+  return value.kind === 'direct' ? value.id : value.kind;
+};
+
+const loggedNames = (stack: ReftableStack): ReadonlySet<RefName> =>
+  new Set(stack.tables.flatMap((table) => [...iterateReftableLogs(table)].map((log) => log.name)));
+
+/** A stack's live records, keyed `<stack> ref|log <name>`; a log reads as its entry count and
+ *  newest entry. */
+const listStack = (stack: ReftableStack, label: string): Listing => {
+  const listing: Record<string, string> = {};
+  for (const record of stack.entries())
+    listing[`${label} ref ${record.name}`] = refValueOf(record.value);
+  for (const name of loggedNames(stack)) {
+    const entries = [...stack.logs(name)].flatMap((log) =>
+      log.entry.kind === 'entry' ? [log.entry] : [],
+    );
+    const [newest] = entries;
+    if (newest !== undefined)
+      listing[`${label} log ${name}`] =
+        `${entries.length} ${newest.oldId} ${newest.newId}\t${newest.message}`;
+  }
+  return listing;
+};
+
+/** The main stack and every linked worktree's, read through one fresh Context. */
+const listStacks = async (fixture: Fixture): Promise<Listing> => {
+  const ctx = context({ workDir: fixture.dirs.main });
+  const admins = (await readdir(path.join(fixture.common, 'worktrees'))).map(
+    (id) => `worktrees/${id}`,
+  );
+  const listing: Record<string, string> = {};
+  for (const label of [MAIN_STACK, ...admins]) {
+    const stack = await loadReftableStack(ctx, reftableDir(path.join(fixture.common, label)));
+    Object.assign(listing, listStack(stack, label));
+  }
+  return listing;
+};
+
+const snapshotOf = async (fixture: Fixture): Promise<Listing> => ({
+  ...(await listCommon(fixture.common)),
+  ...(fixture.reftable ? await listStacks(fixture) : {}),
+});
+
 const deltaOf = (before: Listing, after: Listing): Delta => {
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
   return Object.fromEntries(
@@ -301,9 +490,7 @@ const deltaOf = (before: Listing, after: Listing): Delta => {
 
 const gitWrite = (fixture: Fixture, shape: Shape): ReturnType<typeof tryRunGitWithExit> =>
   tryRunGitWithExit([
-    '-C',
-    fixture.cwd,
-    ...['-c', 'commit.gpgsign=false', '-c', 'gc.auto=0'],
+    ...gitIn(fixture),
     ...['update-ref', '-m', MESSAGE],
     ...(shape.noDeref ? ['--no-deref'] : []),
     shape.name,
@@ -315,6 +502,43 @@ const tsgitWrite = (repo: Repository, fixture: Fixture, shape: Shape): Promise<v
     reflogMessage: MESSAGE,
     ...(shape.noDeref ? { noDeref: true } : {}),
   });
+
+const gitBadNameWrite = (
+  fixture: Fixture,
+  row: BadNameRow,
+): ReturnType<typeof tryRunGitWithExit> => {
+  if (row.target !== undefined)
+    return tryRunGitWithExit([
+      ...gitIn(fixture),
+      'symbolic-ref',
+      '-m',
+      MESSAGE,
+      row.name,
+      row.target,
+    ]);
+  if (row.deletedFirst === undefined)
+    return tryRunGitWithExit([...gitIn(fixture), 'update-ref', '-m', MESSAGE, '-d', row.name]);
+  const input = [...row.deletedFirst, row.name].map((name) => `delete ${name}\n`).join('');
+  return tryRunGitWithExit([...gitIn(fixture), 'update-ref', '-m', MESSAGE, '--stdin'], { input });
+};
+
+const tsgitBadNameWrite = (repo: Repository, row: BadNameRow): Promise<void> => {
+  if (row.target !== undefined)
+    return writeSymbolicRef(repo.ctx, row.name as RefName, row.target as RefName);
+  if (row.deletedFirst === undefined)
+    return repo.primitives.updateRef(row.name as RefName, ZERO_OID, {
+      delete: true,
+      reflogMessage: MESSAGE,
+    });
+  const names = [...row.deletedFirst, row.name].map((name) => name as RefName);
+  return deleteRefs(repo.ctx, names, { reflogMessage: MESSAGE });
+};
+
+/** git dies on a bad name inside `--stdin`, and reports it as an error otherwise. */
+const refusalOf = (row: BadNameRow): { readonly severity: string; readonly exitCode: number } =>
+  row.deletedFirst === undefined
+    ? { severity: 'error', exitCode: ERROR_EXIT }
+    : { severity: 'fatal', exitCode: FATAL_EXIT };
 
 const rejectionOf = async (write: Promise<void>): Promise<unknown> => {
   try {
@@ -331,6 +555,12 @@ const lockedLine = (error: unknown, lock: string): string => {
   return `fatal: update_ref failed for ref '${name}': cannot lock ref '${name}': Unable to create '${lock}': File exists.`;
 };
 
+/** INVALID_REF carries no name: the caller holds the one it passed, and git's line names it. */
+const badNameLine = (error: unknown, severity: string, name: string): string => {
+  if (!(error instanceof TsgitError) || error.data.code !== 'INVALID_REF') return String(error);
+  return `${severity}: ${error.data.reason} '${name}'`;
+};
+
 const ROOT_SPELLING = '<RB>';
 
 /** A line with its throwaway's root spelled `<RB>`, so the two twins' paths compare. */
@@ -341,6 +571,13 @@ const firstLine = (stderr: string): string => stderr.split('\n')[0] ?? '';
 
 const whenOf = (shape: Shape): string =>
   `When ${shape.name} is written${shape.noDeref ? ' without dereferencing' : ''} from the ${shape.from} worktree`;
+
+const whenOfBadName = (row: BadNameRow): string => {
+  const origin = `from the ${row.from} worktree`;
+  if (row.target !== undefined) return `When ${row.name} is pointed at ${row.target} ${origin}`;
+  if (row.deletedFirst === undefined) return `When ${row.name} is deleted ${origin}`;
+  return `When ${[...row.deletedFirst, row.name].join(' and ')} are deleted in one transaction ${origin}`;
+};
 
 const runsOf = (shape: Shape): ReadonlyArray<number> =>
   Array.from({ length: shape.runs ?? 1 }, (_, index) => index + 1);
@@ -355,10 +592,7 @@ describe('worktree ref namespace write interop', () => {
             // Arrange
             const theirs = await buildFixture(row);
             const ours = await buildFixture(row);
-            const [theirsBefore, oursBefore] = [
-              await listCommon(theirs.common),
-              await listCommon(ours.common),
-            ];
+            const [theirsBefore, oursBefore] = [await snapshotOf(theirs), await snapshotOf(ours)];
             const expected = gitWrite(theirs, row);
             const sut = await open({ cwd: ours.cwd });
             await sut.primitives.resolveRef('HEAD');
@@ -367,10 +601,10 @@ describe('worktree ref namespace write interop', () => {
             await tsgitWrite(sut, ours, row);
 
             // Assert
-            const gitDelta = deltaOf(theirsBefore, await listCommon(theirs.common));
+            const gitDelta = deltaOf(theirsBefore, await snapshotOf(theirs));
             expect(expected.exitCode).toBe(0);
             expect(Object.keys(gitDelta)).toEqual(row.changes);
-            expect(deltaOf(oursBefore, await listCommon(ours.common))).toEqual(gitDelta);
+            expect(deltaOf(oursBefore, await snapshotOf(ours))).toEqual(gitDelta);
             expect(await sut.primitives.resolveRef('HEAD')).toBe(
               git(theirs.cwd, 'rev-parse', 'HEAD').trim(),
             );
@@ -406,6 +640,60 @@ describe('worktree ref namespace write interop', () => {
             );
             expect(deltaOf(theirsBefore, await listCommon(theirs.common))).toEqual({});
             expect(deltaOf(oursBefore, await listCommon(ours.common))).toEqual({});
+          },
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(badNameRows)('Given $given', (row) => {
+      describe(whenOfBadName(row), () => {
+        it.each(runsOf(row))(
+          'Then tsgit refuses the bad name with git’s line and neither twin changes (throwaway %i)',
+          async () => {
+            // Arrange
+            const theirs = await buildFixture(row);
+            const ours = await buildFixture(row);
+            const [theirsBefore, oursBefore] = [await snapshotOf(theirs), await snapshotOf(ours)];
+            const expected = gitBadNameWrite(theirs, row);
+            const sut = await open({ cwd: ours.cwd });
+
+            // Act
+            const error = await rejectionOf(tsgitBadNameWrite(sut, row));
+
+            // Assert
+            const { severity, exitCode } = refusalOf(row);
+            expect(expected.exitCode).toBe(exitCode);
+            expect(badNameLine(error, severity, row.name)).toBe(firstLine(expected.stderr));
+            expect(deltaOf(theirsBefore, await snapshotOf(theirs))).toEqual({});
+            expect(deltaOf(oursBefore, await snapshotOf(ours))).toEqual({});
+          },
+          SETUP_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(reflogRows)('Given $given', (row) => {
+      describe(`When the reflog of ${row.name} is read from the ${row.from} worktree`, () => {
+        it(
+          `Then tsgit reads the entries git shows, the ${row.seededIn} worktree’s HEAD log`,
+          async () => {
+            // Arrange
+            const fixture = await buildFixture(row);
+            git(fixture.dirs[row.seededIn], 'update-ref', '-m', SEED_MESSAGE, 'HEAD', fixture.b);
+            const expected = git(fixture.cwd, 'log', '-g', '--format=%H%x09%gs', row.name)
+              .split('\n')
+              .filter((line) => line !== '');
+            const sut = await open({ cwd: fixture.cwd });
+
+            // Act
+            const entries = await readReflog(sut.ctx, row.name as RefName);
+
+            // Assert
+            expect(expected).toContain(`${fixture.b}\t${SEED_MESSAGE}`);
+            expect(
+              [...entries].reverse().map((entry) => `${entry.newId}\t${entry.message}`),
+            ).toEqual(expected);
           },
           SETUP_TIMEOUT,
         );
