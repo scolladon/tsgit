@@ -13,7 +13,7 @@ evidence:
 source: { run: gc-size-lying-loose-blob, phase: review, date: 2026-10-21 }
 status: active
 supersedes: []
-last-verified: 2026-11-05
+last-verified: 2026-11-08
 ---
 # 006 — Size caps at the headroom floor trip again on the review round
 
@@ -24,7 +24,10 @@ leaves 3 to 40 bytes of headroom. The feature crossed four caps and the user app
 the review round then added two small helpers (+155 B gzip on the full library) and crossed
 three caps a second time within two hours, costing a second approval. A stale `dist/` can fake
 the same red by hundreds of kilobytes, so the first question is always whether the build is
-clean.
+clean. The worktree-ref-store run (2026-11-08) took the other branch of the rule: the user
+chose a raise at the implementation gate, the review rounds then added 211, 171 and 100 B
+gzip over three caps and a second raise followed, while a stale `dist/` faked a 580 kB
+tarball overrun in between until `rm -rf dist .wireit` brought it back to 49 B under the cap.
 
 ## Lesson
 

@@ -11,7 +11,7 @@ evidence:
 source: { run: fsck-raw-byte-dotgit-alias, phase: review, date: 2026-11-06 }
 status: active
 supersedes: []
-last-verified: 2026-11-06
+last-verified: 2026-11-08
 ---
 # 031 — A test block anchored on a closing brace lands in whichever describe closes there
 

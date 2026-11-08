@@ -11,7 +11,7 @@ evidence:
 source: { run: fsck-broken-ref-chain-unreadable, phase: review, date: 2026-10-31 }
 status: active
 supersedes: []
-last-verified: 2026-10-31
+last-verified: 2026-11-08
 ---
 # 025 — A defence-in-depth refusal is pinned against git on every shape it reaches
 
