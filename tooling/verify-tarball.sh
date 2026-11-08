@@ -453,7 +453,14 @@ done
 # and the peel fold — runtime code shipped in every distribution form, none removable without
 # dropping the refusals and diagnostics git performs. Tightened 1516 -> 1514 KiB to the final
 # measurement (1 549 164 B, 1512.9 KiB) plus 1 KiB once the review and the mutation triage converged.
-SIZE_CAP=$((1514 * 1024))
+# Raised 1514 -> 1516 KiB by the worktree ref-store walk: the measured pack
+# landed at 1 551 577 B, 1 241 B over the old cap, attributable to the per-store
+# integrity walk with its OS-ordered admin enumeration and store prefixes, the
+# read and write ref locators behind the main-worktree namespace, the lock-name
+# and bad-name predicates, the badRefName and badHeadTarget facts with their
+# grades and shadow, and the unreadable-root-refs arm — runtime code shipped in
+# every distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1516 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
