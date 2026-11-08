@@ -252,6 +252,8 @@ findings as `type ref msgId severity` (`bad-ref` is implied when the type is omi
 | X3 | `mkfifo BISECT_HEAD` in the main gitdir and in `worktrees/wt` | w, wt | — | 0 | ✗ opens it, hangs | nothing: a root ref that is not a regular file is passed over |
 | X4 | main gitdir `BISECT_HEAD` a symbolic link to a named pipe | w | — | 0 | ✗ opens it, hangs | nothing: a root-ref link is followed by a stat, and a target that is not a regular file is passed over |
 | X5 | `mkfifo refs/bisect/bad` in the main store | w | `error: refs/bisect/bad: badRefFiletype: unexpected file type` | 8 | ✗ opens it, hangs | `refs/bisect/bad badRefFiletype error` |
+| C | main `refs/heads/sub/x.lock` = oid, `refs/heads/sub` mode 0444 | w | `warning: failed to stat '.git/refs/heads/sub/x.lock': Permission denied` (the iterator lstats every entry before a `.lock` basename is skipped) | 0 | ✗ the entry is filtered before any lstat, nothing reported | `unreadable-ref-path` with `operation: 'stat'` for the lock file, no content finding |
+| D | `.git/worktrees` a regular file, or mode 000 with a linked `wt` inside | w | — (a directory that cannot be opened lists no linked worktree) | 0 | ✗ throws `NOT_A_DIRECTORY` / `PERMISSION_DENIED` | no linked store listed, nothing reported |
 
 **Path spelling in git's lines** (the interop harness rebuilds it; tsgit always reports the
 absolute path it opened):

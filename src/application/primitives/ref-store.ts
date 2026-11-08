@@ -1417,18 +1417,28 @@ function createFilesRefStore(ctx: Context): RefStore {
     entries: ReadonlyArray<DirEntry>,
     run: IntegrityRun,
   ): Promise<void> {
-    for (const entry of entries.filter(isWalkedByRefsVerify)) {
+    for (const entry of entries) {
       if (run.ended) return;
       const path = `${dir}/${entry.name}`;
       if (await statRefusedUpFront(entry, path, run.findings)) continue;
+      if (await skippedLockEntry(entry, path, run.findings)) continue;
       const name = `${prefix}/${entry.name}` as RefName;
       if (entry.isDirectory) await walkIntegrity(path, name, run);
       else await judgeEntry(entry, name, path, run);
     }
   }
 
-  const isWalkedByRefsVerify = (entry: DirEntry): boolean =>
-    entry.isDirectory || !isSkippedByRefsVerify(entry.name);
+  /** git's refs-verify walk skips a `.lock` file by its name, after the iterator's `lstat` of
+   *  it: a stat the permissions refuse is still warned. A directory of that name is walked. */
+  async function skippedLockEntry(
+    entry: DirEntry,
+    path: string,
+    findings: RefIntegrityFinding[],
+  ): Promise<boolean> {
+    if (entry.isDirectory || !isSkippedByRefsVerify(entry.name)) return false;
+    if (!entry.isSymbolicLink) await entryStatRefused(path, findings);
+    return true;
+  }
 
   /** git's `files_fsck_ref` on one entry: a file type it never opens, then the name, then the
    *  content — a link's content being its referent. */

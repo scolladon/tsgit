@@ -6371,6 +6371,82 @@ describe("ref-store — the integrity walk of every worktree's ref store", () =>
       });
     });
 
+    describe('Given a lock file in refs/heads/', () => {
+      const lock = '/repo/.git/refs/heads/x.lock';
+      const refuseLstat = (ctx: Context): void => {
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation((path: string) =>
+          path === lock ? Promise.reject(permissionDenied(path)) : lstat(path),
+        );
+      };
+      const lstatCallsOnLock = (ctx: Context) =>
+        vi.mocked(ctx.fs.lstat).mock.calls.filter(([path]) => path === lock);
+
+      describe('When its lstat is refused', () => {
+        it('Then unreadableRefPath names it and no content is judged', async () => {
+          // Arrange
+          const ctx = await fromMain();
+          await ctx.fs.writeUtf8(lock, GARBAGE);
+          refuseLstat(ctx);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: lock }]);
+        });
+      });
+
+      describe('When it is a link whose lstat is refused', () => {
+        it('Then unreadableRefPath is reported once', async () => {
+          // Arrange
+          const ctx = await fromMain();
+          await ctx.fs.symlink('main', lock);
+          refuseLstat(ctx);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([{ msgId: 'unreadableRefPath', operation: 'stat', path: lock }]);
+        });
+      });
+
+      describe('When it is readable', () => {
+        it('Then nothing is reported after one lstat of it', async () => {
+          // Arrange
+          const ctx = await fromMain();
+          await ctx.fs.writeUtf8(lock, GARBAGE);
+          vi.spyOn(ctx.fs, 'lstat');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toEqual([]);
+          expect(lstatCallsOnLock(ctx)).toHaveLength(1);
+        });
+      });
+
+      describe('When a directory of that name holds garbage', () => {
+        it('Then the directory is still walked', async () => {
+          // Arrange
+          const ctx = await fromMain();
+          await ctx.fs.writeUtf8('/repo/.git/refs/heads/d.lock/inner', GARBAGE);
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.verifyIntegrity();
+
+          // Assert
+          expect(result).toContainEqual({ ref: 'refs/heads/d.lock/inner', msgId: 'badRefContent' });
+        });
+      });
+    });
+
     describe('Given a non-regular entry whose name is also invalid', () => {
       describe('When verifyIntegrity runs', () => {
         it('Then only badRefFiletype is reported', async () => {

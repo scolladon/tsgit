@@ -40,6 +40,7 @@ const TRAILING_BYTES = /[ \t\r\n]+$/;
 const RESTORED = 0o755;
 const HOP_CAP = 32;
 const NO_ACCESS = 0o000;
+const READ_ONLY = 0o444;
 const SEARCH_ONLY = 0o300;
 const ORDER_RUNS = 3;
 const UNPRIVILEGED = process.platform !== 'win32' && process.getuid?.() !== 0;
@@ -76,6 +77,8 @@ interface Shape {
   readonly fifos?: ReadonlyArray<string>;
   /** Linked worktree ids renamed to a new id once seeded, their work tree's `.git` file following. */
   readonly renamedAdmins?: Readonly<Record<string, string>>;
+  /** Gitdir-relative paths written empty once the moves are done. */
+  readonly blanks?: ReadonlyArray<string>;
   /** Gitdir-relative paths given a mode once seeded. */
   readonly restricted?: Readonly<Record<string, number>>;
   readonly packed?: ReadonlyArray<string>;
@@ -481,6 +484,23 @@ const rows: ReadonlyArray<Row> = [
     runs: ORDER_RUNS,
     origins: BOTH,
   },
+  {
+    given: 'a lock file whose directory can be listed but not searched',
+    files: { 'refs/heads/sub/x.lock': COMMIT_LINE },
+    restricted: { 'refs/heads/sub': READ_ONLY },
+    origins: FROM_MAIN,
+  },
+  {
+    given: 'a worktrees path that is a regular file',
+    moved: { worktrees: 'worktrees.real' },
+    blanks: ['worktrees'],
+    origins: FROM_MAIN,
+  },
+  {
+    given: 'a worktrees directory without any access',
+    restricted: { worktrees: NO_ACCESS },
+    origins: FROM_MAIN,
+  },
 ];
 
 const SEPARATE_BISECT_NAMES = [
@@ -653,6 +673,7 @@ const seedStores = async (arranged: Arranged, commit: string): Promise<void> => 
   for (const relative of shape.removed ?? []) await rm(path.join(gitDir, relative));
   await seedAdminRenames(root, gitDir, shape.renamedAdmins ?? {});
   await seedMoves(gitDir, shape.moved ?? {});
+  for (const relative of shape.blanks ?? []) await writeUnder(gitDir, relative, '');
   await seedLinks(gitDir, shape.links ?? {}, fill);
   if (shape.packed !== undefined) {
     const lines = shape.packed.map((line) => `${fill(line)}\n`).join('');

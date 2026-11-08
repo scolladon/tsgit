@@ -130,7 +130,7 @@ interface FsckResult {
 | `indexRoot` | `boolean` | `true` | Treat index blob OIDs — and, when present, the index's cache-tree tree OIDs — as reachability roots (git's default). Set `false` to exclude the index from every role: roots and the cache-tree check below. |
 | `full` | `boolean` | `true` | Include pack objects (git's `--full`). Set `false` to scan loose objects only. |
 | `strict` | `boolean` | `false` | Upgrade WARN-class msg-ids to ERROR and contribute exit bit 1 (git's `--strict`). |
-| `checkReferences` | `boolean` | `true` | Run the `git refs verify` ref-content pass over the main store and every linked worktree's store, from any working directory; malformed ref content produces `bad-ref` findings with exit bit 8. `false` (git's `--no-references`) drops every finding of the pass (`bad-ref` content and `cannotReadRef`, `unreadable-ref-path`, `refs-walk-failed`, `unreadable-root-refs`, `refs-verify-ended`) but not the `badRefOid` pointers, which stay. |
+| `checkReferences` | `boolean` | `true` | Run the `git refs verify` ref-content pass over the main store and every linked worktree's store, from any working directory; malformed ref content produces `bad-ref` findings with exit bit 8. `false` (git's `--no-references`) drops every finding of the pass (`bad-ref` content and `cannotReadRef`, `unreadable-ref-path`, `refs-walk-failed`, `unreadable-root-refs`, `refs-verify-ended`) but not the `badRefOid` pointers, which stay. A `.git/worktrees` that cannot be opened (a regular file, or a directory the permissions refuse to list) lists no linked store. |
 
 ### Caller projections (the library ships data, not rendering)
 

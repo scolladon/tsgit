@@ -792,3 +792,23 @@ describe('Given a non-regular entry under a linked worktree refs/bisect/', () =>
     });
   });
 });
+
+describe('Given a worktrees path that is a regular file', () => {
+  describe('When fsck runs', () => {
+    it('Then no linked store is listed and the exit code is clean', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees`, '');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(refsOnly(result.findings)).toEqual([]);
+      expect(result.findings.filter((finding) => finding.type === 'bad-ref')).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});

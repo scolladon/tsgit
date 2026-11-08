@@ -190,6 +190,42 @@ describe('linkedWorktreeAdmins', () => {
     });
   });
 
+  describe('Given a worktrees path that is a regular file', () => {
+    describe('When the admins are listed', () => {
+      it('Then there are none', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees`, '');
+        const sut = linkedWorktreeAdmins;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a worktrees directory whose listing is refused', () => {
+    describe('When the admins are listed', () => {
+      it('Then there are none', async () => {
+        // Arrange
+        const ctx = await repoWithWorktrees();
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          throw permissionDenied(path);
+        });
+        const sut = linkedWorktreeAdmins;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
   describe('Given an adapter that lists in OS order', () => {
     describe('When the admins are listed', () => {
       it('Then they follow that order', async () => {
