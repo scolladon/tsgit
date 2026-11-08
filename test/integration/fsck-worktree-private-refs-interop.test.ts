@@ -18,8 +18,9 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FsckFinding, FsckOptions, FsckResult } from '../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
+import { getRefStore } from '../../src/application/primitives/ref-store.js';
 import { TsgitError } from '../../src/domain/index.js';
-import { GIT_AVAILABLE, runGit, tryRunGitWithExit } from './interop-helpers.js';
+import { GIT_AVAILABLE, revParseStdout, runGit, tryRunGitWithExit } from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
 
 const SETUP_TIMEOUT = 60_000;
@@ -422,6 +423,91 @@ const rows: ReadonlyArray<Row> = [
     runs: ORDER_RUNS,
     sequence: true,
   },
+  ...[
+    'ref: main-worktree/HEAD\n',
+    'ref: worktrees/wt/HEAD\n',
+    'ref: worktrees/wt/refs/bisect/bad\n',
+  ].map((body) => ({
+    given: `a head that is a symbolic ref holding '${body.trim()}'`,
+    files: { 'refs/heads/x': body, [BISECT_BAD]: COMMIT_LINE },
+    origins: BOTH,
+  })),
+  {
+    given: 'a head that is a symbolic ref to the main bisect ref through the main-worktree name',
+    files: { 'refs/heads/x': 'ref: main-worktree/refs/bisect/bad\n', [BISECT_BAD]: COMMIT_LINE },
+    origins: BOTH,
+  },
+];
+
+const SEPARATE_BISECT_NAMES = [
+  'main-worktree/HEAD',
+  'worktrees/wt/HEAD',
+  'worktrees/wt/refs/bisect/bad',
+  'main-worktree/refs/heads/main',
+  'worktrees/wt/refs/heads/side',
+  'worktrees/nope/HEAD',
+] as const;
+
+const PACKED_PAIR_NAMES = [
+  'main-worktree/refs/bisect/bad',
+  'main-worktree/refs/bisect/packed',
+  'main-worktree/refs/bisect/fullname',
+  'main-worktree/ORIG_HEAD',
+  'worktrees/wt',
+] as const;
+
+interface NameRow {
+  readonly given: string;
+  readonly shape: Shape;
+  readonly names: ReadonlyArray<string>;
+}
+
+const nameRows: ReadonlyArray<NameRow> = [
+  {
+    given: 'a bisect ref in the admin dir of a linked worktree',
+    shape: { given: 'x', files: { [LINKED_BISECT_BAD]: COMMIT_LINE } },
+    names: SEPARATE_BISECT_NAMES,
+  },
+  {
+    given: 'loose and packed bisect refs in the main store',
+    shape: {
+      given: 'x',
+      files: { [BISECT_BAD]: COMMIT_LINE, ORIG_HEAD: COMMIT_LINE },
+      packed: [
+        `{commit} ${BISECT_BAD.replace('bad', 'packed')}`,
+        '{commit} main-worktree/refs/bisect/fullname',
+      ],
+    },
+    names: PACKED_PAIR_NAMES,
+  },
+];
+
+interface ListingRow {
+  readonly given: string;
+  readonly shape: Shape;
+  readonly origins: ReadonlyArray<string>;
+}
+
+const VT = 'vt';
+const listingRows: ReadonlyArray<ListingRow> = [
+  {
+    given: 'lock files among the main store heads, one holding garbage and one a valid id',
+    shape: {
+      given: 'x',
+      files: { 'refs/heads/x.lock': GARBAGE, 'refs/heads/y.lock': COMMIT_LINE },
+    },
+    origins: FROM_MAIN,
+  },
+  {
+    given: "a dot-led lock file in a linked worktree's bisect namespace",
+    shape: { given: 'x', files: { [`worktrees/${LINKED}/refs/bisect/.x.lock`]: GARBAGE } },
+    origins: FROM_LINKED,
+  },
+  {
+    given: 'a hand-made worktree admin dir whose refs is a file',
+    shape: { given: 'x', handMade: { [VT]: { workDir: true, refsFile: true } } },
+    origins: [VT],
+  },
 ];
 
 const roots: string[] = [];
@@ -682,6 +768,37 @@ const originsOf = (row: Row): ReadonlyArray<{ readonly from: string; readonly la
     label: from === MAIN ? 'the main worktree' : `the linked worktree ${from}`,
   }));
 
+const lastLineOf = (text: string): string => text.trim().split('\n').at(-1) ?? '';
+
+const linesOf = (text: string): ReadonlyArray<string> =>
+  text
+    .split('\n')
+    .filter((line) => line !== '')
+    .sort();
+
+const namesUnderRefs = (names: ReadonlyArray<string>): ReadonlyArray<string> =>
+  names.filter((name) => name.startsWith('refs/')).sort();
+
+interface Resolution {
+  readonly exitCode: number;
+  readonly line: string;
+}
+
+/** git's `rev-parse --verify` outcome, rebuilt from the structured entries or the refusal code. */
+const resolution = async (
+  repo: Awaited<ReturnType<typeof open>>,
+  name: string,
+): Promise<Resolution> => {
+  try {
+    return { exitCode: 0, line: revParseStdout(await repo.revParse(name)) };
+  } catch (error) {
+    if (error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND') {
+      return { exitCode: FATAL_EXIT, line: 'fatal: Needed a single revision' };
+    }
+    throw error;
+  }
+};
+
 describe.skipIf(!GIT_AVAILABLE)('Given a repository whose worktrees keep private refs', () => {
   describe.each(rows.filter((row) => row.fatal === undefined))('Given $given', (row) => {
     describe.each(originsOf(row))('When fsck runs from $label', ({ from }) => {
@@ -724,6 +841,57 @@ describe.skipIf(!GIT_AVAILABLE)('Given a repository whose worktrees keep private
           // Assert
           expect(expected.exitCode).toBe(FATAL_EXIT);
           expect(code).toBe(row.fatal);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+
+  describe.each(nameRows)('Given $given', ({ shape, names }) => {
+    describe.each([MAIN, LINKED])('When rev-parse runs from %s', (from) => {
+      it.each(names)(
+        'Then tsgit resolves %s as git does',
+        async (name) => {
+          // Arrange
+          const arranged = await seed(shape, from);
+          const expected = tryRunGitWithExit(['-C', arranged.cwd, 'rev-parse', '--verify', name]);
+          const sut = await open({ cwd: arranged.cwd });
+
+          // Act
+          const outcome = await resolution(sut, name);
+
+          // Assert
+          expect(outcome.exitCode).toBe(expected.exitCode);
+          expect(outcome.line).toBe(
+            lastLineOf(expected.exitCode === 0 ? expected.stdout : expected.stderr),
+          );
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+
+  describe.each(listingRows)('Given $given', ({ shape, origins }) => {
+    describe.each(origins)('When refs are listed from %s', (from) => {
+      it(
+        'Then tsgit lists the names git lists',
+        async () => {
+          // Arrange
+          const arranged = await seed(shape, from);
+          const expected = tryRunGitWithExit([
+            '-C',
+            arranged.cwd,
+            'for-each-ref',
+            '--format=%(refname)',
+          ]);
+          const sut = getRefStore((await open({ cwd: arranged.cwd })).ctx);
+
+          // Act
+          const names = await sut.listRefNames();
+
+          // Assert
+          expect(expected.exitCode).toBe(0);
+          expect(namesUnderRefs(names)).toEqual(linesOf(expected.stdout));
         },
         SETUP_TIMEOUT,
       );
