@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { forgetLooseOidPrefix } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
+import { loadReftableStack } from '../../../../src/application/primitives/load-reftable-stack.js';
 import {
   commonGitDir,
+  reftableDir,
   shallowFilePath,
 } from '../../../../src/application/primitives/path-layout.js';
 import {
@@ -2732,6 +2734,192 @@ describe('updateRef — a chain that walks HEAD', () => {
           (call) => call.path === headPath && call.method === 'readUtf8',
         );
         expect(headContentReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with its main HEAD on main and wt on side', () => {
+    const SIDE = 'refs/heads/side' as RefName;
+    const MAIN_WORKTREE_HEAD = 'main-worktree/HEAD' as RefName;
+    const WT_HEAD = 'worktrees/wt/HEAD' as RefName;
+
+    interface ReftableWorktrees {
+      readonly main: Context;
+      readonly wt: Context;
+      readonly a: ObjectId;
+      readonly b: ObjectId;
+    }
+
+    /** main and side at A with one log entry each, the main HEAD on main, wt's HEAD on side. */
+    async function seedReftableWorktrees(): Promise<ReftableWorktrees> {
+      const main = withReftableStorage(createMemoryContext());
+      const wt = asWorktreeChild(main);
+      const a = await writeCommit(main, 'A');
+      const b = await writeCommit(main, 'B');
+      const reflog = { oldId: ZERO, newId: a, message: 'seed' };
+      await getRefStore(main).applyRefUpdates([
+        { kind: 'set', name: MAIN, id: a, reflog },
+        { kind: 'set', name: SIDE, id: a, reflog },
+        { kind: 'setSymbolic', name: HEAD, target: MAIN },
+      ]);
+      await getRefStore(wt).applyRefUpdates([{ kind: 'setSymbolic', name: HEAD, target: SIDE }]);
+      return { main, wt, a, b };
+    }
+
+    /** How many log records the stack under `gitDir` holds for the literal record name `name`. */
+    async function logCount(ctx: Context, gitDir: string, name: RefName): Promise<number> {
+      const stack = await loadReftableStack(ctx, reftableDir(gitDir));
+      return [...stack.logs(name)].length;
+    }
+
+    /** The ref record the stack under `gitDir` holds for the literal record name `name`. */
+    async function recordValue(ctx: Context, gitDir: string, name: RefName) {
+      const stack = await loadReftableStack(ctx, reftableDir(gitDir));
+      return stack.lookup(name)?.value;
+    }
+
+    describe('When updateRef writes main-worktree/HEAD from the main worktree', () => {
+      it('Then refs/heads/main = B, main logs once more, the common stack logs main-worktree/HEAD once, and HEAD logs nothing', async () => {
+        // Arrange
+        const { main, b } = await seedReftableWorktrees();
+        const common = main.layout.gitDir;
+        const headLogsBefore = await logCount(main, common, HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(main, MAIN_WORKTREE_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await getRefStore(main).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, common, MAIN)).toBe(2);
+        expect(await logCount(main, common, MAIN_WORKTREE_HEAD)).toBe(1);
+        expect(await recordValue(main, common, MAIN_WORKTREE_HEAD)).toBeUndefined();
+        expect(await logCount(main, common, HEAD)).toBe(headLogsBefore);
+      });
+    });
+
+    describe('When updateRef writes main-worktree/HEAD from wt', () => {
+      it('Then refs/heads/main = B, main logs once more, the common stack logs main-worktree/HEAD once, and neither HEAD logs anything', async () => {
+        // Arrange
+        const { main, wt, b } = await seedReftableWorktrees();
+        const common = main.layout.gitDir;
+        const mainHeadLogsBefore = await logCount(main, common, HEAD);
+        const wtHeadLogsBefore = await logCount(main, adminDir(main), HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(wt, MAIN_WORKTREE_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await getRefStore(main).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, common, MAIN)).toBe(2);
+        expect(await logCount(main, common, MAIN_WORKTREE_HEAD)).toBe(1);
+        expect(await logCount(main, common, HEAD)).toBe(mainHeadLogsBefore);
+        expect(await logCount(main, adminDir(main), HEAD)).toBe(wtHeadLogsBefore);
+      });
+    });
+
+    describe('When updateRef writes worktrees/wt/HEAD from wt', () => {
+      it("Then side = B, side logs once more, wt's stack logs worktrees/wt/HEAD once, and its HEAD logs nothing", async () => {
+        // Arrange
+        const { main, wt, b } = await seedReftableWorktrees();
+        const own = adminDir(main);
+        const headLogsBefore = await logCount(main, own, HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(wt, WT_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await getRefStore(main).resolveDirect(SIDE)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, main.layout.gitDir, SIDE)).toBe(2);
+        expect(await logCount(main, own, WT_HEAD)).toBe(1);
+        expect(await recordValue(main, own, WT_HEAD)).toBeUndefined();
+        expect(await logCount(main, own, HEAD)).toBe(headLogsBefore);
+      });
+    });
+
+    describe('When updateRef writes worktrees/wt/HEAD from the main worktree', () => {
+      it("Then side = B, side logs once more, wt's stack logs worktrees/wt/HEAD once, and neither HEAD logs anything", async () => {
+        // Arrange
+        const { main, b } = await seedReftableWorktrees();
+        const own = adminDir(main);
+        const mainHeadLogsBefore = await logCount(main, main.layout.gitDir, HEAD);
+        const wtHeadLogsBefore = await logCount(main, own, HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(main, WT_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await getRefStore(main).resolveDirect(SIDE)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, main.layout.gitDir, SIDE)).toBe(2);
+        expect(await logCount(main, own, WT_HEAD)).toBe(1);
+        expect(await logCount(main, main.layout.gitDir, HEAD)).toBe(mainHeadLogsBefore);
+        expect(await logCount(main, own, HEAD)).toBe(wtHeadLogsBefore);
+      });
+    });
+
+    describe('When updateRef writes main-worktree/HEAD with the main HEAD detached at A', () => {
+      it('Then the common stack holds a ref and a log record named main-worktree/HEAD and HEAD still answers A', async () => {
+        // Arrange
+        const { main, a, b } = await seedReftableWorktrees();
+        await getRefStore(main).applyRefUpdates([{ kind: 'set', name: HEAD, id: a }]);
+        const common = main.layout.gitDir;
+        const sut = updateRef;
+
+        // Act
+        await sut(main, MAIN_WORKTREE_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await recordValue(main, common, MAIN_WORKTREE_HEAD)).toEqual({
+          kind: 'direct',
+          id: b,
+        });
+        expect(await logCount(main, common, MAIN_WORKTREE_HEAD)).toBe(1);
+        expect(await getRefStore(main).resolveDirect(HEAD)).toEqual({ kind: 'direct', id: a });
+      });
+    });
+
+    describe('When updateRef writes main-worktree/HEAD with noDeref from the main worktree', () => {
+      it('Then the common stack holds a ref and a log record named main-worktree/HEAD and HEAD still names main at A', async () => {
+        // Arrange
+        const { main, a, b } = await seedReftableWorktrees();
+        const common = main.layout.gitDir;
+        const sut = updateRef;
+
+        // Act
+        await sut(main, MAIN_WORKTREE_HEAD, b, { reflogMessage: REASON, noDeref: true });
+
+        // Assert
+        expect(await recordValue(main, common, MAIN_WORKTREE_HEAD)).toEqual({
+          kind: 'direct',
+          id: b,
+        });
+        expect(await logCount(main, common, MAIN_WORKTREE_HEAD)).toBe(1);
+        expect(await getRefStore(main).resolveDirect(HEAD)).toEqual({
+          kind: 'symbolic',
+          target: MAIN,
+        });
+        expect(await getRefStore(main).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: a });
+      });
+    });
+
+    describe('When updateRef writes worktrees/wt/HEAD from wt with wt detached at A', () => {
+      it("Then wt's stack holds a ref and a log record named worktrees/wt/HEAD and wt's HEAD still answers A", async () => {
+        // Arrange
+        const { main, wt, a, b } = await seedReftableWorktrees();
+        await getRefStore(wt).applyRefUpdates([{ kind: 'set', name: HEAD, id: a }]);
+        const own = adminDir(main);
+        const sut = updateRef;
+
+        // Act
+        await sut(wt, WT_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await recordValue(main, own, WT_HEAD)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, own, WT_HEAD)).toBe(1);
+        expect(await getRefStore(wt).resolveDirect(HEAD)).toEqual({ kind: 'direct', id: a });
       });
     });
   });

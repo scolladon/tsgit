@@ -475,7 +475,7 @@ function hasLiveLogRecord(stack: ReftableStack, name: RefName): boolean {
  * loggability — a `delete` or `reflogReplace` tombstones/replaces directly,
  * and an unconditional or reflog-less update never calls
  * `isReftableLoggable` at all. Restricting the candidate set to exactly
- * these names is what lets {@link createLoggableLookup} decide, per batch,
+ * the bare names these updates are judged by is what lets {@link createLoggableLookup} decide, per batch,
  * which strategy is worth its own cost — a pure, synchronous, in-memory
  * pass over the batch itself, never the stack.
  */
@@ -486,7 +486,7 @@ function loggableCandidateNames(updates: readonly ReftableInternalUpdate[]): Rea
       continue;
     }
     if (update.reflog === undefined || update.reflog.unconditional === true) continue;
-    names.add(update.name);
+    names.add(parseWorktreeRef(update.name).bare);
   }
   return names;
 }
@@ -526,15 +526,18 @@ function createLoggableLookup(
 }
 
 /** The reftable counterpart to `record-ref-update.ts`'s `isLoggable`: "has a
- *  reflog" is any log record anywhere in the stack, not a physical file. */
+ *  reflog" is any log record anywhere in the stack, not a physical file. A
+ *  prefixed name is judged by its bare name inside the stack it selects, as
+ *  git's backend sees it; the record itself keeps the full name. */
 async function isReftableLoggable(
   ctx: Context,
   loggable: (name: RefName) => boolean,
   name: RefName,
 ): Promise<boolean> {
-  if (loggable(name)) return true;
+  const { bare } = parseWorktreeRef(name);
+  if (loggable(bare)) return true;
   const config = await readConfig(ctx);
-  return shouldAutocreateReflog(name, config.core ?? {});
+  return shouldAutocreateReflog(bare, config.core ?? {});
 }
 
 /** Appends `reflog` when it applies. Does nothing when there is nothing to

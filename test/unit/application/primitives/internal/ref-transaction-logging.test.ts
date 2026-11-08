@@ -155,4 +155,34 @@ describe('transactionLogging', () => {
       });
     });
   });
+
+  describe('Given a files-backend Context', () => {
+    describe('When transactionLogging is called', () => {
+      it('Then viaHeadName is "literal"', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const result = transactionLogging(ctx);
+
+        // Assert
+        expect(result.viaHeadName).toBe('literal');
+      });
+    });
+  });
+
+  describe('Given a reftable-backend Context', () => {
+    describe('When transactionLogging is called', () => {
+      it('Then viaHeadName is "bare"', () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+
+        // Act
+        const result = transactionLogging(ctx);
+
+        // Assert
+        expect(result.viaHeadName).toBe('bare');
+      });
+    });
+  });
 });

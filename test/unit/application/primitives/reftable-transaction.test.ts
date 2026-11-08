@@ -117,6 +117,8 @@ function withoutAtomicRename(ctx: Context): Context {
   return { ...ctx, fs: rest as FileSystem };
 }
 
+const LOGGING_OFF_CONFIG = '[core]\n  logallrefupdates = false\n';
+
 const adminDir = (ctx: Context): string => `${ctx.layout.gitDir}/worktrees/wt`;
 const asWorktreeChild = (ctx: Context): Context => ({
   ...ctx,
@@ -1159,6 +1161,72 @@ describe('reftable-transaction', () => {
         // Assert
         const commonStack = await loadReftableStack(mainCtx, commonReftableDir(mainCtx));
         expect([...commonStack.names()]).toEqual([name]);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with default logging and no log records', () => {
+    describe('When applyReftableUpdates sets main-worktree/HEAD with a conditional reflog', () => {
+      it('Then the common stack holds one log record named main-worktree/HEAD', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('main-worktree/HEAD');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(ctx, [
+          { kind: 'set', name, id: oid(1), reflog: { oldId: oid(0), newId: oid(1), message: 'm' } },
+        ]);
+
+        // Assert
+        const commonStack = await loadReftableStack(ctx, commonReftableDir(ctx));
+        expect([...commonStack.logs(name)]).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with logAllRefUpdates false and no log records', () => {
+    describe('When applyReftableUpdates sets main-worktree/HEAD with a conditional reflog', () => {
+      it('Then the common stack holds no log record', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, LOGGING_OFF_CONFIG);
+        const name = ref('main-worktree/HEAD');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(ctx, [
+          { kind: 'set', name, id: oid(1), reflog: { oldId: oid(0), newId: oid(1), message: 'm' } },
+        ]);
+
+        // Assert
+        const commonStack = await loadReftableStack(ctx, commonReftableDir(ctx));
+        expect([...commonStack.logs(name)]).toEqual([]);
+      });
+    });
+  });
+
+  describe("Given a reftable repository with logAllRefUpdates false and a HEAD log record in wt's stack", () => {
+    describe('When applyReftableUpdates sets worktrees/wt/HEAD from the main Context with a conditional reflog', () => {
+      it("Then wt's stack holds one log record named worktrees/wt/HEAD", async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, LOGGING_OFF_CONFIG);
+        const headLog = { oldId: oid(0), newId: oid(1), message: 'm', unconditional: true };
+        await applyReftableUpdates(asWorktreeChild(ctx), [
+          { kind: 'set', name: ref('HEAD'), id: oid(1), reflog: headLog },
+        ]);
+        const name = ref('worktrees/wt/HEAD');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(ctx, [
+          { kind: 'set', name, id: oid(2), reflog: { oldId: oid(1), newId: oid(2), message: 'm' } },
+        ]);
+
+        // Assert
+        const worktreeStack = await loadReftableStack(ctx, reftableDir(adminDir(ctx)));
+        expect([...worktreeStack.logs(name)]).toHaveLength(1);
       });
     });
   });

@@ -18,6 +18,7 @@ import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
 import { refLocked, refUpdateConflict } from '../../domain/refs/error.js';
+import { parseWorktreeRef } from '../../domain/refs/per-worktree-ref.js';
 import { assertRefnameSafe, validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { assertRefTargetValid } from './internal/ref-target.js';
@@ -131,8 +132,10 @@ async function planTransaction(
   // Resolved before any write so a genuine I/O error refuses the whole
   // update instead of leaving a committed ref, a written reflog, and a
   // thrown call. A chain that walks HEAD already read it, and never couples.
-  const head = walksHead(name, chain) ? UNCOUPLED_HEAD : await resolveHeadForCoupling(store);
   const logging = transactionLogging(ctx);
+  const head = walksHead(name, chain, logging)
+    ? UNCOUPLED_HEAD
+    : await resolveHeadForCoupling(store);
   const message = options.reflogMessage ?? '';
   return { chain, head, fileOf, logging, zero: zeroOid(ctx.hashConfig), message };
 }
@@ -180,8 +183,13 @@ function oldOrZero(old: ObjectId | 'absent', zero: ObjectId): ObjectId {
 /** Whether `HEAD` is the given name or a link the chain walks — git's
  *  `REF_UPDATE_VIA_HEAD`: `HEAD` then logs as part of the chain itself and
  *  gains no second, coupled entry. */
-const walksHead = (name: RefName, chain: RefWriteChain): boolean =>
-  name === HEAD || chain.links.includes(HEAD);
+const walksHead = (name: RefName, chain: RefWriteChain, logging: TransactionLogging): boolean =>
+  [name, ...chain.links].some((hop) => namesHead(hop, logging));
+
+/** Whether a hop counts as `HEAD`: literally, or — under `'bare'` — by the
+ *  name it reads inside the store its prefix selects. */
+const namesHead = (hop: RefName, { viaHeadName }: TransactionLogging): boolean =>
+  hop === HEAD || (viaHeadName === 'bare' && parseWorktreeRef(hop).bare === HEAD);
 
 /**
  * The coupled `logs/HEAD` entry a write or delete produces when `HEAD`

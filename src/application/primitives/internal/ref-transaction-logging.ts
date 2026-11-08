@@ -39,6 +39,9 @@ export interface TransactionLogging {
   /** files: two names of one transaction on one loose file refuse, as git's per-refname lock
    *  map meets EEXIST; reftable: stacks hold no per-ref lock, so nothing collides. */
   readonly sharedLooseFile: 'refused' | 'allowed';
+  /** files: a hop marks the referent "via HEAD" only when its name is literally HEAD;
+   *  reftable: when its bare name is HEAD (no coupled HEAD log record). */
+  readonly viaHeadName: 'literal' | 'bare';
 }
 
 const FILES: TransactionLogging = {
@@ -48,6 +51,7 @@ const FILES: TransactionLogging = {
   symbolicDeleteLog: 'removed',
   renamedSymrefLog: 'move-then-null-entry',
   sharedLooseFile: 'refused',
+  viaHeadName: 'literal',
 };
 const REFTABLE: TransactionLogging = {
   noOpDeleteLogs: 'skipped',
@@ -56,6 +60,7 @@ const REFTABLE: TransactionLogging = {
   symbolicDeleteLog: 'kept-with-entry',
   renamedSymrefLog: 'copy-then-delete-entry',
   sharedLooseFile: 'allowed',
+  viaHeadName: 'bare',
 };
 
 /** `ctx.layout.refStorage`'s own discriminant — the same one
