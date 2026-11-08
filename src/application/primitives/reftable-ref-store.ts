@@ -397,7 +397,6 @@ export function createReftableRefStore(ctx: Context): RefStore {
 
   return {
     resolveDirect,
-    resolveDirectForWrite: resolveDirect,
     applyRefUpdates,
     listRefs,
     listRefNames,

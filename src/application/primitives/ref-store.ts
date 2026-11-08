@@ -109,15 +109,10 @@ export interface RefStore {
    * Resolve a ref name to its direct ObjectId target, without following symbolic refs.
    * Returns undefined if the ref doesn't exist in either loose or packed storage.
    * Throws if the loose file content is a symbolic ref (callers must handle).
+   * Every reader on a write route (compare-and-swap, presence, the write chain)
+   * reads through it, so it sees the loose file the write will touch.
    */
   resolveDirect(name: RefName): Promise<ResolveDirectResult>;
-  /**
-   * The reader for a write route: it sees the loose file at the path the write
-   * will touch. Every reader on a write route (compare-and-swap, presence, the
-   * write chain) reads through it; a new write route must use it, never
-   * `resolveDirect`.
-   */
-  resolveDirectForWrite(name: RefName): Promise<ResolveDirectResult>;
   /**
    * Apply every update in `updates`, in order, as one call. Each `set` /
    * `setSymbolic` writes atomically through the ref lock; each `delete`
@@ -749,8 +744,6 @@ export function createRefStore(ctx: Context): RefStore {
 const withPseudoRefFiles = (backend: RefStore, files: RefStore): RefStore => ({
   ...backend,
   resolveDirect: (name) => (isPseudoRef(name) ? files : backend).resolveDirect(name),
-  resolveDirectForWrite: (name) =>
-    (isPseudoRef(name) ? files : backend).resolveDirectForWrite(name),
 });
 
 /** A packed snapshot's point lookup — git's `find_reference_location`. */
@@ -1083,8 +1076,6 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   const resolveDirect = (name: RefName): Promise<ResolveDirectResult> =>
     name === HEAD_NAME ? resolveHeadDirect() : resolveDirectAt(name, location(name));
-
-  const resolveDirectForWrite = resolveDirect;
 
   async function resolveDirectAt(
     name: RefName,
@@ -1727,7 +1718,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     expected: ObjectId | 'absent' | undefined,
   ): Promise<void> {
     if (expected === undefined) return;
-    const current = await resolveDirectForWrite(name);
+    const current = await resolveDirect(name);
     const actual = current.kind === 'direct' ? current.id : 'absent';
     if (expected !== actual) throw refUpdateConflict(name, expected, actual);
   }
@@ -2321,7 +2312,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** Whether `name` exists at all — the question git's own read answers, a
    *  regular file in the path or a directory at it reading as no ref. */
   async function refIsPresent(name: RefName): Promise<boolean> {
-    return (await resolveDirectForWrite(name)).kind !== 'missing';
+    return (await resolveDirect(name)).kind !== 'missing';
   }
 
   async function looseFileAt(name: RefName): Promise<boolean> {
@@ -2625,7 +2616,6 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   return {
     resolveDirect,
-    resolveDirectForWrite,
     applyRefUpdates,
     listRefs,
     listRefNames,

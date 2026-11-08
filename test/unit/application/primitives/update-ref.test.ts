@@ -979,14 +979,9 @@ describe('updateRef', () => {
           const store = getRefStore(ctx);
           const reads: RefName[] = [];
           const originalResolve = store.resolveDirect.bind(store);
-          const originalResolveForWrite = store.resolveDirectForWrite.bind(store);
           store.resolveDirect = async (name) => {
             reads.push(name);
             return originalResolve(name);
-          };
-          store.resolveDirectForWrite = async (name) => {
-            reads.push(name);
-            return originalResolveForWrite(name);
           };
           const sut = updateRef;
 

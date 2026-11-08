@@ -46,7 +46,7 @@ async function walkSymbolicChain(store: RefStore, name: RefName): Promise<RefWri
   for (;;) {
     if (seen.has(current)) throw refCycleDetected([...links, current]);
     seen.add(current);
-    const value = await store.resolveDirectForWrite(current);
+    const value = await store.resolveDirect(current);
     if (value.kind !== 'symbolic') {
       return {
         links,
@@ -85,11 +85,7 @@ async function readReferentValue(
   expected: ObjectId | 'absent' | undefined,
 ): Promise<ObjectId | 'absent'> {
   try {
-    const outcome = await resolveDirectChain(
-      { resolveDirect: store.resolveDirectForWrite },
-      target,
-      MAX_SYMBOLIC_REF_DEPTH,
-    );
+    const outcome = await resolveDirectChain(store, target, MAX_SYMBOLIC_REF_DEPTH);
     return outcome.kind === 'found' ? outcome.id : 'absent';
   } catch (err) {
     // Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREADABLE_REFERENT_CODES, so the probe answers false whatever the literal is.
@@ -107,7 +103,7 @@ async function resolveWithoutDeref(
   name: RefName,
   expected: ObjectId | 'absent' | undefined,
 ): Promise<RefWriteChain> {
-  const value = await store.resolveDirectForWrite(name);
+  const value = await store.resolveDirect(name);
   if (value.kind !== 'symbolic') {
     return {
       links: [],
