@@ -26,9 +26,10 @@ describe('writeSymbolicRef', () => {
         const ctx = await buildSeededContext();
         const name = 'HEAD' as RefName;
         const target = 'refs/heads/main' as RefName;
+        const sut = writeSymbolicRef;
 
         // Act
-        await writeSymbolicRef(ctx, name, target);
+        await sut(ctx, name, target);
 
         // Assert
         const content = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
@@ -46,9 +47,10 @@ describe('writeSymbolicRef', () => {
           `${ctx.layout.gitDir}/HEAD`,
           '0123456789abcdef0123456789abcdef01234567\n',
         );
+        const sut = writeSymbolicRef;
 
         // Act
-        await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/main' as RefName);
+        await sut(ctx, 'HEAD' as RefName, 'refs/heads/main' as RefName);
 
         // Assert
         const content = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
@@ -62,10 +64,11 @@ describe('writeSymbolicRef', () => {
       it('Then throws INVALID_REF', async () => {
         // Arrange
         const ctx = await buildSeededContext();
+        const sut = writeSymbolicRef;
 
         // Act + Assert
         try {
-          await writeSymbolicRef(ctx, '/HEAD' as RefName, 'refs/heads/main' as RefName);
+          await sut(ctx, '/HEAD' as RefName, 'refs/heads/main' as RefName);
           throw new Error('expected throw');
         } catch (err) {
           expect(err).toBeInstanceOf(TsgitError);
@@ -80,10 +83,11 @@ describe('writeSymbolicRef', () => {
       it('Then throws INVALID_REF', async () => {
         // Arrange
         const ctx = await buildSeededContext();
+        const sut = writeSymbolicRef;
 
         // Act + Assert
         try {
-          await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/has space' as RefName);
+          await sut(ctx, 'HEAD' as RefName, 'refs/heads/has space' as RefName);
           throw new Error('expected throw');
         } catch (err) {
           expect(err).toBeInstanceOf(TsgitError);
@@ -98,10 +102,11 @@ describe('writeSymbolicRef', () => {
       it('Then it refuses INVALID_REF and writes nothing under main-worktree/', async () => {
         // Arrange
         const ctx = await buildSeededContext();
+        const sut = writeSymbolicRef;
 
         // Act
         const refusal = await refusalOf(() =>
-          writeSymbolicRef(ctx, 'main-worktree/HEAD' as RefName, 'refs/heads/side' as RefName),
+          sut(ctx, 'main-worktree/HEAD' as RefName, 'refs/heads/side' as RefName),
         );
 
         // Assert
@@ -118,10 +123,11 @@ describe('writeSymbolicRef', () => {
         const ctx = await buildSeededContext();
         const adminHead = `${ctx.layout.gitDir}/worktrees/wt/HEAD`;
         await ctx.fs.writeUtf8(adminHead, 'ref: refs/heads/side\n');
+        const sut = writeSymbolicRef;
 
         // Act
         const refusal = await refusalOf(() =>
-          writeSymbolicRef(ctx, 'worktrees/wt/HEAD' as RefName, 'refs/heads/main' as RefName),
+          sut(ctx, 'worktrees/wt/HEAD' as RefName, 'refs/heads/main' as RefName),
         );
 
         // Assert
@@ -130,6 +136,7 @@ describe('writeSymbolicRef', () => {
       });
     });
   });
+
   describe("Given the name refs/.x, which git's refname_is_safe accepts", () => {
     describe('When writeSymbolicRef points it at refs/heads/main', () => {
       it('Then the loose file holds the symbolic ref', async () => {

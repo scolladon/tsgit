@@ -149,11 +149,12 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then the ref lands under the common dir, not the admin dir', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asWorktreeChild(ctx);
-          const commit = await writeCommit(sut, 'shared ref');
+          const child = asWorktreeChild(ctx);
+          const sut = updateRef;
+          const commit = await writeCommit(child, 'shared ref');
 
           // Act
-          await updateRef(sut, 'refs/heads/x' as RefName, commit, { reflogMessage: 'test' });
+          await sut(child, 'refs/heads/x' as RefName, commit, { reflogMessage: 'test' });
 
           // Assert
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/x`)).toBe(true);
@@ -165,11 +166,12 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then the ref lands under the admin dir, not the common dir', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asWorktreeChild(ctx);
-          const commit = await writeCommit(sut, 'per-worktree ref');
+          const child = asWorktreeChild(ctx);
+          const sut = updateRef;
+          const commit = await writeCommit(child, 'per-worktree ref');
 
           // Act
-          await updateRef(sut, 'refs/bisect/bad' as RefName, commit, { reflogMessage: 'test' });
+          await sut(child, 'refs/bisect/bad' as RefName, commit, { reflogMessage: 'test' });
 
           // Assert
           expect(await ctx.fs.exists(`${adminDir(ctx)}/refs/bisect/bad`)).toBe(true);
@@ -183,16 +185,17 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then the ref lands under the commonDir, not the gitDir', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asOverriddenCommonDir(ctx);
+          const child = asOverriddenCommonDir(ctx);
+          const sut = updateRef;
           await seedOverriddenAdminHead(ctx);
-          const commit = await writeCommit(sut, 'disjoint shared ref');
+          const commit = await writeCommit(child, 'disjoint shared ref');
 
           // Act
-          await updateRef(sut, 'refs/heads/x' as RefName, commit, { reflogMessage: 'test' });
+          await sut(child, 'refs/heads/x' as RefName, commit, { reflogMessage: 'test' });
 
           // Assert
-          expect(await ctx.fs.exists(`${sut.layout.commonDir}/refs/heads/x`)).toBe(true);
-          expect(await ctx.fs.exists(`${sut.layout.gitDir}/refs/heads/x`)).toBe(false);
+          expect(await ctx.fs.exists(`${child.layout.commonDir}/refs/heads/x`)).toBe(true);
+          expect(await ctx.fs.exists(`${child.layout.gitDir}/refs/heads/x`)).toBe(false);
         });
       });
 
@@ -200,16 +203,17 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then the ref lands under the gitDir, not the commonDir', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asOverriddenCommonDir(ctx);
+          const child = asOverriddenCommonDir(ctx);
+          const sut = updateRef;
           await seedOverriddenAdminHead(ctx);
-          const commit = await writeCommit(sut, 'disjoint per-worktree ref');
+          const commit = await writeCommit(child, 'disjoint per-worktree ref');
 
           // Act
-          await updateRef(sut, 'refs/bisect/bad' as RefName, commit, { reflogMessage: 'test' });
+          await sut(child, 'refs/bisect/bad' as RefName, commit, { reflogMessage: 'test' });
 
           // Assert
-          expect(await ctx.fs.exists(`${sut.layout.gitDir}/refs/bisect/bad`)).toBe(true);
-          expect(await ctx.fs.exists(`${sut.layout.commonDir}/refs/bisect/bad`)).toBe(false);
+          expect(await ctx.fs.exists(`${child.layout.gitDir}/refs/bisect/bad`)).toBe(true);
+          expect(await ctx.fs.exists(`${child.layout.commonDir}/refs/bisect/bad`)).toBe(false);
         });
       });
     });
@@ -250,11 +254,21 @@ describe('common-dir per-worktree-ref sweep', () => {
       const strayDirExists = (ctx: Context): Promise<boolean> =>
         ctx.fs.exists(`${ctx.layout.gitDir}/main-worktree`);
       const OPTIONS = { reflogMessage: 'probe' };
-      const headLogLineCount = async (ctx: Context): Promise<number> => {
-        const log = `${ctx.layout.gitDir}/logs/HEAD`;
-        if (!(await ctx.fs.exists(log))) return 0;
-        return (await ctx.fs.readUtf8(log)).split('\n').filter((line) => line !== '').length;
+      const logLines = async (ctx: Context, log: string): Promise<ReadonlyArray<string>> => {
+        if (!(await ctx.fs.exists(log))) return [];
+        return (await ctx.fs.readUtf8(log)).split('\n').filter((line) => line !== '');
       };
+      const headLogLineCount = async (ctx: Context): Promise<number> =>
+        (await logLines(ctx, `${ctx.layout.gitDir}/logs/HEAD`)).length;
+      const adminHeadLog = (ctx: Context): string => `${adminDir(ctx)}/logs/HEAD`;
+      /** The log `git worktree add` gives the linked HEAD, which a prefixed write appends to. */
+      const seedAdminHeadLog = (ctx: Context, id: ObjectId): Promise<void> =>
+        ctx.fs.writeUtf8(adminHeadLog(ctx), `${'0'.repeat(40)} ${id} T <t@e> 0 +0000\tseed\n`);
+      /** Where the log of `worktrees/wt/HEAD` lands when the name is spelled as a path. */
+      const strayLogDirExists = (ctx: Context): Promise<boolean> =>
+        ctx.fs.exists(`${ctx.layout.gitDir}/logs/worktrees`);
+      const probeEntryOf = (oldId: ObjectId, newId: ObjectId): RegExp =>
+        new RegExp(`^${oldId} ${newId} .*\tprobe$`);
       const refusalOf = async (write: () => Promise<void>): Promise<unknown> => {
         try {
           await write();
@@ -436,10 +450,11 @@ describe('common-dir per-worktree-ref sweep', () => {
       });
 
       describe('When updateRef writes worktrees/wt/HEAD from the main worktree with both HEADs on branches', () => {
-        it('Then refs/heads/side holds B', async () => {
+        it("Then refs/heads/side holds B and its log and the admin dir's HEAD log gain the entry", async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          await seedAdminHeadLog(ctx, a);
           const sut = updateRef;
 
           // Act
@@ -447,14 +462,20 @@ describe('common-dir per-worktree-ref sweep', () => {
 
           // Assert
           expect(await refValue(ctx, 'refs/heads/side')).toEqual(direct(b));
+          expect(await logLines(ctx, `${ctx.layout.gitDir}/logs/refs/heads/side`)).toEqual([
+            expect.stringMatching(probeEntryOf(a, b)),
+          ]);
+          expect((await logLines(ctx, adminHeadLog(ctx)))[1]).toMatch(probeEntryOf(a, b));
+          expect(await strayLogDirExists(ctx)).toBe(false);
         });
       });
 
       describe('When updateRef writes worktrees/wt/HEAD from the linked worktree with its HEAD detached', () => {
-        it('Then the admin HEAD file holds B', async () => {
+        it("Then the admin HEAD file holds B and the admin dir's HEAD log gains the entry", async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const { b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'detached' });
+          const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'detached' });
+          await seedAdminHeadLog(ctx, a);
           const sut = updateRef;
 
           // Act
@@ -462,14 +483,17 @@ describe('common-dir per-worktree-ref sweep', () => {
 
           // Assert
           expect(await ctx.fs.readUtf8(`${adminDir(ctx)}/HEAD`)).toBe(`${b}\n`);
+          expect((await logLines(ctx, adminHeadLog(ctx)))[1]).toMatch(probeEntryOf(a, b));
+          expect(await strayLogDirExists(ctx)).toBe(false);
         });
       });
 
       describe('When updateRef writes worktrees/wt/HEAD with noDeref from the linked worktree', () => {
-        it('Then the admin HEAD file holds B and refs/heads/side keeps A', async () => {
+        it("Then the admin HEAD file holds B, the admin dir's HEAD log gains the entry and refs/heads/side keeps A", async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const { a, b } = await seedWorktreePair(ctx, { main: 'branch', wt: 'branch' });
+          await seedAdminHeadLog(ctx, a);
           const sut = updateRef;
 
           // Act
@@ -481,6 +505,8 @@ describe('common-dir per-worktree-ref sweep', () => {
           // Assert
           expect(await ctx.fs.readUtf8(`${adminDir(ctx)}/HEAD`)).toBe(`${b}\n`);
           expect(await refValue(ctx, 'refs/heads/side')).toEqual(direct(a));
+          expect((await logLines(ctx, adminHeadLog(ctx)))[1]).toMatch(probeEntryOf(a, b));
+          expect(await strayLogDirExists(ctx)).toBe(false);
         });
       });
 
@@ -710,14 +736,11 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then it lands under the common dir, not the admin dir', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asWorktreeChild(ctx);
+          const child = asWorktreeChild(ctx);
+          const sut = writeSymbolicRef;
 
           // Act
-          await writeSymbolicRef(
-            sut,
-            'refs/remotes/origin/HEAD' as RefName,
-            'refs/heads/main' as RefName,
-          );
+          await sut(child, 'refs/remotes/origin/HEAD' as RefName, 'refs/heads/main' as RefName);
 
           // Assert
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).toBe(true);
@@ -729,10 +752,11 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then it lands under the admin dir, not the common dir', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asWorktreeChild(ctx);
+          const child = asWorktreeChild(ctx);
+          const sut = writeSymbolicRef;
 
           // Act
-          await writeSymbolicRef(sut, 'HEAD' as RefName, 'refs/heads/main' as RefName);
+          await sut(child, 'HEAD' as RefName, 'refs/heads/main' as RefName);
 
           // Assert
           expect(await ctx.fs.exists(`${adminDir(ctx)}/HEAD`)).toBe(true);
@@ -748,13 +772,14 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then the branch is deleted from the common dir', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asWorktreeChild(ctx);
+          const child = asWorktreeChild(ctx);
+          const sut = branchDelete;
           await seedAdminHead(ctx);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/feature`, `${ID_A}\n`);
 
           // Act — forced: the planted tip is no commit HEAD can reach, and
           // the unforced valve would refuse it before any ref dir is touched.
-          await branchDelete(sut, { name: 'feature', force: true });
+          await sut(child, { name: 'feature', force: true });
 
           // Assert
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(false);
@@ -767,13 +792,14 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then it throws BRANCH_NOT_FOUND — the common dir is checked, not the decoy', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asWorktreeChild(ctx);
+          const child = asWorktreeChild(ctx);
+          const sut = branchDelete;
           await seedAdminHead(ctx);
           await ctx.fs.writeUtf8(`${adminDir(ctx)}/refs/heads/feature`, `${ID_A}\n`);
 
           // Act + Assert
           try {
-            await branchDelete(sut, { name: 'feature' });
+            await sut(child, { name: 'feature' });
             expect.unreachable();
           } catch (err) {
             expect((err as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
@@ -789,12 +815,13 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then the tag is deleted from the common dir', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asWorktreeChild(ctx);
+          const child = asWorktreeChild(ctx);
+          const sut = tagDelete;
           await seedAdminHead(ctx);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1`, `${ID_A}\n`);
 
           // Act
-          await tagDelete(sut, { name: 'v1' });
+          await sut(child, { name: 'v1' });
 
           // Assert
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v1`)).toBe(false);
@@ -807,13 +834,14 @@ describe('common-dir per-worktree-ref sweep', () => {
         it('Then it throws TAG_NOT_FOUND — the common dir is checked, not the decoy', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const sut = asWorktreeChild(ctx);
+          const child = asWorktreeChild(ctx);
+          const sut = tagDelete;
           await seedAdminHead(ctx);
           await ctx.fs.writeUtf8(`${adminDir(ctx)}/refs/tags/v1`, `${ID_A}\n`);
 
           // Act + Assert
           try {
-            await tagDelete(sut, { name: 'v1' });
+            await sut(child, { name: 'v1' });
             expect.unreachable();
           } catch (err) {
             expect((err as TsgitError).data.code).toBe('TAG_NOT_FOUND');
@@ -834,11 +862,12 @@ describe('common-dir per-worktree-ref sweep', () => {
           await add(base, ['a.txt']);
           const committed = await commit(base, { message: 'c1', author: AUTHOR });
           await branchCreate(base, { name: 'feature' });
-          const sut = asWorktreeChild(base);
+          const child = asWorktreeChild(base);
+          const sut = checkout;
           await seedAdminHead(base);
 
           // Act
-          const result = await checkout(sut, { rev: 'feature', force: true });
+          const result = await sut(child, { rev: 'feature', force: true });
 
           // Assert
           expect(result.branch).toBe('refs/heads/feature');
@@ -855,13 +884,14 @@ describe('common-dir per-worktree-ref sweep', () => {
           const ctx = await buildSeededContext({
             refs: [{ name: 'refs/heads/main' as RefName, id: ID_A }],
           });
-          const sut = asWorktreeChild(ctx);
+          const child = asWorktreeChild(ctx);
+          const sut = checkout;
           await seedAdminHead(ctx);
           await ctx.fs.writeUtf8(`${adminDir(ctx)}/refs/heads/ghost`, `${ID_A}\n`);
 
           // Act + Assert
           try {
-            await checkout(sut, { rev: 'ghost' });
+            await sut(child, { rev: 'ghost' });
             expect.unreachable();
           } catch (err) {
             expect((err as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
@@ -891,11 +921,12 @@ describe('common-dir per-worktree-ref sweep', () => {
             [{ name: 'refs/heads/main', id: newOid }],
             built.packBytes,
           );
-          const sut: Context = { ...asWorktreeChild(ctx), transport };
+          const child: Context = { ...asWorktreeChild(ctx), transport };
           await seedAdminHead(ctx);
+          const sut = fetch;
 
           // Act
-          const result = await fetch(sut, {});
+          const result = await sut(child, {});
 
           // Assert
           const updated = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
@@ -924,11 +955,12 @@ describe('common-dir per-worktree-ref sweep', () => {
             [{ name: 'refs/heads/main', id: newOid }],
             built.packBytes,
           );
-          const sut: Context = { ...asWorktreeChild(ctx), transport };
+          const child: Context = { ...asWorktreeChild(ctx), transport };
           await seedAdminHead(ctx);
+          const sut = fetch;
 
           // Act
-          const result = await fetch(sut, {});
+          const result = await sut(child, {});
 
           // Assert
           const updated = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');

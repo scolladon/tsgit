@@ -9,9 +9,10 @@ describe('transactionLogging', () => {
       it('Then noOpDeleteLogs is "written"', () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.noOpDeleteLogs).toBe('written');
@@ -24,9 +25,10 @@ describe('transactionLogging', () => {
       it('Then noOpDeleteLogs is "skipped"', () => {
         // Arrange
         const ctx = withReftableStorage(createMemoryContext());
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.noOpDeleteLogs).toBe('skipped');
@@ -39,9 +41,10 @@ describe('transactionLogging', () => {
       it('Then renamedBranchLog is "replace-then-same-id"', () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.renamedBranchLog).toBe('replace-then-same-id');
@@ -54,9 +57,10 @@ describe('transactionLogging', () => {
       it('Then renamedBranchLog is "merge-then-delete-and-create"', () => {
         // Arrange
         const ctx = withReftableStorage(createMemoryContext());
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.renamedBranchLog).toBe('merge-then-delete-and-create');
@@ -69,9 +73,10 @@ describe('transactionLogging', () => {
       it('Then headOldThroughLink is "null-id" and symbolicDeleteLog is "removed"', () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.headOldThroughLink).toBe('null-id');
@@ -85,9 +90,10 @@ describe('transactionLogging', () => {
       it('Then headOldThroughLink is "resolved" and symbolicDeleteLog is "kept-with-entry"', () => {
         // Arrange
         const ctx = withReftableStorage(createMemoryContext());
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.headOldThroughLink).toBe('resolved');
@@ -101,9 +107,10 @@ describe('transactionLogging', () => {
       it('Then renamedSymrefLog is "move-then-null-entry"', () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.renamedSymrefLog).toBe('move-then-null-entry');
@@ -116,9 +123,10 @@ describe('transactionLogging', () => {
       it('Then renamedSymrefLog is "copy-then-delete-entry"', () => {
         // Arrange
         const ctx = withReftableStorage(createMemoryContext());
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.renamedSymrefLog).toBe('copy-then-delete-entry');
@@ -131,9 +139,10 @@ describe('transactionLogging', () => {
       it('Then sharedLooseFile is "refused"', () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.sharedLooseFile).toBe('refused');
@@ -146,9 +155,10 @@ describe('transactionLogging', () => {
       it('Then sharedLooseFile is "allowed"', () => {
         // Arrange
         const ctx = withReftableStorage(createMemoryContext());
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.sharedLooseFile).toBe('allowed');
@@ -161,9 +171,10 @@ describe('transactionLogging', () => {
       it('Then viaHeadName is "literal"', () => {
         // Arrange
         const ctx = createMemoryContext();
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.viaHeadName).toBe('literal');
@@ -176,9 +187,10 @@ describe('transactionLogging', () => {
       it('Then viaHeadName is "bare"', () => {
         // Arrange
         const ctx = withReftableStorage(createMemoryContext());
+        const sut = transactionLogging;
 
         // Act
-        const result = transactionLogging(ctx);
+        const result = sut(ctx);
 
         // Assert
         expect(result.viaHeadName).toBe('bare');

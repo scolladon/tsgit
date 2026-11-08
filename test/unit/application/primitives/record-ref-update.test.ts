@@ -80,13 +80,14 @@ describe('recordRefUpdate', () => {
       describe('When recordRefUpdate logs main-worktree/HEAD', () => {
         it('Then no log file is created', async () => {
           // Arrange
-          const sut = createMemoryContext();
+          const ctx = createMemoryContext();
+          const sut = recordRefUpdate;
 
           // Act
-          await recordRefUpdate(sut, 'main-worktree/HEAD' as RefName, ZERO_OID, OID_A, 'x');
+          await sut(ctx, 'main-worktree/HEAD' as RefName, ZERO_OID, OID_A, 'x');
 
           // Assert
-          expect(await reflogExists(sut, HEAD)).toBe(false);
+          expect(await reflogExists(ctx, HEAD)).toBe(false);
         });
       });
     });
@@ -130,10 +131,11 @@ describe('recordRefUpdate', () => {
           // Arrange
           const ctx = createMemoryContext();
           await recordRefUpdate(ctx, HEAD, ZERO_OID, OID_A, 'commit (initial): seed');
-          const sut = asWorktreeChild(ctx);
+          const child = asWorktreeChild(ctx);
+          const sut = recordRefUpdate;
 
           // Act
-          await recordRefUpdate(sut, 'main-worktree/HEAD' as RefName, OID_A, OID_B, 'link');
+          await sut(child, 'main-worktree/HEAD' as RefName, OID_A, OID_B, 'link');
 
           // Assert
           const entries = await readReflog(ctx, HEAD);
@@ -146,12 +148,13 @@ describe('recordRefUpdate', () => {
       describe('When recordRefUpdate logs worktrees/wt/HEAD from the main worktree', () => {
         it('Then it is appended there', async () => {
           // Arrange
-          const sut = createMemoryContext();
-          const child = asWorktreeChild(sut);
+          const ctx = createMemoryContext();
+          const child = asWorktreeChild(ctx);
           await recordRefUpdate(child, HEAD, ZERO_OID, OID_A, 'commit (initial): seed');
+          const sut = recordRefUpdate;
 
           // Act
-          await recordRefUpdate(sut, 'worktrees/wt/HEAD' as RefName, OID_A, OID_B, 'moved');
+          await sut(ctx, 'worktrees/wt/HEAD' as RefName, OID_A, OID_B, 'moved');
 
           // Assert
           const entries = await readReflog(child, HEAD);

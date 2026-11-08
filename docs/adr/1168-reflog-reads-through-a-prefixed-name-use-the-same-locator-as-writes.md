@@ -22,7 +22,9 @@ the other half of the same path rule.
 
 ## Options considered
 
-1. **One locator for both: `refLocation(ctx, name).reflog` serves reads and writes** —
+1. **One locator for both: `refReflogPath(ctx, name)` serves reads and writes** — it runs
+   the one `parseWorktreeRef` and selects the same store as `refLocation`, so ref and log
+   cannot route apart —
    pros: the read/write split ADR-1164 removed for refs does not come back for logs. The
    designer's recommendation.
 2. **Writes only, with a second reflog locator for reads** — cons: reintroduces the split and
@@ -32,7 +34,7 @@ the other half of the same path rule.
 
 **Adopted-as-recommended (no user judgment) — basis DOCTRINE(D-2) and ADR-1164, pinned by
 W35, W36, W2, W9, W11 and W17: option 1.** `reflog-store.ts` and `record-ref-update.ts` take
-the reflog path from the one locator; the auto-create gate keeps judging the full name as
+the reflog path from `refReflogPath`, beside `refLocation` in `path-layout.ts`; the auto-create gate keeps judging the full name as
 git's `log_ref_setup` does.
 
 ## Consequences

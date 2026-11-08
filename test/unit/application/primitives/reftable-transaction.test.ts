@@ -1101,9 +1101,10 @@ describe('reftable-transaction', () => {
         const mainCtx = withReftableStorage(createMemoryContext());
         const worktreeCtx = asWorktreeChild(mainCtx);
         const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+        const sut = applyReftableUpdates;
 
         // Act
-        await applyReftableUpdates(worktreeCtx, [
+        await sut(worktreeCtx, [
           { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
           { kind: 'set', name: ref('refs/bisect/bad'), id: oid(0x02) },
         ]);
@@ -1138,9 +1139,10 @@ describe('reftable-transaction', () => {
         await mainCtx.fs.writeUtf8(tablesListPath(adminDir(mainCtx)), '');
         const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
         const name = ref('worktrees/wt/refs/bisect/y');
+        const sut = applyReftableUpdates;
 
         // Act
-        await applyReftableUpdates(mainCtx, [
+        await sut(mainCtx, [
           { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
           { kind: 'set', name, id: oid(0x02) },
         ]);
@@ -1160,14 +1162,69 @@ describe('reftable-transaction', () => {
       });
     });
 
+    describe('When applyReftableUpdates sets worktrees/wt/refs/bisect/y before refs/heads/shared from the main Context', () => {
+      it('Then the common lock is still taken first', async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        await mainCtx.fs.writeUtf8(tablesListPath(adminDir(mainCtx)), '');
+        const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(mainCtx, [
+          { kind: 'set', name: ref('worktrees/wt/refs/bisect/y'), id: oid(0x02) },
+          { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
+        ]);
+
+        // Assert
+        const lockCalls = writeExclusiveSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path.endsWith('tables.list.lock'));
+        expect(lockCalls).toEqual([
+          tablesListLockPath(mainCtx.layout.gitDir),
+          tablesListLockPath(adminDir(mainCtx)),
+        ]);
+      });
+    });
+
+    describe('When the linked worktree sets worktrees/other/refs/bisect/z, then refs/bisect/bad, then refs/heads/shared', () => {
+      it("Then the locks go common first, its own stack second and the other worktree's last", async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        const otherDir = `${mainCtx.layout.gitDir}/worktrees/other`;
+        await mainCtx.fs.writeUtf8(tablesListPath(otherDir), '');
+        const worktreeCtx = asWorktreeChild(mainCtx);
+        const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(worktreeCtx, [
+          { kind: 'set', name: ref('worktrees/other/refs/bisect/z'), id: oid(0x03) },
+          { kind: 'set', name: ref('refs/bisect/bad'), id: oid(0x02) },
+          { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
+        ]);
+
+        // Assert
+        const lockCalls = writeExclusiveSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path.endsWith('tables.list.lock'));
+        expect(lockCalls).toEqual([
+          tablesListLockPath(mainCtx.layout.gitDir),
+          tablesListLockPath(worktreeCtx.layout.gitDir),
+          tablesListLockPath(otherDir),
+        ]);
+      });
+    });
+
     describe('When applyReftableUpdates sets main-worktree/refs/bisect/x from the main Context', () => {
       it('Then the common stack holds a record named main-worktree/refs/bisect/x', async () => {
         // Arrange
         const mainCtx = withReftableStorage(createMemoryContext());
         const name = ref('main-worktree/refs/bisect/x');
+        const sut = applyReftableUpdates;
 
         // Act
-        await applyReftableUpdates(mainCtx, [{ kind: 'set', name, id: oid(0x02) }]);
+        await sut(mainCtx, [{ kind: 'set', name, id: oid(0x02) }]);
 
         // Assert
         const commonStack = await loadReftableStack(mainCtx, commonReftableDir(mainCtx));
