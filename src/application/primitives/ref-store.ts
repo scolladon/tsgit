@@ -434,6 +434,14 @@ const statRefusalOf = (path: string, reason: UnreadablePathReason): LooseReadOut
   finding: { msgId: 'unreadableRefPath', operation: 'stat', path, reason },
 });
 
+/** How a rename onto a directory is refused: `PERMISSION_DENIED` on every
+ *  adapter, `DIRECTORY_NOT_EMPTY` on Linux when the directory holds the lock
+ *  being renamed, as the `<id>/.lock` of a bare `worktrees/<id>` does. */
+const RENAME_OVER_DIRECTORY_CODES: ReadonlySet<string> = new Set([
+  'PERMISSION_DENIED',
+  'DIRECTORY_NOT_EMPTY',
+]);
+
 /** The stat failures that mean "no directory here": the path, or a
  *  component above it, is absent or a regular file. */
 const NOT_A_DIRECTORY_PATH_CODES: ReadonlySet<string> = new Set([
@@ -2057,8 +2065,8 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /** Commits `name`'s held lock: refuses refs packed under it, then renames —
-   *  a rename every adapter refuses `PERMISSION_DENIED` over a directory,
-   *  retried once {@link clearDirectory} has removed it. */
+   *  a rename refused over a directory is retried once {@link clearDirectory}
+   *  has removed it. */
   async function commitLooseRef(
     name: RefName,
     path: string,
@@ -2074,7 +2082,10 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       await rename();
     } catch (err) {
-      if (errorDataCode(err) !== PERMISSION_DENIED_CODE || !(await isDirectoryPath(path)))
+      if (
+        !RENAME_OVER_DIRECTORY_CODES.has(errorDataCode(err) ?? '') ||
+        !(await isDirectoryPath(path))
+      )
         throw err;
       await clearDirectory(name, path);
       await rename();

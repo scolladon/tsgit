@@ -22,7 +22,11 @@ import { getRefStore } from '../../../../src/application/primitives/ref-store.js
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
-import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
+import {
+  directoryNotEmpty,
+  permissionDenied,
+  type TsgitError,
+} from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { emptyTreeOid } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
@@ -776,6 +780,32 @@ describe('common-dir per-worktree-ref sweep', () => {
 
           // Assert
           expect(refusal).toEqual({ code: 'PERMISSION_DENIED', path: denied });
+        });
+      });
+
+      describe('When updateRef writes worktrees/wt from the main worktree on a host whose rename onto an ancestor directory refuses DIRECTORY_NOT_EMPTY', () => {
+        it('Then it still refuses FILE_EXISTS on the smallest ref under that dir and leaves its HEAD alone', async () => {
+          // Arrange
+          const base = await buildSeededContext();
+          const { b } = await seedWorktreePair(base, { main: 'branch', wt: 'branch' });
+          const ctx: Context = {
+            ...base,
+            fs: {
+              ...base.fs,
+              rename: async (src, dst) =>
+                dst.replace(/\/$/, '') === adminDir(base)
+                  ? Promise.reject(directoryNotEmpty(src))
+                  : base.fs.rename(src, dst),
+            },
+          };
+          const sut = updateRef;
+
+          // Act
+          const refusal = await refusalOf(() => sut(ctx, 'worktrees/wt' as RefName, b, OPTIONS));
+
+          // Assert
+          expect(refusal).toEqual({ code: 'FILE_EXISTS', path: `${adminDir(ctx)}/HEAD` });
+          expect(await ctx.fs.readUtf8(`${adminDir(ctx)}/HEAD`)).toBe('ref: refs/heads/side\n');
         });
       });
 
