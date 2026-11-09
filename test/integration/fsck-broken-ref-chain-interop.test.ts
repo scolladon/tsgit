@@ -1198,6 +1198,13 @@ const endedLine = (
     ? `fatal: More than ${HOP_CAP} nested symlinks on path '${printedPath(dir, finding.path, row)}'`
     : `fatal: Invalid path '${finding.path}': ${END_TEXT[finding.reason]}`;
 
+/** The body a row seeded for a store-relative name: a root ref, a branch or a tag. */
+const seededBody = (row: Row, bare: string): string =>
+  row.root?.[bare] ??
+  row.refs[bare.replace('refs/heads/', '')] ??
+  row.tags?.[bare.replace('refs/tags/', '')] ??
+  '';
+
 /** The same lines rebuilt from tsgit's findings; the seeded bodies stand for the content. */
 const rebuiltLines = (
   result: FsckResult,
@@ -1250,7 +1257,7 @@ const rebuiltLines = (
       return [`${label}: ${finding.ref}: trailingRefContent: ${detail}`];
     }
     const bare = bareStoreRefName(finding.ref);
-    const body = row.root?.[bare] ?? row.refs[bare.replace('refs/heads/', '')] ?? '';
+    const body = seededBody(row, bare);
     return [
       `${label}: ${finding.ref}: ${finding.msgId}: ${displayed(fill(body).replace(TRAILING_BYTES, ''))}`,
     ];
