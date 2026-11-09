@@ -19,6 +19,16 @@ const head = await repo.primitives.resolveRef('HEAD');
 const tagCommit = await repo.primitives.resolveRef('refs/tags/v1.0.0', { peel: true });
 ```
 
+## Other worktrees' refs
+
+A name under `main-worktree/` or `worktrees/<id>/` whose rest is a per-worktree ref
+(`HEAD`, `refs/bisect/*`, `refs/worktree/*`, `refs/rewritten/*`) resolves in the store that
+prefix selects, from any working directory, as git's `parse_worktree_ref` does:
+`main-worktree/HEAD` is the main worktree's `HEAD`, `worktrees/wt/refs/bisect/bad` the
+linked worktree `wt`'s. A name under those prefixes whose rest is not per-worktree
+(`main-worktree/refs/heads/main`), or that names a worktree that does not exist, does not resolve.
+See [`updateRef`](update-ref.md) for writes through these names.
+
 ## Unreadable refs
 
 A loose ref the file system refuses as too long (`PATH_TOO_LONG`) reads as an
