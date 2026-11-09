@@ -116,3 +116,38 @@ describe('createRefStore().applyRefUpdates', () => {
     });
   });
 });
+
+describe('Given a detached main HEAD and a write addressed through main-worktree/', () => {
+  describe('When applyRefUpdates sets main-worktree/HEAD expecting the HEAD oid', () => {
+    it('Then it writes the main HEAD', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${ID}\n`);
+      const name = 'main-worktree/HEAD' as RefName;
+      const next = 'b'.repeat(40) as ObjectId;
+      const sut = createRefStore(ctx);
+
+      // Act
+      await sut.applyRefUpdates([{ kind: 'set', name, id: next, expected: ID }]);
+
+      // Assert
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${next}\n`);
+    });
+  });
+
+  describe('When applyRefUpdates sets main-worktree/HEAD/x', () => {
+    it('Then it writes the ref', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${ID}\n`);
+      const name = 'main-worktree/HEAD/x' as RefName;
+      const sut = createRefStore(ctx);
+
+      // Act
+      await sut.applyRefUpdates([{ kind: 'set', name, id: ID }]);
+
+      // Assert
+      expect(await sut.resolveDirect(name)).toEqual({ kind: 'direct', id: ID });
+    });
+  });
+});

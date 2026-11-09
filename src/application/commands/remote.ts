@@ -17,7 +17,7 @@ import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
-import { resolveWriteChain } from '../primitives/internal/ref-write-chain.js';
+import { looseFileOf, resolveWriteChain } from '../primitives/internal/ref-write-chain.js';
 import { assertAcceptedRepository } from '../primitives/internal/repo-state.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
@@ -329,7 +329,7 @@ const existingNameConflict = async (
   target: RefName,
 ): Promise<TsgitError | undefined> => {
   const options = { noDeref: true, expected: 'absent' } as const;
-  const chain = await resolveWriteChain(getRefStore(ctx), target, options);
+  const chain = await resolveWriteChain(getRefStore(ctx), target, options, looseFileOf(ctx));
   if (chain.old !== 'absent') return refUpdateConflict(target, 'absent', chain.old);
   return chain.danglingSymref ? refUpdateConflict(target, 'absent', 'absent') : undefined;
 };

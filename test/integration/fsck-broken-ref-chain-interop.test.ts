@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type FsckOptions, type FsckResult, fsck } from '../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
+import { bareStoreRefName } from '../../src/domain/refs/per-worktree-ref.js';
 import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
@@ -1169,12 +1170,17 @@ const seed = async (row: Row): Promise<{ readonly dir: string; readonly fill: Fi
 const gitReportLines = (stderr: string): ReadonlyArray<string> =>
   stderr.split('\n').filter((line) => REPORT_LINE.test(line));
 
-const LINKED_ADMIN = `${path.sep}.git${path.sep}worktrees${path.sep}`;
+/** A root ref file of a linked store: its parent directory is `<dir>/.git/worktrees/<id>`. */
+const isLinkedRootRefFile = (dir: string, file: string): boolean =>
+  path.basename(file) !== 'refs' &&
+  path.dirname(path.dirname(file)) === path.join(dir, '.git', 'worktrees');
 
-/** git prints a path from the top level, but a linked worktree's admin dir and an explicit
- *  `--git-dir` stay absolute. */
+/** git prints a path from the top level, but an explicit `--git-dir`, anything seen from a linked
+ *  worktree and a linked store's root ref file stay absolute. */
 const printedPath = (dir: string, file: string, row: Row): string =>
-  row.via === 'gitdir' || file.includes(LINKED_ADMIN) ? file : path.relative(dir, file);
+  row.via === 'gitdir' || row.via === 'linked' || isLinkedRootRefFile(dir, file)
+    ? file
+    : path.relative(dir, file);
 
 const END_TEXT = {
   FILE_NOT_FOUND: 'No such file or directory',
@@ -1192,11 +1198,12 @@ const endedLine = (
     ? `fatal: More than ${HOP_CAP} nested symlinks on path '${printedPath(dir, finding.path, row)}'`
     : `fatal: Invalid path '${finding.path}': ${END_TEXT[finding.reason]}`;
 
-const OWN_NAMESPACE = /^refs\/(bisect|rewritten|worktree)\//;
-
-/** git names a linked worktree's own refs by the admin dir they live in. */
-const shownRef = (ref: string, row: Row): string =>
-  row.via === 'linked' && OWN_NAMESPACE.test(ref) ? `worktrees/${LINKED_ID}/${ref}` : ref;
+/** The body a row seeded for a store-relative name: a root ref, a branch or a tag. */
+const seededBody = (row: Row, bare: string): string =>
+  row.root?.[bare] ??
+  row.refs[bare.replace('refs/heads/', '')] ??
+  row.tags?.[bare.replace('refs/tags/', '')] ??
+  '';
 
 /** The same lines rebuilt from tsgit's findings; the seeded bodies stand for the content. */
 const rebuiltLines = (
@@ -1210,8 +1217,8 @@ const rebuiltLines = (
     if (finding.type === 'unreadable-ref-path') {
       const shown = printedPath(dir, finding.path, row);
       return finding.operation === 'open-directory'
-        ? [`warning: error opening directory '${shown}${path.sep}': Permission denied`]
-        : [`warning: failed to stat '${shown}': Permission denied`];
+        ? [`warning: error opening directory '${shown}${path.sep}': ${END_TEXT[finding.reason]}`]
+        : [`warning: failed to stat '${shown}': ${END_TEXT[finding.reason]}`];
     }
     if (finding.type === 'refs-walk-failed') {
       return [`error: failed to iterate over '${printedPath(dir, finding.path, row)}'`];
@@ -1227,9 +1234,7 @@ const rebuiltLines = (
       return [`error: cannot read ref file '${shown}': Permission denied`];
     }
     if (finding.msgId === 'symlinkRef') {
-      return [
-        `${label}: ${shownRef(finding.ref, row)}: symlinkRef: use deprecated symbolic link for symref`,
-      ];
+      return [`${label}: ${finding.ref}: symlinkRef: use deprecated symbolic link for symref`];
     }
     if (finding.msgId === 'badReferentName') {
       return [
@@ -1251,7 +1256,8 @@ const rebuiltLines = (
           : `has trailing garbage: '${displayed(finding.trailing)}'`;
       return [`${label}: ${finding.ref}: trailingRefContent: ${detail}`];
     }
-    const body = row.root?.[finding.ref] ?? row.refs[finding.ref.replace('refs/heads/', '')] ?? '';
+    const bare = bareStoreRefName(finding.ref);
+    const body = seededBody(row, bare);
     return [
       `${label}: ${finding.ref}: ${finding.msgId}: ${displayed(fill(body).replace(TRAILING_BYTES, ''))}`,
     ];

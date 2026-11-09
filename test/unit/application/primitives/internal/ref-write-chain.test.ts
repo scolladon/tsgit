@@ -1,12 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { resolveWriteChain } from '../../../../../src/application/primitives/internal/ref-write-chain.js';
+import {
+  looseFileOf,
+  resolveWriteChain,
+} from '../../../../../src/application/primitives/internal/ref-write-chain.js';
 import { getRefStore } from '../../../../../src/application/primitives/ref-store.js';
 import type { UpdateRefOptions } from '../../../../../src/application/primitives/types.js';
 import { writeSymbolicRef } from '../../../../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { withReftableStorage } from '../reftable-fixtures.js';
 
 const ID_A = 'a'.repeat(40) as ObjectId;
 const ID_B = 'b'.repeat(40) as ObjectId;
@@ -16,12 +20,28 @@ const setDirect = async (ctx: Context, name: RefName, id: ObjectId): Promise<voi
   await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name, id }]);
 };
 
+const SELF_NAMING_LINK = 'ref: main-worktree/refs/bisect/c\n';
+
+// Reframe a main-repo Context as a linked worktree's: its own admin dir, the main gitdir as common dir.
+const asWorktreeChild = (ctx: Context): Context => ({
+  ...ctx,
+  layout: {
+    ...ctx.layout,
+    gitDir: `${ctx.layout.gitDir}/worktrees/wt`,
+    commonDir: ctx.layout.gitDir,
+  },
+});
+
 const WRITE_OPTS: UpdateRefOptions = { reflogMessage: 'test' };
 const NO_DEREF_OPTS: UpdateRefOptions = { reflogMessage: 'test', noDeref: true };
 const noDerefWithExpected = (expected: ObjectId | 'absent'): UpdateRefOptions => ({
   reflogMessage: 'test',
   noDeref: true,
   expected,
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('resolveWriteChain', () => {
@@ -34,7 +54,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/main'), WRITE_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/main'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.links).toEqual([]);
@@ -53,7 +78,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/gone'), WRITE_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/gone'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.links).toEqual([]);
@@ -73,7 +103,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/s'), WRITE_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/s'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.links).toEqual(['refs/heads/s']);
@@ -94,7 +129,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/a1'), WRITE_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/a1'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.links).toEqual(['refs/heads/a1', 'refs/heads/a2']);
@@ -112,7 +152,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/s2'), WRITE_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/s2'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.links).toEqual(['refs/heads/s2']);
@@ -134,7 +179,7 @@ describe('resolveWriteChain', () => {
 
         // Act + Assert
         try {
-          await resolveWriteChain(store, ref('refs/heads/p'), WRITE_OPTS);
+          await resolveWriteChain(store, ref('refs/heads/p'), WRITE_OPTS, looseFileOf(ctx));
           expect.unreachable();
         } catch (err) {
           expect(err).toBeInstanceOf(TsgitError);
@@ -158,7 +203,7 @@ describe('resolveWriteChain', () => {
 
         // Act + Assert
         try {
-          await resolveWriteChain(store, ref('refs/heads/z'), WRITE_OPTS);
+          await resolveWriteChain(store, ref('refs/heads/z'), WRITE_OPTS, looseFileOf(ctx));
           expect.unreachable();
         } catch (err) {
           const data = (err as TsgitError).data;
@@ -167,6 +212,56 @@ describe('resolveWriteChain', () => {
             expect(data.chain).toEqual(['refs/heads/z', 'refs/heads/z']);
           }
         }
+      });
+    });
+  });
+
+  describe('Given refs/bisect/c holding ref: main-worktree/refs/bisect/c on a files repository (a file that names itself)', () => {
+    describe('When resolveWriteChain dereferences refs/bisect/c from the main worktree', () => {
+      it('Then it refuses REF_LOCKED naming refs/bisect/c', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/bisect/c`, SELF_NAMING_LINK);
+        const sut = resolveWriteChain;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(getRefStore(ctx), ref('refs/bisect/c'), WRITE_OPTS, looseFileOf(ctx));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'REF_LOCKED', name: 'refs/bisect/c' });
+      });
+    });
+  });
+
+  describe("Given the same file in the linked worktree's own store", () => {
+    describe('When the walk runs from that worktree', () => {
+      it('Then main-worktree/refs/bisect/c is the terminal and nothing refuses', async () => {
+        // Arrange
+        const ctx = asWorktreeChild(createMemoryContext());
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/bisect/c`, SELF_NAMING_LINK);
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(
+          getRefStore(ctx),
+          ref('refs/bisect/c'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
+
+        // Assert
+        expect(result).toEqual({
+          links: ['refs/bisect/c'],
+          terminal: 'main-worktree/refs/bisect/c',
+          old: 'absent',
+          danglingSymref: false,
+          terminalIsSymbolic: false,
+        });
       });
     });
   });
@@ -186,7 +281,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/h1'), WRITE_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/h1'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.terminal).toBe('refs/heads/h6');
@@ -204,7 +304,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/main'), NO_DEREF_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/main'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.links).toEqual([]);
@@ -224,7 +329,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/s'), NO_DEREF_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/s'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.links).toEqual([]);
@@ -245,7 +355,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/main'), NO_DEREF_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/main'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.terminalIsSymbolic).toBe(false);
@@ -263,7 +378,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/s'), WRITE_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/s'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.terminalIsSymbolic).toBe(false);
@@ -280,7 +400,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/s7'), NO_DEREF_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/s7'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.terminal).toBe('refs/heads/s7');
@@ -302,7 +427,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/p'), NO_DEREF_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/p'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.terminal).toBe('refs/heads/p');
@@ -322,7 +452,12 @@ describe('resolveWriteChain', () => {
 
         // Act + Assert
         try {
-          await resolveWriteChain(store, ref('refs/heads/p'), noDerefWithExpected(ID_B));
+          await resolveWriteChain(
+            store,
+            ref('refs/heads/p'),
+            noDerefWithExpected(ID_B),
+            looseFileOf(ctx),
+          );
           expect.unreachable();
         } catch (err) {
           expect((err as TsgitError).data.code).toBe('REF_CYCLE_DETECTED');
@@ -352,7 +487,12 @@ describe('resolveWriteChain', () => {
         const sut = resolveWriteChain;
 
         // Act
-        const result = await sut(getRefStore(ctx), ref('refs/heads/s'), NO_DEREF_OPTS);
+        const result = await sut(
+          getRefStore(ctx),
+          ref('refs/heads/s'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.old).toBe(old);
@@ -378,7 +518,12 @@ describe('resolveWriteChain', () => {
         const store = getRefStore(ctx);
 
         // Act
-        const result = await resolveWriteChain(store, ref('refs/heads/s'), NO_DEREF_OPTS);
+        const result = await resolveWriteChain(
+          store,
+          ref('refs/heads/s'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result.terminal).toBe('refs/heads/s');
@@ -405,7 +550,12 @@ describe('resolveWriteChain', () => {
         const sut = resolveWriteChain;
 
         // Act
-        const result = await sut(getRefStore(ctx), ref('refs/heads/s'), NO_DEREF_OPTS);
+        const result = await sut(
+          getRefStore(ctx),
+          ref('refs/heads/s'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
 
         // Assert
         expect(result).toEqual({
@@ -427,7 +577,12 @@ describe('resolveWriteChain', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(getRefStore(ctx), ref('refs/heads/s'), noDerefWithExpected(ID_A));
+          await sut(
+            getRefStore(ctx),
+            ref('refs/heads/s'),
+            noDerefWithExpected(ID_A),
+            looseFileOf(ctx),
+          );
         } catch (err) {
           caught = err;
         }
@@ -459,7 +614,7 @@ describe('resolveWriteChain', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(failingStore, ref('refs/heads/s'), NO_DEREF_OPTS);
+          await sut(failingStore, ref('refs/heads/s'), NO_DEREF_OPTS, looseFileOf(ctx));
         } catch (err) {
           caught = err;
         }
@@ -481,13 +636,134 @@ describe('resolveWriteChain', () => {
 
         // Act + Assert
         try {
-          await resolveWriteChain(store, ref('refs/heads/bad'), WRITE_OPTS);
+          await resolveWriteChain(store, ref('refs/heads/bad'), WRITE_OPTS, looseFileOf(ctx));
           expect.unreachable();
         } catch (err) {
           expect((err as TsgitError).data.code).toBe('INVALID_REF');
         }
         expect(spy).toHaveBeenCalledTimes(1);
         spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a store that records every read', () => {
+    const recordingStore = (ctx: Context, reads: RefName[]) => {
+      const real = getRefStore(ctx);
+      return {
+        ...real,
+        resolveDirect: async (name: RefName) => {
+          reads.push(name);
+          return real.resolveDirect(name);
+        },
+      };
+    };
+
+    describe('When resolveWriteChain dereferences a symbolic ref', () => {
+      it('Then it reads s then x through resolveDirect', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setDirect(ctx, ref('refs/heads/x'), ID_A);
+        await writeSymbolicRef(ctx, ref('refs/heads/s'), ref('refs/heads/x'));
+        const reads: RefName[] = [];
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(
+          recordingStore(ctx, reads),
+          ref('refs/heads/s'),
+          WRITE_OPTS,
+          looseFileOf(ctx),
+        );
+
+        // Assert
+        expect(reads).toEqual(['refs/heads/s', 'refs/heads/x']);
+        expect(result.links).toEqual(['refs/heads/s']);
+        expect(result.terminal).toBe('refs/heads/x');
+        expect(result.old).toBe(ID_A);
+      });
+    });
+
+    describe('When resolveWriteChain runs with noDeref on a direct ref', () => {
+      it('Then it reads x', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setDirect(ctx, ref('refs/heads/x'), ID_A);
+        const reads: RefName[] = [];
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(
+          recordingStore(ctx, reads),
+          ref('refs/heads/x'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
+
+        // Assert
+        expect(reads).toEqual(['refs/heads/x']);
+        expect(result.terminal).toBe('refs/heads/x');
+        expect(result.old).toBe(ID_A);
+        expect(result.terminalIsSymbolic).toBe(false);
+      });
+    });
+
+    describe('When resolveWriteChain runs with noDeref on a symbolic ref', () => {
+      it('Then it reads s then x', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setDirect(ctx, ref('refs/heads/x'), ID_A);
+        await writeSymbolicRef(ctx, ref('refs/heads/s'), ref('refs/heads/x'));
+        const reads: RefName[] = [];
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(
+          recordingStore(ctx, reads),
+          ref('refs/heads/s'),
+          NO_DEREF_OPTS,
+          looseFileOf(ctx),
+        );
+
+        // Assert
+        expect(reads).toEqual(['refs/heads/s', 'refs/heads/x']);
+        expect(result.terminal).toBe('refs/heads/s');
+        expect(result.old).toBe(ID_A);
+        expect(result.terminalIsSymbolic).toBe(true);
+      });
+    });
+  });
+});
+
+describe('looseFileOf', () => {
+  describe('Given a files repository', () => {
+    describe('When the loose file of main-worktree/HEAD is asked', () => {
+      it("Then it is the gitdir's HEAD", () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = looseFileOf;
+
+        // Act
+        const result = sut(ctx)(ref('main-worktree/HEAD'));
+
+        // Assert
+        expect(result).toBe(`${ctx.layout.gitDir}/HEAD`);
+      });
+    });
+  });
+
+  describe('Given a reftable repository', () => {
+    describe('When it is asked', () => {
+      it('Then it is undefined', () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = looseFileOf;
+
+        // Act
+        const result = sut(ctx)(ref('main-worktree/HEAD'));
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

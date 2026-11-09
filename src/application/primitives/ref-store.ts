@@ -5,6 +5,7 @@ import {
   directoryNotEmpty,
   dirname,
   fileExists,
+  fileNotFound,
   notADirectory,
   TsgitError,
 } from '../../domain/error.js';
@@ -37,9 +38,18 @@ import {
   serializePackedRefs,
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
+import {
+  isSkippedByLooseIterator,
+  isSkippedByRefsVerify,
+} from '../../domain/refs/loose-entry-name.js';
 import { type LooseBody, readLooseBody } from '../../domain/refs/loose-ref.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
-import { isPseudoRef, PER_WORKTREE_PREFIXES } from '../../domain/refs/per-worktree-ref.js';
+import {
+  bareStoreRefName,
+  isPseudoRef,
+  linkedWorktreeRefPrefix,
+  PER_WORKTREE_PREFIXES,
+} from '../../domain/refs/per-worktree-ref.js';
 import {
   firstRefNameConflict,
   type RefNameFacts,
@@ -47,6 +57,7 @@ import {
   type TransactionNames,
 } from '../../domain/refs/ref-name-conflict.js';
 import {
+  isBranchReferent,
   isOutsideRefsNamespace,
   isRootRefName,
   isValidSymrefReferent,
@@ -61,6 +72,7 @@ import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
 import { lstatIfPresent, lstatIfReachable } from './internal/fs-probes.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
+import { linkedWorktreeAdmins } from './internal/linked-worktrees.js';
 import { realPathOutcomeOf } from './internal/real-path.js';
 import {
   isCheckedWhenAbsent,
@@ -71,12 +83,13 @@ import {
 } from './internal/transaction-names.js';
 import {
   commonGitDir,
+  lockSuffix,
   logsDir,
   looseObjectPath,
-  looseRefPath,
   packedRefsPath,
-  perWorktreeRefDir,
-  reflogPath,
+  type RefLocation,
+  refLocation,
+  refReflogPath,
 } from './path-layout.js';
 import { readObject, readObjectMetadata } from './read-object.js';
 import {
@@ -96,6 +109,8 @@ export interface RefStore {
    * Resolve a ref name to its direct ObjectId target, without following symbolic refs.
    * Returns undefined if the ref doesn't exist in either loose or packed storage.
    * Throws if the loose file content is a symbolic ref (callers must handle).
+   * Every reader on a write route (compare-and-swap, presence, the write chain)
+   * reads through it, so it sees the loose file the write will touch.
    */
   resolveDirect(name: RefName): Promise<ResolveDirectResult>;
   /**
@@ -244,9 +259,15 @@ export type RefsVerifyEndReason =
   | 'PERMISSION_DENIED'
   | 'SYMLINK_LOOP';
 
+/** Why git's walk could not open or stat a path and warned instead of judging it: the
+ *  permissions refused, or a component turned into a regular file under the walk. */
+export type UnreadablePathReason = 'PERMISSION_DENIED' | 'NOT_A_DIRECTORY';
+
 export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
+  | { readonly ref: RefName; readonly msgId: 'badRefName' }
+  | { readonly ref: RefName; readonly msgId: 'badRefFiletype' }
   | {
       readonly ref: RefName;
       readonly msgId: 'cannotReadRef';
@@ -256,7 +277,7 @@ export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
   | {
       readonly ref: RefName;
-      readonly msgId: 'badReferentName' | 'symrefTargetIsNotARef';
+      readonly msgId: 'badReferentName' | 'symrefTargetIsNotARef' | 'badHeadTarget';
       readonly referent: string;
     }
   | { readonly ref: RefName; readonly msgId: 'refMissingNewline' }
@@ -271,8 +292,14 @@ export type RefIntegrityFinding =
       readonly msgId: 'unreadableRefPath';
       readonly operation: 'open-directory' | 'stat';
       readonly path: string;
+      readonly reason: UnreadablePathReason;
     }
-  | { readonly msgId: 'refsWalkFailed'; readonly path: string }
+  | {
+      readonly msgId: 'refsWalkFailed';
+      readonly path: string;
+      readonly reason: UnreadablePathReason;
+    }
+  | { readonly msgId: 'rootRefsUnreadable'; readonly path: string }
   | {
       readonly table: string;
       readonly msgId: 'badReftableTable';
@@ -386,6 +413,13 @@ const HEAD_NAME: RefName = 'HEAD' as RefName;
 const errorCodeOf = (err: unknown): string => errorDataCode(err) ?? '';
 
 const PERMISSION_DENIED_CODE = 'PERMISSION_DENIED';
+const NOT_A_DIRECTORY_CODE = 'NOT_A_DIRECTORY';
+
+/** What a worktree's own refs namespace answers when git cannot search it. */
+const UNSEARCHABLE_OWN_CODES: ReadonlySet<string> = new Set([
+  PERMISSION_DENIED_CODE,
+  NOT_A_DIRECTORY_CODE,
+]);
 
 /** What reading one loose ref file for the integrity walk met. */
 type LooseReadOutcome =
@@ -394,6 +428,19 @@ type LooseReadOutcome =
   | { readonly kind: 'refused'; readonly finding: RefIntegrityFinding };
 
 const ABSENT_READ: LooseReadOutcome = { kind: 'absent' };
+
+const statRefusalOf = (path: string, reason: UnreadablePathReason): LooseReadOutcome => ({
+  kind: 'refused',
+  finding: { msgId: 'unreadableRefPath', operation: 'stat', path, reason },
+});
+
+/** How a rename onto a directory is refused: `PERMISSION_DENIED` on every
+ *  adapter, `DIRECTORY_NOT_EMPTY` on Linux when the directory holds the lock
+ *  being renamed, as the `<id>/.lock` of a bare `worktrees/<id>` does. */
+const RENAME_OVER_DIRECTORY_CODES: ReadonlySet<string> = new Set([
+  'PERMISSION_DENIED',
+  'DIRECTORY_NOT_EMPTY',
+]);
 
 /** The stat failures that mean "no directory here": the path, or a
  *  component above it, is absent or a regular file. */
@@ -450,12 +497,13 @@ type LeafProbe = (fs: FileSystem, path: string) => Promise<FileStat | undefined>
 type ListedKind = 'directory' | 'ref' | 'unlisted';
 
 /** The `stat` failures that drop a symbolic link from the loose walk, as a
- *  failed `stat` drops it from git's: dangling, through a regular file, or
- *  a loop. */
+ *  failed `stat` drops it from git's: dangling, through a regular file, a
+ *  loop, or a resolution longer than the file system allows. */
 const UNRESOLVABLE_LINK_CODES: ReadonlySet<string> = new Set([
   'FILE_NOT_FOUND',
   'NOT_A_DIRECTORY',
   'PERMISSION_DENIED',
+  'PATH_TOO_LONG',
 ]);
 /** The no-follow open refusals the plain loose reader decides instead: an
  *  adapter without the open, a regular file in the path, or an unreadable
@@ -489,8 +537,9 @@ const byDescendingName = (a: LooseDuplicate, b: LooseDuplicate): number =>
 /** One delete's loose-file footprint, resolved before any lock is taken. */
 interface DeleteTarget {
   readonly name: RefName;
-  readonly gitDir: string;
+  readonly dir: string;
   readonly loose: string;
+  readonly reflog: string;
   /** Whether the loose file's parent is a directory: the loose lock is
    *  taken, and the refs tree pruned, only then. */
   readonly looseDirExists: boolean;
@@ -569,13 +618,13 @@ function smallestDuplicateName(updates: readonly DeleteUpdate[]): RefName | unde
  *  with the root it must stay below. */
 const refsTreeParent = (target: DeleteTarget): readonly [string, string] => [
   dirname(target.loose),
-  `${target.gitDir}/${REFS_DIR}`,
+  `${target.dir}/${REFS_DIR}`,
 ];
 
 /** {@link refsTreeParent} for the target's reflog in the logs tree. */
 const logsTreeParent = (target: DeleteTarget): readonly [string, string] => [
-  dirname(reflogPath(target.gitDir, target.name)),
-  `${logsDir(target.gitDir)}/${REFS_DIR}`,
+  dirname(target.reflog),
+  `${logsDir(target.dir)}/${REFS_DIR}`,
 ];
 
 const holdsAnyName = (index: PackedNameIndex, names: ReadonlySet<RefName>): boolean =>
@@ -657,6 +706,16 @@ interface IntegrityRun {
   readonly findings: RefIntegrityFinding[];
   ended: boolean;
   strippedGitDir?: Promise<string>;
+}
+
+/** What the `lstat` of a store's `refs` root says: walkable, missing, or a file or link git refuses. */
+type RootKind = 'directory' | 'absent' | 'not-a-directory';
+
+/** One ref store git's refs verify checks. `gitDir` is the common dir for the main store, the admin
+ *  dir otherwise; `prefix` is "" or "worktrees/<id>/". */
+interface IntegrityStore {
+  readonly gitDir: string;
+  readonly prefix: string;
 }
 
 const BACKSLASH = /\\/g;
@@ -797,8 +856,6 @@ interface WalkTarget {
 function createFilesRefStore(ctx: Context): RefStore {
   let packedCache: { readonly loaded: LoadedPackedRefs; readonly mtimeKey: string } | undefined;
 
-  const refDir = (name: RefName): string => perWorktreeRefDir(ctx, name);
-
   /** `packed-refs`' followed `stat`, `undefined` when absent. The no-follow probe
    *  answers a regular file — and an absence — itself, with no refusal; only a
    *  symbolic link pays the following `stat`. */
@@ -832,18 +889,21 @@ function createFilesRefStore(ctx: Context): RefStore {
     return loaded;
   }
 
-  async function readLooseContent(name: RefName): Promise<string | undefined> {
-    const path = looseRefPath(refDir(name), name);
+  async function readLooseContentAt(path: string): Promise<string | undefined> {
     try {
       return await ctx.fs.readUtf8(path);
     } catch (err) {
-      // Absent, and a regular file in the path, both read as no loose ref —
-      // git's `ENOENT` and `ENOTDIR` alike; so does a directory at the path
-      // (`EISDIR`), which costs the one `stat` below.
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return undefined;
-      if ((await pathKind(path)) === 'directory') return undefined;
+      if (await readsAsNoLooseRef(path, err)) return undefined;
       throw err;
     }
+  }
+
+  /** Absent, and a regular file in the path, both read as no loose ref — git's `ENOENT`
+   *  and `ENOTDIR` alike; so does a directory at the path (`EISDIR`), which costs the one
+   *  `stat` here. */
+  async function readsAsNoLooseRef(path: string, err: unknown): Promise<boolean> {
+    if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return true;
+    return (await pathKind(path)) === 'directory';
   }
 
   /**
@@ -920,19 +980,15 @@ function createFilesRefStore(ctx: Context): RefStore {
    * and any other refusal — an adapter without the open, a regular file in the
    * path — the plain reader, which decides those.
    */
-  async function readLooseLeaf(name: RefName, path: string): Promise<LooseLeaf> {
+  async function readLooseLeaf(path: string): Promise<LooseLeaf> {
     try {
       return await readRegularLeaf(path);
     } catch (err) {
-      return leafAfterRefusedOpen(name, path, err);
+      return leafAfterRefusedOpen(path, err);
     }
   }
 
-  async function leafAfterRefusedOpen(
-    name: RefName,
-    path: string,
-    err: unknown,
-  ): Promise<LooseLeaf> {
+  async function leafAfterRefusedOpen(path: string, err: unknown): Promise<LooseLeaf> {
     const code = errorCodeOf(err);
     if (code === 'FILE_NOT_FOUND') return NO_LEAF;
     // A regular file in the path is no such ref — git's `lstat` leaves the
@@ -944,7 +1000,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       return SYMLINK_LEAF;
     }
     if (!PLAIN_READER_CODES.has(code)) throw err;
-    const content = await readLooseContent(name);
+    const content = await readLooseContentAt(path);
     return content === undefined ? NO_LEAF : { kind: 'content', content };
   }
 
@@ -1015,14 +1071,30 @@ function createFilesRefStore(ctx: Context): RefStore {
     return { kind: 'direct', id: entry.id };
   }
 
-  async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
-    if (name === HEAD_NAME) return resolveHeadDirect();
-    const dir = refDir(name);
-    const path = looseRefPath(dir, name);
-    if (await isLooseMiss(path)) return resolveAfterLooseMiss(name, dir, path);
-    const leaf = await readLooseLeaf(name, path);
+  /**
+   * Where every read and write route looks: the loose file and its lock in the
+   * store the name selects, while the packed fallback keeps the full name, as
+   * git does.
+   */
+  const location = (name: RefName): RefLocation => refLocation(ctx, name);
+
+  /** The log file every reflog route reads and writes, in the store `location` picks. */
+  const reflogOf = (name: RefName): string => refReflogPath(ctx, name);
+
+  /** Whether `loose` is this worktree's `HEAD` file, whichever name reached it. */
+  const isHeadFile = (loose: string): boolean => loose === `${ctx.layout.gitDir}/HEAD`;
+
+  const resolveDirect = (name: RefName): Promise<ResolveDirectResult> =>
+    name === HEAD_NAME ? resolveHeadDirect() : resolveDirectAt(name, location(name));
+
+  async function resolveDirectAt(
+    name: RefName,
+    { dir, loose }: RefLocation,
+  ): Promise<ResolveDirectResult> {
+    if (await isLooseMiss(loose)) return resolveAfterLooseMiss(name, dir, loose);
+    const leaf = await readLooseLeaf(loose);
     if (leaf.kind === 'symlink') {
-      return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
+      return resolveSymlinkedRef(name, loose, await ctx.fs.readlink(loose));
     }
     if (leaf.kind === 'content') {
       return fromNamedContent(
@@ -1037,18 +1109,24 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /** git's loose iterator takes a symbolic link entry's followed type: a
-   *  directory is descended, anything else listed, and a link that does not
-   *  resolve dropped. */
+   *  directory is descended, a regular file listed, and a link that does not
+   *  resolve or reaches anything else dropped. */
   async function followedEntryKind(path: string): Promise<ListedKind> {
     try {
-      return (await ctx.fs.stat(path)).isDirectory ? 'directory' : 'ref';
+      const target = await ctx.fs.stat(path);
+      if (target.isDirectory) return 'directory';
+      return target.isFile ? 'ref' : 'unlisted';
     } catch (err) {
       if (UNRESOLVABLE_LINK_CODES.has(errorCodeOf(err))) return 'unlisted';
       throw err;
     }
   }
 
-  const entryKind = (entry: DirEntry): ListedKind => (entry.isDirectory ? 'directory' : 'ref');
+  /** git's loose iterator lists a regular file only: a pipe or socket is never a ref. */
+  const entryKind = (entry: DirEntry): ListedKind => {
+    if (entry.isDirectory) return 'directory';
+    return entry.isFile ? 'ref' : 'unlisted';
+  };
 
   /** git's loose iterator drops a directory it cannot open, a refs root included, and carries
    *  on; the opening routes already refuse the repositories git refuses. */
@@ -1063,7 +1141,7 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** Recursively walk one `refs/**` root, composing slash-joined ref names as it descends. */
   async function walkRefDir(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
-    const entries = await readdirOrSkip(dir);
+    const entries = (await readdirOrSkip(dir)).filter((e) => !isSkippedByLooseIterator(e.name));
     const names: RefName[] = [];
     for (const entry of entries) {
       const path = `${dir}/${entry.name}`;
@@ -1107,15 +1185,6 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function headCandidate(prefix: RefName | undefined): Promise<RefName | undefined> {
     if (!matchesPrefix(HEAD_NAME, prefix)) return undefined;
     return (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) ? HEAD_NAME : undefined;
-  }
-
-  /** The common dir's and the worktree's own `refs` roots in the order git checks them — the
-   *  shared refs first — collapsed into one when both name the same directory (a normal
-   *  repository or the main worktree). */
-  function refsWalkRoots(): ReadonlyArray<string> {
-    const own = `${ctx.layout.gitDir}/${REFS_DIR}`;
-    const common = `${commonGitDir(ctx)}/${REFS_DIR}`;
-    return own === common ? [own] : [common, own];
   }
 
   /** The directories to walk for `relative`: the common dir's copy and, in a linked worktree,
@@ -1214,7 +1283,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       if (!(await ancestorsReadable(target))) return [];
       return await walkRefsRoot(target.root, target.relative, prefix);
     } catch (err) {
-      if (target.ownNamespace && errorCodeOf(err) === PERMISSION_DENIED_CODE) return [];
+      if (target.ownNamespace && UNSEARCHABLE_OWN_CODES.has(errorCodeOf(err))) return [];
       throw err;
     }
   }
@@ -1227,7 +1296,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    * subdirectory rather than always walking the whole tree and filtering
    * every name afterward — `branchList`/`tagList`'s own single-level
    * `readdir` shape, generalised to an arbitrary prefix depth. A name found
-   * under a root other than the one {@link refDir} serves it from is no ref
+   * under a root other than the one {@link location} serves it from is no ref
    * of this worktree and is dropped.
    */
   async function walkAllLooseRefNames(
@@ -1244,7 +1313,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       // counts (~10^5), which a large unpacked ref space (a mirror's
       // `refs/pull/*`, a fetch not yet followed by `pack-refs`) can exceed.
       for (const name of await walkTarget(target, prefix)) {
-        if (target.root === `${refDir(name)}/${target.relative}`) names.push(name);
+        if (target.root === `${location(name).dir}/${target.relative}`) names.push(name);
       }
     }
     return names;
@@ -1319,13 +1388,32 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** The `refs` root git iterates as a whole: when it cannot be opened the iteration itself
    *  fails, where a directory below it is only warned about. */
-  async function walkIntegrityRoot(root: string, run: IntegrityRun): Promise<void> {
-    const entries = await readdirForIntegrity(root, run.findings);
-    if (entries === undefined) {
-      run.findings.push({ msgId: 'refsWalkFailed', path: root });
+  async function walkIntegrityRoot(store: IntegrityStore, run: IntegrityRun): Promise<void> {
+    const root = `${store.gitDir}/${REFS_DIR}`;
+    const kind = await rootKind(root);
+    // Stryker disable next-line ConditionalExpression: equivalent — an absent root's listing fails FILE_NOT_FOUND, which readdirForIntegrity passes over as an empty listing, so the walk reports nothing either way.
+    if (kind === 'absent') return;
+    if (kind === 'not-a-directory') {
+      run.findings.push({ msgId: 'refsWalkFailed', path: root, reason: 'NOT_A_DIRECTORY' });
       return;
     }
-    await walkIntegrityEntries(root, REFS_DIR, entries, run);
+    const entries = await readdirForIntegrity(root, run.findings);
+    if (entries === undefined) {
+      run.findings.push({ msgId: 'refsWalkFailed', path: root, reason: 'PERMISSION_DENIED' });
+      return;
+    }
+    await walkIntegrityEntries(root, `${store.prefix}${REFS_DIR}`, entries, run);
+  }
+
+  /** A link at the root is not followed, whatever it points at. */
+  async function rootKind(root: string): Promise<RootKind> {
+    try {
+      const stat = await ctx.fs.lstat(root);
+      return stat.isDirectory && !stat.isSymbolicLink ? 'directory' : 'not-a-directory';
+    } catch (err) {
+      if (errorCodeOf(err) === 'FILE_NOT_FOUND') return 'absent';
+      throw err;
+    }
   }
 
   async function walkIntegrityEntries(
@@ -1336,43 +1424,85 @@ function createFilesRefStore(ctx: Context): RefStore {
   ): Promise<void> {
     for (const entry of entries) {
       if (run.ended) return;
-      const name = `${prefix}/${entry.name}` as RefName;
-      if (await statRefusedUpFront(entry, `${dir}/${entry.name}`, run.findings)) continue;
-      if (entry.isSymbolicLink) {
-        run.findings.push({ ref: name, msgId: 'symlinkRef' });
-        await linkReferentFindings(run, name, `${dir}/${entry.name}`);
-        continue;
-      }
-      if (entry.isDirectory) {
-        await walkIntegrity(`${dir}/${entry.name}`, name, run);
-        continue;
-      }
-      run.findings.push(...(await looseBodyFindings(name)));
+      await walkIntegrityEntry(entry, dir, prefix, run);
     }
   }
 
-  /** A regular file's `lstat` is left to the read that follows it: its refusal ends in the
-   *  same `failed to stat` at the same position, without a second call per ref. */
-  const statRefusedUpFront = (
+  /** One entry of git's walk: its `lstat` where git takes one up front, the `.lock` skip, then
+   *  a directory descended or a file judged. */
+  async function walkIntegrityEntry(
     entry: DirEntry,
-    path: string,
-    findings: RefIntegrityFinding[],
-  ): Promise<boolean> =>
-    entry.isDirectory || entry.isSymbolicLink
-      ? entryStatRefused(path, findings)
-      : Promise.resolve(false);
+    dir: string,
+    prefix: string,
+    run: IntegrityRun,
+  ): Promise<void> {
+    const path = `${dir}/${entry.name}`;
+    const name = `${prefix}/${entry.name}` as RefName;
+    if (!isStatDeferred(entry, name) && (await statSkipsEntry(path, run.findings))) return;
+    if (isSkippedLockFile(entry)) return;
+    if (entry.isDirectory) await walkIntegrity(path, name, run);
+    else await judgeEntry(entry, name, path, run);
+  }
 
-  /** git's directory iterator `lstat`s every entry before judging it: a refusal is
-   *  `failed to stat`, and the entry is skipped whatever it is. */
-  async function entryStatRefused(path: string, findings: RefIntegrityFinding[]): Promise<boolean> {
+  /** git's directory iterator `lstat`s every entry before judging it. A regular file whose
+   *  name passes the check is left to the read that follows: its refusal is the same
+   *  `failed to stat` at the same position, without a second call per ref. Anything else — a
+   *  directory, a link, a file of another type, a name the check rejects (a `.lock` name among
+   *  them) — is stat'd here, so the refusal comes before a verdict git never reaches. */
+  const isStatDeferred = (entry: DirEntry, name: RefName): boolean =>
+    entry.isFile && isSafeRefName(name);
+
+  /** git's refs-verify walk skips a `.lock` file by its name once the iterator has stat'd it;
+   *  a directory of that name is walked. */
+  const isSkippedLockFile = (entry: DirEntry): boolean =>
+    !entry.isDirectory && isSkippedByRefsVerify(entry.name);
+
+  /** git's `files_fsck_ref` on one entry: a file type it never opens, then the name, then the
+   *  content — a link's content being its referent. */
+  async function judgeEntry(
+    entry: DirEntry,
+    name: RefName,
+    path: string,
+    run: IntegrityRun,
+  ): Promise<void> {
+    if (!entry.isFile && !entry.isSymbolicLink) {
+      run.findings.push({ ref: name, msgId: 'badRefFiletype' });
+      return;
+    }
+    if (!isSafeRefName(name)) run.findings.push({ ref: name, msgId: 'badRefName' });
+    if (!entry.isSymbolicLink) {
+      run.findings.push(...(await looseBodyFindingsAt(name, path)));
+      return;
+    }
+    run.findings.push({ ref: name, msgId: 'symlinkRef' });
+    await linkReferentFindings(run, name, path);
+  }
+
+  /** git's directory iterator `lstat`s every entry before judging it, and skips the entry
+   *  whatever it is when that fails: a refusal, or a parent that became a file meanwhile, is
+   *  warned as `failed to stat`; an entry gone by then — a lock file a concurrent writer
+   *  removed — is passed over without a word. */
+  async function statSkipsEntry(path: string, findings: RefIntegrityFinding[]): Promise<boolean> {
     try {
       await ctx.fs.lstat(path);
       return false;
     } catch (err) {
-      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
-      findings.push({ msgId: 'unreadableRefPath', operation: 'stat', path });
+      const reason = warnedPathReasonOf(err);
+      if (reason === undefined) return true;
+      findings.push({ msgId: 'unreadableRefPath', operation: 'stat', path, reason });
       return true;
     }
+  }
+
+  /** The faults git's iterator warns about and walks past: a refusal, or a path component that
+   *  is no longer a directory. `undefined` for an entry that vanished, passed over in silence;
+   *  anything else is rethrown — git skips it too, but a fault this store cannot name is not
+   *  one it reports as a warning. */
+  function warnedPathReasonOf(err: unknown): UnreadablePathReason | undefined {
+    const code = errorCodeOf(err);
+    if (code === 'FILE_NOT_FOUND') return undefined;
+    if (code === PERMISSION_DENIED_CODE || code === NOT_A_DIRECTORY_CODE) return code;
+    throw err;
   }
 
   /** git strips its gitdir as spelled, never resolved: a gitdir reached through a link, or
@@ -1416,8 +1546,9 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (ctx.fs.readdirInOsOrder ?? ctx.fs.readdir).call(ctx.fs, dir);
   }
 
-  /** git warns `error opening directory` for a directory the permissions refuse and
-   *  carries on with its siblings; `undefined` says the directory could not be opened. */
+  /** git warns `error opening directory` for a directory the permissions refuse, or that
+   *  became a file meanwhile, and carries on with its siblings; one gone by then is passed
+   *  over in silence. `undefined` says the directory could not be opened. */
   async function readdirForIntegrity(
     dir: string,
     findings: RefIntegrityFinding[],
@@ -1425,37 +1556,41 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       return await readdirInOsOrder(dir);
     } catch (err) {
-      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
-      findings.push({ msgId: 'unreadableRefPath', operation: 'open-directory', path: dir });
+      const reason = warnedPathReasonOf(err);
+      if (reason === undefined) return [];
+      findings.push({ msgId: 'unreadableRefPath', operation: 'open-directory', path: dir, reason });
       return undefined;
     }
   }
 
-  /** git's `cannot read ref file`: a file whose open the permissions refuse is a finding
-   *  and the walk carries on; the `lstat` proves the entry exists, as the open's refusal
-   *  alone cannot tell a denied file from a denied directory above it; an `lstat` the
-   *  permissions refuse too is git's `failed to stat`. */
-  async function readLooseContentOrRefusal(name: RefName): Promise<LooseReadOutcome> {
+  /** git `lstat`s a ref file before reading it; this store reads a safe regular file first
+   *  and reconstructs the verdict from the failure: one gone is passed over, a parent turned
+   *  file meanwhile is git's `failed to stat`, and a refused read is its `cannot read ref
+   *  file` — unless the `lstat` is refused too, which alone can tell a denied file from a
+   *  denied directory above it. */
+  async function readLooseContentOrRefusal(name: RefName, path: string): Promise<LooseReadOutcome> {
     try {
-      const raw = await readLooseContent(name);
-      return raw === undefined ? ABSENT_READ : { kind: 'read', raw };
+      return { kind: 'read', raw: await ctx.fs.readUtf8(path) };
     } catch (err) {
-      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
-      const path = looseRefPath(refDir(name), name);
-      try {
-        await ctx.fs.lstat(path);
-      } catch (statErr) {
-        if (errorCodeOf(statErr) !== PERMISSION_DENIED_CODE) throw statErr;
-        return {
-          kind: 'refused',
-          finding: { msgId: 'unreadableRefPath', operation: 'stat', path },
-        };
-      }
-      return {
-        kind: 'refused',
-        finding: { ref: name, msgId: 'cannotReadRef', path, reason: PERMISSION_DENIED_CODE },
-      };
+      const code = errorCodeOf(err);
+      if (code === NOT_A_DIRECTORY_CODE) return statRefusalOf(path, code);
+      if (code === PERMISSION_DENIED_CODE) return refusedReadOf(name, path);
+      if (await readsAsNoLooseRef(path, err)) return ABSENT_READ;
+      throw err;
     }
+  }
+
+  async function refusedReadOf(name: RefName, path: string): Promise<LooseReadOutcome> {
+    try {
+      await ctx.fs.lstat(path);
+    } catch (statErr) {
+      if (errorCodeOf(statErr) !== PERMISSION_DENIED_CODE) throw statErr;
+      return statRefusalOf(path, PERMISSION_DENIED_CODE);
+    }
+    return {
+      kind: 'refused',
+      finding: { ref: name, msgId: 'cannotReadRef', path, reason: PERMISSION_DENIED_CODE },
+    };
   }
 
   /** `name`'s loose-body verdicts, in git's order. A malformed body is `badRefContent`;
@@ -1465,14 +1600,21 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  grammar check — fsck's refs-verify pass runs its own OID-presence check
    *  against its scan-scoped universe once no `badRefContent` finding has
    *  already flagged this ref. */
-  async function looseBodyFindings(name: RefName): Promise<readonly RefIntegrityFinding[]> {
-    const outcome = await readLooseContentOrRefusal(name);
+  async function looseBodyFindingsAt(
+    name: RefName,
+    path: string,
+  ): Promise<readonly RefIntegrityFinding[]> {
+    const outcome = await readLooseContentOrRefusal(name, path);
     if (outcome.kind === 'refused') return [outcome.finding];
     if (outcome.kind === 'absent') return [];
     const body = readLooseBody(outcome.raw, ctx.hashConfig.hexLength);
     if (body.kind === 'unparseable') return [{ ref: name, msgId: 'badRefContent' }];
     if (body.kind === 'symbolic') {
-      return [...symbolicBodyNotices(name, body), ...referentFindings(name, body.referent)];
+      return [
+        ...symbolicBodyNotices(name, body),
+        ...headTargetFindings(name, body.referent),
+        ...referentFindings(name, body.referent),
+      ];
     }
     const notices = directBodyNotices(name, body);
     if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), body.id))) return notices;
@@ -1487,6 +1629,11 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (body.missingNewline) notices.push({ ref, msgId: 'refMissingNewline' });
     if (body.trailingWhitespace) notices.push({ ref, msgId: 'trailingRefContent' });
     return notices;
+  }
+
+  function headTargetFindings(ref: RefName, referent: string): readonly RefIntegrityFinding[] {
+    if (bareStoreRefName(ref) !== 'HEAD' || isBranchReferent(referent)) return [];
+    return [{ ref, msgId: 'badHeadTarget', referent }];
   }
 
   function directBodyNotices(
@@ -1511,22 +1658,68 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
     const run: IntegrityRun = { findings: [], ended: false };
-    for (const root of refsWalkRoots()) {
+    for (const store of await integrityStores()) {
       if (run.ended) break;
-      if (await isDirectoryPath(root)) await walkIntegrityRoot(root, run);
+      await walkIntegrityRoot(store, run);
+      if (!run.ended) run.findings.push(...(await rootRefFindings(store)));
     }
-    if (!run.ended) run.findings.push(...(await rootRefFindings()));
     return run.findings;
   }
 
+  /** The main store first, then every linked worktree's, in the order git lists them. */
+  async function integrityStores(): Promise<ReadonlyArray<IntegrityStore>> {
+    const linked = (await linkedWorktreeAdmins(ctx)).map(({ id, adminDir }) => ({
+      gitDir: adminDir,
+      prefix: linkedWorktreeRefPrefix(id),
+    }));
+    return [{ gitDir: commonGitDir(ctx), prefix: '' }, ...linked];
+  }
+
   /** git checks every root ref after the `refs/` walk, in the gitdir's listing order. */
-  async function rootRefFindings(): Promise<readonly RefIntegrityFinding[]> {
+  async function rootRefFindings(store: IntegrityStore): Promise<readonly RefIntegrityFinding[]> {
     const findings: RefIntegrityFinding[] = [];
-    for (const entry of await readdirInOsOrder(ctx.layout.gitDir)) {
-      if (!isRootRefName(entry.name)) continue;
-      findings.push(...(await looseBodyFindings(entry.name as RefName)));
+    const entries = await listRootEntries(store.gitDir);
+    if (entries === undefined) return [{ msgId: 'rootRefsUnreadable', path: store.gitDir }];
+    for (const entry of entries) {
+      const path = `${store.gitDir}/${entry.name}`;
+      if (!isRootRefName(entry.name) || !(await isRegularRootRef(entry, path))) continue;
+      findings.push(...(await rootRefFacts(store, entry.name, path)));
     }
     return findings;
+  }
+
+  /** git's entry-type probe with links followed: a regular file, or a link whose target is one; a
+   *  target the stat cannot reach is passed over. */
+  async function isRegularRootRef(entry: DirEntry, path: string): Promise<boolean> {
+    if (!entry.isSymbolicLink) return entry.isFile;
+    try {
+      return (await ctx.fs.stat(path)).isFile;
+    } catch (err) {
+      if (UNRESOLVABLE_LINK_CODES.has(errorCodeOf(err))) return false;
+      throw err;
+    }
+  }
+
+  /** A linked store's root ref carries its `worktrees/<id>/` prefix into git's name check; the
+   *  main store's bare root names are exempt. */
+  async function rootRefFacts(
+    store: IntegrityStore,
+    entryName: string,
+    path: string,
+  ): Promise<readonly RefIntegrityFinding[]> {
+    const ref = `${store.prefix}${entryName}` as RefName;
+    const nameFacts: RefIntegrityFinding[] =
+      store.prefix !== '' && !isSafeRefName(ref) ? [{ ref, msgId: 'badRefName' }] : [];
+    return [...nameFacts, ...(await looseBodyFindingsAt(ref, path))];
+  }
+
+  async function listRootEntries(gitDir: string): Promise<ReadonlyArray<DirEntry> | undefined> {
+    try {
+      return await readdirInOsOrder(gitDir);
+    } catch (err) {
+      if (errorCodeOf(err) !== PERMISSION_DENIED_CODE) throw err;
+      return undefined;
+    }
   }
 
   /** CAS guard shared by `set` / `setSymbolic` / `delete` — a no-op when `expected` is absent. */
@@ -1551,7 +1744,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** Remove `name`'s reflog file. A no-op when the file is absent, or when
    *  a directory — the logs of refs under `name` — sits at its path. */
   async function removeReflogFile(name: RefName): Promise<void> {
-    await rmUnlessDirectory(reflogPath(refDir(name), name));
+    await rmUnlessDirectory(reflogOf(name));
   }
 
   /** Removes the file or link at `path`; nothing when the path is absent or
@@ -1607,9 +1800,7 @@ function createFilesRefStore(ctx: Context): RefStore {
         serializeReflogRewriteLineBytes(entry, ctx.hashConfig.hexLength),
       ),
     );
-    await atomicWriteFile(ctx, reflogPath(refDir(update.name), update.name), content, () =>
-      refLocked(update.name),
-    );
+    await atomicWriteFile(ctx, reflogOf(update.name), content, () => refLocked(update.name));
   }
 
   /** `name`'s reflog bytes, or `undefined` when the file is absent. Refuses
@@ -1618,7 +1809,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  enforced exactly once regardless of which parse strictness the caller
    *  wants. */
   async function readReflogBytes(name: RefName): Promise<Uint8Array | undefined> {
-    const path = reflogPath(refDir(name), name);
+    const path = reflogOf(name);
     // One stat instead of an exists probe (itself a stat) + stat: absent is
     // the common miss, and a DIRECTORY at the path — the D/F shape a sibling
     // `<name>/x` log creates — reads as "no reflog", the same answer
@@ -1674,8 +1865,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function moveReflog(from: RefName, to: RefName): Promise<void> {
     if (!(await hasReflog(from))) return;
-    const src = reflogPath(refDir(from), from);
-    await ctx.fs.rename(src, reflogPath(refDir(to), to));
+    await ctx.fs.rename(reflogOf(from), reflogOf(to));
   }
 
   /**
@@ -1685,8 +1875,8 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function copyReflog(from: RefName, to: RefName): Promise<void> {
     if (!(await hasReflog(from))) return;
-    const bytes = await ctx.fs.read(reflogPath(refDir(from), from));
-    await ctx.fs.write(reflogPath(refDir(to), to), bytes);
+    const bytes = await ctx.fs.read(reflogOf(from));
+    await ctx.fs.write(reflogOf(to), bytes);
   }
 
   /** Whether `name` has a reflog FILE — never a directory. `ctx.fs.exists`
@@ -1698,7 +1888,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  regular file (`S_ISREG`) and reports absent for that same directory
    *  shape. */
   async function hasReflog(name: RefName): Promise<boolean> {
-    const path = reflogPath(refDir(name), name);
+    const path = reflogOf(name);
     try {
       return (await ctx.fs.stat(path)).isFile;
     } catch (err) {
@@ -1751,8 +1941,9 @@ function createFilesRefStore(ctx: Context): RefStore {
     content: Uint8Array,
     reflog: ReflogAppend | undefined,
   ): Promise<void> {
-    const write = await writeLooseRef(name, content, () => prepareReflog(name, reflog));
-    if (name === HEAD_NAME) invalidateHeadSlot(ctx);
+    const { loose } = location(name);
+    const write = await writeLooseRef(name, loose, content, () => prepareReflog(name, reflog));
+    if (isHeadFile(loose)) invalidateHeadSlot(ctx);
     if (reflog === undefined || write === undefined) return;
     await commitRefUpdate(ctx, name, write, reflog.oldId, reflog.newId, reflog.message);
   }
@@ -1814,11 +2005,11 @@ function createFilesRefStore(ctx: Context): RefStore {
    * same data on every adapter, whatever each reports for a path under it.
    */
   async function assertNoFileInTheWay(name: RefName, loose: string): Promise<void> {
-    const blocking = await fileInTheWay(dirname(loose), `${refDir(name)}/${REFS_DIR}`);
+    const blocking = await fileInTheWay(dirname(loose), `${location(name).dir}/${REFS_DIR}`);
     if (blocking !== undefined) throw notADirectory(blocking);
   }
 
-  /** `atomicWriteRef` onto `name`'s loose file, with `prepareLog` run under
+  /** `atomicWriteRef` onto `name`'s loose file `path`, with `prepareLog` run under
    *  the held lock between the lock's own refusals and the rename — git's
    *  lock-then-log-then-rename order. A lock that cannot be created for a
    *  path reason checks for a file in the way, so a normal write pays no
@@ -1826,10 +2017,11 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  commit once the ref is in place. */
   async function writeLooseRef(
     name: RefName,
+    path: string,
     content: Uint8Array,
     prepareLog: () => Promise<ReflogWrite | undefined>,
   ): Promise<ReflogWrite | undefined> {
-    const path = looseRefPath(refDir(name), name);
+    await assertLockDirExists(path);
     let prepared: ReflogWrite | undefined;
     try {
       await atomicWriteRef(ctx, name, path, content, (rename) =>
@@ -1851,9 +2043,30 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /** git creates no directory a trailing slash ends: `worktrees/<id>` with no
+   *  name after it locks `<id>/.lock`, which only an existing admin dir holds;
+   *  a regular file there or above it refuses the lock `ENOTDIR`, nothing there
+   *  `ENOENT`. */
+  async function assertLockDirExists(path: string): Promise<void> {
+    if (!path.endsWith('/')) return;
+    const refusal = await lockDirRefusal(path.slice(0, -1), `${path}${lockSuffix}`);
+    if (refusal !== undefined) throw refusal;
+  }
+
+  async function lockDirRefusal(dir: string, lock: string): Promise<TsgitError | undefined> {
+    try {
+      return (await ctx.fs.stat(dir)).isDirectory ? undefined : notADirectory(lock);
+    } catch (err) {
+      const code = errorCodeOf(err);
+      if (code === NOT_A_DIRECTORY_CODE) return notADirectory(lock);
+      if (code === 'FILE_NOT_FOUND') return fileNotFound(lock);
+      throw err;
+    }
+  }
+
   /** Commits `name`'s held lock: refuses refs packed under it, then renames —
-   *  a rename every adapter refuses `PERMISSION_DENIED` over a directory,
-   *  retried once {@link clearDirectory} has removed it. */
+   *  a rename refused over a directory is retried once {@link clearDirectory}
+   *  has removed it. */
   async function commitLooseRef(
     name: RefName,
     path: string,
@@ -1869,7 +2082,10 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       await rename();
     } catch (err) {
-      if (errorDataCode(err) !== PERMISSION_DENIED_CODE || !(await isDirectoryPath(path)))
+      if (
+        !RENAME_OVER_DIRECTORY_CODES.has(errorDataCode(err) ?? '') ||
+        !(await isDirectoryPath(path))
+      )
         throw err;
       await clearDirectory(name, path);
       await rename();
@@ -1911,7 +2127,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** The byte-smallest loose ref under `name`'s loose path, when a directory
    *  sits there. */
   async function smallestLooseRefUnder(name: RefName): Promise<RefName | undefined> {
-    const dir = looseRefPath(refDir(name), name);
+    const dir = location(name).loose;
     if ((await pathKind(dir)) !== 'directory') return undefined;
     return smallestLooseRefIn(dir, name);
   }
@@ -1927,7 +2143,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       await smallestPackedRefUnder(name),
       await smallestLooseRefUnder(name),
     );
-    if (under !== undefined) throw fileExists(looseRefPath(refDir(under), under));
+    if (under !== undefined) throw fileExists(location(under).loose);
   }
 
   async function smallestPackedRefUnder(name: RefName): Promise<RefName | undefined> {
@@ -1952,7 +2168,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const above = refNamePrefixes(name).find((prefix) => packed.byName().has(prefix));
     if (above === undefined && !packed.smallestUnder().has(name)) return;
     if (await refIsPresent(name)) return;
-    if (above !== undefined) throw notADirectory(looseRefPath(refDir(above), above));
+    if (above !== undefined) throw notADirectory(location(above).loose);
     await refuseRefsUnder(name);
   }
 
@@ -2029,7 +2245,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function removeLooseAndLog(target: DeleteTarget, kind: PathKind): Promise<void> {
     if (kind === 'file') await ctx.fs.rm(target.loose);
     await removeReflogFile(target.name);
-    if (target.name === HEAD_NAME) invalidateHeadSlot(ctx);
+    if (isHeadFile(target.loose)) invalidateHeadSlot(ctx);
   }
 
   /** `target`'s loose leaf kind, after git's lock over an absent ref has
@@ -2068,11 +2284,10 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** A delete's target, refusing a file in the way before any lock. */
   async function deleteTargetFor(update: DeleteUpdate): Promise<DeleteTarget> {
-    const gitDir = refDir(update.name);
-    const loose = looseRefPath(gitDir, update.name);
+    const { dir, loose } = location(update.name);
     const looseDirExists = await isDirectoryPath(dirname(loose));
     if (!looseDirExists) await assertNoFileInTheWay(update.name, loose);
-    return { name: update.name, gitDir, loose, looseDirExists };
+    return { name: update.name, dir, loose, reflog: reflogOf(update.name), looseDirExists };
   }
 
   /** Both trees' empty-parent pruning, each distinct parent once, for the
@@ -2134,7 +2349,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   async function looseFileAt(name: RefName): Promise<boolean> {
-    return (await pathKind(looseRefPath(refDir(name), name))) === 'file';
+    return (await pathKind(location(name).loose)) === 'file';
   }
 
   /**
@@ -2192,10 +2407,9 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function nameCheckFor(name: RefName, pass: PreparePass): Promise<NameCheck> {
     const prefixes = refNamePrefixes(name);
     // One `pathKind` answers both questions the lock would ask at this path.
-    const looseDirectory = (await pathKind(looseRefPath(refDir(name), name))) === 'directory';
-    const looseUnder = looseDirectory
-      ? await smallestLooseRefIn(looseRefPath(refDir(name), name), name)
-      : undefined;
+    const { loose } = location(name);
+    const looseDirectory = (await pathKind(loose)) === 'directory';
+    const looseUnder = looseDirectory ? await smallestLooseRefIn(loose, name) : undefined;
     const smallestExistingUnder = smallerName(await smallestPackedRefUnder(name), looseUnder);
     const checkedUnderLock =
       looseUnder !== undefined ||
@@ -2275,7 +2489,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (check === undefined) return;
     if (check.checkedUnderLock) refuseFirstConflict([check], transaction);
     if (!check.looseDirectory) return;
-    await clearDirectory(check.name, looseRefPath(refDir(check.name), check.name));
+    await clearDirectory(check.name, location(check.name).loose);
   }
 
   /** Applies `updates` in order, each consecutive run of deletes as one
@@ -2294,10 +2508,10 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  the order changes nothing but the attempts. */
   async function prunePackedLooseParents(names: readonly RefName[]): Promise<void> {
     const parents = new Map(
-      names.map((name) => [
-        dirname(looseRefPath(refDir(name), name)),
-        `${refDir(name)}/${REFS_DIR}`,
-      ]),
+      names.map((name) => {
+        const { dir, loose } = location(name);
+        return [dirname(loose), `${dir}/${REFS_DIR}`];
+      }),
     );
     for (const [dir, root] of parents) await pruneEmptyParents(dir, root);
   }
@@ -2358,15 +2572,14 @@ function createFilesRefStore(ctx: Context): RefStore {
     // Pooled through the same `ioBound` bucket `buildPackedEntry` uses — each
     // probe is an independent read, and `boundedMapFor`'s input-order result
     // keeps the duplicates in packable (ascending name) order.
-    const kinds = await boundedMapFor(ctx, 'ioBound', packable, (entry) =>
-      looseLeafKind(looseRefPath(refDir(entry.name), entry.name)),
-    );
-    return packable.flatMap((entry, index) => {
+    const located = packable.map((entry) => ({ entry, loose: location(entry.name).loose }));
+    const kinds = await boundedMapFor(ctx, 'ioBound', located, ({ loose }) => looseLeafKind(loose));
+    return located.flatMap(({ entry, loose }, index) => {
       const kind = kinds[index];
       if (kind !== 'file' && kind !== 'link') return [];
       // `packableEntries` already narrowed to the `'direct'` arm.
       const { id } = entry.value as Extract<ResolveDirectResult, { kind: 'direct' }>;
-      return [{ name: entry.name, loose: looseRefPath(refDir(entry.name), entry.name), id, kind }];
+      return [{ name: entry.name, loose, id, kind }];
     });
   }
 

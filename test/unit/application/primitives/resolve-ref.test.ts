@@ -1019,3 +1019,57 @@ describe('readRefCandidate', () => {
     });
   });
 });
+
+const mainAndChild = [
+  { viewer: 'the main Context', view: (ctx: Context): Context => ctx },
+  {
+    viewer: 'the child Context',
+    view: (ctx: Context): Context => ({
+      ...ctx,
+      layout: {
+        ...ctx.layout,
+        gitDir: `${ctx.layout.gitDir}/worktrees/wt`,
+        commonDir: ctx.layout.gitDir,
+      },
+    }),
+  },
+];
+
+describe.each(mainAndChild)('Given a main-worktree/HEAD name read from $viewer', ({ view }) => {
+  const arrange = async (): Promise<Context> => {
+    const ctx = await buildSeededContext({
+      refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+    });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, 'ref: main-worktree/HEAD\n');
+    return view(ctx);
+  };
+
+  describe('When resolveRef reads a ref that points at it', () => {
+    it('Then it resolves through the main HEAD to the main oid', async () => {
+      // Arrange
+      const ctx = await arrange();
+      const sut = resolveRef;
+
+      // Act
+      const result = await sut(ctx, 'refs/heads/x' as RefName);
+
+      // Assert
+      expect(result).toBe(MAIN_ID);
+    });
+  });
+
+  describe('When readRefCandidate reads main-worktree/HEAD', () => {
+    it('Then it is found with the ref its chain ends at', async () => {
+      // Arrange
+      const ctx = await arrange();
+      const sut = readRefCandidate;
+
+      // Act
+      const result = await sut(ctx, 'main-worktree/HEAD' as RefName);
+
+      // Assert
+      expect(result).toEqual({ kind: 'found', id: MAIN_ID, ref: 'refs/heads/main' });
+    });
+  });
+});

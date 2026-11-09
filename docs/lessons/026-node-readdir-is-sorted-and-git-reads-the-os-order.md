@@ -12,7 +12,7 @@ evidence:
 source: { run: fsck-broken-ref-chain-unreadable, phase: planning, date: 2026-10-31 }
 status: active
 supersedes: []
-last-verified: 2026-10-31
+last-verified: 2026-11-08
 ---
 # 026 — Node's readdir is sorted; git reads the OS order
 

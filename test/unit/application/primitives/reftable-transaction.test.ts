@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { loadReftableStack } from '../../../../src/application/primitives/load-reftable-stack.js';
 import {
+  reftableDir,
   reftableTableLockPath,
   tablesListLockPath,
   tablesListPath,
@@ -116,11 +117,23 @@ function withoutAtomicRename(ctx: Context): Context {
   return { ...ctx, fs: rest as FileSystem };
 }
 
+const LOGGING_OFF_CONFIG = '[core]\n  logallrefupdates = false\n';
+
 const adminDir = (ctx: Context): string => `${ctx.layout.gitDir}/worktrees/wt`;
 const asWorktreeChild = (ctx: Context): Context => ({
   ...ctx,
   layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
 });
+
+/** The data of the refusal `act` rejects with; `undefined` when it resolves. */
+async function refusalOf(act: () => Promise<void>): Promise<unknown> {
+  try {
+    await act();
+  } catch (err) {
+    return err instanceof TsgitError ? err.data : err;
+  }
+  return undefined;
+}
 
 async function expectReftableLocked(
   act: () => Promise<void>,
@@ -150,6 +163,10 @@ async function expectReftableLocked(
 }
 
 describe('reftable-transaction', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a stack and a two-ref update list', () => {
     describe('When the transaction commits', () => {
       it('Then both refs appear at one update index', async () => {
@@ -1084,9 +1101,10 @@ describe('reftable-transaction', () => {
         const mainCtx = withReftableStorage(createMemoryContext());
         const worktreeCtx = asWorktreeChild(mainCtx);
         const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+        const sut = applyReftableUpdates;
 
         // Act
-        await applyReftableUpdates(worktreeCtx, [
+        await sut(worktreeCtx, [
           { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
           { kind: 'set', name: ref('refs/bisect/bad'), id: oid(0x02) },
         ]);
@@ -1109,6 +1127,266 @@ describe('reftable-transaction', () => {
           kind: 'direct',
           id: oid(0x02),
         });
+      });
+    });
+  });
+
+  describe("Given a linked worktree's stack", () => {
+    describe('When applyReftableUpdates sets worktrees/wt/refs/bisect/y from the main Context', () => {
+      it("Then wt's stack holds a record named worktrees/wt/refs/bisect/y and the common stack none, and the common lock is taken first", async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        await mainCtx.fs.writeUtf8(tablesListPath(adminDir(mainCtx)), '');
+        const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+        const name = ref('worktrees/wt/refs/bisect/y');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(mainCtx, [
+          { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
+          { kind: 'set', name, id: oid(0x02) },
+        ]);
+
+        // Assert
+        const lockCalls = writeExclusiveSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path.endsWith('tables.list.lock'));
+        expect(lockCalls).toEqual([
+          tablesListLockPath(mainCtx.layout.gitDir),
+          tablesListLockPath(adminDir(mainCtx)),
+        ]);
+        const worktreeStack = await loadReftableStack(mainCtx, reftableDir(adminDir(mainCtx)));
+        const commonStack = await loadReftableStack(mainCtx, commonReftableDir(mainCtx));
+        expect([...worktreeStack.names()]).toEqual([name]);
+        expect([...commonStack.names()]).toEqual([ref('refs/heads/shared')]);
+      });
+    });
+
+    describe('When applyReftableUpdates sets worktrees/wt/refs/bisect/y before refs/heads/shared from the main Context', () => {
+      it('Then the common lock is still taken first', async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        await mainCtx.fs.writeUtf8(tablesListPath(adminDir(mainCtx)), '');
+        const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(mainCtx, [
+          { kind: 'set', name: ref('worktrees/wt/refs/bisect/y'), id: oid(0x02) },
+          { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
+        ]);
+
+        // Assert
+        const lockCalls = writeExclusiveSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path.endsWith('tables.list.lock'));
+        expect(lockCalls).toEqual([
+          tablesListLockPath(mainCtx.layout.gitDir),
+          tablesListLockPath(adminDir(mainCtx)),
+        ]);
+      });
+    });
+
+    describe('When the linked worktree sets worktrees/other/refs/bisect/z, then refs/bisect/bad, then refs/heads/shared', () => {
+      it("Then the locks go common first, its own stack second and the other worktree's last", async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        const otherDir = `${mainCtx.layout.gitDir}/worktrees/other`;
+        await mainCtx.fs.writeUtf8(tablesListPath(otherDir), '');
+        const worktreeCtx = asWorktreeChild(mainCtx);
+        const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(worktreeCtx, [
+          { kind: 'set', name: ref('worktrees/other/refs/bisect/z'), id: oid(0x03) },
+          { kind: 'set', name: ref('refs/bisect/bad'), id: oid(0x02) },
+          { kind: 'set', name: ref('refs/heads/shared'), id: oid(0x01) },
+        ]);
+
+        // Assert
+        const lockCalls = writeExclusiveSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path.endsWith('tables.list.lock'));
+        expect(lockCalls).toEqual([
+          tablesListLockPath(mainCtx.layout.gitDir),
+          tablesListLockPath(worktreeCtx.layout.gitDir),
+          tablesListLockPath(otherDir),
+        ]);
+      });
+    });
+
+    describe('When applyReftableUpdates sets main-worktree/refs/bisect/x from the main Context', () => {
+      it('Then the common stack holds a record named main-worktree/refs/bisect/x', async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        const name = ref('main-worktree/refs/bisect/x');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(mainCtx, [{ kind: 'set', name, id: oid(0x02) }]);
+
+        // Assert
+        const commonStack = await loadReftableStack(mainCtx, commonReftableDir(mainCtx));
+        expect([...commonStack.names()]).toEqual([name]);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with no worktrees/nope admin dir', () => {
+    describe('When applyReftableUpdates sets worktrees/nope/HEAD from the main Context', () => {
+      it('Then it refuses FILE_NOT_FOUND on worktrees/nope/reftable and creates no worktrees/nope', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = applyReftableUpdates;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, [{ kind: 'set', name: ref('worktrees/nope/HEAD'), id: oid(1) }]),
+        );
+
+        // Assert
+        expect(refusal).toEqual({
+          code: 'FILE_NOT_FOUND',
+          path: reftableDir(`${ctx.layout.gitDir}/worktrees/nope`),
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/worktrees/nope`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a reftable repository whose worktrees/nope admin dir holds no reftable dir', () => {
+    describe('When applyReftableUpdates sets worktrees/nope/refs/bisect/z and a shared ref from the main Context', () => {
+      it('Then it refuses FILE_NOT_FOUND on worktrees/nope/reftable and writes neither stack', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const admin = `${ctx.layout.gitDir}/worktrees/nope`;
+        await ctx.fs.writeUtf8(`${admin}/gitdir`, '/elsewhere/.git\n');
+        const sut = applyReftableUpdates;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, [
+            { kind: 'set', name: ref('refs/heads/shared'), id: oid(1) },
+            { kind: 'set', name: ref('worktrees/nope/refs/bisect/z'), id: oid(1) },
+          ]),
+        );
+
+        // Assert
+        expect(refusal).toEqual({ code: 'FILE_NOT_FOUND', path: reftableDir(admin) });
+        expect(await ctx.fs.exists(reftableDir(admin))).toBe(false);
+        expect(await ctx.fs.exists(tablesListPath(ctx.layout.gitDir))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with default logging and no log records', () => {
+    describe('When applyReftableUpdates sets main-worktree/HEAD with a conditional reflog', () => {
+      it('Then the common stack holds no log record, the full name being no name git auto-creates a log for', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('main-worktree/HEAD');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(ctx, [
+          { kind: 'set', name, id: oid(1), reflog: { oldId: oid(0), newId: oid(1), message: 'm' } },
+        ]);
+
+        // Assert
+        const commonStack = await loadReftableStack(ctx, commonReftableDir(ctx));
+        expect([...commonStack.logs(name)]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with default logging and a HEAD log record in the common stack', () => {
+    describe('When applyReftableUpdates sets main-worktree/HEAD with a conditional reflog', () => {
+      it('Then the common stack holds one log record named main-worktree/HEAD', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const headLog = { oldId: oid(0), newId: oid(1), message: 'm', unconditional: true };
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('HEAD'), id: oid(1), reflog: headLog },
+        ]);
+        const name = ref('main-worktree/HEAD');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(ctx, [
+          { kind: 'set', name, id: oid(2), reflog: { oldId: oid(1), newId: oid(2), message: 'm' } },
+        ]);
+
+        // Assert
+        const commonStack = await loadReftableStack(ctx, commonReftableDir(ctx));
+        expect([...commonStack.logs(name)]).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with default logging and an empty stack for wt', () => {
+    describe('When applyReftableUpdates sets worktrees/wt/HEAD from the main Context with a conditional reflog', () => {
+      it("Then wt's stack holds no log record", async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await ctx.fs.writeUtf8(tablesListPath(adminDir(ctx)), '');
+        const name = ref('worktrees/wt/HEAD');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(ctx, [
+          { kind: 'set', name, id: oid(1), reflog: { oldId: oid(0), newId: oid(1), message: 'm' } },
+        ]);
+
+        // Assert
+        const worktreeStack = await loadReftableStack(ctx, reftableDir(adminDir(ctx)));
+        expect([...worktreeStack.logs(name)]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with logAllRefUpdates false and no log records', () => {
+    describe('When applyReftableUpdates sets main-worktree/HEAD with a conditional reflog', () => {
+      it('Then the common stack holds no log record', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, LOGGING_OFF_CONFIG);
+        const name = ref('main-worktree/HEAD');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(ctx, [
+          { kind: 'set', name, id: oid(1), reflog: { oldId: oid(0), newId: oid(1), message: 'm' } },
+        ]);
+
+        // Assert
+        const commonStack = await loadReftableStack(ctx, commonReftableDir(ctx));
+        expect([...commonStack.logs(name)]).toEqual([]);
+      });
+    });
+  });
+
+  describe("Given a reftable repository with logAllRefUpdates false and a HEAD log record in wt's stack", () => {
+    describe('When applyReftableUpdates sets worktrees/wt/HEAD from the main Context with a conditional reflog', () => {
+      it("Then wt's stack holds one log record named worktrees/wt/HEAD", async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, LOGGING_OFF_CONFIG);
+        const headLog = { oldId: oid(0), newId: oid(1), message: 'm', unconditional: true };
+        await applyReftableUpdates(asWorktreeChild(ctx), [
+          { kind: 'set', name: ref('HEAD'), id: oid(1), reflog: headLog },
+        ]);
+        const name = ref('worktrees/wt/HEAD');
+        const sut = applyReftableUpdates;
+
+        // Act
+        await sut(ctx, [
+          { kind: 'set', name, id: oid(2), reflog: { oldId: oid(1), newId: oid(2), message: 'm' } },
+        ]);
+
+        // Assert
+        const worktreeStack = await loadReftableStack(ctx, reftableDir(adminDir(ctx)));
+        expect([...worktreeStack.logs(name)]).toHaveLength(1);
       });
     });
   });

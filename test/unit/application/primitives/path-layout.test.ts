@@ -19,7 +19,9 @@ import {
   packedRefsPath,
   packsDir,
   packsDirIn,
+  refLocation,
   reflogPath,
+  refReflogPath,
   reftableDir,
   reftableTableLockPath,
   sparseCheckoutPath,
@@ -390,6 +392,114 @@ describe('getSpawnCwd', () => {
 
         // Assert
         expect(result).toBe('/srv/bare.git');
+      });
+    });
+  });
+});
+
+/** git's `files_ref_path` (`dir`, `loose`) and `files_reflog_path` (`reflog`) for one name. */
+interface LocatedPaths {
+  readonly dir: string;
+  readonly loose: string;
+  readonly reflog: string;
+}
+
+describe('refLocation and refReflogPath', () => {
+  const locatorContexts: ReadonlyArray<
+    [string, Context, ReadonlyArray<readonly [string, LocatedPaths]>]
+  > = [
+    [
+      "the main worktree's Context",
+      ctxWithLayout('/g'),
+      [
+        ['HEAD', { dir: '/g', loose: '/g/HEAD', reflog: '/g/logs/HEAD' }],
+        ['refs/heads/x', { dir: '/g', loose: '/g/refs/heads/x', reflog: '/g/logs/refs/heads/x' }],
+        ['main-worktree/HEAD', { dir: '/g', loose: '/g/HEAD', reflog: '/g/logs/HEAD' }],
+        [
+          'main-worktree/refs/bisect/x',
+          { dir: '/g', loose: '/g/refs/bisect/x', reflog: '/g/logs/refs/bisect/x' },
+        ],
+        [
+          'worktrees/wt/HEAD',
+          { dir: '/g', loose: '/g/worktrees/wt/HEAD', reflog: '/g/worktrees/wt/logs/HEAD' },
+        ],
+        [
+          'worktrees/wt/refs/bisect/y',
+          {
+            dir: '/g',
+            loose: '/g/worktrees/wt/refs/bisect/y',
+            reflog: '/g/worktrees/wt/logs/refs/bisect/y',
+          },
+        ],
+        [
+          'main-worktree/refs/heads/main',
+          {
+            dir: '/g',
+            loose: '/g/main-worktree/refs/heads/main',
+            reflog: '/g/logs/main-worktree/refs/heads/main',
+          },
+        ],
+        [
+          'worktrees/nope',
+          { dir: '/g', loose: '/g/worktrees/nope/', reflog: '/g/worktrees/nope/logs/' },
+        ],
+      ],
+    ],
+    [
+      "a linked worktree's Context",
+      ctxWithLayout('/g/worktrees/wt', '/g'),
+      [
+        [
+          'HEAD',
+          {
+            dir: '/g/worktrees/wt',
+            loose: '/g/worktrees/wt/HEAD',
+            reflog: '/g/worktrees/wt/logs/HEAD',
+          },
+        ],
+        [
+          'refs/bisect/bad',
+          {
+            dir: '/g/worktrees/wt',
+            loose: '/g/worktrees/wt/refs/bisect/bad',
+            reflog: '/g/worktrees/wt/logs/refs/bisect/bad',
+          },
+        ],
+        ['refs/heads/x', { dir: '/g', loose: '/g/refs/heads/x', reflog: '/g/logs/refs/heads/x' }],
+        ['main-worktree/HEAD', { dir: '/g', loose: '/g/HEAD', reflog: '/g/logs/HEAD' }],
+        [
+          'worktrees/wt/HEAD',
+          { dir: '/g', loose: '/g/worktrees/wt/HEAD', reflog: '/g/worktrees/wt/logs/HEAD' },
+        ],
+        [
+          'worktrees/nope/HEAD',
+          { dir: '/g', loose: '/g/worktrees/nope/HEAD', reflog: '/g/worktrees/nope/logs/HEAD' },
+        ],
+      ],
+    ],
+  ];
+  describe.each(locatorContexts)('Given %s', (_context, ctx, rows) => {
+    describe.each(rows)('When %s is located', (name, expected) => {
+      it("Then dir and loose are git's paths", () => {
+        // Arrange
+        const sut = refLocation;
+
+        // Act
+        const result = sut(ctx, name as RefName);
+
+        // Assert
+        expect(result).toEqual({ dir: expected.dir, loose: expected.loose });
+      });
+
+      it("Then its reflog path is git's", () => {
+        // Arrange
+        const sut = refReflogPath;
+
+        // Act
+        const result = sut(ctx, name as RefName);
+
+        // Assert
+        expect(result).toBe(expected.reflog);
       });
     });
   });

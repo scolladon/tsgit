@@ -174,6 +174,53 @@ describe('Given the main HEAD reflog naming an absent object', () => {
   });
 });
 
+describe('Given linked worktrees whose HEAD reflogs each name an absent object and an adapter listing in OS order', () => {
+  describe('When fsck runs from the main worktree', () => {
+    it('Then the reflog findings follow that order', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      for (const id of ['wt1', 'wt2']) {
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/worktrees/${id}/logs/HEAD`,
+          reflogLine(ABSENT),
+        );
+      }
+      const readdir = ctx.fs.readdir.bind(ctx.fs);
+      Object.assign(ctx.fs, {
+        readdirInOsOrder: async (p: string) => [...(await readdir(p))].reverse(),
+      });
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(reflogFindings(result.findings).map((finding) => finding.ref)).toEqual([
+        'worktrees/wt2/HEAD',
+        'worktrees/wt1/HEAD',
+      ]);
+    });
+  });
+});
+
+describe("Given the current linked worktree's own gitdir file emptied and its HEAD reflog naming an absent object", () => {
+  describe('When fsck runs from that worktree', () => {
+    it('Then no invalid-reflog-entry is reported', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/gitdir`, '');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/logs/HEAD`, reflogLine(ABSENT));
+      const sut = fsck;
+
+      // Act
+      const result = await sut(deriveWorktreeContext(ctx, 'wt1', '/work/wt1'));
+
+      // Assert
+      expect(reflogFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
 describe('Given a shared branch reflog naming an absent object', () => {
   describe('When fsck runs from the main worktree', () => {
     it('Then every worktree reports it once, as each reflog store lists the shared logs', async () => {

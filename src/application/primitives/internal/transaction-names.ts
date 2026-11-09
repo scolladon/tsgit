@@ -12,7 +12,7 @@ import {
   transactionNamesOf,
 } from '../../../domain/refs/ref-name-conflict.js';
 import type { Context } from '../../../ports/context.js';
-import { looseRefPath, perWorktreeRefDir } from '../path-layout.js';
+import { refLocation } from '../path-layout.js';
 
 interface NamedUpdate {
   readonly kind: string;
@@ -53,6 +53,6 @@ export const isCheckedWhenAbsent = (update: NamedUpdate): update is RefChangingU
 /** A conflict's refusal, naming the blocking name's loose path — the data the
  *  files store's own refusals carry, a packed or reftable ref included. */
 export const refNameConflictRefusal = (ctx: Context, conflict: RefNameConflict): TsgitError => {
-  const path = looseRefPath(perWorktreeRefDir(ctx, conflict.blocking), conflict.blocking);
+  const path = refLocation(ctx, conflict.blocking).loose;
   return conflict.position === 'above' ? notADirectory(path) : fileExists(path);
 };

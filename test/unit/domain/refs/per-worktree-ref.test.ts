@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { RefName } from '../../../../src/domain/objects/index.js';
-import { isPerWorktreeRef, isPseudoRef } from '../../../../src/domain/refs/per-worktree-ref.js';
+import {
+  bareStoreRefName,
+  isPerWorktreeRef,
+  isPseudoRef,
+  linkedWorktreeRefPrefix,
+  parseWorktreeRef,
+} from '../../../../src/domain/refs/per-worktree-ref.js';
 
 describe('isPerWorktreeRef', () => {
   describe('Given a per-worktree pseudoref or per-worktree-prefixed ref', () => {
@@ -80,6 +86,110 @@ describe('isPseudoRef', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('linkedWorktreeRefPrefix', () => {
+  describe('Given a worktree id', () => {
+    describe('When the prefix is built', () => {
+      it('Then it is worktrees/<id>/', () => {
+        // Arrange
+        const sut = linkedWorktreeRefPrefix;
+
+        // Act
+        const result = sut('wt');
+
+        // Assert
+        expect(result).toBe('worktrees/wt/');
+      });
+    });
+  });
+});
+
+describe('bareStoreRefName', () => {
+  describe('Given a name carrying one leading worktrees/<id>/ prefix', () => {
+    describe('When the prefix is stripped', () => {
+      it.each([
+        ['worktrees/wt/refs/bisect/bad', 'refs/bisect/bad'],
+        ['worktrees/wt/HEAD', 'HEAD'],
+        ['worktrees/a/worktrees/b/HEAD', 'worktrees/b/HEAD'],
+      ])('Then %s becomes %s', (name, expected) => {
+        // Arrange
+        const sut = bareStoreRefName;
+
+        // Act
+        const result = sut(name);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a name without a leading worktrees/<id>/ prefix', () => {
+    describe('When the prefix is stripped', () => {
+      it.each([
+        'worktrees/wt',
+        'worktrees//HEAD',
+        'x/worktrees/wt/HEAD',
+        'refs/heads/main',
+        'HEAD',
+        'main-worktree/HEAD',
+      ])('Then %s is unchanged', (name) => {
+        // Arrange
+        const sut = bareStoreRefName;
+
+        // Act
+        const result = sut(name);
+
+        // Assert
+        expect(result).toBe(name);
+      });
+    });
+  });
+});
+
+describe('parseWorktreeRef', () => {
+  describe('Given a ref name', () => {
+    describe('When it is parsed', () => {
+      it.each([
+        ['HEAD', { kind: 'current', bare: 'HEAD' }],
+        ['ORIG_HEAD', { kind: 'current', bare: 'ORIG_HEAD' }],
+        ['refs/bisect/bad', { kind: 'current', bare: 'refs/bisect/bad' }],
+        ['refs/heads/main', { kind: 'shared', bare: 'refs/heads/main' }],
+        ['main-worktree/HEAD', { kind: 'main', bare: 'HEAD' }],
+        ['main-worktree/refs/bisect/bad', { kind: 'main', bare: 'refs/bisect/bad' }],
+        ['main-worktree/', { kind: 'main', bare: '' }],
+        [
+          'main-worktree/refs/heads/main',
+          { kind: 'shared', bare: 'main-worktree/refs/heads/main' },
+        ],
+        ['main-worktreeX/HEAD', { kind: 'shared', bare: 'main-worktreeX/HEAD' }],
+        ['worktrees/wt/HEAD', { kind: 'other', id: 'wt', bare: 'HEAD' }],
+        ['worktrees/wt/refs/bisect/y', { kind: 'other', id: 'wt', bare: 'refs/bisect/y' }],
+        ['worktrees/wt/', { kind: 'other', id: 'wt', bare: '' }],
+        ['worktrees//HEAD', { kind: 'other', id: '', bare: 'HEAD' }],
+        ['worktrees/wt', { kind: 'other', id: 'wt', bare: '' }],
+        ['worktrees/HEAD', { kind: 'other', id: 'HEAD', bare: '' }],
+        ['worktrees/ORIG_HEAD', { kind: 'other', id: 'ORIG_HEAD', bare: '' }],
+        ['worktrees/', { kind: 'other', id: '', bare: '' }],
+        ['worktrees/wt/refs/heads/side', { kind: 'shared', bare: 'worktrees/wt/refs/heads/side' }],
+        [
+          'worktrees/wt/main-worktree/HEAD',
+          { kind: 'shared', bare: 'worktrees/wt/main-worktree/HEAD' },
+        ],
+        ['x/worktrees/wt/HEAD', { kind: 'shared', bare: 'x/worktrees/wt/HEAD' }],
+      ])('Then %s selects %j', (name, expected) => {
+        // Arrange
+        const sut = parseWorktreeRef;
+
+        // Act
+        const result = sut(name as RefName);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });

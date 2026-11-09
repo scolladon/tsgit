@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import { pruneWorktrees } from '../../../../../src/application/commands/internal/prune-worktrees.js';
@@ -47,6 +47,10 @@ const entriesOf = async (ctx: Context): Promise<ReadonlyArray<string>> =>
   (await ctx.fs.readdir(rootOf(ctx))).map((entry) => entry.name).sort();
 
 const OPTIONS = { cutoff: CUTOFF, ignoreCase: false };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('pruneWorktrees', () => {
   describe('Given an admin dir whose gitdir file is empty', () => {

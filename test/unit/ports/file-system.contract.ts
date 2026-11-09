@@ -141,6 +141,28 @@ const beneathFileCalls: ReadonlyArray<PathCall> = [
   { name: 'exists', invoke: (e, p) => e.fs.exists(p) },
 ];
 
+/** The surfaces that look a path up, refusing a regular file named with a trailing slash. */
+const trailingSlashFileCalls: ReadonlyArray<PathCall> = [
+  { name: 'read', invoke: (e, p) => e.fs.read(p) },
+  { name: 'readUtf8', invoke: (e, p) => e.fs.readUtf8(p) },
+  { name: 'readSlice', invoke: (e, p) => e.fs.readSlice(p, 0, 1) },
+  { name: 'tryReadUtf8', invoke: (e, p) => tryReadUtf8(e.fs, p) },
+  { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
+  { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
+  { name: 'tryLstat', invoke: (e, p) => tryLstat(e.fs, p) },
+  { name: 'lexists', invoke: (e, p) => lexists(e.fs, p) },
+  { name: 'readdir', invoke: (e, p) => e.fs.readdir(p) },
+  { name: 'readlink', invoke: (e, p) => e.fs.readlink(p) },
+];
+
+/** The create surfaces, which answer a regular file named with a trailing slash as they answer
+ *  the file's own path: the entry already exists. */
+const trailingSlashCreateCalls: ReadonlyArray<PathCall> = [
+  { name: 'writeExclusive', invoke: (e, p) => e.fs.writeExclusive(p, new Uint8Array([2])) },
+  { name: 'mkdir', invoke: (e, p) => e.fs.mkdir(p) },
+  { name: 'symlink', invoke: (e, p) => e.fs.symlink('refusal-file.bin', p) },
+];
+
 /** The intermediate segments that stand where a directory is needed but hold a regular file. */
 const fileSegments: ReadonlyArray<{ readonly label: string; readonly segment: string }> = [
   { label: 'a regular file', segment: 'refusal-file.bin' },
@@ -1743,6 +1765,48 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           // Assert
           assertFileNotFound(caught);
         });
+      });
+
+      describe('Given a regular file named with a trailing slash', () => {
+        for (const { name, invoke } of trailingSlashFileCalls) {
+          it(`Then ${name} refuses NOT_A_DIRECTORY`, async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+            // Arrange
+            await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env, `${env.rootDir}/refusal-file.bin/`);
+              expect.fail('expected NOT_A_DIRECTORY');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertNotADirectory(caught);
+          });
+        }
+
+        for (const { name, invoke } of trailingSlashCreateCalls) {
+          it(`Then ${name} refuses FILE_EXISTS`, async () => {
+            // Arrange
+            await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env, `${env.rootDir}/refusal-file.bin/`);
+              expect.fail('expected FILE_EXISTS');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertFileExists(caught);
+          });
+        }
       });
 
       for (const { label, segment } of fileSegments) {

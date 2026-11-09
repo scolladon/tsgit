@@ -25,7 +25,7 @@
  *  - refs/reflogs/index untouched; loose-oid cache invariant repair
  *  - structural: every result field is a count, boolean or enum
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -279,6 +279,10 @@ async function writePromisorPack(
   await ctx.fs.write(`${packDirOf(ctx)}/pack-${name}.promisor`, new Uint8Array(0));
   return ids as ReadonlyArray<ObjectId>;
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('maintenance gc with an alternate', () => {
   describe('Given a borrower with donor loose objects', () => {
@@ -1557,18 +1561,11 @@ describe('maintenance', () => {
 
   describe('Given a non-directory entry sitting in the worktrees registry', () => {
     describe('When gc runs the retention-root scan', () => {
-      it('Then it is skipped without ever being read as a worktree admin dir', async () => {
-        // Arrange — only directories are worktree admin dirs; a stray file
-        // must never be walked as one.
+      it('Then gc completes with the stray entry skipped', async () => {
+        // Arrange — a stray file is not a worktree admin dir; reading
+        // `<file>/gitdir` fails NOT_A_DIRECTORY and git skips it then.
         const ctx = await seedOneCommit();
-        const strayFile = `${ctx.layout.gitDir}/worktrees/stray-file`;
-        await ctx.fs.writeUtf8(strayFile, 'not a worktree');
-        const readCalls: string[] = [];
-        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
-        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
-          readCalls.push(path);
-          return originalReadUtf8(path);
-        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/stray-file`, 'not a worktree');
         const sut = maintenance;
 
         // Act
@@ -1576,7 +1573,6 @@ describe('maintenance', () => {
 
         // Assert
         expect(result.packId).toBeDefined();
-        expect(readCalls).not.toContain(`${strayFile}/gitdir`);
       });
     });
   });
@@ -1584,12 +1580,13 @@ describe('maintenance', () => {
   describe('Given gc runs from a linked worktree whose own admin dir is listed in the registry', () => {
     describe('When the retention-root scan enumerates other worktrees', () => {
       it('Then it skips re-walking its own admin dir', async () => {
-        // Arrange — re-walking the CURRENT worktree via `addOneWorktreeRoots`
+        // Arrange — re-walking the CURRENT worktree via `addNonCurrentWorktreeRoots`
         // would be a redundant read: `collectRetentionRoots`'s own direct
         // calls against `ctx` already cover it.
         const ctx = await seedOneCommit();
         const wtCtx = deriveWorktreeContext(ctx, 'wt-self', '/tmp/self-worktree');
         const selfGitdirPath = `${wtCtx.layout.gitDir}/gitdir`;
+        const selfIndexPath = `${wtCtx.layout.gitDir}/index`;
         await ctx.fs.writeUtf8(selfGitdirPath, '/tmp/self-worktree/.git\n');
         await ctx.fs.writeUtf8(`${wtCtx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const readCalls: string[] = [];
@@ -1598,15 +1595,23 @@ describe('maintenance', () => {
           readCalls.push(path);
           return originalReadUtf8(path);
         });
+        const existsCalls: string[] = [];
+        const originalExists = ctx.fs.exists.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'exists').mockImplementation(async (path: string) => {
+          existsCalls.push(path);
+          return originalExists(path);
+        });
         const sut = maintenance;
 
         // Act
         await sut(wtCtx, { tasks: ['gc'] });
 
-        // Assert — the one read is gc's worktree-prune step, which reads every
-        // admin entry's gitdir as git's `should_prune_worktree` does; the
-        // retention scan itself adds none.
-        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(1);
+        // Assert — gc's worktree-prune step reads every admin entry's gitdir as
+        // git's `should_prune_worktree` does, and the retention scan's listing
+        // reads it once more for the skip rule; the scan never re-walks the
+        // admin dir itself, whose index is probed once.
+        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(2);
+        expect(existsCalls.filter((p) => p === selfIndexPath).length).toBe(1);
       });
     });
   });

@@ -356,11 +356,11 @@ verify` pass):**
 | msgId | default severity | exit bit | note |
 |---|---|---|---|
 | `badRefContent` | ERROR | 8 (refs pass) | malformed loose-ref content; pinned `9b` composite = `2\|8 = 10` |
-| `badRefName` | ERROR | 8 | invalid ref name format |
+| `badRefName` | ERROR | 8 | invalid ref name format; emitted by the refs-verify pass |
 | `badRefOid` / *invalid sha1 pointer* | ERROR | 2 | ref → syntactically-valid but absent/zero oid (pinned `9a` exit 2) |
-| `badRefFiletype` | ERROR | 8 | ref has a bad file type |
+| `badRefFiletype` | ERROR | 8 | ref has a bad file type; emitted by the refs-verify pass |
 | `badReferentName` | ERROR | 8 | symref referent name invalid |
-| `badHeadTarget` | ERROR | 8 | `HEAD` symref does not refer to a branch |
+| `badHeadTarget` | ERROR | 8 | `HEAD` symref does not refer to a branch; emitted by the refs-verify pass |
 | `emptyPackedRefsFile` | INFO | 0 | empty `packed-refs` |
 | `packedRefEntryNotTerminated` | ERROR | 8 | `packed-refs` entry not newline-terminated |
 | `packedRefUnsorted` | ERROR | 8 | `packed-refs` not sorted |

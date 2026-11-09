@@ -56,8 +56,43 @@ const asWorktreeChild = (ctx: Context): Context => ({
   layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
 });
 
+/** A prefixed HEAD name, the Context it is used from, and the Context whose own HEAD it names. */
+const PREFIXED_HEADS = [
+  {
+    name: 'main-worktree/HEAD' as RefName,
+    viewer: 'the child',
+    from: asWorktreeChild,
+    owner: (ctx: Context): Context => ctx,
+  },
+  {
+    name: 'worktrees/wt/HEAD' as RefName,
+    viewer: 'the main worktree',
+    from: (ctx: Context): Context => ctx,
+    owner: asWorktreeChild,
+  },
+];
+
 describe('reflog-store', () => {
   describe('appendReflog', () => {
+    describe.each(PREFIXED_HEADS)('Given $name used from $viewer', ({ name, from, owner }) => {
+      describe('When appendReflog', () => {
+        it("Then the named worktree's logs/HEAD holds the line", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const reflogEntry = entry();
+          const viewer = from(ctx);
+          const sut = appendReflog;
+
+          // Act
+          await sut(viewer, name, reflogEntry);
+
+          // Assert
+          const raw = await ctx.fs.readUtf8(`${owner(ctx).layout.gitDir}/logs/HEAD`);
+          expect(raw).toBe(serializeReflogLine(reflogEntry, 40));
+        });
+      });
+    });
+
     describe('Given a missing reflog', () => {
       describe('When appendReflog', () => {
         it('Then the .git/logs file is created with the line', async () => {
@@ -241,6 +276,27 @@ describe('reflog-store', () => {
   });
 
   describe('reflogExists', () => {
+    describe.each(PREFIXED_HEADS)(
+      "Given $name used from $viewer and the named worktree's logs/HEAD",
+      ({ name, from, owner }) => {
+        describe('When reflogExists', () => {
+          it('Then returns true', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await appendReflog(owner(ctx), HEAD, entry());
+            const viewer = from(ctx);
+            const sut = reflogExists;
+
+            // Act
+            const result = await sut(viewer, name);
+
+            // Assert
+            expect(result).toBe(true);
+          });
+        });
+      },
+    );
+
     describe('Given no reflog file', () => {
       describe('When reflogExists', () => {
         it('Then returns false', async () => {
@@ -331,6 +387,27 @@ describe('reflog-store', () => {
   });
 
   describe('deleteReflog', () => {
+    describe.each(PREFIXED_HEADS)(
+      "Given $name used from $viewer and the named worktree's logs/HEAD",
+      ({ name, from, owner }) => {
+        describe('When deleteReflog', () => {
+          it('Then that file is removed', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await appendReflog(owner(ctx), HEAD, entry());
+            const viewer = from(ctx);
+            const sut = deleteReflog;
+
+            // Act
+            await sut(viewer, name);
+
+            // Assert
+            expect(await reflogExists(owner(ctx), HEAD)).toBe(false);
+          });
+        });
+      },
+    );
+
     describe('Given an existing reflog', () => {
       describe('When deleteReflog', () => {
         it('Then the file is removed', async () => {

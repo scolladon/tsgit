@@ -164,5 +164,30 @@ describe('ref-store — a regular file in a ref name’s path', () => {
         });
       });
     });
+
+    describe('Given a linked worktree whose refs is a regular file', () => {
+      describe('When listRefNames runs from that worktree', () => {
+        it('Then it lists the shared refs and nothing of its own namespace, without throwing', async () => {
+          // Arrange
+          const main = await seedRepository(build);
+          const admin = gitPath(main, 'worktrees/wt');
+          await main.fs.writeUtf8(`${admin}/HEAD`, 'ref: refs/heads/main\n');
+          await main.fs.writeUtf8(`${admin}/gitdir`, '/work/wt/.git\n');
+          await main.fs.writeUtf8(`${admin}/commondir`, '../..\n');
+          await main.fs.writeUtf8(`${admin}/refs`, 'not a directory\n');
+          const linked: Context = {
+            ...main,
+            layout: { ...main.layout, gitDir: admin, commonDir: main.layout.gitDir },
+          };
+          const sut = createRefStore(linked);
+
+          // Act
+          const result = await sut.listRefNames('refs/' as RefName);
+
+          // Assert
+          expect(result).toEqual([BLOCKER]);
+        });
+      });
+    });
   });
 });

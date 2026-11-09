@@ -2,13 +2,14 @@
  * A ref whose chain fails to resolve to an object is reported with a zero pointer,
  * as are the refs that lead to it: the listing difference names every one.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fsck } from '../../../../src/application/commands/fsck.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { permissionDenied } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeRawObjectBytes } from '../primitives/fixtures.js';
 
 const ZERO_POINTER = '0'.repeat(40);
 const EXIT_MISSING_AND_CONTENT = 10;
@@ -32,6 +33,10 @@ const pointersOf = (result: Awaited<ReturnType<typeof fsck>>) =>
 
 const pointers = (...names: ReadonlyArray<string>) =>
   names.map((name) => ({ ref: `refs/heads/${name}`, target: ZERO_POINTER }));
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('Given a symbolic ref leading to a ref holding garbage', () => {
   describe.each([
@@ -94,6 +99,72 @@ describe('Given a ref holding garbage alone', () => {
   });
 });
 
+const badNameFindings = (result: Awaited<ReturnType<typeof fsck>>, msgId: string) =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.msgId === msgId ? [finding] : [],
+  );
+
+describe('Given a branch named refs/heads/a..b holding a valid oid', () => {
+  describe('When fsck runs', () => {
+    it('Then badRefName errors with bit 8', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'a..b', `${'a'.repeat(40)}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badNameFindings(result, 'badRefName')).toEqual([
+        { type: 'bad-ref', ref: 'refs/heads/a..b', msgId: 'badRefName', severity: 'error' },
+      ]);
+      expect(result.exitCode & 8).toBe(8);
+    });
+
+    it('Then the name points at the zero oid, exit 10', async () => {
+      // Arrange
+      const ctx = await repository();
+      await plant(ctx, 'a..b', `${'a'.repeat(40)}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointersOf(result)).toEqual(pointers('a..b'));
+      expect(result.exitCode).toBe(EXIT_MISSING_AND_CONTENT);
+    });
+  });
+});
+
+const headFindingsOf = (result: Awaited<ReturnType<typeof fsck>>) =>
+  result.findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.ref === 'HEAD'
+      ? [{ msgId: finding.msgId, severity: finding.severity, referent: finding.referent }]
+      : [],
+  );
+
+describe('Given HEAD as ref: refs/tags/x', () => {
+  describe('When fsck runs', () => {
+    it('Then only badHeadTarget is reported for HEAD, with bit 8', async () => {
+      // Arrange
+      const ctx = await repository();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/tags/x\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(headFindingsOf(result)).toEqual([
+        { msgId: 'badHeadTarget', severity: 'error', referent: 'refs/tags/x' },
+      ]);
+      expect(result.exitCode & 8).toBe(8);
+    });
+  });
+});
+
 describe('Given a ref holding sixty-four hex digits in a SHA-1 repository', () => {
   describe('When fsck runs', () => {
     it('Then it gets a zero pointer', async () => {
@@ -152,6 +223,40 @@ describe('Given a symbolic ref whose target does not exist', () => {
         // Assert
         expect(pointersOf(result)).toEqual(pointers(from));
         expect(result.exitCode).toBe(EXIT_MISSING);
+      });
+    });
+  });
+});
+
+describe('Given a symbolic ref targeting a main-worktree/ per-worktree ref', () => {
+  describe.each([
+    { target: 'main-worktree/HEAD', planted: 'HEAD' },
+    { target: 'main-worktree/refs/bisect/bad', planted: 'refs/bisect/bad' },
+  ])('$target', ({ target, planted }) => {
+    describe('When fsck runs', () => {
+      it('Then only symrefTargetIsNotARef is reported and the exit code is 0', async () => {
+        // Arrange
+        const ctx = await repository();
+        const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+        const commit = await writeRawObjectBytes(
+          ctx,
+          'commit',
+          new TextEncoder().encode(
+            `tree ${tree}\nauthor A <a@a> 1 +0000\ncommitter A <a@a> 1 +0000\n\nc\n`,
+          ),
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${planted}`, `${commit}\n`);
+        await plant(ctx, 'x', `ref: ${target}\n`);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(
+          result.findings.flatMap((finding) => (finding.type === 'bad-ref' ? [finding.msgId] : [])),
+        ).toEqual(['symrefTargetIsNotARef']);
+        expect(result.exitCode).toBe(0);
       });
     });
   });

@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { forgetLooseOidPrefix } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
+import { loadReftableStack } from '../../../../src/application/primitives/load-reftable-stack.js';
 import {
   commonGitDir,
+  reftableDir,
   shallowFilePath,
 } from '../../../../src/application/primitives/path-layout.js';
 import {
@@ -120,6 +122,28 @@ async function snapshotDir(
     }
   }
   return files.slice().sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** The linked worktree's own (admin) gitdir under the common dir's `worktrees/`. */
+const adminDir = (ctx: Context): string => `${ctx.layout.gitDir}/worktrees/wt`;
+
+/** Reframe a seeded main-repo Context as a linked-worktree child Context. */
+const asWorktreeChild = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
+});
+
+/** The refusal git's refname_is_safe gate raises — its text without the name. */
+const BAD_NAME_REFUSAL = { code: 'INVALID_REF', reason: 'refusing to update ref with bad name' };
+
+/** Runs `act` and returns what it threw (undefined when it resolved). */
+async function refusalOf(act: () => Promise<void>): Promise<unknown> {
+  try {
+    await act();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
 }
 
 describe('updateRef', () => {
@@ -536,6 +560,250 @@ describe('updateRef', () => {
 
         // Assert
         expect(await ctx.fs.exists('/repo/.git/refs/heads/never-existed')).toBe(false);
+      });
+    });
+  });
+
+  describe("Given names git's refname_is_safe rejects", () => {
+    const UNVERIFIED = 'a'.repeat(40) as ObjectId;
+    const BISECT_S = 'refs/bisect/s' as RefName;
+    const BISECT_T = 'refs/bisect/t' as RefName;
+
+    describe('When a linked worktree deletes main-worktree/refs/bisect/s', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const main = await buildSeededContext({ refs: [{ name: BISECT_S, id: UNVERIFIED }] });
+        const child = asWorktreeChild(main);
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(child, 'main-worktree/refs/bisect/s' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await main.fs.exists('/repo/.git/refs/bisect/s')).toBe(true);
+      });
+    });
+
+    describe('When a linked worktree writes the null id to main-worktree/refs/bisect/s', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const main = await buildSeededContext({ refs: [{ name: BISECT_S, id: UNVERIFIED }] });
+        const child = asWorktreeChild(main);
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(child, 'main-worktree/refs/bisect/s' as RefName, ZERO, { reflogMessage: REASON }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await main.fs.exists('/repo/.git/refs/bisect/s')).toBe(true);
+      });
+    });
+
+    describe('When the main worktree deletes worktrees/wt/refs/bisect/t', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: `worktrees/wt/${BISECT_T}` as RefName, id: UNVERIFIED }],
+        });
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, 'worktrees/wt/refs/bisect/t' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await ctx.fs.exists('/repo/.git/worktrees/wt/refs/bisect/t')).toBe(true);
+      });
+    });
+
+    describe('When a linked worktree deletes main-worktree/HEAD', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const main = await buildSeededContext({ refs: [{ name: HEAD, id: UNVERIFIED }] });
+        const child = asWorktreeChild(main);
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(child, 'main-worktree/HEAD' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await main.fs.readUtf8('/repo/.git/HEAD')).toBe(`${UNVERIFIED}\n`);
+      });
+    });
+
+    describe('When the main worktree deletes worktrees/wt/HEAD', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const side = 'refs/heads/side' as RefName;
+        const ctx = await buildSeededContext({ refs: [{ name: side, id: UNVERIFIED }] });
+        await ctx.fs.writeUtf8('/repo/.git/worktrees/wt/HEAD', `ref: ${side}\n`);
+        await ctx.fs.writeUtf8('/repo/.git/logs/refs/heads/side', `${ZERO} ${UNVERIFIED}\n`);
+        const before = await snapshotDir(ctx, '/repo/.git');
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, 'worktrees/wt/HEAD' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await snapshotDir(ctx, '/repo/.git')).toEqual(before);
+      });
+    });
+
+    describe('When it deletes foo/bar', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'foo/bar' as RefName, id: UNVERIFIED }],
+        });
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, 'foo/bar' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await ctx.fs.exists('/repo/.git/foo/bar')).toBe(true);
+      });
+    });
+
+    describe('When a reftable linked worktree deletes main-worktree/refs/bisect/s', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const main = withReftableStorage(createMemoryContext());
+        await getRefStore(main).applyRefUpdates([{ kind: 'set', name: BISECT_S, id: UNVERIFIED }]);
+        const child = asWorktreeChild(main);
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(child, 'main-worktree/refs/bisect/s' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await getRefStore(main).resolveDirect(BISECT_S)).toEqual({
+          kind: 'direct',
+          id: UNVERIFIED,
+        });
+      });
+    });
+
+    describe('When the reftable main worktree deletes worktrees/wt/refs/bisect/t', () => {
+      it('Then it refuses INVALID_REF and removes nothing', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = updateRef;
+        const child = asWorktreeChild(ctx);
+        await getRefStore(child).applyRefUpdates([{ kind: 'set', name: BISECT_T, id: UNVERIFIED }]);
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, 'worktrees/wt/refs/bisect/t' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await getRefStore(child).resolveDirect(BISECT_T)).toEqual({
+          kind: 'direct',
+          id: UNVERIFIED,
+        });
+      });
+    });
+  });
+
+  describe("Given names git's check_refname_format rejects", () => {
+    const UNVERIFIED = 'a'.repeat(40) as ObjectId;
+
+    describe('When updateRef deletes the absent refs/.x', () => {
+      it('Then it resolves and creates nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const before = await snapshotDir(ctx, '/repo/.git');
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'refs/.x' as RefName, UNVERIFIED, { delete: true });
+
+        // Assert
+        expect(await snapshotDir(ctx, '/repo/.git')).toEqual(before);
+      });
+    });
+
+    describe('When updateRef deletes the loose refs/heads/bad..name', () => {
+      it('Then the loose file is removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedRef(ctx, 'refs/heads/bad..name' as RefName, UNVERIFIED);
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'refs/heads/bad..name' as RefName, ZERO, { reflogMessage: REASON });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/bad..name')).toBe(false);
+      });
+    });
+
+    describe('When deleteRefs deletes the loose refs/heads/x.lock and refs/heads/@{', () => {
+      it('Then both loose files are removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const names = ['refs/heads/x.lock', 'refs/heads/@{'] as RefName[];
+        for (const name of names) await seedRef(ctx, name, UNVERIFIED);
+        const sut = deleteRefs;
+
+        // Act
+        await sut(ctx, names, {});
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/x.lock')).toBe(false);
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/@{')).toBe(false);
+      });
+    });
+
+    describe('When updateRef deletes refs/a/', () => {
+      it('Then it refuses with the bad-name reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = updateRef;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(ctx, 'refs/a/' as RefName, UNVERIFIED, { delete: true }),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+      });
+    });
+
+    describe('When deleteRefs deletes refs/a/', () => {
+      it('Then it refuses with the bad-name reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = deleteRefs;
+
+        // Act
+        const refusal = await refusalOf(() => sut(ctx, ['refs/a/' as RefName], {}));
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
       });
     });
   });
@@ -1177,7 +1445,7 @@ describe('updateRef', () => {
       });
     });
 
-    describe('Given HEAD symbolically points at the branch being deleted', () => {
+    describe('Given HEAD symbolically points at the branch being deleted and the store records its updates', () => {
       describe('When updateRef deletes it', () => {
         it('Then the deletion and the coupled HEAD entry land in one applyRefUpdates call', async () => {
           // Arrange — a delete's write target is the null id, so the seeded
@@ -1813,6 +2081,30 @@ describe('updateRef', () => {
           });
           expect(fixture.calls).toEqual([]);
         });
+      });
+    });
+  });
+
+  describe('Given a reftable repository with refs/heads/s = ref: refs/heads/main and HEAD on main', () => {
+    describe('When updateRef writes s', () => {
+      it('Then main holds B and nothing refuses', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const a = await writeCommit(ctx, 'reftable A');
+        const b = await writeCommit(ctx, 'reftable B');
+        const store = getRefStore(ctx);
+        await store.applyRefUpdates([
+          { kind: 'set', name: MAIN, id: a },
+          { kind: 'setSymbolic', name: 'refs/heads/s' as RefName, target: MAIN },
+          { kind: 'setSymbolic', name: HEAD, target: MAIN },
+        ]);
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'refs/heads/s' as RefName, b, { reflogMessage: 'through s' });
+
+        // Assert
+        expect(await store.resolveDirect(MAIN)).toEqual({ kind: 'direct', id: b });
       });
     });
   });
@@ -2461,7 +2753,7 @@ describe('deleteRefs', () => {
     });
   });
 
-  describe('Given an invalid name after a valid one', () => {
+  describe("Given a name git's refname_is_safe rejects after a valid one", () => {
     describe('When deleteRefs runs', () => {
       it('Then it refuses the name before deleting anything', async () => {
         // Arrange
@@ -2472,18 +2764,37 @@ describe('deleteRefs', () => {
 
         // Act
         try {
-          await deleteRefs(ctx, [MAIN, 'refs/heads/a..b' as RefName], {});
+          await deleteRefs(ctx, [MAIN, 'refs/heads/a/' as RefName], {});
         } catch (err) {
           caught = err;
         }
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_REF',
-          reason: 'ref name must not contain ..',
-        });
+        expect((caught as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
         expect(batches).toEqual([]);
         expect(await getRefStore(ctx).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: mainId });
+      });
+    });
+  });
+
+  describe('Given refs/bisect/s', () => {
+    describe('When deleteRefs deletes refs/bisect/s and main-worktree/refs/bisect/s', () => {
+      it('Then it refuses INVALID_REF and refs/bisect/s stays', async () => {
+        // Arrange
+        const bisect = 'refs/bisect/s' as RefName;
+        const bisectId = 'a'.repeat(40) as ObjectId;
+        const ctx = await buildSeededContext({ refs: [{ name: bisect, id: bisectId }] });
+        const child = asWorktreeChild(ctx);
+        const sut = deleteRefs;
+
+        // Act
+        const refusal = await refusalOf(() =>
+          sut(child, [bisect, 'main-worktree/refs/bisect/s' as RefName], {}),
+        );
+
+        // Assert
+        expect((refusal as TsgitError).data).toEqual(BAD_NAME_REFUSAL);
+        expect(await ctx.fs.readUtf8('/repo/.git/refs/bisect/s')).toBe(`${bisectId}\n`);
       });
     });
   });
@@ -2510,6 +2821,244 @@ describe('updateRef — a chain that walks HEAD', () => {
           (call) => call.path === headPath && call.method === 'readUtf8',
         );
         expect(headContentReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a files repository whose HEAD names refs/bisect/x', () => {
+    describe('When updateRef writes main-worktree/refs/bisect/x from the main worktree', () => {
+      it('Then HEAD gains no log entry, its referent compared by the literal name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({});
+        const a = await writeCommit(ctx, 'A');
+        const b = await writeCommit(ctx, 'B');
+        const bisect = 'refs/bisect/x' as RefName;
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: bisect, id: a },
+          { kind: 'setSymbolic', name: 'HEAD' as RefName, target: bisect },
+        ]);
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'main-worktree/refs/bisect/x' as RefName, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual([]);
+        expect(await getRefStore(ctx).resolveDirect(bisect)).toEqual({ kind: 'direct', id: b });
+      });
+    });
+  });
+
+  describe('Given a reftable repository with its main HEAD on main and wt on side', () => {
+    const SIDE = 'refs/heads/side' as RefName;
+    const MAIN_WORKTREE_HEAD = 'main-worktree/HEAD' as RefName;
+    const WT_HEAD = 'worktrees/wt/HEAD' as RefName;
+    const BISECT_X = 'refs/bisect/x' as RefName;
+    const MAIN_WORKTREE_BISECT_X = 'main-worktree/refs/bisect/x' as RefName;
+
+    interface ReftableWorktrees {
+      readonly main: Context;
+      readonly wt: Context;
+      readonly a: ObjectId;
+      readonly b: ObjectId;
+    }
+
+    /** main and side at A with one log entry each, the main HEAD on main and wt's HEAD on
+     *  side, each HEAD with one log entry, as `git commit` and `git worktree add` leave them. */
+    async function seedReftableWorktrees(): Promise<ReftableWorktrees> {
+      const main = withReftableStorage(createMemoryContext());
+      const wt = asWorktreeChild(main);
+      const a = await writeCommit(main, 'A');
+      const b = await writeCommit(main, 'B');
+      const reflog = { oldId: ZERO, newId: a, message: 'seed' };
+      const headLog = { kind: 'reflogOnly', name: HEAD, reflog } as const;
+      await getRefStore(main).applyRefUpdates([
+        { kind: 'set', name: MAIN, id: a, reflog },
+        { kind: 'set', name: SIDE, id: a, reflog },
+        { kind: 'setSymbolic', name: HEAD, target: MAIN },
+        headLog,
+      ]);
+      await getRefStore(wt).applyRefUpdates([
+        { kind: 'setSymbolic', name: HEAD, target: SIDE },
+        headLog,
+      ]);
+      return { main, wt, a, b };
+    }
+
+    /** How many log records the stack under `gitDir` holds for the literal record name `name`. */
+    async function logCount(ctx: Context, gitDir: string, name: RefName): Promise<number> {
+      const stack = await loadReftableStack(ctx, reftableDir(gitDir));
+      return [...stack.logs(name)].length;
+    }
+
+    /** The ref record the stack under `gitDir` holds for the literal record name `name`. */
+    async function recordValue(ctx: Context, gitDir: string, name: RefName) {
+      const stack = await loadReftableStack(ctx, reftableDir(gitDir));
+      return stack.lookup(name)?.value;
+    }
+
+    describe('When updateRef writes main-worktree/HEAD from the main worktree', () => {
+      it('Then refs/heads/main = B, main logs once more, the common stack logs main-worktree/HEAD once, and HEAD logs nothing', async () => {
+        // Arrange
+        const { main, b } = await seedReftableWorktrees();
+        const common = main.layout.gitDir;
+        const headLogsBefore = await logCount(main, common, HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(main, MAIN_WORKTREE_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await getRefStore(main).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, common, MAIN)).toBe(2);
+        expect(await logCount(main, common, MAIN_WORKTREE_HEAD)).toBe(1);
+        expect(await recordValue(main, common, MAIN_WORKTREE_HEAD)).toBeUndefined();
+        expect(await logCount(main, common, HEAD)).toBe(headLogsBefore);
+      });
+    });
+
+    describe('When updateRef writes main-worktree/HEAD from wt', () => {
+      it('Then refs/heads/main = B, main logs once more, the common stack logs main-worktree/HEAD once, and neither HEAD logs anything', async () => {
+        // Arrange
+        const { main, wt, b } = await seedReftableWorktrees();
+        const common = main.layout.gitDir;
+        const mainHeadLogsBefore = await logCount(main, common, HEAD);
+        const wtHeadLogsBefore = await logCount(main, adminDir(main), HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(wt, MAIN_WORKTREE_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await getRefStore(main).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, common, MAIN)).toBe(2);
+        expect(await logCount(main, common, MAIN_WORKTREE_HEAD)).toBe(1);
+        expect(await logCount(main, common, HEAD)).toBe(mainHeadLogsBefore);
+        expect(await logCount(main, adminDir(main), HEAD)).toBe(wtHeadLogsBefore);
+      });
+    });
+
+    describe('When updateRef writes worktrees/wt/HEAD from wt', () => {
+      it("Then side = B, side logs once more, wt's stack logs worktrees/wt/HEAD once, and its HEAD logs nothing", async () => {
+        // Arrange
+        const { main, wt, b } = await seedReftableWorktrees();
+        const own = adminDir(main);
+        const headLogsBefore = await logCount(main, own, HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(wt, WT_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await getRefStore(main).resolveDirect(SIDE)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, main.layout.gitDir, SIDE)).toBe(2);
+        expect(await logCount(main, own, WT_HEAD)).toBe(1);
+        expect(await recordValue(main, own, WT_HEAD)).toBeUndefined();
+        expect(await logCount(main, own, HEAD)).toBe(headLogsBefore);
+      });
+    });
+
+    describe('When updateRef writes worktrees/wt/HEAD from the main worktree', () => {
+      it("Then side = B, side logs once more, wt's stack logs worktrees/wt/HEAD once, and neither HEAD logs anything", async () => {
+        // Arrange
+        const { main, b } = await seedReftableWorktrees();
+        const own = adminDir(main);
+        const mainHeadLogsBefore = await logCount(main, main.layout.gitDir, HEAD);
+        const wtHeadLogsBefore = await logCount(main, own, HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(main, WT_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await getRefStore(main).resolveDirect(SIDE)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, main.layout.gitDir, SIDE)).toBe(2);
+        expect(await logCount(main, own, WT_HEAD)).toBe(1);
+        expect(await logCount(main, main.layout.gitDir, HEAD)).toBe(mainHeadLogsBefore);
+        expect(await logCount(main, own, HEAD)).toBe(wtHeadLogsBefore);
+      });
+    });
+
+    describe('When updateRef writes main-worktree/HEAD with the main HEAD detached at A', () => {
+      it('Then the common stack holds a ref and a log record named main-worktree/HEAD and HEAD still answers A', async () => {
+        // Arrange
+        const { main, a, b } = await seedReftableWorktrees();
+        await getRefStore(main).applyRefUpdates([{ kind: 'set', name: HEAD, id: a }]);
+        const common = main.layout.gitDir;
+        const sut = updateRef;
+
+        // Act
+        await sut(main, MAIN_WORKTREE_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await recordValue(main, common, MAIN_WORKTREE_HEAD)).toEqual({
+          kind: 'direct',
+          id: b,
+        });
+        expect(await logCount(main, common, MAIN_WORKTREE_HEAD)).toBe(1);
+        expect(await getRefStore(main).resolveDirect(HEAD)).toEqual({ kind: 'direct', id: a });
+      });
+    });
+
+    describe('When updateRef writes main-worktree/HEAD with noDeref from the main worktree', () => {
+      it('Then the common stack holds a ref and a log record named main-worktree/HEAD and HEAD still names main at A', async () => {
+        // Arrange
+        const { main, a, b } = await seedReftableWorktrees();
+        const common = main.layout.gitDir;
+        const sut = updateRef;
+
+        // Act
+        await sut(main, MAIN_WORKTREE_HEAD, b, { reflogMessage: REASON, noDeref: true });
+
+        // Assert
+        expect(await recordValue(main, common, MAIN_WORKTREE_HEAD)).toEqual({
+          kind: 'direct',
+          id: b,
+        });
+        expect(await logCount(main, common, MAIN_WORKTREE_HEAD)).toBe(1);
+        expect(await getRefStore(main).resolveDirect(HEAD)).toEqual({
+          kind: 'symbolic',
+          target: MAIN,
+        });
+        expect(await getRefStore(main).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: a });
+      });
+    });
+
+    describe('When updateRef writes main-worktree/refs/bisect/x from the main worktree with HEAD naming refs/bisect/x', () => {
+      it('Then HEAD gains one log record, its referent matching the bare name', async () => {
+        // Arrange
+        const { main, a, b } = await seedReftableWorktrees();
+        await getRefStore(main).applyRefUpdates([
+          { kind: 'set', name: BISECT_X, id: a },
+          { kind: 'setSymbolic', name: HEAD, target: BISECT_X },
+        ]);
+        const common = main.layout.gitDir;
+        const headLogsBefore = await logCount(main, common, HEAD);
+        const sut = updateRef;
+
+        // Act
+        await sut(main, MAIN_WORKTREE_BISECT_X, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await logCount(main, common, HEAD)).toBe(headLogsBefore + 1);
+      });
+    });
+
+    describe('When updateRef writes worktrees/wt/HEAD from wt with wt detached at A', () => {
+      it("Then wt's stack holds a ref and a log record named worktrees/wt/HEAD and wt's HEAD still answers A", async () => {
+        // Arrange
+        const { main, wt, a, b } = await seedReftableWorktrees();
+        await getRefStore(wt).applyRefUpdates([{ kind: 'set', name: HEAD, id: a }]);
+        const own = adminDir(main);
+        const sut = updateRef;
+
+        // Act
+        await sut(wt, WT_HEAD, b, { reflogMessage: REASON });
+
+        // Assert
+        expect(await recordValue(main, own, WT_HEAD)).toEqual({ kind: 'direct', id: b });
+        expect(await logCount(main, own, WT_HEAD)).toBe(1);
+        expect(await getRefStore(wt).resolveDirect(HEAD)).toEqual({ kind: 'direct', id: a });
       });
     });
   });

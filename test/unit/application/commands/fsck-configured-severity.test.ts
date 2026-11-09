@@ -424,3 +424,118 @@ describe('Given the zero pointer silenced through the msg-id that names it', () 
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Refs pass — badRefName and badHeadTarget
+// ---------------------------------------------------------------------------
+
+const repoWithBadBranchName = async (): Promise<Context> => {
+  const ctx = await initRepo();
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/a..b`, `${'a'.repeat(40)}\n`);
+  return ctx;
+};
+
+const repoWithOneComponentLinkedHeadTarget = async (): Promise<Context> => {
+  const ctx = await initRepo();
+  const adminDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+  await ctx.fs.writeUtf8(`${adminDir}/HEAD`, 'ref: tags\n');
+  await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/work/wt1/.git\n');
+  await ctx.fs.writeUtf8(`${adminDir}/commondir`, '../..\n');
+  return ctx;
+};
+
+const headFacts = (findings: ReadonlyArray<FsckFinding>) =>
+  findings.flatMap((f) =>
+    f.type === 'bad-ref' && f.ref === 'worktrees/wt1/HEAD'
+      ? [{ msgId: f.msgId, severity: f.severity }]
+      : [],
+  );
+
+describe('Given badRefName softened to warn', () => {
+  describe('When fsck runs', () => {
+    it('Then the name warns, the zero pointer errors, and only the missing bit stands', async () => {
+      // Arrange
+      const ctx = await repoWithBadBranchName();
+      await configure(ctx, '[fsck]\n\tbadRefName = warn\n');
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badRefs(result.findings, 'badRefName')).toEqual([
+        { type: 'bad-ref', ref: 'refs/heads/a..b', msgId: 'badRefName', severity: 'warning' },
+      ]);
+      expect(badRefs(result.findings, 'badRefOid')).toHaveLength(1);
+      expect(result.exitCode).toBe(BIT_MISSING);
+    });
+  });
+});
+
+describe('Given badRefName silenced', () => {
+  describe('When fsck runs', () => {
+    it('Then the name is not reported and the zero pointer stands alone', async () => {
+      // Arrange
+      const ctx = await repoWithBadBranchName();
+      await configure(ctx, '[fsck]\n\tbadRefName = ignore\n');
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badRefs(result.findings, 'badRefName')).toEqual([]);
+      expect(badRefs(result.findings, 'badRefOid')).toHaveLength(1);
+      expect(result.exitCode).toBe(BIT_MISSING);
+    });
+  });
+});
+
+describe('Given badHeadTarget at its default grade', () => {
+  describe('When fsck runs', () => {
+    it('Then it errors and hides the referent facts of that HEAD', async () => {
+      // Arrange
+      const ctx = await repoWithOneComponentLinkedHeadTarget();
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(headFacts(result.findings)).toEqual([{ msgId: 'badHeadTarget', severity: 'error' }]);
+      expect(result.exitCode & BIT_REFS_CONTENT).toBe(BIT_REFS_CONTENT);
+    });
+  });
+});
+
+describe('Given badHeadTarget softened to warn', () => {
+  describe('When fsck runs', () => {
+    it('Then it warns and the referent facts of that HEAD are not hidden', async () => {
+      // Arrange
+      const ctx = await repoWithOneComponentLinkedHeadTarget();
+      await configure(ctx, '[fsck]\n\tbadHeadTarget = warn\n');
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(headFacts(result.findings)).toEqual([
+        { msgId: 'badHeadTarget', severity: 'warning' },
+        { msgId: 'badReferentName', severity: 'error' },
+      ]);
+    });
+  });
+});
+
+describe('Given badHeadTarget silenced', () => {
+  describe('When fsck runs', () => {
+    it('Then no badHeadTarget is reported', async () => {
+      // Arrange
+      const ctx = await repoWithOneComponentLinkedHeadTarget();
+      await configure(ctx, '[fsck]\n\tbadHeadTarget = ignore\n');
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badRefs(result.findings, 'badHeadTarget')).toEqual([]);
+    });
+  });
+});

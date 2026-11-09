@@ -4,10 +4,11 @@
  * from a linked worktree `main-worktree/HEAD`. Each is a reachability root,
  * and one naming an absent object is an `invalid sha1 pointer` (bit 2).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { snapshotWorktreeHeads } from '../../../../src/application/commands/internal/fsck/roots.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied } from '../../../../src/domain/error.js';
@@ -60,6 +61,10 @@ const pointer = (ref: string) => ({
   msgId: 'badRefOid',
   severity: 'error',
   target: ABSENT,
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('Given a linked worktree whose detached HEAD names an absent object', () => {
@@ -312,7 +317,7 @@ const refuseRead = (ctx: Context, refused: string): void => {
 
 describe('Given a HEAD naming a branch the permissions refuse', () => {
   describe('When the worktree heads are snapshotted', () => {
-    it('Then that HEAD is skipped and not listed as an unreadable file', async () => {
+    it('Then that HEAD is skipped', async () => {
       // Arrange
       const ctx = await repoWithWorktrees();
       const targetPath = `${ctx.layout.gitDir}/refs/heads/main`;
@@ -323,11 +328,207 @@ describe('Given a HEAD naming a branch the permissions refuse', () => {
       const result = await sut(ctx);
 
       // Assert
-      expect(result.unreadable).toEqual([]);
       expect(result.heads.map((head) => head.ref)).toEqual([
         'worktrees/wt1/HEAD',
         'worktrees/wt2/HEAD',
       ]);
+    });
+  });
+});
+
+describe("Given the main worktree's HEAD file refused for permission", () => {
+  describe('When fsck runs from a linked worktree', () => {
+    it('Then one cannotReadRef names HEAD at the main path with bit 8', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const path = `${ctx.layout.gitDir}/HEAD`;
+      refuseRead(ctx, path);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(deriveWorktreeContext(ctx, 'wt1', '/work/wt1'));
+
+      // Assert
+      expect(cannotReadFindings(result.findings)).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'HEAD',
+          msgId: 'cannotReadRef',
+          severity: 'error',
+          path,
+          reason: 'PERMISSION_DENIED',
+        },
+      ]);
+      expect(result.exitCode & EXIT_REFS_CONTENT).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+});
+
+const badContentRefs = (findings: ReadonlyArray<FsckFinding>) =>
+  findings.flatMap((finding) =>
+    finding.type === 'bad-ref' && finding.msgId === 'badRefContent' ? [finding.ref] : [],
+  );
+
+describe("Given garbage in the main ORIG_HEAD and in the wt1 admin's CHERRY_PICK_HEAD and REBASE_HEAD", () => {
+  describe('When fsck runs', () => {
+    it("Then each store's root check stops at its own first error", async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, 'garbage\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/CHERRY_PICK_HEAD`, 'garbage\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/REBASE_HEAD`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual([
+        'ORIG_HEAD',
+        'worktrees/wt1/CHERRY_PICK_HEAD',
+      ]);
+    });
+  });
+});
+
+describe("Given garbage in the main ORIG_HEAD and in a wt1 store's refs/bisect/bad", () => {
+  describe('When fsck runs', () => {
+    it('Then both are reported, a prefixed refs name not being a root ref', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, 'garbage\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/refs/bisect/bad`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual([
+        'ORIG_HEAD',
+        'worktrees/wt1/refs/bisect/bad',
+      ]);
+    });
+  });
+});
+
+describe('Given garbage in a linked store and references not checked', () => {
+  describe('When fsck runs', () => {
+    it('Then no content finding is reported', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/refs/bisect/bad`, 'garbage\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/ORIG_HEAD`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe("Given a linked store's refs/bisect/a..b holding a valid oid", () => {
+  describe('When fsck runs from that worktree', () => {
+    it('Then the zero pointer names refs/bisect/a..b bare', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/refs/bisect/a..b`, `${ABSENT}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(deriveWorktreeContext(ctx, 'wt1', '/work/wt1'));
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([
+        { ...pointer('refs/bisect/a..b'), target: '0'.repeat(40) },
+      ]);
+    });
+  });
+});
+
+describe('Given a linked worktree whose HEAD holds a symbolic ref outside refs/', () => {
+  describe('When fsck runs from the main worktree', () => {
+    it('Then badHeadTarget names worktrees/wt1/HEAD', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, 'ref: refs/tags/x\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(
+        result.findings.filter((f) => f.type === 'bad-ref' && f.msgId === 'badHeadTarget'),
+      ).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'worktrees/wt1/HEAD',
+          msgId: 'badHeadTarget',
+          severity: 'error',
+          referent: 'refs/tags/x',
+        },
+      ]);
+    });
+  });
+});
+
+describe('Given a linked worktree whose HEAD holds a one-component symbolic ref', () => {
+  describe('When fsck runs from the main worktree', () => {
+    it('Then only badHeadTarget is reported for worktrees/wt1/HEAD', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, 'ref: tags\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(
+        result.findings.flatMap((f) =>
+          f.type === 'bad-ref' && f.ref === 'worktrees/wt1/HEAD' ? [f.msgId] : [],
+        ),
+      ).toEqual(['badHeadTarget']);
+    });
+  });
+});
+
+describe('Given a linked worktree whose HEAD holds garbage', () => {
+  describe('When fsck runs from the main worktree', () => {
+    it('Then badRefContent names worktrees/wt1/HEAD and no pointer is reported for it', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual(['worktrees/wt1/HEAD']);
+      expect(pointerFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+describe('Given the main HEAD holding garbage', () => {
+  describe('When fsck runs from a linked worktree', () => {
+    it('Then badRefContent names HEAD', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(deriveWorktreeContext(ctx, 'wt1', '/work/wt1'));
+
+      // Assert
+      expect(badContentRefs(result.findings)).toEqual(['HEAD']);
     });
   });
 });
@@ -434,6 +635,188 @@ describe.each([
         broken.map((ref) => ({ ...pointer(ref), target: '0'.repeat(40) })),
       );
       expect(result.exitCode).toBe(EXIT_MISSING);
+    });
+  });
+});
+
+const refsOnly = (findings: ReadonlyArray<FsckFinding>) =>
+  findings.filter(
+    (finding) =>
+      finding.type === 'refs-walk-failed' ||
+      finding.type === 'unreadable-root-refs' ||
+      finding.type === 'unreadable-ref-path',
+  );
+
+describe('Given a linked worktree whose refs is a regular file', () => {
+  describe('When fsck runs', () => {
+    it('Then refs-walk-failed carries NOT_A_DIRECTORY with bit 8', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const refs = `${ctx.layout.gitDir}/worktrees/wt1/refs`;
+      await ctx.fs.writeUtf8(refs, 'garbage\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(refsOnly(result.findings)).toEqual([
+        { type: 'refs-walk-failed', path: refs, reason: 'NOT_A_DIRECTORY' },
+      ]);
+      expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+});
+
+const refuseAdminListing = (ctx: Context, adminDir: string): void => {
+  const readdir = ctx.fs.readdir.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+    if (path === adminDir) throw permissionDenied(path);
+    return readdir(path);
+  });
+};
+
+describe('Given a linked worktree whose admin dir lists nothing and nothing else is wrong', () => {
+  describe('When fsck runs', () => {
+    it('Then unreadable-root-refs is reported with bit 8 and no other ref finding', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const adminDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+      refuseAdminListing(ctx, adminDir);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(refsOnly(result.findings)).toEqual([
+        { type: 'unreadable-root-refs', path: adminDir, reason: 'PERMISSION_DENIED' },
+      ]);
+      expect(result.findings.filter((finding) => finding.type === 'bad-ref')).toEqual([]);
+      expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+
+  describe('When fsck runs with checkReferences false', () => {
+    it('Then nothing is reported and the exit code is clean', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      refuseAdminListing(ctx, `${ctx.layout.gitDir}/worktrees/wt1`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(refsOnly(result.findings)).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+const withFifoUnderLinkedRefs = async (): Promise<Context> => {
+  const ctx = await repoWithWorktrees();
+  const dir = `${ctx.layout.gitDir}/worktrees/wt1/refs/bisect`;
+  await ctx.fs.mkdir(dir);
+  const readdir = ctx.fs.readdir.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+    const real = await readdir(path);
+    const fifo = { name: 'bad', isFile: false, isDirectory: false, isSymbolicLink: false };
+    return path === dir ? [...real, fifo] : real;
+  });
+  // The walk stats the pipe before judging it; nothing sits behind the faked entry, so its
+  // stat answers with the directory's own, re-typed to a pipe.
+  const lstat = ctx.fs.lstat.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path: string) =>
+    path === `${dir}/bad`
+      ? { ...(await lstat(dir)), isFile: false, isDirectory: false, isSymbolicLink: false }
+      : lstat(path),
+  );
+  return ctx;
+};
+
+const filetypeFindings = (findings: ReadonlyArray<FsckFinding>) =>
+  findings.filter((finding) => finding.type === 'bad-ref' && finding.msgId === 'badRefFiletype');
+
+describe('Given a non-regular entry under a linked worktree refs/bisect/', () => {
+  describe('When fsck runs', () => {
+    it('Then badRefFiletype is an error on the prefixed name with bit 8', async () => {
+      // Arrange
+      const ctx = await withFifoUnderLinkedRefs();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(filetypeFindings(result.findings)).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'worktrees/wt1/refs/bisect/bad',
+          msgId: 'badRefFiletype',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+
+  describe('When fsck runs with checkReferences false', () => {
+    it('Then nothing is reported', async () => {
+      // Arrange
+      const ctx = await withFifoUnderLinkedRefs();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert
+      expect(filetypeFindings(result.findings)).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When fsck runs with fsck.badRefFiletype set to warn', () => {
+    it('Then it is a warning and the exit code is clean', async () => {
+      // Arrange
+      const ctx = await withFifoUnderLinkedRefs();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tbadRefFiletype = warn\n');
+      __resetConfigCacheForTests();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(filetypeFindings(result.findings)).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'worktrees/wt1/refs/bisect/bad',
+          msgId: 'badRefFiletype',
+          severity: 'warning',
+        },
+      ]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a worktrees path that is a regular file', () => {
+  describe('When fsck runs', () => {
+    it('Then no linked store is listed and the exit code is clean', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees`, '');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(refsOnly(result.findings)).toEqual([]);
+      expect(result.findings.filter((finding) => finding.type === 'bad-ref')).toEqual([]);
+      expect(result.exitCode).toBe(0);
     });
   });
 });

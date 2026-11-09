@@ -453,7 +453,24 @@ done
 # and the peel fold — runtime code shipped in every distribution form, none removable without
 # dropping the refusals and diagnostics git performs. Tightened 1516 -> 1514 KiB to the final
 # measurement (1 549 164 B, 1512.9 KiB) plus 1 KiB once the review and the mutation triage converged.
-SIZE_CAP=$((1514 * 1024))
+# Raised 1514 -> 1516 KiB by the worktree ref-store walk: the measured pack
+# landed at 1 551 577 B, 1 241 B over the old cap, attributable to the per-store
+# integrity walk with its OS-ordered admin enumeration and store prefixes, the
+# read and write ref locators behind the main-worktree namespace, the lock-name
+# and bad-name predicates, the badRefName and badHeadTarget facts with their
+# grades and shadow, and the unreadable-root-refs arm — runtime code shipped in
+# every distribution form, none removable without dropping the behaviour.
+# Raised 1516 -> 1518 KiB by the write side of the worktree ref namespace: the
+# measured pack landed at 1 553 893 B, 1 509 B over the old cap, attributable to
+# the parseWorktreeRef parser and the one refLocation locator every ref and
+# reflog route now shares, the refname_is_safe gate on deletes and symbolic
+# writes, the shared-lock refusal with its coupled-HEAD rule, and the reftable
+# stack selection with its bare-name log gate — runtime code in every
+# distribution form, none removable without dropping the behaviour.
+# Raised 1518 -> 1519 KiB by the admin-path lock refusals (a regular file at or
+# above <common>/worktrees/<id>) and the memory adapter's trailing-slash lookup
+# refusal: the measured pack landed at 1 554 512 B, 80 B over the old cap.
+SIZE_CAP=$((1519 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

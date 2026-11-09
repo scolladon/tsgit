@@ -19,9 +19,10 @@
  * Step 11 (auto-compaction) is a later part's own protocol and best-effort
  * concern — not implemented here.
  *
- * **Cross-stack transactions.** An update list may span both the common and
- * a linked worktree's own stack. Both locks are acquired up front, in a
- * FIXED order (common first, then worktree), so two tsgit writers can never
+ * **Cross-stack transactions.** An update list may span the common stack, a
+ * linked worktree's own, and the stack a `worktrees/<id>/` name selects.
+ * Every lock is acquired up front, in a FIXED order (common first, then the
+ * own worktree, then any other in first-use order), so two tsgit writers can never
  * deadlock against each other; each stack is written and committed only
  * after every stack in the transaction has passed its own step-3 CAS check,
  * so a refusal on one stack never leaves the other mutated. Each stack keeps
@@ -55,6 +56,7 @@
  * this non-empty body can never confuse it.
  */
 
+import { fileNotFound } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { AuthorIdentity } from '../../domain/objects/author-identity.js';
 import { bytesEqual } from '../../domain/objects/encoding.js';
@@ -78,6 +80,7 @@ import {
   serializeReftable,
   suggestCompactionSegment,
 } from '../../domain/refs/index.js';
+import { parseWorktreeRef } from '../../domain/refs/per-worktree-ref.js';
 import {
   firstRefNameConflict,
   type RefNameFacts,
@@ -103,11 +106,11 @@ import {
 } from './load-reftable-stack.js';
 import {
   commonGitDir,
-  perWorktreeRefDir,
   reftableDir,
   reftableTableLockPath,
   tablesListLockPath,
   tablesListPath,
+  worktreeStoreDir,
 } from './path-layout.js';
 import type { ReflogAppend, RefUpdate } from './ref-store.js';
 
@@ -473,7 +476,7 @@ function hasLiveLogRecord(stack: ReftableStack, name: RefName): boolean {
  * loggability — a `delete` or `reflogReplace` tombstones/replaces directly,
  * and an unconditional or reflog-less update never calls
  * `isReftableLoggable` at all. Restricting the candidate set to exactly
- * these names is what lets {@link createLoggableLookup} decide, per batch,
+ * the bare names these updates are judged by is what lets {@link createLoggableLookup} decide, per batch,
  * which strategy is worth its own cost — a pure, synchronous, in-memory
  * pass over the batch itself, never the stack.
  */
@@ -484,7 +487,7 @@ function loggableCandidateNames(updates: readonly ReftableInternalUpdate[]): Rea
       continue;
     }
     if (update.reflog === undefined || update.reflog.unconditional === true) continue;
-    names.add(update.name);
+    names.add(parseWorktreeRef(update.name).bare);
   }
   return names;
 }
@@ -524,13 +527,16 @@ function createLoggableLookup(
 }
 
 /** The reftable counterpart to `record-ref-update.ts`'s `isLoggable`: "has a
- *  reflog" is any log record anywhere in the stack, not a physical file. */
+ *  reflog" is any log record anywhere in the stack, not a physical file. git's
+ *  `should_write_log` probes that existence by the bare name inside the stack
+ *  a prefix selects, but judges auto-creation on the full name; the record
+ *  itself keeps the full name. */
 async function isReftableLoggable(
   ctx: Context,
   loggable: (name: RefName) => boolean,
   name: RefName,
 ): Promise<boolean> {
-  if (loggable(name)) return true;
+  if (loggable(parseWorktreeRef(name).bare)) return true;
   const config = await readConfig(ctx);
   return shouldAutocreateReflog(name, config.core ?? {});
 }
@@ -1336,8 +1342,22 @@ interface StackBucket {
   readonly updates: readonly ReftableInternalUpdate[];
 }
 
-/** Fixed order: common dir first, then a linked worktree's own — the
- *  deadlock-avoidance rule the module JSDoc documents. */
+/** `gitDir`'s bucket, created on first use — after the pre-seeded common
+ *  and own buckets, so another worktree's stack never locks before them. */
+function bucketFor(
+  buckets: Map<string, ReftableInternalUpdate[]>,
+  gitDir: string,
+): ReftableInternalUpdate[] {
+  const existing = buckets.get(gitDir);
+  if (existing !== undefined) return existing;
+  const created: ReftableInternalUpdate[] = [];
+  buckets.set(gitDir, created);
+  return created;
+}
+
+/** Fixed order: common dir first, then a linked worktree's own, then any
+ *  other worktree's stack a prefixed name selects — the deadlock-avoidance
+ *  rule the module JSDoc documents. Records keep the full name as given. */
 function partitionByStack(
   ctx: Context,
   updates: readonly ReftableInternalUpdate[],
@@ -1350,12 +1370,27 @@ function partitionByStack(
   // anything has been pushed to it, a harmless no-op indistinguishable from skipping it.
   if (ownDir !== commonDir) buckets.set(ownDir, []);
   for (const update of updates) {
-    const gitDir = perWorktreeRefDir(ctx, update.name);
-    buckets.get(gitDir)!.push(update);
+    bucketFor(buckets, worktreeStoreDir(ctx, parseWorktreeRef(update.name))).push(update);
   }
   return [...buckets.entries()]
     .map(([gitDir, bucketUpdates]) => ({ gitDir, updates: bucketUpdates }))
     .filter((bucket) => bucket.updates.length > 0);
+}
+
+/** git opens another worktree's stack without creating it: a missing
+ *  `<common>/worktrees/<id>/reftable` fails that stack's lock, so the write
+ *  refuses before any stack is locked or any directory exists. The common and
+ *  own stacks are created on first write, as git's are. */
+async function assertForeignStacksExist(
+  ctx: Context,
+  buckets: readonly StackBucket[],
+): Promise<void> {
+  const created = new Set([commonGitDir(ctx), ctx.layout.gitDir]);
+  for (const { gitDir } of buckets) {
+    if (created.has(gitDir)) continue;
+    const dir = reftableDir(gitDir);
+    if (!(await ctx.fs.exists(dir))) throw fileNotFound(dir);
+  }
 }
 
 // --- Top-level orchestration -------------------------------------------------
@@ -1394,6 +1429,7 @@ export async function applyReftableUpdates(
 ): Promise<void> {
   const buckets = partitionByStack(ctx, updates);
   if (buckets.length === 0) return;
+  await assertForeignStacksExist(ctx, buckets);
   const identity = await resolveReflogIdentity(ctx);
   const locks: string[] = [];
   const consumed = new Set<string>();

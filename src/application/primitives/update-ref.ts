@@ -17,12 +17,18 @@
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
-import { refUpdateConflict } from '../../domain/refs/error.js';
-import { validateRefName } from '../../domain/refs/ref-validation.js';
+import { refLocked, refUpdateConflict } from '../../domain/refs/error.js';
+import { parseWorktreeRef } from '../../domain/refs/per-worktree-ref.js';
+import { assertRefnameSafe, validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { assertRefTargetValid } from './internal/ref-target.js';
 import { type TransactionLogging, transactionLogging } from './internal/ref-transaction-logging.js';
-import { type RefWriteChain, resolveWriteChain } from './internal/ref-write-chain.js';
+import {
+  type LooseFileOf,
+  looseFileOf,
+  type RefWriteChain,
+  resolveWriteChain,
+} from './internal/ref-write-chain.js';
 import {
   getRefStore,
   type RefStore,
@@ -36,11 +42,13 @@ const HEAD: RefName = 'HEAD' as RefName;
 const UNCOUPLED_HEAD: ResolveDirectResult = { kind: 'missing' };
 
 /** What every entry of one update's transaction shares: the walked chain,
- *  the `HEAD` value it may couple with, the backend's logging shape, the
- *  null id, and the reflog message (empty when a delete carries none). */
+ *  the `HEAD` value it may couple with, the loose file each name locks, the
+ *  backend's logging shape, the null id, and the reflog message (empty when
+ *  a delete carries none). */
 interface TransactionPlan {
   readonly chain: RefWriteChain;
   readonly head: ResolveDirectResult;
+  readonly fileOf: LooseFileOf;
   readonly logging: TransactionLogging;
   readonly zero: ObjectId;
   readonly message: string;
@@ -52,20 +60,27 @@ export async function updateRef(
   newId: ObjectId,
   options: UpdateRefOptions,
 ): Promise<void> {
-  // validateRefName rejects `..`, absolute paths, and every character class
-  // that could let `${gitDir}/${name}` escape the repo — no separate path
-  // containment check is needed.
-  validateRefName(name);
-  // Verification precedes chain resolution and the compare-and-swap (git's
-  // own order); a delete is never verified.
-  if (!isDelete(ctx, newId, options)) await assertRefTargetValid(ctx, name, newId);
+  // git's transaction_refname_valid: a delete is gated on refname_is_safe
+  // alone, which is how a broken-named ref stays deletable, and is never
+  // verified; a write must pass the full ref grammar first.
+  if (isDelete(ctx, newId, options)) assertRefnameSafe(name);
+  else await assertWritable(ctx, name, newId);
 
   const store = getRefStore(ctx);
   const plan = await planTransaction(ctx, store, name, options);
   assertExpected(name, options.expected, plan.chain);
+  assertNoSharedHeadLock(plan, name);
   await store.applyRefUpdates(
     isDelete(ctx, newId, options) ? deleteUpdates(plan, options) : writeUpdates(plan, newId),
   );
+}
+
+/** Refuses a name outside git's ref grammar, then verifies the target. Both
+ *  keep `${gitDir}/${name}` inside the repo; verification precedes chain
+ *  resolution and the compare-and-swap, git's own order. */
+async function assertWritable(ctx: Context, name: RefName, newId: ObjectId): Promise<void> {
+  validateRefName(name);
+  await assertRefTargetValid(ctx, name, newId);
 }
 
 /** What a {@link deleteRefs} run carries to every delete it plans. */
@@ -87,7 +102,7 @@ export async function deleteRefs(
   names: readonly RefName[],
   options: DeleteRefsOptions,
 ): Promise<void> {
-  for (const name of names) validateRefName(name);
+  for (const name of names) assertRefnameSafe(name);
   const store = getRefStore(ctx);
   const deleteOptions = { ...options, delete: true } as const;
   const updates: RefUpdate[] = [];
@@ -112,14 +127,17 @@ async function planTransaction(
   name: RefName,
   options: UpdateRefOptions,
 ): Promise<TransactionPlan> {
-  const chain = await resolveWriteChain(store, name, options);
+  const fileOf = looseFileOf(ctx);
+  const chain = await resolveWriteChain(store, name, options, fileOf);
   // Resolved before any write so a genuine I/O error refuses the whole
   // update instead of leaving a committed ref, a written reflog, and a
   // thrown call. A chain that walks HEAD already read it, and never couples.
-  const head = walksHead(name, chain) ? UNCOUPLED_HEAD : await resolveHeadForCoupling(store);
   const logging = transactionLogging(ctx);
+  const head = walksHead(name, chain, logging)
+    ? UNCOUPLED_HEAD
+    : await resolveHeadForCoupling(store);
   const message = options.reflogMessage ?? '';
-  return { chain, head, logging, zero: zeroOid(ctx.hashConfig), message };
+  return { chain, head, fileOf, logging, zero: zeroOid(ctx.hashConfig), message };
 }
 
 /** git marks a null new object id `REF_DELETING` and takes the delete path
@@ -165,8 +183,17 @@ function oldOrZero(old: ObjectId | 'absent', zero: ObjectId): ObjectId {
 /** Whether `HEAD` is the given name or a link the chain walks — git's
  *  `REF_UPDATE_VIA_HEAD`: `HEAD` then logs as part of the chain itself and
  *  gains no second, coupled entry. */
-const walksHead = (name: RefName, chain: RefWriteChain): boolean =>
-  name === HEAD || chain.links.includes(HEAD);
+const walksHead = (name: RefName, chain: RefWriteChain, logging: TransactionLogging): boolean =>
+  [name, ...chain.links].some((hop) => namesHead(hop, logging));
+
+/** The name a hop is compared with `HEAD` by: its literal spelling, or — under
+ *  `'bare'` — the name it reads inside the store its prefix selects. */
+const nameSeenByHead = (hop: RefName, { viaHeadName }: TransactionLogging): RefName =>
+  viaHeadName === 'bare' ? parseWorktreeRef(hop).bare : hop;
+
+/** Whether a hop counts as `HEAD`. */
+const namesHead = (hop: RefName, logging: TransactionLogging): boolean =>
+  nameSeenByHead(hop, logging) === HEAD;
 
 /**
  * The coupled `logs/HEAD` entry a write or delete produces when `HEAD`
@@ -180,12 +207,33 @@ const walksHead = (name: RefName, chain: RefWriteChain): boolean =>
  */
 function coupledHeadEntry(plan: TransactionPlan, newId: ObjectId): RefUpdate | undefined {
   const { chain, head, logging, zero, message } = plan;
-  if (head.kind !== 'symbolic') return undefined;
+  if (head.kind !== 'symbolic' || !couplesHead(plan)) return undefined;
   const namesLink = chain.links.includes(head.target);
-  if (head.target !== chain.terminal && !namesLink) return undefined;
   const oldId =
     namesLink && logging.headOldThroughLink === 'null-id' ? zero : oldOrZero(chain.old, zero);
   return { kind: 'reflogOnly', name: HEAD, reflog: { oldId, newId, message } };
+}
+
+/** Whether the transaction gains the coupled `HEAD` entry: `HEAD` symbolically
+ *  names the chain's terminal or one of its walked links — the files backend's
+ *  `split_head_update` compares the referent with the literal name, the
+ *  reftable backend with the bare name a prefix leaves. */
+function couplesHead({ chain, head, logging }: TransactionPlan): boolean {
+  if (head.kind !== 'symbolic') return false;
+  const isReferent = (hop: RefName): boolean => nameSeenByHead(hop, logging) === head.target;
+  return isReferent(chain.terminal) || chain.links.some(isReferent);
+}
+
+/** git locks the coupled `HEAD` update's file after the chain's own: when a
+ *  walked link or the terminal already holds `HEAD`'s loose file under
+ *  another name, `lock_ref_for_update` meets `EEXIST` and git reports it
+ *  against the name the caller gave. */
+function assertNoSharedHeadLock(plan: TransactionPlan, name: RefName): void {
+  if (!couplesHead(plan)) return;
+  const headFile = plan.fileOf(HEAD);
+  if (headFile === undefined) return;
+  const chainNames = [...plan.chain.links, plan.chain.terminal];
+  if (chainNames.some((link) => plan.fileOf(link) === headFile)) throw refLocked(name);
 }
 
 /** The entries git's transaction splits off at each symbolic hop: one

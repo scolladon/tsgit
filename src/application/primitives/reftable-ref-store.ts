@@ -14,6 +14,7 @@ import {
   type ReftableRefValue,
   type ReftableStack,
 } from '../../domain/refs/index.js';
+import { parseWorktreeRef } from '../../domain/refs/per-worktree-ref.js';
 import type { Context } from '../../ports/context.js';
 import { isDegradableReftableFault } from './internal/reftable-source.js';
 import {
@@ -21,7 +22,7 @@ import {
   parseTablesList,
   readSizeCheckedTableBytes,
 } from './load-reftable-stack.js';
-import { commonGitDir, perWorktreeRefDir, reftableDir } from './path-layout.js';
+import { commonGitDir, perWorktreeRefDir, reftableDir, worktreeStoreDir } from './path-layout.js';
 import type {
   PackRefsOutcome,
   RefEntry,
@@ -33,6 +34,12 @@ import type {
 import { applyReftableUpdates, packReftableStack } from './reftable-transaction.js';
 
 const TABLES_LIST_FILE = 'tables.list';
+
+/** A name's selected stack and the bare name its records carry there. */
+interface SelectedStack {
+  readonly stack: ReftableStack;
+  readonly bare: RefName;
+}
 
 /** One finding for a table that failed a structural check — `check` is
  *  whatever the caller already extracted from the caught
@@ -161,9 +168,12 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return loadReftableStack(ctx, reftableDir(dir));
   }
 
-  /** The stack that owns `name`'s record — routes exactly like the files
-   *  backend's `refDir(name)`, on the same classification. */
-  const stackFor = (name: RefName): Promise<ReftableStack> => stackAt(perWorktreeRefDir(ctx, name));
+  /** The stack `name` selects — git's `backend_for`, on the files backend's
+   *  classification — and the bare name its records are read by there. */
+  async function stackFor(name: RefName): Promise<SelectedStack> {
+    const target = parseWorktreeRef(name);
+    return { stack: await stackAt(worktreeStoreDir(ctx, target)), bare: target.bare };
+  }
 
   /** Every stack this Context can see: the common dir's, plus a linked
    *  worktree's own when it differs from the common dir. */
@@ -194,8 +204,8 @@ export function createReftableRefStore(ctx: Context): RefStore {
   }
 
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
-    const stack = await stackFor(name);
-    const record = stack.lookup(name);
+    const { stack, bare } = await stackFor(name);
+    const record = stack.lookup(bare);
     return record === undefined ? { kind: 'missing' } : toResolveResult(record.value);
   }
 
@@ -273,9 +283,9 @@ export function createReftableRefStore(ctx: Context): RefStore {
   }
 
   async function readReflog(name: RefName): Promise<readonly ReflogEntry[]> {
-    const stack = await stackFor(name);
+    const { stack, bare } = await stackFor(name);
     const entries: ReflogEntry[] = [];
-    for (const record of stack.logs(name)) {
+    for (const record of stack.logs(bare)) {
       if (record.entry.kind === 'entry') {
         const { oldId, newId, identity, message } = record.entry;
         // The on-disk log record's message always carries the single
@@ -340,7 +350,8 @@ export function createReftableRefStore(ctx: Context): RefStore {
   }
 
   async function hasReflog(name: RefName): Promise<boolean> {
-    return hasLiveReflog(await stackFor(name), name);
+    const { stack, bare } = await stackFor(name);
+    return hasLiveReflog(stack, bare);
   }
 
   /** Every name ANY raw table in `stack` carries a log record for — a

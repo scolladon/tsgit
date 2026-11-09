@@ -12,7 +12,7 @@ evidence:
 source: { run: lift-delta-chain-read-cap, phase: review, date: 2026-10-20 }
 status: active
 supersedes: []
-last-verified: 2026-10-29
+last-verified: 2026-11-08
 ---
 # 003 — Wall-clock budget tests fail under foreign load
 
@@ -21,7 +21,12 @@ last-verified: 2026-10-29
 Three consecutive `npm run validate` runs went red on `test:perf` alone, each on a
 different budget assertion (1016 ms and 1077 ms against 1000 ms, 1078 ms against 800 ms),
 while another session was fuzzing git on the host and the machine was swapping. The same
-source had passed `test:perf` twice earlier that day. Retrying blindly would have looped.
+source had passed `test:perf` twice earlier that day. Retrying blindly would have looped. A clean rebuild is itself foreign load: after
+`rm -rf dist .wireit` in the worktree-ref-store run (2026-11-08), Spotlight's file-event daemon and
+`mds` re-indexed the tree at full CPU for about twenty minutes, a gate started at load 4 ended
+at load 25, `add.test.ts` timed out once under coverage and one interop row in
+`ref-transaction-interop.test.ts` failed an assertion it passed alone; the next run on a quiet
+host was green with only the two scripts re-executing.
 
 ## Lesson
 

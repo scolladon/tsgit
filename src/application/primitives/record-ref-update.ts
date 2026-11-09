@@ -17,7 +17,7 @@ import { shouldAutocreateReflog } from '../../domain/reflog/should-log.js';
 import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from './config-read.js';
 import { removeEmptyDirectoryTree } from './internal/empty-directories.js';
-import { perWorktreeRefDir, reflogPath } from './path-layout.js';
+import { refReflogPath } from './path-layout.js';
 import { resolveReflogIdentity } from './reflog-identity.js';
 
 export interface RecordRefUpdateOptions {
@@ -69,11 +69,12 @@ export async function prepareRefUpdate(
   options?: RecordRefUpdateOptions,
 ): Promise<ReflogWrite | undefined> {
   const config = await readConfig(ctx);
-  const path = reflogPath(perWorktreeRefDir(ctx, ref), ref);
+  const path = refReflogPath(ctx, ref);
   const kind = await reflogPathKind(ctx, path);
   // An existing log is appended to whatever the autocreate rule says, as
   // git's plain `O_APPEND` open does.
   if (kind === 'file') return { config };
+  // The full name, as git's gate judges it: a prefixed HEAD is not "HEAD".
   const autocreate =
     options?.unconditional === true || shouldAutocreateReflog(ref, config.core ?? {});
   if (!autocreate) return undefined;
@@ -126,6 +127,6 @@ async function clearLogDirectory(ctx: Context, path: string): Promise<void> {
  *  needed — the path is already settable, {@link prepareRefUpdate} saw to
  *  that. */
 async function appendReflogFile(ctx: Context, ref: RefName, entry: ReflogEntry): Promise<void> {
-  const path = reflogPath(perWorktreeRefDir(ctx, ref), ref);
+  const path = refReflogPath(ctx, ref);
   await ctx.fs.appendUtf8(path, serializeReflogLine(entry, ctx.hashConfig.hexLength));
 }

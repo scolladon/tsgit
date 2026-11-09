@@ -1,7 +1,13 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/error.js';
-import { isSafeRefName, validateRefName } from '../../../../src/domain/refs/ref-validation.js';
+import type { RefName } from '../../../../src/domain/objects/index.js';
+import {
+  assertRefnameSafe,
+  isRefnameSafe,
+  isSafeRefName,
+  validateRefName,
+} from '../../../../src/domain/refs/ref-validation.js';
 import { arbRefName } from './arbitraries.js';
 
 describe('validateRefName', () => {
@@ -319,6 +325,109 @@ describe('isSafeRefName', () => {
 
         // Assert
         expect(result).toBeInstanceOf(TypeError);
+      });
+    });
+  });
+});
+
+describe('isRefnameSafe', () => {
+  describe('Given a name git deletes or symbolic-writes', () => {
+    describe('When checking it', () => {
+      it.each([
+        'refs/heads/main',
+        'refs/.x',
+        'refs/a/.x',
+        'refs/heads/with\\back',
+        'HEAD',
+        'ORIG_HEAD',
+        'AUTO_MERGE',
+        '_',
+      ])('Then %j is safe', (name) => {
+        // Arrange
+        const sut = isRefnameSafe;
+
+        // Act
+        const result = sut(name as RefName);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a name git refuses to delete or symbolic-write', () => {
+    describe('When checking it', () => {
+      it.each([
+        'refs/',
+        'refs//x',
+        'refs/a/',
+        'refs/a//b',
+        'refs/a/b//',
+        'refs/a/./b',
+        'refs/a/../b',
+        'refs/a/..',
+        'refs/a/.',
+        '',
+        'head',
+        'foo/bar',
+        'REBASE-HEAD',
+        'HEAD1',
+        'main-worktree/HEAD',
+        'worktrees/wt/HEAD',
+        'refs/a\\..\\x',
+        'refs/heads\\.\\x',
+        'refs/heads/a\\\\b',
+      ])('Then %j is unsafe', (name) => {
+        // Arrange
+        const sut = isRefnameSafe;
+
+        // Act
+        const result = sut(name as RefName);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('assertRefnameSafe', () => {
+  describe("Given 'foo/bar'", () => {
+    describe('When asserting it is safe', () => {
+      it("Then it refuses INVALID_REF with git's bad-name reason", () => {
+        // Arrange
+        const sut = assertRefnameSafe;
+
+        // Act
+        const result = (() => {
+          try {
+            sut('foo/bar' as RefName);
+            return undefined;
+          } catch (error) {
+            return error;
+          }
+        })();
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'refusing to update ref with bad name',
+        });
+      });
+    });
+  });
+
+  describe("Given 'refs/heads/main'", () => {
+    describe('When asserting it is safe', () => {
+      it('Then it returns', () => {
+        // Arrange
+        const sut = assertRefnameSafe;
+
+        // Act
+        const result = sut('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

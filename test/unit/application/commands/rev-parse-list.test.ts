@@ -710,3 +710,64 @@ describe("Given a commit whose parent names the commit's own tree as its parent,
     });
   });
 });
+
+const asLinkedWorktree = (ctx: Context): Context => ({
+  ...ctx,
+  layout: {
+    ...ctx.layout,
+    gitDir: `${ctx.layout.gitDir}/worktrees/wt`,
+    commonDir: ctx.layout.gitDir,
+  },
+});
+
+const worktreeViews = [
+  { viewer: 'the main Context', view: (ctx: Context): Context => ctx },
+  { viewer: 'the linked Context', view: asLinkedWorktree },
+];
+
+describe.each(worktreeViews)('Given a linked worktree read from $viewer', ({ view }) => {
+  const arrange = async () => {
+    const { ctx, ids } = await listRepo();
+    const common = ctx.layout.gitDir;
+    await writeRef(ctx, 'worktrees/wt/HEAD', ids.s1 as ObjectId);
+    await writeRef(ctx, 'worktrees/wt/refs/bisect/bad', ids.x1 as ObjectId);
+    await ctx.fs.writeUtf8(`${common}/worktrees/wt/gitdir`, '/elsewhere/.git\n');
+    return { ctx: view(ctx), ids };
+  };
+
+  describe('When revParse reads the main worktree and linked worktree private refs', () => {
+    it.each([
+      { name: 'main-worktree/HEAD', id: 'c2' },
+      { name: 'worktrees/wt/HEAD', id: 's1' },
+      { name: 'worktrees/wt/refs/bisect/bad', id: 'x1' },
+    ])('Then $name is the object git resolves', async ({ name, id }) => {
+      // Arrange
+      const { ctx, ids } = await arrange();
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, name);
+
+      // Assert
+      expect(result).toEqual([{ kind: 'object', id: ids[id], negated: false }]);
+    });
+  });
+
+  describe('When revParse reads names git does not resolve', () => {
+    it.each([
+      'main-worktree/refs/heads/main',
+      'worktrees/wt/refs/heads/side',
+      'worktrees/nope/HEAD',
+    ])('Then %s throws OBJECT_NOT_FOUND', async (name) => {
+      // Arrange
+      const { ctx } = await arrange();
+      const sut = revParse;
+
+      // Act
+      const data = await failureData(() => sut(ctx, name));
+
+      // Assert
+      expect((data as { code: string }).code).toBe('OBJECT_NOT_FOUND');
+    });
+  });
+});

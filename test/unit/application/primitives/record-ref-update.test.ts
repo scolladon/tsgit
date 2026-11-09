@@ -12,6 +12,15 @@ const OID_A = 'a'.repeat(40) as ObjectId;
 const OID_B = 'b'.repeat(40) as ObjectId;
 const BRANCH = 'refs/heads/main' as RefName;
 const TAG = 'refs/tags/v1.0.0' as RefName;
+const HEAD = 'HEAD' as RefName;
+
+const adminDir = (ctx: Context): string => `${ctx.layout.gitDir}/worktrees/wt`;
+
+// Reframe a main-repo Context as a linked-worktree child Context.
+const asWorktreeChild = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
+});
 
 const seedConfig = async (ctx: Context, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
@@ -24,6 +33,7 @@ describe('recordRefUpdate', () => {
 
   afterEach(() => {
     __resetConfigCacheForTests();
+    vi.restoreAllMocks();
   });
 
   describe('gate open', () => {
@@ -66,6 +76,22 @@ describe('recordRefUpdate', () => {
   });
 
   describe('gate closed', () => {
+    describe('Given no main logs/HEAD and the default core.logAllRefUpdates', () => {
+      describe('When recordRefUpdate logs main-worktree/HEAD', () => {
+        it('Then no log file is created', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const sut = recordRefUpdate;
+
+          // Act
+          await sut(ctx, 'main-worktree/HEAD' as RefName, ZERO_OID, OID_A, 'x');
+
+          // Assert
+          expect(await reflogExists(ctx, HEAD)).toBe(false);
+        });
+      });
+    });
+
     describe('Given a tag ref under default config', () => {
       describe('When recordRefUpdate', () => {
         it('Then no reflog is written', async () => {
@@ -99,6 +125,47 @@ describe('recordRefUpdate', () => {
   });
 
   describe('existing-log arm', () => {
+    describe('Given the main logs/HEAD', () => {
+      describe('When recordRefUpdate logs main-worktree/HEAD from the child', () => {
+        it('Then the entry is appended to the main logs/HEAD', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await recordRefUpdate(ctx, HEAD, ZERO_OID, OID_A, 'commit (initial): seed');
+          const child = asWorktreeChild(ctx);
+          const sut = recordRefUpdate;
+
+          // Act
+          await sut(child, 'main-worktree/HEAD' as RefName, OID_A, OID_B, 'link');
+
+          // Assert
+          const entries = await readReflog(ctx, HEAD);
+          expect(entries.map((entry) => entry.message)).toEqual(['commit (initial): seed', 'link']);
+        });
+      });
+    });
+
+    describe("Given the admin dir's logs/HEAD", () => {
+      describe('When recordRefUpdate logs worktrees/wt/HEAD from the main worktree', () => {
+        it('Then it is appended there', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const child = asWorktreeChild(ctx);
+          await recordRefUpdate(child, HEAD, ZERO_OID, OID_A, 'commit (initial): seed');
+          const sut = recordRefUpdate;
+
+          // Act
+          await sut(ctx, 'worktrees/wt/HEAD' as RefName, OID_A, OID_B, 'moved');
+
+          // Assert
+          const entries = await readReflog(child, HEAD);
+          expect(entries.map((entry) => entry.message)).toEqual([
+            'commit (initial): seed',
+            'moved',
+          ]);
+        });
+      });
+    });
+
     describe('Given an existing tag reflog', () => {
       describe('When recordRefUpdate on that tag', () => {
         it('Then it appends despite the non-default prefix', async () => {
