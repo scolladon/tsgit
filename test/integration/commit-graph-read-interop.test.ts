@@ -92,29 +92,100 @@ const writeGraphWithoutEdgeChunk = (repo: Linear): void => {
   writeFileSync(file, bytes);
 };
 
-const gitWarnings = (repo: Linear): { readonly exitCode: number; readonly lines: string[] } => {
-  const result = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H']);
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const OVERWRITTEN_TREE = 'aa'.repeat(EMPTY_TREE.length / 2);
+
+/** git's log of the history: its warnings, and the commits whose root tree it took from the graph. */
+const gitLoadsGraph = (repo: Linear) => {
+  const result = tryRunGitWithExit(['-C', repo.dir, 'log', '--reverse', '--format=%H %T']);
   const lines = result.stderr
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => line.replace(WARNING_PREFIX, ''));
-  return { exitCode: result.exitCode, lines };
+  const served = result.stdout
+    .split('\n')
+    .filter((line) => line.endsWith(OVERWRITTEN_TREE))
+    .map((line) => line.slice(0, EMPTY_TREE.length));
+  return { exitCode: result.exitCode, lines, served };
+};
+
+/** tsgit's warning as git prints it: a refused chain line travels in the logger context. */
+const asGitWarning = (message: string, context?: Record<string, unknown>): string => {
+  const text = message.replace(LOGGER_PREFIX, '');
+  const line = context?.line;
+  return typeof line === 'string' ? text.replace('line not', `line '${line}' not`) : text;
 };
 
 const tsgitServes = async (repo: Linear, ids: ReadonlyArray<ObjectId>) => {
   const warnings: string[] = [];
-  const logger = { warn: (message: string) => warnings.push(message) };
-  const opened = await openRepository({ cwd: repo.dir, logger });
+  const warn = (message: string, context?: Record<string, unknown>) =>
+    warnings.push(asGitWarning(message, context));
+  const opened = await openRepository({ cwd: repo.dir, logger: { warn } });
   try {
     const served: boolean[] = [];
     for (const id of ids) served.push((await commitHeader(opened.ctx, id)) !== undefined);
-    return { served, warnings: warnings.map((line) => line.replace(LOGGER_PREFIX, '')) };
+    return { served, warnings };
   } finally {
     await opened.dispose?.();
   }
 };
 
+/** Every commit here records the empty tree: overwriting it marks what a reader takes from the graph. */
+const overwriteRootTrees = (file: string): void => {
+  chmodSync(file, 0o644);
+  const bytes = readFileSync(file);
+  const tree = Buffer.from(EMPTY_TREE, 'hex');
+  for (let at = bytes.indexOf(tree); at >= 0; at = bytes.indexOf(tree, at + tree.length)) {
+    bytes.fill(0xaa, at, at + tree.length);
+  }
+  writeFileSync(file, bytes);
+};
+
 describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
+  describe.each([
+    { name: 'a blank first line', body: (b: string, t: string) => `\n${b}\n${t}\n` },
+    { name: 'a blank line between the layers', body: (b: string, t: string) => `${b}\n\n${t}\n` },
+    { name: 'a blank last line', body: (b: string, t: string) => `${b}\n${t}\n\n` },
+    {
+      name: 'a whitespace-only line between the layers',
+      body: (b: string, t: string) => `${b}\n   \n${t}\n`,
+    },
+    { name: 'a whitespace-only last line', body: (b: string, t: string) => `${b}\n${t}\n   \n` },
+    { name: 'CRLF line endings', body: (b: string, t: string) => `${b}\r\n${t}\r\n` },
+    { name: 'a space after the first hash', body: (b: string, t: string) => `${b} \n${t}\n` },
+    {
+      name: 'a third hash with no layer file',
+      body: (b: string, t: string) => `${b}\n${t}\n${'0'.repeat(b.length)}\n`,
+    },
+    { name: 'an empty file', body: () => '' },
+  ])('Given a two-layer chain file carrying $name', ({ body }) => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then both print the same warning and serve the same commits from the graph',
+        async () => {
+          // Arrange
+          const repo = linearHistory(4);
+          writeSplitAt(repo, repo.commits[2] as ObjectId);
+          writeSplitAt(repo, repo.commits[3] as ObjectId);
+          const [base, tip] = chainLines(repo) as [string, string];
+          for (const layer of [base, tip]) overwriteRootTrees(layerPath(repo, layer));
+          chmodSync(chainPath(repo), 0o644);
+          writeFileSync(chainPath(repo), body(base, tip));
+
+          // Act
+          const git = gitLoadsGraph(repo);
+          const ours = await tsgitServes(repo, repo.commits);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(ours.warnings).toEqual(git.lines);
+          expect(repo.commits.filter((_, index) => ours.served[index])).toEqual(git.served);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   describe('Given a chain whose second line names a layer built on a different base', () => {
     describe('When both tools load the graph', () => {
       it(
@@ -135,7 +206,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
           writeFileSync(chainPath(repo), `${foreign}\n${tip}\n`);
 
           // Act
-          const git = gitWarnings(repo);
+          const git = gitLoadsGraph(repo);
           const ours = await tsgitServes(repo, [c1, c2, c4]);
 
           // Assert
@@ -173,7 +244,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
           writeFileSync(tipFile, bytes);
 
           // Act
-          const git = gitWarnings(repo);
+          const git = gitLoadsGraph(repo);
           const ours = await tsgitServes(repo, [c1, c3]);
 
           // Assert
@@ -205,7 +276,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
           writeFileSync(file, bytes);
 
           // Act
-          const git = gitWarnings(repo);
+          const git = gitLoadsGraph(repo);
           const ours = await tsgitServes(repo, [...repo.commits]);
 
           // Assert
@@ -239,7 +310,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
           });
 
           // Act
-          const git = gitWarnings(repo);
+          const git = gitLoadsGraph(repo);
           const served = await commitHeader(opened.ctx, repo.commits[0] as ObjectId);
           await opened.dispose?.();
 
@@ -411,7 +482,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
           writeFileSync(file, bytes);
 
           // Act
-          const git = gitWarnings(repo);
+          const git = gitLoadsGraph(repo);
           const ours = await tsgitServes(repo, [...repo.commits]);
 
           // Assert

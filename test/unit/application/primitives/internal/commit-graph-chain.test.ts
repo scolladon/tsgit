@@ -84,6 +84,29 @@ describe('loadChain', () => {
     });
   });
 
+  describe('Given a chain whose first line is blank', () => {
+    describe('When loadChain', () => {
+      it('Then the blank line is the not-a-hash verdict and no line after it is read', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = loadChain;
+        const hash = 'a'.repeat(ctx.hashConfig.digestLength * 2);
+        const source = sourceWithoutPacks(ctx);
+
+        // Act
+        const result = await sut(ctx, [source], new TextEncoder().encode(`\n${hash}\n${hash}\n`));
+
+        // Assert
+        expect(result).toEqual({
+          layers: [],
+          verdicts: [{ check: 'chain-line-not-hash', line: '' }],
+          incomplete: true,
+          stoppedAt: '',
+        });
+      });
+    });
+  });
+
   describe('Given a full-length chain line that is not hexadecimal', () => {
     describe('When loadChain', () => {
       it('Then the line is the not-a-hash verdict', async () => {
