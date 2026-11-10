@@ -39,7 +39,7 @@ tsgit at `45ad1d97` matches every row:
 - `fsck` reports the same `chain-line-not-hash`, `chain-layer-missing` and
   `chain-incomplete` findings that `commit-graph verify` prints, with the same exit bit.
 - The read side logs the same warning (the offending line travels in the logger
-  context as `layer`) and serves the same layer prefix.
+  context as `line`) and serves the same layer prefix.
 
 No source change is needed.
 
@@ -53,7 +53,8 @@ Pin the family so a regression shows up as a red row:
    warnings and served commits to git's warnings and to the commits git serves from
    the graph, read with the root-tree overwrite above.
 3. `test/unit/application/primitives/internal/commit-graph-chain.test.ts`: a blank
-   line between two hashes stops the walk after the first layer.
+   first line, followed by a line long enough to be read, is the not-a-hash verdict
+   and stops the walk before that line.
 
 ## Decision candidates
 
