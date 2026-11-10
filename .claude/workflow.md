@@ -14,6 +14,7 @@ phases:
   review:         { context: [.claude/workflow/surface-gates.md, .claude/workflow/probes.md] }
   documentation:  { context: .claude/workflow/docs-drift.md }
   validation:     { override: .claude/workflow/mutation.md, context: .claude/workflow/probes.md }
+  impact-triage:  { context: .claude/workflow/filing-bar.md }
   integrate:      { context: .claude/workflow/docs-drift.md, merge-flags: "--admin", non-blocking-jobs: [mutation, benchmark-compare] }
 pr: { creator: session, pre-pr-gate: "npm outdated" }
 scripts: { pre-teardown: .claude/workflow/serena-prune.sh }
@@ -161,6 +162,14 @@ Every new follow-up (backlog entry or GitHub issue) is **also** inserted at its 
 `## Release order` table at the top of `docs/BACKLOG.md`, and a shipped id is struck there in
 place. `.claude/hooks/check-release-order.sh` (Stop hook) blocks the turn while the table and
 the open work disagree; the end-of-run election reads that table top-down.
+
+**Filing bar** ([ADR-1170](../docs/adr/1170-a-filing-bar-separates-the-backlog-from-a-divergence-ledger.md)):
+a follow-up enters the backlog only when it is a user-reported failure, a consumer API bug,
+a data-integrity defect, a wrong result or refusal mismatch on a well-formed repository, or a
+measured cost on a common caller path. Everything else that is proven goes to
+`docs/known-divergences.md` with its proof, and a run files no more entries than it closes.
+Before this bar, runs filed about three entries per item shipped, so the backlog never shrank.
+The rules the triager applies live in `.claude/workflow/filing-bar.md`.
 
 ## Worktree layout
 

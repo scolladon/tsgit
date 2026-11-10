@@ -6,7 +6,7 @@ A pure TypeScript git library. Lightning-fast, portable (Node.js + browser), zer
 
 ## Git-faithfulness (prime directive)
 
-Replicate canonical git's **observable behaviour byte-for-byte** — object SHAs, ref & reflog contents, on-disk state files (`sequencer/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, …), refusal conditions, and message formats — **unless an ADR explicitly diverges and says why**. This is a project-wide invariant, not scoped to any workflow: it binds every change. Verify against real `git` (scrubbed `GIT_*`, signing off) rather than guessing; pin the result with a cross-tool interop test. Enforced by the interop harness + parity goldens + write-surface audit. See [ADR-226](docs/adr/226-git-faithfulness-prime-directive.md).
+Replicate canonical git's **observable behaviour byte-for-byte** — object SHAs, ref & reflog contents, on-disk state files (`sequencer/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, …), refusal conditions, and message formats — **unless an ADR explicitly diverges and says why**. This is a project-wide invariant, not scoped to any workflow: it binds every change. Verify against real `git` (scrubbed `GIT_*`, signing off) rather than guessing; pin the result with a cross-tool interop test. Enforced by the interop harness + parity goldens + write-surface audit. See [ADR-226](docs/adr/226-git-faithfulness-prime-directive.md). A proven gap outside a change is *scheduled* only above the filing bar of [ADR-1170](docs/adr/1170-a-filing-bar-separates-the-backlog-from-a-divergence-ledger.md); below it, it is recorded in `docs/known-divergences.md`.
 
 ## Structured output, not cosmetics
 
