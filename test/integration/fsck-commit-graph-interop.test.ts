@@ -372,6 +372,30 @@ const CHAIN_ROWS: ReadonlyArray<{
   },
   { name: 'a chain shorter than a hash', damage: (h) => writeFileSync(h.chain, 'abc\n') },
   { name: 'one hash and no newline', damage: (h) => writeFileSync(h.chain, h.base) },
+  { name: 'a blank first line', damage: (h) => writeFileSync(h.chain, `\n${h.base}\n${h.tip}\n`) },
+  {
+    name: 'a blank line between the layers',
+    damage: (h) => writeFileSync(h.chain, `${h.base}\n\n${h.tip}\n`),
+  },
+  { name: 'a blank last line', damage: (h) => writeFileSync(h.chain, `${h.base}\n${h.tip}\n\n`) },
+  {
+    name: 'a whitespace-only line between the layers',
+    damage: (h) => writeFileSync(h.chain, `${h.base}\n   \n${h.tip}\n`),
+  },
+  {
+    name: 'a whitespace-only last line',
+    damage: (h) => writeFileSync(h.chain, `${h.base}\n${h.tip}\n   \n`),
+  },
+  { name: 'CRLF line endings', damage: (h) => writeFileSync(h.chain, `${h.base}\r\n${h.tip}\r\n`) },
+  {
+    name: 'a space after the first hash',
+    damage: (h) => writeFileSync(h.chain, `${h.base} \n${h.tip}\n`),
+  },
+  {
+    name: 'a third hash with no layer file',
+    damage: (h) => writeFileSync(h.chain, `${h.base}\n${h.tip}\n${'0'.repeat(HASH_LENGTH * 2)}\n`),
+  },
+  { name: 'an empty file', damage: (h) => writeFileSync(h.chain, '') },
 ];
 
 describe.skipIf(!GIT_AVAILABLE)('Given an octopus merge in a commit-graph', () => {

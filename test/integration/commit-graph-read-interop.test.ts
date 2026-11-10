@@ -114,7 +114,98 @@ const tsgitServes = async (repo: Linear, ids: ReadonlyArray<ObjectId>) => {
   }
 };
 
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const OVERWRITTEN_TREE = 'aa'.repeat(EMPTY_TREE.length / 2);
+
+/** Every commit here records the empty tree: overwriting it marks what a reader takes from the graph. */
+const overwriteRootTrees = (file: string): void => {
+  chmodSync(file, 0o644);
+  const bytes = readFileSync(file);
+  const tree = Buffer.from(EMPTY_TREE, 'hex');
+  for (let at = bytes.indexOf(tree); at >= 0; at = bytes.indexOf(tree, at + tree.length)) {
+    bytes.fill(0xaa, at, at + tree.length);
+  }
+  writeFileSync(file, bytes);
+};
+
+/** The commits git serves from the graph are the ones whose tree it reads overwritten. */
+const gitServes = (repo: Linear) => {
+  const result = tryRunGitWithExit(['-C', repo.dir, 'log', '--reverse', '--format=%H %T']);
+  const served = result.stdout
+    .split('\n')
+    .filter((line) => line.endsWith(OVERWRITTEN_TREE))
+    .map((line) => line.slice(0, EMPTY_TREE.length));
+  const warnings = result.stderr.split('\n').filter((line) => line.length > 0);
+  return { exitCode: result.exitCode, served, warnings };
+};
+
+/** tsgit's warnings rebuilt as git prints them: the refused line travels in the context. */
+const tsgitServesWithContext = async (repo: Linear) => {
+  const warnings: string[] = [];
+  const warn = (message: string, context?: Record<string, unknown>) => {
+    const text = message.replace(LOGGER_PREFIX, '');
+    const line = context?.line;
+    warnings.push(
+      `warning: ${typeof line === 'string' ? text.replace('line not', `line '${line}' not`) : text}`,
+    );
+  };
+  const opened = await openRepository({ cwd: repo.dir, logger: { warn } });
+  try {
+    const served: ObjectId[] = [];
+    for (const id of repo.commits) {
+      if ((await commitHeader(opened.ctx, id)) !== undefined) served.push(id);
+    }
+    return { served, warnings };
+  } finally {
+    await opened.dispose?.();
+  }
+};
+
 describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
+  describe.each([
+    { name: 'a blank first line', body: (b: string, t: string) => `\n${b}\n${t}\n` },
+    { name: 'a blank line between the layers', body: (b: string, t: string) => `${b}\n\n${t}\n` },
+    { name: 'a blank last line', body: (b: string, t: string) => `${b}\n${t}\n\n` },
+    {
+      name: 'a whitespace-only line between the layers',
+      body: (b: string, t: string) => `${b}\n   \n${t}\n`,
+    },
+    { name: 'a whitespace-only last line', body: (b: string, t: string) => `${b}\n${t}\n   \n` },
+    { name: 'CRLF line endings', body: (b: string, t: string) => `${b}\r\n${t}\r\n` },
+    { name: 'a space after the first hash', body: (b: string, t: string) => `${b} \n${t}\n` },
+    {
+      name: 'a third hash with no layer file',
+      body: (b: string, t: string) => `${b}\n${t}\n${'0'.repeat(b.length)}\n`,
+    },
+    { name: 'an empty file', body: () => '' },
+  ])('Given a two-layer chain file carrying $name', ({ body }) => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then both print the same warning and serve the same commits from the graph',
+        async () => {
+          // Arrange
+          const repo = linearHistory(4);
+          writeSplitAt(repo, repo.commits[2] as ObjectId);
+          writeSplitAt(repo, repo.commits[3] as ObjectId);
+          const [base, tip] = chainLines(repo) as [string, string];
+          for (const layer of [base, tip]) overwriteRootTrees(layerPath(repo, layer));
+          chmodSync(chainPath(repo), 0o644);
+          writeFileSync(chainPath(repo), body(base, tip));
+
+          // Act
+          const git = gitServes(repo);
+          const ours = await tsgitServesWithContext(repo);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(ours.warnings).toEqual(git.warnings);
+          expect(ours.served).toEqual(git.served);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   describe('Given a chain whose second line names a layer built on a different base', () => {
     describe('When both tools load the graph', () => {
       it(
