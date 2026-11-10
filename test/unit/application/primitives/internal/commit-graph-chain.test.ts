@@ -94,7 +94,7 @@ describe('loadChain', () => {
         const source = sourceWithoutPacks(ctx);
 
         // Act
-        const result = await sut(ctx, [source], new TextEncoder().encode(`\n${hash}\n`));
+        const result = await sut(ctx, [source], new TextEncoder().encode(`\n${hash}\n${hash}\n`));
 
         // Assert
         expect(result).toEqual({
