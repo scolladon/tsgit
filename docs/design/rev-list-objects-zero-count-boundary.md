@@ -49,39 +49,39 @@ passes no count), so `pack-objects --sparse -n 0` cannot be reached through tsgi
 
 Fixture: linear n0 → N → W → W2. n0 has only `old.txt`. N has `a.txt` + `sub/x.txt`.
 W changes `a.txt`, adds `new.txt` (`sub/` shared with N). W2 adds `w2.txt`. Tn/Tw/T0 =
-root trees of N/W/n0; Tsub = `N:sub`; Bn/Bw = `a.txt` blob in N/W; U = an unreachable
+root trees of N/W/n0; Ts = `N:sub`; Bn/Bw = `a.txt` blob in N/W; U = an unreachable
 tree with its own blob; tagTn/tagN = annotated tags of Tn/N. A bitmap was written
 (`repack -adb`). Every row carries `--objects`. "ours" is tsgit at `b9c4b523`.
 
 ```
-DIFF -n 0 W Tn ^N            git: []                      ours: [Tn,Bn,Tsub,x-blob]
-DIFF -n 0 W Tw ^N            git: [Tw,Bw,new-blob]        ours: [Tw,Bw,new-blob,Tsub,x-blob]
+DIFF -n 0 W Tn ^N            git: []                      ours: [Tn,Bn,Ts,x-blob]
+DIFF -n 0 W Tw ^N            git: [Tw,Bw,new-blob]        ours: [Tw,Bw,new-blob,Ts,x-blob]
 OK   -n 0 W U ^N             git: [U,u-blob]
-DIFF -n 0 W Tsub ^N          git: []                      ours: [Tsub,x-blob]
+DIFF -n 0 W Ts ^N          git: []                      ours: [Ts,x-blob]
 DIFF -n 0 W Bn ^N            git: []                      ours: [Bn]
 OK   -n 0 W Bw ^N            git: [Bw]
 OK   -n 0 W T0 ^N            git: [T0,old-blob]           (grandparent tree is NOT marked — only the edge)
 OK   W T0 ^N                 git: [W,T0,old-blob,Tw,Bw,new-blob]
-DIFF -n 0 W tagTn ^N         git: [tagTn]                 ours: [tagTn,Tn,Bn,Tsub,x-blob]
+DIFF -n 0 W tagTn ^N         git: [tagTn]                 ours: [tagTn,Tn,Bn,Ts,x-blob]
 OK   -n 0 W tagN ^N          git: [tagN]
-OK   -n 0 Tn ^N              git: [Tn,Bn,Tsub,x-blob]     (no commit seed: nothing is marked)
-OK   Tn ^N                   git: [Tn,Bn,Tsub,x-blob]
+OK   -n 0 Tn ^N              git: [Tn,Bn,Ts,x-blob]     (no commit seed: nothing is marked)
+OK   Tn ^N                   git: [Tn,Bn,Ts,x-blob]
 OK   -n 0 Bn ^N              git: [Bn]
 OK   -n 0 U ^N               git: [U,u-blob]
-OK   -n 0 W Tn               git: [Tn,Bn,Tsub,x-blob]     (no not side)
+OK   -n 0 W Tn               git: [Tn,Bn,Ts,x-blob]     (no not side)
 OK   -n 0 W ^N               git: []
 OK   -n 0 W                  git: []
 OK   -n 1 W Tn ^N            git: [W,Tw,Bw,new-blob]
-DIFF -n 0 W2 Tn ^N           git: []                      ours: [Tn,Bn,Tsub,x-blob]
+DIFF -n 0 W2 Tn ^N           git: []                      ours: [Tn,Bn,Ts,x-blob]
 OK   -n 1 W2 Tn ^N           git: [W2,W2tree,Bw,new-blob,w2-blob]
-DIFF -n 0 W2 Tw ^N           git: [Tw,Bw,new-blob]        ours: [Tw,Bw,new-blob,Tsub,x-blob]
+DIFF -n 0 W2 Tw ^N           git: [Tw,Bw,new-blob]        ours: [Tw,Bw,new-blob,Ts,x-blob]
 OK   -n 1 W2 Tw ^N           git: [W2,Tw,Bw,new-blob,W2tree,w2-blob]
-DIFF -n 0 W2 Tw ^W           git: []                      ours: [Tw,Bw,new-blob,Tsub,x-blob]
-DIFF -n 0 --no-walk W Tn ^N  git: []                      ours: [Tn,Bn,Tsub,x-blob]
-OK   -n 0 --no-walk W Tn     git: [Tn,Bn,Tsub,x-blob]
-DIFF -n 0 --use-bitmap-index W Tn ^N   git: []            ours (useBitmapIndex): [Tn,Bn,Tsub,x-blob]
+DIFF -n 0 W2 Tw ^W           git: []                      ours: [Tw,Bw,new-blob,Ts,x-blob]
+DIFF -n 0 --no-walk W Tn ^N  git: []                      ours: [Tn,Bn,Ts,x-blob]
+OK   -n 0 --no-walk W Tn     git: [Tn,Bn,Ts,x-blob]
+DIFF -n 0 --use-bitmap-index W Tn ^N   git: []            ours (useBitmapIndex): [Tn,Bn,Ts,x-blob]
 OK   -n 0 W Tn ^Tn           git: []
-DIFF -n 0 W Tn ^tagN         git: []                      ours: [Tn,Bn,Tsub,x-blob]
+DIFF -n 0 W Tn ^tagN         git: []                      ours: [Tn,Bn,Ts,x-blob]
 DIFF -n 0 W Tn ^N ^Tw        git: []                      ours: [Tn,Bn]
 OK   -n 0 W Tw ^N ^Tw        git: []
 ```
@@ -173,7 +173,7 @@ from real `git`:
    dropped: this row separates "marked the edge" from "returned early"), `main tag-tree ^base`, `main base-tree ^tag-base`,
    `main base-tree ^base` under `noWalk`, `main base-tree` (no `not`),
    `main base-tree ^tip-tree` (tree-only `not`). The fixture has no subdirectory. The
-   `Tsub` recursion is already pinned by the unbounded rows.
+   `Ts` recursion is already pinned by the unbounded rows.
 2. Next to `Given a commit whose parent object is missing and an excluded root` (uses
    `writeLiteralCommit`, `ABSENT_PARENT`, `capturing`, `settled`, `walkStderrOf`): a
    `describe.each` over `{ objects: false, true }` with `maxCount: 0`, asserting
