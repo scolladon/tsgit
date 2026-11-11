@@ -4575,8 +4575,12 @@ describe.skipIf(!GIT_AVAILABLE)(
         it('Then both refuse on the value they cannot read, never on the name under it', async () => {
           // Arrange
           const { peer, ours, ctx } = await filesCasePair('delete-above-with-old-value');
+          // One pinned date for both repositories: the snapshots compare their
+          // reflog lines, which two wall-clock calls can stamp a second apart.
           for (const dir of [peer, ours]) {
-            runGit(['-C', dir, 'update-ref', 'refs/remotes/p/q', filesC1]);
+            runGit(['-C', dir, 'update-ref', 'refs/remotes/p/q', filesC1], {
+              env: pinnedEnv(COMMITTER_EPOCH),
+            });
           }
           const before = await snapshotOf(peer);
           const sut = updateRef;
