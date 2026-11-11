@@ -4022,7 +4022,12 @@ describe('stash push line endings', () => {
         expect(await readStashStack(ctx)).toEqual([]);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/stash`)).toBe(false);
         expect(await read(ctx, 'a.txt')).toBe('a\nb\nc\nd\n');
-        expect(await readIndex(ctx)).toEqual(indexBefore);
+        // git refreshes and rewrites the index before it refuses, so only the
+        // file's own mtime may move; every entry and extension stays as it was.
+        expect({ ...(await readIndex(ctx)), indexMtime: undefined }).toEqual({
+          ...indexBefore,
+          indexMtime: undefined,
+        });
       });
     });
   });

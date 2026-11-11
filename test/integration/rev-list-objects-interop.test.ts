@@ -629,6 +629,34 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
+
+    describe.each([
+      { wants: ['main', 'base-tree'], not: ['base'], noWalk: false },
+      { wants: ['main', 'base-blob'], not: ['base'], noWalk: false },
+      { wants: ['main', 'tip-tree'], not: ['base'], noWalk: false },
+      { wants: ['main', 'tag-tree'], not: ['base'], noWalk: false },
+      { wants: ['main', 'base-tree'], not: ['tag-base'], noWalk: false },
+      { wants: ['main', 'base-tree'], not: ['base'], noWalk: true },
+      { wants: ['main', 'base-tree'], not: [], noWalk: false },
+      { wants: ['main', 'base-tree'], not: ['tip-tree'], noWalk: false },
+    ])(
+      'When revList lists $wants ^$not with objects, maxCount 0 and noWalk $noWalk',
+      ({ wants, not, noWalk }) => {
+        it('Then it shows the pending objects git rev-list --objects -n 0 shows', async () => {
+          // Arrange
+          const flags = noWalk ? ['--no-walk'] : [];
+          const expected = gitIds(dir, '--objects', '-n', '0', ...flags, ...wants, '--not', ...not);
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = revList;
+
+          // Act
+          const result = await sut(ctx, { wants, not, objects: true, maxCount: 0, noWalk });
+
+          // Assert
+          expect(result.entries.map((entry) => entry.id)).toEqual(expected);
+        });
+      },
+    );
   });
   describe('Given a merge whose first parent is dated before its second', () => {
     let fixture: SkewedMergeFixture;
@@ -1122,6 +1150,74 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
       });
     });
   });
+
+  describe.each([
+    ['rev-list -n 0', [], false],
+    ['rev-list -n 0 --objects', ['--objects'], true],
+  ] as const)(
+    'Given a commit whose parent object is missing and an excluded root, walked with maxCount 0',
+    (command, flags, objects) => {
+      describe(`When ${command} walks the range on both tools`, () => {
+        it('Then both cannot read the parent and fail the walk setup', async () => {
+          // Arrange
+          const { dir } = await buildMistypedTagFixture();
+          const child = writeLiteralCommit(dir, emptyTreeOf(dir), [ABSENT_PARENT]);
+          const root = writeLiteralCommit(dir, emptyTreeOf(dir), []);
+          const peer = tryRunGitWithExit([
+            '-C',
+            dir,
+            'rev-list',
+            '-n',
+            '0',
+            ...flags,
+            child,
+            `^${root}`,
+          ]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          const result = await settled(() =>
+            sut(ctx, { wants: [child], not: [root], objects, maxCount: 0 }),
+          );
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+        });
+      });
+    },
+  );
+
+  describe.each([
+    ['rev-list -n 0', [], false],
+    ['rev-list -n 0 --objects', ['--objects'], true],
+  ] as const)(
+    'Given a commit whose parent object is missing and nothing excluded, walked with maxCount 0',
+    (command, flags, objects) => {
+      describe(`When ${command} runs on both tools`, () => {
+        it('Then neither walks: git prints nothing and tsgit lists nothing, logging nothing', async () => {
+          // Arrange
+          const { dir } = await buildMistypedTagFixture();
+          const child = writeLiteralCommit(dir, emptyTreeOf(dir), [ABSENT_PARENT]);
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '-n', '0', ...flags, child]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          const result = await sut(ctx, { wants: [child], objects, maxCount: 0 });
+
+          // Assert
+          expect({ exitCode: peer.exitCode, stdout: peer.stdout, stderr: peer.stderr }).toEqual({
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+          });
+          expect({ entries: result.entries, logged }).toEqual({ entries: [], logged: [] });
+        });
+      });
+    },
+  );
 
   describe('Given a commit whose parent object is missing', () => {
     describe('When pack-objects --revs walks it on both tools', () => {

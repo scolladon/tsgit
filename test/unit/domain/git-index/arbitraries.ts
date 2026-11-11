@@ -67,11 +67,17 @@ const PATH_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789-_.'.split('');
 // exercise only paths the parser will accept.
 const UNSAFE_PATHS: ReadonlySet<string> = new Set(['.', '..']);
 
+// `.git` is refused as an index path, and so is `.git` followed by any run
+// of dots, which git's dot-git check strips before comparing.
+const DOTGIT_ALIAS = /^\.git\.*$/;
+
+const isParserAdmissible = (s: string): boolean => !UNSAFE_PATHS.has(s) && !DOTGIT_ALIAS.test(s);
+
 export function arbFilePath(): fc.Arbitrary<ReturnType<typeof FilePath.from>> {
   return fc
     .array(fc.constantFrom(...PATH_CHARS), { minLength: 1, maxLength: 30 })
     .map((chars: ReadonlyArray<string>) => chars.join(''))
-    .filter((s: string) => !UNSAFE_PATHS.has(s))
+    .filter(isParserAdmissible)
     .map((s: string) => FilePath.from(s));
 }
 

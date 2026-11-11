@@ -82,7 +82,9 @@ export interface ClosureRequest {
   /**
    * At most this many commits emitted (under `objects`, those commits and
    * everything they reach). Governs the commit walk only — tag/tree/blob
-   * wants resolved outside it are unaffected. `0` walks no commits at all.
+   * wants resolved outside it are unaffected. `0` lists no commit; with a
+   * commit in `not` the range is still walked (and, under `objects`, its edge
+   * trees marked), as git's `limit_list` runs before the count applies.
    * Omitted means unbounded. Forces the walk tier regardless of `tier`
    * (git itself abandons the bitmap for it).
    */
@@ -559,7 +561,7 @@ async function markExcludedTrees(
   await markSparseTrees(ctx, await sparseSeedsOf(ctx, walk.limited), marks);
 }
 
-/** Dispatch the commit-seed side of the closure: no seeds, `maxCount: 0`, `noWalk`, or the full walk. */
+/** Dispatch the commit-seed side of the closure: no seeds, `maxCount: 0` with no commit excluded, `noWalk`, or the full walk. */
 async function listCommitSeeds(
   ctx: Context,
   resolved: ResolvedWants,
@@ -567,7 +569,8 @@ async function listCommitSeeds(
   request: ClosureRequest,
 ): Promise<ReadonlyArray<WalkedCommit>> {
   const { commitSeeds } = resolved;
-  if (commitSeeds.length === 0 || request.maxCount === 0) return [];
+  if (commitSeeds.length === 0 || (request.maxCount === 0 && marks.commitTips.length === 0))
+    return [];
   // git ignores `--no-walk` once a range (a `not` tip) is present, falling back
   // to the ordinary bounded walk; `noWalk` shows only the tips solely when there
   // is nothing to exclude.

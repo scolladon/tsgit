@@ -591,6 +591,7 @@
     "kqueue",
     "leadingdash",
     "lexists",
+    "libc",
     "libfoo",
     "libgit",
     "libiconv",
