@@ -3345,6 +3345,112 @@ describe('computeClosure — the commit walk the request selects', () => {
       });
     });
   });
+
+  describe('Given a want commit and the root tree of its excluded parent as a pending want', () => {
+    describe('When computeClosure lists objects with maxCount: 0', () => {
+      it('Then the parent tree is marked through the walked edge and nothing is listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const parentTree = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'a.txt', await writeBlob(ctx, 'parent')),
+        ]);
+        const parent = await writeDatedCommit(ctx, parentTree, [], 100);
+        const tipTree = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'a.txt', await writeBlob(ctx, 'tip')),
+        ]);
+        const tip = await writeDatedCommit(ctx, tipTree, [parent], 200);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tip, parentTree],
+          not: [parent],
+          objects: true,
+          maxCount: 0,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent the repository lacks, an unrelated commit excluded and a type table', () => {
+    describe('When computeClosure walks it with maxCount: 0', () => {
+      it('Then the walk setup fails as it does without a count', async () => {
+        // Arrange
+        const { ctx, tip, unrelated } = await buildGraftedTip();
+        const sut = computeClosure;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, {
+            tier: 'walk',
+            wants: [tip],
+            not: [unrelated],
+            objects: false,
+            maxCount: 0,
+            objectTypes: createObjectTypeTable(),
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({ code: 'REVISION_WALK_FAILED' });
+      });
+    });
+  });
+
+  describe('Given a commit whose parent the repository lacks, nothing excluded and a type table', () => {
+    describe('When computeClosure walks it with maxCount: 0', () => {
+      it('Then nothing is walked and nothing is listed', async () => {
+        // Arrange
+        const { ctx, tip } = await buildGraftedTip();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tip],
+          not: [],
+          objects: true,
+          maxCount: 0,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent the repository lacks, only a tree excluded and a type table', () => {
+    describe('When computeClosure walks it with maxCount: 0', () => {
+      it('Then nothing is walked and nothing is listed', async () => {
+        // Arrange
+        const { ctx, tip } = await buildGraftedTip();
+        const emptyTree = await writeTree(ctx, []);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tip],
+          not: [emptyTree],
+          objects: true,
+          maxCount: 0,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([]);
+      });
+    });
+  });
 });
 
 describe('computeClosure — what a typing request logs', () => {

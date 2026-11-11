@@ -128013,7 +128013,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " yields an\nempty result."
+										"text": " lists no\ncommit. Under "
+									},
+									{
+										"kind": "code",
+										"text": "`objects`"
+									},
+									{
+										"kind": "text",
+										"text": ", the pending tree, blob and tag wants are still\nlisted, minus whatever the excluded commits' edge trees reach. With a\ncommit in "
+									},
+									{
+										"kind": "code",
+										"text": "`not`"
+									},
+									{
+										"kind": "text",
+										"text": ", the range is still walked."
 									}
 								]
 							},

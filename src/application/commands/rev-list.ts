@@ -57,8 +57,10 @@ export interface RevListOptions {
   readonly all?: boolean;
   /**
    * At most this many commits emitted (under `objects`, those commits and
-   * everything they reach). Bounds the commit walk only. `0` yields an
-   * empty result.
+   * everything they reach). Bounds the commit walk only. `0` lists no
+   * commit. Under `objects`, the pending tree, blob and tag wants are still
+   * listed, minus whatever the excluded commits' edge trees reach. With a
+   * commit in `not`, the range is still walked.
    */
   readonly maxCount?: number;
   /** Follow only the first parent of each commit. */
