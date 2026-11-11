@@ -57,6 +57,8 @@ A damaged object, ref, index or state file, or a file the process cannot read.
 
 - **32.1 row D22** — `walkTree` non-strict subtree skip (D22). Evidence: [faithfulness-triage-2026-10](spike/faithfulness-triage-2026-10.md).
 
+- **32.1 row D10 (mistyped-tag half)** — `grep` of a tag whose declared type lies about its target: git dies (`is a commit, not a tree` / `invalid object … given`), tsgit greps the peeled object anyway. Split from row D10 on 2026-11-11; the blob-target half stays in the backlog. Evidence: [faithfulness-triage-2026-10](spike/faithfulness-triage-2026-10.md).
+
 ## Message only
 
 Exit codes and data match git; only the wording or the named path differs.
