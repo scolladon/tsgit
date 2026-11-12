@@ -39,4 +39,8 @@ switching `diff`'s readers to the same function (outside this change's perimeter
 
 - A `[diff "x"]` section with no keys counts as a driver in tsgit's config map but not in
   git: residual recorded in `docs/known-divergences.md`.
+- The size gate went red; the narrower rule would have saved at most ~330 B of the overage,
+  so the user ruled to keep the full rule and raise the caps once review converged:
+  browser bundle 365 → 365.7 kB (measured 365.68), full library 424.2 → 424.8 kB (424.75),
+  commands-internal chunk 93.4 → 93.5 kB (93.48), tarball 1520 → 1522 KiB (1 558 419 B).
 - The builtin name set must follow git releases.
