@@ -105821,7 +105821,15 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Blob is binary AND some line of its first 64 KiB is returned by the matcher\n("
+										"text": "Blob is binary — by its "
+									},
+									{
+										"kind": "code",
+										"text": "`diff`"
+									},
+									{
+										"kind": "text",
+										"text": " attribute or, absent one, by the NUL sniff —\nAND some line the matcher returns ("
 									},
 									{
 										"kind": "code",
@@ -105829,7 +105837,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "-aware). "
+										"text": "-aware): the whole blob when the\nattribute forced binary, its first 64 KiB when the sniff decided. "
 									},
 									{
 										"kind": "code",
@@ -105837,7 +105845,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " stays empty — line scan is skipped for binary blobs\n(git's default). The caller reconstructs\n\"Binary file X matches\" from this datum."
+										"text": " stays\nempty — line scan is skipped for binary blobs (git's default). The caller\nreconstructs \"Binary file X matches\" from this datum."
 									}
 								]
 							},
@@ -105858,7 +105866,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Lines of a binary blob's first 64 KiB the matcher returns — git's "
+										"text": "Lines of a binary blob the matcher returns (the whole blob under a\nforced-binary attribute, its first 64 KiB otherwise) — git's "
 									},
 									{
 										"kind": "code",
@@ -105866,7 +105874,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\ncount for it. "
+										"text": " count for it.\n"
 									},
 									{
 										"kind": "code",
@@ -106431,7 +106439,15 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Blob is binary AND some line of its first 64 KiB is returned by the matcher\n("
+										"text": "Blob is binary — by its "
+									},
+									{
+										"kind": "code",
+										"text": "`diff`"
+									},
+									{
+										"kind": "text",
+										"text": " attribute or, absent one, by the NUL sniff —\nAND some line the matcher returns ("
 									},
 									{
 										"kind": "code",
@@ -106439,7 +106455,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "-aware). "
+										"text": "-aware): the whole blob when the\nattribute forced binary, its first 64 KiB when the sniff decided. "
 									},
 									{
 										"kind": "code",
@@ -106447,7 +106463,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " stays empty — line scan is skipped for binary blobs\n(git's default). The caller reconstructs\n\"Binary file X matches\" from this datum."
+										"text": " stays\nempty — line scan is skipped for binary blobs (git's default). The caller\nreconstructs \"Binary file X matches\" from this datum."
 									}
 								]
 							},
@@ -106474,7 +106490,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Lines of a binary blob's first 64 KiB the matcher returns — git's "
+										"text": "Lines of a binary blob the matcher returns (the whole blob under a\nforced-binary attribute, its first 64 KiB otherwise) — git's "
 									},
 									{
 										"kind": "code",
@@ -106482,7 +106498,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\ncount for it. "
+										"text": " count for it.\n"
 									},
 									{
 										"kind": "code",

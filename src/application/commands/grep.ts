@@ -1,5 +1,7 @@
 import { invalidOption } from '../../domain/commands/error.js';
-import { isBinary, MAX_LINE_BYTES, splitLines } from '../../domain/diff/index.js';
+import { type BinaryOverride, sideIsBinary } from '../../domain/diff/binary-decision.js';
+import { MAX_LINE_BYTES, splitLines } from '../../domain/diff/index.js';
+import type { GitIndex } from '../../domain/git-index/index.js';
 import {
   buildGrepMatcher,
   type GrepMatcher,
@@ -16,6 +18,10 @@ import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
 import { peelToTreeOrBlob } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
+import {
+  type GrepBinaryOverrideOf,
+  grepBinaryOverrideReader,
+} from './internal/grep-binary-override.js';
 import { resolveCommandPathspec } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 import { resolveReference } from './internal/resolve-rev.js';
@@ -32,15 +38,17 @@ export interface GrepLineHit {
 export interface GrepBlobResult {
   readonly hits: ReadonlyArray<GrepLineHit>;
   /**
-   * Blob is binary AND some line of its first 64 KiB is returned by the matcher
-   * (`invert`-aware). `hits` stays empty — line scan is skipped for binary blobs
-   * (git's default). The caller reconstructs
-   * "Binary file X matches" from this datum.
+   * Blob is binary — by its `diff` attribute or, absent one, by the NUL sniff —
+   * AND some line the matcher returns (`invert`-aware): the whole blob when the
+   * attribute forced binary, its first 64 KiB when the sniff decided. `hits` stays
+   * empty — line scan is skipped for binary blobs (git's default). The caller
+   * reconstructs "Binary file X matches" from this datum.
    */
   readonly binaryMatch: boolean;
   /**
-   * Lines of a binary blob's first 64 KiB the matcher returns — git's `-c`
-   * count for it. `0` for a text blob, whose count is `hits.length`.
+   * Lines of a binary blob the matcher returns (the whole blob under a
+   * forced-binary attribute, its first 64 KiB otherwise) — git's `-c` count for it.
+   * `0` for a text blob, whose count is `hits.length`.
    */
   readonly binaryMatchCount: number;
 }
@@ -84,8 +92,8 @@ const isSearchableMode = (mode: string): boolean =>
 const enumerateWorkingTree = async (
   ctx: Context,
   workDir: string,
+  index: GitIndex,
 ): Promise<ReadonlyArray<Candidate>> => {
-  const index = await readIndex(ctx);
   const candidates: Candidate[] = [];
   for (const entry of index.entries) {
     if (entry.flags.stage !== 0) continue;
@@ -104,9 +112,8 @@ const enumerateWorkingTree = async (
   return candidates;
 };
 
-const enumerateIndex = async (ctx: Context): Promise<ReadonlyArray<Candidate>> => {
-  const index = await readIndex(ctx);
-  return index.entries
+const enumerateIndex = (ctx: Context, index: GitIndex): ReadonlyArray<Candidate> =>
+  index.entries
     .filter((entry) => entry.flags.stage === 0 && isSearchableMode(entry.mode))
     .map((entry) => ({
       path: entry.path,
@@ -115,7 +122,6 @@ const enumerateIndex = async (ctx: Context): Promise<ReadonlyArray<Candidate>> =
         return blob.content;
       },
     }));
-};
 
 const enumerateTree = async (ctx: Context, treeId: ObjectId): Promise<ReadonlyArray<Candidate>> => {
   const candidates: Candidate[] = [];
@@ -134,29 +140,42 @@ const enumerateTree = async (ctx: Context, treeId: ObjectId): Promise<ReadonlyAr
   return candidates;
 };
 
-async function enumerateCandidates(
-  ctx: Context,
-  target: 'index' | undefined,
-): Promise<ReadonlyArray<Candidate>> {
-  if (target === undefined) {
-    // Only the working-tree target needs one — `--cached` and a tree-ish
-    // target both stay open in a bare repo (git: `grep --cached <pat>` and
-    // `grep <pat> HEAD` both exit 0).
-    return enumerateWorkingTree(ctx, requireWorkTree(ctx, 'grep'));
-  }
-  return enumerateIndex(ctx);
+interface Enumerated {
+  readonly candidates: ReadonlyArray<Candidate>;
+  readonly index: GitIndex;
 }
 
-// git's binary verdict and -c count: the window's lines the (invert-aware) matcher returns.
-// The window bounds a caller RegExp, whose backtracking over a multi-MB binary blob would
-// block the event loop; a match only beyond the first 64 KiB is not reported.
-const countReturnedLines = (matcher: GrepMatcher, bytes: Uint8Array): number =>
-  splitLines(bytes.subarray(0, MAX_LINE_BYTES)).filter((line) => matcher.matchLine(line).returned)
-    .length;
+async function enumerateCandidates(ctx: Context, target: 'index' | undefined): Promise<Enumerated> {
+  // Only the working-tree target needs one — `--cached` and a tree-ish
+  // target both stay open in a bare repo (git: `grep --cached <pat>` and
+  // `grep <pat> HEAD` both exit 0).
+  const workDir = target === undefined ? requireWorkTree(ctx, 'grep') : undefined;
+  const index = await readIndex(ctx);
+  const candidates =
+    workDir === undefined
+      ? enumerateIndex(ctx, index)
+      : await enumerateWorkingTree(ctx, workDir, index);
+  return { candidates, index };
+}
 
-function scanBlob(matcher: GrepMatcher, bytes: Uint8Array): GrepBlobResult | undefined {
-  if (isBinary(bytes)) {
-    const binaryMatchCount = countReturnedLines(matcher, bytes);
+// A forced-binary file has text-shaped lines, so its whole buffer costs what the text path
+// already pays; the window stays a safety bound for NUL-sniffed blobs.
+const binaryWindow = (bytes: Uint8Array, override: BinaryOverride | undefined): Uint8Array =>
+  override === 'binary' ? bytes : bytes.subarray(0, MAX_LINE_BYTES);
+
+// git's binary verdict and -c count: the window's lines the (invert-aware) matcher returns.
+// The NUL-sniffed window bounds a caller RegExp, whose backtracking over a multi-MB binary blob
+// would block the event loop; a match only beyond the first 64 KiB is not reported.
+const countReturnedLines = (matcher: GrepMatcher, bytes: Uint8Array): number =>
+  splitLines(bytes).filter((line) => matcher.matchLine(line).returned).length;
+
+function scanBlob(
+  matcher: GrepMatcher,
+  bytes: Uint8Array,
+  override?: BinaryOverride,
+): GrepBlobResult | undefined {
+  if (sideIsBinary(bytes, override)) {
+    const binaryMatchCount = countReturnedLines(matcher, binaryWindow(bytes, override));
     return binaryMatchCount > 0 ? { hits: [], binaryMatch: true, binaryMatchCount } : undefined;
   }
 
@@ -181,8 +200,10 @@ const grepBlob = async (ctx: Context, matcher: GrepMatcher, id: ObjectId): Promi
 const scanCandidate = async (
   matcher: GrepMatcher,
   candidate: Candidate,
+  overrideOf?: GrepBinaryOverrideOf,
 ): Promise<GrepPathResult | undefined> => {
-  const match = scanBlob(matcher, await candidate.load());
+  const override = await overrideOf?.(candidate.path);
+  const match = scanBlob(matcher, await candidate.load(), override);
   return match === undefined ? undefined : { path: candidate.path, ...match };
 };
 
@@ -199,12 +220,15 @@ const grepCandidates = async (
   matcher: GrepMatcher,
   pathspecMatcher: PathspecMatcher | undefined,
   candidates: ReadonlyArray<Candidate>,
+  overrideOf?: GrepBinaryOverrideOf,
 ): Promise<GrepResult> => {
   const inScope =
     pathspecMatcher !== undefined
       ? candidates.filter(({ path }) => matchesPathspec(pathspecMatcher.matcher, path))
       : candidates;
-  const results = await boundedMapFor(ctx, 'ioBound', inScope, (c) => scanCandidate(matcher, c));
+  const results = await boundedMapFor(ctx, 'ioBound', inScope, (c) =>
+    scanCandidate(matcher, c, overrideOf),
+  );
   return { paths: results.filter((r): r is GrepPathResult => r !== undefined) };
 };
 
@@ -248,5 +272,12 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
     return grepRev(ctx, matcher, target.treeish, opts.paths);
   }
   const pathspecMatcher = pathspecFor(ctx, opts.paths);
-  return grepCandidates(ctx, matcher, pathspecMatcher, await enumerateCandidates(ctx, target));
+  const { candidates, index } = await enumerateCandidates(ctx, target);
+  return grepCandidates(
+    ctx,
+    matcher,
+    pathspecMatcher,
+    candidates,
+    grepBinaryOverrideReader(ctx, index),
+  );
 }

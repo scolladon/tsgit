@@ -11,6 +11,7 @@ import {
 import { init } from '../../../../src/application/commands/init.js';
 import { resolveRevision } from '../../../../src/application/commands/rev-parse.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { MAX_LINE_BYTES } from '../../../../src/domain/diff/index.js';
@@ -1706,6 +1707,222 @@ describe('Given a blob target', () => {
 
       // Assert
       expect(data).toMatchObject(expected as object);
+    });
+  });
+});
+
+describe('Given a diff attribute', () => {
+  const F1 = 'a NEEDLE\nb\nNEEDLE c\n';
+  const F2 = 'x NEEDLE\0y\n';
+  const TARGETS: ReadonlyArray<[string, 'index' | undefined]> = [
+    ['the index', 'index'],
+    ['the work tree', undefined],
+  ];
+  const targetOption = (target: 'index' | undefined): { target?: 'index' } =>
+    target === undefined ? {} : { target };
+  const pathOf = (result: GrepResult, path: string): GrepPathResult | undefined =>
+    result.paths.find((p) => p.path === path);
+
+  const appendConfig = async (ctx: Context, text: string): Promise<void> => {
+    const cfg = `${ctx.layout.gitDir}/config`;
+    await ctx.fs.writeUtf8(cfg, `${await ctx.fs.readUtf8(cfg)}${text}`);
+    __resetConfigCacheForTests();
+  };
+
+  const seedWithAttributes = async (attributes: string, f1 = F1): Promise<Context> => {
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, '.gitattributes', attributes);
+    await writeAndStage(ctx, 'f1', f1);
+    await commitAll(ctx);
+    return ctx;
+  };
+
+  const removeWorkTreeAttributes = async (ctx: Context): Promise<void> => {
+    await ctx.fs.rm(`${ctx.layout.workDir}/.gitattributes`);
+  };
+
+  describe.each(TARGETS)('Given %s as the target', (_label, target) => {
+    describe('When a path is set -diff', () => {
+      it('Then it is a binary match with its returned-line count and no hits', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')).toEqual({
+          path: 'f1',
+          hits: [],
+          binaryMatch: true,
+          binaryMatchCount: 2,
+        });
+      });
+    });
+
+    describe('When a NUL path is set diff', () => {
+      it('Then it is scanned as text', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f2 diff\n');
+        await writeAndStage(ctx, 'f2', F2);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f2')).toEqual({
+          path: 'f2',
+          hits: [{ lineNumber: 1, line: enc(F2), spans: [{ start: 2, end: 8 }] }],
+          binaryMatch: false,
+          binaryMatchCount: 0,
+        });
+      });
+    });
+
+    describe('When the .gitattributes exists only in the index', () => {
+      it('Then the index copy decides', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        await removeWorkTreeAttributes(ctx);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
+    });
+
+    describe('When the work-tree .gitattributes differs from the index copy', () => {
+      it('Then the work-tree copy wins', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(false);
+      });
+    });
+
+    describe('When a path names a driver configured binary', () => {
+      it('Then it is a binary match', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 diff=drv\n');
+        await appendConfig(ctx, '[diff "drv"]\n\tbinary = true\n');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
+    });
+
+    describe('When the default driver is configured binary and no attribute names a path', () => {
+      it('Then the path is a binary match', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        await writeAndStage(ctx, 'f1', F1);
+        await commitAll(ctx);
+        await appendConfig(ctx, '[diff "default"]\n\tbinary = true\n');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
+    });
+
+    describe('When a forced-binary path matches only beyond 64 KiB', () => {
+      it('Then the whole blob is scanned', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('big.txt binary\n');
+        await writeAndStage(ctx, 'big.txt', `${'x\n'.repeat(MAX_LINE_BYTES / 2 + 16)}NEEDLE\n`);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'big.txt')).toEqual({
+          path: 'big.txt',
+          hits: [],
+          binaryMatch: true,
+          binaryMatchCount: 1,
+        });
+      });
+    });
+  });
+
+  describe('Given the index target and a path set -diff, When the match is inverted', () => {
+    it('Then the binary count is the non-matching lines', async () => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: 'index',
+        invert: true,
+      });
+
+      // Assert
+      expect(pathOf(result, 'f1')).toEqual({
+        path: 'f1',
+        hits: [],
+        binaryMatch: true,
+        binaryMatchCount: 1,
+      });
+    });
+  });
+
+  describe('Given a layout without a work tree and an index-only .gitattributes', () => {
+    it.each([
+      [
+        'a bare-flagged layout',
+        (ctx: Context): Context => ({ ...ctx, layout: { ...ctx.layout, bare: true } }) as Context,
+      ],
+      ['a bare context', (ctx: Context): Context => asBareContext(ctx)],
+    ])('Then %s never reads the index copy', async (_label, toBare) => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      await removeWorkTreeAttributes(ctx);
+      const sut = grep;
+
+      // Act
+      const result = await sut(toBare(ctx), { patterns: [{ fixed: 'NEEDLE' }], target: 'index' });
+
+      // Assert
+      expect(pathOf(result, 'f1')?.binaryMatch).toBe(false);
+    });
+  });
+
+  describe('Given a NUL blob whose only match lies beyond 64 KiB and no attribute', () => {
+    it('Then it is still not reported', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      const blob = new Uint8Array(MAX_LINE_BYTES + 64);
+      blob.set(enc('DEEP_MATCH'), MAX_LINE_BYTES + 10);
+      await ctx.fs.write(`${ctx.layout.workDir}/deep.bin`, blob);
+      await add(ctx, ['deep.bin']);
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, { patterns: [{ fixed: 'DEEP_MATCH' }], target: 'index' });
+
+      // Assert
+      expect(result.paths).toHaveLength(0);
     });
   });
 });
