@@ -189,14 +189,21 @@ const dropsQuietRead = (arg: string): boolean => {
 const readModeOf = (arg: string): RevisionReadMode => (dropsQuietRead(arg) ? 'reporting' : 'quiet');
 
 /** git's `get_oid` read aloud: an ambiguous abbreviated name is reported before the read fails. */
-export const readReporting = async (
+export const readReporting = (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   expression: string,
   accepts?: CandidateFilter,
-): Promise<ObjectId> => {
+): Promise<ObjectId> => readReportingWithPath(ctx, table, expression, accepts).then(idOf);
+
+const readReportingWithPath = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  expression: string,
+  accepts?: CandidateFilter,
+): Promise<NamedRevision> => {
   try {
-    return await evaluateTyped(ctx, table, expression, { accepts });
+    return await evaluateTypedWithPath(ctx, table, expression, { accepts });
   } catch (error) {
     reportAmbiguousOid(ctx, error);
     throw error;
@@ -232,6 +239,20 @@ const SIDES_BY_SOURCE: Readonly<
   Record<RevisionSource, (expression: string) => DifferenceSides | undefined>
 > = { 'command-line': differenceSides, stdin: rangeSides };
 
+/** The path a rev named, and whether naming it read the index (`:path`, `:N:path`). */
+export interface RevisionPath {
+  readonly path: FilePath;
+  readonly fromIndex: boolean;
+}
+
+/** An object id plus git's object-context path, when the name carried one. */
+export interface NamedRevision {
+  readonly id: ObjectId;
+  readonly named?: RevisionPath;
+}
+
+const idOf = ({ id }: NamedRevision): ObjectId => id;
+
 /**
  * The single object a `setup_revisions` reader takes from `expression`: an
  * expression holding `..` has its sides read first, as git tries it as a
@@ -249,19 +270,36 @@ export const resolveRevision = async (
   return readNamedObject(ctx, table, expression, expression);
 };
 
+/** `resolveRevision` (command line) plus the path the name carried. */
+export const resolveRevisionWithPath = async (
+  ctx: Context,
+  expression: string,
+): Promise<NamedRevision> => {
+  const table = createObjectTypeTable();
+  await readDifferenceSides(ctx, table, differenceSides(expression));
+  return readNamedObjectWithPath(ctx, table, expression, expression);
+};
+
 /**
  * `name` read once; naming no object, git's misspelt-name diagnosis of `arg`
  * re-runs `get_oid`, re-emitting each warning — unless `arg` reads as a
  * pathspec or names a working-tree path.
  */
-export const readNamedObject = async (
+export const readNamedObject = (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   name: string,
   arg: string,
-): Promise<ObjectId> => {
+): Promise<ObjectId> => readNamedObjectWithPath(ctx, table, name, arg).then(idOf);
+
+const readNamedObjectWithPath = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  name: string,
+  arg: string,
+): Promise<NamedRevision> => {
   try {
-    return await readReporting(ctx, table, name);
+    return await readReportingWithPath(ctx, table, name);
   } catch (error) {
     if (await rereadsMisspeltRevision(ctx, arg, error)) await rereadMisspelt(ctx, table, arg);
     throw error;
@@ -387,33 +425,47 @@ export const evaluateRevision = (ctx: Context, expression: string): Promise<Obje
   evaluateTyped(ctx, createObjectTypeTable(), expression);
 
 /** git's `get_oid` typing each object it parses into `table`, the invocation's. */
-const evaluateTyped = async (
+const evaluateTyped = (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   expression: string,
   options: RevisionNameOptions = {},
-): Promise<ObjectId> => {
+): Promise<ObjectId> => evaluateTypedWithPath(ctx, table, expression, options).then(idOf);
+
+const evaluateTypedWithPath = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  expression: string,
+  options: RevisionNameOptions = {},
+): Promise<NamedRevision> => {
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
   const expr = parseExpression(expression);
-  return evaluate(ctx, table, expr, expression, options);
+  return evaluateWithPath(ctx, table, expr, expression, options);
 };
 
-const evaluate = async (
+const evaluate = (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   expr: RevExpression,
   raw: string,
   options: RevisionNameOptions = {},
-): Promise<ObjectId> => {
-  if (expr.kind === 'index-stage') {
-    return resolveIndexStage(ctx, { stage: expr.stage, path: resolveRelativePath(ctx, expr.path) });
-  }
+): Promise<ObjectId> => evaluateWithPath(ctx, table, expr, raw, options).then(idOf);
+
+const evaluateWithPath = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  expr: RevExpression,
+  raw: string,
+  options: RevisionNameOptions = {},
+): Promise<NamedRevision> => {
+  if (expr.kind === 'index-stage') return resolveIndexStageNamed(ctx, expr);
   if (expr.kind === 'tree-path') {
     const whole = mayReadWhole(raw) ? await readWholeName(ctx, table, raw, options) : undefined;
     return whole ?? resolveTreePath(ctx, table, expr.rev, expr.path, options.mode);
   }
-  if (expr.kind === 'message-search') return searchFromRefs(ctx, table, expr.pattern, raw);
+  if (expr.kind === 'message-search')
+    return { id: await searchFromRefs(ctx, table, expr.pattern, raw) };
   // `now` is read once per call so the reflog `@{date}` resolution is
   // deterministic within an evaluation; the grammar parser stays clock-free.
   const now = Math.floor(Date.now() / 1000);
@@ -427,7 +479,7 @@ const evaluate = async (
   for (const op of expr.operations) {
     id = await applyOperation(ctx, table, id, op);
   }
-  return id;
+  return { id };
 };
 
 /** A whole-name reading that names nothing: git goes on to split the name at its colon. */
@@ -441,9 +493,9 @@ const readWholeName = async (
   table: ObjectTypeTable | undefined,
   raw: string,
   options: RevisionNameOptions,
-): Promise<ObjectId | undefined> => {
+): Promise<NamedRevision | undefined> => {
   try {
-    return await evaluate(ctx, table, parseWholeName(raw), raw, options);
+    return { id: await evaluate(ctx, table, parseWholeName(raw), raw, options) };
   } catch (error) {
     if (!WHOLE_NAME_MISSES.has(errorDataCode(error))) throw error;
     return undefined;
@@ -731,6 +783,17 @@ const readCommitAt = async (ctx: Context, id: ObjectId): Promise<PeeledCommit> =
   return { id, commit: obj };
 };
 
+const resolveIndexStageNamed = async (
+  ctx: Context,
+  expr: { readonly stage: 0 | 1 | 2 | 3; readonly path: string },
+): Promise<NamedRevision> => {
+  const path = resolveRelativePath(ctx, expr.path);
+  return {
+    id: await resolveIndexStage(ctx, { stage: expr.stage, path }),
+    named: namedPath(path, true),
+  };
+};
+
 const resolveIndexStage = async (
   ctx: Context,
   expr: { readonly stage: 0 | 1 | 2 | 3; readonly path: string },
@@ -756,19 +819,25 @@ const resolveTreePath = async (
   rev: string,
   rawPath: string,
   mode?: RevisionReadMode,
-): Promise<ObjectId> => {
+): Promise<NamedRevision> => {
   const baseId = await evaluate(ctx, table, parseExpression(rev), rev, {
     accepts: treeishFilter(ctx),
     mode,
   });
   const path = resolveRelativePath(ctx, rawPath);
   const treeId = await peel(ctx, table, baseId, 'tree');
-  if (path === '') return treeId;
+  if (path === '') return { id: treeId };
   // `treeId` is already a tree (peeled above), so `readTree` loads it without a
   // further peel; the shared descent then walks the `/`-separated components.
   const rootTree = await readTree(ctx, treeId);
-  return (await descendTreePath(ctx, rootTree, path, rev)).id;
+  const { id } = await descendTreePath(ctx, rootTree, path, rev);
+  return { id, named: namedPath(path, false) };
 };
+
+const namedPath = (path: string, fromIndex: boolean): RevisionPath => ({
+  path: path as FilePath,
+  fromIndex,
+});
 
 const RELATIVE_PATH_PREFIXES: ReadonlyArray<string> = ['./', '../'];
 
