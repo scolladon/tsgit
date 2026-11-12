@@ -2,8 +2,8 @@
 
 Search tracked content for a pattern — git's `git grep`, with one deliberate
 divergence: **the pattern is a JavaScript `RegExp`, not git's POSIX grammar**
-(see Divergences). Returns **structured data only**: per matching path, the
-matching lines with 1-based line numbers, the raw line bytes, and byte-offset
+(see Divergences). Returns **structured data only**: per matching path (or, for a
+blob target, the blob's match), the matching lines with 1-based line numbers, the raw line bytes, and byte-offset
 match spans. The rendered `path:line:text`, the `-c` count, the `-l` name list,
 and the `Binary file … matches` line are caller projections.
 
@@ -34,13 +34,16 @@ interface GrepLineHit {
   readonly line: Uint8Array;       // raw line bytes (trailing LF kept)
   readonly spans: ReadonlyArray<MatchSpan>; // empty under invert
 }
-interface GrepPathResult {
-  readonly path: FilePath;
+interface GrepBlobResult {
   readonly hits: ReadonlyArray<GrepLineHit>;
-  readonly binaryMatch: boolean;   // binary blob contained a match; hits empty
+  readonly binaryMatch: boolean;   // binary blob, some line of its first 64 KiB returned by the matcher; hits empty
+}
+interface GrepPathResult extends GrepBlobResult {
+  readonly path: FilePath;
 }
 interface GrepResult {
-  readonly paths: ReadonlyArray<GrepPathResult>; // only paths with a hit or binaryMatch
+  readonly paths: ReadonlyArray<GrepPathResult>; // only paths with a hit or binaryMatch; always empty for a blob target
+  readonly blob?: GrepBlobResult;                // blob target only; absent when it did not match
 }
 ```
 
@@ -51,7 +54,7 @@ interface GrepResult {
 | `patterns` | `ReadonlyArray<RegExp \| { fixed: string }>` | (required, ≥1) | Patterns to search. A `RegExp` searches by JS regex (flags ride on it: `i` for case-insensitive, `s`, `m`); a `{ fixed }` searches a literal substring. Multiple patterns are **OR-combined** (git's `-e … -e …`). |
 | `wholeWord` | `boolean` | `false` | git's `-w` — a match counts only when the byte before its start and the byte at its end are non-word bytes (`[A-Za-z0-9_]`). Applied to both regex and fixed forms. |
 | `invert` | `boolean` | `false` | git's `-v` — return the lines that do **not** match. Inverted line hits carry empty `spans`. |
-| `target` | `'index' \| { treeish }` | working tree | Absent ⇒ the **working tree** (tracked files, working-tree content). `'index'` ⇒ the staged content (git's `--cached`). `{ treeish: 'HEAD' }` ⇒ a committed tree/commit (full rev grammar). |
+| `target` | `'index' \| { treeish }` | working tree | Absent ⇒ the **working tree** (tracked files, working-tree content). `'index'` ⇒ the staged content (git's `--cached`). `{ treeish: 'HEAD' }` ⇒ a commit, tree, or blob (full rev grammar); the key stays `treeish` even for a blob. |
 | `paths` | `ReadonlyArray<string>` | (all) | Pathspec limiter — only enumerated paths matching the pathspec are searched. Same syntax as [`add`](add.md#pathspec-syntax): git's pathspec glob, where `*` and `?` cross `/`; on a POSIX host a `\` is a matching escape. |
 
 ## Behaviour
@@ -60,17 +63,24 @@ interface GrepResult {
   index, stage 0) and reads their **working-tree** content, so unstaged
   modifications are visible; untracked and ignored files are not searched.
   `'index'` reads staged blob content; `{ treeish }` reads a committed tree.
+- **Blob target.** A `{ treeish }` rev that resolves to a blob (`oid`, `rev:path`,
+  `:path`, `:0:path`, `<oid>^{blob}`, a tag — nested or lightweight — of a blob,
+  `tag^{}`) greps that blob. The result has `paths: []` and a `blob` field, absent
+  when nothing matched. `paths` (the pathspec) is validated, so its refusals hold,
+  but never applied. Any blob mode is grepped, a symlink's target string included.
 - **Work-tree requirement is target-dependent.** Only the default (working-tree)
   target needs a work tree — it refuses `WORK_TREE_REQUIRED` when the repository
-  has none (bare, or opened without one). `'index'` and `{ treeish }` stay open in
-  a bare repository, matching git's `grep --cached` and `grep <pattern> HEAD`.
-- **Searchable content.** Only regular and executable file blobs are searched;
-  **symlinks and gitlinks (submodules) are skipped** on every target — matching
-  `git grep`. A tracked file absent from the working tree is silently skipped.
+  has none (bare, or opened without one). `'index'` and `{ treeish }` (tree or blob)
+  stay open in a bare repository, matching git's `grep --cached` and `grep <pattern> HEAD`.
+- **Searchable content.** On tree, index and working-tree targets only regular and
+  executable file blobs are searched; **symlinks and gitlinks (submodules) are
+  skipped** — matching `git grep`. The mode filter does not apply to a blob target. A tracked file absent from the working tree is silently skipped.
 - **Binary blobs.** A binary blob (NUL in the first 8 KiB — git's own rule, no
-  line-length or line-count heuristic) is not line-scanned; if it contains a
-  match the path is reported with `binaryMatch: true` and empty `hits` (git's
-  `Binary file X matches`, exit 0).
+  line-length or line-count heuristic) is not line-scanned; it is reported with
+  `binaryMatch: true` and empty `hits` (git's `Binary file X matches`, exit 0) when
+  the matcher returns some line of its first 64 KiB. Under `invert` a returned line
+  is a non-matching one, so a binary blob whose every line matches is not reported;
+  an anchored pattern sees each line, not the whole window.
 - **Line numbering** is 1-based; `line` carries the raw bytes including the
   trailing LF that `splitLines` preserves.
 - **Match spans** are **byte offsets** into `line` — `line.subarray(start, end)`
@@ -78,10 +88,14 @@ interface GrepResult {
 
 ### Caller projections (the library ships data, not rendering)
 
-- **`path:line:text`** — for each `hit`, `${path}:${hit.lineNumber}:${decode(hit.line)}`.
-- **`-c` (count):** `result.paths.map(p => ({ path: p.path, count: p.binaryMatch ? 1 : p.hits.length }))`.
-- **`-l` (name-only):** `result.paths.map(p => p.path)`.
-- **`Binary file X matches`:** emit for each `p` with `p.binaryMatch === true`.
+- **Label.** The `rev` as typed for a blob target; `${rev}:${path}` for a tree target.
+- **`path:line:text`** — tree: for each `hit`, `${rev}:${path}:${hit.lineNumber}:${decode(hit.line)}`;
+  blob: `${rev}:${hit.lineNumber}:${decode(hit.line)}` for each `hit` of `result.blob`.
+- **`-c` (count):** `result.paths.map(p => ({ path: p.path, count: p.binaryMatch ? 1 : p.hits.length }))`;
+  blob: `result.blob && { label: rev, count: result.blob.binaryMatch ? 1 : result.blob.hits.length }`.
+- **`-l` (name-only):** `result.paths.map(p => p.path)`; blob: `result.blob ? [rev] : []`.
+- **`Binary file X matches`:** emit for each `p` with `p.binaryMatch === true`;
+  blob: `Binary file ${rev} matches` when `result.blob?.binaryMatch`.
 
 ### Divergences (documented)
 
@@ -104,7 +118,10 @@ interface GrepResult {
   matches every line. The empty-pattern case is degenerate; the command rejects an
   empty `patterns` array but treats an empty literal as a no-match.
 - **Binary-match presence inspects only the first 64 KiB** of a binary blob: a blob
-  whose only match lies beyond the first 64 KiB is not reported as `binaryMatch`. This
+  whose only match lies beyond the first 64 KiB is not reported as `binaryMatch`.
+  Under `invert`, a window boundary cutting through a matching line can return the
+  cut fragment as a non-matching line, so the blob may be reported where git's
+  unbounded scan would not. This
   bounds the work a caller `RegExp` can do over an unbounded binary blob (the text path
   is already bounded per line). Binary blobs are an incidental search target, so the
   window is a deliberate safety bound.
@@ -156,6 +173,13 @@ await repo.grep({
   paths: ['src/'],
 });
 
+// Search one blob: `result.blob` is absent when it does not match.
+const { blob } = await repo.grep({
+  patterns: [{ fixed: 'name' }],
+  target: { treeish: 'HEAD:package.json' },
+});
+if (blob) console.log(blob.hits.map(h => h.lineNumber));
+
 // Lines NOT matching any pattern.
 await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 ```
@@ -172,8 +196,10 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 - `WORK_TREE_REQUIRED` — the default (working-tree) target against a repository with no work tree (bare, or opened without one). Not raised for `'index'` or `{ treeish }` targets.
 - `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid streaming-class `[core]` entry, reached through the eager operational gate every operational command reads (see [`errors.md`](../errors.md)).
 - `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` or `core.deltaBaseCacheLimit` — the repo-settings class, checked by an explicit call right after the gate and **before** the pattern-empty check above (so an empty-pattern call still reports the config fault, matching git, even though `grep` would otherwise reach this class structurally only once it walks the tree). See [`internals.md`](../primitives/internals.md#assertreposettingsvalid).
-- `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — a `{ treeish }` target cannot be
-  resolved.
+- `OBJECT_NOT_FOUND` — a `{ treeish }` target names a missing object, including a
+  gitlink path (`HEAD:<submodule>`).
+- `PATH_NOT_IN_TREE` — a `rev:path` target names no entry.
+- `REVPARSE_UNRESOLVED` — a `{ treeish }` rev cannot be resolved.
 - `GREP_LINE_TOO_LONG` — a single line's bytes exceed the JS engine's maximum
   string length and cannot be decoded to run a `RegExp` pattern (`length` /
   `limit` name the offending byte count and the decode ceiling). Only regex
@@ -184,4 +210,4 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 
 - Primitives: [`readBlob`](../primitives/read-blob.md) · [`walkTree`](../primitives/walk-tree.md) · [`readIndex`](../primitives/read-index.md)
 - Related commands: [`diff`](diff.md) · [`log`](log.md) · [`show`](show.md)
-- ADRs: 395 (JavaScript `RegExp` grammar) · 396 (v1 command surface) · 397 (byte-offset bridge)
+- ADRs: 395 (JavaScript `RegExp` grammar) · 396 (v1 command surface) · 397 (byte-offset bridge) · 1171 (blob result field) · 1172 (pathspec with a blob target) · 1173 (peel to tree or blob) · 1174 (line-wise binary verdict) · 1175 (`treeish` key kept)
