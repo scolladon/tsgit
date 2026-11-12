@@ -106273,7 +106273,15 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Blob is binary AND contained a match. "
+										"text": "Blob is binary AND some line of its first 64 KiB is returned by the matcher\n("
+									},
+									{
+										"kind": "code",
+										"text": "`invert`"
+									},
+									{
+										"kind": "text",
+										"text": "-aware). "
 									},
 									{
 										"kind": "code",
@@ -106281,7 +106289,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " stays empty — line scan is\nskipped for binary blobs (git's default). The caller reconstructs\n\"Binary file X matches\" from this datum."
+										"text": " stays empty — line scan is skipped for binary blobs\n(git's default). The caller reconstructs\n\"Binary file X matches\" from this datum."
 									}
 								]
 							},

@@ -31,8 +31,9 @@ export interface GrepPathResult {
   readonly path: FilePath;
   readonly hits: ReadonlyArray<GrepLineHit>;
   /**
-   * Blob is binary AND contained a match. `hits` stays empty — line scan is
-   * skipped for binary blobs (git's default). The caller reconstructs
+   * Blob is binary AND some line of its first 64 KiB is returned by the matcher
+   * (`invert`-aware). `hits` stays empty — line scan is skipped for binary blobs
+   * (git's default). The caller reconstructs
    * "Binary file X matches" from this datum.
    */
   readonly binaryMatch: boolean;
@@ -138,23 +139,19 @@ async function enumerateCandidates(
   return candidates;
 }
 
+// git's binary verdict: some line of the window is returned by the (invert-aware) matcher.
+// The window bounds a caller RegExp, whose backtracking over a multi-MB binary blob would
+// block the event loop; a match only beyond the first 64 KiB is not reported.
+const returnsAnyLine = (matcher: GrepMatcher, bytes: Uint8Array): boolean =>
+  splitLines(bytes.subarray(0, MAX_LINE_BYTES)).some((line) => matcher.matchLine(line).returned);
+
 function scanBlob(
   matcher: GrepMatcher,
-  binaryProbeMatcher: GrepMatcher,
   path: FilePath,
   bytes: Uint8Array,
 ): GrepPathResult | undefined {
   if (isBinary(bytes)) {
-    // Binary blobs skip line scan. Use the non-inverted probe to check whether
-    // the pattern occurs anywhere in the blob — independent of -v, because git
-    // reports "Binary file X matches" based on pattern presence, not inversion.
-    // Bound the probe to MAX_LINE_BYTES: a presence boolean does not need the whole
-    // blob, and an unbounded latin1 scan of a multi-MB blob with a backtracking caller
-    // RegExp would block the event loop. Trade-off: a match only beyond the first
-    // 64 KiB of a binary blob is not reported (documented in the design).
-    const probeVerdict = binaryProbeMatcher.matchLine(bytes.subarray(0, MAX_LINE_BYTES));
-    if (!probeVerdict.returned) return undefined;
-    return { path, hits: [], binaryMatch: true };
+    return returnsAnyLine(matcher, bytes) ? { path, hits: [], binaryMatch: true } : undefined;
   }
 
   const lines = splitLines(bytes);
@@ -188,12 +185,6 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
     ...(opts.invert === true ? { invert: true } : {}),
   });
 
-  // Separate non-inverted probe for binary-match detection: git reports
-  // "Binary file X matches" based on pattern presence, independent of -v.
-  const binaryProbeMatcher = buildGrepMatcher(opts.patterns, {
-    ...(opts.wholeWord === true ? { wholeWord: true } : {}),
-  });
-
   const pathspecMatcher =
     opts.paths !== undefined && opts.paths.length > 0
       ? resolveCommandPathspec(ctx, opts.paths)
@@ -207,7 +198,7 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
       : candidates;
 
   const results = await boundedMapFor(ctx, 'ioBound', inScope, async (c) =>
-    scanBlob(matcher, binaryProbeMatcher, c.path, await c.load()),
+    scanBlob(matcher, c.path, await c.load()),
   );
   const paths = results.filter((r): r is GrepPathResult => r !== undefined);
   return { paths };

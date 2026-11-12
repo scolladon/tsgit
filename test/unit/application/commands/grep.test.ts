@@ -435,25 +435,95 @@ describe('Given a tracked binary blob whose bytes do NOT contain the pattern, Wh
   });
 });
 
-describe('Given a binary blob containing the pattern and invert=true, When grep runs', () => {
-  it('Then binaryMatch stays true (presence is independent of -v)', async () => {
-    // Arrange
-    const ctx = await seedRepo();
-    const binaryBlob = new Uint8Array([0x00, ...enc('FIND_ME'), 0x00]);
-    await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, binaryBlob);
-    await add(ctx, ['data.bin']);
-    await commitAll(ctx);
+const commitBinary = async (ctx: Context, name: string, text: string): Promise<void> => {
+  await ctx.fs.write(`${ctx.layout.workDir}/${name}`, new TextEncoder().encode(text));
+  await add(ctx, [name]);
+  await commitAll(ctx);
+};
 
-    // Act — invert must NOT suppress the binary-match report
-    const result: GrepResult = await grep(ctx, {
-      patterns: [{ fixed: 'FIND_ME' }],
-      invert: true,
+describe('Given a binary blob whose only line contains the pattern', () => {
+  describe('When grep runs with invert', () => {
+    it('Then the blob is not reported', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      const binaryBlob = new Uint8Array([0x00, ...enc('FIND_ME'), 0x00]);
+      await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, binaryBlob);
+      await add(ctx, ['data.bin']);
+      await commitAll(ctx);
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'FIND_ME' }], invert: true });
+
+      // Assert
+      expect(result.paths).toEqual([]);
     });
+  });
+});
 
-    // Assert
-    expect(result.paths).toHaveLength(1);
-    expect(result.paths[0]!.binaryMatch).toBe(true);
-    expect(result.paths[0]!.hits).toHaveLength(0);
+describe('Given a binary blob with no line containing the pattern', () => {
+  describe('When grep runs with invert', () => {
+    it('Then the blob is reported as a binary match', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await commitBinary(ctx, 'nomatch.dat', 'bin\0x\n');
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], invert: true });
+
+      // Assert
+      expect(result.paths).toEqual([{ path: 'nomatch.dat', hits: [], binaryMatch: true }]);
+    });
+  });
+});
+
+describe('Given a binary blob whose second line starts with the pattern', () => {
+  describe('When grep runs with a start-anchored regex', () => {
+    it('Then the blob is reported as a binary match', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await commitBinary(ctx, 'anchored.dat', 'bin\0x\nNEEDLE y\n');
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [/^NEEDLE/] });
+
+      // Assert
+      expect(result.paths).toEqual([{ path: 'anchored.dat', hits: [], binaryMatch: true }]);
+    });
+  });
+});
+
+describe('Given a binary blob with one matching and one other line', () => {
+  describe('When grep runs with invert', () => {
+    it('Then the blob is reported because the other line is returned', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await commitBinary(ctx, 'mixed.dat', 'bin\0NEEDLE\nother\n');
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], invert: true });
+
+      // Assert
+      expect(result.paths).toEqual([{ path: 'mixed.dat', hits: [], binaryMatch: true }]);
+    });
+  });
+
+  describe('When grep runs without invert', () => {
+    it('Then the blob is reported because one line matches', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await commitBinary(ctx, 'mixed.dat', 'bin\0NEEDLE\nother\n');
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+
+      // Assert
+      expect(result.paths).toEqual([{ path: 'mixed.dat', hits: [], binaryMatch: true }]);
+    });
   });
 });
 

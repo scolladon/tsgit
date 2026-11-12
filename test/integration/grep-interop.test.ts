@@ -139,6 +139,12 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     // The target file is untracked so git grep won't find it via the target either.
     await writeFile(path.join(dir, 'symlink_target.txt'), 'NEEDLE in symlink target\n');
 
+    // Binary blobs whose verdict depends on line-wise matching (pins #J1/#J2).
+    await writeFile(path.join(dir, 'all-match.dat'), Buffer.from('bin\0NEEDLE\n'));
+    await writeFile(path.join(dir, 'mixed.dat'), Buffer.from('bin\0NEEDLE\nother\n'));
+    await writeFile(path.join(dir, 'nomatch.dat'), Buffer.from('bin\0x\n'));
+    await writeFile(path.join(dir, 'anchored.dat'), Buffer.from('bin\0x\nNEEDLE y\n'));
+
     git(dir, 'add', '-A');
     clock += 60;
     runGit(['-C', dir, 'commit', '-q', '-m', 'initial'], { env: datedEnv(clock) });
@@ -392,6 +398,61 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
 
         // Reconstruct "path:lineNumber:" prefix and compare to git grep -n output
         expect(gitOutput).toContain(`longline.txt:${longResult?.hits[0]?.lineNumber}:`);
+      });
+    });
+  });
+
+  describe('Given binary blobs under *.dat', () => {
+    describe('When grepping HEAD with invert', () => {
+      it("Then tsgit's binaryMatch paths equal git grep -v -l", async () => {
+        // Arrange
+        const gitOutput = git(dir, 'grep', '-v', '-l', '-F', LIT, 'HEAD', '--', '*.dat');
+
+        // Act
+        const result = await grep(ctx, {
+          patterns: [{ fixed: LIT }],
+          invert: true,
+          target: { treeish: 'HEAD' },
+          paths: ['*.dat'],
+        });
+
+        // Assert
+        const gitNames = new Set(
+          gitOutput
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((l) => l.replace(/^HEAD:/, '')),
+        );
+        expect(deriveNameOnly(result.paths)).toEqual(gitNames);
+        expect(result.paths.every((p) => p.binaryMatch && p.hits.length === 0)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given binary blobs under *.dat and a start-anchored pattern', () => {
+    describe('When grepping HEAD', () => {
+      it("Then tsgit's binaryMatch paths equal git grep -l -E", async () => {
+        // Arrange — ^NEEDLE means the same in ERE and JS: this pins line splitting, not grammar
+        const gitOutput = git(dir, 'grep', '-l', '-E', '^NEEDLE', 'HEAD', '--', '*.dat');
+
+        // Act
+        const result = await grep(ctx, {
+          patterns: [/^NEEDLE/],
+          target: { treeish: 'HEAD' },
+          paths: ['*.dat'],
+        });
+
+        // Assert
+        const gitNames = new Set(
+          gitOutput
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((l) => l.replace(/^HEAD:/, '')),
+        );
+        expect(deriveNameOnly(result.paths)).toEqual(gitNames);
+        expect(gitNames).toEqual(new Set(['anchored.dat']));
       });
     });
   });
