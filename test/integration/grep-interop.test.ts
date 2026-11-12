@@ -884,7 +884,7 @@ const commitAttrRepo = (repo: string): void => {
   runGit(['-C', repo, 'commit', '-q', '-m', 'initial'], { env: datedEnv(clock) });
 };
 
-describe.skipIf(!GIT_AVAILABLE)('Given a diff attribute', () => {
+describe.skipIf(!GIT_AVAILABLE)('grep diff attribute verdict', () => {
   let main: string;
   let defaultDriver: string;
   let indexOnly: string;

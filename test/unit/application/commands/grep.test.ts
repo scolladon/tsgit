@@ -1711,7 +1711,7 @@ describe('Given a blob target', () => {
   });
 });
 
-describe('Given a diff attribute', () => {
+describe('grep diff attribute verdict', () => {
   const F1 = 'a NEEDLE\nb\nNEEDLE c\n';
   const F2 = 'x NEEDLE\0y\n';
   const TARGETS: ReadonlyArray<[string, 'index' | undefined]> = [
@@ -1887,7 +1887,7 @@ describe('Given a diff attribute', () => {
     });
   });
 
-  describe('Given a layout without a work tree and an index-only .gitattributes', () => {
+  describe('Given a layout without a work tree and an index-only .gitattributes, When grepping', () => {
     it.each([
       [
         'a bare-flagged layout',
@@ -1938,7 +1938,7 @@ describe('Given a diff attribute', () => {
     });
   });
 
-  describe('Given a blob rev that names a path and the path is set -diff', () => {
+  describe('Given a blob rev that names a path and the path is set -diff, When grepping', () => {
     it.each(['HEAD:f1', ':f1', ':0:f1', 'HEAD^{tree}:f1'])(
       'Then the target %s is a binary match',
       async (treeish) => {
@@ -1955,7 +1955,7 @@ describe('Given a diff attribute', () => {
     );
   });
 
-  describe('Given a blob rev read through the index and its .gitattributes only in the index', () => {
+  describe('Given a blob rev read through the index and its .gitattributes only in the index, When grepping', () => {
     it('Then the index copy decides', async () => {
       // Arrange
       const ctx = await seedWithAttributes('f1 binary\n');
@@ -1973,7 +1973,7 @@ describe('Given a diff attribute', () => {
     });
   });
 
-  describe('Given a blob rev read from a commit and its .gitattributes only in the index', () => {
+  describe('Given a blob rev read from a commit and its .gitattributes only in the index, When grepping', () => {
     it('Then the index copy is not loaded and the blob is text', async () => {
       // Arrange
       const ctx = await seedWithAttributes('f1 binary\n');
@@ -1991,7 +1991,7 @@ describe('Given a diff attribute', () => {
     });
   });
 
-  describe('Given a blob named by oid or by an annotated tag and the path is set -diff', () => {
+  describe('Given a blob named by oid or by an annotated tag and the path is set -diff, When grepping', () => {
     it.each([
       ['its oid', async (_ctx: Context, oid: ObjectId) => oid],
       [
@@ -2016,7 +2016,7 @@ describe('Given a diff attribute', () => {
     });
   });
 
-  describe('Given a NUL blob whose only match lies beyond 64 KiB and no attribute', () => {
+  describe('Given a NUL blob whose only match lies beyond 64 KiB and no attribute, When grepping', () => {
     it('Then it is still not reported', async () => {
       // Arrange
       const ctx = await seedRepo();
