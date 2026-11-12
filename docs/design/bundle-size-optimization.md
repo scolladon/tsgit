@@ -818,3 +818,16 @@ context's object store is disposed with its parent, `session-lineage.ts`), on th
 | Chunks: commands-internal | 93.4 kB | 93 258 | 93.4 kB | 142 B |
 
 The tarball measured 1 549 313 B (1513.0 KiB); the 1514 KiB cap holds.
+
+## Size-limit raise — grep blob targets
+
+`grep` of a blob target (the tree-or-blob peel, the path-free blob scan and the line-wise binary
+verdict with its returned-line count) crossed two caps at the implementation gate, measured on a
+clean build (`rm -rf dist .wireit`). The user approved one raise; the review folds then landed under it.
+
+| Row | cap | measured at the gate | raised to | final measurement | headroom |
+|---|--:|--:|--:|--:|--:|
+| Full library | 424.0 kB | 424 095 | 424.2 kB | 424 058 | 142 B |
+
+The npm tarball cap moved 1519 → 1520 KiB (1 555 460 B at the gate, 1 555 779 B final). The
+browser bundle stayed under its 365 kB cap (364 988 B final, 12 B headroom).
