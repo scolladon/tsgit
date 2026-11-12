@@ -9,7 +9,7 @@ import {
   type PeelHopObject,
   parseTypedPeelHop,
 } from './object-type-table.js';
-import { walkPeelChain } from './peel-chain.js';
+import { type PeelOutcome, walkPeelChain } from './peel-chain.js';
 
 const INVALID_OBJECT_ID = 'INVALID_OBJECT_ID';
 
@@ -32,15 +32,48 @@ export const peel = async (
   target: PeelTarget,
   name?: string,
 ): Promise<ObjectId> => {
-  const read = (oid: ObjectId) => readHop(ctx, table, oid);
-  const nextHop = (obj: PeelHopObject | undefined) => hopToward(obj, target);
-  const walk = await walkPeelChain({ id, result: await read(id) }, read, nextHop);
-  if (walk.end !== 'reached') throw objectNotFound(id);
+  const walk = await walkToward(ctx, table, id, target);
   const reached = walk.result;
   if (reached === undefined) throw objectNotFound(walk.id);
   if (reached.type === target) return walk.id;
   if (name !== undefined) reportPeelMismatch(ctx, name, target, reached.type);
   throw objectNotFound(walk.id);
+};
+
+export type SearchableKind = 'tree' | 'blob';
+
+export interface SearchableObject {
+  readonly kind: SearchableKind;
+  readonly id: ObjectId;
+}
+
+/**
+ * git grep's object dispatch (`deref_tag`, then a commit read as its root
+ * tree): tags are followed to any depth, a tree or a blob is kept as it is.
+ */
+export const peelToTreeOrBlob = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<SearchableObject> => {
+  const walk = await walkToward(ctx, table, id, 'tree');
+  const kind = walk.result?.type;
+  if (kind === 'tree' || kind === 'blob') return { kind, id: walk.id };
+  throw objectNotFound(walk.id);
+};
+
+/** The walk toward `target`; a chain that does not end `reached` names no object. */
+const walkToward = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  target: PeelTarget,
+): Promise<PeelOutcome<PeelHopObject | undefined>> => {
+  const read = (oid: ObjectId) => readHop(ctx, table, oid);
+  const nextHop = (obj: PeelHopObject | undefined) => hopToward(obj, target);
+  const walk = await walkPeelChain({ id, result: await read(id) }, read, nextHop);
+  if (walk.end !== 'reached') throw objectNotFound(id);
+  return walk;
 };
 
 /**
