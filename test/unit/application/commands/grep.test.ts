@@ -1332,7 +1332,7 @@ const writeTagObject = (
   ctx: Context,
   tagName: string,
   object: ObjectId,
-  objectType: 'blob' | 'tag' | 'tree',
+  objectType: 'blob' | 'commit' | 'tag' | 'tree',
 ): Promise<ObjectId> =>
   writeObject(ctx, {
     type: 'tag',
@@ -1908,6 +1908,114 @@ describe('Given a diff attribute', () => {
     });
   });
 
+  describe('Given a tree object as the rev', () => {
+    const treeTargets: ReadonlyArray<[string, (ctx: Context) => Promise<string>]> = [
+      ['the peeled tree rev', async () => 'HEAD^{tree}'],
+      [
+        'an annotated tag of the tree',
+        async (ctx) => {
+          const tree = await resolveRevision(ctx, 'HEAD^{tree}');
+          const tag = await writeTagObject(ctx, 'tt', tree, 'tree');
+          await tagCreate(ctx, { name: 'tt', target: tag });
+          return 'tt';
+        },
+      ],
+    ];
+
+    describe.each(treeTargets)('When the target is %s and a path is set -diff', (_l, prepare) => {
+      it('Then the content sniff decides and the path is text', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        const treeish = await prepare(ctx);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(project(pathOf(result, 'f1')?.hits ?? [])).toEqual(F1_HITS);
+      });
+    });
+  });
+
+  describe('Given a blob rev that names a path and the path is set -diff', () => {
+    it.each(['HEAD:f1', ':f1', ':0:f1', 'HEAD^{tree}:f1'])(
+      'Then the target %s is a binary match',
+      async (treeish) => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(result.blob).toEqual({ hits: [], binaryMatch: true, binaryMatchCount: 2 });
+      },
+    );
+  });
+
+  describe('Given a blob rev read through the index and its .gitattributes only in the index', () => {
+    it('Then the index copy decides', async () => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      await removeWorkTreeAttributes(ctx);
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: ':f1' },
+      });
+
+      // Assert
+      expect(result.blob?.binaryMatch).toBe(true);
+    });
+  });
+
+  describe('Given a blob rev read from a commit and its .gitattributes only in the index', () => {
+    it('Then the index copy is not loaded and the blob is text', async () => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      await removeWorkTreeAttributes(ctx);
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:f1' },
+      });
+
+      // Assert
+      expect(blobHits(result)).toEqual(F1_HITS);
+    });
+  });
+
+  describe('Given a blob named by oid or by an annotated tag and the path is set -diff', () => {
+    it.each([
+      ['its oid', async (_ctx: Context, oid: ObjectId) => oid],
+      [
+        'an annotated tag of it',
+        async (ctx: Context, oid: ObjectId) => {
+          const tag = await writeTagObject(ctx, 'bt', oid, 'blob');
+          await tagCreate(ctx, { name: 'bt', target: tag });
+          return 'bt';
+        },
+      ],
+    ])('Then %s is scanned as text', async (_label, prepare) => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      const treeish = await prepare(ctx, await resolveRevision(ctx, 'HEAD:f1'));
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+      // Assert
+      expect(blobHits(result)).toEqual(F1_HITS);
+    });
+  });
+
   describe('Given a NUL blob whose only match lies beyond 64 KiB and no attribute', () => {
     it('Then it is still not reported', async () => {
       // Arrange
@@ -1923,6 +2031,87 @@ describe('Given a diff attribute', () => {
 
       // Assert
       expect(result.paths).toHaveLength(0);
+    });
+  });
+
+  describe('Given a rev that dereferences to a commit', () => {
+    const commitTargets: ReadonlyArray<[string, (ctx: Context) => Promise<string>]> = [
+      ['the commit rev', async () => 'HEAD'],
+      [
+        'an annotated tag of the commit',
+        async (ctx) => {
+          const headId = await resolveRevision(ctx, 'HEAD');
+          const tag = await writeTagObject(ctx, 'ct', headId, 'commit');
+          await tagCreate(ctx, { name: 'ct', target: tag });
+          return 'ct';
+        },
+      ],
+    ];
+
+    describe.each(commitTargets)('When the target is %s and a path is set -diff', (_l, prepare) => {
+      it('Then the path is a binary match with its returned-line count', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        const treeish = await prepare(ctx);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(pathOf(result, 'f1')).toEqual({
+          path: 'f1',
+          hits: [],
+          binaryMatch: true,
+          binaryMatchCount: 2,
+        });
+      });
+    });
+
+    describe('When a NUL path is set diff', () => {
+      it('Then it is scanned as text', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f2 diff\n');
+        await writeAndStage(ctx, 'f2', F2);
+        await commitAll(ctx);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, {
+          patterns: [{ fixed: 'NEEDLE' }],
+          target: { treeish: 'HEAD' },
+        });
+
+        // Assert
+        expect(pathOf(result, 'f2')).toEqual({
+          path: 'f2',
+          hits: [{ lineNumber: 1, line: enc(F2), spans: [{ start: 2, end: 8 }] }],
+          binaryMatch: false,
+          binaryMatchCount: 0,
+        });
+      });
+    });
+
+    describe('When a bare context has an info/attributes setting -diff', () => {
+      it('Then the path is a binary match', async () => {
+        // Arrange
+        const seeded = await seedRepo();
+        await writeAndStage(seeded, 'f1', F1);
+        await commitAll(seeded);
+        await seeded.fs.mkdir(`${seeded.layout.gitDir}/info`);
+        await seeded.fs.writeUtf8(`${seeded.layout.gitDir}/info/attributes`, 'f1 binary\n');
+        const ctx = asBareContext(seeded);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, {
+          patterns: [{ fixed: 'NEEDLE' }],
+          target: { treeish: 'HEAD' },
+        });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
     });
   });
 });

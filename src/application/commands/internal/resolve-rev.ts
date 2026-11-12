@@ -10,22 +10,25 @@ import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { ObjectTypeTable } from '../../primitives/internal/object-type-table.js';
 import { peel } from '../../primitives/internal/peel.js';
-import { resolveRevision } from '../rev-parse.js';
+import { type NamedRevision, resolveRevision, resolveRevisionWithPath } from '../rev-parse.js';
 import { requireReference } from './require-reference.js';
 
 /** Resolve `rev` and peel to its commit (annotated tags followed). */
 export const resolveCommit = async (ctx: Context, rev: string): Promise<ObjectId> =>
   peel(ctx, undefined, await resolveRevision(ctx, rev), 'commit');
 
-/** git's `get_reference`: `rev` resolved and its object parsed into `table`, dying `bad object <rev>`. */
+/**
+ * git's `get_reference`: `rev` resolved and its object parsed into `table`, dying `bad object <rev>`,
+ * and the path the rev named, when it named one.
+ */
 export const resolveReference = async (
   ctx: Context,
   table: ObjectTypeTable,
   rev: string,
-): Promise<ObjectId> => {
-  const id = await resolveRevision(ctx, rev);
-  await requireReference(ctx, table, rev, id);
-  return id;
+): Promise<NamedRevision> => {
+  const resolved = await resolveRevisionWithPath(ctx, rev);
+  await requireReference(ctx, table, rev, resolved.id);
+  return resolved;
 };
 
 /** A {@link resolveReference}d object peeled to its tree through the same table. */

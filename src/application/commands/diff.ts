@@ -70,8 +70,8 @@ async function resolveSides(
   opts: DiffOptions,
 ): Promise<{ readonly from: ObjectId; readonly to: ObjectId | undefined }> {
   const table = createObjectTypeTable();
-  const fromId = await resolveReference(ctx, table, opts.from ?? 'HEAD');
-  const toId = opts.to === undefined ? undefined : await resolveReference(ctx, table, opts.to);
+  const { id: fromId } = await resolveReference(ctx, table, opts.from ?? 'HEAD');
+  const toId = opts.to === undefined ? undefined : (await resolveReference(ctx, table, opts.to)).id;
   const from = await peelToTree(ctx, table, fromId);
   return { from, to: toId === undefined ? undefined : await peelToTree(ctx, table, toId) };
 }

@@ -890,6 +890,8 @@ describe.skipIf(!GIT_AVAILABLE)('Given a diff attribute', () => {
   let indexOnly: string;
   let windowed: string;
   let bareClone: string;
+  let bareInfoClone: string;
+  let treeOnly: string;
 
   beforeAll(async () => {
     main = await initAttrRepo('tsgit-grep-attr-');
@@ -919,6 +921,8 @@ describe.skipIf(!GIT_AVAILABLE)('Given a diff attribute', () => {
     git(main, 'config', 'diff.strict.binary', 'true');
     git(main, 'config', 'diff.loose.binary', 'false');
     commitAttrRepo(main);
+    runGit(['-C', main, 'tag', '-a', '-m', 'm', 'ct', 'HEAD'], { env: datedEnv(clock) });
+    runGit(['-C', main, 'tag', '-a', '-m', 'm', 'tt', 'HEAD^{tree}'], { env: datedEnv(clock) });
 
     defaultDriver = await initAttrRepo('tsgit-grep-attr-default-');
     await writeFile(
@@ -941,6 +945,18 @@ describe.skipIf(!GIT_AVAILABLE)('Given a diff attribute', () => {
     runGit(['clone', '-q', '--bare', indexOnly, bareClone]);
     runGit([`--git-dir=${bareClone}`, 'read-tree', 'HEAD']);
 
+    bareInfoClone = `${indexOnly}-bare-info.git`;
+    runGit(['clone', '-q', '--bare', indexOnly, bareInfoClone]);
+    await mkdir(path.join(bareInfoClone, 'info'), { recursive: true });
+    await writeFile(path.join(bareInfoClone, 'info', 'attributes'), 'f1 binary\n');
+
+    treeOnly = await initAttrRepo('tsgit-grep-attr-tree-');
+    await writeFile(path.join(treeOnly, '.gitattributes'), 'f1 binary\n');
+    await writeFile(path.join(treeOnly, 'f1'), TEXT_LINES);
+    commitAttrRepo(treeOnly);
+    await writeFile(path.join(treeOnly, '.gitattributes'), '');
+    git(treeOnly, 'add', '.gitattributes');
+
     windowed = await initAttrRepo('tsgit-grep-attr-window-');
     await writeFile(path.join(windowed, '.gitattributes'), 'big.txt binary\n');
     await writeFile(path.join(windowed, 'big.txt'), `${'x\n'.repeat(40_000)}NEEDLE\n`);
@@ -948,7 +964,15 @@ describe.skipIf(!GIT_AVAILABLE)('Given a diff attribute', () => {
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
-    for (const repo of [main, defaultDriver, indexOnly, windowed, bareClone]) {
+    for (const repo of [
+      main,
+      defaultDriver,
+      indexOnly,
+      windowed,
+      bareClone,
+      bareInfoClone,
+      treeOnly,
+    ]) {
       await rm(repo, { recursive: true, force: true });
     }
   });
@@ -1066,6 +1090,181 @@ describe.skipIf(!GIT_AVAILABLE)('Given a diff attribute', () => {
         // Assert
         const expected = lines(git(bareClone, 'grep', '-n', '-F', '--cached', LIT));
         expect(pathLines('', result)).toEqual(expected);
+      });
+    });
+  });
+
+  const grepRev = (repo: string, treeish: string): Promise<GrepResult> =>
+    grep(createNodeContext({ workDir: repo }), {
+      patterns: [{ fixed: LIT }],
+      target: { treeish },
+    });
+
+  const blobRows = (target: string, result: GrepResult): string[] =>
+    result.blob?.binaryMatch ? [`Binary file ${target} matches`] : blobLines(target, result);
+
+  describe.each(['HEAD', 'ct'])('Given the commit rev %s as the target', (rev) => {
+    describe('When searching the main fixture', () => {
+      it('Then -n rows equal git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+
+        // Act
+        const result = await sut(main, rev);
+
+        // Assert
+        const expected = lines(git(main, 'grep', '-n', '-F', LIT, rev));
+        expect(pathLines(`${rev}:`, result).sort()).toEqual(expected.sort());
+      });
+    });
+  });
+
+  describe('Given the commit rev HEAD as the target', () => {
+    describe('When counting in the main fixture', () => {
+      it('Then -c rows equal git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+
+        // Act
+        const result = await sut(main, 'HEAD');
+
+        // Assert
+        const expected = lines(git(main, 'grep', '-c', '-F', LIT, 'HEAD'));
+        expect(countLines('HEAD:', result).sort()).toEqual(expected.sort());
+      });
+    });
+
+    describe('When the repository is bare with an info/attributes', () => {
+      it('Then -n rows equal git grep', async () => {
+        // Arrange
+        const sut = grep;
+        const ctx = createNodeContext({
+          workDir: bareInfoClone,
+          gitDir: bareInfoClone,
+          bare: true,
+        });
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: LIT }], target: { treeish: 'HEAD' } });
+
+        // Assert
+        const expected = lines(git(bareInfoClone, 'grep', '-n', '-F', LIT, 'HEAD'));
+        expect(expected).toEqual(['Binary file HEAD:f1 matches']);
+        expect(pathLines('HEAD:', result)).toEqual(expected);
+      });
+    });
+
+    describe('When diff.default.binary is configured', () => {
+      it('Then -n rows equal git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+
+        // Act
+        const result = await sut(defaultDriver, 'HEAD');
+
+        // Assert
+        const expected = lines(git(defaultDriver, 'grep', '-n', '-F', LIT, 'HEAD'));
+        expect(pathLines('HEAD:', result).sort()).toEqual(expected.sort());
+      });
+    });
+  });
+
+  describe.each(['HEAD^{tree}', 'tt', 'HEAD:sub'])('Given the tree rev %s as the target', (rev) => {
+    describe('When searching the main fixture', () => {
+      it('Then -n rows equal git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+
+        // Act
+        const result = await sut(main, rev);
+
+        // Assert
+        const expected = lines(git(main, 'grep', '-n', '-F', LIT, rev));
+        expect(pathLines(`${rev}:`, result).sort()).toEqual(expected.sort());
+      });
+    });
+  });
+
+  describe.each([
+    ['repo with the attribute only in the index', () => indexOnly, 'HEAD'],
+    ['repo with the attribute only in the index', () => indexOnly, 'HEAD:f1'],
+    ['repo with the attribute only in the rev tree', () => treeOnly, 'HEAD'],
+    ['bare clone without info/attributes', () => bareClone, 'HEAD'],
+  ])('Given the %s', (_label, repo, rev) => {
+    describe(`When the target is ${rev}`, () => {
+      it('Then the rows equal git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+        const dir = repo();
+        const bare = dir === bareClone;
+
+        // Act
+        const result = bare
+          ? await grep(createNodeContext({ workDir: dir, gitDir: dir, bare: true }), {
+              patterns: [{ fixed: LIT }],
+              target: { treeish: rev },
+            })
+          : await sut(dir, rev);
+
+        // Assert
+        const expected = lines(git(dir, 'grep', '-n', '-F', LIT, rev));
+        expect([...pathLines(`${rev}:`, result), ...blobRows(rev, result)].sort()).toEqual(
+          expected.sort(),
+        );
+      });
+    });
+  });
+
+  describe.each([
+    'HEAD:bin.txt',
+    'HEAD:sub/nested.txt',
+    'HEAD:diffed.dat',
+    ':bin.txt',
+    ':diffed.dat',
+  ])('Given the blob rev %s as the target', (rev) => {
+    describe('When searching the main fixture', () => {
+      it('Then the rows equal git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+
+        // Act
+        const result = await sut(main, rev);
+
+        // Assert
+        expect(blobRows(rev, result)).toEqual(lines(git(main, 'grep', '-n', '-F', LIT, rev)));
+      });
+    });
+  });
+
+  describe('Given the blob rev :f1 as the target', () => {
+    describe('When the attribute exists only in the index', () => {
+      it('Then the row equals git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+
+        // Act
+        const result = await sut(indexOnly, ':f1');
+
+        // Assert
+        const expected = lines(git(indexOnly, 'grep', '-n', '-F', LIT, ':f1'));
+        expect(expected).toEqual(['Binary file :f1 matches']);
+        expect(blobRows(':f1', result)).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a blob named by its oid', () => {
+    describe('When a path names it binary', () => {
+      it('Then the rows equal git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+        const oid = git(main, 'rev-parse', 'HEAD:bin.txt').trim();
+
+        // Act
+        const result = await sut(main, oid);
+
+        // Assert
+        expect(blobRows(oid, result)).toEqual(lines(git(main, 'grep', '-n', '-F', LIT, oid)));
       });
     });
   });

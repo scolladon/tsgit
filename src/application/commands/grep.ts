@@ -25,6 +25,7 @@ import {
 import { resolveCommandPathspec } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 import { resolveReference } from './internal/resolve-rev.js';
+import type { RevisionPath } from './rev-parse.js';
 
 export interface GrepLineHit {
   /** 1-based line number (git's `-n`). */
@@ -192,8 +193,13 @@ function scanBlob(
   return { hits, binaryMatch: false, binaryMatchCount: 0 };
 }
 
-const grepBlob = async (ctx: Context, matcher: GrepMatcher, id: ObjectId): Promise<GrepResult> => {
-  const blob = scanBlob(matcher, (await readBlob(ctx, id)).content);
+const grepBlob = async (
+  ctx: Context,
+  matcher: GrepMatcher,
+  id: ObjectId,
+  override?: BinaryOverride,
+): Promise<GrepResult> => {
+  const blob = scanBlob(matcher, (await readBlob(ctx, id)).content, override);
   return blob === undefined ? { paths: [] } : { paths: [], blob };
 };
 
@@ -232,6 +238,17 @@ const grepCandidates = async (
   return { paths: results.filter((r): r is GrepPathResult => r !== undefined) };
 };
 
+// A blob rev reads attributes only when the name carried a path (`HEAD:f`, `:f`); only a
+// `:path` name has loaded the index, so only it may see the index copy of `.gitattributes`.
+const blobOverride = async (
+  ctx: Context,
+  named: RevisionPath | undefined,
+): Promise<BinaryOverride | undefined> => {
+  if (named === undefined) return undefined;
+  const index = named.fromIndex ? await readIndex(ctx) : undefined;
+  return grepBinaryOverrideReader(ctx, index)(named.path);
+};
+
 // git resolves and parses the named object, then the pathspec, and only then peels the
 // object: an unresolvable or missing rev outranks a bad pathspec, a failing peel does not.
 const grepRev = async (
@@ -241,12 +258,23 @@ const grepRev = async (
   paths: ReadonlyArray<string> | undefined,
 ): Promise<GrepResult> => {
   const table = createObjectTypeTable();
-  const named = await resolveReference(ctx, table, rev);
+  const { id, named } = await resolveReference(ctx, table, rev);
   const pathspecMatcher = pathspecFor(ctx, paths);
-  const root = await peelToTreeOrBlob(ctx, table, named);
+  const root = await peelToTreeOrBlob(ctx, table, id);
   // git greps the one blob a rev names; the pathspec is validated but never applied to it.
-  if (root.kind === 'blob') return grepBlob(ctx, matcher, root.id);
-  return grepCandidates(ctx, matcher, pathspecMatcher, await enumerateTree(ctx, root.id));
+  if (root.kind === 'blob') {
+    return grepBlob(ctx, matcher, root.id, await blobOverride(ctx, named));
+  }
+  // git checks attributes under a commit only; a tree object keeps the content sniff.
+  const overrideOf =
+    root.kind === 'commit-tree' ? grepBinaryOverrideReader(ctx, undefined) : undefined;
+  return grepCandidates(
+    ctx,
+    matcher,
+    pathspecMatcher,
+    await enumerateTree(ctx, root.id),
+    overrideOf,
+  );
 };
 
 export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult> {
