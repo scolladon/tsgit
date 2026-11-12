@@ -600,7 +600,7 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
       ];
 
       it.each(forged)(
-        'Then, $label, git exits 128 and tsgit refuses OBJECT_NOT_FOUND on the commit, as git names it',
+        'Then git exits 128 and tsgit refuses OBJECT_NOT_FOUND on the commit $label',
         async ({ rev }) => {
           // Arrange
           const target = rev();
