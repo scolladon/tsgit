@@ -99,6 +99,16 @@ const blobLines = (rev: string, r: GrepResult): string[] =>
 
 const lines = (out: string): string[] => out.split('\n').filter(Boolean);
 
+/** The refusal's error data, or `undefined` when `run` resolves. */
+const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+  } catch (e) {
+    return (e as { data: unknown }).data;
+  }
+  return undefined;
+};
+
 interface BlobRev {
   readonly label: string;
   readonly rev: () => string;
@@ -607,19 +617,13 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
           const gitRun = tryRunGitWithExit(['-C', dir, 'grep', '-F', LIT, target]);
 
           // Act
-          let caught: unknown;
-          try {
-            await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: target } });
-          } catch (e) {
-            caught = e;
-          }
+          const data = await refusalOf(() =>
+            grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: target } }),
+          );
 
           // Assert
           expect(gitRun.exitCode).toBe(128);
-          expect((caught as { data: unknown }).data).toEqual({
-            code: 'OBJECT_NOT_FOUND',
-            id: target,
-          });
+          expect(data).toEqual({ code: 'OBJECT_NOT_FOUND', id: target });
         },
       );
     });
@@ -648,21 +652,18 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
           ]);
 
           // Act
-          let caught: unknown;
-          try {
-            await grep(ctx, {
+          const data = await refusalOf(() =>
+            grep(ctx, {
               patterns: [{ fixed: LIT }],
               target: { treeish: target },
               paths: ['../outside'],
-            });
-          } catch (e) {
-            caught = e;
-          }
+            }),
+          );
 
           // Assert
           expect(gitRun.exitCode).toBe(128);
           expect(gitRun.stderr).toContain('outside repository');
-          expect((caught as { data: { code: string } }).data.code).toBe('PATHSPEC_OUTSIDE_REPO');
+          expect(data).toMatchObject({ code: 'PATHSPEC_OUTSIDE_REPO' });
         },
       );
     });
@@ -680,21 +681,18 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
           const gitRun = tryRunGitWithExit(['-C', dir, 'grep', '-F', LIT, rev, '--', '../outside']);
 
           // Act
-          let caught: unknown;
-          try {
-            await grep(ctx, {
+          const data = await refusalOf(() =>
+            grep(ctx, {
               patterns: [{ fixed: LIT }],
               target: { treeish: rev },
               paths: ['../outside'],
-            });
-          } catch (e) {
-            caught = e;
-          }
+            }),
+          );
 
           // Assert
           expect(gitRun.exitCode).toBe(128);
           expect(gitRun.stderr).not.toContain('outside repository');
-          expect((caught as { data: { code: string } }).data.code).toBe(code);
+          expect(data).toMatchObject({ code });
         },
       );
     });
@@ -793,20 +791,17 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
         ]);
 
         // Act
-        let caught: unknown;
-        try {
-          await grep(ctx, {
+        const data = await refusalOf(() =>
+          grep(ctx, {
             patterns: [{ fixed: LIT }],
             target: { treeish: target },
             paths: ['../outside'],
-          });
-        } catch (e) {
-          caught = e;
-        }
+          }),
+        );
 
         // Assert
         expect(gitRun.exitCode).toBe(128);
-        expect((caught as { data: { code: string } }).data.code).toBe('PATHSPEC_OUTSIDE_REPO');
+        expect(data).toMatchObject({ code: 'PATHSPEC_OUTSIDE_REPO' });
       });
     });
 
