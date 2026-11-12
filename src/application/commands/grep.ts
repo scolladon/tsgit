@@ -13,10 +13,12 @@ import type { Context } from '../../ports/context.js';
 import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
+import { peelToTreeOrBlob } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { resolveCommandPathspec } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
-import { resolveTreeOrBlob } from './internal/resolve-rev.js';
+import { resolveReference } from './internal/resolve-rev.js';
 
 export interface GrepLineHit {
   /** 1-based line number (git's `-n`). */
@@ -206,15 +208,18 @@ const grepCandidates = async (
   return { paths: results.filter((r): r is GrepPathResult => r !== undefined) };
 };
 
-// git resolves the rev before it parses the pathspec, so a bad rev outranks a bad pathspec.
+// git resolves and parses the named object, then the pathspec, and only then peels the
+// object: an unresolvable or missing rev outranks a bad pathspec, a failing peel does not.
 const grepRev = async (
   ctx: Context,
   matcher: GrepMatcher,
   rev: string,
   paths: ReadonlyArray<string> | undefined,
 ): Promise<GrepResult> => {
-  const root = await resolveTreeOrBlob(ctx, rev);
+  const table = createObjectTypeTable();
+  const named = await resolveReference(ctx, table, rev);
   const pathspecMatcher = pathspecFor(ctx, paths);
+  const root = await peelToTreeOrBlob(ctx, table, named);
   // git greps the one blob a rev names; the pathspec is validated but never applied to it.
   if (root.kind === 'blob') return grepBlob(ctx, matcher, root.id);
   return grepCandidates(ctx, matcher, pathspecMatcher, await enumerateTree(ctx, root.id));

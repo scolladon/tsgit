@@ -1652,14 +1652,16 @@ describe('Given a blob target', () => {
   });
 
   describe('When the target names nothing greppable', () => {
-    const refusals: ReadonlyArray<readonly [string, (tree: ObjectId) => string, unknown]> = [
+    // git's `unable to parse object: <name>` names the rev as spelt, not the id it resolved to.
+    type Refusal = readonly [string, (tree: ObjectId) => string, (target: string) => object];
+    const refusals: ReadonlyArray<Refusal> = [
       [
         'a missing path',
         () => 'HEAD:nope',
-        { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'nope' },
+        () => ({ code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'nope' }),
       ],
-      ['a missing object', () => '0'.repeat(40), { code: 'OBJECT_NOT_FOUND', id: '0'.repeat(40) }],
-      ['a gitlink path', (tree) => `${tree}:gl`, { code: 'OBJECT_NOT_FOUND', id: '1'.repeat(40) }],
+      ['a missing object', () => '0'.repeat(40), (id) => ({ code: 'OBJECT_NOT_FOUND', id })],
+      ['a gitlink path', (tree) => `${tree}:gl`, (id) => ({ code: 'OBJECT_NOT_FOUND', id })],
     ];
 
     it.each(refusals)(
@@ -1668,15 +1670,16 @@ describe('Given a blob target', () => {
         // Arrange
         const { ctx } = await seedBlobTargets();
         const tree = await seedSpecialTree(ctx);
+        const target = rev(tree);
         const sut = grep;
 
         // Act
         const data = await catchData(() =>
-          sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish: rev(tree) } }),
+          sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish: target } }),
         );
 
         // Assert
-        expect(data).toMatchObject(expected as object);
+        expect(data).toMatchObject(expected(target));
       },
     );
   });

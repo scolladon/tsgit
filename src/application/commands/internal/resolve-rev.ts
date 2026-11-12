@@ -9,17 +9,13 @@
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { ObjectTypeTable } from '../../primitives/internal/object-type-table.js';
-import { peel, peelToTreeOrBlob, type SearchableObject } from '../../primitives/internal/peel.js';
+import { peel } from '../../primitives/internal/peel.js';
 import { resolveRevision } from '../rev-parse.js';
 import { requireReference } from './require-reference.js';
 
 /** Resolve `rev` and peel to its commit (annotated tags followed). */
 export const resolveCommit = async (ctx: Context, rev: string): Promise<ObjectId> =>
   peel(ctx, undefined, await resolveRevision(ctx, rev), 'commit');
-
-/** Resolve `rev` to what `grep` searches: its tree (commit → tree, tags followed) or a blob. */
-export const resolveTreeOrBlob = async (ctx: Context, rev: string): Promise<SearchableObject> =>
-  peelToTreeOrBlob(ctx, undefined, await resolveRevision(ctx, rev));
 
 /** git's `get_reference`: `rev` resolved and its object parsed into `table`, dying `bad object <rev>`. */
 export const resolveReference = async (

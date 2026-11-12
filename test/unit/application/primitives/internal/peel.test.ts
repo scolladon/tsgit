@@ -405,7 +405,7 @@ describe('peelToTreeOrBlob', () => {
     };
 
     describe('When the commit is peeled', () => {
-      it('Then it refuses OBJECT_NOT_FOUND on the blob', async () => {
+      it('Then it refuses OBJECT_NOT_FOUND on the commit', async () => {
         // Arrange
         const { ctx } = await logging();
         const blob = await blobOf(ctx, 'a\n');
@@ -416,12 +416,12 @@ describe('peelToTreeOrBlob', () => {
         const result = await caught(() => sut(ctx, undefined, commit));
 
         // Assert
-        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: blob });
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: commit });
       });
     });
 
     describe('When an annotated tag naming the commit is peeled', () => {
-      it('Then it refuses OBJECT_NOT_FOUND on the blob', async () => {
+      it('Then it refuses OBJECT_NOT_FOUND on the commit', async () => {
         // Arrange
         const { ctx } = await logging();
         const blob = await blobOf(ctx, 'a\n');
@@ -443,7 +443,62 @@ describe('peelToTreeOrBlob', () => {
         const result = await caught(() => sut(ctx, undefined, tag));
 
         // Assert
-        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: blob });
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: commit });
+      });
+    });
+  });
+
+  describe('Given a commit whose tree header names a tag of a blob', () => {
+    const commitOver = async (ctx: Context, tree: ObjectId): Promise<ObjectId> => {
+      const who = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+      return createCommit(ctx, { tree, parents: [], author: who, committer: who, message: 'm' });
+    };
+
+    describe('When the commit is peeled', () => {
+      it('Then it refuses OBJECT_NOT_FOUND on the commit', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const blob = await blobOf(ctx, 'a\n');
+        const commit = await commitOver(ctx, await tagOf(ctx, blob, 'blob'));
+        const sut = peelToTreeOrBlob;
+
+        // Act
+        const result = await caught(() => sut(ctx, undefined, commit));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: commit });
+      });
+    });
+
+    describe('When a commit naming that commit as its tree is peeled', () => {
+      it('Then it refuses OBJECT_NOT_FOUND on the outer commit', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const blob = await blobOf(ctx, 'a\n');
+        const inner = await commitOver(ctx, await tagOf(ctx, blob, 'blob'));
+        const outer = await commitOver(ctx, inner);
+        const sut = peelToTreeOrBlob;
+
+        // Act
+        const result = await caught(() => sut(ctx, undefined, outer));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: outer });
+      });
+    });
+
+    describe('When a commit whose tree is missing is peeled', () => {
+      it('Then it refuses OBJECT_NOT_FOUND on the commit', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const commit = await commitOver(ctx, MISSING);
+        const sut = peelToTreeOrBlob;
+
+        // Act
+        const result = await caught(() => sut(ctx, undefined, commit));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: commit });
       });
     });
   });

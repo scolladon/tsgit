@@ -112,7 +112,12 @@ HEAD:f1 HEAD -- 'sub/*'     HEAD:f1:… (unfiltered) + HEAD:sub/f2:1:…   0   (
 HEAD:f1 -- ../outside       fatal: … is outside repository …           128       THROW PATHSPEC_OUTSIDE_REPO{path:'../outside'}   (both refuse)
 HEAD:nope -- ../outside     fatal: unable to resolve revision: HEAD:nope 128     PATH_NOT_IN_TREE (review: rev before pathspec)
 <missing-oid> -- ../outside fatal: unable to parse object: <oid>        128       OBJECT_NOT_FOUND (review: rev before pathspec)
-<commit with tree=blob>     fatal: unable to read tree (<blob>)        128       OBJECT_NOT_FOUND{id:<blob>} (review)
+<commit with tree=blob>     fatal: unable to read tree (<commit>)      128       OBJECT_NOT_FOUND{id:<commit>} (review)
+<commit, tree=tag→blob>     fatal: unable to read tree (<commit>)      128       OBJECT_NOT_FOUND{id:<commit>} (review c2)
+<commit tree=blob> -- ../outside   … is outside repository          128       PATHSPEC_OUTSIDE_REPO (review c2: peel after pathspec)
+<commit, missing tree> -- ../outside … is outside repository        128       PATHSPEC_OUTSIDE_REPO (review c2)
+<tag, missing target> -- ../outside  … is outside repository        128       PATHSPEC_OUTSIDE_REPO (review c2)
+<tree>:gl (gitlink)         fatal: unable to parse object: <tree>:gl   128       OBJECT_NOT_FOUND{id:'<tree>:gl'} (review c2)
 -c HEAD:twice.bin           HEAD:twice.bin:2 (bin\0NEEDLE\nNEEDLE\n)   0         binaryMatchCount 2 (review, ADR-1176)
 ```
 

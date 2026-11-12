@@ -17,8 +17,12 @@ tree, a tree or a blob searched. `peel(…, 'tree')` already walks there but ref
 ## Decision
 
 **Ratified by the user.** `peel.ts` exports `peelToTreeOrBlob`, sharing `peel`'s walk;
-`resolve-rev.ts` exports `resolveTreeOrBlob`, which replaces `resolveTreeish` (grep was its
-only caller). `peel`'s signature is unchanged.
+`resolveTreeish` (grep was its only caller) is removed. `peel`'s signature is unchanged.
+
+Refined in review, keeping the locus: `peelToTreeOrBlob` models git's two stages — `deref_tag`
+over annotated tags, then a commit read raw as its root tree, refusing on the commit's id when
+that does not end on a tree. `grep` calls `resolveReference` (name + object parse), then its
+pathspec, then `peelToTreeOrBlob`, which is git's refusal order.
 
 Rejected: inspecting the object type inside `grep.ts` (duplicates the hop policy in a command)
 and widening `peel`'s target to a set (changes a signature `rev-parse`, `archive`,

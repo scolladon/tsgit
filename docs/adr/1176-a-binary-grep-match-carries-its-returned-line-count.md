@@ -36,7 +36,8 @@ gap above the filing bar), and deferring to the backlog.
 
 - No early exit: a binary blob costs one full window scan (bounded, ≤ ~8 ms measured on a
   one-LF-every-2-bytes window).
-- A match only beyond the first 64 KiB is still not counted (the window's existing residual).
+- Returned lines past the first 64 KiB are not counted, so such a binary blob counts lower than
+  `git grep -c` (the window's existing residual).
 
 ### Neutral
 

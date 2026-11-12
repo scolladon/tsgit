@@ -69,10 +69,14 @@ interface GrepResult {
   `tag^{}`) greps that blob. The result has `paths: []` and a `blob` field, absent
   when nothing matched. `paths` (the pathspec) is validated, so its refusals hold,
   but never applied. Any blob mode is grepped, a symlink's target string included.
-  A commit whose tree header names a blob is refused, as git refuses it.
-- **Refusal order.** For a `{ treeish }` target the rev is resolved before the
-  pathspec is parsed, as git does: a bad rev outranks a pathspec outside the
-  repository.
+  Once a commit is reached, everything past it must end on a tree: a commit whose
+  tree header leads to a blob (directly, through a tag, or through another commit)
+  is refused on that commit's id, as git's `unable to read tree (<commit>)`.
+- **Refusal order.** For a `{ treeish }` target git resolves the rev and parses the
+  object it names, then the pathspec, then peels the object. A rev that does not
+  resolve, or names a missing object, outranks a pathspec outside the repository;
+  a failure while peeling (a tag whose target is missing, a commit whose tree is
+  missing or is a blob) does not.
 - **Work-tree requirement is target-dependent.** Only the default (working-tree)
   target needs a work tree — it refuses `WORK_TREE_REQUIRED` when the repository
   has none (bare, or opened without one). `'index'` and `{ treeish }` (tree or blob)
@@ -99,7 +103,7 @@ interface GrepResult {
 - **`-c` (count):** with `count = m => m.binaryMatch ? m.binaryMatchCount : m.hits.length`,
   `result.paths.map(p => ({ path: p.path, count: count(p) }))`;
   blob: `result.blob && { label: rev, count: count(result.blob) }`. git counts the
-  returned lines of a binary blob too, not 1.
+  returned lines of a binary blob too, not 1 (within the first 64 KiB — see Divergences).
 - **`-l` (name-only):** `result.paths.map(p => p.path)`; blob: `result.blob ? [rev] : []`.
 - **`Binary file X matches`:** emit for each `p` with `p.binaryMatch === true`;
   blob: `Binary file ${rev} matches` when `result.blob?.binaryMatch`.
@@ -125,7 +129,9 @@ interface GrepResult {
   matches every line. The empty-pattern case is degenerate; the command rejects an
   empty `patterns` array but treats an empty literal as a no-match.
 - **Binary-match presence inspects only the first 64 KiB** of a binary blob: a blob
-  whose only match lies beyond the first 64 KiB is not reported as `binaryMatch`.
+  whose only match lies beyond the first 64 KiB is not reported as `binaryMatch`,
+  and `binaryMatchCount` counts only the window's returned lines, so a binary blob
+  with returned lines past 64 KiB counts lower than `git grep -c`.
   Under `invert`, a window boundary cutting through a matching line can return the
   cut fragment as a non-matching line, so the blob may be reported where git's
   unbounded scan would not. This
@@ -205,7 +211,8 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 - `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` or `core.deltaBaseCacheLimit` — the repo-settings class, checked by an explicit call right after the gate and **before** the pattern-empty check above (so an empty-pattern call still reports the config fault, matching git, even though `grep` would otherwise reach this class structurally only once it walks the tree). See [`internals.md`](../primitives/internals.md#assertreposettingsvalid).
 - `OBJECT_NOT_FOUND` — a `{ treeish }` target names a missing object, including a
   gitlink path (`HEAD:<submodule>`) or an index path (`:path`, `:<n>:path`) with no
-  entry; also a commit whose tree header names a blob.
+  entry (`id` is the rev as spelt, as git's `unable to parse object: <name>`); also a
+  commit whose root does not end on a tree (`id` is that commit).
 - `PATH_NOT_IN_TREE` — a `rev:path` target names no entry.
 - `REVPARSE_UNRESOLVED` — a `{ treeish }` rev cannot be resolved.
 - `GREP_LINE_TOO_LONG` — a single line's bytes exceed the JS engine's maximum

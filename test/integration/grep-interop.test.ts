@@ -113,6 +113,9 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   let emptyOid: string;
   let exeTree: string;
   let blobRootCommit: string;
+  let tagBlobRootCommit: string;
+  let missingTreeCommit: string;
+  let missingTargetTag: string;
   let bare: string;
   let bareCtx: Context;
 
@@ -245,10 +248,19 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     const exeOid = hashLoose('run NEEDLE\n');
     exeTree = runGit(['-C', dir, 'mktree'], { input: `100755 blob ${exeOid}\trun.sh\n` }).trim();
     const who = 'A <a@example.com> 1 +0000';
-    blobRootCommit = runGit(
-      ['-C', dir, 'hash-object', '-t', 'commit', '-w', '--literally', '--stdin'],
-      { input: `tree ${blobOid}\nauthor ${who}\ncommitter ${who}\n\nm\n` },
-    ).trim();
+    const forge = (type: string, body: string): string =>
+      runGit(['-C', dir, 'hash-object', '-t', type, '-w', '--literally', '--stdin'], {
+        input: body,
+      }).trim();
+    const commitOver = (tree: string): string =>
+      forge('commit', `tree ${tree}\nauthor ${who}\ncommitter ${who}\n\nm\n`);
+    blobRootCommit = commitOver(blobOid);
+    tagBlobRootCommit = commitOver(git(dir, 'rev-parse', 'blob-tag').trim());
+    missingTreeCommit = commitOver('1'.repeat(40));
+    missingTargetTag = forge(
+      'tag',
+      `object ${'2'.repeat(40)}\ntype commit\ntag t\ntagger ${who}\n\nm\n`,
+    );
     bare = `${dir}-bare.git`;
     runGit(['clone', '-q', '--bare', dir, bare]);
     bareCtx = createNodeContext({ workDir: bare, gitDir: bare, bare: true });
@@ -411,7 +423,7 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   // list and the per-file count from the structured fields (paths[].path,
   // hits.length / binaryMatch) — assertTargetParity checks both derivations.
   // ---------------------------------------------------------------------------
-  describe('Given 5 enumerated text paths and 1 binary path of which 3+1 contain NEEDLE', () => {
+  describe('Given the HEAD tree with text, nested and binary paths, one binary with two returned lines', () => {
     describe('When grepping the HEAD treeish for the literal', () => {
       it('Then tsgit derives the same matching paths and per-file counts as git grep -l/-c', async () => {
         // Arrange & Act
@@ -581,26 +593,78 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
       });
     });
 
-    describe('When a commit names the blob as its tree', () => {
-      it('Then git exits 128 and tsgit refuses OBJECT_NOT_FOUND on the blob', async () => {
-        // Arrange
-        const gitRun = tryRunGitWithExit(['-C', dir, 'grep', '-F', LIT, blobRootCommit]);
+    describe('When a commit reaches the blob through its tree header', () => {
+      const forged: ReadonlyArray<BlobRev> = [
+        { label: 'naming the blob', rev: () => blobRootCommit },
+        { label: 'naming a tag of the blob', rev: () => tagBlobRootCommit },
+      ];
 
-        // Act
-        let caught: unknown;
-        try {
-          await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: blobRootCommit } });
-        } catch (e) {
-          caught = e;
-        }
+      it.each(forged)(
+        'Then, $label, git exits 128 and tsgit refuses OBJECT_NOT_FOUND on the commit, as git names it',
+        async ({ rev }) => {
+          // Arrange
+          const target = rev();
+          const gitRun = tryRunGitWithExit(['-C', dir, 'grep', '-F', LIT, target]);
 
-        // Assert
-        expect(gitRun.exitCode).toBe(128);
-        expect((caught as { data: unknown }).data).toEqual({
-          code: 'OBJECT_NOT_FOUND',
-          id: blobOid,
-        });
-      });
+          // Act
+          let caught: unknown;
+          try {
+            await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: target } });
+          } catch (e) {
+            caught = e;
+          }
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect((caught as { data: unknown }).data).toEqual({
+            code: 'OBJECT_NOT_FOUND',
+            id: target,
+          });
+        },
+      );
+    });
+
+    describe('When the rev names an object that fails only once peeled and the pathspec is outside the repository', () => {
+      const peelFailures: ReadonlyArray<BlobRev> = [
+        { label: 'a commit naming the blob as its tree', rev: () => blobRootCommit },
+        { label: 'a commit with a missing tree', rev: () => missingTreeCommit },
+        { label: 'a tag with a missing target', rev: () => missingTargetTag },
+      ];
+
+      it.each(peelFailures)(
+        'Then $label refuses on the pathspec first, as git does',
+        async ({ rev }) => {
+          // Arrange
+          const target = rev();
+          const gitRun = tryRunGitWithExit([
+            '-C',
+            dir,
+            'grep',
+            '-F',
+            LIT,
+            target,
+            '--',
+            '../outside',
+          ]);
+
+          // Act
+          let caught: unknown;
+          try {
+            await grep(ctx, {
+              patterns: [{ fixed: LIT }],
+              target: { treeish: target },
+              paths: ['../outside'],
+            });
+          } catch (e) {
+            caught = e;
+          }
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).toContain('outside repository');
+          expect((caught as { data: { code: string } }).data.code).toBe('PATHSPEC_OUTSIDE_REPO');
+        },
+      );
     });
 
     describe('When the rev is bad and the pathspec is outside the repository', () => {
