@@ -67,15 +67,21 @@ the index.
      path, normalised the way `resolveRelativePath` already normalises it (`./`, `../`
      against `ctx.cwd`).
 3. Targets that do not consult the attribute: a `{ treeish }` that dereferences to a tree
-   object, and a blob rev with no path. Their verdict stays the sniff, as today.
+   object, and a blob rev with no path. They still take the `default` driver:
+   `diff.default.binary` decides, else the sniff (corrected in review; pinned:
+   `diff.default.binary=true` ⇒ `Binary file HEAD^{tree}:f1 matches`, `Binary file HEAD::f1
+   matches`, `Binary file <oid> matches`; `=false` greps a NUL blob as text on the same
+   targets — the matrix's default-driver rows already showed it for a path-less blob).
 4. Attribute sources, highest first: `info/attributes`, the per-directory
    `.gitattributes` (work-tree file, then the index blob when the work-tree file is
    absent), then `core.attributesFile`.
    - The index fallback applies to `--cached`, the work tree, and a `:path` / `:N:path`
      blob rev. These are the targets that load the index (rows C and E).
    - Any other rev target reads the work-tree file only.
-   - In a repository without a work tree, only `info/attributes` and
-     `core.attributesFile` are read, never the index.
+   - In a bare repository, only `info/attributes` and `core.attributesFile` are read,
+     never the index. A repository that is not bare reads the index copy even without a
+     work tree (corrected in review; pinned: `core.bare=false`, `GIT_DIR` only,
+     `grep --cached` with an index-only `f1 binary` ⇒ `Binary file f1 matches`).
    - The rev's own tree is never read. `attr.tree` and `--attr-source` are not implemented in tsgit
    (ledger row 31.9) and stay out.
 5. A forced verdict feeds the existing machinery unchanged:

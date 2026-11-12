@@ -13,7 +13,8 @@ subjects:
 
 Pinned against git 2.56: a rev that dereferences to a commit (tags followed) consults
 attributes; a tree object (`HEAD^{tree}`, a tree oid, a tag of a tree, `HEAD:`, `HEAD:sub`)
-keeps the sniff. `peelToTreeOrBlob` already branches on exactly that.
+reads none, though git's `default` driver (`diff.default.binary`) still applies to it.
+`peelToTreeOrBlob` already branches on exactly that.
 
 ## Decision
 

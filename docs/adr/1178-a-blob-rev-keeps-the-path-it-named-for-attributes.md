@@ -14,7 +14,8 @@ subjects:
 
 git keeps the path a rev names (`get_oid_with_context`'s `oc.path`). Pinned against git 2.56:
 `HEAD:f1`, `:f1`, `:0:f1`, `HEAD^{tree}:f1`, `HEAD:./f1` and `HEAD~0:f1` honour `f1 binary`;
-an oid, `<oid>^{blob}` or a tag of a blob keep the content sniff.
+an oid, `<oid>^{blob}` or a tag of a blob read no attribute (only `diff.default.binary`,
+then the content sniff).
 
 ## Decision
 

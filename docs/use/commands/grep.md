@@ -93,9 +93,11 @@ interface GrepResult {
   Targets that read the attribute: the work tree, `'index'`, a rev that dereferences to
   a commit (tags followed), a blob rev that names a path (`HEAD:f`, `:f`, `:0:f`).
   Targets that do not: a tree object (`HEAD^{tree}`, a tree oid or tag of one,
-  `HEAD:sub`), a blob named by oid or tag. Sources: `info/attributes`, the work-tree
-  `.gitattributes` (the index copy only for the work tree, `'index'` and a `:path` rev),
-  `core.attributesFile`; never the rev's own tree. A bare repository reads only
+  `HEAD:sub`), a blob named by oid or tag; these still take `diff.default.binary`
+  before the sniff. Sources: `info/attributes`, the work-tree
+  `.gitattributes` (the index copy only for the work tree, `'index'` and a `:path` rev,
+  in any repository that is not bare), `core.attributesFile`; never the rev's own tree.
+  A bare repository reads only
   `info/attributes` and `core.attributesFile`. A binary blob is not line-scanned; it is
   reported with `binaryMatch: true` and empty `hits` (git's `Binary file X matches`,
   exit 0) when the matcher returns some line: of the whole blob under a forced-binary
