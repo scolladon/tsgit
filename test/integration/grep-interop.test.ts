@@ -16,12 +16,12 @@
  *   unique:         tsgit's grep data reconstructs canonical `git grep` target/binary/line decisions
  *   interopSurface: grep
  */
-import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { type GrepResult, grep } from '../../src/application/commands/grep.js';
+import { type GrepBlobResult, type GrepResult, grep } from '../../src/application/commands/grep.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
@@ -43,12 +43,15 @@ const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
 let clock = 1_700_000_000;
 
 /**
- * Reconstruct git's per-path count for `-c`. Binary blobs that matched report
- * count=1 in git's output; tsgit reports binaryMatch:true with hits:[]. The
- * caller derives the same count from the structured datum.
+ * Reconstruct git's per-path count for `-c`. git counts the returned lines of a
+ * binary blob too; tsgit keeps `hits` empty for one and carries the count in
+ * `binaryMatchCount`.
  */
+const countOf = (match: GrepBlobResult): number =>
+  match.binaryMatch ? match.binaryMatchCount : match.hits.length;
+
 const deriveCount = (paths: GrepResult['paths']): Map<string, number> =>
-  new Map(paths.map((p) => [p.path as string, p.binaryMatch ? 1 : p.hits.length]));
+  new Map(paths.map((p) => [p.path as string, countOf(p)]));
 
 /**
  * Reconstruct git's name-only (`-l`) list. Binary blobs that matched appear in
@@ -61,7 +64,7 @@ const deriveNameOnly = (paths: GrepResult['paths']): Set<string> =>
 /**
  * Assert list + count parity between tsgit and `git grep` for a given treeish
  * target. Strips the "HEAD:" prefix from git's output. Binary blobs that
- * matched are included in both the list and the count (git counts them as 1).
+ * matched are included in both the list and the count (git counts their returned lines).
  */
 const assertTargetParity = (
   result: GrepResult,
@@ -109,6 +112,7 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   let wordOid: string;
   let emptyOid: string;
   let exeTree: string;
+  let blobRootCommit: string;
   let bare: string;
   let bareCtx: Context;
 
@@ -118,6 +122,8 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     { label: 'HEAD:c.txt', rev: () => 'HEAD:c.txt' },
     { label: 'HEAD:./c.txt', rev: () => 'HEAD:./c.txt' },
     { label: 'HEAD:a.txt', rev: () => 'HEAD:a.txt' },
+    { label: 'HEAD:nested/deep.txt', rev: () => 'HEAD:nested/deep.txt' },
+    { label: 'HEAD^{tree}:c.txt', rev: () => 'HEAD^{tree}:c.txt' },
     { label: ':c.txt', rev: () => ':c.txt' },
     { label: ':0:c.txt', rev: () => ':0:c.txt' },
     { label: 'an annotated tag', rev: () => 'blob-tag' },
@@ -180,6 +186,10 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     await writeFile(path.join(dir, 'mixed.dat'), Buffer.from('bin\0NEEDLE\nother\n'));
     await writeFile(path.join(dir, 'nomatch.dat'), Buffer.from('bin\0x\n'));
     await writeFile(path.join(dir, 'anchored.dat'), Buffer.from('bin\0x\nNEEDLE y\n'));
+    // Two returned lines in one binary blob: git's -c prints 2, not 1.
+    await writeFile(path.join(dir, 'twice.bin'), Buffer.from('bin\0NEEDLE\nNEEDLE\n'));
+    await mkdir(path.join(dir, 'nested'));
+    await writeFile(path.join(dir, 'nested', 'deep.txt'), 'NEEDLE deep\n');
 
     git(dir, 'add', '-A');
     clock += 60;
@@ -234,6 +244,11 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     emptyOid = hashLoose('');
     const exeOid = hashLoose('run NEEDLE\n');
     exeTree = runGit(['-C', dir, 'mktree'], { input: `100755 blob ${exeOid}\trun.sh\n` }).trim();
+    const who = 'A <a@example.com> 1 +0000';
+    blobRootCommit = runGit(
+      ['-C', dir, 'hash-object', '-t', 'commit', '-w', '--literally', '--stdin'],
+      { input: `tree ${blobOid}\nauthor ${who}\ncommitter ${who}\n\nm\n` },
+    ).trim();
     bare = `${dir}-bare.git`;
     runGit(['clone', '-q', '--bare', dir, bare]);
     bareCtx = createNodeContext({ workDir: bare, gitDir: bare, bare: true });
@@ -483,6 +498,7 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
             .map((l) => l.replace(/^HEAD:/, '')),
         );
         expect(deriveNameOnly(result.paths)).toEqual(gitNames);
+        expect(gitNames).toEqual(new Set(['anchored.dat', 'mixed.dat', 'nomatch.dat']));
         expect(result.paths.every((p) => p.binaryMatch && p.hits.length === 0)).toBe(true);
       });
     });
@@ -544,9 +560,15 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     });
 
     describe('When -l or -c is projected', () => {
-      it('Then the name list and the count equal git', async () => {
+      const projected: ReadonlyArray<BlobRev> = [
+        { label: 'an annotated tag', rev: () => 'blob-tag' },
+        { label: 'the full oid', rev: () => blobOid },
+        { label: 'a binary blob with two returned lines', rev: () => 'HEAD:twice.bin' },
+      ];
+
+      it.each(projected)('Then $label lists and counts as git does', async ({ rev }) => {
         // Arrange
-        const target = 'blob-tag';
+        const target = rev();
 
         // Act
         const result = await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: target } });
@@ -554,9 +576,63 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
         // Assert
         const { blob } = result;
         expect(blob ? [target] : []).toEqual(lines(git(dir, 'grep', '-l', '-F', LIT, target)));
-        const count = blob ? [`${target}:${blob.binaryMatch ? 1 : blob.hits.length}`] : [];
+        const count = blob ? [`${target}:${countOf(blob)}`] : [];
         expect(count).toEqual(lines(git(dir, 'grep', '-c', '-F', LIT, target)));
       });
+    });
+
+    describe('When a commit names the blob as its tree', () => {
+      it('Then git exits 128 and tsgit refuses OBJECT_NOT_FOUND on the blob', async () => {
+        // Arrange
+        const gitRun = tryRunGitWithExit(['-C', dir, 'grep', '-F', LIT, blobRootCommit]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: blobRootCommit } });
+        } catch (e) {
+          caught = e;
+        }
+
+        // Assert
+        expect(gitRun.exitCode).toBe(128);
+        expect((caught as { data: unknown }).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: blobOid,
+        });
+      });
+    });
+
+    describe('When the rev is bad and the pathspec is outside the repository', () => {
+      const badRevs = [
+        { label: 'a missing path', rev: 'HEAD:nope', code: 'PATH_NOT_IN_TREE' },
+        { label: 'a missing object', rev: '1'.repeat(40), code: 'OBJECT_NOT_FOUND' },
+      ];
+
+      it.each(badRevs)(
+        'Then $label is refused before the pathspec, as git does',
+        async ({ rev, code }) => {
+          // Arrange
+          const gitRun = tryRunGitWithExit(['-C', dir, 'grep', '-F', LIT, rev, '--', '../outside']);
+
+          // Act
+          let caught: unknown;
+          try {
+            await grep(ctx, {
+              patterns: [{ fixed: LIT }],
+              target: { treeish: rev },
+              paths: ['../outside'],
+            });
+          } catch (e) {
+            caught = e;
+          }
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).not.toContain('outside repository');
+          expect((caught as { data: { code: string } }).data.code).toBe(code);
+        },
+      );
     });
 
     describe('When the match is inverted', () => {

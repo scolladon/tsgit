@@ -36,6 +36,11 @@ export interface GrepBlobResult {
    * "Binary file X matches" from this datum.
    */
   readonly binaryMatch: boolean;
+  /**
+   * Lines of a binary blob's first 64 KiB the matcher returns — git's `-c`
+   * count for it. `0` for a text blob, whose count is `hits.length`.
+   */
+  readonly binaryMatchCount: number;
 }
 
 export interface GrepPathResult extends GrepBlobResult {
@@ -140,15 +145,17 @@ async function enumerateCandidates(
   return enumerateIndex(ctx);
 }
 
-// git's binary verdict: some line of the window is returned by the (invert-aware) matcher.
+// git's binary verdict and -c count: the window's lines the (invert-aware) matcher returns.
 // The window bounds a caller RegExp, whose backtracking over a multi-MB binary blob would
 // block the event loop; a match only beyond the first 64 KiB is not reported.
-const returnsAnyLine = (matcher: GrepMatcher, bytes: Uint8Array): boolean =>
-  splitLines(bytes.subarray(0, MAX_LINE_BYTES)).some((line) => matcher.matchLine(line).returned);
+const countReturnedLines = (matcher: GrepMatcher, bytes: Uint8Array): number =>
+  splitLines(bytes.subarray(0, MAX_LINE_BYTES)).filter((line) => matcher.matchLine(line).returned)
+    .length;
 
 function scanBlob(matcher: GrepMatcher, bytes: Uint8Array): GrepBlobResult | undefined {
   if (isBinary(bytes)) {
-    return returnsAnyLine(matcher, bytes) ? { hits: [], binaryMatch: true } : undefined;
+    const binaryMatchCount = countReturnedLines(matcher, bytes);
+    return binaryMatchCount > 0 ? { hits: [], binaryMatch: true, binaryMatchCount } : undefined;
   }
 
   const lines = splitLines(bytes);
@@ -161,7 +168,7 @@ function scanBlob(matcher: GrepMatcher, bytes: Uint8Array): GrepBlobResult | und
   });
 
   if (hits.length === 0) return undefined;
-  return { hits, binaryMatch: false };
+  return { hits, binaryMatch: false, binaryMatchCount: 0 };
 }
 
 const grepBlob = async (ctx: Context, matcher: GrepMatcher, id: ObjectId): Promise<GrepResult> => {
@@ -177,10 +184,18 @@ const scanCandidate = async (
   return match === undefined ? undefined : { path: candidate.path, ...match };
 };
 
+type PathspecMatcher = ReturnType<typeof resolveCommandPathspec>;
+
+const pathspecFor = (
+  ctx: Context,
+  paths: ReadonlyArray<string> | undefined,
+): PathspecMatcher | undefined =>
+  paths !== undefined && paths.length > 0 ? resolveCommandPathspec(ctx, paths) : undefined;
+
 const grepCandidates = async (
   ctx: Context,
   matcher: GrepMatcher,
-  pathspecMatcher: ReturnType<typeof resolveCommandPathspec> | undefined,
+  pathspecMatcher: PathspecMatcher | undefined,
   candidates: ReadonlyArray<Candidate>,
 ): Promise<GrepResult> => {
   const inScope =
@@ -189,6 +204,20 @@ const grepCandidates = async (
       : candidates;
   const results = await boundedMapFor(ctx, 'ioBound', inScope, (c) => scanCandidate(matcher, c));
   return { paths: results.filter((r): r is GrepPathResult => r !== undefined) };
+};
+
+// git resolves the rev before it parses the pathspec, so a bad rev outranks a bad pathspec.
+const grepRev = async (
+  ctx: Context,
+  matcher: GrepMatcher,
+  rev: string,
+  paths: ReadonlyArray<string> | undefined,
+): Promise<GrepResult> => {
+  const root = await resolveTreeOrBlob(ctx, rev);
+  const pathspecMatcher = pathspecFor(ctx, paths);
+  // git greps the one blob a rev names; the pathspec is validated but never applied to it.
+  if (root.kind === 'blob') return grepBlob(ctx, matcher, root.id);
+  return grepCandidates(ctx, matcher, pathspecMatcher, await enumerateTree(ctx, root.id));
 };
 
 export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult> {
@@ -209,17 +238,10 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
     ...(opts.invert === true ? { invert: true } : {}),
   });
 
-  const pathspecMatcher =
-    opts.paths !== undefined && opts.paths.length > 0
-      ? resolveCommandPathspec(ctx, opts.paths)
-      : undefined;
-
   const { target } = opts;
   if (target !== undefined && target !== 'index') {
-    const root = await resolveTreeOrBlob(ctx, target.treeish);
-    // git greps the one blob a rev names; the pathspec is validated above but never applied to it.
-    if (root.kind === 'blob') return grepBlob(ctx, matcher, root.id);
-    return grepCandidates(ctx, matcher, pathspecMatcher, await enumerateTree(ctx, root.id));
+    return grepRev(ctx, matcher, target.treeish, opts.paths);
   }
+  const pathspecMatcher = pathspecFor(ctx, opts.paths);
   return grepCandidates(ctx, matcher, pathspecMatcher, await enumerateCandidates(ctx, target));
 }

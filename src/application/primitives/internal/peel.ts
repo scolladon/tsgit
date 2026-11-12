@@ -9,7 +9,7 @@ import {
   type PeelHopObject,
   parseTypedPeelHop,
 } from './object-type-table.js';
-import { type PeelOutcome, walkPeelChain } from './peel-chain.js';
+import { type PeelWalk, walkPeelChain } from './peel-chain.js';
 
 const INVALID_OBJECT_ID = 'INVALID_OBJECT_ID';
 
@@ -49,7 +49,8 @@ export interface SearchableObject {
 
 /**
  * git grep's object dispatch (`deref_tag`, then a commit read as its root
- * tree): tags are followed to any depth, a tree or a blob is kept as it is.
+ * tree): tags are followed to any depth, a tree or a blob is kept as it is,
+ * and a commit whose tree header names a blob refuses.
  */
 export const peelToTreeOrBlob = async (
   ctx: Context,
@@ -58,7 +59,9 @@ export const peelToTreeOrBlob = async (
 ): Promise<SearchableObject> => {
   const walk = await walkToward(ctx, table, id, 'tree');
   const kind = walk.result?.type;
-  if (kind === 'tree' || kind === 'blob') return { kind, id: walk.id };
+  if (kind === 'tree') return { kind, id: walk.id };
+  // A commit's root is read as a tree: git refuses a blob its tree header names.
+  if (kind === 'blob' && walk.crossed.last?.type !== 'commit') return { kind, id: walk.id };
   throw objectNotFound(walk.id);
 };
 
@@ -68,7 +71,7 @@ const walkToward = async (
   table: ObjectTypeTable | undefined,
   id: ObjectId,
   target: PeelTarget,
-): Promise<PeelOutcome<PeelHopObject | undefined>> => {
+): Promise<PeelWalk<PeelHopObject | undefined>> => {
   const read = (oid: ObjectId) => readHop(ctx, table, oid);
   const nextHop = (obj: PeelHopObject | undefined) => hopToward(obj, target);
   const walk = await walkPeelChain({ id, result: await read(id) }, read, nextHop);

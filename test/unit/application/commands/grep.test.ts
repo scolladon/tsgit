@@ -481,7 +481,9 @@ describe('Given a binary blob with no line containing the pattern', () => {
       const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], invert: true });
 
       // Assert
-      expect(result.paths).toEqual([{ path: 'nomatch.dat', hits: [], binaryMatch: true }]);
+      expect(result.paths).toEqual([
+        { path: 'nomatch.dat', hits: [], binaryMatch: true, binaryMatchCount: 1 },
+      ]);
     });
   });
 });
@@ -498,7 +500,9 @@ describe('Given a binary blob whose second line starts with the pattern', () => 
       const result: GrepResult = await sut(ctx, { patterns: [/^NEEDLE/] });
 
       // Assert
-      expect(result.paths).toEqual([{ path: 'anchored.dat', hits: [], binaryMatch: true }]);
+      expect(result.paths).toEqual([
+        { path: 'anchored.dat', hits: [], binaryMatch: true, binaryMatchCount: 1 },
+      ]);
     });
   });
 });
@@ -515,7 +519,9 @@ describe('Given a binary blob with one matching and one other line', () => {
       const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], invert: true });
 
       // Assert
-      expect(result.paths).toEqual([{ path: 'mixed.dat', hits: [], binaryMatch: true }]);
+      expect(result.paths).toEqual([
+        { path: 'mixed.dat', hits: [], binaryMatch: true, binaryMatchCount: 1 },
+      ]);
     });
   });
 
@@ -530,7 +536,9 @@ describe('Given a binary blob with one matching and one other line', () => {
       const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
 
       // Assert
-      expect(result.paths).toEqual([{ path: 'mixed.dat', hits: [], binaryMatch: true }]);
+      expect(result.paths).toEqual([
+        { path: 'mixed.dat', hits: [], binaryMatch: true, binaryMatchCount: 1 },
+      ]);
     });
   });
 });
@@ -1399,6 +1407,7 @@ describe('Given a blob target', () => {
       // Assert
       expect(result.paths).toStrictEqual([]);
       expect(result.blob?.binaryMatch).toBe(false);
+      expect(result.blob?.binaryMatchCount).toBe(0);
       expect(blobHits(result)).toStrictEqual(F1_HITS);
     });
   });
@@ -1407,6 +1416,7 @@ describe('Given a blob target', () => {
     const revs: ReadonlyArray<readonly [string, (oid: ObjectId) => string]> = [
       ['HEAD:f1', () => 'HEAD:f1'],
       ['HEAD:./f1', () => 'HEAD:./f1'],
+      ['HEAD^{tree}:f1', () => 'HEAD^{tree}:f1'],
       [':f1', () => ':f1'],
       [':0:f1', () => ':0:f1'],
       ['abbreviated oid', (oid) => oid.slice(0, 7)],
@@ -1497,7 +1507,23 @@ describe('Given a blob target', () => {
       });
 
       // Assert
-      expect(result.blob).toStrictEqual({ hits: [], binaryMatch: true });
+      expect(result.blob).toStrictEqual({ hits: [], binaryMatch: true, binaryMatchCount: 1 });
+    });
+
+    it('Then binaryMatchCount counts every returned line, as git -c does', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      await commitBinary(ctx, 'twice.bin', 'bin\0NEEDLE\nNEEDLE\nother\n');
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:twice.bin' },
+      });
+
+      // Assert
+      expect(result.blob).toStrictEqual({ hits: [], binaryMatch: true, binaryMatchCount: 2 });
     });
   });
 
@@ -1574,25 +1600,37 @@ describe('Given a blob target', () => {
   });
 
   describe('When wholeWord is set on a blob holding only an embedded word', () => {
-    it('Then the blob does not match with wholeWord and matches without', async () => {
+    it('Then the blob does not match', async () => {
       // Arrange
       const { ctx } = await seedBlobTargets();
       const sut = grep;
 
       // Act
-      const gated = await sut(ctx, {
+      const result = await sut(ctx, {
         patterns: [{ fixed: 'NEEDLE' }],
         wholeWord: true,
         target: { treeish: 'HEAD:word' },
       });
-      const ungated = await sut(ctx, {
+
+      // Assert
+      expect(result).toStrictEqual({ paths: [] });
+    });
+  });
+
+  describe('When wholeWord is not set on a blob holding only an embedded word', () => {
+    it('Then the embedded word matches', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
         patterns: [{ fixed: 'NEEDLE' }],
         target: { treeish: 'HEAD:word' },
       });
 
       // Assert
-      expect(gated).toStrictEqual({ paths: [] });
-      expect(blobHits(ungated)).toStrictEqual([[1, 'xNEEDLEx\n', [{ start: 1, end: 7 }]]]);
+      expect(blobHits(result)).toStrictEqual([[1, 'xNEEDLEx\n', [{ start: 1, end: 7 }]]]);
     });
   });
 
@@ -1614,26 +1652,57 @@ describe('Given a blob target', () => {
   });
 
   describe('When the target names nothing greppable', () => {
-    it('Then it refuses with the git-shaped error', async () => {
+    const refusals: ReadonlyArray<readonly [string, (tree: ObjectId) => string, unknown]> = [
+      [
+        'a missing path',
+        () => 'HEAD:nope',
+        { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'nope' },
+      ],
+      ['a missing object', () => '0'.repeat(40), { code: 'OBJECT_NOT_FOUND', id: '0'.repeat(40) }],
+      ['a gitlink path', (tree) => `${tree}:gl`, { code: 'OBJECT_NOT_FOUND', id: '1'.repeat(40) }],
+    ];
+
+    it.each(refusals)(
+      'Then %s refuses with the git-shaped error',
+      async (_label, rev, expected) => {
+        // Arrange
+        const { ctx } = await seedBlobTargets();
+        const tree = await seedSpecialTree(ctx);
+        const sut = grep;
+
+        // Act
+        const data = await catchData(() =>
+          sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish: rev(tree) } }),
+        );
+
+        // Assert
+        expect(data).toMatchObject(expected as object);
+      },
+    );
+  });
+
+  describe('When the target names nothing greppable and the pathspec is outside the repository', () => {
+    const badRevs: ReadonlyArray<readonly [string, string, unknown]> = [
+      ['a missing path', 'HEAD:nope', { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'nope' }],
+      ['a missing object', '0'.repeat(40), { code: 'OBJECT_NOT_FOUND', id: '0'.repeat(40) }],
+    ];
+
+    it.each(badRevs)('Then %s is refused before the pathspec', async (_label, rev, expected) => {
       // Arrange
       const { ctx } = await seedBlobTargets();
-      const tree = await seedSpecialTree(ctx);
       const sut = grep;
-      const refusals: ReadonlyArray<readonly [string, unknown]> = [
-        ['HEAD:nope', { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'nope' }],
-        ['0'.repeat(40), { code: 'OBJECT_NOT_FOUND', id: '0'.repeat(40) }],
-        [`${tree}:gl`, { code: 'OBJECT_NOT_FOUND', id: '1'.repeat(40) }],
-      ];
 
       // Act
-      const failures = await Promise.all(
-        refusals.map(([treeish]) =>
-          catchData(() => sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } })),
-        ),
+      const data = await catchData(() =>
+        sut(ctx, {
+          patterns: [{ fixed: 'NEEDLE' }],
+          target: { treeish: rev },
+          paths: ['../outside'],
+        }),
       );
 
       // Assert
-      expect(failures).toMatchObject(refusals.map(([, expected]) => expected));
+      expect(data).toMatchObject(expected as object);
     });
   });
 });

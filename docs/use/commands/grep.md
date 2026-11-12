@@ -37,6 +37,7 @@ interface GrepLineHit {
 interface GrepBlobResult {
   readonly hits: ReadonlyArray<GrepLineHit>;
   readonly binaryMatch: boolean;   // binary blob, some line of its first 64 KiB returned by the matcher; hits empty
+  readonly binaryMatchCount: number; // binary blob: lines of its first 64 KiB the matcher returns; 0 for text
 }
 interface GrepPathResult extends GrepBlobResult {
   readonly path: FilePath;
@@ -68,6 +69,10 @@ interface GrepResult {
   `tag^{}`) greps that blob. The result has `paths: []` and a `blob` field, absent
   when nothing matched. `paths` (the pathspec) is validated, so its refusals hold,
   but never applied. Any blob mode is grepped, a symlink's target string included.
+  A commit whose tree header names a blob is refused, as git refuses it.
+- **Refusal order.** For a `{ treeish }` target the rev is resolved before the
+  pathspec is parsed, as git does: a bad rev outranks a pathspec outside the
+  repository.
 - **Work-tree requirement is target-dependent.** Only the default (working-tree)
   target needs a work tree — it refuses `WORK_TREE_REQUIRED` when the repository
   has none (bare, or opened without one). `'index'` and `{ treeish }` (tree or blob)
@@ -91,8 +96,10 @@ interface GrepResult {
 - **Label.** The `rev` as typed for a blob target; `${rev}:${path}` for a tree target.
 - **`path:line:text`** — tree: for each `hit`, `${rev}:${path}:${hit.lineNumber}:${decode(hit.line)}`;
   blob: `${rev}:${hit.lineNumber}:${decode(hit.line)}` for each `hit` of `result.blob`.
-- **`-c` (count):** `result.paths.map(p => ({ path: p.path, count: p.binaryMatch ? 1 : p.hits.length }))`;
-  blob: `result.blob && { label: rev, count: result.blob.binaryMatch ? 1 : result.blob.hits.length }`.
+- **`-c` (count):** with `count = m => m.binaryMatch ? m.binaryMatchCount : m.hits.length`,
+  `result.paths.map(p => ({ path: p.path, count: count(p) }))`;
+  blob: `result.blob && { label: rev, count: count(result.blob) }`. git counts the
+  returned lines of a binary blob too, not 1.
 - **`-l` (name-only):** `result.paths.map(p => p.path)`; blob: `result.blob ? [rev] : []`.
 - **`Binary file X matches`:** emit for each `p` with `p.binaryMatch === true`;
   blob: `Binary file ${rev} matches` when `result.blob?.binaryMatch`.
@@ -197,7 +204,8 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 - `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid streaming-class `[core]` entry, reached through the eager operational gate every operational command reads (see [`errors.md`](../errors.md)).
 - `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` or `core.deltaBaseCacheLimit` — the repo-settings class, checked by an explicit call right after the gate and **before** the pattern-empty check above (so an empty-pattern call still reports the config fault, matching git, even though `grep` would otherwise reach this class structurally only once it walks the tree). See [`internals.md`](../primitives/internals.md#assertreposettingsvalid).
 - `OBJECT_NOT_FOUND` — a `{ treeish }` target names a missing object, including a
-  gitlink path (`HEAD:<submodule>`).
+  gitlink path (`HEAD:<submodule>`) or an index path (`:path`, `:<n>:path`) with no
+  entry; also a commit whose tree header names a blob.
 - `PATH_NOT_IN_TREE` — a `rev:path` target names no entry.
 - `REVPARSE_UNRESOLVED` — a `{ treeish }` rev cannot be resolved.
 - `GREP_LINE_TOO_LONG` — a single line's bytes exceed the JS engine's maximum
@@ -210,4 +218,4 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 
 - Primitives: [`readBlob`](../primitives/read-blob.md) · [`walkTree`](../primitives/walk-tree.md) · [`readIndex`](../primitives/read-index.md)
 - Related commands: [`diff`](diff.md) · [`log`](log.md) · [`show`](show.md)
-- ADRs: 395 (JavaScript `RegExp` grammar) · 396 (v1 command surface) · 397 (byte-offset bridge) · 1171 (blob result field) · 1172 (pathspec with a blob target) · 1173 (peel to tree or blob) · 1174 (line-wise binary verdict) · 1175 (`treeish` key kept)
+- ADRs: 395 (JavaScript `RegExp` grammar) · 396 (v1 command surface) · 397 (byte-offset bridge) · 1171 (blob result field) · 1172 (pathspec with a blob target) · 1173 (peel to tree or blob) · 1174 (line-wise binary verdict) · 1175 (`treeish` key kept) · 1176 (binary line count)

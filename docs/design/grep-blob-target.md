@@ -110,6 +110,10 @@ HEAD:f1 -- nomatch          HEAD:f1:1:a NEEDLE …                       0   (pa
 HEAD:f1 -- 'sub/*'          HEAD:f1:1:a NEEDLE …                       0   (pathspec ignored)
 HEAD:f1 HEAD -- 'sub/*'     HEAD:f1:… (unfiltered) + HEAD:sub/f2:1:…   0   (filters the tree target only)
 HEAD:f1 -- ../outside       fatal: … is outside repository …           128       THROW PATHSPEC_OUTSIDE_REPO{path:'../outside'}   (both refuse)
+HEAD:nope -- ../outside     fatal: unable to resolve revision: HEAD:nope 128     PATH_NOT_IN_TREE (review: rev before pathspec)
+<missing-oid> -- ../outside fatal: unable to parse object: <oid>        128       OBJECT_NOT_FOUND (review: rev before pathspec)
+<commit with tree=blob>     fatal: unable to read tree (<blob>)        128       OBJECT_NOT_FOUND{id:<blob>} (review)
+-c HEAD:twice.bin           HEAD:twice.bin:2 (bin\0NEEDLE\nNEEDLE\n)   0         binaryMatchCount 2 (review, ADR-1176)
 ```
 
 Tree targets and refusals (no change; pinned as controls):

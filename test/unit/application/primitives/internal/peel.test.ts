@@ -223,6 +223,27 @@ describe('peel', () => {
       });
     });
   });
+
+  describe('Given a blob id and peel toward a tree', () => {
+    describe('When it is peeled', () => {
+      it('Then it refuses OBJECT_NOT_FOUND on the blob', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('a\n'),
+        });
+        const sut = peel;
+
+        // Act
+        const result = await caught(() => sut(ctx, undefined, blob, 'tree'));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: blob });
+      });
+    });
+  });
 });
 
 describe('peelToTreeOrBlob', () => {
@@ -377,16 +398,49 @@ describe('peelToTreeOrBlob', () => {
     });
   });
 
-  describe('Given a blob id and peel toward a tree', () => {
-    describe('When it is peeled', () => {
-      it('Then peel still refuses OBJECT_NOT_FOUND on the blob', async () => {
+  describe('Given a commit whose tree header names a blob', () => {
+    const commitOver = async (ctx: Context, tree: ObjectId): Promise<ObjectId> => {
+      const who = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+      return createCommit(ctx, { tree, parents: [], author: who, committer: who, message: 'm' });
+    };
+
+    describe('When the commit is peeled', () => {
+      it('Then it refuses OBJECT_NOT_FOUND on the blob', async () => {
         // Arrange
         const { ctx } = await logging();
         const blob = await blobOf(ctx, 'a\n');
-        const sut = peel;
+        const commit = await commitOver(ctx, blob);
+        const sut = peelToTreeOrBlob;
 
         // Act
-        const result = await caught(() => sut(ctx, undefined, blob, 'tree'));
+        const result = await caught(() => sut(ctx, undefined, commit));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: blob });
+      });
+    });
+
+    describe('When an annotated tag naming the commit is peeled', () => {
+      it('Then it refuses OBJECT_NOT_FOUND on the blob', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const blob = await blobOf(ctx, 'a\n');
+        const commit = await commitOver(ctx, blob);
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: commit,
+            objectType: 'commit',
+            tagName: 't',
+            message: 'm',
+            extraHeaders: [],
+          },
+        });
+        const sut = peelToTreeOrBlob;
+
+        // Act
+        const result = await caught(() => sut(ctx, undefined, tag));
 
         // Assert
         expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: blob });
