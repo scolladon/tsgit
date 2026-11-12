@@ -65,8 +65,8 @@ Re-pinned on main `f307051d` before design (lesson 033): the brief's symbols
 Fixture: `f1 = "a NEEDLE\nb\nNEEDLE c\n"`, `sub/f2 = "NEEDLE sub\n"`,
 `bin.dat = "bin\0NEEDLE\n"`, `word = "xNEEDLEx\n"`, `empty` (0 bytes),
 `link -> NEEDLE-target` (symlink), `exe = "run NEEDLE\n"` (100755), and `gl`, a gitlink to
-`1111…1111` (absent). Tags: `blobtag` (annotated → blob f1), `tagtag` (annotated →
-blobtag), `light` (lightweight → blob f1), `treetag` (annotated → root tree). "ours" is
+`1111…1111` (absent). Tags: `blob-tag` (annotated → blob f1), `tag-of-tag` (annotated →
+blob-tag), `light` (lightweight → blob f1), `tree-tag` (annotated → root tree). "ours" is
 tsgit at `f307051d`. Pattern `NEEDLE`, `-n` unless stated.
 
 ```
@@ -79,11 +79,11 @@ HEAD^{tree}:f1              HEAD^{tree}:f1:1:a NEEDLE …                0      
 :f1                         :f1:1:a NEEDLE …                           0         THROW (same)
 :0:f1                       :0:f1:1:a NEEDLE …                         0         THROW (same)
 HEAD:sub/f2                 HEAD:sub/f2:1:NEEDLE sub                   0         THROW (same, sub/f2 oid)
-blobtag                     blobtag:1:a NEEDLE …                       0         THROW
-tagtag                      tagtag:1:a NEEDLE …                        0         THROW
+blob-tag                     blob-tag:1:a NEEDLE …                       0         THROW
+tag-of-tag                      tag-of-tag:1:a NEEDLE …                        0         THROW
 light                       light:1:a NEEDLE …                         0         THROW
 <f1-oid>^{blob}             <f1-oid>^{blob}:1:a NEEDLE …               0         THROW
-blobtag^{}                  blobtag^{}:1:a NEEDLE …                    0         THROW
+blob-tag^{}                  blob-tag^{}:1:a NEEDLE …                    0         THROW
 <loose unreachable blob>    <oid>:1:loose NEEDLE                       0         THROW
 HEAD:bin.dat                Binary file HEAD:bin.dat matches           0         THROW
 HEAD:link                   HEAD:link:1:NEEDLE-target                  0         THROW   (symlink blob IS grepped)
@@ -94,12 +94,12 @@ HEAD:word                   HEAD:word:1:xNEEDLEx                       0        
 HEAD:f1     -v              HEAD:f1:2:b                                0         THROW
 HEAD:f1     -l              HEAD:f1                                    0         THROW
 <f1-oid>    -l              <f1-oid>                                   0         THROW
-blobtag     -c              blobtag:2                                  0         THROW
+blob-tag     -c              blob-tag:2                                  0         THROW
 HEAD:bin.dat -c             HEAD:bin.dat:1                             0         THROW
 HEAD:bin.dat -l             HEAD:bin.dat                               0         THROW
 HEAD:f1     (pattern ZZZ)   (none)                                     1         THROW
 bare repo: HEAD:f1          HEAD:f1:1:a NEEDLE …                       0         (same THROW path)
-bare repo: blobtag          blobtag:1:a NEEDLE …                       0         (same THROW path)
+bare repo: blob-tag          blob-tag:1:a NEEDLE …                       0         (same THROW path)
 ```
 
 Pathspec against a blob target:
@@ -118,14 +118,14 @@ Tree targets and refusals (no change; pinned as controls):
 HEAD:sub                    HEAD:sub:f2:1:NEEDLE sub                   0         [["f2",[1],false]]
 HEAD:sub -- f2              HEAD:sub:f2:1:NEEDLE sub                   0         (pathspec is relative to the tree)
 HEAD:sub -- sub/f2          (none)                                     1
-treetag                     treetag:f1:1:… treetag:sub/f2:1:…          0         [["f1",[1,3],false],["sub/f2",[1],false]]
+tree-tag                     tree-tag:f1:1:… tree-tag:sub/f2:1:…          0         [["f1",[1,3],false],["sub/f2",[1],false]]
 HEAD:nope                   fatal: path 'nope' does not exist in 'HEAD'   128    THROW PATH_NOT_IN_TREE{rev:'HEAD',path:'nope'}
 HEAD:gl (gitlink, absent)   fatal: unable to parse object: HEAD:gl     128       THROW OBJECT_NOT_FOUND{id:1111…}
 0000…0000                   fatal: unable to parse object: 0000…       128       THROW OBJECT_NOT_FOUND{id:0000…}
 <f1-oid>^{tree}             error: … expected tree type, but the object dereferences to blob type; fatal … 128   (rev grammar refusal, unchanged)
 ```
 
-Several targets in one git call (`HEAD:f1 blobtag`, `HEAD HEAD:f1`) emit each target's
+Several targets in one git call (`HEAD:f1 blob-tag`, `HEAD HEAD:f1`) emit each target's
 block in argument order. tsgit takes one target per call, so this does not apply.
 
 Probe scripts (throwaway dirs): the session's `mk.sh` plus this phase's `mk2.sh` (gitlink,
@@ -228,12 +228,12 @@ That branch has two defects, found by this phase's probes. They affect **every**
 today, and the blob target would inherit both:
 
 ```
-fixture: allmatch.dat="bin\0NEEDLE\n"  mixed.dat="bin\0NEEDLE\nother\n"  nomatch.dat="bin\0x\n"
+fixture: all-match.dat="bin\0NEEDLE\n"  mixed.dat="bin\0NEEDLE\nother\n"  nomatch.dat="bin\0x\n"
 git grep -v NEEDLE HEAD        → Binary file HEAD:mixed.dat matches / Binary file HEAD:nomatch.dat matches, exit 0
-tsgit invert, target HEAD      → [["allmatch.dat",0,true],["mixed.dat",0,true]]          (allmatch wrong, nomatch missing)
+tsgit invert, target HEAD      → [["all-match.dat",0,true],["mixed.dat",0,true]]          (all-match wrong, nomatch missing)
 
-fixture: anch.dat="bin\0x\nNEEDLE y\n"
-git grep -E '^NEEDLE' HEAD     → Binary file HEAD:anch.dat matches, exit 0
+fixture: anchored.dat="bin\0x\nNEEDLE y\n"
+git grep -E '^NEEDLE' HEAD     → Binary file HEAD:anchored.dat matches, exit 0
 tsgit /^NEEDLE/, target HEAD   → []                                                      (window probed as one line)
 ```
 
@@ -315,27 +315,27 @@ the extraction does not change `peel`.
 | `wholeWord` on `xNEEDLEx` | `blob` undefined | wholeWord not forwarded |
 | bare context (`asBareContext`), blob target | resolves | work-tree gate applied to blob |
 
-If Decision 4 folds: rewrite the `:438` row to git's verdict, and add rows for allmatch
+If Decision 4 folds: rewrite the `:438` row to git's verdict, and add rows for all-match
 (not reported), nomatch-under-invert (reported) and the `^`-anchored second line
 (reported). Each row kills a revert to the window probe.
 
 **Interop** (`test/integration/grep-interop.test.ts`; helpers `git`, `runGit`,
 `runGitEnv`, `tryRunGitWithExit` from `interop-helpers.ts`; expected values always from
-real `git`). In `beforeAll`, after the initial commit, add `git tag -a blobtag <c.txt
-blob>`, `git tag -a tagtag blobtag` and `git tag light <c.txt blob>` (dated env). New
+real `git`). In `beforeAll`, after the initial commit, add `git tag -a blob-tag <c.txt
+blob>`, `git tag -a tag-of-tag blob-tag` and `git tag light <c.txt blob>` (dated env). New
 `describe('Given a blob target')` with `it.each` over rev builders: `<oid>`, `HEAD:c.txt`,
-`HEAD:a.txt`, `blobtag`, `tagtag`, `light`, `<oid>^{blob}`, `blobtag^{}`, `:c.txt`. Each
+`HEAD:a.txt`, `blob-tag`, `tag-of-tag`, `light`, `<oid>^{blob}`, `blob-tag^{}`, `:c.txt`. Each
 row runs `git grep -n -F NEEDLE <rev>` and rebuilds
 `${rev}:${lineNumber}:${text}` from `result.blob`, asserting equality line for line. More
 rows:
 
 - `HEAD:b.bin`: `Binary file HEAD:b.bin matches` rebuilt from `blob.binaryMatch`.
-- `-l` / `-c` on `blobtag`: `[rev]` / `${rev}:${count}`.
+- `-l` / `-c` on `blob-tag`: `[rev]` / `${rev}:${count}`.
 - `-v` on `HEAD:c.txt`.
 - `HEAD:c.txt -- nomatch`: git still matches, and so does tsgit with `paths: ['nomatch']`.
 - `HEAD:b.txt` (no match): `tryRunGitWithExit` exit 1, and `result.blob` undefined.
 - `HEAD:tracked_symlink.txt` with `{ fixed: 'symlink_target' }`.
-- If Decision 4 folds: `-v` over a binary blob pair (allmatch/nomatch) against the tree
+- If Decision 4 folds: `-v` over a binary blob pair (all-match/nomatch) against the tree
   target.
 
 `assertTargetParity`'s `HEAD:` strip stays tree-only.
