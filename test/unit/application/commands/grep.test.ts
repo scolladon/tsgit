@@ -2077,7 +2077,7 @@ describe('grep diff attribute verdict', () => {
       const ctx = await seedWithAttributes('f1 binary\n');
       await removeWorkTreeAttributes(ctx);
       const bare = asBareContext(ctx);
-      const noWorkTree = { ...bare, layout: { ...bare.layout, bare: false } } as Context;
+      const noWorkTree: Context = { ...bare, layout: { ...bare.layout, bare: false } };
       const sut = grep;
 
       // Act
