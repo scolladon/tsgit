@@ -148,6 +148,7 @@ export {
   fsck,
 } from './fsck.js';
 export {
+  type GrepBlobResult,
   type GrepLineHit,
   type GrepOptions,
   type GrepPathResult,

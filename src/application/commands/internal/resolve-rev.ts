@@ -1,5 +1,5 @@
 /**
- * Shared rev resolution for the porcelain reads (`log`, `diff`): resolve a
+ * Shared rev resolution for the porcelain reads (`log`, `diff`, `grep`): resolve a
  * revision through the full `resolveRevision` grammar (`~`/`^`/`@{…}`/`:path`/oid-prefix)
  * and peel it to the object kind the caller needs. Peeling reuses `rev-parse`'s
  * `peel` (follows annotated tags; `commit→tree` for the tree target), so a tag
@@ -9,7 +9,7 @@
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { ObjectTypeTable } from '../../primitives/internal/object-type-table.js';
-import { peel } from '../../primitives/internal/peel.js';
+import { peel, peelToTreeOrBlob, type SearchableObject } from '../../primitives/internal/peel.js';
 import { resolveRevision } from '../rev-parse.js';
 import { requireReference } from './require-reference.js';
 
@@ -17,9 +17,9 @@ import { requireReference } from './require-reference.js';
 export const resolveCommit = async (ctx: Context, rev: string): Promise<ObjectId> =>
   peel(ctx, undefined, await resolveRevision(ctx, rev), 'commit');
 
-/** Resolve `rev` and peel to its tree (commit → its tree, tags followed). */
-export const resolveTreeish = async (ctx: Context, rev: string): Promise<ObjectId> =>
-  peel(ctx, undefined, await resolveRevision(ctx, rev), 'tree');
+/** Resolve `rev` to what `grep` searches: its tree (commit → tree, tags followed) or a blob. */
+export const resolveTreeOrBlob = async (ctx: Context, rev: string): Promise<SearchableObject> =>
+  peelToTreeOrBlob(ctx, undefined, await resolveRevision(ctx, rev));
 
 /** git's `get_reference`: `rev` resolved and its object parsed into `table`, dying `bad object <rev>`. */
 export const resolveReference = async (

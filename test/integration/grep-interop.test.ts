@@ -23,7 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type GrepResult, grep } from '../../src/application/commands/grep.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -88,9 +88,45 @@ const assertTargetParity = (
   }
 };
 
+const text = (line: Uint8Array): string => new TextDecoder().decode(line).replace(/\n$/, '');
+
+/** git's `<rev>:<n>:<line>` rows, rebuilt from the structured blob result (the library renders nothing). */
+const blobLines = (rev: string, r: GrepResult): string[] =>
+  (r.blob?.hits ?? []).map((h) => `${rev}:${h.lineNumber}:${text(h.line)}`);
+
+const lines = (out: string): string[] => out.split('\n').filter(Boolean);
+
+interface BlobRev {
+  readonly label: string;
+  readonly rev: () => string;
+}
+
 describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   let dir: string;
   let ctx: Context;
+  let blobOid: string;
+  let looseOid: string;
+  let wordOid: string;
+  let emptyOid: string;
+  let exeTree: string;
+  let bare: string;
+  let bareCtx: Context;
+
+  const blobRevs: ReadonlyArray<BlobRev> = [
+    { label: 'the full oid', rev: () => blobOid },
+    { label: 'an abbreviated oid', rev: () => blobOid.slice(0, 7) },
+    { label: 'HEAD:c.txt', rev: () => 'HEAD:c.txt' },
+    { label: 'HEAD:./c.txt', rev: () => 'HEAD:./c.txt' },
+    { label: 'HEAD:a.txt', rev: () => 'HEAD:a.txt' },
+    { label: ':c.txt', rev: () => ':c.txt' },
+    { label: ':0:c.txt', rev: () => ':0:c.txt' },
+    { label: 'an annotated tag', rev: () => 'blob-tag' },
+    { label: 'a tag of a tag', rev: () => 'tag-of-tag' },
+    { label: 'a lightweight tag', rev: () => 'light' },
+    { label: 'oid^{blob}', rev: () => `${blobOid}^{blob}` },
+    { label: 'tag^{}', rev: () => 'blob-tag^{}' },
+    { label: 'an unreachable loose blob', rev: () => looseOid },
+  ];
 
   beforeAll(async () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-grep-interop-'));
@@ -181,11 +217,33 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     // git grep (any target) must NOT return it.
     await writeFile(path.join(dir, 'untracked_with_needle.txt'), 'NEEDLE in untracked file\n');
 
+    // Blob-target fixtures: tags do not move HEAD, so the rows above are untouched.
+    blobOid = git(dir, 'rev-parse', 'HEAD:c.txt').trim();
+    runGit(['-C', dir, 'tag', '-a', '-m', 'm', 'blob-tag', blobOid], { env: datedEnv(clock) });
+    runGit(
+      ['-C', dir, '-c', 'advice.nestedTag=false', 'tag', '-a', '-m', 'm', 'tag-of-tag', 'blob-tag'],
+      {
+        env: datedEnv(clock),
+      },
+    );
+    git(dir, 'tag', 'light', blobOid);
+    const hashLoose = (s: string): string =>
+      runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: s }).trim();
+    looseOid = hashLoose('loose NEEDLE\n');
+    wordOid = hashLoose('xNEEDLEx\n');
+    emptyOid = hashLoose('');
+    const exeOid = hashLoose('run NEEDLE\n');
+    exeTree = runGit(['-C', dir, 'mktree'], { input: `100755 blob ${exeOid}\trun.sh\n` }).trim();
+    bare = `${dir}-bare.git`;
+    runGit(['clone', '-q', '--bare', dir, bare]);
+    bareCtx = createNodeContext({ workDir: bare, gitDir: bare, bare: true });
+
     ctx = createNodeContext({ workDir: dir });
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
+    await rm(bare, { recursive: true, force: true });
   });
 
   // ---------------------------------------------------------------------------
@@ -453,6 +511,210 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
         );
         expect(deriveNameOnly(result.paths)).toEqual(gitNames);
         expect(gitNames).toEqual(new Set(['anchored.dat']));
+      });
+    });
+  });
+  describe('Given a blob target', () => {
+    describe.each(blobRevs)('When the rev is $label', ({ rev }) => {
+      it('Then the rebuilt lines equal git grep -n and paths is empty', async () => {
+        // Arrange
+        const target = rev();
+
+        // Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: target } });
+
+        // Assert
+        expect(blobLines(target, result)).toEqual(lines(git(dir, 'grep', '-n', '-F', LIT, target)));
+        expect(result.paths).toEqual([]);
+      });
+    });
+
+    describe('When the blob is binary', () => {
+      it('Then the Binary file line equals git', async () => {
+        // Arrange
+        const target = 'HEAD:b.bin';
+
+        // Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: target } });
+
+        // Assert
+        const rebuilt = result.blob?.binaryMatch === true ? `Binary file ${target} matches` : '';
+        expect(rebuilt).toBe(git(dir, 'grep', '-n', '-F', LIT, target).trim());
+      });
+    });
+
+    describe('When -l or -c is projected', () => {
+      it('Then the name list and the count equal git', async () => {
+        // Arrange
+        const target = 'blob-tag';
+
+        // Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: target } });
+
+        // Assert
+        const { blob } = result;
+        expect(blob ? [target] : []).toEqual(lines(git(dir, 'grep', '-l', '-F', LIT, target)));
+        const count = blob ? [`${target}:${blob.binaryMatch ? 1 : blob.hits.length}`] : [];
+        expect(count).toEqual(lines(git(dir, 'grep', '-c', '-F', LIT, target)));
+      });
+    });
+
+    describe('When the match is inverted', () => {
+      it('Then the rebuilt lines equal git grep -n -v', async () => {
+        // Arrange
+        const target = 'HEAD:a.txt';
+
+        // Act
+        const result = await grep(ctx, {
+          patterns: [{ fixed: LIT }],
+          invert: true,
+          target: { treeish: target },
+        });
+
+        // Assert
+        expect(blobLines(target, result)).toHaveLength(12);
+        expect(blobLines(target, result)).toEqual(
+          lines(git(dir, 'grep', '-n', '-v', '-F', LIT, target)),
+        );
+      });
+    });
+
+    describe('When nothing matches', () => {
+      const rows: ReadonlyArray<{ label: string; rev: () => string; wholeWord: boolean }> = [
+        { label: 'a non-matching blob', rev: () => 'HEAD:b.txt', wholeWord: false },
+        { label: 'the empty blob', rev: () => emptyOid, wholeWord: false },
+        { label: 'an embedded word under -w', rev: () => wordOid, wholeWord: true },
+      ];
+      it.each(rows)('Then $label exits 1 and has no blob key', async ({ rev, wholeWord }) => {
+        // Arrange
+        const target = rev();
+        const flags = wholeWord ? ['-w'] : [];
+
+        // Act
+        const result = await grep(ctx, {
+          patterns: [{ fixed: LIT }],
+          ...(wholeWord ? { wholeWord: true } : {}),
+          target: { treeish: target },
+        });
+
+        // Assert
+        const gitRun = tryRunGitWithExit(['-C', dir, 'grep', '-n', '-F', ...flags, LIT, target]);
+        expect(gitRun.exitCode).toBe(1);
+        expect(result).toStrictEqual({ paths: [] });
+      });
+
+      it('Then an embedded word matches on both sides without -w', async () => {
+        // Arrange & Act
+        const result = await grep(ctx, {
+          patterns: [{ fixed: LIT }],
+          target: { treeish: wordOid },
+        });
+
+        // Assert
+        expect(blobLines(wordOid, result)).toEqual(
+          lines(git(dir, 'grep', '-n', '-F', LIT, wordOid)),
+        );
+        expect(result.blob).toBeDefined();
+      });
+    });
+
+    describe('When a non-matching pathspec is given', () => {
+      it('Then the pathspec is not applied, as in git', async () => {
+        // Arrange
+        const target = 'HEAD:c.txt';
+
+        // Act
+        const result = await grep(ctx, {
+          patterns: [{ fixed: LIT }],
+          target: { treeish: target },
+          paths: ['nomatch'],
+        });
+
+        // Assert
+        const expected = lines(git(dir, 'grep', '-n', '-F', LIT, target, '--', 'nomatch'));
+        expect(expected).toHaveLength(1);
+        expect(blobLines(target, result)).toEqual(expected);
+      });
+    });
+
+    describe('When the pathspec is outside the repository', () => {
+      it('Then git exits 128 and tsgit refuses PATHSPEC_OUTSIDE_REPO', async () => {
+        // Arrange
+        const target = 'HEAD:c.txt';
+        const gitRun = tryRunGitWithExit([
+          '-C',
+          dir,
+          'grep',
+          '-F',
+          LIT,
+          target,
+          '--',
+          '../outside',
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await grep(ctx, {
+            patterns: [{ fixed: LIT }],
+            target: { treeish: target },
+            paths: ['../outside'],
+          });
+        } catch (e) {
+          caught = e;
+        }
+
+        // Assert
+        expect(gitRun.exitCode).toBe(128);
+        expect((caught as { data: { code: string } }).data.code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+
+    describe('When the blob is a symlink target string', () => {
+      it('Then it is grepped like git does', async () => {
+        // Arrange
+        const target = 'HEAD:tracked_symlink.txt';
+
+        // Act
+        const result = await grep(ctx, {
+          patterns: [{ fixed: 'symlink_target' }],
+          target: { treeish: target },
+        });
+
+        // Assert
+        const expected = lines(git(dir, 'grep', '-n', '-F', 'symlink_target', target));
+        expect(expected).toHaveLength(1);
+        expect(blobLines(target, result)).toEqual(expected);
+      });
+    });
+
+    describe('When the blob is an executable', () => {
+      it('Then it is grepped like git does', async () => {
+        // Arrange
+        const target = `${exeTree}:run.sh`;
+
+        // Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: target } });
+
+        // Assert
+        const expected = lines(git(dir, 'grep', '-n', '-F', LIT, target));
+        expect(expected).toEqual([`${target}:1:run NEEDLE`]);
+        expect(blobLines(target, result)).toEqual(expected);
+      });
+    });
+
+    describe('When the repository is bare', () => {
+      it.each(['HEAD:c.txt', 'blob-tag'])('Then %s equals git grep -n', async (target) => {
+        // Arrange & Act
+        const result = await grep(bareCtx, {
+          patterns: [{ fixed: LIT }],
+          target: { treeish: target },
+        });
+
+        // Assert
+        const expected = lines(git(bare, 'grep', '-n', '-F', LIT, target));
+        expect(expected).toHaveLength(1);
+        expect(blobLines(target, result)).toEqual(expected);
       });
     });
   });
