@@ -1361,7 +1361,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
-    "@biomejs/biome": "2.6.6",
+    "@biomejs/biome": "2.6.7",
     "@cloudflare/vitest-pool-workers": "0.23.0",
     "@cloudflare/workers-types": "5.20261110.1",
     "@commitlint/cli": "21.2.4",
@@ -1381,7 +1381,7 @@
     "dependency-cruiser": "18.7.2",
     "fast-check": "4.10.2",
     "husky": "9.1.7",
-    "isomorphic-git": "1.44.12",
+    "isomorphic-git": "1.44.13",
     "jscpd": "5.4.3",
     "knip": "6.33.0",
     "lint-staged": "17.6.0",
