@@ -16,11 +16,13 @@ import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
-import { peelToTreeOrBlob } from '../primitives/internal/peel.js';
+import { peelToTreeOrBlob, type SearchableKind } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
   type GrepBinaryOverrideOf,
   grepBinaryOverrideReader,
+  grepDefaultDriverOverride,
+  grepDefaultDriverReader,
 } from './internal/grep-binary-override.js';
 import { resolveCommandPathspec } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
@@ -159,8 +161,8 @@ async function enumerateCandidates(ctx: Context, target: 'index' | undefined): P
   return { candidates, index };
 }
 
-// A forced-binary file has text-shaped lines, so its whole buffer costs what the text path
-// already pays; the window stays a safety bound for NUL-sniffed blobs.
+// git scans a blob its driver forces binary whole; that line scan is the one the text path
+// already runs uncapped. The window stays a safety bound for NUL-sniffed blobs only.
 const binaryWindow = (bytes: Uint8Array, override: BinaryOverride | undefined): Uint8Array =>
   override === 'binary' ? bytes : bytes.subarray(0, MAX_LINE_BYTES);
 
@@ -244,10 +246,14 @@ const blobOverride = async (
   ctx: Context,
   named: RevisionPath | undefined,
 ): Promise<BinaryOverride | undefined> => {
-  if (named === undefined) return undefined;
+  if (named === undefined) return grepDefaultDriverOverride(ctx);
   const index = named.fromIndex ? await readIndex(ctx) : undefined;
   return grepBinaryOverrideReader(ctx, index)(named.path);
 };
+
+// git checks attributes under a commit only; a tree object still gets the default driver.
+const treeOverrideOf = (ctx: Context, kind: SearchableKind): GrepBinaryOverrideOf =>
+  kind === 'commit-tree' ? grepBinaryOverrideReader(ctx, undefined) : grepDefaultDriverReader(ctx);
 
 // git resolves and parses the named object, then the pathspec, and only then peels the
 // object: an unresolvable or missing rev outranks a bad pathspec, a failing peel does not.
@@ -265,16 +271,20 @@ const grepRev = async (
   if (root.kind === 'blob') {
     return grepBlob(ctx, matcher, root.id, await blobOverride(ctx, named));
   }
-  // git checks attributes under a commit only; a tree object keeps the content sniff.
-  const overrideOf =
-    root.kind === 'commit-tree' ? grepBinaryOverrideReader(ctx, undefined) : undefined;
-  return grepCandidates(
-    ctx,
-    matcher,
-    pathspecMatcher,
-    await enumerateTree(ctx, root.id),
-    overrideOf,
-  );
+  const candidates = await enumerateTree(ctx, root.id);
+  return grepCandidates(ctx, matcher, pathspecMatcher, candidates, treeOverrideOf(ctx, root.kind));
+};
+
+const grepLoaded = async (
+  ctx: Context,
+  matcher: GrepMatcher,
+  target: 'index' | undefined,
+  paths: ReadonlyArray<string> | undefined,
+): Promise<GrepResult> => {
+  const pathspecMatcher = pathspecFor(ctx, paths);
+  const { candidates, index } = await enumerateCandidates(ctx, target);
+  const overrideOf = grepBinaryOverrideReader(ctx, index);
+  return grepCandidates(ctx, matcher, pathspecMatcher, candidates, overrideOf);
 };
 
 export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult> {
@@ -299,13 +309,5 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
   if (target !== undefined && target !== 'index') {
     return grepRev(ctx, matcher, target.treeish, opts.paths);
   }
-  const pathspecMatcher = pathspecFor(ctx, opts.paths);
-  const { candidates, index } = await enumerateCandidates(ctx, target);
-  return grepCandidates(
-    ctx,
-    matcher,
-    pathspecMatcher,
-    candidates,
-    grepBinaryOverrideReader(ctx, index),
-  );
+  return grepLoaded(ctx, matcher, target, opts.paths);
 }

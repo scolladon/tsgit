@@ -2016,21 +2016,75 @@ describe('grep diff attribute verdict', () => {
     });
   });
 
-  describe('Given a NUL blob whose only match lies beyond 64 KiB and no attribute, When grepping', () => {
-    it('Then it is still not reported', async () => {
-      // Arrange
+  describe('Given a target that names no path and a default driver configured', () => {
+    const seedDefaultDriver = async (binary: boolean): Promise<Context> => {
       const ctx = await seedRepo();
-      const blob = new Uint8Array(MAX_LINE_BYTES + 64);
-      blob.set(enc('DEEP_MATCH'), MAX_LINE_BYTES + 10);
-      await ctx.fs.write(`${ctx.layout.workDir}/deep.bin`, blob);
-      await add(ctx, ['deep.bin']);
+      await writeAndStage(ctx, 'f1', F1);
+      await writeAndStage(ctx, 'f2', F2);
+      await commitAll(ctx);
+      await appendConfig(ctx, `[diff "default"]\n\tbinary = ${binary}\n`);
+      return ctx;
+    };
+
+    describe.each(['HEAD^{tree}', 'HEAD:'])('When the tree rev %s is grepped', (treeish) => {
+      it('Then a text path is a binary match under binary = true', async () => {
+        // Arrange
+        const ctx = await seedDefaultDriver(true);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
+
+      it('Then a NUL path is scanned as text under binary = false', async () => {
+        // Arrange
+        const ctx = await seedDefaultDriver(false);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(pathOf(result, 'f2')?.binaryMatch).toBe(false);
+      });
+    });
+
+    describe('When a blob is grepped by its oid', () => {
+      it.each([
+        [true, 'f1', true],
+        [false, 'f2', false],
+      ])('Then binary = %s makes %s a binary match: %s', async (binary, file, expected) => {
+        // Arrange
+        const ctx = await seedDefaultDriver(binary);
+        const treeish = await resolveRevision(ctx, `HEAD:${file}`);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(result.blob?.binaryMatch).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a non-bare layout without a work tree and an index-only .gitattributes, When grepping the index', () => {
+    it('Then the index copy decides', async () => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      await removeWorkTreeAttributes(ctx);
+      const bare = asBareContext(ctx);
+      const noWorkTree = { ...bare, layout: { ...bare.layout, bare: false } } as Context;
       const sut = grep;
 
       // Act
-      const result = await sut(ctx, { patterns: [{ fixed: 'DEEP_MATCH' }], target: 'index' });
+      const result = await sut(noWorkTree, { patterns: [{ fixed: 'NEEDLE' }], target: 'index' });
 
       // Assert
-      expect(result.paths).toHaveLength(0);
+      expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
     });
   });
 

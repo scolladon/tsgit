@@ -906,6 +906,7 @@ describe.skipIf(!GIT_AVAILABLE)('grep diff attribute verdict', () => {
         'unset.dat !diff',
         'strict.txt diff=strict',
         'loose.dat diff=loose',
+        'nested.txt binary',
         '',
       ].join('\n'),
     );
@@ -1003,7 +1004,7 @@ describe.skipIf(!GIT_AVAILABLE)('grep diff attribute verdict', () => {
         expect(pathLines('', result).sort()).toEqual(expected.sort());
       });
 
-      it('Then -c rows equal git grep', async () => {
+      it('Then -c rows equal git grep, a count either verdict yields', async () => {
         // Arrange
         const sut = grepTarget;
 
@@ -1015,7 +1016,7 @@ describe.skipIf(!GIT_AVAILABLE)('grep diff attribute verdict', () => {
         expect(countLines('', result).sort()).toEqual(expected.sort());
       });
 
-      it('Then -v -c rows equal git grep', async () => {
+      it('Then -v -c rows equal git grep, a count either verdict yields', async () => {
         // Arrange
         const sut = grepTarget;
 
@@ -1121,7 +1122,7 @@ describe.skipIf(!GIT_AVAILABLE)('grep diff attribute verdict', () => {
 
   describe('Given the commit rev HEAD as the target', () => {
     describe('When counting in the main fixture', () => {
-      it('Then -c rows equal git grep', async () => {
+      it('Then -c rows equal git grep, a count either verdict yields', async () => {
         // Arrange
         const sut = grepRev;
 
@@ -1249,6 +1250,38 @@ describe.skipIf(!GIT_AVAILABLE)('grep diff attribute verdict', () => {
         const expected = lines(git(indexOnly, 'grep', '-n', '-F', LIT, ':f1'));
         expect(expected).toEqual(['Binary file :f1 matches']);
         expect(blobRows(':f1', result)).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given diff.default.binary and a target that names no path', () => {
+    describe.each(['HEAD^{tree}', 'HEAD:'])('When the tree rev %s is grepped', (rev) => {
+      it('Then -n rows equal git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+
+        // Act
+        const result = await sut(defaultDriver, rev);
+
+        // Assert
+        const expected = lines(git(defaultDriver, 'grep', '-n', '-F', LIT, rev));
+        expect(pathLines(`${rev}:`, result).sort()).toEqual(expected.sort());
+      });
+    });
+
+    describe('When a blob is grepped by its oid', () => {
+      it('Then the row equals git grep', async () => {
+        // Arrange
+        const sut = grepRev;
+        const oid = git(defaultDriver, 'rev-parse', 'HEAD:plain.txt').trim();
+
+        // Act
+        const result = await sut(defaultDriver, oid);
+
+        // Assert
+        const expected = lines(git(defaultDriver, 'grep', '-n', '-F', LIT, oid));
+        expect(expected).toEqual([`Binary file ${oid} matches`]);
+        expect(blobRows(oid, result)).toEqual(expected);
       });
     });
   });
