@@ -235,10 +235,6 @@ const withPrinted = (refusal: unknown, printed: ReadonlyArray<RevParseEntry>): u
  */
 export type RevisionSource = 'command-line' | 'stdin';
 
-const SIDES_BY_SOURCE: Readonly<
-  Record<RevisionSource, (expression: string) => DifferenceSides | undefined>
-> = { 'command-line': differenceSides, stdin: rangeSides };
-
 /** The path a rev named, and whether naming it read the index (`:path`, `:N:path`). */
 export interface RevisionPath {
   readonly path: FilePath;
@@ -264,10 +260,10 @@ export const resolveRevision = async (
   expression: string,
   source: RevisionSource = 'command-line',
 ): Promise<ObjectId> => {
+  if (source === 'command-line') return resolveRevisionWithPath(ctx, expression).then(idOf);
   const table = createObjectTypeTable();
-  await readDifferenceSides(ctx, table, SIDES_BY_SOURCE[source](expression));
-  if (source === 'stdin') return readReporting(ctx, table, expression);
-  return readNamedObject(ctx, table, expression, expression);
+  await readDifferenceSides(ctx, table, rangeSides(expression));
+  return readReporting(ctx, table, expression);
 };
 
 /** `resolveRevision` (command line) plus the path the name carried. */
