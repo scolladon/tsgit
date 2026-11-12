@@ -38,12 +38,14 @@ const BUILTIN_NAMES: ReadonlySet<string> = new Set([
 const arbDriver: fc.Arbitrary<DiffDriverBinary> = fc
   .option(fc.boolean(), { nil: undefined })
   .map((binary) => (binary === undefined ? {} : { binary }));
-const arbDrivers = fc.option(
-  fc
-    .dictionary(fc.string(), arbDriver)
-    .map((dict) => new Map<string, DiffDriverBinary>(Object.entries(dict))),
-  { nil: undefined },
-);
+const arbDriverMap = fc
+  .dictionary(fc.string(), arbDriver)
+  .map((dict) => new Map<string, DiffDriverBinary>(Object.entries(dict)));
+const arbDrivers = fc.option(arbDriverMap, { nil: undefined });
+// The fallback is only observable when the default driver itself carries a verdict.
+const arbDriversWithDefault = fc
+  .tuple(arbDriverMap, fc.boolean())
+  .map(([drivers, binary]) => new Map([...drivers, ['default', { binary }]]));
 
 describe('userdiff-binary properties', () => {
   describe('Given a forced diff attribute value (invariant lens)', () => {
@@ -73,10 +75,10 @@ describe('userdiff-binary properties', () => {
         // Act / Assert
         fc.assert(
           fc.property(
-            arbDrivers,
+            arbDriversWithDefault,
             fc.string().filter((name) => !BUILTIN_NAMES.has(name)),
             (drivers, name) => {
-              fc.pre(drivers?.has(name) !== true);
+              fc.pre(!drivers.has(name));
               const result = sut({ set: name }, drivers);
               expect(result).toBe(sut('unspecified', drivers));
             },
