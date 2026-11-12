@@ -112,6 +112,8 @@ A well-formed repository, but a configuration, layout or argument shape few call
   - an invalid `core.bigFileThreshold` (and `core.packedGitLimit` / `core.deltaBaseCacheLimit`) is fatal in git but read as absent by tsgit;
   - a loose size claim at or above the 2 GiB inflate ceiling is refused, and that case has not been probed against git. _(surfaced by the diff-core parity hardening review; ADR-907 amendment.)_
 
+- **32.56** (grep) — an empty `[diff "<name>"]` section is treated as a configured driver. Pinned against git 2.56.0: `g diff=emp`, a `[diff "emp"]` header with no keys and `diff.default.binary=true` ⇒ `git grep` prints `Binary file HEAD:g matches`; tsgit treats `emp` as a configured driver with `binary` unset and greps `g` as text. Edge: needs both an empty section and `diff.default.binary`.
+
 - **32.23** A non-fast-forward merge refuses whenever any tracked path lies beyond a symlink — git 2.55 (`merge` exits 128 with `'a/x' is beyond a symbolic link` / `Cannot save the current worktree state`) refuses even when the merge never touches `a/x` (theirs changes only `b`); tsgit refuses only when a CHANGED path lies beyond the link (`findTrackedBeyondSymlink`). The full rule needs a leading-path check per tracked directory on every non-fast-forward merge — measure the cost first. Refusal-mismatch.
 
 - **32.28** Byte-path filesystem port — non-UTF-8 entry names cannot be written, stat'd or unlinked on disk because the `FileSystem` port is string-pathed; tsgit treats them as absent (ADR-973, matching git on macOS), where git on Linux materialises the raw name. Needs a byte-path variant of the port and adapters. Edge (Linux, legacy-encoded names).
