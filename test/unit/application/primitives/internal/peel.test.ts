@@ -501,5 +501,22 @@ describe('peelToTreeOrBlob', () => {
         expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: commit });
       });
     });
+
+    describe('When a commit whose tree header names a tag missing its type line is peeled', () => {
+      it('Then the tag parse fault propagates unchanged', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const bytes = new TextEncoder().encode(`object ${MISSING}\n`);
+        const malformed = await writeRawObjectBytes(ctx, 'tag', bytes);
+        const commit = await commitOver(ctx, malformed);
+        const sut = peelToTreeOrBlob;
+
+        // Act
+        const result = await caught(() => sut(ctx, undefined, commit));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'INVALID_TAG' });
+      });
+    });
   });
 });

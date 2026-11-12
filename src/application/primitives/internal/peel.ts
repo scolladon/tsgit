@@ -60,8 +60,9 @@ export const peelToTreeOrBlob = async (
   const deref = await walkWith(ctx, table, id, tagHop);
   const kind = deref.result?.type;
   if (kind === 'tree' || kind === 'blob') return { kind, id: deref.id };
-  if (kind === 'commit') return { kind: 'tree', id: await rootTreeOf(ctx, deref.id) };
-  throw objectNotFound(deref.id);
+  // Past the tag walk only a commit or an unparsed object remains; reading the
+  // latter as a root tree refuses OBJECT_NOT_FOUND on the same id.
+  return { kind: 'tree', id: await rootTreeOf(ctx, deref.id) };
 };
 
 /**
