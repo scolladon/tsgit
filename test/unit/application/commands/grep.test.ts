@@ -9,7 +9,10 @@ import {
   grep,
 } from '../../../../src/application/commands/grep.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { resolveRevision } from '../../../../src/application/commands/rev-parse.js';
+import { tagCreate } from '../../../../src/application/commands/tag.js';
 import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { MAX_LINE_BYTES } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import {
@@ -17,8 +20,13 @@ import {
   type IndexEntry,
   STAGE0_FLAGS,
 } from '../../../../src/domain/git-index/index-entry.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
-import { FILE_MODE, FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, Tree } from '../../../../src/domain/objects/index.js';
+import {
+  FILE_MODE,
+  FilePath,
+  type ObjectId,
+  treeEntry,
+} from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
@@ -435,25 +443,103 @@ describe('Given a tracked binary blob whose bytes do NOT contain the pattern, Wh
   });
 });
 
-describe('Given a binary blob containing the pattern and invert=true, When grep runs', () => {
-  it('Then binaryMatch stays true (presence is independent of -v)', async () => {
-    // Arrange
-    const ctx = await seedRepo();
-    const binaryBlob = new Uint8Array([0x00, ...enc('FIND_ME'), 0x00]);
-    await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, binaryBlob);
-    await add(ctx, ['data.bin']);
-    await commitAll(ctx);
+const commitBinary = async (ctx: Context, name: string, text: string): Promise<void> => {
+  await ctx.fs.write(`${ctx.layout.workDir}/${name}`, new TextEncoder().encode(text));
+  await add(ctx, [name]);
+  await commitAll(ctx);
+};
 
-    // Act — invert must NOT suppress the binary-match report
-    const result: GrepResult = await grep(ctx, {
-      patterns: [{ fixed: 'FIND_ME' }],
-      invert: true,
+describe('Given a binary blob whose only line contains the pattern', () => {
+  describe('When grep runs with invert', () => {
+    it('Then the blob is not reported', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      const binaryBlob = new Uint8Array([0x00, ...enc('FIND_ME'), 0x00]);
+      await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, binaryBlob);
+      await add(ctx, ['data.bin']);
+      await commitAll(ctx);
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'FIND_ME' }], invert: true });
+
+      // Assert
+      expect(result.paths).toEqual([]);
     });
+  });
+});
 
-    // Assert
-    expect(result.paths).toHaveLength(1);
-    expect(result.paths[0]!.binaryMatch).toBe(true);
-    expect(result.paths[0]!.hits).toHaveLength(0);
+describe('Given a binary blob with no line containing the pattern', () => {
+  describe('When grep runs with invert', () => {
+    it('Then the blob is reported as a binary match', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await commitBinary(ctx, 'nomatch.dat', 'bin\0x\n');
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], invert: true });
+
+      // Assert
+      expect(result.paths).toEqual([
+        { path: 'nomatch.dat', hits: [], binaryMatch: true, binaryMatchCount: 1 },
+      ]);
+    });
+  });
+});
+
+describe('Given a binary blob whose second line starts with the pattern', () => {
+  describe('When grep runs with a start-anchored regex', () => {
+    it('Then the blob is reported as a binary match', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await commitBinary(ctx, 'anchored.dat', 'bin\0x\nNEEDLE y\n');
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [/^NEEDLE/] });
+
+      // Assert
+      expect(result.paths).toEqual([
+        { path: 'anchored.dat', hits: [], binaryMatch: true, binaryMatchCount: 1 },
+      ]);
+    });
+  });
+});
+
+describe('Given a binary blob with one matching and one other line', () => {
+  describe('When grep runs with invert', () => {
+    it('Then the blob is reported because the other line is returned', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await commitBinary(ctx, 'mixed.dat', 'bin\0NEEDLE\nother\n');
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], invert: true });
+
+      // Assert
+      expect(result.paths).toEqual([
+        { path: 'mixed.dat', hits: [], binaryMatch: true, binaryMatchCount: 1 },
+      ]);
+    });
+  });
+
+  describe('When grep runs without invert', () => {
+    it('Then the blob is reported because one line matches', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await commitBinary(ctx, 'mixed.dat', 'bin\0NEEDLE\nother\n');
+      const sut = grep;
+
+      // Act
+      const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+
+      // Assert
+      expect(result.paths).toEqual([
+        { path: 'mixed.dat', hits: [], binaryMatch: true, binaryMatchCount: 1 },
+      ]);
+    });
   });
 });
 
@@ -1235,6 +1321,391 @@ describe('Given more index blobs than the ioBound limit', () => {
       } finally {
         spy.mockRestore();
       }
+    });
+  });
+});
+
+// ─── Blob target ─────────────────────────────────────────────────────────────
+
+const writeTagObject = (
+  ctx: Context,
+  tagName: string,
+  object: ObjectId,
+  objectType: 'blob' | 'tag' | 'tree',
+): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: { object, objectType, tagName, tagger: AUTHOR, message: 'm\n', extraHeaders: [] },
+  });
+
+const seedBlobTargets = async (): Promise<{ ctx: Context; oid: ObjectId }> => {
+  const ctx = await seedRepo();
+  await writeAndStage(ctx, 'f1', 'a NEEDLE\nb\nNEEDLE c\n');
+  await writeAndStage(ctx, 'sub/f2', 'NEEDLE sub\n');
+  await writeAndStage(ctx, 'word', 'xNEEDLEx\n');
+  await ctx.fs.write(`${ctx.layout.workDir}/bin.dat`, enc('bin\0NEEDLE\n'));
+  await add(ctx, ['bin.dat']);
+  await commitAll(ctx);
+  const oid = await resolveRevision(ctx, 'HEAD:f1');
+  const blobTag = await writeTagObject(ctx, 'blob-tag', oid, 'blob');
+  await tagCreate(ctx, { name: 'blob-tag', target: blobTag });
+  const nested = await writeTagObject(ctx, 'tag-of-tag', blobTag, 'tag');
+  await tagCreate(ctx, { name: 'tag-of-tag', target: nested });
+  const rootTree = await resolveRevision(ctx, 'HEAD^{tree}');
+  const treeTag = await writeTagObject(ctx, 'tree-tag', rootTree, 'tree');
+  await tagCreate(ctx, { name: 'tree-tag', target: treeTag });
+  await tagCreate(ctx, { name: 'light', target: oid });
+  return { ctx, oid };
+};
+
+const seedSpecialTree = async (ctx: Context): Promise<ObjectId> => {
+  const link = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: enc('NEEDLE-target'),
+  });
+  return writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [
+      treeEntry(FILE_MODE.SYMLINK, 'link', link),
+      treeEntry(FILE_MODE.GITLINK, 'gl', '1'.repeat(40) as ObjectId),
+    ],
+  } as Tree);
+};
+
+const project = (hits: ReadonlyArray<GrepLineHit>): unknown[] =>
+  hits.map((h) => [h.lineNumber, dec(h.line), h.spans]);
+
+const F1_HITS = [
+  [1, 'a NEEDLE\n', [{ start: 2, end: 8 }]],
+  [3, 'NEEDLE c\n', [{ start: 0, end: 6 }]],
+];
+
+const blobHits = (result: GrepResult): unknown[] => project(result.blob?.hits ?? []);
+
+const catchData = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+  } catch (e) {
+    return (e as TsgitError).data;
+  }
+  return undefined;
+};
+
+describe('Given a blob target', () => {
+  describe('When the target is the blob full oid', () => {
+    it('Then paths is empty and blob carries lines 1 and 3', async () => {
+      // Arrange
+      const { ctx, oid } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish: oid } });
+
+      // Assert
+      expect(result.paths).toStrictEqual([]);
+      expect(result.blob?.binaryMatch).toBe(false);
+      expect(result.blob?.binaryMatchCount).toBe(0);
+      expect(blobHits(result)).toStrictEqual(F1_HITS);
+    });
+  });
+
+  describe('When the target is any rev reaching the blob', () => {
+    const revs: ReadonlyArray<readonly [string, (oid: ObjectId) => string]> = [
+      ['HEAD:f1', () => 'HEAD:f1'],
+      ['HEAD:./f1', () => 'HEAD:./f1'],
+      ['HEAD^{tree}:f1', () => 'HEAD^{tree}:f1'],
+      [':f1', () => ':f1'],
+      [':0:f1', () => ':0:f1'],
+      ['abbreviated oid', (oid) => oid.slice(0, 7)],
+      ['oid^{blob}', (oid) => `${oid}^{blob}`],
+      ['annotated tag', () => 'blob-tag'],
+      ['tag of tag', () => 'tag-of-tag'],
+      ['lightweight tag', () => 'light'],
+      ['tag^{}', () => 'blob-tag^{}'],
+    ];
+    it.each(revs)('Then %s greps the blob', async (_label, rev) => {
+      // Arrange
+      const { ctx, oid } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: rev(oid) },
+      });
+
+      // Assert
+      expect(result.paths).toStrictEqual([]);
+      expect(blobHits(result)).toStrictEqual(F1_HITS);
+    });
+  });
+
+  describe('When the target is a tree path or a tag of a tree', () => {
+    it('Then HEAD:sub lists the tree paths and carries no blob key', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:sub' },
+      });
+
+      // Assert
+      expect(result.paths.map((p) => p.path)).toStrictEqual(['f2']);
+      expect('blob' in result).toBe(false);
+    });
+
+    it('Then a tag of the root tree lists every matching path', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'tree-tag' },
+      });
+
+      // Assert
+      expect(result.paths.map((p) => p.path)).toStrictEqual(['bin.dat', 'f1', 'sub/f2', 'word']);
+      expect('blob' in result).toBe(false);
+    });
+  });
+
+  describe('When the blob does not match', () => {
+    it('Then the result has no blob key', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'ZZZ' }],
+        target: { treeish: 'HEAD:f1' },
+      });
+
+      // Assert
+      expect(result).toStrictEqual({ paths: [] });
+    });
+  });
+
+  describe('When the blob is binary', () => {
+    it('Then blob reports binaryMatch with no hits', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:bin.dat' },
+      });
+
+      // Assert
+      expect(result.blob).toStrictEqual({ hits: [], binaryMatch: true, binaryMatchCount: 1 });
+    });
+
+    it('Then binaryMatchCount counts every returned line, as git -c does', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      await commitBinary(ctx, 'twice.bin', 'bin\0NEEDLE\nNEEDLE\nother\n');
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:twice.bin' },
+      });
+
+      // Assert
+      expect(result.blob).toStrictEqual({ hits: [], binaryMatch: true, binaryMatchCount: 2 });
+    });
+  });
+
+  describe('When the blob is a symlink target', () => {
+    it('Then it is grepped without a mode filter', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const tree = await seedSpecialTree(ctx);
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: `${tree}:link` },
+      });
+
+      // Assert
+      expect(blobHits(result)).toStrictEqual([[1, 'NEEDLE-target', [{ start: 0, end: 6 }]]]);
+    });
+  });
+
+  describe('When a pathspec is given', () => {
+    it('Then a non-matching pathspec is not applied to the blob', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:f1' },
+        paths: ['nomatch'],
+      });
+
+      // Assert
+      expect(blobHits(result)).toStrictEqual(F1_HITS);
+    });
+
+    it('Then a pathspec outside the repository still refuses', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const data = await catchData(() =>
+        sut(ctx, {
+          patterns: [{ fixed: 'NEEDLE' }],
+          target: { treeish: 'HEAD:f1' },
+          paths: ['../outside'],
+        }),
+      );
+
+      // Assert
+      expect(data).toMatchObject({ code: 'PATHSPEC_OUTSIDE_REPO', path: '../outside' });
+    });
+  });
+
+  describe('When invert is set', () => {
+    it('Then blob carries the non-matching line', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        invert: true,
+        target: { treeish: 'HEAD:f1' },
+      });
+
+      // Assert
+      expect(blobHits(result)).toStrictEqual([[2, 'b\n', []]]);
+    });
+  });
+
+  describe('When wholeWord is set on a blob holding only an embedded word', () => {
+    it('Then the blob does not match', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        wholeWord: true,
+        target: { treeish: 'HEAD:word' },
+      });
+
+      // Assert
+      expect(result).toStrictEqual({ paths: [] });
+    });
+  });
+
+  describe('When wholeWord is not set on a blob holding only an embedded word', () => {
+    it('Then the embedded word matches', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:word' },
+      });
+
+      // Assert
+      expect(blobHits(result)).toStrictEqual([[1, 'xNEEDLEx\n', [{ start: 1, end: 7 }]]]);
+    });
+  });
+
+  describe('When the repository is bare', () => {
+    it('Then the blob is grepped without a work tree', async () => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const result = await sut(asBareContext(ctx), {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:f1' },
+      });
+
+      // Assert
+      expect(blobHits(result)).toStrictEqual(F1_HITS);
+    });
+  });
+
+  describe('When the target names nothing greppable', () => {
+    // git's `unable to parse object: <name>` names the rev as spelt, not the id it resolved to.
+    type Refusal = readonly [string, (tree: ObjectId) => string, (target: string) => object];
+    const refusals: ReadonlyArray<Refusal> = [
+      [
+        'a missing path',
+        () => 'HEAD:nope',
+        () => ({ code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'nope' }),
+      ],
+      ['a missing object', () => '0'.repeat(40), (id) => ({ code: 'OBJECT_NOT_FOUND', id })],
+      ['a gitlink path', (tree) => `${tree}:gl`, (id) => ({ code: 'OBJECT_NOT_FOUND', id })],
+    ];
+
+    it.each(refusals)(
+      'Then %s refuses with the git-shaped error',
+      async (_label, rev, expected) => {
+        // Arrange
+        const { ctx } = await seedBlobTargets();
+        const tree = await seedSpecialTree(ctx);
+        const target = rev(tree);
+        const sut = grep;
+
+        // Act
+        const data = await catchData(() =>
+          sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish: target } }),
+        );
+
+        // Assert
+        expect(data).toMatchObject(expected(target));
+      },
+    );
+  });
+
+  describe('When the target names nothing greppable and the pathspec is outside the repository', () => {
+    const badRevs: ReadonlyArray<readonly [string, string, unknown]> = [
+      ['a missing path', 'HEAD:nope', { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'nope' }],
+      ['a missing object', '0'.repeat(40), { code: 'OBJECT_NOT_FOUND', id: '0'.repeat(40) }],
+    ];
+
+    it.each(badRevs)('Then %s is refused before the pathspec', async (_label, rev, expected) => {
+      // Arrange
+      const { ctx } = await seedBlobTargets();
+      const sut = grep;
+
+      // Act
+      const data = await catchData(() =>
+        sut(ctx, {
+          patterns: [{ fixed: 'NEEDLE' }],
+          target: { treeish: rev },
+          paths: ['../outside'],
+        }),
+      );
+
+      // Assert
+      expect(data).toMatchObject(expected as object);
     });
   });
 });

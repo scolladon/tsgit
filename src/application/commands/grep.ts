@@ -13,10 +13,12 @@ import type { Context } from '../../ports/context.js';
 import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
+import { peelToTreeOrBlob } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { resolveCommandPathspec } from './internal/pathspec-intake.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
-import { resolveTreeish } from './internal/resolve-rev.js';
+import { resolveReference } from './internal/resolve-rev.js';
 
 export interface GrepLineHit {
   /** 1-based line number (git's `-n`). */
@@ -27,20 +29,31 @@ export interface GrepLineHit {
   readonly spans: ReadonlyArray<MatchSpan>;
 }
 
-export interface GrepPathResult {
-  readonly path: FilePath;
+export interface GrepBlobResult {
   readonly hits: ReadonlyArray<GrepLineHit>;
   /**
-   * Blob is binary AND contained a match. `hits` stays empty — line scan is
-   * skipped for binary blobs (git's default). The caller reconstructs
+   * Blob is binary AND some line of its first 64 KiB is returned by the matcher
+   * (`invert`-aware). `hits` stays empty — line scan is skipped for binary blobs
+   * (git's default). The caller reconstructs
    * "Binary file X matches" from this datum.
    */
   readonly binaryMatch: boolean;
+  /**
+   * Lines of a binary blob's first 64 KiB the matcher returns — git's `-c`
+   * count for it. `0` for a text blob, whose count is `hits.length`.
+   */
+  readonly binaryMatchCount: number;
+}
+
+export interface GrepPathResult extends GrepBlobResult {
+  readonly path: FilePath;
 }
 
 export interface GrepResult {
-  /** Only paths with ≥1 hit or binaryMatch:true. */
+  /** Tree-ish, index and working-tree targets: only paths with ≥1 hit or binaryMatch:true. Always empty for a blob target. */
   readonly paths: ReadonlyArray<GrepPathResult>;
+  /** Blob target only: the blob's match; absent when it did not match (git exit 1). */
+  readonly blob?: GrepBlobResult;
 }
 
 export interface GrepOptions {
@@ -52,7 +65,8 @@ export interface GrepOptions {
   readonly invert?: boolean;
   /**
    * Target. Absent ⇒ working tree; `'index'` ⇒ `--cached`;
-   * `{ treeish }` ⇒ committed tree.
+   * `{ treeish }` ⇒ a committed tree, or a blob when
+   * the rev resolves to one.
    */
   readonly target?: 'index' | { readonly treeish: string };
   /** Pathspec limiter (`-- <path>...`). */
@@ -103,25 +117,7 @@ const enumerateIndex = async (ctx: Context): Promise<ReadonlyArray<Candidate>> =
     }));
 };
 
-async function enumerateCandidates(
-  ctx: Context,
-  opts: GrepOptions,
-): Promise<ReadonlyArray<Candidate>> {
-  const { target } = opts;
-
-  if (target === undefined) {
-    // Only the working-tree target needs one — `--cached` and a tree-ish
-    // target both stay open in a bare repo (git: `grep --cached <pat>` and
-    // `grep <pat> HEAD` both exit 0).
-    return enumerateWorkingTree(ctx, requireWorkTree(ctx, 'grep'));
-  }
-
-  if (target === 'index') {
-    return enumerateIndex(ctx);
-  }
-
-  // tree-ish target
-  const treeId = await resolveTreeish(ctx, target.treeish);
+const enumerateTree = async (ctx: Context, treeId: ObjectId): Promise<ReadonlyArray<Candidate>> => {
   const candidates: Candidate[] = [];
   // Stryker disable next-line ObjectLiteral: equivalent — `walkTree`'s `recursive` option defaults to `true` when omitted (see `walk-tree.ts`), so `{}` and `{ recursive: true }` produce identical traversals.
   for await (const { path, id, mode } of walkTree(ctx, treeId, { recursive: true })) {
@@ -136,25 +132,32 @@ async function enumerateCandidates(
     });
   }
   return candidates;
+};
+
+async function enumerateCandidates(
+  ctx: Context,
+  target: 'index' | undefined,
+): Promise<ReadonlyArray<Candidate>> {
+  if (target === undefined) {
+    // Only the working-tree target needs one — `--cached` and a tree-ish
+    // target both stay open in a bare repo (git: `grep --cached <pat>` and
+    // `grep <pat> HEAD` both exit 0).
+    return enumerateWorkingTree(ctx, requireWorkTree(ctx, 'grep'));
+  }
+  return enumerateIndex(ctx);
 }
 
-function scanBlob(
-  matcher: GrepMatcher,
-  binaryProbeMatcher: GrepMatcher,
-  path: FilePath,
-  bytes: Uint8Array,
-): GrepPathResult | undefined {
+// git's binary verdict and -c count: the window's lines the (invert-aware) matcher returns.
+// The window bounds a caller RegExp, whose backtracking over a multi-MB binary blob would
+// block the event loop; a match only beyond the first 64 KiB is not reported.
+const countReturnedLines = (matcher: GrepMatcher, bytes: Uint8Array): number =>
+  splitLines(bytes.subarray(0, MAX_LINE_BYTES)).filter((line) => matcher.matchLine(line).returned)
+    .length;
+
+function scanBlob(matcher: GrepMatcher, bytes: Uint8Array): GrepBlobResult | undefined {
   if (isBinary(bytes)) {
-    // Binary blobs skip line scan. Use the non-inverted probe to check whether
-    // the pattern occurs anywhere in the blob — independent of -v, because git
-    // reports "Binary file X matches" based on pattern presence, not inversion.
-    // Bound the probe to MAX_LINE_BYTES: a presence boolean does not need the whole
-    // blob, and an unbounded latin1 scan of a multi-MB blob with a backtracking caller
-    // RegExp would block the event loop. Trade-off: a match only beyond the first
-    // 64 KiB of a binary blob is not reported (documented in the design).
-    const probeVerdict = binaryProbeMatcher.matchLine(bytes.subarray(0, MAX_LINE_BYTES));
-    if (!probeVerdict.returned) return undefined;
-    return { path, hits: [], binaryMatch: true };
+    const binaryMatchCount = countReturnedLines(matcher, bytes);
+    return binaryMatchCount > 0 ? { hits: [], binaryMatch: true, binaryMatchCount } : undefined;
   }
 
   const lines = splitLines(bytes);
@@ -167,8 +170,60 @@ function scanBlob(
   });
 
   if (hits.length === 0) return undefined;
-  return { path, hits, binaryMatch: false };
+  return { hits, binaryMatch: false, binaryMatchCount: 0 };
 }
+
+const grepBlob = async (ctx: Context, matcher: GrepMatcher, id: ObjectId): Promise<GrepResult> => {
+  const blob = scanBlob(matcher, (await readBlob(ctx, id)).content);
+  return blob === undefined ? { paths: [] } : { paths: [], blob };
+};
+
+const scanCandidate = async (
+  matcher: GrepMatcher,
+  candidate: Candidate,
+): Promise<GrepPathResult | undefined> => {
+  const match = scanBlob(matcher, await candidate.load());
+  return match === undefined ? undefined : { path: candidate.path, ...match };
+};
+
+type PathspecMatcher = ReturnType<typeof resolveCommandPathspec>;
+
+const pathspecFor = (
+  ctx: Context,
+  paths: ReadonlyArray<string> | undefined,
+): PathspecMatcher | undefined =>
+  paths !== undefined && paths.length > 0 ? resolveCommandPathspec(ctx, paths) : undefined;
+
+const grepCandidates = async (
+  ctx: Context,
+  matcher: GrepMatcher,
+  pathspecMatcher: PathspecMatcher | undefined,
+  candidates: ReadonlyArray<Candidate>,
+): Promise<GrepResult> => {
+  const inScope =
+    pathspecMatcher !== undefined
+      ? candidates.filter(({ path }) => matchesPathspec(pathspecMatcher.matcher, path))
+      : candidates;
+  const results = await boundedMapFor(ctx, 'ioBound', inScope, (c) => scanCandidate(matcher, c));
+  return { paths: results.filter((r): r is GrepPathResult => r !== undefined) };
+};
+
+// git resolves and parses the named object, then the pathspec, and only then peels the
+// object: an unresolvable or missing rev outranks a bad pathspec, a failing peel does not.
+const grepRev = async (
+  ctx: Context,
+  matcher: GrepMatcher,
+  rev: string,
+  paths: ReadonlyArray<string> | undefined,
+): Promise<GrepResult> => {
+  const table = createObjectTypeTable();
+  const named = await resolveReference(ctx, table, rev);
+  const pathspecMatcher = pathspecFor(ctx, paths);
+  const root = await peelToTreeOrBlob(ctx, table, named);
+  // git greps the one blob a rev names; the pathspec is validated but never applied to it.
+  if (root.kind === 'blob') return grepBlob(ctx, matcher, root.id);
+  return grepCandidates(ctx, matcher, pathspecMatcher, await enumerateTree(ctx, root.id));
+};
 
 export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult> {
   // Repository state is checked BEFORE the argument guard, because that is the
@@ -188,27 +243,10 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
     ...(opts.invert === true ? { invert: true } : {}),
   });
 
-  // Separate non-inverted probe for binary-match detection: git reports
-  // "Binary file X matches" based on pattern presence, independent of -v.
-  const binaryProbeMatcher = buildGrepMatcher(opts.patterns, {
-    ...(opts.wholeWord === true ? { wholeWord: true } : {}),
-  });
-
-  const pathspecMatcher =
-    opts.paths !== undefined && opts.paths.length > 0
-      ? resolveCommandPathspec(ctx, opts.paths)
-      : undefined;
-
-  const candidates = await enumerateCandidates(ctx, opts);
-
-  const inScope =
-    pathspecMatcher !== undefined
-      ? candidates.filter(({ path }) => matchesPathspec(pathspecMatcher.matcher, path))
-      : candidates;
-
-  const results = await boundedMapFor(ctx, 'ioBound', inScope, async (c) =>
-    scanBlob(matcher, binaryProbeMatcher, c.path, await c.load()),
-  );
-  const paths = results.filter((r): r is GrepPathResult => r !== undefined);
-  return { paths };
+  const { target } = opts;
+  if (target !== undefined && target !== 'index') {
+    return grepRev(ctx, matcher, target.treeish, opts.paths);
+  }
+  const pathspecMatcher = pathspecFor(ctx, opts.paths);
+  return grepCandidates(ctx, matcher, pathspecMatcher, await enumerateCandidates(ctx, target));
 }

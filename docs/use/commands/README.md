@@ -27,7 +27,7 @@ a bound `this`.
 | [`fetch`](fetch.md) | Fetch refs and objects from a remote. |
 | [`fetchMissing`](fetch-missing.md) | Prefetch promisor-remote objects in batch (partial clone). |
 | [`fsck`](fsck.md) | Verify object integrity and connectivity; returns structured findings (no rendered line). |
-| [`grep`](grep.md) | Search tracked content for a JavaScript `RegExp` (or literal); returns structured per-line match data (no rendered line). |
+| [`grep`](grep.md) | Search tracked content, or the one blob a rev names, for a JavaScript `RegExp` (or literal); returns structured per-line match data (no rendered line), per path or for the blob (`GrepBlobResult`). |
 | [`init`](init.md) | Initialize a fresh repository. |
 | [`log`](log.md) | Walk first-parent commit history. |
 | [`maintenance`](maintenance.md) | Explicit-only repository upkeep — currently the commit-graph task. |

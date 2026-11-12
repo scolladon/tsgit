@@ -42,7 +42,7 @@ moved 21 entries and 10 sub-rows there.
 | # | cut | items | why here |
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
-| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · 32.1 row D10 | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
+| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ · 32.56 | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
 | 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · 32.32 · 32.40 · 32.41 · 32.44 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B17, C6 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
@@ -635,7 +635,7 @@ Order: numeric, 31.1 → 31.6, one craft session each, strictly sequential (no p
 
 Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit against git 2.55 (about 100 items probed in merge/rebase/checkout, fetch/push/remote, object names, graph/storage; Tiers 1–2 shipped with #302). Every entry below was reproduced against real git 2.55; items marked **verify on main** may overlap a fix that landed in the same PR and must be re-pinned before work starts.
 
-- [ ] **32.1** Triage Tier 3 — refusal mismatches (git refuses or accepts, tsgit does the opposite): merge refuses on `REVERT_HEAD`/`REBASE_HEAD` (A2) · `checkout -- <unmerged>` silent (A6) · octopus D/F conflict raw error + litter (A13) · tracking from `@{-1}` (A20) · `checkout <remote-branch>` DWIM (A23) · fetch `force`/`showForcedUpdates` options (B5, **verify on main**) · mirror refspec + negative → `branch -d` deletes an unmerged branch (B17) · leading `-x` (C6) · diff-driver config read eagerly: add/reset/checkout refuse, status misses `diff.renames` (D16) · grep of a blob target (`<blob>`, `HEAD:f1`, a tag of a blob) throws `OBJECT_NOT_FOUND` where git greps it (D10; the mistyped-tag half moved to the ledger) · `writeExclusive` with a file parent: silent success on Node (D5). Evidence: [faithfulness-triage-2026-10](spike/faithfulness-triage-2026-10.md).
+- [ ] **32.1** Triage Tier 3 — refusal mismatches (git refuses or accepts, tsgit does the opposite): merge refuses on `REVERT_HEAD`/`REBASE_HEAD` (A2) · `checkout -- <unmerged>` silent (A6) · octopus D/F conflict raw error + litter (A13) · tracking from `@{-1}` (A20) · `checkout <remote-branch>` DWIM (A23) · fetch `force`/`showForcedUpdates` options (B5, **verify on main**) · mirror refspec + negative → `branch -d` deletes an unmerged branch (B17) · leading `-x` (C6) · diff-driver config read eagerly: add/reset/checkout refuse, status misses `diff.renames` (D16) · ~~grep of a blob target (`<blob>`, `HEAD:f1`, a tag of a blob) throws `OBJECT_NOT_FOUND` where git greps it (D10; the mistyped-tag half moved to the ledger)~~ · ADRs 1171–1176 · design/grep-blob-target.md · `writeExclusive` with a file parent: silent success on Node (D5). Evidence: [faithfulness-triage-2026-10](spike/faithfulness-triage-2026-10.md).
 - [ ] **32.5** Thin-pack fetch — the fetch request negotiates no `thin-pack` (the v1 capability subset omits it), so a fetch downloads full objects where git sends deltas against objects the client already has. The index-pack walk already completes thin packs from a base resolver (used by `bundle verify`); the work is requesting `thin-pack` and wiring that resolver into the fetch receive path. Kept out of the alternates PR by decision.
 - [x] **32.6** EOL conversion subsystem — `core.autocrlf`, `core.eol`, `core.safecrlf`, the `text`/`eol` attributes (`text=auto`), `ident` and renormalization (`-X renormalize`, `add --renormalize`) are not implemented; merge refuses `-X renormalize` for that reason. Ranked ahead of 31.4 in Next-up: conversion changes blob bytes, hence object ids, on add and checkout. Own design, ADRs and interop matrix against git 2.55. · ADRs 950–957 · design/eol-conversion.md
 - [ ] **32.7** Global and system config reading — the typed `core.*`/feature-key reads (`readConfig`) are repository-local only (ADR-859 carries the divergence forward; `repo.config` itself spans all scopes, ADR-182); git also layers system and global files under every read, which triaged gaps depend on (e.g. a globally set `fetch.showForcedUpdates` is not seen). Reading outside the repository crosses the containment boundary (ADR-625): own feature with design, ADR and security review before any code.
@@ -738,6 +738,21 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
 ---
 
 ---
+
+### Open (scoped 2026-11-12 — follow-ups surfaced by the grep-blob-target run, triaged)
+
+- [ ] **32.56** `grep` ignores the `.gitattributes` `diff`/`binary` attribute when it decides binary vs text — pinned against git 2.56.0 on a well-formed repo. With `f1` = `a NEEDLE\nb\nNEEDLE c\n` under `f1 binary`, git reports `Binary file HEAD:f1 matches` (and `Binary file f1 matches` for the worktree and `--cached`); tsgit `grep` returns two line hits with `binaryMatch: false` on all three targets. The reverse also differs: with `f2` = `x NEEDLE\0y\n` under bare `diff`, git greps the file as text (`HEAD:f2:1:…`) and tsgit reports `binaryMatch: true`. `scanBlob` in `src/application/commands/grep.ts` content-sniffs with `isBinary` only. Fix: resolve the path's `diff` attribute through the 24.20 `AttributeProvider` (`-diff`/`binary` → binary, bare `diff` → text, unspecified → sniff) and pass the verdict to `scanBlob` for the tree, index and working-tree targets; a blob target has no path and keeps the sniff. Pin it with a cross-tool interop row per target. Not folded: adds feature behaviour.
+  ```
+  $ git grep -n NEEDLE HEAD          # .gitattributes: "f1 binary\nf2 diff\n"
+  Binary file HEAD:f1 matches
+  HEAD:f2:1:x NEEDLE<NUL>y
+  $ git grep -n NEEDLE ; git grep -n --cached NEEDLE   # (f1 only attribute)
+  Binary file f1 matches
+  Binary file f1 matches
+  tsgit grep {treeish:'HEAD'} → [["f1",[1,3],false]]
+  tsgit worktree               → [["f1",[1,3],false],["f2",[],true]]
+  tsgit index                  → [["f1",[1,3],false],["f2",[],true]]
+  ```
 
 ## Phase 11 admin tail — completed 2026-05-17
 

@@ -59,6 +59,22 @@ A damaged object, ref, index or state file, or a file the process cannot read.
 
 - **32.1 row D10 (mistyped-tag half)** — `grep` of a tag whose declared type lies about its target: git dies (`is a commit, not a tree` / `invalid object … given`), tsgit greps the peeled object anyway. Split from row D10 on 2026-11-11; the blob-target half stays in the backlog. Evidence: [faithfulness-triage-2026-10](spike/faithfulness-triage-2026-10.md).
 
+- **32.57** `grep` of a commit whose `tree` header names a header-only tag refuses `INVALID_TAG` where git greps — pre-existing, pinned against git 2.56.0. A tag object holding only `object <tree>\n` and a commit whose `tree` line names that tag, both forged with `hash-object --literally`: git `grep NEEDLE <commit>` prints `<commit>:f:NEEDLE` (exit 0); tsgit `grep(ctx, { patterns: [/NEEDLE/], target: { treeish: <commit> } })` throws `INVALID_TAG { reason: 'second line must be type' }`: the peel hop in `peel.ts` parses the whole tag, where git reads only the `object` line. Not folded: out of scope.
+  ```
+  $ git grep NEEDLE 92928f44e81c11aaa932f64a453a429754e639f5
+  92928f44e81c11aaa932f64a453a429754e639f5:f:NEEDLE
+  exit=0
+  tsgit THROW {"code":"INVALID_TAG","reason":"second line must be type"}
+  ```
+
+- **32.58** `grep` of a tag whose target object is missing names the missing id where git names the rev — pre-existing, pinned against git 2.56.0. Tag ref `mt` points at a tag forged with `hash-object --literally` whose `object` line is `2222222222222222222222222222222222222222` (absent): git `grep -F NEEDLE mt` dies `fatal: invalid object 'mt' given.` (exit 128); tsgit `grep(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish: 'mt' } })` throws `OBJECT_NOT_FOUND { id: '2222…2222' }`. Both refuse; git's line cannot be rebuilt from tsgit's data. Not folded: out of scope.
+  ```
+  $ git grep -F NEEDLE mt
+  fatal: invalid object 'mt' given.
+  exit=128
+  tsgit THROW {"code":"OBJECT_NOT_FOUND","id":"2222222222222222222222222222222222222222"}
+  ```
+
 ## Message only
 
 Exit codes and data match git; only the wording or the named path differs.

@@ -470,7 +470,11 @@ done
 # Raised 1518 -> 1519 KiB by the admin-path lock refusals (a regular file at or
 # above <common>/worktrees/<id>) and the memory adapter's trailing-slash lookup
 # refusal: the measured pack landed at 1 554 512 B, 80 B over the old cap.
-SIZE_CAP=$((1519 * 1024))
+# Raised 1519 -> 1520 KiB by grep's blob target and its line-wise binary verdict:
+# the measured pack landed at 1 555 460 B, 4 B over the old cap, attributable to
+# the tree-or-blob peel and the path-free blob scan — runtime code in every
+# distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1520 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

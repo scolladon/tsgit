@@ -1,5 +1,5 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
-import { objectNotFound } from '../../../domain/objects/error.js';
+import { isObjectNotFound, objectNotFound } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { isBlobByHeader } from './object-emit.js';
@@ -9,7 +9,7 @@ import {
   type PeelHopObject,
   parseTypedPeelHop,
 } from './object-type-table.js';
-import { walkPeelChain } from './peel-chain.js';
+import { type PeelOutcome, walkPeelChain } from './peel-chain.js';
 
 const INVALID_OBJECT_ID = 'INVALID_OBJECT_ID';
 
@@ -32,16 +32,77 @@ export const peel = async (
   target: PeelTarget,
   name?: string,
 ): Promise<ObjectId> => {
-  const read = (oid: ObjectId) => readHop(ctx, table, oid);
-  const nextHop = (obj: PeelHopObject | undefined) => hopToward(obj, target);
-  const walk = await walkPeelChain({ id, result: await read(id) }, read, nextHop);
-  if (walk.end !== 'reached') throw objectNotFound(id);
+  const walk = await walkToward(ctx, table, id, target);
   const reached = walk.result;
   if (reached === undefined) throw objectNotFound(walk.id);
   if (reached.type === target) return walk.id;
   if (name !== undefined) reportPeelMismatch(ctx, name, target, reached.type);
   throw objectNotFound(walk.id);
 };
+
+export type SearchableKind = 'tree' | 'blob';
+
+export interface SearchableObject {
+  readonly kind: SearchableKind;
+  readonly id: ObjectId;
+}
+
+/**
+ * git grep's object dispatch: `deref_tag` follows annotated tags to any depth
+ * and keeps a tree or a blob as it is; a commit is then read as its root tree,
+ * so every object past it must end on a tree — a blob there refuses.
+ */
+export const peelToTreeOrBlob = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<SearchableObject> => {
+  const deref = await walkWith(ctx, table, id, tagHop);
+  const kind = deref.result?.type;
+  if (kind === 'tree' || kind === 'blob') return { kind, id: deref.id };
+  // Past the tag walk only a commit or an unparsed object remains; reading the
+  // latter as a root tree refuses OBJECT_NOT_FOUND on the same id.
+  return { kind: 'tree', id: await rootTreeOf(ctx, deref.id) };
+};
+
+/**
+ * git's `read_object_with_reference(OBJ_TREE)` over a commit: reads raw, outside
+ * the invocation's type table, and any failure to end on a tree names the commit
+ * (`unable to read tree (<commit>)`).
+ */
+const rootTreeOf = async (ctx: Context, commit: ObjectId): Promise<ObjectId> => {
+  try {
+    return await peel(ctx, undefined, commit, 'tree');
+  } catch (error) {
+    if (isObjectNotFound(error)) throw objectNotFound(commit);
+    throw error;
+  }
+};
+
+type PeelHop = (obj: PeelHopObject | undefined) => ObjectId | undefined;
+
+const walkToward = (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  target: PeelTarget,
+): Promise<PeelOutcome<PeelHopObject | undefined>> =>
+  walkWith(ctx, table, id, (obj) => hopToward(obj, target));
+
+/** The walk `nextHop` drives; a chain that does not end `reached` names no object. */
+const walkWith = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  nextHop: PeelHop,
+): Promise<PeelOutcome<PeelHopObject | undefined>> => {
+  const read = (oid: ObjectId) => readHop(ctx, table, oid);
+  const walk = await walkPeelChain({ id, result: await read(id) }, read, nextHop);
+  if (walk.end !== 'reached') throw objectNotFound(id);
+  return walk;
+};
+
+const tagHop: PeelHop = (obj) => (obj?.type === 'tag' ? obj.data.object : undefined);
 
 /**
  * One hop's object. git's `peel_object` types a blob through `oid_object_info`,
