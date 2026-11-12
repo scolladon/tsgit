@@ -42,7 +42,7 @@ moved 21 entries and 10 sub-rows there.
 | # | cut | items | why here |
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
-| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
+| 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ · 32.56 | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
 | 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · 32.32 · 32.40 · 32.41 · 32.44 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B17, C6 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
@@ -738,6 +738,21 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
 ---
 
 ---
+
+### Open (scoped 2026-11-12 — follow-ups surfaced by the grep-blob-target run, triaged)
+
+- [ ] **32.56** `grep` ignores the `.gitattributes` `diff`/`binary` attribute when it decides binary vs text — pinned against git 2.56.0 on a well-formed repo. With `f1` = `a NEEDLE\nb\nNEEDLE c\n` under `f1 binary`, git reports `Binary file HEAD:f1 matches` (and `Binary file f1 matches` for the worktree and `--cached`); tsgit `grep` returns two line hits with `binaryMatch: false` on all three targets. The reverse also differs: with `f2` = `x NEEDLE\0y\n` under bare `diff`, git greps the file as text (`HEAD:f2:1:…`) and tsgit reports `binaryMatch: true`. `scanBlob` in `src/application/commands/grep.ts` content-sniffs with `isBinary` only. Fix: resolve the path's `diff` attribute through the 24.20 `AttributeProvider` (`-diff`/`binary` → binary, bare `diff` → text, unspecified → sniff) and pass the verdict to `scanBlob` for the tree, index and working-tree targets; a blob target has no path and keeps the sniff. Pin it with a cross-tool interop row per target. Not folded: adds feature behaviour.
+  ```
+  $ git grep -n NEEDLE HEAD          # .gitattributes: "f1 binary\nf2 diff\n"
+  Binary file HEAD:f1 matches
+  HEAD:f2:1:x NEEDLE<NUL>y
+  $ git grep -n NEEDLE ; git grep -n --cached NEEDLE   # (f1 only attribute)
+  Binary file f1 matches
+  Binary file f1 matches
+  tsgit grep {treeish:'HEAD'} → [["f1",[1,3],false]]
+  tsgit worktree               → [["f1",[1,3],false],["f2",[],true]]
+  tsgit index                  → [["f1",[1,3],false],["f2",[],true]]
+  ```
 
 ## Phase 11 admin tail — completed 2026-05-17
 
