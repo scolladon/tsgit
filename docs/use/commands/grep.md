@@ -212,7 +212,9 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 - `OBJECT_NOT_FOUND` — a `{ treeish }` target names a missing object, including a
   gitlink path (`HEAD:<submodule>`) or an index path (`:path`, `:<n>:path`) with no
   entry (`id` is the rev as spelt, as git's `unable to parse object: <name>`); also a
-  commit whose root does not end on a tree (`id` is that commit).
+  commit whose tree header leads to a blob or a missing object (`id` is that commit).
+  A malformed tag or commit inside a commit's tree chain refuses with its own parse
+  code (`INVALID_TAG` / `INVALID_COMMIT`) rather than git's header-only read.
 - `PATH_NOT_IN_TREE` — a `rev:path` target names no entry.
 - `REVPARSE_UNRESOLVED` — a `{ treeish }` rev cannot be resolved.
 - `GREP_LINE_TOO_LONG` — a single line's bytes exceed the JS engine's maximum
