@@ -413,15 +413,15 @@ export interface ConfigEntry {
 }
 
 /**
- * Read `${gitDir}/config` (a missing file is treated as `''`), fold
- * `setConfigEntryInText` over `entries`, write the result, and invalidate the
- * per-`Context` `readConfig` cache so a later read sees the new values.
+ * Read-modify-write one config file at `path`, folding `setConfigEntryInText`
+ * over `entries` — the caller's key casing is kept. A missing file is treated
+ * as `''`; the per-`Context` config caches are invalidated after the write.
  */
-export const updateConfigEntries = async (
+export const updateConfigFileEntries = async (
   ctx: Context,
+  path: string,
   entries: ReadonlyArray<ConfigEntry>,
 ): Promise<void> => {
-  const path = `${commonGitDir(ctx)}/config`;
   const original = await readConfigText(ctx, path);
   parseIniSectionsForWrite(original, path);
   const updated = entries.reduce(
@@ -433,6 +433,23 @@ export const updateConfigEntries = async (
   invalidateConfigCache(ctx);
   // Stryker disable next-line CallExpression: equivalent — invalidateConfigCache already delegates to invalidateScopedConfigCache; this explicit pairing documents the contract but changes no observable cache state.
   invalidateScopedConfigCache(ctx);
+};
+
+/** `updateConfigFileEntries` on the file `resolveConfigScopePath(ctx, scope)` names. */
+export const updateScopedConfigEntries = async (
+  ctx: Context,
+  scope: ConfigScope,
+  entries: ReadonlyArray<ConfigEntry>,
+): Promise<void> => {
+  await updateConfigFileEntries(ctx, await resolveConfigScopePath(ctx, scope), entries);
+};
+
+/** Fold `entries` into `${commonGitDir}/config`. */
+export const updateConfigEntries = async (
+  ctx: Context,
+  entries: ReadonlyArray<ConfigEntry>,
+): Promise<void> => {
+  await updateConfigFileEntries(ctx, `${commonGitDir(ctx)}/config`, entries);
 };
 
 /** Fold a batch of `[core]` `key = value` writes via `updateConfigEntries`. */
