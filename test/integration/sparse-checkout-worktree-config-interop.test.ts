@@ -464,7 +464,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
     });
   });
 
-  describe('Given the verbs run on a sparse repository', () => {
+  describe('sparse-checkout verbs on a sparse repository', () => {
     const readFile = (dir: string, name: string): string =>
       readFileSync(join(dir, '.git', name), 'utf8');
     const gitList = (dir: string): ReadonlyArray<string> =>
@@ -499,22 +499,22 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         writeFileSync(join(dir, '.git', 'info', 'sparse-checkout'), text);
       });
 
-    describe('When both tools list after the cone key flips in the worktree layer', () => {
+    describe('Given a cone set through git, When both tools list after the cone key flips in the worktree layer', () => {
       it('Then the list matches git before and after the flip', async () => {
         // Arrange
         sparseSetCone();
-        const sut = async (): Promise<{ cone: boolean; patterns: ReadonlyArray<string> }> => {
+        const listOurs = async (): Promise<{ cone: boolean; patterns: ReadonlyArray<string> }> => {
           const repo = await openRepository({ cwd: pair.ours });
           return repo.sparseCheckout.list();
         };
 
         // Act
-        const before = await sut();
+        const before = await listOurs();
         const gitBefore = gitList(pair.peer);
         bothSides((dir) =>
           runGit(['-C', dir, 'config', '--worktree', 'core.sparseCheckoutCone', 'false']),
         );
-        const after = await sut();
+        const after = await listOurs();
         const gitAfter = gitList(pair.peer);
 
         // Assert
@@ -694,7 +694,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
     });
   });
 
-  describe('Given the write verbs run on a repository', () => {
+  describe('sparse-checkout write verbs', () => {
     const readFile = (dir: string, name: string): string =>
       readFileSync(join(dir, '.git', name), 'utf8');
     const readOptional = (dir: string, name: string): string | undefined =>
