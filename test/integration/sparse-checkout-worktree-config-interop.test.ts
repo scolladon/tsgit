@@ -21,6 +21,7 @@ import {
   makePeerPair,
   type PeerPair,
   runGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 import { COMMIT_ENV, commitOn, listing, regular } from './occupant-displacement-fixtures.js';
 
@@ -558,5 +559,208 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         });
       });
     });
+  });
+
+  describe('Given the write verbs run on a repository', () => {
+    const readFile = (dir: string, name: string): string =>
+      readFileSync(join(dir, '.git', name), 'utf8');
+    const readOptional = (dir: string, name: string): string | undefined =>
+      existsSync(join(dir, '.git', name)) ? readFile(dir, name) : undefined;
+    const normalize = (text: string | undefined, dir: string): string | undefined =>
+      text?.split(dir).join('<work>');
+    const expectSameConfigFiles = (): void => {
+      for (const name of ['config', 'config.worktree']) {
+        expect(normalize(readOptional(pair.ours, name), pair.ours)).toBe(
+          normalize(readOptional(pair.peer, name), pair.peer),
+        );
+      }
+    };
+    const expectSameState = async (repo: Repository): Promise<void> => {
+      expectSameConfigFiles();
+      expect(readOptional(pair.ours, 'info/sparse-checkout')).toBe(
+        readOptional(pair.peer, 'info/sparse-checkout'),
+      );
+      expect(await tagView(repo)).toBe(gitTagView(pair.peer));
+      expect(listing(pair.ours)).toEqual(listing(pair.peer));
+    };
+
+    interface Verb {
+      readonly args: ReadonlyArray<string>;
+      readonly run: (repo: Repository) => Promise<unknown>;
+    }
+    const setCone = (dirs: ReadonlyArray<string>): Verb => ({
+      args: ['set', '--cone', ...dirs],
+      run: (repo) => repo.sparseCheckout.set({ patterns: dirs, cone: true }),
+    });
+    const setNonCone = (patterns: ReadonlyArray<string>): Verb => ({
+      args: ['set', '--no-cone', ...patterns],
+      run: (repo) => repo.sparseCheckout.set({ patterns, cone: false }),
+    });
+    const setPlain = (patterns: ReadonlyArray<string>): Verb => ({
+      args: ['set', ...patterns],
+      run: (repo) => repo.sparseCheckout.set({ patterns }),
+    });
+    const disable: Verb = {
+      args: ['disable'],
+      run: (repo) => repo.sparseCheckout.disable(),
+    };
+
+    interface WriteRow {
+      readonly id: string;
+      readonly setup: (dir: string) => void;
+      readonly verbs: ReadonlyArray<Verb>;
+    }
+    const noSetup = (): void => undefined;
+    const WRITE_ROWS: ReadonlyArray<WriteRow> = [
+      { id: 'B1', setup: noSetup, verbs: [setCone(['b'])] },
+      { id: 'P-nc', setup: noSetup, verbs: [setNonCone(['/b/'])] },
+      {
+        id: 'P-pre',
+        setup: (dir) => {
+          gitConfig(dir, 'core.sparseCheckout', 'true');
+          gitConfig(dir, 'core.sparseCheckoutCone', 'false');
+        },
+        verbs: [setCone(['b'])],
+      },
+      {
+        id: 'B2',
+        setup: (dir) => gitConfig(dir, 'extensions.worktreeConfig', 'false'),
+        verbs: [setCone(['b'])],
+      },
+      {
+        id: 'B3',
+        setup: (dir) => gitConfig(dir, 'core.worktree', dir),
+        verbs: [setCone(['b'])],
+      },
+      {
+        id: 'B4',
+        setup: (dir) => gitConfig(dir, 'core.repositoryformatversion', '1'),
+        verbs: [setCone(['b'])],
+      },
+      { id: 'B5', setup: noSetup, verbs: [setCone(['b']), setNonCone(['/a/'])] },
+      { id: 'B6', setup: noSetup, verbs: [setCone(['b']), disable, setPlain(['b'])] },
+      {
+        id: 'S3',
+        setup: (dir) => gitConfig(dir, 'core.sparseCheckout', 'true'),
+        verbs: [setCone(['a'])],
+      },
+      {
+        id: 'S4',
+        setup: (dir) => gitConfig(dir, 'core.sparseCheckoutCone', 'false'),
+        verbs: [setPlain(['a'])],
+      },
+      {
+        id: 'S6',
+        setup: (dir) => {
+          writeConeFile(dir);
+          gitConfig(dir, 'core.sparseCheckout', 'true');
+        },
+        verbs: [disable],
+      },
+      { id: 'P-dis', setup: noSetup, verbs: [setCone(['b']), disable] },
+      { id: 'P-dis0', setup: noSetup, verbs: [disable] },
+    ];
+
+    describe.each(WRITE_ROWS)('Given write row $id', (row) => {
+      describe('When both tools run the verbs', () => {
+        it('Then the config files, pattern file, index tags and work tree match git', async () => {
+          // Arrange
+          bothSides(row.setup);
+          for (const verb of row.verbs) {
+            runGit(['-C', pair.peer, 'sparse-checkout', ...verb.args]);
+          }
+          const repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          for (const verb of row.verbs) await verb.run(repo);
+
+          // Assert
+          await expectSameState(repo);
+        });
+      });
+    });
+
+    describe('Given a cone set by tsgit', () => {
+      describe('When both tools check out the other branch', () => {
+        it('Then git reads what tsgit wrote and the index tags match', async () => {
+          // Arrange
+          runGit(['-C', pair.peer, 'sparse-checkout', 'set', '--cone', 'b']);
+          const repo = await openRepository({ cwd: pair.ours });
+          await repo.sparseCheckout.set({ patterns: ['b'], cone: true });
+          expectSameConfigFiles();
+
+          // Act
+          runGit(['-C', pair.peer, 'checkout', '-q', 'other']);
+          runGit(['-C', pair.ours, 'checkout', '-q', 'other']);
+
+          // Assert
+          expect(gitTagView(pair.ours)).toBe(gitTagView(pair.peer));
+          expect(gitTagView(pair.ours)).toBe('S a/f\nS a/g\nH b/f\nH top\n');
+        });
+      });
+    });
+
+    describe('Given a sparse set by git on both sides and tsgit disabling one', () => {
+      describe('When both tools list and check out the other branch', () => {
+        it('Then git behaves the same on both sides', async () => {
+          // Arrange
+          sparseSetConeBoth();
+          runGit(['-C', pair.peer, 'sparse-checkout', 'disable']);
+          const repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          await repo.sparseCheckout.disable();
+
+          // Assert
+          expectSameConfigFiles();
+          const listOurs = tryRunGitWithExit(['-C', pair.ours, 'sparse-checkout', 'list']);
+          const listPeer = tryRunGitWithExit(['-C', pair.peer, 'sparse-checkout', 'list']);
+          expect(listOurs.exitCode).toBe(listPeer.exitCode);
+          expect(listOurs.stderr).toBe(listPeer.stderr);
+          runGit(['-C', pair.peer, 'checkout', '-q', 'other']);
+          runGit(['-C', pair.ours, 'checkout', '-q', 'other']);
+          expect(gitTagView(pair.ours)).toBe(gitTagView(pair.peer));
+        });
+      });
+    });
+
+    describe('Given a linked worktree on both sides', () => {
+      const linkedOf = async (main: string): Promise<string> => {
+        const parent = await mkdtemp(join(tmpdir(), 'tsgit-wt-'));
+        extraDirs.push(parent);
+        const linked = join(parent, 'wt');
+        runGit(['-C', main, 'worktree', 'add', '-q', linked, '-b', 'side']);
+        return linked;
+      };
+      describe('When both tools set a cone inside the linked worktree', () => {
+        it('Then the worktree config, the common config and main behave as in git', async () => {
+          // Arrange
+          const peerLinked = await linkedOf(pair.peer);
+          const oursLinked = await linkedOf(pair.ours);
+          runGit(['-C', peerLinked, 'sparse-checkout', 'set', '--cone', 'b']);
+          const repo = await openRepository({ cwd: oursLinked });
+
+          // Act
+          await repo.sparseCheckout.set({ patterns: ['b'], cone: true });
+
+          // Assert
+          const linkedConfig = (main: string): string | undefined =>
+            readOptional(main, 'worktrees/wt/config.worktree');
+          expect(linkedConfig(pair.ours)).toBe(linkedConfig(pair.peer));
+          expect(readOptional(pair.ours, 'config')).toBe(readOptional(pair.peer, 'config'));
+          expect(readOptional(pair.ours, 'config.worktree')).toBe(
+            readOptional(pair.peer, 'config.worktree'),
+          );
+          const listOurs = tryRunGitWithExit(['-C', pair.ours, 'sparse-checkout', 'list']);
+          const listPeer = tryRunGitWithExit(['-C', pair.peer, 'sparse-checkout', 'list']);
+          expect(listOurs.exitCode).toBe(listPeer.exitCode);
+          expect(listOurs.stderr).toBe(listPeer.stderr);
+          expect(listing(oursLinked)).toEqual(listing(peerLinked));
+        });
+      });
+    });
+
+    const sparseSetConeBoth = (): void =>
+      bothSides((dir) => runGit(['-C', dir, 'sparse-checkout', 'set', '--cone', 'b']));
   });
 });

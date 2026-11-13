@@ -72,6 +72,11 @@ const fileExists = (ctx: Context, path: string): Promise<boolean> =>
 const readConfigText = (ctx: Context): Promise<string> =>
   ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
 
+const readWorktreeConfigText = (ctx: Context): Promise<string> =>
+  ctx.fs.readUtf8(`${ctx.layout.gitDir}/config.worktree`);
+
+const EXTENSION_TEXT = '[extensions]\n\tworktreeConfig = true\n';
+
 const readSparseFile = (ctx: Context): Promise<string> =>
   ctx.fs.readUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`);
 
@@ -96,6 +101,8 @@ const seedWorktreeSparse = async (ctx: Context, text: string): Promise<void> => 
 };
 
 const WORKTREE_CONE = '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n';
+const DISABLED_WORKTREE =
+  '[core]\n\tsparseCheckout = false\n\tsparseCheckoutCone = false\n[index]\n\tsparse = false\n';
 const CONE_SRC_FILE = '/*\n!/*/\n/src/\n';
 
 /** Count `writeUtf8` calls that target the local config file. */
@@ -391,14 +398,14 @@ describe('sparseCheckout command', () => {
         it('Then config records sparseCheckout and cone true and the file is the cone shape', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
+          const localBefore = await readConfigText(ctx);
 
           // Act
           await sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true });
 
           // Assert
-          const config = await readConfigText(ctx);
-          expect(config).toContain('sparseCheckout = true');
-          expect(config).toContain('sparseCheckoutCone = true');
+          expect(await readWorktreeConfigText(ctx)).toBe(WORKTREE_CONE);
+          expect(await readConfigText(ctx)).toBe(localBefore + EXTENSION_TEXT);
           expect(await readSparseFile(ctx)).toBe('/*\n!/*/\n/src/\n!/src/*/\n/src/app/\n');
         });
       });
@@ -421,7 +428,9 @@ describe('sparseCheckout command', () => {
             retained: [],
           });
           expect(await readSparseFile(ctx)).toBe('/src/\n');
-          expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = false');
+          expect(await readWorktreeConfigText(ctx)).toBe(
+            '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = false\n',
+          );
           expect(await fileExists(ctx, 'docs/guide.md')).toBe(false);
           expect(await fileExists(ctx, 'src/util.ts')).toBe(true);
         });
@@ -439,7 +448,7 @@ describe('sparseCheckout command', () => {
 
           // Assert
           expect(result.cone).toBe(true);
-          expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = true');
+          expect(await readWorktreeConfigText(ctx)).toBe(WORKTREE_CONE);
         });
       });
     });
@@ -498,7 +507,7 @@ describe('sparseCheckout command', () => {
 
           // Assert — non-cone is preserved end to end.
           expect(result.cone).toBe(false);
-          expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = false');
+          expect(await readWorktreeConfigText(ctx)).toContain('sparseCheckoutCone = false');
         });
       });
     });
@@ -637,7 +646,7 @@ describe('sparseCheckout command', () => {
 
           // Assert
           expect(result.cone).toBe(false);
-          expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = false');
+          expect(await readWorktreeConfigText(ctx)).toContain('sparseCheckoutCone = false');
         });
       });
     });
@@ -725,7 +734,58 @@ describe('sparseCheckout command', () => {
           });
           expect(await fileExists(ctx, 'src/app/main.ts')).toBe(true);
           expect(await fileExists(ctx, 'src/util.ts')).toBe(true);
-          expect(await readConfigText(ctx)).toContain('sparseCheckout = false');
+          expect(await readWorktreeConfigText(ctx)).toBe(DISABLED_WORKTREE);
+        });
+      });
+    });
+
+    describe('Given a fresh repository', () => {
+      describe('When disable', () => {
+        it('Then the three disabling keys are written to the worktree config', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+
+          // Act
+          await sparseCheckoutDisable(ctx);
+
+          // Assert
+          expect(await readWorktreeConfigText(ctx)).toBe(DISABLED_WORKTREE);
+        });
+      });
+    });
+
+    describe('Given a local sparseCheckout true', () => {
+      describe('When disable', () => {
+        it('Then the local key is kept and the worktree config switches it off', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await enableSparse(ctx, true);
+          const localBefore = await readConfigText(ctx);
+
+          // Act
+          await sparseCheckoutDisable(ctx);
+
+          // Assert
+          expect(await readConfigText(ctx)).toBe(localBefore + EXTENSION_TEXT);
+          expect(await readWorktreeConfigText(ctx)).toBe(DISABLED_WORKTREE);
+        });
+      });
+    });
+
+    describe('Given a cone set followed by a non-cone set', () => {
+      describe('When both run', () => {
+        it('Then the cone key is rewritten in place', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await sparseCheckoutSet(ctx, { patterns: ['src'], cone: true });
+
+          // Act
+          await sparseCheckoutSet(ctx, { patterns: ['/src/'], cone: false });
+
+          // Assert
+          expect(await readWorktreeConfigText(ctx)).toBe(
+            '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = false\n',
+          );
         });
       });
     });
@@ -876,7 +936,7 @@ describe('sparseCheckout command', () => {
 
           // Assert
           expect(configWrites()).toBeGreaterThan(0);
-          expect(await readConfigText(ctx)).toContain('sparseCheckoutCone = true');
+          expect(await readWorktreeConfigText(ctx)).toBe(WORKTREE_CONE);
         });
       });
     });

@@ -19,10 +19,11 @@ import {
   serializeCone,
 } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
+import { enableWorktreeConfig } from '../primitives/internal/enable-worktree-config.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { loadSparseMatcher, readSparsePatternText } from '../primitives/read-sparse-checkout.js';
 import { readSparseConfig } from '../primitives/read-sparse-config.js';
-import { updateCoreConfig, updateScopedConfigEntries } from '../primitives/update-config.js';
+import { updateScopedConfigEntries } from '../primitives/update-config.js';
 import { writeSparsePatternText } from '../primitives/write-sparse-checkout.js';
 import {
   type ApplySparseCheckoutOpts,
@@ -112,12 +113,20 @@ interface PersistOptions {
   readonly recordMode: boolean;
 }
 
-/** Record the mode keys with the casing git writes them in. */
-const recordSparseMode = (ctx: Context, cone: boolean): Promise<void> =>
-  updateScopedConfigEntries(ctx, 'local', [
+const DISABLE_ENTRIES = [
+  { section: 'core', key: 'sparseCheckout', value: 'false' },
+  { section: 'core', key: 'sparseCheckoutCone', value: 'false' },
+  { section: 'index', key: 'sparse', value: 'false' },
+] as const;
+
+/** Record the mode keys in the worktree layer with the casing git writes them in. */
+const recordSparseMode = async (ctx: Context, cone: boolean): Promise<void> => {
+  await enableWorktreeConfig(ctx);
+  await updateScopedConfigEntries(ctx, 'worktree', [
     { section: 'core', key: 'sparseCheckout', value: 'true' },
     { section: 'core', key: 'sparseCheckoutCone', value: cone ? 'true' : 'false' },
   ]);
+};
 
 /** Apply `spec`, then persist the pattern file and, when asked, the mode (set ordering). */
 const applyAndPersist = async (
@@ -189,7 +198,8 @@ export const sparseCheckoutDisable = async (
 ): Promise<SparseCheckoutAppliedResult> => {
   await assertSparseReady(ctx);
   const applied = await applySparseCheckout(ctx, applyOpts(undefined, input?.force));
-  await updateCoreConfig(ctx, { sparseCheckout: 'false' });
+  await enableWorktreeConfig(ctx);
+  await updateScopedConfigEntries(ctx, 'worktree', DISABLE_ENTRIES);
   return toApplied(false, applied);
 };
 
