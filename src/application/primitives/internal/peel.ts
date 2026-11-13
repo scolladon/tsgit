@@ -40,7 +40,7 @@ export const peel = async (
   throw objectNotFound(walk.id);
 };
 
-export type SearchableKind = 'tree' | 'blob';
+export type SearchableKind = 'commit-tree' | 'tree' | 'blob';
 
 export interface SearchableObject {
   readonly kind: SearchableKind;
@@ -50,7 +50,9 @@ export interface SearchableObject {
 /**
  * git grep's object dispatch: `deref_tag` follows annotated tags to any depth
  * and keeps a tree or a blob as it is; a commit is then read as its root tree,
- * so every object past it must end on a tree — a blob there refuses.
+ * so every object past it must end on a tree — a blob there refuses. A commit's
+ * tree is told apart (`commit-tree`) because git checks attributes only under
+ * a commit.
  */
 export const peelToTreeOrBlob = async (
   ctx: Context,
@@ -62,7 +64,7 @@ export const peelToTreeOrBlob = async (
   if (kind === 'tree' || kind === 'blob') return { kind, id: deref.id };
   // Past the tag walk only a commit or an unparsed object remains; reading the
   // latter as a root tree refuses OBJECT_NOT_FOUND on the same id.
-  return { kind: 'tree', id: await rootTreeOf(ctx, deref.id) };
+  return { kind: 'commit-tree', id: await rootTreeOf(ctx, deref.id) };
 };
 
 /**

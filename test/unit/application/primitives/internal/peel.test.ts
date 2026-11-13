@@ -256,7 +256,11 @@ describe('peelToTreeOrBlob', () => {
       content: new TextEncoder().encode(text),
     });
 
-  const tagOf = (ctx: Context, object: ObjectId, objectType: 'blob' | 'tag'): Promise<ObjectId> =>
+  const tagOf = (
+    ctx: Context,
+    object: ObjectId,
+    objectType: 'blob' | 'commit' | 'tag' | 'tree',
+  ): Promise<ObjectId> =>
     writeObject(ctx, {
       type: 'tag',
       id: '' as ObjectId,
@@ -265,6 +269,19 @@ describe('peelToTreeOrBlob', () => {
 
   const emptyTree = (ctx: Context): Promise<ObjectId> =>
     writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+
+  const commitOfEmptyTree = async (ctx: Context) => {
+    const tree = await emptyTree(ctx);
+    const who = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+    const commit = await createCommit(ctx, {
+      tree,
+      parents: [],
+      author: who,
+      committer: who,
+      message: 'm',
+    });
+    return { commit, tree };
+  };
 
   describe('Given a blob id', () => {
     describe('When it is peeled', () => {
@@ -304,22 +321,50 @@ describe('peelToTreeOrBlob', () => {
 
   describe('Given a commit', () => {
     describe('When it is peeled', () => {
-      it('Then it answers the tree kind and its root tree id', async () => {
+      it('Then it answers the commit-tree kind and its root tree id', async () => {
         // Arrange
         const { ctx } = await logging();
-        const tree = await emptyTree(ctx);
-        const who = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
-        const commit = await createCommit(ctx, {
-          tree,
-          parents: [],
-          author: who,
-          committer: who,
-          message: 'm',
-        });
+        const { commit, tree } = await commitOfEmptyTree(ctx);
         const sut = peelToTreeOrBlob;
 
         // Act
         const result = await sut(ctx, undefined, commit);
+
+        // Assert
+        expect(result).toEqual({ kind: 'commit-tree', id: tree });
+      });
+    });
+  });
+
+  describe('Given an annotated tag naming a commit', () => {
+    describe('When it is peeled', () => {
+      it('Then it answers the commit-tree kind and its root tree id', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const { commit, tree } = await commitOfEmptyTree(ctx);
+        const tag = await tagOf(ctx, commit, 'commit');
+        const sut = peelToTreeOrBlob;
+
+        // Act
+        const result = await sut(ctx, undefined, tag);
+
+        // Assert
+        expect(result).toEqual({ kind: 'commit-tree', id: tree });
+      });
+    });
+  });
+
+  describe('Given an annotated tag naming a tree', () => {
+    describe('When it is peeled', () => {
+      it('Then it answers the tree kind and the tree id', async () => {
+        // Arrange
+        const { ctx } = await logging();
+        const tree = await emptyTree(ctx);
+        const tag = await tagOf(ctx, tree, 'tree');
+        const sut = peelToTreeOrBlob;
+
+        // Act
+        const result = await sut(ctx, undefined, tag);
 
         // Assert
         expect(result).toEqual({ kind: 'tree', id: tree });

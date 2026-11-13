@@ -11,6 +11,7 @@ import {
 import { init } from '../../../../src/application/commands/init.js';
 import { resolveRevision } from '../../../../src/application/commands/rev-parse.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { MAX_LINE_BYTES } from '../../../../src/domain/diff/index.js';
@@ -1331,7 +1332,7 @@ const writeTagObject = (
   ctx: Context,
   tagName: string,
   object: ObjectId,
-  objectType: 'blob' | 'tag' | 'tree',
+  objectType: 'blob' | 'commit' | 'tag' | 'tree',
 ): Promise<ObjectId> =>
   writeObject(ctx, {
     type: 'tag',
@@ -1706,6 +1707,465 @@ describe('Given a blob target', () => {
 
       // Assert
       expect(data).toMatchObject(expected as object);
+    });
+  });
+});
+
+describe('grep diff attribute verdict', () => {
+  const F1 = 'a NEEDLE\nb\nNEEDLE c\n';
+  const F2 = 'x NEEDLE\0y\n';
+  const TARGETS: ReadonlyArray<[string, 'index' | undefined]> = [
+    ['the index', 'index'],
+    ['the work tree', undefined],
+  ];
+  const targetOption = (target: 'index' | undefined): { target?: 'index' } =>
+    target === undefined ? {} : { target };
+  const pathOf = (result: GrepResult, path: string): GrepPathResult | undefined =>
+    result.paths.find((p) => p.path === path);
+
+  const appendConfig = async (ctx: Context, text: string): Promise<void> => {
+    const cfg = `${ctx.layout.gitDir}/config`;
+    await ctx.fs.writeUtf8(cfg, `${await ctx.fs.readUtf8(cfg)}${text}`);
+    __resetConfigCacheForTests();
+  };
+
+  const seedWithAttributes = async (attributes: string, f1 = F1): Promise<Context> => {
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, '.gitattributes', attributes);
+    await writeAndStage(ctx, 'f1', f1);
+    await commitAll(ctx);
+    return ctx;
+  };
+
+  const removeWorkTreeAttributes = async (ctx: Context): Promise<void> => {
+    await ctx.fs.rm(`${ctx.layout.workDir}/.gitattributes`);
+  };
+
+  describe.each(TARGETS)('Given %s as the target', (_label, target) => {
+    describe('When a path is set -diff', () => {
+      it('Then it is a binary match with its returned-line count and no hits', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')).toEqual({
+          path: 'f1',
+          hits: [],
+          binaryMatch: true,
+          binaryMatchCount: 2,
+        });
+      });
+    });
+
+    describe('When a NUL path is set diff', () => {
+      it('Then it is scanned as text', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f2 diff\n');
+        await writeAndStage(ctx, 'f2', F2);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f2')).toEqual({
+          path: 'f2',
+          hits: [{ lineNumber: 1, line: enc(F2), spans: [{ start: 2, end: 8 }] }],
+          binaryMatch: false,
+          binaryMatchCount: 0,
+        });
+      });
+    });
+
+    describe('When the .gitattributes exists only in the index', () => {
+      it('Then the index copy decides', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        await removeWorkTreeAttributes(ctx);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
+    });
+
+    describe('When the work-tree .gitattributes differs from the index copy', () => {
+      it('Then the work-tree copy wins', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(false);
+      });
+    });
+
+    describe('When a path names a driver configured binary', () => {
+      it('Then it is a binary match', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 diff=drv\n');
+        await appendConfig(ctx, '[diff "drv"]\n\tbinary = true\n');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
+    });
+
+    describe('When the default driver is configured binary and no attribute names a path', () => {
+      it('Then the path is a binary match', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        await writeAndStage(ctx, 'f1', F1);
+        await commitAll(ctx);
+        await appendConfig(ctx, '[diff "default"]\n\tbinary = true\n');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
+    });
+
+    describe('When a forced-binary path matches only beyond 64 KiB', () => {
+      it('Then the whole blob is scanned', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('big.txt binary\n');
+        await writeAndStage(ctx, 'big.txt', `${'x\n'.repeat(MAX_LINE_BYTES / 2 + 16)}NEEDLE\n`);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], ...targetOption(target) });
+
+        // Assert
+        expect(pathOf(result, 'big.txt')).toEqual({
+          path: 'big.txt',
+          hits: [],
+          binaryMatch: true,
+          binaryMatchCount: 1,
+        });
+      });
+    });
+  });
+
+  describe('Given the index target and a path set -diff, When the match is inverted', () => {
+    it('Then the binary count is the non-matching lines', async () => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: 'index',
+        invert: true,
+      });
+
+      // Assert
+      expect(pathOf(result, 'f1')).toEqual({
+        path: 'f1',
+        hits: [],
+        binaryMatch: true,
+        binaryMatchCount: 1,
+      });
+    });
+  });
+
+  describe('Given a layout without a work tree and an index-only .gitattributes, When grepping', () => {
+    it.each([
+      [
+        'a bare-flagged layout',
+        (ctx: Context): Context => ({ ...ctx, layout: { ...ctx.layout, bare: true } }) as Context,
+      ],
+      ['a bare context', (ctx: Context): Context => asBareContext(ctx)],
+    ])('Then %s never reads the index copy', async (_label, toBare) => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      await removeWorkTreeAttributes(ctx);
+      const sut = grep;
+
+      // Act
+      const result = await sut(toBare(ctx), { patterns: [{ fixed: 'NEEDLE' }], target: 'index' });
+
+      // Assert
+      expect(pathOf(result, 'f1')?.binaryMatch).toBe(false);
+    });
+  });
+
+  describe('Given a tree object as the rev', () => {
+    const treeTargets: ReadonlyArray<[string, (ctx: Context) => Promise<string>]> = [
+      ['the peeled tree rev', async () => 'HEAD^{tree}'],
+      [
+        'an annotated tag of the tree',
+        async (ctx) => {
+          const tree = await resolveRevision(ctx, 'HEAD^{tree}');
+          const tag = await writeTagObject(ctx, 'tt', tree, 'tree');
+          await tagCreate(ctx, { name: 'tt', target: tag });
+          return 'tt';
+        },
+      ],
+    ];
+
+    describe.each(treeTargets)('When the target is %s and a path is set -diff', (_l, prepare) => {
+      it('Then the content sniff decides and the path is text', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        const treeish = await prepare(ctx);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(project(pathOf(result, 'f1')?.hits ?? [])).toEqual(F1_HITS);
+      });
+    });
+  });
+
+  describe('Given a blob rev that names a path and the path is set -diff, When grepping', () => {
+    it.each(['HEAD:f1', ':f1', ':0:f1', 'HEAD^{tree}:f1'])(
+      'Then the target %s is a binary match',
+      async (treeish) => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(result.blob).toEqual({ hits: [], binaryMatch: true, binaryMatchCount: 2 });
+      },
+    );
+  });
+
+  describe('Given a blob rev read through the index and its .gitattributes only in the index, When grepping', () => {
+    it('Then the index copy decides', async () => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      await removeWorkTreeAttributes(ctx);
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: ':f1' },
+      });
+
+      // Assert
+      expect(result.blob?.binaryMatch).toBe(true);
+    });
+  });
+
+  describe('Given a blob rev read from a commit and its .gitattributes only in the index, When grepping', () => {
+    it('Then the index copy is not loaded and the blob is text', async () => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      await removeWorkTreeAttributes(ctx);
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, {
+        patterns: [{ fixed: 'NEEDLE' }],
+        target: { treeish: 'HEAD:f1' },
+      });
+
+      // Assert
+      expect(blobHits(result)).toEqual(F1_HITS);
+    });
+  });
+
+  describe('Given a blob named by oid or by an annotated tag and the path is set -diff, When grepping', () => {
+    it.each([
+      ['its oid', async (_ctx: Context, oid: ObjectId) => oid],
+      [
+        'an annotated tag of it',
+        async (ctx: Context, oid: ObjectId) => {
+          const tag = await writeTagObject(ctx, 'bt', oid, 'blob');
+          await tagCreate(ctx, { name: 'bt', target: tag });
+          return 'bt';
+        },
+      ],
+    ])('Then %s is scanned as text', async (_label, prepare) => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      const treeish = await prepare(ctx, await resolveRevision(ctx, 'HEAD:f1'));
+      const sut = grep;
+
+      // Act
+      const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+      // Assert
+      expect(blobHits(result)).toEqual(F1_HITS);
+    });
+  });
+
+  describe('Given a target that names no path and a default driver configured', () => {
+    const seedDefaultDriver = async (binary: boolean): Promise<Context> => {
+      const ctx = await seedRepo();
+      await writeAndStage(ctx, 'f1', F1);
+      await writeAndStage(ctx, 'f2', F2);
+      await commitAll(ctx);
+      await appendConfig(ctx, `[diff "default"]\n\tbinary = ${binary}\n`);
+      return ctx;
+    };
+
+    describe.each(['HEAD^{tree}', 'HEAD:'])('When the tree rev %s is grepped', (treeish) => {
+      it('Then a text path is a binary match under binary = true', async () => {
+        // Arrange
+        const ctx = await seedDefaultDriver(true);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
+
+      it('Then a NUL path is scanned as text under binary = false', async () => {
+        // Arrange
+        const ctx = await seedDefaultDriver(false);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(pathOf(result, 'f2')?.binaryMatch).toBe(false);
+      });
+    });
+
+    describe('When a blob is grepped by its oid', () => {
+      it.each([
+        [true, 'f1', true],
+        [false, 'f2', false],
+      ])('Then binary = %s makes %s a binary match: %s', async (binary, file, expected) => {
+        // Arrange
+        const ctx = await seedDefaultDriver(binary);
+        const treeish = await resolveRevision(ctx, `HEAD:${file}`);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(result.blob?.binaryMatch).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a non-bare layout without a work tree and an index-only .gitattributes, When grepping the index', () => {
+    it('Then the index copy decides', async () => {
+      // Arrange
+      const ctx = await seedWithAttributes('f1 binary\n');
+      await removeWorkTreeAttributes(ctx);
+      const bare = asBareContext(ctx);
+      const noWorkTree: Context = { ...bare, layout: { ...bare.layout, bare: false } };
+      const sut = grep;
+
+      // Act
+      const result = await sut(noWorkTree, { patterns: [{ fixed: 'NEEDLE' }], target: 'index' });
+
+      // Assert
+      expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+    });
+  });
+
+  describe('Given a rev that dereferences to a commit', () => {
+    const commitTargets: ReadonlyArray<[string, (ctx: Context) => Promise<string>]> = [
+      ['the commit rev', async () => 'HEAD'],
+      [
+        'an annotated tag of the commit',
+        async (ctx) => {
+          const headId = await resolveRevision(ctx, 'HEAD');
+          const tag = await writeTagObject(ctx, 'ct', headId, 'commit');
+          await tagCreate(ctx, { name: 'ct', target: tag });
+          return 'ct';
+        },
+      ],
+    ];
+
+    describe.each(commitTargets)('When the target is %s and a path is set -diff', (_l, prepare) => {
+      it('Then the path is a binary match with its returned-line count', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f1 binary\n');
+        const treeish = await prepare(ctx);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }], target: { treeish } });
+
+        // Assert
+        expect(pathOf(result, 'f1')).toEqual({
+          path: 'f1',
+          hits: [],
+          binaryMatch: true,
+          binaryMatchCount: 2,
+        });
+      });
+    });
+
+    describe('When a NUL path is set diff', () => {
+      it('Then it is scanned as text', async () => {
+        // Arrange
+        const ctx = await seedWithAttributes('f2 diff\n');
+        await writeAndStage(ctx, 'f2', F2);
+        await commitAll(ctx);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, {
+          patterns: [{ fixed: 'NEEDLE' }],
+          target: { treeish: 'HEAD' },
+        });
+
+        // Assert
+        expect(pathOf(result, 'f2')).toEqual({
+          path: 'f2',
+          hits: [{ lineNumber: 1, line: enc(F2), spans: [{ start: 2, end: 8 }] }],
+          binaryMatch: false,
+          binaryMatchCount: 0,
+        });
+      });
+    });
+
+    describe('When a bare context has an info/attributes setting -diff', () => {
+      it('Then the path is a binary match', async () => {
+        // Arrange
+        const seeded = await seedRepo();
+        await writeAndStage(seeded, 'f1', F1);
+        await commitAll(seeded);
+        await seeded.fs.mkdir(`${seeded.layout.gitDir}/info`);
+        await seeded.fs.writeUtf8(`${seeded.layout.gitDir}/info/attributes`, 'f1 binary\n');
+        const ctx = asBareContext(seeded);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, {
+          patterns: [{ fixed: 'NEEDLE' }],
+          target: { treeish: 'HEAD' },
+        });
+
+        // Assert
+        expect(pathOf(result, 'f1')?.binaryMatch).toBe(true);
+      });
     });
   });
 });

@@ -474,7 +474,12 @@ done
 # the measured pack landed at 1 555 460 B, 4 B over the old cap, attributable to
 # the tree-or-blob peel and the path-free blob scan — runtime code in every
 # distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((1520 * 1024))
+# Raised 1520 -> 1522 KiB by grep's diff-attribute binary verdict: the measured
+# pack landed at 1 558 419 B, 1 939 B over the old cap, attributable to the
+# userdiff driver verdict with its builtin driver names, the per-target attribute
+# reader, the commit-tree kind and the path a blob rev names — runtime code in
+# every distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1522 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

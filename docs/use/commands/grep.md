@@ -36,8 +36,8 @@ interface GrepLineHit {
 }
 interface GrepBlobResult {
   readonly hits: ReadonlyArray<GrepLineHit>;
-  readonly binaryMatch: boolean;   // binary blob, some line of its first 64 KiB returned by the matcher; hits empty
-  readonly binaryMatchCount: number; // binary blob: lines of its first 64 KiB the matcher returns; 0 for text
+  readonly binaryMatch: boolean;   // binary by attribute or sniff, some line returned by the matcher (whole blob under a forced-binary attribute, first 64 KiB otherwise); hits empty
+  readonly binaryMatchCount: number; // binary blob: lines the matcher returns (same window); 0 for text
 }
 interface GrepPathResult extends GrepBlobResult {
   readonly path: FilePath;
@@ -84,12 +84,26 @@ interface GrepResult {
 - **Searchable content.** On tree, index and working-tree targets only regular and
   executable file blobs are searched; **symlinks and gitlinks (submodules) are
   skipped** — matching `git grep`. The mode filter does not apply to a blob target. A tracked file absent from the working tree is silently skipped.
-- **Binary blobs.** A binary blob (NUL in the first 8 KiB — git's own rule, no
-  line-length or line-count heuristic) is not line-scanned; it is reported with
-  `binaryMatch: true` and empty `hits` (git's `Binary file X matches`, exit 0) when
-  the matcher returns some line of its first 64 KiB. Under `invert` a returned line
-  is a non-matching one, so a binary blob whose every line matches is not reported;
-  an anchored pattern sees each line, not the whole window.
+- **Binary blobs.** A blob is binary when the `diff` attribute says so, else when it has
+  a NUL in the first 8 KiB (git's own rule, no line-length or line-count heuristic).
+  The verdict order: `-diff` / `binary` (or a macro setting `-diff`) forces binary; bare
+  `diff` forces text (a NUL stays in `line`); `diff=<name>` uses `diff.<name>.binary`
+  when that driver exists (configured, or one of git's builtin driver names), otherwise
+  `diff.default.binary`; otherwise the NUL sniff. `textconv` never changes the verdict.
+  Targets that read the attribute: the work tree, `'index'`, a rev that dereferences to
+  a commit (tags followed), a blob rev that names a path (`HEAD:f`, `:f`, `:0:f`).
+  Targets that do not: a tree object (`HEAD^{tree}`, a tree oid or tag of one,
+  `HEAD:sub`), a blob named by oid or tag; these still take `diff.default.binary`
+  before the sniff. Sources: `info/attributes`, the work-tree
+  `.gitattributes` (the index copy only for the work tree, `'index'` and a `:path` rev,
+  in any repository that is not bare), `core.attributesFile`; never the rev's own tree.
+  A bare repository reads only
+  `info/attributes` and `core.attributesFile`. A binary blob is not line-scanned; it is
+  reported with `binaryMatch: true` and empty `hits` (git's `Binary file X matches`,
+  exit 0) when the matcher returns some line: of the whole blob under a forced-binary
+  attribute, of its first 64 KiB otherwise. Under `invert` a returned line is a
+  non-matching one, so a binary blob whose every line matches is not reported; an
+  anchored pattern sees each line, not the whole window.
 - **Line numbering** is 1-based; `line` carries the raw bytes including the
   trailing LF that `splitLines` preserves.
 - **Match spans** are **byte offsets** into `line` — `line.subarray(start, end)`
@@ -103,7 +117,7 @@ interface GrepResult {
 - **`-c` (count):** with `count = m => m.binaryMatch ? m.binaryMatchCount : m.hits.length`,
   `result.paths.map(p => ({ path: p.path, count: count(p) }))`;
   blob: `result.blob && { label: rev, count: count(result.blob) }`. git counts the
-  returned lines of a binary blob too, not 1 (within the first 64 KiB — see Divergences).
+  returned lines of a binary blob too, not 1 (within the scanned window — see Divergences).
 - **`-l` (name-only):** `result.paths.map(p => p.path)`; blob: `result.blob ? [rev] : []`.
 - **`Binary file X matches`:** emit for each `p` with `p.binaryMatch === true`;
   blob: `Binary file ${rev} matches` when `result.blob?.binaryMatch`.
@@ -128,7 +142,7 @@ interface GrepResult {
 - **An empty fixed pattern `{ fixed: '' }` matches nothing**, whereas `git grep -F ''`
   matches every line. The empty-pattern case is degenerate; the command rejects an
   empty `patterns` array but treats an empty literal as a no-match.
-- **Binary-match presence inspects only the first 64 KiB** of a binary blob: a blob
+- **Binary-match presence inspects only the first 64 KiB** of a blob the NUL sniff marks binary: a blob
   whose only match lies beyond the first 64 KiB is not reported as `binaryMatch`,
   and `binaryMatchCount` counts only the window's returned lines, so a binary blob
   with returned lines past 64 KiB counts lower than `git grep -c`.
@@ -138,6 +152,12 @@ interface GrepResult {
   bounds the work a caller `RegExp` can do over an unbounded binary blob (the text path
   is already bounded per line). Binary blobs are an incidental search target, so the
   window is a deliberate safety bound.
+- **`attr.tree`, `--attr-source` and `GIT_ATTR_SOURCE` are not implemented**: the `diff`
+  attribute is never read from a named tree (see `31.9` in
+  [known divergences](../../known-divergences.md)).
+- **A `[diff "<name>"]` section with no keys counts as a driver** (the NUL sniff
+  applies) where git routes it to the default driver; observable only under
+  `diff.default.binary` (see `32.56` in [known divergences](../../known-divergences.md)).
 
 ## Performance
 

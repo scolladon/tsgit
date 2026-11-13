@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import {
   evaluateRevision,
   resolveRevision,
+  resolveRevisionWithPath,
 } from '../../../../src/application/commands/rev-parse.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { writeReflog } from '../../../../src/application/primitives/reflog-store.js';
@@ -74,6 +75,29 @@ const writeTag = (
       extraHeaders: [],
     },
   });
+
+const seedTree = async (
+  ctx: Context,
+): Promise<{ blobA: ObjectId; blobB: ObjectId; sub: ObjectId; root: ObjectId }> => {
+  const blobA = await writeBlob(ctx, 'hello\n');
+  const blobB = await writeBlob(ctx, 'nested\n');
+  const sub = await writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [treeEntry(FILE_MODE.REGULAR, 'b.txt', blobB)],
+  });
+  const root = await writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [
+      treeEntry(FILE_MODE.REGULAR, 'a.txt', blobA),
+      treeEntry(FILE_MODE.DIRECTORY, 'sub', sub),
+    ],
+  });
+  const commit = await writeCommit(ctx, root, []);
+  await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
+  return { blobA, blobB, sub, root };
+};
 
 /** Write a fully-framed `.git/index` (body + hash trailer) with the given entries. */
 const writeIndexFile = async (
@@ -665,29 +689,6 @@ describe('resolveRevision', () => {
   });
 
   describe('Given a tree-ish with a path (<rev>:<path>)', () => {
-    const seedTree = async (
-      ctx: Context,
-    ): Promise<{ blobA: ObjectId; blobB: ObjectId; sub: ObjectId; root: ObjectId }> => {
-      const blobA = await writeBlob(ctx, 'hello\n');
-      const blobB = await writeBlob(ctx, 'nested\n');
-      const sub = await writeObject(ctx, {
-        type: 'tree',
-        id: '' as ObjectId,
-        entries: [treeEntry(FILE_MODE.REGULAR, 'b.txt', blobB)],
-      });
-      const root = await writeObject(ctx, {
-        type: 'tree',
-        id: '' as ObjectId,
-        entries: [
-          treeEntry(FILE_MODE.REGULAR, 'a.txt', blobA),
-          treeEntry(FILE_MODE.DIRECTORY, 'sub', sub),
-        ],
-      });
-      const commit = await writeCommit(ctx, root, []);
-      await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
-      return { blobA, blobB, sub, root };
-    };
-
     describe('When resolveRevision resolves the tree-ish path', () => {
       it.each([
         {
@@ -1830,6 +1831,64 @@ describe('resolveRevision', () => {
           // Assert
           expect(refusal).toEqual({ code: 'REVPARSE_UNRESOLVED', expression: 'v1@{0}' });
         });
+      });
+    });
+  });
+});
+
+describe('resolveRevisionWithPath', () => {
+  describe.each([
+    { expr: 'main:a.txt', cwd: '', want: { id: 'blobA', path: 'a.txt', fromIndex: false } },
+    { expr: 'main^{tree}:a.txt', cwd: '', want: { id: 'blobA', path: 'a.txt', fromIndex: false } },
+    {
+      expr: 'main:./b.txt',
+      cwd: '/sub',
+      want: { id: 'blobB', path: 'sub/b.txt', fromIndex: false },
+    },
+    { expr: ':a.txt', cwd: '', want: { id: 'blobA', path: 'a.txt', fromIndex: true } },
+    { expr: ':0:a.txt', cwd: '', want: { id: 'blobA', path: 'a.txt', fromIndex: true } },
+    { expr: 'main:sub', cwd: '', want: { id: 'sub', path: 'sub', fromIndex: false } },
+  ] as const)('Given $expr read from "$cwd"', ({ expr, cwd, want }) => {
+    describe('When the name is resolved with its path', () => {
+      it('Then it answers the object and the path the name carried', async () => {
+        // Arrange
+        const repo = createMemoryContext();
+        const ids = await seedTree(repo);
+        await writeIndexFile(repo, [{ path: 'a.txt', id: ids.blobA, stage: 0 }]);
+        const ctx = { ...repo, cwd: `${repo.layout.workDir}${cwd}` } as Context;
+        const sut = resolveRevisionWithPath;
+
+        // Act
+        const result = await sut(ctx, expr);
+
+        // Assert
+        expect(result).toStrictEqual({
+          id: ids[want.id],
+          named: { path: want.path, fromIndex: want.fromIndex },
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { expr: 'main:', want: 'root' },
+    { expr: 'main', want: 'commit' },
+    { expr: 'blobA', want: 'blobA' },
+  ] as const)('Given $expr naming no path', ({ expr, want }) => {
+    describe('When the name is resolved with its path', () => {
+      it('Then it answers the object alone', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const ids = await seedTree(ctx);
+        const commit = await resolveRevision(ctx, 'main');
+        const name = expr === 'blobA' ? ids.blobA : expr;
+        const sut = resolveRevisionWithPath;
+
+        // Act
+        const result = await sut(ctx, name);
+
+        // Assert
+        expect(result).toStrictEqual({ id: want === 'commit' ? commit : ids[want] });
       });
     });
   });
