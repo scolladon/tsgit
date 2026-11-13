@@ -100,7 +100,7 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-071 — Sparse command shape](../adr/071-sparse-command-shape.md)
 - [ADR-072 — Sparse dirty-file policy](../adr/072-sparse-dirty-file-policy.md)
 - [ADR-073 — Sparse integration scope](../adr/073-sparse-integration-scope.md)
-- [ADR-074 — Minimal config writer for `[core]`](../adr/074-minimal-config-writer.md)
+- [ADR-074 — Minimal config writer for `[core]`](../adr/074-minimal-config-writer.md) — its target file for the sparse keys is superseded by [ADR-1188 — Sparse checkout writes its keys to the worktree config](../adr/1188-sparse-checkout-writes-its-keys-to-the-worktree-config.md)
 - [ADR-075 — Reset sparse integration](../adr/075-reset-sparse-integration.md)
 - [ADR-076 — Merge conflict materialization respects sparse](../adr/076-merge-conflict-materialization.md)
 
