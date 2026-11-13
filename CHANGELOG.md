@@ -1,5 +1,31 @@
 # Changelog
 
+## [6.0.1](https://github.com/scolladon/tsgit/compare/v6.0.0...v6.0.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **checkout:** displace occupants in a forced write's way and refuse as git does across callers ([#331](https://github.com/scolladon/tsgit/issues/331)) ([fb6bc5b](https://github.com/scolladon/tsgit/commit/fb6bc5b030805f1f498f7382b91bf89d017d2814))
+* **checkout:** rewrite stale entries on a forced checkout and across git's one-way-merge callers ([#332](https://github.com/scolladon/tsgit/issues/332)) ([23ff6c1](https://github.com/scolladon/tsgit/commit/23ff6c1ec8a3d1c1059b3f7acdec9979b8ea579c))
+* follow git 2.56 across fsck, midx, stash, gitlink, gc and merge-base, and pin CI to 2.56 ([#335](https://github.com/scolladon/tsgit/issues/335)) ([071d8e4](https://github.com/scolladon/tsgit/commit/071d8e480f5a38bdc321f7c5a5fde1479986a4fb))
+* **fsck:** read dotgit alias names through git's UTF-8 reader so a rejected byte or a slash ends the name ([#338](https://github.com/scolladon/tsgit/issues/338)) ([adf96e8](https://github.com/scolladon/tsgit/commit/adf96e8f5f4daa098df8ee1a50f9c0a0b1e40cd6))
+* **fsck:** report broken ref chains and unreadable ref files as git does, and read loose refs with git's grammar ([#336](https://github.com/scolladon/tsgit/issues/336)) ([751166b](https://github.com/scolladon/tsgit/commit/751166b575fa30856683e451e09f4771b576526a))
+* **grep:** decide binary from the diff attribute and its driver as git does ([#344](https://github.com/scolladon/tsgit/issues/344)) ([4a49607](https://github.com/scolladon/tsgit/commit/4a49607ebc5f3f8135ae7f32fe4bb95ee2272ae2))
+* **grep:** grep a blob when the target rev resolves to one ([#343](https://github.com/scolladon/tsgit/issues/343)) ([4a7baf8](https://github.com/scolladon/tsgit/commit/4a7baf8648a4c3d8a22569b9c4c4db13f2f56f7d))
+* **pathspec:** match pathspecs with git's glob dialect and refuse unmatched globs atomically ([#326](https://github.com/scolladon/tsgit/issues/326)) ([8438d4f](https://github.com/scolladon/tsgit/commit/8438d4f080f0037347a344fb929351e477c1fad3))
+* **refs:** walk every worktree's ref store in fsck and route the main-worktree/ and worktrees/&lt;id&gt;/ namespace on reads and writes ([#339](https://github.com/scolladon/tsgit/issues/339)) ([45ad1d9](https://github.com/scolladon/tsgit/commit/45ad1d9776ed9a2b078ca3b90c67509c7a434572))
+* **rev-list:** walk the range under maxCount 0 when a commit is excluded ([#342](https://github.com/scolladon/tsgit/issues/342)) ([f307051](https://github.com/scolladon/tsgit/commit/f307051ddb6474667a2f886073d03033d7ecc4a9))
+* **rev-parse:** refuse a corrupt first candidate and skip an unreadable object fanout as git does ([#337](https://github.com/scolladon/tsgit/issues/337)) ([a091b53](https://github.com/scolladon/tsgit/commit/a091b5331f5d43d7c748906ff1c860d51a7d1791))
+* **stash:** follow git's apply order, patch-rule index judge, clean -d and gitlink paths on push ([#333](https://github.com/scolladon/tsgit/issues/333)) ([b105fcd](https://github.com/scolladon/tsgit/commit/b105fcd0b237d2c9d5343cca83f320c9e3bb72b2))
+* **status:** judge a gitlink by its checkout as git does, in status, rm, stash and the sequencer ([#330](https://github.com/scolladon/tsgit/issues/330)) ([4899565](https://github.com/scolladon/tsgit/commit/4899565f3a1a259d7fe55db882c4a813c628ce23))
+
+
+### Documentation
+
+* **backlog:** add a filing bar and move below-bar divergences to a ledger ([#341](https://github.com/scolladon/tsgit/issues/341)) ([b9c4b52](https://github.com/scolladon/tsgit/commit/b9c4b5232d28806178e2801774cc57d5cad605d2))
+* **backlog:** file 32.38–32.42, proven by git 2.55 twin probes ([#329](https://github.com/scolladon/tsgit/issues/329)) ([95704e7](https://github.com/scolladon/tsgit/commit/95704e7db12726180d155091d5b7feb7b79f25f5))
+* **backlog:** strike 32.30, delivered by [#326](https://github.com/scolladon/tsgit/issues/326) ([#328](https://github.com/scolladon/tsgit/issues/328)) ([36a8b9b](https://github.com/scolladon/tsgit/commit/36a8b9b7d66e4442618d510e127ff27bdcba31b5))
+
 ## [6.0.0](https://github.com/scolladon/tsgit/compare/v5.0.0...v6.0.0) (2026-10-21)
 
 
