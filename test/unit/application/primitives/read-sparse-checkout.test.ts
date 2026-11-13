@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { __resetSectionsCacheForTests } from '../../../../src/application/primitives/config-scoped-read.js';
 import {
   loadSparseMatcher,
   MAX_SPARSE_PATTERN_FILE_BYTES,
@@ -17,6 +18,10 @@ const seedPatternFile = async (ctx: Context, text: string): Promise<void> => {
   await ctx.fs.writeUtf8(sparsePath(ctx), text);
 };
 
+const seedWorktreeConfig = async (ctx: Context, text: string): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config.worktree`, text);
+};
+
 const seedConfig = async (ctx: Context, text: string): Promise<void> => {
   await ctx.fs.writeUtf8(configPath(ctx), text);
 };
@@ -24,6 +29,7 @@ const seedConfig = async (ctx: Context, text: string): Promise<void> => {
 describe('primitives/read-sparse-checkout', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
+    __resetSectionsCacheForTests();
   });
 
   describe('readSparsePatternText', () => {
@@ -170,6 +176,45 @@ describe('primitives/read-sparse-checkout', () => {
           // Arrange — an explicit falsy gate is still inactive.
           const ctx = createMemoryContext();
           await seedConfig(ctx, '[core]\n\tsparseCheckout = false\n');
+
+          // Act
+          const result = await loadSparseMatcher(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the extension on and config.worktree setting sparseCheckout and sparseCheckoutCone true with a cone file', () => {
+      describe('When loadSparseMatcher', () => {
+        it('Then a cone matcher is built from the worktree keys', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedConfig(ctx, '[extensions]\n\tworktreeConfig = true\n');
+          await seedWorktreeConfig(
+            ctx,
+            '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n',
+          );
+          await seedPatternFile(ctx, '/*\n!/*/\n/src/\n');
+
+          // Act
+          const result = await loadSparseMatcher(ctx);
+
+          // Assert
+          expect(result).toBeDefined();
+          expect(result?.('src/main.ts' as FilePath)).toBe(true);
+          expect(result?.('docs/readme.md' as FilePath)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given the extension off and config.worktree setting sparseCheckout true', () => {
+      describe('When loadSparseMatcher', () => {
+        it('Then returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedWorktreeConfig(ctx, '[core]\n\tsparseCheckout = true\n');
 
           // Act
           const result = await loadSparseMatcher(ctx);
