@@ -160,19 +160,19 @@ export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
   // caller discipline at one site.
   if (layoutFailsAcceptance(ctx.layout)) return false;
   const sections = await readSingleScope(ctx, 'local');
-  for (const section of sections) {
-    if (section.section.toLowerCase() !== 'extensions') continue;
-    if (section.subsection !== undefined) continue;
-    for (const entry of section.entries) {
-      if (entry.key.toLowerCase() !== 'worktreeconfig') continue;
-      const parsed = parseGitBoolean(entry.value);
-      // A value git's boolean grammar refuses is inert here — the
-      // discovery-tier gate in `assertRepository` is what raises it, and it
-      // runs before this on every command.
-      return parsed.ok && parsed.value;
-    }
-  }
-  return false;
+  // git's config read keeps the last occurrence of a key.
+  const last = sections
+    .filter((section) => section.section.toLowerCase() === 'extensions')
+    .filter((section) => section.subsection === undefined)
+    .flatMap((section) => section.entries)
+    .filter((entry) => entry.key.toLowerCase() === 'worktreeconfig')
+    .at(-1);
+  if (last === undefined) return false;
+  const parsed = parseGitBoolean(last.value);
+  // A value git's boolean grammar refuses is inert here — the
+  // discovery-tier gate in `assertRepository` is what raises it, and it
+  // runs before this on every command.
+  return parsed.ok && parsed.value;
 };
 
 /**
