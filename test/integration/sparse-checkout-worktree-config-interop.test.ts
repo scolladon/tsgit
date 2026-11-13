@@ -331,6 +331,139 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
     });
   });
 
+  describe('Given a bad sparse boolean planted in the layered config', () => {
+    interface RefusalData {
+      readonly code: string;
+      readonly key?: string;
+      readonly value?: string;
+      readonly source?: string;
+      readonly line?: number;
+    }
+    const plant = (
+      worktreeFile: string,
+      local: ReadonlyArray<readonly [string, string]> = [],
+    ): void =>
+      bothSides((dir) => {
+        gitConfig(dir, 'extensions.worktreeConfig', 'true');
+        for (const [key, value] of local) gitConfig(dir, key, value);
+        writeFileSync(join(dir, '.git', 'config.worktree'), worktreeFile);
+      });
+    const refusalOf = async (action: () => Promise<unknown>): Promise<RefusalData> => {
+      try {
+        await action();
+      } catch (error) {
+        return (error as { readonly data: RefusalData }).data;
+      }
+      throw new Error('expected a refusal');
+    };
+    const expectGitRefuses = (args: ReadonlyArray<string>, stderr: string): void => {
+      const git = tryRunGitWithExit(['-C', pair.peer, ...args]);
+      expect(git.exitCode).toBe(128);
+      expect(git.stderr).toContain(stderr);
+    };
+
+    interface BadRow {
+      readonly id: string;
+      readonly worktreeFile: string;
+      readonly local: ReadonlyArray<readonly [string, string]>;
+      readonly key: string;
+      readonly value: string;
+      readonly source: string;
+    }
+    const BAD_ROWS: ReadonlyArray<BadRow> = [
+      {
+        id: 'R10',
+        worktreeFile: '[core]\n\tsparseCheckout = bogus\n',
+        local: [],
+        key: 'core.sparsecheckout',
+        value: 'bogus',
+        source: '/.git/config.worktree',
+      },
+      {
+        id: 'R12',
+        worktreeFile: '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = bogus\n',
+        local: [],
+        key: 'core.sparsecheckoutcone',
+        value: 'bogus',
+        source: '/.git/config.worktree',
+      },
+      {
+        id: 'O1',
+        worktreeFile: '[core]\n\tsparseCheckout = bogus2\n',
+        local: [['core.sparseCheckout', 'bogus1']],
+        key: 'core.sparsecheckout',
+        value: 'bogus1',
+        source: '/.git/config',
+      },
+      {
+        id: 'O2',
+        worktreeFile: '[core]\n\tsparseCheckout = bogus2\n',
+        local: [['core.sparseCheckoutCone', 'bogus1']],
+        key: 'core.sparsecheckoutcone',
+        value: 'bogus1',
+        source: '/.git/config',
+      },
+    ];
+
+    describe.each(BAD_ROWS)('When row $id is checked out by both tools', (row) => {
+      it('Then tsgit refuses as git does', async () => {
+        // Arrange
+        plant(row.worktreeFile, row.local);
+        expectGitRefuses(
+          ['checkout', 'other'],
+          `bad boolean config value '${row.value}' for '${row.key}'`,
+        );
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        const result = await refusalOf(() => repo.checkout({ rev: 'other' }));
+
+        // Assert
+        expect(result.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(result.key).toBe(row.key);
+        expect(result.value).toBe(row.value);
+        expect(result.source?.endsWith(row.source)).toBe(true);
+      });
+    });
+
+    describe.each(BAD_ROWS)('When row $id is queried for status by both tools', (row) => {
+      it('Then tsgit refuses as git does', async () => {
+        // Arrange
+        plant(row.worktreeFile, row.local);
+        expectGitRefuses(['status'], `bad boolean config value '${row.value}' for '${row.key}'`);
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        const result = await refusalOf(() => repo.status());
+
+        // Assert
+        expect(result.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(result.key).toBe(row.key);
+        expect(result.value).toBe(row.value);
+        expect(result.source?.endsWith(row.source)).toBe(true);
+      });
+    });
+
+    describe.each([
+      { id: 'M1', local: [] as ReadonlyArray<readonly [string, string]> },
+      { id: 'O3', local: [['core.sparseCheckout', 'bogus1']] as const },
+    ])('When row $id has a malformed config.worktree', ({ local }) => {
+      it('Then opening refuses on the worktree file as git does', async () => {
+        // Arrange
+        plant('[core\n', local);
+        expectGitRefuses(['status'], 'bad config line 1 in file .git/config.worktree');
+
+        // Act
+        const result = await refusalOf(() => openRepository({ cwd: pair.ours }));
+
+        // Assert
+        expect(result.code).toBe('CONFIG_PARSE_ERROR');
+        expect(result.line).toBe(1);
+        expect(result.source?.endsWith('/.git/config.worktree')).toBe(true);
+      });
+    });
+  });
+
   describe('Given the verbs run on a sparse repository', () => {
     const readFile = (dir: string, name: string): string =>
       readFileSync(join(dir, '.git', name), 'utf8');

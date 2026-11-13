@@ -5,8 +5,9 @@
  */
 import { type IniSection, parseGitBoolean } from '../../domain/config/config-ini.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from './config-read.js';
-import { isWorktreeScopeActive, readConfigSections } from './config-scoped-read.js';
+import { findLastEntry, readConfig } from './config-read.js';
+import { readConfigSections } from './config-scoped-read.js';
+import { layoutFailsAcceptance } from './internal/layout-verdict.js';
 
 export interface SparseConfig {
   readonly enabled: boolean;
@@ -44,8 +45,21 @@ const lastValidBooleans = (sections: ReadonlyArray<IniSection>): WorktreeSparseK
   cone: lastValidBoolean(sections, CONE_KEY),
 });
 
+/**
+ * Whether `extensions.worktreeConfig` is on, read from the epoch-trusted
+ * local entry so an operational command pays no stat beyond its own. A
+ * refused value is inert here: the discovery-tier gate raises it.
+ */
+export const isWorktreeConfigExtensionOn = async (ctx: Context): Promise<boolean> => {
+  if (layoutFailsAcceptance(ctx.layout)) return false;
+  const entry = await findLastEntry(ctx, 'extensions', 'worktreeConfig');
+  if (entry === undefined) return false;
+  const parsed = parseGitBoolean(entry.value);
+  return parsed.ok && parsed.value;
+};
+
 const readWorktreeKeys = async (ctx: Context): Promise<WorktreeSparseKeys> => {
-  if (!(await isWorktreeScopeActive(ctx))) return {};
+  if (!(await isWorktreeConfigExtensionOn(ctx))) return {};
   const scoped = await readConfigSections({ ctx, scope: 'worktree' });
   return lastValidBooleans(scoped.map((entry) => entry.section));
 };

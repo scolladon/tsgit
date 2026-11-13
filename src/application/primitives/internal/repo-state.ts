@@ -6,6 +6,7 @@ import {
   configMissingValue,
   operationInProgress,
 } from '../../../domain/commands/error.js';
+import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import { notARepository, workTreeConfigInvalid, workTreeRequired } from '../../../domain/index.js';
 import { RefName } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
@@ -51,7 +52,10 @@ import {
   openConfigEpoch,
   type ValuelessEntry,
 } from '../config-read.js';
+import { readConfigSections } from '../config-scoped-read.js';
+import { isWorktreeConfigExtensionOn } from '../read-sparse-config.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
+import { resolveWorktreeScopePath } from './config-scope.js';
 import { type HeadFile, validateHead } from './head-file.js';
 import { assertRepoSettingsValid } from './repo-settings-gate.js';
 import { rootRefExists } from './root-ref.js';
@@ -403,7 +407,9 @@ const computeGateVerdict = async (ctx: Context): Promise<FilePath> => {
  */
 export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
   await assertUsableHeadAndOpenEpoch(ctx);
-  return await memoizeGateVerdict(ctx, computeGateVerdict);
+  const root = await memoizeGateVerdict(ctx, computeGateVerdict);
+  await assertWorktreeSparseBooleansValid(ctx);
+  return root;
 };
 
 const assertUsableHeadAndOpenEpoch = async (ctx: Context): Promise<void> => {
@@ -422,7 +428,33 @@ export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Pr
   await assertUsableHeadAndOpenEpoch(ctx);
   assertTrustedAndFormat(ctx, await assertDiscoveryAndRoot(ctx));
   await assertRepoSettingsValid(ctx);
-  return await memoizeGateVerdict(ctx, computeGateVerdict);
+  const root = await memoizeGateVerdict(ctx, computeGateVerdict);
+  await assertWorktreeSparseBooleansValid(ctx);
+  return root;
+};
+
+const WORKTREE_SPARSE_KEYS: ReadonlySet<string> = new Set(['sparsecheckout', 'sparsecheckoutcone']);
+
+/**
+ * git's `repo_config_get_bool` on the sparse keys dies on a value its boolean
+ * grammar refuses, wherever the layered config holds it. The local scope is
+ * covered by the memoised eager gate; this covers `config.worktree`, kept
+ * outside the memo because that verdict is keyed on the local file only.
+ * Only the two sparse keys: git reads no other `[core]` boolean on this path.
+ */
+export const assertWorktreeSparseBooleansValid = async (ctx: Context): Promise<void> => {
+  if (!(await isWorktreeConfigExtensionOn(ctx))) return;
+  const sections = await readConfigSections({ ctx, scope: 'worktree' });
+  for (const { section } of sections) {
+    if (section.section.toLowerCase() !== 'core' || section.subsection !== undefined) continue;
+    for (const entry of section.entries) {
+      const key = entry.key.toLowerCase();
+      if (!WORKTREE_SPARSE_KEYS.has(key) || entry.value === null) continue;
+      if (parseGitBoolean(entry.value).ok) continue;
+      const source = resolveWorktreeScopePath(ctx, { active: true });
+      throw configBadBooleanValue(`core.${key}`, source, entry.value);
+    }
+  }
 };
 
 /**

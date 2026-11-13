@@ -3,7 +3,10 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { __resetSectionsCacheForTests } from '../../../../src/application/primitives/config-scoped-read.js';
 import { commonGitDir } from '../../../../src/application/primitives/path-layout.js';
-import { readSparseConfig } from '../../../../src/application/primitives/read-sparse-config.js';
+import {
+  isWorktreeConfigExtensionOn,
+  readSparseConfig,
+} from '../../../../src/application/primitives/read-sparse-config.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const seedLocal = (ctx: Context, text: string): Promise<void> =>
@@ -232,6 +235,58 @@ describe('primitives/read-sparse-config', () => {
         expect(reads.mock.calls.map(([p]) => p)).not.toContain(
           `${ctx.layout.gitDir}/config.worktree`,
         );
+      });
+    });
+  });
+});
+
+describe('isWorktreeConfigExtensionOn', () => {
+  describe.each([
+    ['true', '[extensions]\n\tworktreeConfig = true\n', true],
+    ['yes', '[extensions]\n\tworktreeConfig = yes\n', true],
+    ['valueless', '[extensions]\n\tworktreeConfig\n', true],
+    ['false', '[extensions]\n\tworktreeConfig = false\n', false],
+    ['a refused value', '[extensions]\n\tworktreeConfig = bogus\n', false],
+    ['absent', '[core]\n\tbare = false\n', false],
+    ['under a subsection', '[extensions "x"]\n\tworktreeConfig = true\n', false],
+  ])('Given the local config holds worktreeConfig as %s', (_label, text, expected) => {
+    describe('When the extension is asked', () => {
+      it(`Then it answers ${String(expected)}`, async () => {
+        // Arrange
+        __resetConfigCacheForTests();
+        const ctx = createMemoryContext();
+        await seedLocal(ctx, text);
+        const sut = isWorktreeConfigExtensionOn;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('isWorktreeConfigExtensionOn on a refused layout', () => {
+  describe('Given the extension on in a repository whose format is refused', () => {
+    describe('When the extension is asked', () => {
+      it('Then it answers false', async () => {
+        // Arrange
+        __resetConfigCacheForTests();
+        const base = createMemoryContext();
+        await seedLocal(base, EXT_ON);
+        const ctx: Context = {
+          ...base,
+          layout: { ...base.layout, formatRefusal: { kind: 'version', version: 99 } },
+        };
+        const sut = isWorktreeConfigExtensionOn;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });
