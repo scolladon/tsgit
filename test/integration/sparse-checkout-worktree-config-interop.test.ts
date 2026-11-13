@@ -22,9 +22,16 @@ import {
   type PeerPair,
   runGit,
 } from './interop-helpers.js';
-import { commitOn, listing, regular } from './occupant-displacement-fixtures.js';
+import { COMMIT_ENV, commitOn, listing, regular } from './occupant-displacement-fixtures.js';
 
 const CONE_FILE = '/*\n!/*/\n/b/\n';
+const AUTHOR = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+} as const;
+
 const seedFixture = (dir: string): void => {
   const main = commitOn(dir, [
     regular('a/f', 'f1\n'),
@@ -222,6 +229,49 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
 
         // Assert
         await expectSameState(repo);
+      });
+    });
+
+    describe('When both tools fast-forward merge the other branch', () => {
+      it('Then the index tags and the work tree match git', async () => {
+        // Arrange
+        sparseSet();
+        runGit(['-C', pair.peer, 'merge', '-q', '--ff-only', 'other']);
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        await repo.merge.run({ rev: 'other', fastForward: 'only' });
+
+        // Assert
+        await expectSameState(repo);
+      });
+    });
+  });
+
+  describe('Given a diverged main and a sparse work tree set through git', () => {
+    describe('When both tools three-way merge the other branch', () => {
+      it('Then the index tags and the work tree match git', async () => {
+        // Arrange
+        bothSides((dir) => {
+          const main = runGit(['-C', dir, 'rev-parse', 'main']).trim();
+          const next = commitOn(
+            dir,
+            [regular('a/f', 'f1\n'), regular('b/f', 'f1\n'), regular('top', 't2\n')],
+            main,
+          );
+          runGit(['-C', dir, 'update-ref', 'refs/heads/main', next]);
+          runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+          runGit(['-C', dir, 'sparse-checkout', 'set', '--cone', 'b']);
+        });
+        runGit(['-C', pair.peer, 'merge', '-q', '--no-edit', 'other'], { env: COMMIT_ENV });
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        await repo.merge.run({ rev: 'other', message: 'm', author: AUTHOR });
+
+        // Assert
+        expect(await tagView(repo)).toBe(gitTagView(pair.peer));
+        expect(listing(pair.ours)).toEqual(listing(pair.peer));
       });
     });
   });

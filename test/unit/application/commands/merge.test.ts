@@ -4059,6 +4059,37 @@ describe('merge — sparse checkout', () => {
         expect(srcStages).toEqual([1, 2, 3]);
       });
     });
+
+    describe('When a fast-forward merge brings a change outside the pattern', () => {
+      it('Then the excluded path is recorded skip-worktree and left off disk', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'base-a\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'base-b\n');
+        await add(ctx, ['src/a.txt', 'docs/b.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'FEATURE-b\n');
+        await add(ctx, ['docs/b.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { rev: 'main' });
+        await enableSparseSrcOnly(ctx);
+        await ctx.fs.rm(`${ctx.layout.workDir}/docs/b.txt`);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'feature', fastForward: 'only' });
+
+        // Assert
+        expect(result.kind).toBe('fast-forward');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
+        const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
+        const index = await readIndex(ctx);
+        expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
+        expect(index.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
+      });
+    });
   });
 });
 
