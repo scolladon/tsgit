@@ -16,7 +16,7 @@
 - A part that would be a pure test pass over already-landed code merges into its
   neighbour.
 - A part should land in ~100 tool calls. More than ~5 RED→GREEN cycles, or more than 6
-  files in its `### Context` block, is two parts. What counts is a backticked path:
+  files in its `### Context` block, is two parts. What counts is a path in backticks:
   backtick the files the part CREATES or EDITS, and write read-only reference paths in
   plain text.
 
@@ -86,7 +86,7 @@ Helpers to import: `GIT_AVAILABLE`, `makePeerPair`, `initBothRepos`, `runGit`,
 `listing`, `COMMIT_ENV` from test/integration/occupant-displacement-fixtures.ts;
 `openRepository` from src/index.node.ts; `readIndex` from
 src/application/primitives/read-index.ts. Wrap the suite in
-`describe.skipIf(!GIT_AVAILABLE)`; `beforeEach` → `makePeerPair('sparse-wtcfg')` +
+`describe.skipIf(!GIT_AVAILABLE)`; `beforeEach` → `makePeerPair('sparse-worktree-config')` +
 `initBothRepos(peer, ours)`; `afterEach` → `pair.dispose()` plus removal of any extra
 temp dir a row created.
 
@@ -535,7 +535,7 @@ export const enableWorktreeConfig = async (ctx: Context): Promise<void> => {
 };
 const relocateCoreWorktree = async (ctx: Context): Promise<void> => {
   const { values } = await getAllConfigValues({ ctx, key: 'core.worktree', scope: 'local' });
-  const value = values.at(-1)?.value; // git's configset read: last wins
+  const value = values.at(-1)?.value; // git's config read: last wins
   if (typeof value !== 'string') return;
   await updateConfigFileEntries(ctx, `${commonGitDir(ctx)}/config.worktree`, [{ section: 'core', key: 'worktree', value }]);
   await unsetAllConfigEntries({ ctx, key: 'core.worktree', scope: 'local' });
