@@ -26,8 +26,10 @@ mode keeps the current mode when sparse is on (S1, S2, S4).
 **adopted-as-recommended (no user judgment)** — ADR-226 (git faithfulness).
 
 - `set` with a mode, or with sparse off, turns the worktree scope on (`extensions.worktreeConfig
-  = true` in the common config; a local `core.worktree` moves to `config.worktree`), then
-  writes `core.sparseCheckout = true` and `core.sparseCheckoutCone` to `config.worktree`.
+  = true` in the common config; a local `core.worktree` moves to the main worktree's
+  `<commonDir>/config.worktree`, even when run from a linked worktree), then writes
+  `core.sparseCheckout = true` and `core.sparseCheckoutCone` to the current worktree's
+  `<gitDir>/config.worktree`.
   Without a mode it keeps the resolved mode when sparse is on, else cone, and writes no
   config when sparse is already on.
 - `disable` turns the worktree scope on and writes `core.sparseCheckout = false`,

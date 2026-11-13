@@ -125,8 +125,10 @@ holding the key, the extension state, the key, the worktree kind, and the writer
    - set `extensions.worktreeConfig = true` in `<commonDir>/config`. An existing
      `worktreeConfig = false` line is rewritten in place (B2). Otherwise an
      `[extensions]` section is appended (B1);
-   - move a local `core.worktree` to the top of `[core]` in `config.worktree`, and remove
-     it from the local file (B3);
+   - move a local `core.worktree` to the top of `[core]` in the **main** worktree's
+     `<commonDir>/config.worktree`, and remove it from the local file (B3). From a linked
+     worktree it still lands in the main worktree's file, while the sparse keys go to the
+     linked worktree's own `<gitDir>/config.worktree` (git 2.56, pinned at planning);
    - leave `core.repositoryformatversion` alone: 0 stays 0 and 1 stays 1 (B1, B4).
 
    `core.bare = true` would also move, but a bare repository cannot reach the writers
@@ -247,7 +249,7 @@ unchanged.
 | W reset `--hard` / merge ff | all `H`, every file written | no |
 | W reset `--mixed` | all `H`, files untouched | no |
 | W-re/add | `reapply` / `add` ⇒ `INVALID_OPTION` "requires sparse checkout to be enabled" | no |
-| W-dis | `disable` after git `set`: local `sparseCheckout = false` appended, `config.worktree` untouched ⇒ `git sparse-checkout list` still `b`; a git `checkout other` re-sparsifies (`S a/f S a/g`) | no |
+| W-dis | `disable` after git `set`: local `sparseCheckout = false` appended, `config.worktree` untouched ⇒ `git sparse-checkout list` still `b`; a git `checkout other` goes sparse again (`S a/f S a/g`) | no |
 | TS-set | `set b` on a fresh repo: local `sparseCheckout = true`, `sparseCheckoutCone = true`, no extension, no `config.worktree` | no (B1) |
 | L2 | linked worktree: `checkout other` ⇒ all `H` | no |
 | L3 | `set b` in a linked worktree writes the shared `.git/config`. Git's main worktree then warns `this worktree is not sparse (sparse-checkout file may not exist)` because sparse is on in main with no pattern file | no |
@@ -331,8 +333,9 @@ New internal helper `enableWorktreeConfig(ctx)` in
    `setConfigEntryInText` rewrites an existing value in place or appends
    `[extensions]` (B1, B2).
 2. When the local file holds `core.worktree`, read its raw value with
-   `getConfigValue({ ctx, key: 'core.worktree', scope: 'local' })`. Write it to scope
-   `'worktree'` (`{ section: 'core', key: 'worktree', value }`), then remove it from the
+   `getConfigValue({ ctx, key: 'core.worktree', scope: 'local' })`. Write it to the main
+   worktree's `<commonDir>/config.worktree` (`{ section: 'core', key: 'worktree', value }`;
+   not scope `'worktree'`, which is the current gitDir's file), then remove it from the
    local file with `removeConfigEntry` in a local read-modify-write (B3).
 
 Step 2 needs step 1's extension write first, because `resolveConfigScopePath('worktree')`
