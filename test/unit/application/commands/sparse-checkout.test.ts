@@ -295,6 +295,27 @@ describe('sparseCheckout command', () => {
       });
     });
 
+    describe('Given a non-cone file holding unescaped trailing spaces', () => {
+      describe('When list', () => {
+        it('Then the patterns come back trimmed as git prints them', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await enableSparse(ctx, false);
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/info/sparse-checkout`,
+            '# c\n\n/a/\nfoo  \nbar\\ \n\\#lit\n',
+          );
+          const sut = sparseCheckoutList;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual({ cone: false, patterns: ['/a/', 'foo', 'bar\\ ', '\\#lit'] });
+        });
+      });
+    });
+
     describe('Given a hand-written unsorted cone file', () => {
       describe('When list', () => {
         it('Then the recursive dirs are sorted', async () => {
@@ -626,6 +647,26 @@ describe('sparseCheckout command', () => {
           // Assert
           expect(result.cone).toBe(false);
           expect(await readWorktreeConfigText(ctx)).toContain('sparseCheckoutCone = false');
+          expect(await readSparseFile(ctx)).toBe('/*\n!/*/\n/src/\n');
+        });
+      });
+
+      describe('When add appends to a file holding unescaped trailing spaces', () => {
+        it('Then the kept patterns are written trimmed and an escaped space survives', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await sparseCheckoutSet(ctx, { patterns: ['/src/'], cone: false });
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/info/sparse-checkout`,
+            '# c\n\n/src/\nfoo  \nbar\\ \n\\#lit\n',
+          );
+          const sut = sparseCheckoutAdd;
+
+          // Act
+          await sut(ctx, { patterns: ['/docs/'] });
+
+          // Assert
+          expect(await readSparseFile(ctx)).toBe('/src/\nfoo\nbar\\ \n\\#lit\n/docs/\n');
         });
       });
     });

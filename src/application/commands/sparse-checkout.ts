@@ -9,6 +9,7 @@
  * pattern file and config — a failed apply leaves `.git` untouched.
  */
 import { invalidOption } from '../../domain/commands/error.js';
+import { stripTrailingSpaces } from '../../domain/ignore/parse-gitignore.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import {
   buildConeSpec,
@@ -81,12 +82,15 @@ const assertSparseReady = async (ctx: Context): Promise<void> => {
   await assertNoPendingOperation(ctx);
 };
 
-/** Map a parsed spec onto the `list` output: sorted recursive dirs / raw lines. */
+/**
+ * Map a parsed spec onto the `list` output: sorted recursive dirs, or the
+ * pattern lines with unescaped trailing spaces trimmed, as git prints them.
+ */
 const specToList = (spec: SparseSpec): SparseCheckoutListResult => {
   if (spec.mode === 'cone') {
     return { cone: true, patterns: [...spec.recursive].sort() };
   }
-  return { cone: false, patterns: spec.rules.map((rule) => rule.source) };
+  return { cone: false, patterns: spec.rules.map((rule) => stripTrailingSpaces(rule.source)) };
 };
 
 export const sparseCheckoutList = async (ctx: Context): Promise<SparseCheckoutListResult> => {

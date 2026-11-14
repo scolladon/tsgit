@@ -34,7 +34,7 @@ export interface TokenizedIgnoreLine {
   readonly cleanPattern: string;
 }
 
-const stripTrailingSpaces = (line: string): string => {
+export const stripTrailingSpaces = (line: string): string => {
   // Trailing space is significant only when escaped (`\ `).
   let end = line.length;
   // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — when end===0, charCodeAt(-1) is NaN, so `NaN===0x20` is false and the loop exits regardless of the `end > 0` bound.
