@@ -208,7 +208,15 @@ const readSingleScope = async (
   if (layoutFailsAcceptance(ctx.layout) && (scope === 'local' || scope === 'worktree')) {
     throw configScopeNotAvailable(scope, 'repository-not-accepted');
   }
-  const path = await resolveConfigScopePath(ctx, scope);
+  return readScopeAt(ctx, scope, await resolveConfigScopePath(ctx, scope));
+};
+
+/** The cached, mtime-checked read of one scope's file at an already-resolved path. */
+const readScopeAt = async (
+  ctx: Context,
+  scope: ConfigScope,
+  path: string,
+): Promise<ReadonlyArray<IniSection>> => {
   const bucket = getSectionsCacheBucket(ctx);
   const mtimeKey = await scopeFileMtimeKey(ctx, path);
   const cached = bucket.get(scope);
@@ -218,6 +226,21 @@ const readSingleScope = async (
   const promise = readScopeFile(ctx, path);
   bucket.set(scope, { promise, mtimeKey });
   return await promise;
+};
+
+/**
+ * The `config.worktree` sections for a caller that has already settled
+ * `extensions.worktreeConfig` as on, sharing the 'worktree' cache bucket but
+ * skipping `isWorktreeScopeActive`'s second read of the local file.
+ */
+export const readActiveWorktreeSections = async (
+  ctx: Context,
+): Promise<ReadonlyArray<IniSection>> => {
+  if (layoutFailsAcceptance(ctx.layout)) {
+    throw configScopeNotAvailable('worktree', 'repository-not-accepted');
+  }
+  const path = resolveWorktreeScopePath(ctx, { active: true });
+  return readScopeAt(ctx, 'worktree', path);
 };
 
 const safeReadScopeOrSkip = async (

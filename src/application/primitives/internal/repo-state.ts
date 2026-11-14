@@ -52,8 +52,12 @@ import {
   openConfigEpoch,
   type ValuelessEntry,
 } from '../config-read.js';
-import { readConfigSections } from '../config-scoped-read.js';
-import { isWorktreeConfigExtensionOn } from '../read-sparse-config.js';
+import { readActiveWorktreeSections } from '../config-scoped-read.js';
+import {
+  isWorktreeConfigExtensionOn,
+  type SparseKeyEntry,
+  sparseKeyEntries,
+} from '../read-sparse-config.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
 import { resolveWorktreeScopePath } from './config-scope.js';
 import { type HeadFile, validateHead } from './head-file.js';
@@ -433,8 +437,6 @@ export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Pr
   return root;
 };
 
-const WORKTREE_SPARSE_KEYS: ReadonlySet<string> = new Set(['sparsecheckout', 'sparsecheckoutcone']);
-
 /**
  * git's `repo_config_get_bool` on the sparse keys dies on a value its boolean
  * grammar refuses, wherever the layered config holds it. The local scope is
@@ -442,19 +444,18 @@ const WORKTREE_SPARSE_KEYS: ReadonlySet<string> = new Set(['sparsecheckout', 'sp
  * outside the memo because that verdict is keyed on the local file only.
  * Only the two sparse keys: git reads no other `[core]` boolean on this path.
  */
+const isRefusedBoolean = (
+  entry: SparseKeyEntry,
+): entry is SparseKeyEntry & { readonly value: string } =>
+  entry.value !== null && !parseGitBoolean(entry.value).ok;
+
 export const assertWorktreeSparseBooleansValid = async (ctx: Context): Promise<void> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return;
-  const sections = await readConfigSections({ ctx, scope: 'worktree' });
-  for (const { section } of sections) {
-    if (section.section.toLowerCase() !== 'core' || section.subsection !== undefined) continue;
-    for (const entry of section.entries) {
-      const key = entry.key.toLowerCase();
-      if (!WORKTREE_SPARSE_KEYS.has(key) || entry.value === null) continue;
-      if (parseGitBoolean(entry.value).ok) continue;
-      const source = resolveWorktreeScopePath(ctx, { active: true });
-      throw configBadBooleanValue(`core.${key}`, source, entry.value);
-    }
-  }
+  const entries = sparseKeyEntries(await readActiveWorktreeSections(ctx));
+  const refused = entries.find(isRefusedBoolean);
+  if (refused === undefined) return;
+  const source = resolveWorktreeScopePath(ctx, { active: true });
+  throw configBadBooleanValue(`core.${refused.key}`, source, refused.value);
 };
 
 /**

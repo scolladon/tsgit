@@ -5,6 +5,7 @@ import { __resetConfigCacheForTests } from '../../../../src/application/primitiv
 import {
   __resetSectionsCacheForTests,
   getConfigValue,
+  readActiveWorktreeSections,
   readConfigSections,
 } from '../../../../src/application/primitives/config-scoped-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -81,6 +82,29 @@ describe('primitives/config-scoped-read — the repository scope on a refused la
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data).toEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'worktree',
+          reason: 'repository-not-accepted',
+        });
+      });
+    });
+
+    describe('When readActiveWorktreeSections runs', () => {
+      it('Then it throws CONFIG_SCOPE_NOT_AVAILABLE before reading the worktree file', async () => {
+        // Arrange
+        const ctx = untrustedCtx(createMemoryContext());
+        await seed(ctx, '[extensions]\n\tworktreeConfig = true\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config.worktree`,
+          '[core]\n\tsparseCheckout = true\n',
+        );
+        const sut = readActiveWorktreeSections;
+
+        // Act
+        const caught = await catchError(() => sut(ctx));
+
+        // Assert
         expect(caught.data).toEqual({
           code: 'CONFIG_SCOPE_NOT_AVAILABLE',
           scope: 'worktree',

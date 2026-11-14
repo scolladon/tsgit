@@ -6,7 +6,7 @@
 import { type IniSection, parseGitBoolean } from '../../domain/config/config-ini.js';
 import type { Context } from '../../ports/context.js';
 import { findLastEntry, readConfig } from './config-read.js';
-import { readConfigSections } from './config-scoped-read.js';
+import { readActiveWorktreeSections } from './config-scoped-read.js';
 import { layoutFailsAcceptance } from './internal/layout-verdict.js';
 
 export interface SparseConfig {
@@ -19,31 +19,37 @@ interface WorktreeSparseKeys {
   readonly cone?: boolean | undefined;
 }
 
+/** One sparse key as written in `config.worktree`, key lower-cased. */
+export interface SparseKeyEntry {
+  readonly key: string;
+  readonly value: string | null;
+}
+
 const CORE_SECTION = 'core';
 const ENABLED_KEY = 'sparsecheckout';
 const CONE_KEY = 'sparsecheckoutcone';
+const SPARSE_KEYS: ReadonlySet<string> = new Set([ENABLED_KEY, CONE_KEY]);
+
+/** Every sparse-key entry under a subsectionless `[core]`, in file order. */
+export const sparseKeyEntries = (
+  sections: ReadonlyArray<IniSection>,
+): ReadonlyArray<SparseKeyEntry> =>
+  sections
+    .filter((section) => section.section.toLowerCase() === CORE_SECTION)
+    .filter((section) => section.subsection === undefined)
+    .flatMap((section) => section.entries)
+    .map((entry) => ({ key: entry.key.toLowerCase(), value: entry.value }))
+    .filter((entry) => SPARSE_KEYS.has(entry.key));
 
 const lastValidBoolean = (
-  sections: ReadonlyArray<IniSection>,
+  entries: ReadonlyArray<SparseKeyEntry>,
   wanted: string,
-): boolean | undefined => {
-  let result: boolean | undefined;
-  for (const section of sections) {
-    if (section.section.toLowerCase() !== CORE_SECTION) continue;
-    if (section.subsection !== undefined) continue;
-    for (const entry of section.entries) {
-      if (entry.key.toLowerCase() !== wanted) continue;
-      const parsed = parseGitBoolean(entry.value);
-      if (parsed.ok) result = parsed.value;
-    }
-  }
-  return result;
-};
-
-const lastValidBooleans = (sections: ReadonlyArray<IniSection>): WorktreeSparseKeys => ({
-  enabled: lastValidBoolean(sections, ENABLED_KEY),
-  cone: lastValidBoolean(sections, CONE_KEY),
-});
+): boolean | undefined =>
+  entries
+    .filter((entry) => entry.key === wanted)
+    .map((entry) => parseGitBoolean(entry.value))
+    .flatMap((parsed) => (parsed.ok ? [parsed.value] : []))
+    .at(-1);
 
 /**
  * Whether `extensions.worktreeConfig` is on, read from the epoch-trusted
@@ -60,8 +66,11 @@ export const isWorktreeConfigExtensionOn = async (ctx: Context): Promise<boolean
 
 const readWorktreeKeys = async (ctx: Context): Promise<WorktreeSparseKeys> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return {};
-  const scoped = await readConfigSections({ ctx, scope: 'worktree' });
-  return lastValidBooleans(scoped.map((entry) => entry.section));
+  const entries = sparseKeyEntries(await readActiveWorktreeSections(ctx));
+  return {
+    enabled: lastValidBoolean(entries, ENABLED_KEY),
+    cone: lastValidBoolean(entries, CONE_KEY),
+  };
 };
 
 export const readSparseConfig = async (ctx: Context): Promise<SparseConfig> => {
