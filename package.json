@@ -1363,7 +1363,7 @@
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.6.7",
     "@cloudflare/vitest-pool-workers": "0.23.0",
-    "@cloudflare/workers-types": "5.20261110.1",
+    "@cloudflare/workers-types": "5.20261114.1",
     "@commitlint/cli": "21.2.4",
     "@commitlint/config-conventional": "21.2.4",
     "@ls-lint/ls-lint": "2.3.2",
@@ -1377,7 +1377,7 @@
     "@stryker-mutator/vitest-runner": "10.1.1",
     "@types/node": "26.6.6",
     "@vitest/coverage-v8": "4.1.11",
-    "cspell": "10.4.1",
+    "cspell": "10.5.0",
     "dependency-cruiser": "18.7.2",
     "fast-check": "4.10.2",
     "husky": "9.1.7",
@@ -1394,6 +1394,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.11",
     "wireit": "0.15.0",
-    "wrangler": "4.161.0"
+    "wrangler": "4.162.0"
   }
 }
