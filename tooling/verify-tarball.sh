@@ -479,7 +479,12 @@ done
 # userdiff driver verdict with its builtin driver names, the per-target attribute
 # reader, the commit-tree kind and the path a blob rev names — runtime code in
 # every distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((1522 * 1024))
+# Raised 1522 -> 1524 KiB by the sparse keys in config.worktree: the measured
+# pack landed at 1 560 058 B, 1 530 B over the old cap, attributable to the
+# layered sparse reader, the worktree-config enabler, the casing-preserving
+# scoped writer and the worktree sparse-boolean refusal — runtime code in every
+# distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1524 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
