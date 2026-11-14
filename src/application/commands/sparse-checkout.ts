@@ -128,21 +128,25 @@ const recordSparseMode = async (ctx: Context, cone: boolean): Promise<void> => {
   ]);
 };
 
-/** Apply `spec`, then persist the pattern file and, when asked, the mode (set ordering). */
+/**
+ * When asked, record the mode first — git's `set` writes its config before it
+ * touches the work tree, so a refused update leaves the config written — then
+ * apply `spec` and persist the pattern file.
+ */
 const applyAndPersist = async (
   ctx: Context,
   spec: SparseSpec,
   text: string,
   options: PersistOptions,
 ): Promise<SparseCheckoutAppliedResult> => {
+  if (options.recordMode) {
+    await recordSparseMode(ctx, spec.mode === 'cone');
+  }
   const applied = await applySparseCheckout(
     ctx,
     applyOpts(buildSparseMatcher(spec), options.force),
   );
   await writeSparsePatternText(ctx, text);
-  if (options.recordMode) {
-    await recordSparseMode(ctx, spec.mode === 'cone');
-  }
   return toApplied(spec.mode === 'cone', applied);
 };
 

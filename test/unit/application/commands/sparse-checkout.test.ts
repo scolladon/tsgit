@@ -469,27 +469,6 @@ describe('sparseCheckout command', () => {
       });
     });
 
-    describe('Given a failed apply (index locked)', () => {
-      describe('When set', () => {
-        it('Then config and pattern file are untouched', async () => {
-          // Arrange — hold the index lock so `applySparseCheckout` throws first.
-          const ctx = await seedRepoWithTree();
-          const configBefore = await readConfigText(ctx);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/index.lock`, '');
-
-          // Act
-          const err = await expectError(() =>
-            sparseCheckoutSet(ctx, { patterns: ['src/app'], cone: true }),
-          );
-
-          // Assert — apply failed before any persistence: `.git` unchanged.
-          expect(err.data.code).toBe('RESOURCE_LOCKED');
-          expect(await readConfigText(ctx)).toBe(configBefore);
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/info/sparse-checkout`)).toBe(false);
-        });
-      });
-    });
-
     describe('Given non-cone mode with cone-shaped patterns', () => {
       describe('When set', () => {
         it('Then they stay non-cone', async () => {
@@ -739,14 +718,35 @@ describe('sparseCheckout command', () => {
       });
     });
 
+    describe('Given a fresh repository whose index is locked', () => {
+      describe('When set runs with a mode', () => {
+        it('Then the mode is recorded before the refused work-tree update and no pattern file is written', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/index.lock`, '');
+          const sut = sparseCheckoutSet;
+
+          // Act
+          const err = await expectError(() => sut(ctx, { patterns: ['src'], cone: true }));
+
+          // Assert
+          expect(err.data.code).toBe('RESOURCE_LOCKED');
+          expect(await readConfigText(ctx)).toContain(EXTENSION_TEXT);
+          expect(await readWorktreeConfigText(ctx)).toBe(WORKTREE_CONE);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/info/sparse-checkout`)).toBe(false);
+        });
+      });
+    });
+
     describe('Given a fresh repository', () => {
       describe('When disable', () => {
         it('Then the three disabling keys are written to the worktree config', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
+          const sut = sparseCheckoutDisable;
 
           // Act
-          await sparseCheckoutDisable(ctx);
+          await sut(ctx);
 
           // Assert
           expect(await readWorktreeConfigText(ctx)).toBe(DISABLED_WORKTREE);
@@ -761,9 +761,10 @@ describe('sparseCheckout command', () => {
           const ctx = await seedRepoWithTree();
           await enableSparse(ctx, true);
           const localBefore = await readConfigText(ctx);
+          const sut = sparseCheckoutDisable;
 
           // Act
-          await sparseCheckoutDisable(ctx);
+          await sut(ctx);
 
           // Assert
           expect(await readConfigText(ctx)).toBe(localBefore + EXTENSION_TEXT);
@@ -777,10 +778,11 @@ describe('sparseCheckout command', () => {
         it('Then the cone key is rewritten in place', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
-          await sparseCheckoutSet(ctx, { patterns: ['src'], cone: true });
+          const sut = sparseCheckoutSet;
+          await sut(ctx, { patterns: ['src'], cone: true });
 
           // Act
-          await sparseCheckoutSet(ctx, { patterns: ['/src/'], cone: false });
+          await sut(ctx, { patterns: ['/src/'], cone: false });
 
           // Assert
           expect(await readWorktreeConfigText(ctx)).toBe(

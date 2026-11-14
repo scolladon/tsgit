@@ -929,6 +929,43 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
       });
     });
 
+    describe('Given a locked index on both sides', () => {
+      describe('When both tools set a cone', () => {
+        it('Then both record the config, refuse the work-tree update and write no pattern file', async () => {
+          // Arrange
+          bothSides((dir) => writeFileSync(join(dir, '.git', 'index.lock'), ''));
+          const gitRun = tryRunGitWithExit([
+            '-C',
+            pair.peer,
+            'sparse-checkout',
+            'set',
+            '--cone',
+            'b',
+          ]);
+          const repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.sparseCheckout.set({ patterns: ['b'], cone: true });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitRun.exitCode).not.toBe(0);
+          expect((caught as { data?: { code?: string } }).data?.code).toBe('RESOURCE_LOCKED');
+          expect(readOptional(pair.ours, 'config')).toBe(readOptional(pair.peer, 'config'));
+          expect(readOptional(pair.ours, 'config.worktree')).toBe(
+            readOptional(pair.peer, 'config.worktree'),
+          );
+          expect(readOptional(pair.ours, 'info/sparse-checkout')).toBe(
+            readOptional(pair.peer, 'info/sparse-checkout'),
+          );
+        });
+      });
+    });
+
     const sparseSetConeBoth = (): void =>
       bothSides((dir) => runGit(['-C', dir, 'sparse-checkout', 'set', '--cone', 'b']));
   });
