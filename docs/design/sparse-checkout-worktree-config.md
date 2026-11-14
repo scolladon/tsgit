@@ -125,14 +125,21 @@ holding the key, the extension state, the key, the worktree kind, and the writer
    - set `extensions.worktreeConfig = true` in `<commonDir>/config`. An existing
      `worktreeConfig = false` line is rewritten in place (B2). Otherwise an
      `[extensions]` section is appended (B1);
+   - when the local `core.bare` (last entry) parses true, write `core.bare = true` to the
+     **main** worktree's `<commonDir>/config.worktree` and remove it from the local file,
+     before `core.worktree`. A linked worktree of a bare repository passes
+     `requireWorkTree`, so it reaches this step; without the move git reads the shared
+     `core.bare = true` as applying to the linked worktree and refuses there (git 2.56,
+     pinned at review);
    - move a local `core.worktree` to the top of `[core]` in the **main** worktree's
      `<commonDir>/config.worktree`, and remove it from the local file (B3). From a linked
      worktree it still lands in the main worktree's file, while the sparse keys go to the
      linked worktree's own `<gitDir>/config.worktree` (git 2.56, pinned at planning);
    - leave `core.repositoryformatversion` alone: 0 stays 0 and 1 stays 1 (B1, B4).
 
-   `core.bare = true` would also move, but a bare repository cannot reach the writers
-   (`requireWorkTree`), so tsgit omits that branch.
+   Each move writes the main worktree file first, then unsets the local key; the unset
+   refuses a key set more than once (`CONFIG_MULTIPLE_VALUES`), as git's single unset
+   does, so a duplicated `core.worktree` stops `set` before any sparse key is written.
 9. **Writers that persist no config.** `add` and `reapply` write no config (P-add, B7, B8,
    A1). They read the resolved pair (requirement 4).
 10. **Bytes.** Key casing is `worktreeConfig`, `sparseCheckout`, `sparseCheckoutCone`,

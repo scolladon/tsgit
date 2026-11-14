@@ -893,6 +893,42 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
       });
     });
 
+    describe('Given a linked worktree of a bare clone on both sides', () => {
+      const bareWithLinked = async (source: string): Promise<{ bare: string; linked: string }> => {
+        const parent = await mkdtemp(join(tmpdir(), 'tsgit-bare-'));
+        extraDirs.push(parent);
+        const bare = join(parent, 'bare.git');
+        const linked = join(parent, 'wt');
+        runGit(['clone', '-q', '--bare', source, bare]);
+        runGit(['-C', bare, 'worktree', 'add', '-q', linked]);
+        return { bare, linked };
+      };
+      describe('When both tools set a non-cone pattern inside the linked worktree', () => {
+        it('Then core.bare moves to the main worktree config and git still sees a work tree', async () => {
+          // Arrange
+          const peer = await bareWithLinked(pair.peer);
+          const ours = await bareWithLinked(pair.ours);
+          runGit(['-C', peer.linked, 'sparse-checkout', 'set', '--no-cone', 'a/']);
+          const repo = await openRepository({ cwd: ours.linked });
+
+          // Act
+          await repo.sparseCheckout.set({ patterns: ['a/'], cone: false });
+
+          // Assert
+          const configOf = (bare: string): string | undefined =>
+            existsSync(join(bare, 'config.worktree'))
+              ? readFileSync(join(bare, 'config.worktree'), 'utf8')
+              : undefined;
+          expect(configOf(ours.bare)).toBe('[core]\n\tbare = true\n');
+          expect(configOf(ours.bare)).toBe(configOf(peer.bare));
+          const bareFlag = (linked: string): string =>
+            runGit(['-C', linked, 'rev-parse', '--is-bare-repository']).trim();
+          expect(bareFlag(ours.linked)).toBe('false');
+          expect(bareFlag(ours.linked)).toBe(bareFlag(peer.linked));
+        });
+      });
+    });
+
     const sparseSetConeBoth = (): void =>
       bothSides((dir) => runGit(['-C', dir, 'sparse-checkout', 'set', '--cone', 'b']));
   });

@@ -87,18 +87,82 @@ describe('enableWorktreeConfig', () => {
 
   describe('Given two local core.worktree entries', () => {
     describe('When enabling', () => {
-      it('Then the last one moves and both leave the local file', async () => {
+      it('Then the last one is written to the common worktree config and the unset refuses', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await seedLocal(ctx, '[core]\n\tworktree = /first\n\tworktree = /last\n');
 
         // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'CONFIG_MULTIPLE_VALUES',
+          key: 'core.worktree',
+          count: 2,
+          requested: 'remove',
+          scope: 'local',
+        });
+        expect(await ctx.fs.readUtf8(worktreeFile(ctx))).toBe('[core]\n\tworktree = /last\n');
+        expect(await readLocal(ctx)).toContain('worktree = /first\n\tworktree = /last\n');
+      });
+    });
+  });
+
+  describe('Given a local core.bare = true', () => {
+    describe('When enabling', () => {
+      it('Then it moves to the common worktree config as true', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedLocal(ctx, '[core]\n\tbare = yes\n');
+
+        // Act
         await sut(ctx);
 
         // Assert
-        expect(await ctx.fs.readUtf8(worktreeFile(ctx))).toBe('[core]\n\tworktree = /last\n');
-        expect(await readLocal(ctx)).not.toContain('/first');
-        expect(await readLocal(ctx)).not.toContain('/last');
+        expect(await ctx.fs.readUtf8(worktreeFile(ctx))).toBe('[core]\n\tbare = true\n');
+        expect(await readLocal(ctx)).not.toContain('bare');
+        expect(await readLocal(ctx)).toContain(EXTENSION);
+      });
+    });
+  });
+
+  describe('Given a local core.bare = true and a local core.worktree', () => {
+    describe('When enabling', () => {
+      it('Then core.bare moves before core.worktree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedLocal(ctx, '[core]\n\tworktree = /w\n\tbare = true\n');
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(worktreeFile(ctx))).toBe(
+          '[core]\n\tbare = true\n\tworktree = /w\n',
+        );
+      });
+    });
+  });
+
+  describe('Given a local core.bare = false', () => {
+    describe('When enabling', () => {
+      it('Then it stays in the local file and no worktree file is created', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedLocal(ctx, '[core]\n\tbare = false\n');
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await readLocal(ctx)).toContain('bare = false');
+        expect(await ctx.fs.exists(worktreeFile(ctx))).toBe(false);
       });
     });
   });
