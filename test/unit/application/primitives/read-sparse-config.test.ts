@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { __resetSectionsCacheForTests } from '../../../../src/application/primitives/config-scoped-read.js';
@@ -8,6 +8,7 @@ import {
   readSparseConfig,
 } from '../../../../src/application/primitives/read-sparse-config.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { instrumentedContext } from './fixtures.js';
 
 const seedLocal = (ctx: Context, text: string): Promise<void> =>
   ctx.fs.writeUtf8(`${commonGitDir(ctx)}/config`, text);
@@ -111,6 +112,12 @@ const ROWS: ReadonlyArray<Row> = [
     id: 'subsection guard',
     local: EXT_ON,
     worktree: `[core "x"]\n${SPARSE}`,
+    expected: { enabled: false, cone: false },
+  },
+  {
+    id: 'non-core section',
+    local: EXT_ON,
+    worktree: `[other]\n${SPARSE}`,
     expected: { enabled: false, cone: false },
   },
   {
@@ -223,8 +230,10 @@ describe('primitives/read-sparse-config', () => {
         const base = createMemoryContext();
         await seedLocal(base, EXT_ON);
         await seedWorktree(base, `[core]\n${SPARSE}${CONE}`);
-        const ctx: Context = { ...base, layout: { ...base.layout, untrusted: true as const } };
-        const reads = vi.spyOn(ctx.fs, 'readUtf8');
+        const { ctx, calls } = instrumentedContext({
+          ...base,
+          layout: { ...base.layout, untrusted: true as const },
+        });
         const sut = readSparseConfig;
 
         // Act
@@ -232,9 +241,7 @@ describe('primitives/read-sparse-config', () => {
 
         // Assert
         expect(result).toEqual({ enabled: false, cone: false });
-        expect(reads.mock.calls.map(([p]) => p)).not.toContain(
-          `${ctx.layout.gitDir}/config.worktree`,
-        );
+        expect(calls().filter((c) => c.path.endsWith('/config.worktree'))).toEqual([]);
       });
     });
   });

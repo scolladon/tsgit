@@ -4077,14 +4077,14 @@ describe('merge — sparse checkout', () => {
         await checkout(ctx, { rev: 'main' });
         await enableSparseSrcOnly(ctx);
         await ctx.fs.rm(`${ctx.layout.workDir}/docs/b.txt`);
+        const sut = mergeRun;
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'feature', fastForward: 'only' });
+        const result = await sut(ctx, { rev: 'feature', fastForward: 'only' });
 
         // Assert
         expect(result.kind).toBe('fast-forward');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
-        const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
         const index = await readIndex(ctx);
         expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
         expect(index.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
