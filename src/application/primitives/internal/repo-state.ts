@@ -437,6 +437,11 @@ export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Pr
   return root;
 };
 
+/** A valueless entry parses as true, so only a written value can be refused. */
+const isRefusedBoolean = (
+  entry: SparseKeyEntry,
+): entry is SparseKeyEntry & { readonly value: string } => !parseGitBoolean(entry.value).ok;
+
 /**
  * git's `repo_config_get_bool` on the sparse keys dies on a value its boolean
  * grammar refuses, wherever the layered config holds it. The local scope is
@@ -444,11 +449,6 @@ export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Pr
  * outside the memo because that verdict is keyed on the local file only.
  * Only the two sparse keys: git reads no other `[core]` boolean on this path.
  */
-const isRefusedBoolean = (
-  entry: SparseKeyEntry,
-): entry is SparseKeyEntry & { readonly value: string } =>
-  entry.value !== null && !parseGitBoolean(entry.value).ok;
-
 export const assertWorktreeSparseBooleansValid = async (ctx: Context): Promise<void> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return;
   const entries = sparseKeyEntries(await readActiveWorktreeSections(ctx));
