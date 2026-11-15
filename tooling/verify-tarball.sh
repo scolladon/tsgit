@@ -484,7 +484,10 @@ done
 # layered sparse reader, the worktree-config enabler, the casing-preserving
 # scoped writer and the worktree sparse-boolean refusal — runtime code in every
 # distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((1524 * 1024))
+# Raised 1524 -> 1525 KiB by the same change's review fixes: the measured pack
+# landed at 1 560 653 B, 77 B over, attributable to the core.bare relocation,
+# git's forward trailing-space scan and the line-based non-cone listing.
+SIZE_CAP=$((1525 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
