@@ -229,6 +229,41 @@ describe('sparseCheckout command', () => {
       });
     });
 
+    describe('Given sparse disabled with a pattern file left on disk', () => {
+      describe('When list', () => {
+        it('Then the file is not read and the list is empty', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/src/\n');
+          const sut = sparseCheckoutList;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual({ cone: false, patterns: [] });
+        });
+      });
+    });
+
+    describe('Given a non-cone file written with CRLF line endings', () => {
+      describe('When list', () => {
+        it('Then the carriage return is dropped from each pattern', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await enableSparse(ctx, false);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/a/\r\n/b/\r\n');
+          const sut = sparseCheckoutList;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual({ cone: false, patterns: ['/a/', '/b/'] });
+        });
+      });
+    });
+
     describe('Given a cone repo', () => {
       describe('When list', () => {
         it('Then returns the sorted recursive directories', async () => {
