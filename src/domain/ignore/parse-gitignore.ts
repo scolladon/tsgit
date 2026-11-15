@@ -50,19 +50,15 @@ const trailingSpaceStart = (line: string): number | undefined => {
       lastSpace ??= at;
       continue;
     }
-    if (char === BACKSLASH) {
-      at += 1;
-      if (at >= line.length) return undefined;
-    }
+    if (char === BACKSLASH) at += 1;
     lastSpace = undefined;
   }
   return lastSpace;
 };
 
-export const stripTrailingSpaces = (line: string): string => {
-  const start = trailingSpaceStart(line);
-  return start === undefined ? line : line.slice(0, start);
-};
+/** `slice(0, undefined)` keeps the whole line when there is nothing to trim. */
+export const stripTrailingSpaces = (line: string): string =>
+  line.slice(0, trailingSpaceStart(line));
 
 const unescapePattern = (s: string): string => {
   // Replace `\<char>` with `<char>` — preserves the literal char (e.g. `\#`, `\ `).

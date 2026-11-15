@@ -235,13 +235,9 @@ const readScopeAt = async (
  */
 export const readActiveWorktreeSections = async (
   ctx: Context,
-): Promise<ReadonlyArray<IniSection>> => {
-  if (layoutFailsAcceptance(ctx.layout)) {
-    throw configScopeNotAvailable('worktree', 'repository-not-accepted');
-  }
-  const path = resolveWorktreeScopePath(ctx, { active: true });
-  return readScopeAt(ctx, 'worktree', path);
-};
+): Promise<ReadonlyArray<IniSection>> =>
+  // `resolveWorktreeScopePath` refuses a refused layout before any read.
+  readScopeAt(ctx, 'worktree', resolveWorktreeScopePath(ctx, { active: true }));
 
 const safeReadScopeOrSkip = async (
   ctx: Context,
