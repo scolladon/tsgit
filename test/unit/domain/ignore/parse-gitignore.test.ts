@@ -453,8 +453,6 @@ describe('tokenizeIgnoreLine', () => {
 });
 
 describe('stripTrailingSpaces', () => {
-  const sut = stripTrailingSpaces;
-
   describe('Given a line', () => {
     describe('When its trailing spaces are trimmed as git trims them', () => {
       it.each([
@@ -468,6 +466,9 @@ describe('stripTrailingSpaces', () => {
         { label: 'only spaces', line: '   ', expected: '' },
         { label: 'no trailing space', line: 'plain', expected: 'plain' },
       ])('Then $label is trimmed to the expected text', ({ line, expected }) => {
+        // Arrange
+        const sut = stripTrailingSpaces;
+
         // Act
         const result = sut(line);
 
