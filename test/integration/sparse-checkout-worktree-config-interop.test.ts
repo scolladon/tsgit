@@ -966,6 +966,47 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
       });
     });
 
+    describe('Given a non-cone file with trailing spaces, an escaped backslash and a whitespace-only line', () => {
+      const PATTERN_TEXT = '# c\n\n/a/\nfoo  \nbar\\ \nesc\\\\  \n  \n';
+      const seedPatterns = (): void =>
+        bothSides((dir) => {
+          runGit(['-C', dir, 'sparse-checkout', 'set', '--no-cone', '/a/']);
+          writeFileSync(join(dir, '.git', 'info', 'sparse-checkout'), PATTERN_TEXT);
+        });
+
+      describe('When both tools list', () => {
+        it('Then the listed patterns match git', async () => {
+          // Arrange
+          seedPatterns();
+          const repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          const result = await repo.sparseCheckout.list();
+
+          // Assert
+          const gitList = runGit(['-C', pair.peer, 'sparse-checkout', 'list']);
+          expect(result.patterns.map((pattern) => `${pattern}\n`).join('')).toBe(gitList);
+        });
+      });
+
+      describe('When both tools add a pattern', () => {
+        it('Then the rewritten pattern file matches git', async () => {
+          // Arrange
+          seedPatterns();
+          runGit(['-C', pair.peer, 'sparse-checkout', 'add', '/b/']);
+          const repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          await repo.sparseCheckout.add({ patterns: ['/b/'] });
+
+          // Assert
+          expect(readOptional(pair.ours, 'info/sparse-checkout')).toBe(
+            readOptional(pair.peer, 'info/sparse-checkout'),
+          );
+        });
+      });
+    });
+
     const sparseSetConeBoth = (): void =>
       bothSides((dir) => runGit(['-C', dir, 'sparse-checkout', 'set', '--cone', 'b']));
   });

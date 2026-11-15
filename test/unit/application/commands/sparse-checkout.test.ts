@@ -316,6 +316,24 @@ describe('sparseCheckout command', () => {
       });
     });
 
+    describe('Given a non-cone file holding a whitespace-only line', () => {
+      describe('When list', () => {
+        it('Then that line is listed as an empty pattern as git lists it', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await enableSparse(ctx, false);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/a/\n  \n\n/b/\n');
+          const sut = sparseCheckoutList;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual({ cone: false, patterns: ['/a/', '', '/b/'] });
+        });
+      });
+    });
+
     describe('Given a hand-written unsorted cone file', () => {
       describe('When list', () => {
         it('Then the recursive dirs are sorted', async () => {
@@ -667,6 +685,22 @@ describe('sparseCheckout command', () => {
 
           // Assert
           expect(await readSparseFile(ctx)).toBe('/src/\nfoo\nbar\\ \n\\#lit\n/docs/\n');
+        });
+      });
+
+      describe('When add appends to a file holding a whitespace-only line', () => {
+        it('Then that line is rewritten as an empty line', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await sparseCheckoutSet(ctx, { patterns: ['/src/'], cone: false });
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/src/\n  \n');
+          const sut = sparseCheckoutAdd;
+
+          // Act
+          await sut(ctx, { patterns: ['/docs/'] });
+
+          // Assert
+          expect(await readSparseFile(ctx)).toBe('/src/\n\n/docs/\n');
         });
       });
     });

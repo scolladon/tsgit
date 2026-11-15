@@ -4,9 +4,9 @@
  * `reapply` / `disable`). Each verb is a Context-aware function; the namespace
  * binder lives in `internal/sparse-checkout-namespace.ts`.
  *
- * Persistence ordering: a mutating verb computes its matcher in memory, runs
- * `applySparseCheckout` FIRST, and only AFTER a successful apply persists the
- * pattern file and config — a failed apply leaves `.git` untouched.
+ * Persistence ordering, as git's: `set` records its mode config first, then
+ * runs `applySparseCheckout`, then writes the pattern file; `disable` applies,
+ * then writes its config. A failed apply leaves the pattern file untouched.
  */
 import { invalidOption } from '../../domain/commands/error.js';
 import { stripTrailingSpaces } from '../../domain/ignore/parse-gitignore.js';
@@ -82,15 +82,26 @@ const assertSparseReady = async (ctx: Context): Promise<void> => {
   await assertNoPendingOperation(ctx);
 };
 
+const COMMENT_MARK = '#';
+
 /**
- * Map a parsed spec onto the `list` output: sorted recursive dirs, or the
- * pattern lines with unescaped trailing spaces trimmed, as git prints them.
+ * The non-cone pattern lines as git's `add_patterns_from_buffer` keeps them:
+ * only an empty line or a `#` comment is skipped, a trailing `\r` is dropped
+ * and unescaped trailing spaces are trimmed — so a whitespace-only line stays
+ * as an empty pattern.
  */
-const specToList = (spec: SparseSpec): SparseCheckoutListResult => {
+const nonConePatternLines = (text: string): ReadonlyArray<string> =>
+  text
+    .split('\n')
+    .filter((line) => line !== '' && !line.startsWith(COMMENT_MARK))
+    .map((line) => stripTrailingSpaces(line.replace(/\r$/, '')));
+
+/** Map a parsed spec onto the `list` output: sorted recursive dirs, or the file's pattern lines. */
+const specToList = (spec: SparseSpec, text: string): SparseCheckoutListResult => {
   if (spec.mode === 'cone') {
     return { cone: true, patterns: [...spec.recursive].sort() };
   }
-  return { cone: false, patterns: spec.rules.map((rule) => stripTrailingSpaces(rule.source)) };
+  return { cone: false, patterns: nonConePatternLines(text) };
 };
 
 export const sparseCheckoutList = async (ctx: Context): Promise<SparseCheckoutListResult> => {
@@ -100,7 +111,7 @@ export const sparseCheckoutList = async (ctx: Context): Promise<SparseCheckoutLi
     return { cone: false, patterns: [] };
   }
   const text = (await readSparsePatternText(ctx)) ?? '';
-  return specToList(parseSparseCheckout(text, sparse.cone).spec);
+  return specToList(parseSparseCheckout(text, sparse.cone).spec, text);
 };
 
 /**
@@ -243,7 +254,7 @@ const combineSpecAndText = (
     const spec = buildConeSpec(dirs);
     return { spec, text: serializeCone(spec) };
   }
-  const kept = specToList(parseSparseCheckout(existing, false).spec).patterns;
+  const kept = specToList(parseSparseCheckout(existing, false).spec, existing).patterns;
   const text = nonConeText([...kept, ...added]);
   // `false`: non-cone mode — interpret the combined patterns with gitignore
   // semantics even if the result is cone-shaped (see `buildSpecAndText`).

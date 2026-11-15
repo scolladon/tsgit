@@ -34,16 +34,34 @@ export interface TokenizedIgnoreLine {
   readonly cleanPattern: string;
 }
 
-export const stripTrailingSpaces = (line: string): string => {
-  // Trailing space is significant only when escaped (`\ `).
-  let end = line.length;
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — when end===0, charCodeAt(-1) is NaN, so `NaN===0x20` is false and the loop exits regardless of the `end > 0` bound.
-  while (end > 0 && line.charCodeAt(end - 1) === 0x20) {
-    // Stryker disable next-line ConditionalExpression: the left-operand mutant (`end >= 2` -> true) is equivalent — when `end === 1` the dropped guard lets `line.charCodeAt(-1)` evaluate to `NaN`, and `NaN === 0x5c` is `false`, so the branch is not taken either way. `end >= 2` is a defensive guard the NaN behaviour already makes redundant.
-    if (end >= 2 && line.charCodeAt(end - 2) === 0x5c) break; // backslash-space → preserve
-    end -= 1;
+const SPACE = ' ';
+const BACKSLASH = '\\';
+
+/**
+ * Where a line's unescaped trailing spaces start, scanned forwards as git's
+ * `trim_trailing_spaces` does: a backslash escapes the next character, and a
+ * line ending on a lone backslash is left untrimmed.
+ */
+const trailingSpaceStart = (line: string): number | undefined => {
+  let lastSpace: number | undefined;
+  for (let at = 0; at < line.length; at += 1) {
+    const char = line[at];
+    if (char === SPACE) {
+      lastSpace ??= at;
+      continue;
+    }
+    if (char === BACKSLASH) {
+      at += 1;
+      if (at >= line.length) return undefined;
+    }
+    lastSpace = undefined;
   }
-  return line.slice(0, end);
+  return lastSpace;
+};
+
+export const stripTrailingSpaces = (line: string): string => {
+  const start = trailingSpaceStart(line);
+  return start === undefined ? line : line.slice(0, start);
 };
 
 const unescapePattern = (s: string): string => {
