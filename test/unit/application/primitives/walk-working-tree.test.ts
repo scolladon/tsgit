@@ -398,6 +398,23 @@ describe('walkWorkingTree', () => {
     });
   });
 
+  describe('Given a file whose name is longer than 255 bytes', () => {
+    describe('When walked', () => {
+      it('Then yields it', async () => {
+        // Arrange
+        const ascii = `${'b'.repeat(300)}.txt`;
+        const wide = '\u6f22'.repeat(100);
+        const ctx = await seedFs({ [ascii]: '1', [wide]: '2' });
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(result.sort()).toEqual([ascii, wide].sort());
+      });
+    });
+  });
+
   describe('Given depth exactly at maxDepth', () => {
     describe('When walked', () => {
       it('Then yields without throwing (boundary)', async () => {

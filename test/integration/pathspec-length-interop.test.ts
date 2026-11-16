@@ -7,9 +7,10 @@
  *   surface:        add
  *   bucket:         cross-tool-interop
  *   unique:         long pathspecs and long working-tree names are acted on, or not matched, as git does
- *   interopSurface: add, rm
+ *   interopSurface: add, rm, mv
  */
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import {
   mkdir,
   mkdtemp,
@@ -24,9 +25,12 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
+import { blame } from '../../src/application/commands/blame.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { grep } from '../../src/application/commands/grep.js';
+import { mv } from '../../src/application/commands/mv.js';
 import { rm } from '../../src/application/commands/rm.js';
+import { status } from '../../src/application/commands/status.js';
 import { pathspecNoMatch } from '../../src/domain/commands/error.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
@@ -38,6 +42,8 @@ const P256 = `${M127}/${'n'.repeat(128)}`; // tracked
 const P257 = `${M127}/${'n'.repeat(129)}`; // tracked
 const S255 = 's'.repeat(255); // tracked
 const P5000 = Array.from({ length: 25 }, () => 'p'.repeat(200)).join('/'); // 5024 bytes, never on disk
+const S300 = 's'.repeat(300); // no host holds a 300-byte component
+const CJK100 = '\u6f22'.repeat(100); // 300 UTF-8 bytes, 100 characters
 const BASE = 'base';
 const TRACKED = [BASE, P805, P256, P257, S255];
 const FIVE_STARS = '**a**b**c**d**x';
@@ -45,6 +51,19 @@ const FOUR_STARS = '**a**b**c**x';
 const TEN_STARS = '**********';
 const GIT_EXIT_FATAL = 128;
 const GIT_EXIT_ERROR = 1;
+
+const hostCanHoldWideComponent = (): boolean => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'tsgit-wide-probe-'));
+  try {
+    writeFileSync(path.join(dir, CJK100), 'x');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+const canHoldWideComponent = hostCanHoldWideComponent();
 
 const snapshotOf = (repo: string) => ({
   index: runGit(['-C', repo, 'ls-files', '-s']),
@@ -89,11 +108,15 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       await writeFile(path.join(repo, name), content);
     };
 
-    const twin = async (side: string, modified: ReadonlyArray<string>): Promise<string> => {
+    const twin = async (
+      side: string,
+      modified: ReadonlyArray<string>,
+      extraTracked: ReadonlyArray<string>,
+    ): Promise<string> => {
       counter += 1;
       const repo = path.join(root, `${side}-${counter}`);
       runGit(['init', '-q', '-b', 'main', repo]);
-      for (const name of TRACKED) await writeAt(repo, name, 'needle\n');
+      for (const name of [...TRACKED, ...extraTracked]) await writeAt(repo, name, 'needle\n');
       runGit(['-C', repo, 'add', '-A']);
       runGit(
         [
@@ -119,9 +142,10 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     const twins = async (
       modified: ReadonlyArray<string>,
       untracked: ReadonlyArray<string> = [],
+      extraTracked: ReadonlyArray<string> = [],
     ) => {
-      const gitRepo = await twin('git', modified);
-      const tsgitRepo = await twin('tsgit', modified);
+      const gitRepo = await twin('git', modified, extraTracked);
+      const tsgitRepo = await twin('tsgit', modified, extraTracked);
       for (const name of untracked) {
         await writeAt(gitRepo, name, 'new\n');
         await writeAt(tsgitRepo, name, 'new\n');
@@ -304,9 +328,15 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     });
 
     describe.each([
-      { id: 'C7', cached: false },
-      { id: 'C7', cached: true },
-    ])('When git and tsgit remove the unmatched P5000 with cached $cached (row $id)', (row) => {
+      { id: 'C7', label: 'P5000', spec: P5000, cached: false },
+      { id: 'C7', label: 'P5000', spec: P5000, cached: true },
+      { id: 'C7', label: 'S300', spec: S300, cached: false },
+      { id: 'C7', label: 'S300', spec: S300, cached: true },
+      { id: 'C7', label: 'S300 glob', spec: `${S300}*`, cached: false },
+      { id: 'C7', label: 'S300 glob', spec: `${S300}*`, cached: true },
+      { id: 'C7', label: 'S300 slash x', spec: `${S300}/x`, cached: false },
+      { id: 'C7', label: 'S300 slash x', spec: `${S300}/x`, cached: true },
+    ])('When git and tsgit remove the unmatched $label with cached $cached (row $id)', (row) => {
       it('Then both refuse it as matching nothing', async () => {
         // Arrange
         const { gitRepo, tsgitRepo, ctx } = await twins([]);
@@ -319,21 +349,25 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           'rm',
           ...(row.cached ? ['--cached'] : []),
           '--',
-          P5000,
+          row.spec,
         ]);
-        const err = await caught(() => sut(ctx, [P5000], { cached: row.cached }));
+        const err = await caught(() => sut(ctx, [row.spec], { cached: row.cached }));
 
         // Assert
         expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
-        expect(err.data).toEqual(pathspecNoMatch(P5000).data);
+        expect(err.data).toEqual(pathspecNoMatch(row.spec).data);
         expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
       });
     });
 
     describe.each([
-      { id: 'C8', source: undefined },
-      { id: 'C8', source: 'HEAD' },
-    ])('When git and tsgit restore the unmatched P5000 from $source (row $id)', (row) => {
+      { id: 'C8', label: 'P5000', spec: P5000, source: undefined },
+      { id: 'C8', label: 'P5000', spec: P5000, source: 'HEAD' },
+      { id: 'C8', label: 'S300', spec: S300, source: undefined },
+      { id: 'C8', label: 'S300', spec: S300, source: 'HEAD' },
+      { id: 'C8', label: 'S300 glob', spec: `${S300}*`, source: undefined },
+      { id: 'C8', label: 'S300 slash x', spec: `${S300}/x`, source: undefined },
+    ])('When git and tsgit restore the unmatched $label from $source (row $id)', (row) => {
       it('Then both refuse it as matching nothing', async () => {
         // Arrange
         const { gitRepo, tsgitRepo, ctx } = await twins([]);
@@ -341,34 +375,167 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         const gitSource = row.source === undefined ? [] : [row.source];
 
         // Act
-        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'checkout', ...gitSource, '--', P5000]);
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'checkout', ...gitSource, '--', row.spec]);
         const err = await caught(() =>
           sut(ctx, {
-            paths: [P5000],
+            paths: [row.spec],
             ...(row.source === undefined ? {} : { source: row.source }),
           }),
         );
 
         // Assert
         expect(gitRun.exitCode).toBe(GIT_EXIT_ERROR);
-        expect(err.data).toEqual(pathspecNoMatch(P5000).data);
+        expect(err.data).toEqual(pathspecNoMatch(row.spec).data);
         expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
       });
     });
 
-    describe('When git and tsgit grep the unmatched P5000 (row C9)', () => {
+    describe.each([
+      { id: 'C9', label: 'P5000', spec: P5000, head: false },
+      { id: 'C9', label: 'S300', spec: S300, head: false },
+      { id: 'C9', label: 'S300 glob', spec: `${S300}*`, head: false },
+      { id: 'C9', label: 'S300 slash x', spec: `${S300}/x`, head: false },
+      { id: 'C9', label: 'S300 from HEAD', spec: S300, head: true },
+    ])('When git and tsgit grep the unmatched $label (row $id)', (row) => {
       it('Then neither reports a hit', async () => {
         // Arrange
         const { gitRepo, ctx } = await twins([]);
         const sut = grep;
+        const gitRev = row.head ? ['HEAD'] : [];
 
         // Act
-        const result = await sut(ctx, { patterns: [/needle/], paths: [P5000] });
-        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'grep', '-l', 'needle', '--', P5000]);
+        const result = await sut(ctx, {
+          patterns: [/needle/],
+          paths: [row.spec],
+          ...(row.head ? { target: { treeish: 'HEAD' } } : {}),
+        });
+        const gitRun = tryRunGitWithExit([
+          '-C',
+          gitRepo,
+          'grep',
+          '-l',
+          'needle',
+          ...gitRev,
+          '--',
+          row.spec,
+        ]);
 
         // Assert
         expect(gitRun.exitCode).toBe(GIT_EXIT_ERROR);
         expect(result.paths).toEqual([]);
+      });
+    });
+
+    describe('When git and tsgit add a path under a missing parent holding S300 (row C2)', () => {
+      it('Then both refuse it as matching nothing', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const spec = `sub/${S300}`;
+        const sut = add;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', spec]);
+        const err = await caught(() => sut(ctx, [spec]));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual(pathspecNoMatch(spec).data);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit add the dot excluding S300 (row C5)', () => {
+      it('Then both stage the modified file and leave the same index', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([BASE]);
+        const specs = ['.', `!${S300}`];
+        const sut = add;
+
+        // Act
+        runGit(['-C', gitRepo, 'add', '--', ...specs.map(gitSpec)]);
+        await sut(ctx, specs);
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(runGit(['-C', tsgitRepo, 'status', '--porcelain'])).toBe('M  base\n');
+      });
+    });
+
+    const plantIndexOnly = (repos: ReadonlyArray<string>, name: string): void => {
+      for (const repo of repos) {
+        const blob = runGit(['-C', repo, 'rev-parse', `HEAD:${BASE}`]).trim();
+        runGit(['-C', repo, 'update-index', '--add', '--cacheinfo', `100644,${blob},${name}`]);
+      }
+    };
+
+    describe('When git and tsgit remove S300 planted only in the index (row I1)', () => {
+      it('Then both drop it from the index', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        plantIndexOnly([gitRepo, tsgitRepo], S300);
+        const sut = rm;
+
+        // Act
+        runGit(['-C', gitRepo, 'rm', '-q', '--cached', '--', S300]);
+        await sut(ctx, [S300], { cached: true });
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(runGit(['-C', tsgitRepo, 'ls-files']).split('\n')).not.toContain(S300);
+      });
+    });
+
+    describe('When git and tsgit remove a pattern reaching S255 and an index-only S300 (row I4)', () => {
+      it('Then both remove the two from the index', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        plantIndexOnly([gitRepo, tsgitRepo], S300);
+        const spec = `${'s'.repeat(254)}*`;
+        const sut = rm;
+
+        // Act
+        runGit(['-C', gitRepo, 'rm', '-q', '--cached', '--', spec]);
+        await sut(ctx, [spec], { cached: true });
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        const left = runGit(['-C', tsgitRepo, 'ls-files']).split('\n');
+        expect(left).not.toContain(S255);
+        expect(left).not.toContain(S300);
+      });
+    });
+
+    describe('When git and tsgit grep the index for an index-only S300 (row I3)', () => {
+      it('Then both report the one hit', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        plantIndexOnly([gitRepo, tsgitRepo], S300);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, {
+          patterns: [/./],
+          paths: [S300],
+          target: 'index',
+        });
+        const gitRun = tryRunGitWithExit([
+          '-C',
+          gitRepo,
+          'grep',
+          '--cached',
+          '-l',
+          '-z',
+          '.',
+          '--',
+          S300,
+        ]);
+
+        // Assert
+        const gitHits = gitRun.stdout.split('\0').filter((name) => name !== '');
+        expect(gitHits).toEqual([S300]);
+        expect(result.paths[0]?.path).toBe(S300);
+        expect(result.paths).toHaveLength(1);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
       });
     });
 
@@ -389,6 +556,251 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         // Assert
         expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
         expect(runGit(['-C', tsgitRepo, 'ls-files']).split('\n')).not.toContain(P5000);
+      });
+    });
+
+    describe.each([
+      { id: 'K1', specs: [CJK100], modified: [], tracked: [], untracked: [CJK100] },
+      { id: 'K1', specs: [CJK100], modified: [CJK100], tracked: [CJK100], untracked: [] },
+      { id: 'K1', specs: ['.'], modified: [BASE], tracked: [], untracked: [CJK100] },
+    ])('When git and tsgit add $specs on a host holding a wide name (row $id)', (row) => {
+      it.runIf(canHoldWideComponent)('Then both leave the same index and status', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins(row.modified, row.untracked, row.tracked);
+        const sut = add;
+
+        // Act
+        runGit(['-C', gitRepo, 'add', '--', ...row.specs]);
+        await sut(ctx, row.specs);
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(runGit(['-C', tsgitRepo, 'ls-files', '-z']).split('\0')).toContain(CJK100);
+      });
+    });
+
+    describe.each([{ cached: false }, { cached: true }])(
+      'When git and tsgit remove a wide name with cached $cached (row K2)',
+      (row) => {
+        it.runIf(canHoldWideComponent)('Then both leave the same index and tree', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo, ctx } = await twins([], [], [CJK100]);
+          const sut = rm;
+
+          // Act
+          runGit(['-C', gitRepo, 'rm', '-q', ...(row.cached ? ['--cached'] : []), '--', CJK100]);
+          await sut(ctx, [CJK100], { cached: row.cached });
+
+          // Assert
+          expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+          expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
+        });
+      },
+    );
+
+    describe.each([
+      { from: CJK100, to: 'short', tracked: [CJK100] },
+      { from: BASE, to: CJK100, tracked: [] },
+    ])('When git and tsgit move a path to or from a wide name (row K3)', (row) => {
+      it.runIf(canHoldWideComponent)('Then both leave the same index and tree', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([], [], row.tracked);
+        const sut = mv;
+
+        // Act
+        runGit(['-C', gitRepo, 'mv', '--', row.from, row.to]);
+        await sut(ctx, [row.from], row.to);
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit restore a modified wide name (row K4)', () => {
+      it.runIf(canHoldWideComponent)('Then both restore the same content', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([CJK100], [], [CJK100]);
+        const sut = checkout;
+
+        // Act
+        runGit(['-C', gitRepo, 'checkout', '--', CJK100]);
+        await sut(ctx, { paths: [CJK100] });
+
+        // Assert
+        expect(await readFile(path.join(tsgitRepo, CJK100), 'utf8')).toBe(
+          await readFile(path.join(gitRepo, CJK100), 'utf8'),
+        );
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe.each([
+      { state: 'untracked', modified: [], tracked: [], untracked: [CJK100] },
+      { state: 'modified', modified: [CJK100], tracked: [CJK100], untracked: [] },
+    ])('When git and tsgit report a $state wide name (row K5)', (row) => {
+      it.runIf(canHoldWideComponent)('Then both list the same paths', async () => {
+        // Arrange
+        const { gitRepo, ctx } = await twins(row.modified, row.untracked, row.tracked);
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+        const gitRun = runGit([
+          '-C',
+          gitRepo,
+          'status',
+          '--porcelain',
+          '-z',
+          '--untracked-files=all',
+        ]);
+
+        // Assert
+        const gitPaths = gitRun
+          .split('\0')
+          .filter((entry) => entry !== '')
+          .map((entry) => entry.slice('XY '.length))
+          .sort();
+        const paths = [...result.untracked, ...result.changes.map((change) => change.path)].sort();
+        expect(paths).toEqual(gitPaths);
+        expect(paths).toContain(CJK100);
+      });
+    });
+
+    describe('When git and tsgit grep a wide name (row K5)', () => {
+      it.runIf(canHoldWideComponent)('Then both report the one hit', async () => {
+        // Arrange
+        const { gitRepo, ctx } = await twins([], [], [CJK100]);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [/needle/], paths: [CJK100] });
+        const gitRun = tryRunGitWithExit([
+          '-C',
+          gitRepo,
+          'grep',
+          '-l',
+          '-z',
+          'needle',
+          '--',
+          CJK100,
+        ]);
+
+        // Assert
+        const gitHits = gitRun.stdout.split('\0').filter((name) => name !== '');
+        expect(result.paths.map((entry) => entry.path)).toEqual(gitHits);
+        expect(gitHits).toEqual([CJK100]);
+      });
+    });
+
+    describe('When git and tsgit blame a wide name with one line appended (row K5)', () => {
+      it.runIf(canHoldWideComponent)('Then both attribute the same lines', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([], [], [CJK100]);
+        for (const repo of [gitRepo, tsgitRepo]) {
+          await writeFile(path.join(repo, CJK100), 'needle\nchanged\n');
+        }
+        const sut = blame;
+        const zeros = '0'.repeat(40);
+
+        // Act
+        const result = await sut(ctx, CJK100, { worktree: true });
+        const gitRun = runGit(['-C', gitRepo, 'blame', '--root', '-l', '-s', '--', CJK100]);
+
+        // Assert
+        const gitLines = gitRun
+          .split('\n')
+          .filter((line) => line !== '')
+          .map((line) => line.slice(0, 40));
+        expect(result.lines.map((line) => (line.committed ? line.commit : zeros))).toEqual(
+          gitLines,
+        );
+        expect(gitLines).toHaveLength(2);
+      });
+    });
+
+    describe('When git and tsgit act on a wide name no host can create (row L3)', () => {
+      it.skipIf(canHoldWideComponent)('Then rm, checkout and grep find no match', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+
+        // Act
+        const gitRm = tryRunGitWithExit(['-C', gitRepo, 'rm', '--', CJK100]);
+        const rmErr = await caught(() => rm(ctx, [CJK100]));
+        const gitCheckout = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', CJK100]);
+        const checkoutErr = await caught(() => checkout(ctx, { paths: [CJK100] }));
+        const gitGrep = tryRunGitWithExit(['-C', gitRepo, 'grep', '-l', 'needle', '--', CJK100]);
+        const grepResult = await grep(ctx, { patterns: [/needle/], paths: [CJK100] });
+
+        // Assert
+        expect(gitRm.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(rmErr.data).toEqual(pathspecNoMatch(CJK100).data);
+        expect(gitCheckout.exitCode).toBe(GIT_EXIT_ERROR);
+        expect(checkoutErr.data).toEqual(pathspecNoMatch(CJK100).data);
+        expect(gitGrep.exitCode).toBe(GIT_EXIT_ERROR);
+        expect(grepResult.paths).toEqual([]);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit grep a tree holding a wide name without a pathspec (row K6)', () => {
+      it.runIf(canHoldWideComponent)('Then both report the same hits', async () => {
+        // Arrange
+        const { gitRepo, ctx } = await twins([], [], [CJK100]);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [/needle/] });
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'grep', '-l', '-z', 'needle']);
+
+        // Assert
+        const gitHits = gitRun.stdout.split('\0').filter((name) => name !== '');
+        expect(result.paths.map((entry) => entry.path).sort()).toEqual([...gitHits].sort());
+        expect(gitHits).toContain(CJK100);
+      });
+    });
+
+    describe('When git and tsgit switch to and from a commit holding a wide name (row K6)', () => {
+      it.runIf(canHoldWideComponent)('Then both leave the same index and tree', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        for (const repo of [gitRepo, tsgitRepo]) {
+          runGit(['-C', repo, 'checkout', '-q', '-b', 'wide']);
+          await writeAt(repo, CJK100, 'needle\n');
+          runGit(['-C', repo, 'add', '--', CJK100]);
+          runGit(
+            [
+              '-C',
+              repo,
+              '-c',
+              'user.name=t',
+              '-c',
+              'user.email=t@example.com',
+              'commit',
+              '-q',
+              '-m',
+              'w',
+            ],
+            { env: runGitEnv() },
+          );
+          runGit(['-C', repo, 'checkout', '-q', 'main']);
+        }
+        const sut = checkout;
+
+        // Act
+        runGit(['-C', gitRepo, 'checkout', '-q', 'wide']);
+        await sut(ctx, { rev: 'wide' });
+        const onWide = { tsgit: snapshotOf(tsgitRepo), git: snapshotOf(gitRepo) };
+        const wideFiles = { tsgit: await filesOf(tsgitRepo), git: await filesOf(gitRepo) };
+        runGit(['-C', gitRepo, 'checkout', '-q', 'main']);
+        await sut(ctx, { rev: 'main' });
+
+        // Assert
+        expect(onWide.tsgit).toEqual(onWide.git);
+        expect(wideFiles.tsgit).toEqual(wideFiles.git);
+        expect(wideFiles.tsgit).toContain(CJK100);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
       });
     });
   },

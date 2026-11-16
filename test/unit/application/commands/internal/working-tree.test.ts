@@ -93,7 +93,6 @@ describe('internal/working-tree', () => {
           },
           { path: 'foo/.git /file', label: "'foo/.git ' (trailing space, NTFS-safe)" },
           { path: 'foo/.git./file', label: "'foo/.git.' (trailing dot, NTFS-safe)" },
-          { path: `a/${'b'.repeat(256)}/c`, label: 'a 256-byte component' },
           { path: 'foo/bar\x01baz', label: 'a control character (\\x01) in a component' },
           { path: '', label: 'an empty string' },
           {
@@ -138,23 +137,14 @@ describe('internal/working-tree', () => {
             path: Array.from({ length: 16 }, () => 'a'.repeat(255)).join('/'),
             label: 'a 4095-byte path of sixteen 255-byte components',
           },
+          { path: `a/${'b'.repeat(256)}/c`, label: 'a 256-byte component' },
+          { path: `a/${'b'.repeat(255)}/c`, label: 'a 255-byte component' },
         ])('Then $label is returned unchanged', ({ path }) => {
           // Arrange
           const sut = validatePath;
 
           // Act + Assert
           expect(sut(path)).toBe(path);
-        });
-      });
-    });
-
-    describe('Given a component of exactly 255 bytes', () => {
-      describe('When validatePath', () => {
-        it('Then succeeds (boundary)', () => {
-          // Arrange
-          const path = `a/${'b'.repeat(255)}/c`;
-          // Assert
-          expect(() => validatePath(path)).not.toThrow();
         });
       });
     });
