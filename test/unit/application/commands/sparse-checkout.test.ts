@@ -236,7 +236,7 @@ describe('sparseCheckout command', () => {
 
     describe('Given sparse disabled with a pattern file left on disk', () => {
       describe('When list', () => {
-        it('Then the file is not read and the list refuses', async () => {
+        it('Then the list still refuses with patterns on disk', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/src/\n');
@@ -246,7 +246,11 @@ describe('sparseCheckout command', () => {
           const err = await expectError(() => sut(ctx));
 
           // Assert
-          expect(err.data.code).toBe('INVALID_OPTION');
+          expect(err.data).toEqual({
+            code: 'INVALID_OPTION',
+            option: 'action',
+            reason: 'list requires sparse checkout to be enabled',
+          });
         });
       });
     });
