@@ -40,7 +40,6 @@ export const validateWorkingTreePath = (input: string): FilePath => {
  */
 export const validateWorkingTreePathOn = (input: string, host: PathSyntaxHost): FilePath => {
   if (host.windowsPathSyntax === true) rejectBackslash(input);
-  rejectInputShape(input);
   rejectLeadingColon(input);
   const components = input.split('/');
   for (const component of components) {
@@ -66,7 +65,6 @@ export const validateWorkingTreePathOn = (input: string, host: PathSyntaxHost): 
  */
 export const validateWalkedEntryPath = (input: string, host: PathSyntaxHost): FilePath => {
   if (host.windowsPathSyntax === true) rejectBackslash(input);
-  rejectInputShape(input);
   const components = input.split('/');
   for (const component of components) {
     rejectTraversalShape(component, input);
@@ -82,15 +80,6 @@ const reject = (input: string): never => {
 // syntax reads it as a separator.
 const rejectBackslash = (input: string): void => {
   if (input.includes(BACKSLASH)) reject(input);
-};
-
-const rejectInputShape = (input: string): void => {
-  // Stryker disable next-line ConditionalExpression: equivalent — when this fast-path guard is removed (`if (false)`), the empty string still splits to `['']`, whose empty component is rejected by `rejectTraversalShape` with the identical `pathspecOutsideRepo('')` error.
-  if (input === '') reject(input);
-  // Stryker disable next-line ConditionalExpression,MethodExpression: equivalent — a leading or trailing `/` always produces an empty path component, which `rejectTraversalShape` rejects regardless; this guard only changes which line throws, not the accept/reject verdict or the error data.
-  if (input.startsWith('/')) reject(input);
-  // Stryker disable next-line ConditionalExpression: equivalent — a NUL byte is code 0x00, always `<= 0x1f`, so the per-component control-char scan rejects it regardless of this fast-path guard.
-  if (input.includes('\0')) reject(input);
 };
 
 const rejectTraversalShape = (component: string, original: string): void => {
