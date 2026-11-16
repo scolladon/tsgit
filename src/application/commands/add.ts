@@ -728,7 +728,7 @@ const literalStats = async (
 ): Promise<LiteralStats | undefined> => {
   if (literals.length === 0 || literals.some(namesDirectoryOnly)) return undefined;
   const probed = await boundedMapFor(ctx, 'ioBound', literals, (path) =>
-    lstatOrBeneathFile(ctx, path),
+    lstatPathspecBody(ctx, path),
   );
   const stats = new Map<FilePath, FileStat>();
   for (const [index, stat] of probed.entries()) {
@@ -750,6 +750,18 @@ const lstatOrBeneathFile = async (
     return await lstatOrMissing(ctx, path);
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === NOT_A_DIRECTORY) return undefined;
+    throw err;
+  }
+};
+
+const PATH_TOO_LONG = 'PATH_TOO_LONG';
+
+/** A pathspec body the file system refuses as too long names nothing on disk, as git's `file_exists` reads it. */
+const lstatPathspecBody = async (ctx: Context, body: FilePath): Promise<FileStat | undefined> => {
+  try {
+    return await lstatOrBeneathFile(ctx, body);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === PATH_TOO_LONG) return undefined;
     throw err;
   }
 };
@@ -1038,7 +1050,7 @@ const indexVerdicts = (
 
 /** Whether the pathspec's verbatim body, as typed, names something on disk. */
 const namesOnDisk = async (ctx: Context, { entry, probesDisk }: PositivePathspec) =>
-  probesDisk && (await lstatOrBeneathFile(ctx, entry.body as FilePath)) !== undefined;
+  probesDisk && (await lstatPathspecBody(ctx, entry.body as FilePath)) !== undefined;
 
 /**
  * `add --renormalize` runs no directory fill, so a pathspec is seen through the
@@ -1102,7 +1114,7 @@ const namesDiskPath = async (
 ): Promise<boolean> => {
   if (!probesDisk) return false;
   const body = entry.body as FilePath;
-  const stat = await lstatOrBeneathFile(ctx, body);
+  const stat = await lstatPathspecBody(ctx, body);
   return stat !== undefined && (!namesDirectoryOnly(body) || stat.isDirectory);
 };
 

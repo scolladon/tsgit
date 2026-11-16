@@ -1,4 +1,5 @@
 import { pathspecBeyondSymlink, pathspecOutsideRepo } from '../../../domain/commands/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { wellFormed } from '../../../domain/objects/encoding.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import {
@@ -8,7 +9,10 @@ import {
 } from '../../../domain/pathspec/index.js';
 import { globSpecialIndex } from '../../../domain/pathspec/wildcard.js';
 import type { Context } from '../../../ports/context.js';
-import { createLeadingPathScanner } from '../../primitives/internal/symlinked-leading-path.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from '../../primitives/internal/symlinked-leading-path.js';
 import { validatePath } from './working-tree.js';
 
 export interface ResolvedPathspec {
@@ -73,8 +77,8 @@ const BACKSLASH_STAND_IN = 'x';
 /**
  * Validates a pathspec body with each backslash read as an ordinary byte —
  * wildmatch's escape is a matching concern, not a path separator here — so
- * every other rule (traversal, control bytes, `.git` aliases, leading `/`,
- * length) still applies. A refusal names the body as typed.
+ * every other rule (traversal, control bytes, `.git` aliases, leading `/`)
+ * still applies. A refusal names the body as typed.
  */
 const validatePathspecBody = (body: string): void => {
   try {
@@ -96,6 +100,19 @@ const collapsePattern = (raw: string): string => {
   return `${negation}${kept}${directoryOnly ? SEPARATOR : ''}`;
 };
 
+const PATH_TOO_LONG = 'PATH_TOO_LONG';
+
+// git's lstat_cache records a failed lstat as "not a symlink": a prefix the file
+// system cannot name has nothing beneath it, so no later prefix can be a link.
+const beyondSymlink = async (scanner: LeadingPathScanner, target: FilePath): Promise<boolean> => {
+  try {
+    return await scanner.hasSymlinkedLeadingPath(target);
+  } catch (err) {
+    if (errorDataCode(err) === PATH_TOO_LONG) return false;
+    throw err;
+  }
+};
+
 // Refuse a pathspec body — literal or glob — that names a file beyond a
 // symbolic link — git's `has_symlinked_leading_path` refusal, shape-based
 // (fires for an intra-repo link target too). Git checks path components
@@ -109,7 +126,7 @@ export const assertNoSymlinkedLeadingPath = async (
 ): Promise<void> => {
   const scanner = createLeadingPathScanner(ctx);
   for (const target of targets) {
-    if (await scanner.hasSymlinkedLeadingPath(target)) {
+    if (await beyondSymlink(scanner, target)) {
       throw pathspecBeyondSymlink(target);
     }
   }

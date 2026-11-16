@@ -461,6 +461,66 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
+    describe.each([
+      { label: 'S256', spec: 's'.repeat(256) },
+      { label: 'S300', spec: S300 },
+      { label: 'S300 glob', spec: `${S300}*` },
+      { label: 'S255 wildcard', spec: `?${S255}` },
+      { label: 'P5000', spec: P5000 },
+      { label: 'P5000 glob', spec: `${P5000}/*` },
+      { label: 'S300 slash x', spec: `${S300}/x` },
+    ])('When git and tsgit add the unmatched $label (rows C1, C3)', (row) => {
+      it('Then both refuse it as matching nothing', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = add;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', row.spec]);
+        const err = await caught(() => sut(ctx, [row.spec]));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual(pathspecNoMatch(row.spec).data);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit add a modified file together with S300 (row C4)', () => {
+      it('Then both refuse S300 alone and stage nothing', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([BASE]);
+        const sut = add;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'add', '--', BASE, S300]);
+        const err = await caught(() => sut(ctx, [BASE, S300]));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual(pathspecNoMatch(S300).data);
+        expect(runGit(['-C', tsgitRepo, 'status', '--porcelain'])).toBe(' M base\n');
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit add the dot excluding S300 slash x (row C6)', () => {
+      it('Then both stage the modified file and leave the same index', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([BASE]);
+        const specs = ['.', `!${S300}/x`];
+        const sut = add;
+
+        // Act
+        runGit(['-C', gitRepo, 'add', '--', ...specs.map(gitSpec)]);
+        await sut(ctx, specs);
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(runGit(['-C', tsgitRepo, 'status', '--porcelain'])).toBe('M  base\n');
+      });
+    });
+
     const plantIndexOnly = (repos: ReadonlyArray<string>, name: string): void => {
       for (const repo of repos) {
         const blob = runGit(['-C', repo, 'rev-parse', `HEAD:${BASE}`]).trim();
@@ -720,11 +780,13 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     });
 
     describe('When git and tsgit act on a wide name no host can create (row L3)', () => {
-      it.skipIf(canHoldWideComponent)('Then rm, checkout and grep find no match', async () => {
+      it.skipIf(canHoldWideComponent)('Then add, rm, checkout and grep find no match', async () => {
         // Arrange
         const { gitRepo, tsgitRepo, ctx } = await twins([]);
 
         // Act
+        const gitAdd = tryRunGitWithExit(['-C', gitRepo, 'add', '--', CJK100]);
+        const addErr = await caught(() => add(ctx, [CJK100]));
         const gitRm = tryRunGitWithExit(['-C', gitRepo, 'rm', '--', CJK100]);
         const rmErr = await caught(() => rm(ctx, [CJK100]));
         const gitCheckout = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', CJK100]);
@@ -733,6 +795,8 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         const grepResult = await grep(ctx, { patterns: [/needle/], paths: [CJK100] });
 
         // Assert
+        expect(gitAdd.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(addErr.data).toEqual(pathspecNoMatch(CJK100).data);
         expect(gitRm.exitCode).toBe(GIT_EXIT_FATAL);
         expect(rmErr.data).toEqual(pathspecNoMatch(CJK100).data);
         expect(gitCheckout.exitCode).toBe(GIT_EXIT_ERROR);

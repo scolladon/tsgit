@@ -4,9 +4,10 @@ import {
   assertNoSymlinkedLeadingPath,
   resolvePathspec,
 } from '../../../../../src/application/commands/internal/resolve-pathspec.js';
-import { TsgitError } from '../../../../../src/domain/error.js';
+import { pathTooLong, permissionDenied, TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 import { matchesPathspec } from '../../../../../src/domain/pathspec/match-pathspec.js';
+import type { Context } from '../../../../../src/ports/context.js';
 
 const path = (s: string): FilePath => s as FilePath;
 
@@ -309,6 +310,12 @@ describe('resolvePathspec', () => {
           target: LITERAL_300,
         },
         {
+          label: 'a 300-byte single component',
+          pattern: 's'.repeat(300),
+          entry: { body: 's'.repeat(300), isLiteral: true, negated: false },
+          target: 's'.repeat(300),
+        },
+        {
           label: 'five `**`',
           pattern: '**a**b**c**d**x',
           entry: { body: '**a**b**c**d**x', isLiteral: false, negated: false },
@@ -379,6 +386,20 @@ const expectAsyncError = async (fn: () => Promise<unknown>, code: string): Promi
   expect(caught).toBeInstanceOf(TsgitError);
   expect((caught as TsgitError).data.code).toBe(code);
   return caught as TsgitError;
+};
+
+const refusing = (ctx: Context, name: string, fault: (path: string) => TsgitError): Context => {
+  const refused = `${ctx.layout.workDir}/${name}`;
+  const fs = new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+      return async (p: string) => {
+        if (p === refused) throw fault(p);
+        return target.lstat(p);
+      };
+    },
+  });
+  return { ...ctx, fs };
 };
 
 describe('assertNoSymlinkedLeadingPath', () => {
@@ -455,6 +476,56 @@ describe('assertNoSymlinkedLeadingPath', () => {
         await expect(
           assertNoSymlinkedLeadingPath(ctx, [path('dir/file'), path('top-level.txt')]),
         ).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a target whose leading prefix the file system refuses as too long', () => {
+    describe('When checked', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = refusing(createMemoryContext(), 'long', pathTooLong);
+
+        // Act + Assert
+        await expect(assertNoSymlinkedLeadingPath(ctx, [path('long/x')])).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a target whose leading prefix is refused with PERMISSION_DENIED', () => {
+    describe('When checked', () => {
+      it('Then it rejects with that fault', async () => {
+        // Arrange
+        const ctx = refusing(createMemoryContext(), 'long', permissionDenied);
+
+        // Act
+        const err = await expectAsyncError(
+          () => assertNoSymlinkedLeadingPath(ctx, [path('long/x')]),
+          'PERMISSION_DENIED',
+        );
+
+        // Assert
+        expect(err.data).toEqual(permissionDenied(`${ctx.layout.workDir}/long`).data);
+      });
+    });
+  });
+
+  describe('Given a too-long prefix target followed by a target beyond a symlink', () => {
+    describe('When checked', () => {
+      it('Then the later target is still refused', async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await seeded.fs.symlink('/outside-the-repo', `${seeded.layout.workDir}/dir`);
+        const ctx = refusing(seeded, 'long', pathTooLong);
+
+        // Act
+        const err = await expectAsyncError(
+          () => assertNoSymlinkedLeadingPath(ctx, [path('long/x'), path('dir/file')]),
+          'PATHSPEC_BEYOND_SYMLINK',
+        );
+
+        // Assert
+        expect((err.data as { path: string }).path).toBe('dir/file');
       });
     });
   });

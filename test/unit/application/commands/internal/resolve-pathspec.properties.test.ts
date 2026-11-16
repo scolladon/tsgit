@@ -13,22 +13,29 @@ import { matchesPathspec } from '../../../../../src/domain/pathspec/match-pathsp
 
 const NUM_RUNS = 100;
 const FIRST_PRINTABLE = 0x20;
-const LAST_PRINTABLE = 0x7e;
+const LAST_BMP_SCALAR = 0xd7ff;
+const DELETE = 0x7f;
 const WILDCARDS = ['*', '?'];
-const UNSAFE = new Set(['/', '\\', '*', '?', '[']);
-const MAX_COMPONENT_LENGTH = 100;
+const SEPARATORS = new Set(['/', '\\']);
+const GLOB_SPECIAL = new Set(['*', '?', '[']);
+const MAX_COMPONENT_LENGTH = 600;
 const MAX_COMPONENTS = 40;
 const DRIVE_PREFIX = /^[A-Za-z]?:/;
 
-const SAFE_ASCII = Array.from({ length: LAST_PRINTABLE - FIRST_PRINTABLE + 1 }, (_, i) =>
-  String.fromCharCode(FIRST_PRINTABLE + i),
-).filter((c) => !UNSAFE.has(c));
+const codeUnit = fc
+  .integer({ min: FIRST_PRINTABLE, max: LAST_BMP_SCALAR })
+  .filter((code) => code !== DELETE)
+  .map((code) => String.fromCharCode(code))
+  .filter((c) => !SEPARATORS.has(c));
+
+const LITERAL_UNIT = codeUnit.filter((c) => !GLOB_SPECIAL.has(c));
+const WILDCARD_UNIT = fc.oneof(LITERAL_UNIT, fc.constantFrom(...WILDCARDS));
 
 const isUsableComponent = (c: string): boolean => c !== '.' && c !== '..' && !isDotGitAlias(c);
 
-const componentOf = (alphabet: ReadonlyArray<string>) =>
+const componentOf = (unit: fc.Arbitrary<string>) =>
   fc
-    .array(fc.constantFrom(...alphabet), {
+    .array(unit, {
       minLength: 1,
       maxLength: MAX_COMPONENT_LENGTH,
       size: 'max',
@@ -36,9 +43,9 @@ const componentOf = (alphabet: ReadonlyArray<string>) =>
     .map((chars) => chars.join(''))
     .filter(isUsableComponent);
 
-const patternOf = (alphabet: ReadonlyArray<string>) =>
+const patternOf = (unit: fc.Arbitrary<string>) =>
   fc
-    .array(componentOf(alphabet), { minLength: 1, maxLength: MAX_COMPONENTS, size: 'max' })
+    .array(componentOf(unit), { minLength: 1, maxLength: MAX_COMPONENTS, size: 'max' })
     .map((components) => components.join('/'))
     .filter((p) => !DRIVE_PREFIX.test(p) && !p.startsWith('!'));
 
@@ -51,7 +58,7 @@ describe('resolvePathspec properties', () => {
 
         // Act + Assert
         fc.assert(
-          fc.property(patternOf(SAFE_ASCII), (pattern) => {
+          fc.property(patternOf(LITERAL_UNIT), (pattern) => {
             const { matcher } = sut([pattern]);
             expect(matcher[0]?.body).toBe(pattern);
             expect(matchesPathspec(matcher, pattern as FilePath)).toBe(true);
@@ -67,7 +74,7 @@ describe('resolvePathspec properties', () => {
       it('Then a pattern of any count of * and ? never throws', () => {
         // Arrange
         const sut = resolvePathspec;
-        const pattern = patternOf([...SAFE_ASCII, ...WILDCARDS]).filter((p) =>
+        const pattern = patternOf(WILDCARD_UNIT).filter((p) =>
           WILDCARDS.some((w) => p.includes(w)),
         );
 
