@@ -1,6 +1,7 @@
 ---
 subjects:
   - src/application/commands/mv.ts
+  - src/application/commands/internal/working-tree.ts
 ---
 # 1194 — mv names the destination when the host refuses it as too long
 
@@ -28,7 +29,8 @@ bad source.
 
 **adopted-as-recommended (no user judgment)** — ADR-249 (fields carry the right data) and no
 trade-off beyond mechanics. Both rows refuse with index and disk unchanged; `mv -n` returns the
-plan as git's dry run does.
+plan as git's dry run does. The catch wraps only the leaf rename inside `moveNode`, so a too-long
+source descendant of a directory move keeps naming itself.
 
 ## Consequences
 

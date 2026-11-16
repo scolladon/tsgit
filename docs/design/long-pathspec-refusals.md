@@ -355,6 +355,11 @@ No validator change beyond §2. The resulting behaviour per row:
   `PATH_TOO_LONG` on the 4900-byte parent reads as "missing" and `mv` refuses
   `MV_DESTINATION_DIRECTORY_MISSING { source, destination }`. git reaches its rename and reports the
   rename failure. Both refuse and leave the state unchanged; only the code differs (D4).
+- Where the relabel sits (D4, ADR-1194): around the leaf rename in `moveNode`
+  (`src/application/commands/internal/working-tree.ts`), after the source leaf's `lstat` succeeded,
+  naming that leaf's repository-relative destination. A directory move reads every source descendant
+  first, so a too-long source descendant keeps its own path; a catch around the whole move would
+  mislabel it as the destination (review finding, pinned by a unit row).
 - Ordering: `mv` refuses under the index lock before moving anything. A rename failure on the first
   leaf leaves the index unwritten, so R8 holds.
 
