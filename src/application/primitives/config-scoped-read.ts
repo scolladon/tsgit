@@ -160,19 +160,19 @@ export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
   // caller discipline at one site.
   if (layoutFailsAcceptance(ctx.layout)) return false;
   const sections = await readSingleScope(ctx, 'local');
-  for (const section of sections) {
-    if (section.section.toLowerCase() !== 'extensions') continue;
-    if (section.subsection !== undefined) continue;
-    for (const entry of section.entries) {
-      if (entry.key.toLowerCase() !== 'worktreeconfig') continue;
-      const parsed = parseGitBoolean(entry.value);
-      // A value git's boolean grammar refuses is inert here — the
-      // discovery-tier gate in `assertRepository` is what raises it, and it
-      // runs before this on every command.
-      return parsed.ok && parsed.value;
-    }
-  }
-  return false;
+  // git's config read keeps the last occurrence of a key.
+  const last = sections
+    .filter((section) => section.section.toLowerCase() === 'extensions')
+    .filter((section) => section.subsection === undefined)
+    .flatMap((section) => section.entries)
+    .filter((entry) => entry.key.toLowerCase() === 'worktreeconfig')
+    .at(-1);
+  if (last === undefined) return false;
+  const parsed = parseGitBoolean(last.value);
+  // A value git's boolean grammar refuses is inert here — the
+  // discovery-tier gate in `assertRepository` is what raises it, and it
+  // runs before this on every command.
+  return parsed.ok && parsed.value;
 };
 
 /**
@@ -208,7 +208,15 @@ const readSingleScope = async (
   if (layoutFailsAcceptance(ctx.layout) && (scope === 'local' || scope === 'worktree')) {
     throw configScopeNotAvailable(scope, 'repository-not-accepted');
   }
-  const path = await resolveConfigScopePath(ctx, scope);
+  return readScopeAt(ctx, scope, await resolveConfigScopePath(ctx, scope));
+};
+
+/** The cached, mtime-checked read of one scope's file at an already-resolved path. */
+const readScopeAt = async (
+  ctx: Context,
+  scope: ConfigScope,
+  path: string,
+): Promise<ReadonlyArray<IniSection>> => {
   const bucket = getSectionsCacheBucket(ctx);
   const mtimeKey = await scopeFileMtimeKey(ctx, path);
   const cached = bucket.get(scope);
@@ -219,6 +227,17 @@ const readSingleScope = async (
   bucket.set(scope, { promise, mtimeKey });
   return await promise;
 };
+
+/**
+ * The `config.worktree` sections for a caller that has already settled
+ * `extensions.worktreeConfig` as on, sharing the 'worktree' cache bucket but
+ * skipping `isWorktreeScopeActive`'s second read of the local file.
+ */
+export const readActiveWorktreeSections = async (
+  ctx: Context,
+): Promise<ReadonlyArray<IniSection>> =>
+  // `resolveWorktreeScopePath` refuses a refused layout before any read.
+  readScopeAt(ctx, 'worktree', resolveWorktreeScopePath(ctx, { active: true }));
 
 const safeReadScopeOrSkip = async (
   ctx: Context,

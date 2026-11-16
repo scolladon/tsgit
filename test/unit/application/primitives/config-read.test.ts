@@ -45,6 +45,7 @@ import {
 import { assertValidBooleanConfig } from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { qualifyKey } from '../../../../src/application/primitives/internal/config-key.js';
 import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
+import { loadSparseMatcher } from '../../../../src/application/primitives/read-sparse-checkout.js';
 import { parseConfigKey } from '../../../../src/domain/commands/config-key.js';
 import { notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
@@ -2796,6 +2797,32 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(configStatCalls(calls())).toBe(1);
+      });
+    });
+
+    describe('When the worktree extension is on and the sparse matcher is loaded twice', () => {
+      it('Then config is stat-ed once and config.worktree once per read', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedHead(base);
+        await seed(base, '[extensions]\n\tworktreeConfig = true\n');
+        await base.fs.writeUtf8(
+          `${base.layout.gitDir}/config.worktree`,
+          '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n',
+        );
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await assertOperationalRepository(ctx);
+        await loadSparseMatcher(ctx);
+        await loadSparseMatcher(ctx);
+
+        // Assert
+        const worktreeStats = calls().filter(
+          (c) => c.method === 'stat' && c.path.endsWith('/config.worktree'),
+        ).length;
+        expect(configStatCalls(calls())).toBe(1);
+        expect(worktreeStats).toBe(3);
       });
     });
 

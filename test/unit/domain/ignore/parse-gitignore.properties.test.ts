@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   type IgnoreRuleset,
   parseGitignore,
+  stripTrailingSpaces,
 } from '../../../../src/domain/ignore/parse-gitignore.js';
 import { arbGitignorePattern, arbGitignoreText } from './arbitraries.js';
 
@@ -118,6 +119,29 @@ describe('parse-gitignore properties', () => {
               expect(rule.lineNumber).toBeGreaterThan(previous);
               previous = rule.lineNumber;
             }
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary line of spaces, backslashes and letters', () => {
+    describe('When its trailing spaces are trimmed', () => {
+      it('Then the result is a prefix, only spaces are removed and a second trim is a no-op', () => {
+        // Arrange
+        const sut = stripTrailingSpaces;
+        const arbLine = fc
+          .array(fc.constantFrom(' ', '\\', 'a'), { maxLength: 12 })
+          .map((chars) => chars.join(''));
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbLine, (line) => {
+            const result = sut(line);
+            expect(line.startsWith(result)).toBe(true);
+            expect(line.slice(result.length).replaceAll(' ', '')).toBe('');
+            expect(sut(result)).toBe(result);
           }),
           { numRuns: 200 },
         );

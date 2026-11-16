@@ -901,17 +901,17 @@ describe('openRepository — round-trip via memory adapter', () => {
     });
     describe('When the bound sparseCheckout command is called', () => {
       it('Then it delegates and returns a list result', async () => {
-        // Arrange — the bound `sparseCheckout` strips `ctx`; a fresh repo has
-        // sparse checkout disabled, so `list` returns the empty non-cone list.
+        // Arrange — the bound `sparseCheckout` strips `ctx`.
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo' }, fallback);
         await sut.init();
+        await sut.sparseCheckout.set({ patterns: ['src'], cone: true });
 
         // Act
         const result = await sut.sparseCheckout.list();
 
         // Assert
-        expect(result).toEqual({ cone: false, patterns: [] });
+        expect(result).toEqual({ cone: true, patterns: ['src'] });
       });
     });
   });

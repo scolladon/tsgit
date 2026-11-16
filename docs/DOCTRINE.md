@@ -16,3 +16,10 @@ design can apply without reopening the conversation. Each entry cites the ADR th
 - **Rule:** fold both halves in the same change, cover the shared half with its own unit rows and an interop pin per affected consumer; a half-fix that leaves the row red is not a fix.
 - **Evidence:** ADR-1160
 - **Counter-cases:** none
+
+## D-3 — A pinned refusal mismatch in a function the change edits is folded even when the fix breaks the API
+
+- **Trigger:** an in-scope refusal mismatch (git refuses, tsgit returns a default) sits in a function the change already edits, and the faithful fix turns a returning public method into a throwing one.
+- **Rule:** fold it in the same change with an ADR and mark the commit breaking (`!`); never park a pinned refusal mismatch in the divergence ledger because its fix breaks the API.
+- **Evidence:** ADR-1190
+- **Counter-cases:** none

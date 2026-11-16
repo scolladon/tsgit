@@ -1,8 +1,12 @@
 # ADR-074: `.git/config` writes use targeted `[core]` line surgery, not a full INI writer
 
+> **Superseded by [ADR-1188](1188-sparse-checkout-writes-its-keys-to-the-worktree-config.md)** for the target file of the sparse keys: `sparse-checkout` writes `core.sparseCheckout` / `core.sparseCheckoutCone` to `<gitDir>/config.worktree`, as git does.
+> The targeted line-surgery mechanism is carried forward.
+
 ## Status
 
-Accepted (at `c85927a`)
+- **Status:** superseded by ADR-1188
+- Accepted at `c85927a`.
 
 ## Context
 

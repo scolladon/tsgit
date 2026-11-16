@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseGitignore,
+  stripTrailingSpaces,
   tokenizeIgnoreLine,
 } from '../../../../src/domain/ignore/parse-gitignore.js';
 
@@ -446,6 +447,33 @@ describe('tokenizeIgnoreLine', () => {
           directoryOnly: true,
           cleanPattern: 'src',
         });
+      });
+    });
+  });
+});
+
+describe('stripTrailingSpaces', () => {
+  describe('Given a line', () => {
+    describe('When its trailing spaces are trimmed as git trims them', () => {
+      it.each([
+        { label: 'plain trailing spaces', line: 'foo  ', expected: 'foo' },
+        { label: 'an escaped space', line: 'bar\\ ', expected: 'bar\\ ' },
+        { label: 'an escaped space then spaces', line: 'bar\\   ', expected: 'bar\\ ' },
+        { label: 'an escaped backslash then spaces', line: 'esc\\\\  ', expected: 'esc\\\\' },
+        { label: 'inner spaces', line: 'a b ', expected: 'a b' },
+        { label: 'a trailing lone backslash after spaces', line: 'a  \\', expected: 'a  \\' },
+        { label: 'a trailing lone backslash only', line: 'x \\', expected: 'x \\' },
+        { label: 'only spaces', line: '   ', expected: '' },
+        { label: 'no trailing space', line: 'plain', expected: 'plain' },
+      ])('Then $label is trimmed to the expected text', ({ line, expected }) => {
+        // Arrange
+        const sut = stripTrailingSpaces;
+
+        // Act
+        const result = sut(line);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

@@ -1206,9 +1206,16 @@ const attemptNonConflictTree = async (
   { readonly kind: 'written'; readonly entries: ReadonlyArray<IndexEntry> } | WorktreeRefusal
 > => {
   const currentIndex = await readIndex(ctx);
+  const matcher = await loadSparseMatcher(ctx);
   try {
     // git's two-way rule: a path HEAD and the target agree on keeps its index entry and work file.
-    const result = await materializeTree(ctx, { targetTree, currentIndex, headTree, force: false });
+    const result = await materializeTree(ctx, {
+      targetTree,
+      currentIndex,
+      headTree,
+      force: false,
+      ...(matcher !== undefined ? { sparse: matcher } : {}),
+    });
     return { kind: 'written', entries: result.newIndexEntries };
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'CHECKOUT_OVERWRITE_DIRTY') {

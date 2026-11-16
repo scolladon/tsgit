@@ -4,11 +4,12 @@
  * `reapply` / `disable`). Each verb is a Context-aware function; the namespace
  * binder lives in `internal/sparse-checkout-namespace.ts`.
  *
- * Persistence ordering: a mutating verb computes its matcher in memory, runs
- * `applySparseCheckout` FIRST, and only AFTER a successful apply persists the
- * pattern file and config — a failed apply leaves `.git` untouched.
+ * Persistence ordering, as git's: `set` records its mode config first, then
+ * runs `applySparseCheckout`, then writes the pattern file; `disable` applies,
+ * then writes its config. A failed apply leaves the pattern file untouched.
  */
 import { invalidOption } from '../../domain/commands/error.js';
+import { stripTrailingSpaces } from '../../domain/ignore/parse-gitignore.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import {
   buildConeSpec,
@@ -19,10 +20,11 @@ import {
   serializeCone,
 } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from '../primitives/config-read.js';
+import { enableWorktreeConfig } from '../primitives/internal/enable-worktree-config.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { loadSparseMatcher, readSparsePatternText } from '../primitives/read-sparse-checkout.js';
-import { updateCoreConfig } from '../primitives/update-config.js';
+import { readSparseConfig } from '../primitives/read-sparse-config.js';
+import { updateScopedConfigEntries } from '../primitives/update-config.js';
 import { writeSparsePatternText } from '../primitives/write-sparse-checkout.js';
 import {
   type ApplySparseCheckoutOpts,
@@ -80,23 +82,36 @@ const assertSparseReady = async (ctx: Context): Promise<void> => {
   await assertNoPendingOperation(ctx);
 };
 
-/** Map a parsed spec onto the `list` output: sorted recursive dirs / raw lines. */
-const specToList = (spec: SparseSpec): SparseCheckoutListResult => {
+const COMMENT_MARK = '#';
+
+/**
+ * The non-cone pattern lines as git's `add_patterns_from_buffer` keeps them:
+ * only an empty line or a `#` comment is skipped, a trailing `\r` is dropped
+ * and unescaped trailing spaces are trimmed — so a whitespace-only line stays
+ * as an empty pattern.
+ */
+const nonConePatternLines = (text: string): ReadonlyArray<string> =>
+  text
+    .split('\n')
+    .filter((line) => line !== '' && !line.startsWith(COMMENT_MARK))
+    .map((line) => stripTrailingSpaces(line.replace(/\r$/, '')));
+
+/** Map a parsed spec onto the `list` output: sorted recursive dirs, or the file's pattern lines. */
+const specToList = (spec: SparseSpec, text: string): SparseCheckoutListResult => {
   if (spec.mode === 'cone') {
     return { cone: true, patterns: [...spec.recursive].sort() };
   }
-  return { cone: false, patterns: spec.rules.map((rule) => rule.source) };
+  return { cone: false, patterns: nonConePatternLines(text) };
 };
 
 export const sparseCheckoutList = async (ctx: Context): Promise<SparseCheckoutListResult> => {
   await assertSparseReady(ctx);
-  const config = await readConfig(ctx);
-  if (config.core?.sparseCheckout !== true) {
-    return { cone: false, patterns: [] };
+  const sparse = await readSparseConfig(ctx);
+  if (!sparse.enabled) {
+    throw invalidOption('action', 'list requires sparse checkout to be enabled');
   }
-  const coneRequested = config.core.sparseCheckoutCone === true;
   const text = (await readSparsePatternText(ctx)) ?? '';
-  return specToList(parseSparseCheckout(text, coneRequested).spec);
+  return specToList(parseSparseCheckout(text, sparse.cone).spec, text);
 };
 
 /**
@@ -108,19 +123,45 @@ const applyOpts = (
   force: boolean | undefined,
 ): ApplySparseCheckoutOpts => (force === undefined ? { matcher } : { matcher, force });
 
-/** Apply `spec`, then persist the pattern file and `core` config (set ordering). */
+interface PersistOptions {
+  readonly force: boolean | undefined;
+  readonly recordMode: boolean;
+}
+
+const DISABLE_ENTRIES = [
+  { section: 'core', key: 'sparseCheckout', value: 'false' },
+  { section: 'core', key: 'sparseCheckoutCone', value: 'false' },
+  { section: 'index', key: 'sparse', value: 'false' },
+] as const;
+
+/** Record the mode keys in the worktree layer with the casing git writes them in. */
+const recordSparseMode = async (ctx: Context, cone: boolean): Promise<void> => {
+  await enableWorktreeConfig(ctx);
+  await updateScopedConfigEntries(ctx, 'worktree', [
+    { section: 'core', key: 'sparseCheckout', value: 'true' },
+    { section: 'core', key: 'sparseCheckoutCone', value: cone ? 'true' : 'false' },
+  ]);
+};
+
+/**
+ * When asked, record the mode first — git's `set` writes its config before it
+ * touches the work tree, so a refused update leaves the config written — then
+ * apply `spec` and persist the pattern file.
+ */
 const applyAndPersist = async (
   ctx: Context,
   spec: SparseSpec,
   text: string,
-  force: boolean | undefined,
+  options: PersistOptions,
 ): Promise<SparseCheckoutAppliedResult> => {
-  const applied = await applySparseCheckout(ctx, applyOpts(buildSparseMatcher(spec), force));
+  if (options.recordMode) {
+    await recordSparseMode(ctx, spec.mode === 'cone');
+  }
+  const applied = await applySparseCheckout(
+    ctx,
+    applyOpts(buildSparseMatcher(spec), options.force),
+  );
   await writeSparsePatternText(ctx, text);
-  await updateCoreConfig(ctx, {
-    sparseCheckout: 'true',
-    sparseCheckoutCone: spec.mode === 'cone' ? 'true' : 'false',
-  });
   return toApplied(spec.mode === 'cone', applied);
 };
 
@@ -132,10 +173,11 @@ export const sparseCheckoutSet = async (
   if (input.patterns.length === 0) {
     throw invalidOption('patterns', 'set requires at least one pattern');
   }
-  const config = await readConfig(ctx);
-  const useCone = input.cone ?? config.core?.sparseCheckoutCone ?? true;
+  const sparse = await readSparseConfig(ctx);
+  const useCone = input.cone ?? (sparse.enabled ? sparse.cone : true);
   const { spec, text } = buildSpecAndText(useCone, input.patterns);
-  return applyAndPersist(ctx, spec, text, input.force);
+  const recordMode = input.cone !== undefined || !sparse.enabled;
+  return applyAndPersist(ctx, spec, text, { force: input.force, recordMode });
 };
 
 export const sparseCheckoutAdd = async (
@@ -146,14 +188,13 @@ export const sparseCheckoutAdd = async (
   if (input.patterns.length === 0) {
     throw invalidOption('patterns', 'add requires at least one pattern');
   }
-  const config = await readConfig(ctx);
-  if (config.core?.sparseCheckout !== true) {
+  const sparse = await readSparseConfig(ctx);
+  if (!sparse.enabled) {
     throw invalidOption('action', 'add requires sparse checkout to be enabled');
   }
-  const useCone = config.core.sparseCheckoutCone === true;
   const existing = (await readSparsePatternText(ctx)) ?? '';
-  const { spec, text } = combineSpecAndText(useCone, existing, input.patterns);
-  return applyAndPersist(ctx, spec, text, input.force);
+  const { spec, text } = combineSpecAndText(sparse.cone, existing, input.patterns);
+  return applyAndPersist(ctx, spec, text, { force: input.force, recordMode: false });
 };
 
 export const sparseCheckoutReapply = async (
@@ -165,9 +206,9 @@ export const sparseCheckoutReapply = async (
   if (matcher === undefined) {
     throw invalidOption('action', 'reapply requires sparse checkout to be enabled');
   }
-  const config = await readConfig(ctx);
+  const sparse = await readSparseConfig(ctx);
   const applied = await applySparseCheckout(ctx, applyOpts(matcher, input?.force));
-  return toApplied(config.core?.sparseCheckoutCone === true, applied);
+  return toApplied(sparse.cone, applied);
 };
 
 export const sparseCheckoutDisable = async (
@@ -176,9 +217,14 @@ export const sparseCheckoutDisable = async (
 ): Promise<SparseCheckoutAppliedResult> => {
   await assertSparseReady(ctx);
   const applied = await applySparseCheckout(ctx, applyOpts(undefined, input?.force));
-  await updateCoreConfig(ctx, { sparseCheckout: 'false' });
+  await enableWorktreeConfig(ctx);
+  await updateScopedConfigEntries(ctx, 'worktree', DISABLE_ENTRIES);
   return toApplied(false, applied);
 };
+
+/** Non-cone file text: one pattern per line, each terminated as git writes it. */
+const nonConeText = (patterns: ReadonlyArray<string>): string =>
+  patterns.map((pattern) => `${pattern}\n`).join('');
 
 /** Build the spec + on-disk text for a fresh `set` from the user's patterns. */
 const buildSpecAndText = (
@@ -189,7 +235,7 @@ const buildSpecAndText = (
     const spec = buildConeSpec(patterns);
     return { spec, text: serializeCone(spec) };
   }
-  const text = patterns.join('\n');
+  const text = nonConeText(patterns);
   // `false`: the caller chose non-cone, so the patterns are interpreted with
   // gitignore last-match-wins semantics even when they happen to be
   // cone-shaped — a cone parse would select a different path set.
@@ -208,8 +254,8 @@ const combineSpecAndText = (
     const spec = buildConeSpec(dirs);
     return { spec, text: serializeCone(spec) };
   }
-  const lines = existing === '' ? added : [existing, ...added];
-  const text = lines.join('\n');
+  const kept = specToList(parseSparseCheckout(existing, false).spec, existing).patterns;
+  const text = nonConeText([...kept, ...added]);
   // `false`: non-cone mode — interpret the combined patterns with gitignore
   // semantics even if the result is cone-shaped (see `buildSpecAndText`).
   return { spec: parseSparseCheckout(text, false).spec, text };

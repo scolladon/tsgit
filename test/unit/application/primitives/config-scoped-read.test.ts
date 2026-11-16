@@ -221,6 +221,24 @@ describe('isWorktreeScopeActive', () => {
           expected: false,
         },
         {
+          label: 'worktreeConfig = false is overridden by a later worktreeConfig = true',
+          files: {
+            '/repo/.git/config': u8(
+              '[extensions]\n\tworktreeConfig = false\n[extensions]\n\tworktreeConfig = true\n',
+            ),
+          },
+          expected: true,
+        },
+        {
+          label: 'worktreeConfig = true is overridden by a later worktreeConfig = false',
+          files: {
+            '/repo/.git/config': u8(
+              '[extensions]\n\tworktreeConfig = true\n\tworktreeConfig = false\n',
+            ),
+          },
+          expected: false,
+        },
+        {
           label: '[extensions] carries a different key set to true',
           files: { '/repo/.git/config': u8('[extensions]\n\totherKey = true\n') },
           expected: false,

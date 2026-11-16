@@ -17,8 +17,10 @@ import {
   setConfigEntryInText,
   setCoreConfigEntryInText,
   updateConfigEntries,
+  updateConfigFileEntries,
   updateConfigOperations,
   updateCoreConfig,
+  updateScopedConfigEntries,
 } from '../../../../src/application/primitives/update-config.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -4982,6 +4984,158 @@ describe('write-path refusal on malformed config files', () => {
           const result = await ctx.fs.readUtf8(path);
           expect(result).toBe('');
         });
+      });
+    });
+  });
+});
+
+const EXTENSION_ON = '[extensions]\n\tworktreeConfig = true\n';
+const SPARSE_ENTRIES = [
+  { section: 'core', key: 'sparseCheckout', value: 'true' },
+  { section: 'core', key: 'sparseCheckoutCone', value: 'true' },
+] as const;
+
+const linkedContext = (base: Context): Context => ({
+  ...base,
+  layout: {
+    ...base.layout,
+    gitDir: `${base.layout.gitDir}/worktrees/wt`,
+    commonDir: base.layout.gitDir,
+  },
+});
+
+describe('updateScopedConfigEntries', () => {
+  beforeEach(() => {
+    __resetConfigCacheForTests();
+  });
+
+  describe('Given the local scope and an absent config file', () => {
+    describe('When two sparse entries are written', () => {
+      it('Then the text keeps the caller key casing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = updateScopedConfigEntries;
+
+        // Act
+        await sut(ctx, 'local', SPARSE_ENTRIES);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(configPath(ctx))).toBe(
+          '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n',
+        );
+      });
+    });
+  });
+
+  describe('Given the worktree scope with the extension on', () => {
+    describe('When entries are written', () => {
+      it('Then config.worktree is written and the local file is untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, EXTENSION_ON);
+        const sut = updateScopedConfigEntries;
+
+        // Act
+        await sut(ctx, 'worktree', SPARSE_ENTRIES);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config.worktree`)).toBe(
+          '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n',
+        );
+        expect(await ctx.fs.readUtf8(configPath(ctx))).toBe(EXTENSION_ON);
+      });
+    });
+  });
+
+  describe('Given the worktree scope with the extension off', () => {
+    describe('When entries are written', () => {
+      it('Then it throws CONFIG_SCOPE_NOT_AVAILABLE and writes no file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = updateScopedConfigEntries;
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await sut(ctx, 'worktree', SPARSE_ENTRIES);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'worktree',
+          reason: 'worktree-extension-unset',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/config.worktree`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a linked worktree with the extension on', () => {
+    describe('When worktree-scope entries are written', () => {
+      it('Then the per-worktree file under the common dir is written', async () => {
+        // Arrange
+        const main = createMemoryContext();
+        const wt = linkedContext(main);
+        await seed(main, EXTENSION_ON);
+        const sut = updateScopedConfigEntries;
+
+        // Act
+        await sut(wt, 'worktree', SPARSE_ENTRIES);
+
+        // Assert
+        expect(await main.fs.exists(`${main.layout.gitDir}/worktrees/wt/config.worktree`)).toBe(
+          true,
+        );
+        expect(await main.fs.exists(`${main.layout.gitDir}/config.worktree`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a worktree file read before the write', () => {
+    describe('When entries are written', () => {
+      it('Then a later scoped read sees the new value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, EXTENSION_ON);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config.worktree`,
+          '[core]\n\tsparseCheckout = false\n',
+        );
+        await getConfigValue({ ctx, key: 'core.sparsecheckout', scope: 'worktree' });
+        const sut = updateScopedConfigEntries;
+
+        // Act
+        await sut(ctx, 'worktree', SPARSE_ENTRIES);
+
+        // Assert
+        const result = await getConfigValue({ ctx, key: 'core.sparsecheckout', scope: 'worktree' });
+        expect(result.value).toBe('true');
+      });
+    });
+  });
+});
+
+describe('updateConfigFileEntries', () => {
+  beforeEach(() => {
+    __resetConfigCacheForTests();
+  });
+
+  describe('Given an arbitrary path', () => {
+    describe('When entries are written', () => {
+      it('Then that file holds the entries with the caller casing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const path = `${ctx.layout.gitDir}/elsewhere`;
+        const sut = updateConfigFileEntries;
+
+        // Act
+        await sut(ctx, path, [{ section: 'core', key: 'sparseCheckout', value: 'true' }]);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(path)).toBe('[core]\n\tsparseCheckout = true\n');
       });
     });
   });

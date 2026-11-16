@@ -1,7 +1,7 @@
 /**
  * Read the `.git/info/sparse-checkout` pattern file and build the matcher
  * every sparse-aware consumer gates on. No working-tree mutation — pure read
- * side over ports + domain + `readConfig`.
+ * side over ports + domain + `readSparseConfig`.
  */
 import { sparsePatternFileTooLarge } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
@@ -12,8 +12,8 @@ import {
   type SparseMatcher,
 } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from './config-read.js';
 import { sparseCheckoutPath } from './path-layout.js';
+import { readSparseConfig } from './read-sparse-config.js';
 
 /**
  * Hard cap on the `.git/info/sparse-checkout` file — 1 MiB, mirroring
@@ -51,16 +51,14 @@ export const readSparsePatternText = async (ctx: Context): Promise<string | unde
 
 /**
  * Build the sparse matcher for the current repository. Returns `undefined`
- * when `core.sparseCheckout` is falsy/absent — sparse is inactive and callers
+ * when the resolved `core.sparseCheckout` is falsy/absent — sparse is inactive and callers
  * behave exactly as a non-sparse repo. When active, the matcher is parsed in
  * the mode `core.sparseCheckoutCone` dictates; a cone file that degrades to
  * non-cone matching logs one warning.
  */
 export const loadSparseMatcher = async (ctx: Context): Promise<SparseMatcher | undefined> => {
-  const config = await readConfig(ctx);
-  if (config.core?.sparseCheckout !== true) return undefined;
-  // `config.core` is non-undefined here — the guard above already narrowed it.
-  const coneRequested = config.core.sparseCheckoutCone === true;
+  const { enabled, cone: coneRequested } = await readSparseConfig(ctx);
+  if (!enabled) return undefined;
   const text = await readSparsePatternText(ctx);
   const parsed = parseSparseCheckout(text ?? '', coneRequested);
   // Only an actual pattern file can be "not cone-shaped" — an absent file
