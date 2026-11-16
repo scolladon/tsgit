@@ -166918,7 +166918,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\nwhen "
+										"text": "\nwhen the resolved "
 									},
 									{
 										"kind": "code",
@@ -178255,31 +178255,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Read "
-									},
-									{
-										"kind": "code",
-										"text": "`${gitDir}/config`"
-									},
-									{
-										"kind": "text",
-										"text": " (a missing file is treated as "
-									},
-									{
-										"kind": "code",
-										"text": "`''`"
-									},
-									{
-										"kind": "text",
-										"text": "), fold\n"
-									},
-									{
-										"kind": "code",
-										"text": "`setConfigEntryInText`"
-									},
-									{
-										"kind": "text",
-										"text": " over "
+										"text": "Fold "
 									},
 									{
 										"kind": "code",
@@ -178287,23 +178263,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ", write the result, and invalidate the\nper-"
+										"text": " into "
 									},
 									{
 										"kind": "code",
-										"text": "`Context`"
+										"text": "`${commonGitDir}/config`"
 									},
 									{
 										"kind": "text",
-										"text": " "
-									},
-									{
-										"kind": "code",
-										"text": "`readConfig`"
-									},
-									{
-										"kind": "text",
-										"text": " cache so a later read sees the new values."
+										"text": "."
 									}
 								]
 							},
