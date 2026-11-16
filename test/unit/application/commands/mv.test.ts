@@ -1043,10 +1043,11 @@ describe('mv on a directory holding a lossy member', () => {
       it('Then it names the destination and leaves the index and the source unchanged', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
-        const sut = failingRename(ctx, pathTooLong('/abs/a.txt'));
+        const refusing = failingRename(ctx, pathTooLong('/abs/a.txt'));
+        const sut = mv;
 
         // Act
-        const err = await expectError(() => mv(sut, ['a.txt'], 'b.txt'), 'PATH_TOO_LONG');
+        const err = await expectError(() => sut(refusing, ['a.txt'], 'b.txt'), 'PATH_TOO_LONG');
 
         // Assert
         expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'b.txt' });
@@ -1060,10 +1061,11 @@ describe('mv on a directory holding a lossy member', () => {
       it('Then it names the target inside that directory', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a', 'd/k': 'k' });
-        const sut = failingRename(ctx, pathTooLong('/abs/a.txt'));
+        const refusing = failingRename(ctx, pathTooLong('/abs/a.txt'));
+        const sut = mv;
 
         // Act
-        const err = await expectError(() => mv(sut, ['a.txt'], 'd'), 'PATH_TOO_LONG');
+        const err = await expectError(() => sut(refusing, ['a.txt'], 'd'), 'PATH_TOO_LONG');
 
         // Assert
         expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'd/a.txt' });
@@ -1077,7 +1079,7 @@ describe('mv on a directory holding a lossy member', () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
         const fault = permissionDenied('/abs/a.txt');
-        const sut: Context = {
+        const refusing: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
@@ -1086,9 +1088,10 @@ describe('mv on a directory holding a lossy member', () => {
             },
           },
         };
+        const sut = mv;
 
         // Act
-        const outcome = mv(sut, ['a.txt'], 'b.txt');
+        const outcome = sut(refusing, ['a.txt'], 'b.txt');
 
         // Assert
         await expect(outcome).rejects.toBe(fault);
