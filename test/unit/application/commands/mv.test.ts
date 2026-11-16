@@ -1027,18 +1027,20 @@ describe('mv on a directory holding a lossy member', () => {
       });
     });
   });
+});
+
+describe('mv — a move the file system refuses', () => {
+  const failingRename = (ctx: Context, fault: TsgitError): Context => ({
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      rename: async () => {
+        throw fault;
+      },
+    },
+  });
 
   describe('Given a rename the file system refuses as too long', () => {
-    const failingRename = (ctx: Context, fault: TsgitError): Context => ({
-      ...ctx,
-      fs: {
-        ...ctx.fs,
-        rename: async () => {
-          throw fault;
-        },
-      },
-    });
-
     describe('When mv', () => {
       it('Then it names the destination and leaves the index and the source unchanged', async () => {
         // Arrange
@@ -1069,6 +1071,23 @@ describe('mv on a directory holding a lossy member', () => {
 
         // Assert
         expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'd/a.txt' });
+      });
+    });
+  });
+
+  describe('Given a directory move whose leaf rename the file system refuses as too long', () => {
+    describe('When mv', () => {
+      it('Then it names that leaf inside the destination', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const refusing = failingRename(ctx, pathTooLong('/abs/d/f'));
+        const sut = mv;
+
+        // Act
+        const err = await expectError(() => sut(refusing, ['d'], 'e'), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'e/f' });
       });
     });
   });
