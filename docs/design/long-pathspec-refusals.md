@@ -128,8 +128,9 @@ L3 a component the host cannot hold; L4 total > 4096 bytes; L5 an existing path 
   length is below the host `PATH_MAX` before it runs. L3 rows use ASCII names over 255 bytes (no
   supported file system holds them). L4 rows use a 4999-byte path, past every `PATH_MAX` (1024 macOS,
   4096 Linux).
-- **R10 — cost.** The matcher is unchanged. The cost per path stays bounded by the path's own length,
-  as measured below. No new cap is added unless D1 chooses one.
+- **R10 — cost.** The matcher is unchanged. The cost per path is bounded by the path's own length
+  times the largest bracket expression in the pattern, as git's `wildmatch` is (measured below). No new
+  cap is added unless D1 chooses one.
 - **R11 — output.** No result type changes and no error code is added or removed (unless D4/D5 choose
   otherwise). `docs/use` stops claiming a cap that no longer exists.
 
@@ -244,7 +245,11 @@ copy (raw outputs in `<scratch>`):
 
 Compile is linear in the pattern. Matching is `O(live tokens × path bytes)` per path. Every non-star
 token consumes at least one byte, so at most `2 × path bytes + 1` tokens are ever live: the cost is
-bounded by the **path**, at worst quadratic in it, and independent of pattern length past that point.
+bounded by the **path**, at worst quadratic in it, for `*` and `?` tokens. A `[…]` token tests each
+byte against its members one by one, as git's `wildmatch` does, so its cost also grows with the
+bracket's size: a 100 000-byte bracket over 2000 short paths takes 8.5 s in tsgit and 4.6 s in git
+2.56 (`git ls-files` with the same pattern). That is git-shaped cost, not a new class: git has no
+pattern cap either.
 A `*` run is one token, so the `**` count bounds nothing; that budget is a leftover of the RegExp
 compiler that ADR-077 removed. The byte budget does cap live tokens at about 256. For a 4000-byte path
 that is 1.8 ms against 13.6–48.7 ms. That is a constant-factor saving that exists only on paths far
