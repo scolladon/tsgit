@@ -788,72 +788,64 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
-    describe('Given a wide name that is not on disk (row L3)', () => {
-      describe('When git and tsgit add it', () => {
-        it('Then both find no match', async () => {
-          // Arrange
-          const { gitRepo, tsgitRepo, ctx } = await twins([]);
-          const sut = add;
+    describe('When git and tsgit target a wide name that is not on disk (row L3)', () => {
+      it('Then add finds no match in both', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = add;
 
-          // Act
-          const gitAdd = tryRunGitWithExit(['-C', gitRepo, 'add', '--', CJK100]);
-          const err = await caught(() => sut(ctx, [CJK100]));
+        // Act
+        const gitAdd = tryRunGitWithExit(['-C', gitRepo, 'add', '--', CJK100]);
+        const err = await caught(() => sut(ctx, [CJK100]));
 
-          // Assert
-          expect(gitAdd.exitCode).toBe(GIT_EXIT_FATAL);
-          expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
-          expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
-        });
+        // Assert
+        expect(gitAdd.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
       });
 
-      describe('When git and tsgit rm it', () => {
-        it('Then both find no match', async () => {
-          // Arrange
-          const { gitRepo, tsgitRepo, ctx } = await twins([]);
-          const sut = rm;
+      it('Then rm finds no match in both', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = rm;
 
-          // Act
-          const gitRm = tryRunGitWithExit(['-C', gitRepo, 'rm', '--', CJK100]);
-          const err = await caught(() => sut(ctx, [CJK100]));
+        // Act
+        const gitRm = tryRunGitWithExit(['-C', gitRepo, 'rm', '--', CJK100]);
+        const err = await caught(() => sut(ctx, [CJK100]));
 
-          // Assert
-          expect(gitRm.exitCode).toBe(GIT_EXIT_FATAL);
-          expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
-          expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
-        });
+        // Assert
+        expect(gitRm.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
       });
 
-      describe('When git and tsgit check it out', () => {
-        it('Then both find no match', async () => {
-          // Arrange
-          const { gitRepo, tsgitRepo, ctx } = await twins([]);
-          const sut = checkout;
+      it('Then checkout finds no match in both', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = checkout;
 
-          // Act
-          const gitCheckout = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', CJK100]);
-          const err = await caught(() => sut(ctx, { paths: [CJK100] }));
+        // Act
+        const gitCheckout = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', CJK100]);
+        const err = await caught(() => sut(ctx, { paths: [CJK100] }));
 
-          // Assert
-          expect(gitCheckout.exitCode).toBe(GIT_EXIT_ERROR);
-          expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
-          expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
-        });
+        // Assert
+        expect(gitCheckout.exitCode).toBe(GIT_EXIT_ERROR);
+        expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
       });
 
-      describe('When git and tsgit grep it', () => {
-        it('Then both report no hit', async () => {
-          // Arrange
-          const { gitRepo, ctx } = await twins([]);
-          const sut = grep;
+      it('Then grep reports no hit in both', async () => {
+        // Arrange
+        const { gitRepo, ctx } = await twins([]);
+        const sut = grep;
 
-          // Act
-          const gitGrep = tryRunGitWithExit(['-C', gitRepo, 'grep', '-l', 'needle', '--', CJK100]);
-          const result = await sut(ctx, { patterns: [/needle/], paths: [CJK100] });
+        // Act
+        const gitGrep = tryRunGitWithExit(['-C', gitRepo, 'grep', '-l', 'needle', '--', CJK100]);
+        const result = await sut(ctx, { patterns: [/needle/], paths: [CJK100] });
 
-          // Assert
-          expect(gitGrep.exitCode).toBe(GIT_EXIT_ERROR);
-          expect(result.paths).toEqual([]);
-        });
+        // Assert
+        expect(gitGrep.exitCode).toBe(GIT_EXIT_ERROR);
+        expect(result.paths).toEqual([]);
       });
     });
 
