@@ -35,6 +35,10 @@ enabled' }`. No new error code. The commit is marked breaking.
 ### Negative
 
 - Callers that called `list()` to find out whether sparse is on must catch the refusal.
+- A `core.sparseCheckout = true` set only in the global config now refuses, where git lists with
+  the warning `this worktree is not sparse (sparse-checkout file may not exist)`: tsgit resolves
+  the key from the repository's local and worktree layers only, by design. It returned the empty
+  list before, matching git by chance.
 
 ### Neutral
 
