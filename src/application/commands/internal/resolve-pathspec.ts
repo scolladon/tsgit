@@ -1,8 +1,4 @@
-import {
-  invalidOption,
-  pathspecBeyondSymlink,
-  pathspecOutsideRepo,
-} from '../../../domain/commands/error.js';
+import { pathspecBeyondSymlink, pathspecOutsideRepo } from '../../../domain/commands/error.js';
 import { wellFormed } from '../../../domain/objects/encoding.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import {
@@ -14,15 +10,6 @@ import { globSpecialIndex } from '../../../domain/pathspec/wildcard.js';
 import type { Context } from '../../../ports/context.js';
 import { createLeadingPathScanner } from '../../primitives/internal/symlinked-leading-path.js';
 import { validatePath } from './working-tree.js';
-
-// Matching is linear, but a hostile pattern still chooses how much work it
-// asks for. Cap raw pattern byte length AND the number of `**` tokens per
-// pattern to bound that work. The byte cap measures UTF-8 encoded bytes
-// (not UTF-16 code units) so non-ASCII patterns are bounded by their
-// on-the-wire size.
-const MAX_PATHSPEC_PATTERN_BYTES = 256;
-const MAX_DOUBLE_STAR_PER_PATTERN = 4;
-const PATTERN_ENCODER = new TextEncoder();
 
 export interface ResolvedPathspec {
   /** The compiled matcher, ready for `matchesPathspec`. */
@@ -47,14 +34,8 @@ export interface ResolvedPathspec {
 // compile the pathspec. The validator rejects `..`, leading `/`, NUL
 // bytes, and other unsafe segments — so a pattern like `!../escape`
 // is rejected via the body even though it is "negated".
-//
-// Patterns are also length-capped at `MAX_PATHSPEC_PATTERN_BYTES` and
-// limited to `MAX_DOUBLE_STAR_PER_PATTERN` `**` tokens to bound the work a
-// hostile pattern can request; both throw `INVALID_OPTION`.
 export const resolvePathspec = (patterns: ReadonlyArray<string>): ResolvedPathspec => {
-  const wellFormedPatterns = patterns.map(wellFormed);
-  const collapsed = wellFormedPatterns.map(collapsePattern);
-  for (const raw of wellFormedPatterns) enforcePatternBudget(raw);
+  const collapsed = patterns.map(wellFormed).map(collapsePattern);
   const matcher = compilePathspec(collapsed);
   const literalMustMatch = matcher.filter(isPositiveLiteral).map((e) => bodyOf(e));
   const hasGlob = matcher.some(isPositiveGlob);
@@ -113,34 +94,6 @@ const collapsePattern = (raw: string): string => {
   validatePathspecBody(kept);
   const directoryOnly = isElided(components[components.length - 1] as string);
   return `${negation}${kept}${directoryOnly ? SEPARATOR : ''}`;
-};
-
-const enforcePatternBudget = (pattern: string): void => {
-  if (PATTERN_ENCODER.encode(pattern).byteLength > MAX_PATHSPEC_PATTERN_BYTES) {
-    throw invalidOption('paths', `pattern exceeds max length ${MAX_PATHSPEC_PATTERN_BYTES} bytes`);
-  }
-  if (countDoubleStars(pattern) > MAX_DOUBLE_STAR_PER_PATTERN) {
-    throw invalidOption(
-      'paths',
-      `pattern exceeds max **-token count ${MAX_DOUBLE_STAR_PER_PATTERN}`,
-    );
-  }
-};
-
-const countDoubleStars = (pattern: string): number => {
-  let count = 0;
-  let i = 0;
-  // Stryker disable next-line EqualityOperator: equivalent — when `i === pattern.length`, `pattern[i]` is `undefined`, never `'*'`, so the extra iteration counts nothing and exits.
-  while (i < pattern.length) {
-    // Stryker disable next-line ArithmeticOperator: equivalent — when `pattern[i]` is `'*'`, the scanner stepped over `pattern[i-1]` by 1; a preceding `'*'` would already have started a counted pair, so the lookbehind never adds a distinct count (verified exhaustively).
-    if (pattern[i] === '*' && pattern[i + 1] === '*') {
-      count += 1;
-      i += 2;
-      continue;
-    }
-    i += 1;
-  }
-  return count;
 };
 
 // Refuse a pathspec body — literal or glob — that names a file beyond a
