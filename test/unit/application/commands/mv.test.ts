@@ -5,6 +5,7 @@ import { mv } from '../../../../src/application/commands/mv.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { pathTooLong, permissionDenied } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -1023,6 +1024,74 @@ describe('mv on a directory holding a lossy member', () => {
           ['d/�', [0x64, 0x2f, 0xff]],
           ['e/y', undefined],
         ]);
+      });
+    });
+  });
+
+  describe('Given a rename the file system refuses as too long', () => {
+    const failingRename = (ctx: Context, fault: TsgitError): Context => ({
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        rename: async () => {
+          throw fault;
+        },
+      },
+    });
+
+    describe('When mv', () => {
+      it('Then it names the destination and leaves the index and the source unchanged', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const sut = failingRename(ctx, pathTooLong('/abs/a.txt'));
+
+        // Act
+        const err = await expectError(() => mv(sut, ['a.txt'], 'b.txt'), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'b.txt' });
+        expect(await indexEntry(ctx, 'a.txt')).toBeDefined();
+        expect(await indexEntry(ctx, 'b.txt')).toBeUndefined();
+        expect(await exists(ctx, 'a.txt')).toBe(true);
+      });
+    });
+
+    describe('When mv moves into a directory', () => {
+      it('Then it names the target inside that directory', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a', 'd/k': 'k' });
+        const sut = failingRename(ctx, pathTooLong('/abs/a.txt'));
+
+        // Act
+        const err = await expectError(() => mv(sut, ['a.txt'], 'd'), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'd/a.txt' });
+      });
+    });
+  });
+
+  describe('Given a rename the file system refuses for another reason', () => {
+    describe('When mv', () => {
+      it('Then it rethrows that very error', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const fault = permissionDenied('/abs/a.txt');
+        const sut: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rename: async () => {
+              throw fault;
+            },
+          },
+        };
+
+        // Act
+        const outcome = mv(sut, ['a.txt'], 'b.txt');
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
       });
     });
   });

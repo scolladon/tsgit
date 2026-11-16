@@ -19,7 +19,7 @@ import {
   mvOverlappingSources,
   mvSourceNotTracked,
 } from '../../domain/commands/error.js';
-import { basename, dirname, TsgitError } from '../../domain/error.js';
+import { basename, dirname, pathTooLong, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { withPath } from '../../domain/git-index/index-entry.js';
 import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
@@ -137,7 +137,7 @@ export const mv = async (
     if (opts.dryRun === true) return { moved, skipped };
     applyToIndex(indexPathRulesOf(ctx), byPath, planned);
     for (const item of planned) {
-      await renameInWorkingTree(ctx, item.source, item.target);
+      await moveOnDisk(ctx, item);
     }
     await lock.commit(Array.from(byPath.values()), 'update');
     return { moved, skipped };
@@ -369,6 +369,19 @@ const refusal = (reason: MvSkipReason, source: FilePath, target: FilePath): Tsgi
 
 const stripTrailingSlash = (path: string): string =>
   path.endsWith('/') ? path.slice(0, -1) : path;
+
+const PATH_TOO_LONG = 'PATH_TOO_LONG';
+
+// One errno cannot say which operand was too long; the source already exists, so it is the destination.
+const moveOnDisk = async (ctx: Context, item: PlanItem): Promise<void> => {
+  try {
+    await renameInWorkingTree(ctx, item.source, item.target);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === PATH_TOO_LONG)
+      throw pathTooLong(item.target);
+    throw err;
+  }
+};
 
 const workPath = (ctx: Context, path: FilePath): string =>
   joinPath(requireWorkTree(ctx, 'mv'), path);

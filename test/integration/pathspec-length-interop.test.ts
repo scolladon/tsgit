@@ -867,5 +867,150 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
       });
     });
+
+    describe.each([
+      { id: 'M1', from: P805, to: 'moved' },
+      { id: 'M1', from: BASE, to: `${DIR805}/z` },
+      { id: 'M1', from: BASE, to: `${M127}/${'o'.repeat(129)}` },
+    ])('When git and tsgit move $from to $to (row $id)', (row) => {
+      it('Then both leave the same index and tree', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = mv;
+
+        // Act
+        runGit(['-C', gitRepo, 'mv', '--', row.from, row.to]);
+        await sut(ctx, [row.from], row.to);
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
+      });
+    });
+
+    describe.each([
+      { id: 'M2', to: S300 },
+      { id: 'M2', to: `${DIR805}/${S300}` },
+    ])('When git and tsgit move base to the too-long $to (row $id)', (row) => {
+      it('Then both refuse it, tsgit naming the destination, and change nothing', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const before = { snapshot: snapshotOf(tsgitRepo), files: await filesOf(tsgitRepo) };
+        const sut = mv;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '--', BASE, row.to]);
+        const err = await caught(() => sut(ctx, [BASE], row.to));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(gitRun.stderr).toContain('File name too long');
+        expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: row.to });
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(snapshotOf(tsgitRepo)).toEqual(before.snapshot);
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).toEqual(before.files);
+      });
+    });
+
+    describe.each([
+      { id: 'M3', from: S300 },
+      { id: 'M3', from: P5000 },
+      { id: 'M3', from: `${DIR805}/nope` },
+    ])('When git and tsgit move the missing $from to short (row $id)', (row) => {
+      it('Then both refuse it as an untracked source', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = mv;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '--', row.from, 'short']);
+        const err = await caught(() => sut(ctx, [row.from], 'short'));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual({
+          code: 'MV_SOURCE_NOT_TRACKED',
+          source: row.from,
+          destination: 'short',
+        });
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit move S300 planted only in the index to short (row M4)', () => {
+      it('Then both refuse it as a bad source', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        plantIndexOnly([gitRepo, tsgitRepo], S300);
+        const sut = mv;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '--', S300, 'short']);
+        const err = await caught(() => sut(ctx, [S300], 'short'));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual({ code: 'MV_BAD_SOURCE', source: S300, destination: 'short' });
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit move base to P5000 under a missing directory (row M5)', () => {
+      it('Then both refuse it and change nothing, tsgit as a missing directory', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = mv;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '--', BASE, P5000]);
+        const err = await caught(() => sut(ctx, [BASE], P5000));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual({
+          code: 'MV_DESTINATION_DIRECTORY_MISSING',
+          source: BASE,
+          destination: P5000,
+        });
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit dry-run moving base to S300 (row M6)', () => {
+      it('Then both succeed and move nothing', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = mv;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '-n', '--', BASE, S300]);
+        const result = await sut(ctx, [BASE], S300, { dryRun: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result).toEqual({ moved: [{ from: BASE, to: S300 }], skipped: [] });
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit move the missing S300 to short skipping errors (row M7)', () => {
+      it('Then both succeed, tsgit reporting the skipped source', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = mv;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '-k', '--', S300, 'short']);
+        const result = await sut(ctx, [S300], 'short', { skipErrors: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result.skipped).toEqual([{ source: S300, reason: 'source-not-tracked' }]);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
   },
 );
