@@ -1,5 +1,5 @@
 import { checkoutOverwriteDirty } from '../../../domain/commands/error.js';
-import { dirname, TsgitError } from '../../../domain/error.js';
+import { dirname, pathTooLong, TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
@@ -136,14 +136,28 @@ export const renameInWorkingTree = async (
 ): Promise<void> => {
   const from = validatePath(rawFrom);
   const to = validatePath(rawTo);
-  await moveNode(ctx, repoPath(ctx, from), repoPath(ctx, to));
+  await moveNode(ctx, { abs: repoPath(ctx, from), rel: from }, { abs: repoPath(ctx, to), rel: to });
 };
 
-const moveNode = async (ctx: Context, fromAbs: string, toAbs: string): Promise<void> => {
+/** One end of a move: its absolute path and the repository-relative path an error names. */
+interface MoveEnd {
+  readonly abs: string;
+  readonly rel: FilePath;
+}
+
+const PATH_TOO_LONG = 'PATH_TOO_LONG';
+
+const childOf = (end: MoveEnd, name: string): MoveEnd => ({
+  abs: `${end.abs}/${name}`,
+  rel: `${end.rel}/${name}` as FilePath,
+});
+
+const moveNode = async (ctx: Context, from: MoveEnd, to: MoveEnd): Promise<void> => {
+  const fromAbs = from.abs;
   const stat = await ctx.fs.lstat(fromAbs);
   if (stat.isDirectory && !stat.isSymbolicLink) {
     for (const child of await ctx.fs.readdir(fromAbs)) {
-      await moveNode(ctx, `${fromAbs}/${child.name}`, `${toAbs}/${child.name}`);
+      await moveNode(ctx, childOf(from, child.name), childOf(to, child.name));
     }
     // The loop emptied the directory; remove the shell. `rm` is leaf-only per
     // the port (the Node adapter throws EISDIR on a directory), so the
@@ -154,7 +168,17 @@ const moveNode = async (ctx: Context, fromAbs: string, toAbs: string): Promise<v
   // A root-level target (parent is the work-tree root, which always exists)
   // yields an empty `dirname`; skip the mkdir rather than create an empty path
   // the fs validator rejects. Non-root parents are created as before.
-  const parentDir = dirname(toAbs);
-  if (parentDir !== '') await ctx.fs.mkdir(parentDir);
-  await ctx.fs.rename(fromAbs, toAbs);
+  await moveLeaf(ctx, fromAbs, to);
+};
+
+// The source leaf was just read, so a name-too-long refusal from here can only mean the destination.
+const moveLeaf = async (ctx: Context, fromAbs: string, to: MoveEnd): Promise<void> => {
+  try {
+    const parentDir = dirname(to.abs);
+    if (parentDir !== '') await ctx.fs.mkdir(parentDir);
+    await ctx.fs.rename(fromAbs, to.abs);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === PATH_TOO_LONG) throw pathTooLong(to.rel);
+    throw err;
+  }
 };

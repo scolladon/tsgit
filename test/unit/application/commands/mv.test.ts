@@ -1073,6 +1073,34 @@ describe('mv on a directory holding a lossy member', () => {
     });
   });
 
+  describe('Given a directory move whose source descendant the file system refuses as too long', () => {
+    describe('When mv', () => {
+      it('Then the refusal keeps naming that source descendant', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const fault = pathTooLong('/abs/d/f');
+        const descendant = work(ctx, 'd/f');
+        const refusing: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (path: string) => {
+              if (path === descendant) throw fault;
+              return ctx.fs.lstat(path);
+            },
+          },
+        };
+        const sut = mv;
+
+        // Act
+        const outcome = sut(refusing, ['d'], 'e');
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
+      });
+    });
+  });
+
   describe('Given a rename the file system refuses for another reason', () => {
     describe('When mv', () => {
       it('Then it rethrows that very error', async () => {
