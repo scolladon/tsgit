@@ -75,6 +75,12 @@ A damaged object, ref, index or state file, or a file the process cannot read.
   tsgit THROW {"code":"OBJECT_NOT_FOUND","id":"2222222222222222222222222222222222222222"}
   ```
 
+- **32.66** `openRepository` names `config.worktree`'s parse error before a bad local `core.bare` — pre-existing, pinned against git 2.56.0. `extensions.worktreeConfig = true`, `git config core.bare bogus`, `.git/config.worktree` = `[core`: git dies `fatal: bad boolean config value 'bogus' for 'core.bare'`; tsgit throws `CONFIG_PARSE_ERROR { line: 1, source: …/config.worktree }` because `readRepositoryFormat` scans the scoped file before `resolveBare` (`src/repository/read-repository-format.ts`). Both refuse. Second fault: an unterminated `[core` alone — git names `bad config line 2`, tsgit `line: 1`. Not folded: out of scope (layout-read order).
+  ```
+  fatal: bad boolean config value 'bogus' for 'core.bare'      git exit=128
+  tsgit THROW {"code":"CONFIG_PARSE_ERROR","line":1,"source":"<tmp>/.git/config.worktree"}
+  ```
+
 ## Message only
 
 Exit codes and data match git; only the wording or the named path differs.
@@ -138,6 +144,31 @@ A well-formed repository, but a configuration, layout or argument shape few call
 
 - **32.16** (push) — `:.have` / `main:.have` (git `fatal: invalid refspec`, exit 128; tsgit accepts `main:.have`, rejected as `refs/heads/.have`, and answers `PUSH_REFSPEC_UNMATCHED` for `:.have`). Pinned against git 2.55.
 
+- **32.61** `sparseCheckout.set` refuses during a merge where git runs it — pre-existing, pinned against git 2.56.0. With a conflicted merge in progress (`c` at stages 1–3), git `sparse-checkout set dir` exits 0, warns `The following paths are unmerged and were left despite sparse patterns: c`, and writes `extensions.worktreeConfig = true`, `.git/config.worktree` and `.git/info/sparse-checkout`; tsgit `sparseCheckout.set({ patterns: ['dir'] })` throws `OPERATION_IN_PROGRESS { operation: 'merge' }` (`assertNoPendingOperation` in `assertSparseReady`, `src/application/commands/sparse-checkout.ts`) and writes nothing. Not folded: needs a probe of which pending operations git tolerates per verb.
+  ```
+  git merge side                 # exit 1 (conflict on c)
+  git sparse-checkout set dir    # exit 0, warning above; config + pattern file written
+  tsgit THROW {"code":"OPERATION_IN_PROGRESS","operation":"merge"}; nothing written
+  ```
+
+- **32.62** `readConfig` ignores every non-sparse key in `config.worktree` — pre-existing, pinned against git 2.56.0. With `extensions.worktreeConfig = true`, git reads `config.worktree` for every key; tsgit reads it for the sparse keys only, `readConfig` stays local-only (`src/application/primitives/config-read.ts`). Well-formed case: local `core.fileMode = true`, `git config --worktree core.fileMode false`, `chmod +x x` — git `status` clean, tsgit `status()` `clean: false`. Corrupt case: `core.ignorecase = bogus` in `config.worktree` — git `fatal: bad boolean config value 'bogus' for 'core.ignorecase'`, tsgit `status()` succeeds. Not folded: out of scope (every reader's config layer, outside the sparse keys).
+  ```
+  git config extensions.worktreeConfig true; git config --worktree core.fileMode false; chmod +x x
+  git status --porcelain: (clean)     tsgit status {"clean":false}
+  ```
+
+- **32.64** Non-cone `/*` and `!/*/` mis-match, so checkout drops and deletes top-level files — pre-existing, pinned against git 2.56.0. Local `core.sparseCheckout = true`, no cone key. With `/*\n!/*/\n/b/\n`, git keeps `H top` with `top` on disk, tsgit marks `S top` and deletes it; with `/*` alone git keeps everything `H`, tsgit marks every path inside a directory `S` (`src/domain/sparse/parse-sparse-checkout.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.32; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
+  ```
+  pattern=/*\n!/*/\n/b/\n git: S a/f S a/g H b/f H top | tsgit: S a/f S a/g H b/f S top
+  pattern=/*\n            git: H a/f H a/g H b/f H top | tsgit: S a/f S a/g S b/f H top
+  ```
+
+- **32.65** Checkout clears a skip-worktree bit git keeps once sparse is off — pre-existing, pinned against git 2.56.0. Local cone sparse on `b`, `read-tree -mu HEAD`, then `core.sparseCheckout = false` (no `sparse-checkout disable`), then checkout `other` (changes `a/f`): git writes `a/f` and keeps its bit (`S a/f S a/g H b/f H top`); tsgit gives `H a/f S a/g H b/f H top` (`src/application/commands/checkout.ts`). The disk matches; only the index bit differs. Not folded: out of scope.
+  ```
+  ls-files -t  git:   S a/f S a/g H b/f H top    disk: ./a/f ./b/f ./top
+  ls-files -t  tsgit: H a/f S a/g H b/f H top    disk: ./a/f ./b/f ./top
+  ```
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.
@@ -160,3 +191,9 @@ Measured, on a command that is not on a common caller path.
 git supports a form that tsgit does not offer, and no caller has asked for it.
 
 - **32.55** Spike — `describe` of a blob never names it as git's `describe_blob` does — pre-existing, pinned against git 2.56.0: one commit with `f` = `x`, annotated tag `v1`: git `describe <blob of f>` prints `v1:f` (exit 0); tsgit `describe(ctx, <blob oid>)` throws `NO_REACHABLE_NAMES { oid: <blob> }` (with a lightweight tag git refuses too: `No annotated tags can describe '<commit>'`). Not folded: adds feature behaviour. Question: which structured result shape carries the blob's describe (the commit's describe fields plus a `path`, no rendered `<tag>:<path>`), and which commit does git's walk pick when the blob appears in several commits or only off HEAD (`--reverse --objects` order, HEAD only or `--all`)?
+
+- **32.63** `worktree.add` copies neither the main `config.worktree` nor `info/sparse-checkout` — pre-existing, a documented non-goal (ADR-297), pinned against git 2.56.0. After `git sparse-checkout set --cone b`, git `worktree add <path> other` writes both into `.git/worktrees/<id>/`, so the new worktree is sparse (`S a/f S a/g H b/f H top`); tsgit `worktree.add({ path, commitish: 'other' })` writes neither (`src/application/commands/worktree.ts`), its index is all `H` and every file is written. Not folded: out of scope (git's own key filter on `worktree add`).
+  ```
+  git   .git/worktrees/wg/: … config.worktree … info/sparse-checkout
+  tsgit .git/worktrees/wt/: commondir gitdir HEAD index logs ORIG_HEAD
+  ```

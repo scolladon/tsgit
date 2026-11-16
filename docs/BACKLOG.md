@@ -43,7 +43,7 @@ moved 21 entries and 10 sub-rows there.
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
 | 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ · ~~32.56~~ | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
-| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · 32.40 · 32.41 · 32.44 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
+| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · 32.40 · 32.41 · 32.44 · 32.60 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B17, C6 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
@@ -753,6 +753,21 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   tsgit worktree               → [["f1",[1,3],false],["f2",[],true]]
   tsgit index                  → [["f1",[1,3],false],["f2",[],true]]
   ```
+
+### Open (scoped 2026-11-16 — follow-ups surfaced by the sparse-checkout-worktree-config run, triaged)
+
+- [ ] **32.60** Cherry-pick and revert write out-of-cone paths under sparse checkout — pinned against git 2.56.0 on a well-formed repository. With a cone sparse checkout on `b` (`core.sparseCheckout`/`core.sparseCheckoutCone` true, pattern file `/*\n!/*/\n/b/\n`, `read-tree -mu HEAD`), git `cherry-pick other` (where `other` changes `a/f` and `b/f`) leaves `S a/f S a/g H b/f H top` with only `b/f` and `top` on disk; tsgit `cherryPick.run({ commits: ['other'] })` gives `H a/f S a/g H b/f H top` and writes `a/f`. `revert HEAD` on `other` diverges the same way; `merge.run` matches git. Cause: `applyMergeToWorktree`'s clean path (`src/application/primitives/apply-merge-to-worktree.ts:543`) calls `materializeTree` without the `sparse` matcher, which `materializeTree` already accepts. Fix: load the matcher and pass it on the clean path, keep ADR-076's conflict-path handling; pin one interop row per consumer (cherry-pick, revert, rebase, `rebase --rebase-merges`, the replay sequence, stash — the last four inferred from call sites, not pinned). Pre-existing on main 4a49607e.
+  ```
+  # git 2.56.0, scrubbed env; base: a/f a/g b/f top; main+1 edits top; other+1 edits a/f b/f
+  git config core.sparseCheckout true; git config core.sparseCheckoutCone true
+  printf '/*\n!/*/\n/b/\n' > .git/info/sparse-checkout; git read-tree -mu HEAD
+  git cherry-pick other            # exit 0
+  ls-files -t: S a/f S a/g H b/f H top     disk: ./b/f ./top
+  tsgit repo.cherryPick.run({ commits: ['other'] })
+  ls-files -t: H a/f S a/g H b/f H top     disk: ./a/f ./b/f ./top
+  revert git: S a/f S a/g H b/f H top | tsgit: H a/f S a/g H b/f H top, a/f written
+  ```
+  Not folded: out of scope (the sequencer's shared merge-to-worktree primitive, outside the config-layer change). Data-integrity.
 
 ## Phase 11 admin tail — completed 2026-05-17
 
