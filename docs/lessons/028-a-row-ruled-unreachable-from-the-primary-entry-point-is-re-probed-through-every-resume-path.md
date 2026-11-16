@@ -11,10 +11,11 @@ evidence:
   - test/integration/commit-ish-corrupt-candidate-interop.test.ts
   - docs/design/rev-parse-corrupt-input.md
   - src/application/commands/rebase.ts
+  - test/integration/sparse-checkout-worktree-config-interop.test.ts
 source: { run: rev-parse-corrupt-input, phase: review, date: 2026-11-05 }
 status: active
 supersedes: []
-last-verified: 2026-11-05
+last-verified: 2026-11-16
 ---
 # 028 — A row ruled unreachable from the primary entry point is re-probed through every resume path
 
@@ -41,9 +42,11 @@ Before writing "unreachable", list every entry point that re-reads state the pri
 Probe each with real git on a fixture that stops the run there (a conflict), with `user.*` set and `GIT_EDITOR=true`.
 Pin the reachable ones as twin rows on both tools, state files included.
 A ruled-out line a later probe overturns is rewritten as `RULED-OUT-REVISED` with the new proof, never silently dropped.
+A layout guard is an input filter too: probe a linked worktree, a bare repository's linked worktree and a separate git dir before calling a writer unreachable.
 
 ## Evidence
 
 `test/integration/commit-ish-corrupt-candidate-interop.test.ts` — the reset-x-through-continue row: a conflict-stopped rebase-merges run, its todo hand-edited, `continue` on both tools.
 `docs/design/rev-parse-corrupt-input.md` — the matrix row "rebase -i, todo reset x", revised from "unreachable" to "reachable only through rebaseContinue after a hand-edited rebase-merges todo".
 `src/application/commands/rebase.ts` — `rebaseContinue` re-reads `rebase-merge/git-rebase-todo` with no instruction-kind filter.
+`test/integration/sparse-checkout-worktree-config-interop.test.ts` — "a linked worktree of a bare clone": the design ruled `core.bare` relocation unreachable because `requireWorkTree` refuses a bare repository, yet a bare repository's linked worktree passes it and reaches `sparseCheckout.set`.
