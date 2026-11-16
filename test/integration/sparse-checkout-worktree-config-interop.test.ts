@@ -966,6 +966,33 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
       });
     });
 
+    describe('Given a worktree that is not sparse on both sides', () => {
+      describe('When both tools list', () => {
+        it('Then both refuse', async () => {
+          // Arrange
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'sparse-checkout', 'list']);
+          const repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.sparseCheckout.list();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).toContain('this worktree is not sparse');
+          expect((caught as { data?: unknown }).data).toEqual({
+            code: 'INVALID_OPTION',
+            option: 'action',
+            reason: 'list requires sparse checkout to be enabled',
+          });
+        });
+      });
+    });
+
     describe('Given a non-cone file with trailing spaces, an escaped backslash and a whitespace-only line', () => {
       const PATTERN_TEXT = '# c\n\n/a/\nfoo  \nbar\\ \nesc\\\\  \n  \n';
       const seedPatterns = (): void =>

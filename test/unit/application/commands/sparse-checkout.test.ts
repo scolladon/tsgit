@@ -216,32 +216,37 @@ describe('sparseCheckout command', () => {
   describe('list', () => {
     describe('Given sparse disabled', () => {
       describe('When list', () => {
-        it('Then returns empty non-cone list', async () => {
+        it('Then throws INVALID_OPTION for action as git refuses a worktree that is not sparse', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
+          const sut = sparseCheckoutList;
 
           // Act
-          const result = await sparseCheckoutList(ctx);
+          const err = await expectError(() => sut(ctx));
 
           // Assert
-          expect(result).toEqual({ cone: false, patterns: [] });
+          expect(err.data).toEqual({
+            code: 'INVALID_OPTION',
+            option: 'action',
+            reason: 'list requires sparse checkout to be enabled',
+          });
         });
       });
     });
 
     describe('Given sparse disabled with a pattern file left on disk', () => {
       describe('When list', () => {
-        it('Then the file is not read and the list is empty', async () => {
+        it('Then the file is not read and the list refuses', async () => {
           // Arrange
           const ctx = await seedRepoWithTree();
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/src/\n');
           const sut = sparseCheckoutList;
 
           // Act
-          const result = await sut(ctx);
+          const err = await expectError(() => sut(ctx));
 
           // Assert
-          expect(result).toEqual({ cone: false, patterns: [] });
+          expect(err.data.code).toBe('INVALID_OPTION');
         });
       });
     });

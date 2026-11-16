@@ -37,7 +37,7 @@ The four mutating methods share `SparseCheckoutAppliedResult`; `list` returns th
 
 | Method | Meaning |
 |---|---|
-| `list()` | Return the active patterns and the mode (`cone` vs non-cone). |
+| `list()` | Return the active patterns and the mode (`cone` vs non-cone). Refuses on a worktree that is not sparse, as git does. |
 | `set({ patterns, cone?, force? })` | Replace patterns. `cone: false` switches to non-cone (`.gitignore`-style); `cone: true` selects cone (directory list, O(1) membership). Without `cone`, the current mode is kept when sparse is on, else cone. |
 | `add({ patterns, force? })` | Widen the cone with more directories. Writes no config. |
 | `reapply({ force? }?)` | Writes no config. Re-run materialisation against the on-disk patterns (e.g. after hand-editing `.git/info/sparse-checkout`). |
@@ -82,6 +82,7 @@ await repo.sparseCheckout.disable();
 
 - `WORKING_TREE_DIRTY` — `set` / `add` would discard a dirty out-of-cone file and `force` is not set.
 - `INVALID_OPTION` — empty pattern list, or `cone: true` with a non-cone-compatible pattern.
+- `INVALID_OPTION` (`option: 'action'`) — `list`, `add` or `reapply` on a worktree whose resolved `core.sparseCheckout` is off (git: `this worktree is not sparse`).
 - `SPARSE_PATTERN_FILE_TOO_LARGE` — `.git/info/sparse-checkout` exceeds the size cap.
 - `CONFIG_BAD_BOOLEAN_VALUE` — a malformed `core.sparseCheckout` / `core.sparseCheckoutCone`, in the local config or in `config.worktree`.
 - `CONFIG_MULTIPLE_VALUES` — `set` / `disable` while turning the worktree scope on, when the local file holds `core.bare` or `core.worktree` more than once.
@@ -91,4 +92,4 @@ await repo.sparseCheckout.disable();
 
 - Primitives: [`loadSparseMatcher`](../primitives/internals.md#loadsparsematcher), [`readSparsePatternText`](../primitives/internals.md#readsparsepatterntext), [`writeSparsePatternText`](../primitives/internals.md#writesparsepatterntext), [`materializeTree`](../primitives/internals.md#materializetree)
 - Related commands: [`checkout`](checkout.md), [`reset`](reset.md), [`status`](status.md)
-- ADRs: [181](../../adr/181-nested-namespace-porcelain.md), [192](../../adr/192-crud-namespace-per-verb-results.md), [193](../../adr/193-no-transition-shim-hard-remove-callable.md) (namespace shape) · [069](../../adr/069-skip-worktree-index-v3.md), [070](../../adr/070-cone-and-non-cone.md), [071](../../adr/071-sparse-command-shape.md), [072](../../adr/072-sparse-dirty-file-policy.md), [073](../../adr/073-sparse-integration-scope.md), [074](../../adr/074-minimal-config-writer.md) (superseded for the target file by 1188), [077](../../adr/077-linear-glob-matcher.md) · [1184](../../adr/1184-sparse-keys-are-read-from-the-worktree-config-layer.md), [1185](../../adr/1185-the-worktree-sparse-boolean-check-runs-after-the-local-gate.md), [1186](../../adr/1186-the-gate-checks-only-the-sparse-keys-in-the-worktree-file.md), [1187](../../adr/1187-a-scoped-config-write-keeps-the-key-casing.md), [1188](../../adr/1188-sparse-checkout-writes-its-keys-to-the-worktree-config.md), [1189](../../adr/1189-a-non-cone-pattern-file-ends-each-pattern-with-a-newline.md)
+- ADRs: [181](../../adr/181-nested-namespace-porcelain.md), [192](../../adr/192-crud-namespace-per-verb-results.md), [193](../../adr/193-no-transition-shim-hard-remove-callable.md) (namespace shape) · [069](../../adr/069-skip-worktree-index-v3.md), [070](../../adr/070-cone-and-non-cone.md), [071](../../adr/071-sparse-command-shape.md), [072](../../adr/072-sparse-dirty-file-policy.md), [073](../../adr/073-sparse-integration-scope.md), [074](../../adr/074-minimal-config-writer.md) (superseded for the target file by 1188), [077](../../adr/077-linear-glob-matcher.md) · [1184](../../adr/1184-sparse-keys-are-read-from-the-worktree-config-layer.md), [1185](../../adr/1185-the-worktree-sparse-boolean-check-runs-after-the-local-gate.md), [1186](../../adr/1186-the-gate-checks-only-the-sparse-keys-in-the-worktree-file.md), [1187](../../adr/1187-a-scoped-config-write-keeps-the-key-casing.md), [1188](../../adr/1188-sparse-checkout-writes-its-keys-to-the-worktree-config.md), [1189](../../adr/1189-a-non-cone-pattern-file-ends-each-pattern-with-a-newline.md), [1190](../../adr/1190-sparse-checkout-list-refuses-a-worktree-that-is-not-sparse.md)

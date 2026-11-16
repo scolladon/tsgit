@@ -108,7 +108,7 @@ export const sparseCheckoutList = async (ctx: Context): Promise<SparseCheckoutLi
   await assertSparseReady(ctx);
   const sparse = await readSparseConfig(ctx);
   if (!sparse.enabled) {
-    return { cone: false, patterns: [] };
+    throw invalidOption('action', 'list requires sparse checkout to be enabled');
   }
   const text = (await readSparsePatternText(ctx)) ?? '';
   return specToList(parseSparseCheckout(text, sparse.cone).spec, text);
