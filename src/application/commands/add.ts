@@ -68,6 +68,7 @@ import { boundedMapFor, limiterFor } from '../primitives/internal/concurrency.js
 import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limiter.js';
 import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
+import { isPathTooLong } from '../primitives/internal/fs-probes.js';
 import { gitlinkHeadOf } from '../primitives/internal/gitlink-head.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import type { CommitOptions, IndexLock } from '../primitives/internal/index-lock.js';
@@ -754,14 +755,12 @@ const lstatOrBeneathFile = async (
   }
 };
 
-const PATH_TOO_LONG = 'PATH_TOO_LONG';
-
 /** A pathspec body the file system refuses as too long names nothing on disk, as git's `file_exists` reads it. */
 const lstatPathspecBody = async (ctx: Context, body: FilePath): Promise<FileStat | undefined> => {
   try {
     return await lstatOrBeneathFile(ctx, body);
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === PATH_TOO_LONG) return undefined;
+    if (isPathTooLong(err)) return undefined;
     throw err;
   }
 };

@@ -9,7 +9,7 @@ import {
   validateWorkingTreePathOn,
 } from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
-import { lstatIfPresent } from '../../primitives/internal/fs-probes.js';
+import { isPathTooLong, lstatIfPresent } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
 
@@ -145,8 +145,6 @@ interface MoveEnd {
   readonly rel: FilePath;
 }
 
-const PATH_TOO_LONG = 'PATH_TOO_LONG';
-
 const childOf = (end: MoveEnd, name: string): MoveEnd => ({
   abs: `${end.abs}/${name}`,
   rel: `${end.rel}/${name}` as FilePath,
@@ -178,7 +176,7 @@ const moveLeaf = async (ctx: Context, fromAbs: string, to: MoveEnd): Promise<voi
     if (parentDir !== '') await ctx.fs.mkdir(parentDir);
     await ctx.fs.rename(fromAbs, to.abs);
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === PATH_TOO_LONG) throw pathTooLong(to.rel);
+    if (isPathTooLong(err)) throw pathTooLong(to.rel);
     throw err;
   }
 };

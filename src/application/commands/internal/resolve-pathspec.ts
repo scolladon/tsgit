@@ -1,5 +1,4 @@
 import { pathspecBeyondSymlink, pathspecOutsideRepo } from '../../../domain/commands/error.js';
-import { errorDataCode } from '../../../domain/error-data-code.js';
 import { wellFormed } from '../../../domain/objects/encoding.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import {
@@ -9,6 +8,7 @@ import {
 } from '../../../domain/pathspec/index.js';
 import { globSpecialIndex } from '../../../domain/pathspec/wildcard.js';
 import type { Context } from '../../../ports/context.js';
+import { isPathTooLong } from '../../primitives/internal/fs-probes.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -100,15 +100,13 @@ const collapsePattern = (raw: string): string => {
   return `${negation}${kept}${directoryOnly ? SEPARATOR : ''}`;
 };
 
-const PATH_TOO_LONG = 'PATH_TOO_LONG';
-
 // git's lstat_cache records a failed lstat as "not a symlink": a prefix the file
 // system cannot name has nothing beneath it, so no later prefix can be a link.
 const beyondSymlink = async (scanner: LeadingPathScanner, target: FilePath): Promise<boolean> => {
   try {
     return await scanner.hasSymlinkedLeadingPath(target);
   } catch (err) {
-    if (errorDataCode(err) === PATH_TOO_LONG) return false;
+    if (isPathTooLong(err)) return false;
     throw err;
   }
 };
