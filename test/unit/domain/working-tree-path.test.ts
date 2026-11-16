@@ -74,36 +74,27 @@ describe('validateWorkingTreePath', () => {
 
   describe('Given a path that exceeds 4096 bytes', () => {
     describe('When validated', () => {
-      it('Then rejects', () => {
+      it('Then returns the input unchanged', () => {
         // Arrange
-        // 'a'.repeat(4097) — single-byte char, byteLength === length.
-        const input = 'a'.repeat(4097);
+        const sut = validateWorkingTreePath;
+        // 16 × 255 + 15 separators + '/a' = 4097 bytes, every component legal.
+        const input = `${Array.from({ length: 16 }, () => 'a'.repeat(255)).join('/')}/a`;
 
-        // Act
-        const err = expectReject(input);
-
-        // Assert
-        expect((err.data as { path: string }).path).toBe(input);
+        // Act + Assert
+        expect(sut(input)).toBe(input);
       });
     });
   });
 
   describe('Given a path exceeding 4096 bytes but with every component legal', () => {
     describe('When validated', () => {
-      it('Then rejects on the total-byte cap', () => {
+      it('Then returns the input unchanged', () => {
         // Arrange
-        // Kills the L30 `if (byteLength(input) > MAX_PATH_BYTES)` -> `if (false)`
-        // mutant. Each component is 200 bytes (≤ 255) so the per-component guard
-        // never fires; only the total-byte cap can reject this input.
-        const segment = 'a'.repeat(200);
-        const input = Array.from({ length: 25 }, () => segment).join('/');
-        expect(input.length).toBeGreaterThan(4096);
+        const sut = validateWorkingTreePath;
+        const input = Array.from({ length: 25 }, () => 'a'.repeat(200)).join('/');
 
-        // Act
-        const err = expectReject(input);
-
-        // Assert
-        expect((err.data as { path: string }).path).toBe(input);
+        // Act + Assert
+        expect(sut(input)).toBe(input);
       });
     });
   });
@@ -522,12 +513,14 @@ describe('validateWalkedEntryPath', () => {
 
   describe('Given a path that exceeds 4096 bytes', () => {
     describe('When validated', () => {
-      it('Then rejects on the total-byte cap', () => {
+      it('Then returns the input unchanged', () => {
         // Arrange
-        const input = 'a'.repeat(4097);
+        const sut = (p: string) => validateWalkedEntryPath(p, POSIX_HOST);
+        // 16 × 255 + 15 separators + '/a' = 4097 bytes, every component legal.
+        const input = `${Array.from({ length: 16 }, () => 'a'.repeat(255)).join('/')}/a`;
 
         // Act + Assert
-        expectWalkedEntryReject(input);
+        expect(sut(input)).toBe(input);
       });
     });
   });

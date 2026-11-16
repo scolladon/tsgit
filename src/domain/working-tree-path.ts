@@ -4,7 +4,6 @@ import { isDotGitAlias } from './path/verify-path.js';
 
 const POSIX_HOST: PathSyntaxHost = {};
 const BACKSLASH = '\\';
-const MAX_PATH_BYTES = 4096;
 const MAX_COMPONENT_BYTES = 255;
 const PATH_ENCODER = new TextEncoder();
 
@@ -30,7 +29,7 @@ export interface PathSyntaxHost {
  *   drive-letter qualifier (`C:...`) — a `:` anywhere else in the path is
  *   POSIX-legal and git-accepted (pinned: `foo:bar/x`), so it is not
  *   rejected.
- * - Length caps: total path ≤ 4096 bytes; each component ≤ 255 bytes.
+ * - Length cap: each component ≤ 255 bytes.
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
   rejectBackslash(input);
@@ -91,7 +90,6 @@ const rejectBackslash = (input: string): void => {
 const rejectInputShape = (input: string): void => {
   // Stryker disable next-line ConditionalExpression: equivalent — when this fast-path guard is removed (`if (false)`), the empty string still splits to `['']`, whose empty component is rejected by `rejectTraversalShape` with the identical `pathspecOutsideRepo('')` error.
   if (input === '') reject(input);
-  if (byteLength(input) > MAX_PATH_BYTES) reject(input);
   // Stryker disable next-line ConditionalExpression,MethodExpression: equivalent — a leading or trailing `/` always produces an empty path component, which `rejectTraversalShape` rejects regardless; this guard only changes which line throws, not the accept/reject verdict or the error data.
   if (input.startsWith('/')) reject(input);
   // Stryker disable next-line ConditionalExpression: equivalent — a NUL byte is code 0x00, always `<= 0x1f`, so the per-component control-char scan rejects it regardless of this fast-path guard.

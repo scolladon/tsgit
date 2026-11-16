@@ -37,6 +37,7 @@ const M127 = 'm'.repeat(127);
 const P256 = `${M127}/${'n'.repeat(128)}`; // tracked
 const P257 = `${M127}/${'n'.repeat(129)}`; // tracked
 const S255 = 's'.repeat(255); // tracked
+const P5000 = Array.from({ length: 25 }, () => 'p'.repeat(200)).join('/'); // 5024 bytes, never on disk
 const BASE = 'base';
 const TRACKED = [BASE, P805, P256, P257, S255];
 const FIVE_STARS = '**a**b**c**d**x';
@@ -299,6 +300,95 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         // Assert
         expect(gitRun.exitCode).toBe(GIT_EXIT_ERROR);
         expect(result.paths).toEqual([]);
+      });
+    });
+
+    describe.each([
+      { id: 'C7', cached: false },
+      { id: 'C7', cached: true },
+    ])('When git and tsgit remove the unmatched P5000 with cached $cached (row $id)', (row) => {
+      it('Then both refuse it as matching nothing', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = rm;
+
+        // Act
+        const gitRun = tryRunGitWithExit([
+          '-C',
+          gitRepo,
+          'rm',
+          ...(row.cached ? ['--cached'] : []),
+          '--',
+          P5000,
+        ]);
+        const err = await caught(() => sut(ctx, [P5000], { cached: row.cached }));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
+        expect(err.data).toEqual(pathspecNoMatch(P5000).data);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe.each([
+      { id: 'C8', source: undefined },
+      { id: 'C8', source: 'HEAD' },
+    ])('When git and tsgit restore the unmatched P5000 from $source (row $id)', (row) => {
+      it('Then both refuse it as matching nothing', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const sut = checkout;
+        const gitSource = row.source === undefined ? [] : [row.source];
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'checkout', ...gitSource, '--', P5000]);
+        const err = await caught(() =>
+          sut(ctx, {
+            paths: [P5000],
+            ...(row.source === undefined ? {} : { source: row.source }),
+          }),
+        );
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_ERROR);
+        expect(err.data).toEqual(pathspecNoMatch(P5000).data);
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit grep the unmatched P5000 (row C9)', () => {
+      it('Then neither reports a hit', async () => {
+        // Arrange
+        const { gitRepo, ctx } = await twins([]);
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [/needle/], paths: [P5000] });
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'grep', '-l', 'needle', '--', P5000]);
+
+        // Assert
+        expect(gitRun.exitCode).toBe(GIT_EXIT_ERROR);
+        expect(result.paths).toEqual([]);
+      });
+    });
+
+    describe('When git and tsgit remove P5000 planted only in the index (row I2)', () => {
+      it('Then both drop it from the index', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        for (const repo of [gitRepo, tsgitRepo]) {
+          const blob = runGit(['-C', repo, 'rev-parse', `HEAD:${BASE}`]).trim();
+          runGit(['-C', repo, 'update-index', '--add', '--cacheinfo', `100644,${blob},${P5000}`]);
+        }
+        const sut = rm;
+
+        // Act
+        runGit(['-C', gitRepo, 'rm', '-q', '--cached', '--', P5000]);
+        await sut(ctx, [P5000], { cached: true });
+
+        // Assert
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(runGit(['-C', tsgitRepo, 'ls-files']).split('\n')).not.toContain(P5000);
       });
     });
   },

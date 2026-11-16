@@ -100,7 +100,6 @@ describe('internal/working-tree', () => {
             path: 'a\\b',
             label: 'a path with backslash separator (Windows-style, use POSIX separators)',
           },
-          { path: 'a'.repeat(4097), label: 'a 4097-byte path (one over the cap)' },
           {
             path: `foo/bar${String.fromCharCode(0x1f)}baz`,
             label: 'a control character at exactly 0x1F (boundary kill for `code <= 0x1f`)',
@@ -128,18 +127,23 @@ describe('internal/working-tree', () => {
       });
     });
 
-    describe('Given a 4096-byte path with components ≤255', () => {
+    describe('Given a path no length rule refuses', () => {
       describe('When validatePath', () => {
-        it('Then succeeds (boundary)', () => {
-          // Arrange — kills `byteLength(input) >= MAX_PATH_BYTES` boundary mutants.
-          // 16 segments × 255 = 4080, plus 15 separators = 4095. Total 4095 ≤ 4096.
-          const big = 'a'.repeat(255);
-          const path = Array.from({ length: 16 }, () => big).join('/');
-          // Assert
-          expect(path.length).toBe(4095);
+        it.each([
+          {
+            path: `${Array.from({ length: 16 }, () => 'a'.repeat(255)).join('/')}/a`,
+            label: 'a 4097-byte path',
+          },
+          {
+            path: Array.from({ length: 16 }, () => 'a'.repeat(255)).join('/'),
+            label: 'a 4095-byte path of sixteen 255-byte components',
+          },
+        ])('Then $label is returned unchanged', ({ path }) => {
+          // Arrange
+          const sut = validatePath;
 
-          // Act + Assert — exactly one byte under the cap must NOT throw.
-          expect(() => validatePath(path)).not.toThrow();
+          // Act + Assert
+          expect(sut(path)).toBe(path);
         });
       });
     });

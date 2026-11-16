@@ -211,10 +211,25 @@ describe('resolvePathspec', () => {
         { pattern: 'a\\b\0', label: 'a NUL byte' },
         { pattern: 'a\\b\u0001', label: 'a control byte' },
         { pattern: 'a\\b/.git/x', label: 'a `.git` component' },
-        { pattern: `a\\${'b'.repeat(5000)}`, label: 'an over-long body' },
       ])('Then $label is still refused', ({ pattern }) => {
         // Arrange + Assert
         expectError(() => resolvePathspec([pattern]), 'PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
+  describe('Given a backslash body longer than 4096 bytes', () => {
+    describe('When resolved', () => {
+      it('Then it is one wildcard entry', () => {
+        // Arrange
+        const sut = resolvePathspec;
+        const pattern = `a\\b/${Array.from({ length: 21 }, () => 'c'.repeat(200)).join('/')}`;
+
+        // Act
+        const result = sut([pattern]);
+
+        // Assert
+        expect(result.matcher.map((e) => [e.body, e.isLiteral])).toEqual([[pattern, false]]);
       });
     });
   });
