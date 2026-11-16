@@ -398,6 +398,25 @@ describe('walkWorkingTree', () => {
     });
   });
 
+  describe('Given a file whose name is longer than 255 bytes', () => {
+    describe('When walked', () => {
+      it('Then yields it', async () => {
+        // Arrange
+        const ascii = `${'b'.repeat(300)}.txt`;
+        const wide = '\u6f22'.repeat(100);
+        const ctx = await seedFs({ [ascii]: '1', [wide]: '2' });
+
+        const sut = walkWorkingTree;
+
+        // Act
+        const result = await collect(sut(ctx));
+
+        // Assert
+        expect(result.sort()).toEqual([ascii, wide].sort());
+      });
+    });
+  });
+
   describe('Given depth exactly at maxDepth', () => {
     describe('When walked', () => {
       it('Then yields without throwing (boundary)', async () => {
@@ -417,14 +436,9 @@ describe('walkWorkingTree', () => {
   describe('Given a working tree exactly 2048 levels deep (config unset, default cap), with a leaf one level short of the bottom', () => {
     describe('When walked', () => {
       it('Then it yields exactly that leaf, proving genuine descent (positive boundary)', async () => {
-        // Arrange — a leaf at the very bottom (depth 2048) does not fit:
-        // validateWalkedEntryPath's OWN 4096-byte total-path cap (independent
-        // of core.maxTreeDepth) would be 2*2048+1 = 4097 bytes for a
-        // 1-character leaf there, one byte over. One level up, at depth
-        // 2047, the same 1-character leaf's path is 2*2048-1 = 4095 bytes —
-        // safely under the cap — so the leaf is planted there while the
-        // deepest directory (2048) stays empty, preserving the "completes
-        // exactly at the default cap" boundary this fixture also proves.
+        // Arrange — no byte cap exists; the leaf sits one level short of the
+        // bottom only to keep the empty 2048th directory in the walk,
+        // preserving the "completes exactly at the default cap" boundary.
         // 2048 is the default cap, not a measured ceiling; the
         // explicit-stack walker has no frame ceiling to gamble against.
         const ctx = createMemoryContext();
@@ -445,20 +459,18 @@ describe('walkWorkingTree', () => {
 
   describe('Given a working tree 2049 levels deep (config unset, default cap)', () => {
     describe('When walked', () => {
-      it('Then throws PATHSPEC_OUTSIDE_REPO, never a raw RangeError', async () => {
-        // Arrange — a 2049-segment path cannot be constructed at all under
-        // validateWalkedEntryPath's independent 4096-byte total-path cap,
-        // even with 1-character directory names (2*2049-1 = 4097 > 4096):
-        // that guard fires on the 2049th directory's own entry, before the
-        // depth guard (checked one entry later) ever runs. The default
-        // cap's own "throws past cap" side is exercised at a small
-        // configured cap below, comfortably inside the path-length budget;
-        // this test instead pins that no raw RangeError resurfaces here.
+      it('Then throws TREE_DEPTH_EXCEEDED at depth 2049, never a raw RangeError', async () => {
+        // Arrange — the default maxDepth (2048) is what bounds this walk.
         const ctx = createMemoryContext();
         await seedDeepEmptyWorkingTree(ctx, 2049);
 
-        // Act + Assert
-        await expectError(() => collect(walkWorkingTree(ctx)), 'PATHSPEC_OUTSIDE_REPO');
+        const sut = walkWorkingTree;
+
+        // Act
+        const err = await expectError(() => collect(sut(ctx)), 'TREE_DEPTH_EXCEEDED');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'TREE_DEPTH_EXCEEDED', depth: 2049 });
       });
     });
   });

@@ -38,7 +38,7 @@ interface WalkWorkingTreeEntry {
 - **Symlinks are never followed** — a symlink to a directory is yielded as a leaf, not descended into; staged as mode `120000` upstream by `add`.
 - **Walk-time ignore pruning:** when `ignore` is supplied, ignored directories are not descended into — big perf win on `node_modules`.
 - **Depth/entry caps:** `maxDepth` throws `TREE_DEPTH_EXCEEDED`; `maxEntries` throws `TREE_ENTRY_LIMIT_EXCEEDED`. `maxDepth` defaults to `core.maxTreeDepth`, read from the repository-local config only (default 2048 when unset) and honoured unclamped at any configured value.
-- **The default depth cap is effectively unreachable on a real filesystem walk.** Every walked path is independently checked against `MAX_PATH_BYTES` (4096 bytes total), a pre-existing, unrelated cap on the working-tree path validator. Even a maximally compact one-character-per-level path exceeds 4096 bytes before it reaches a depth past the default 2048 `maxDepth` — the byte cap throws `PATHSPEC_OUTSIDE_REPO` first, so a path "at exactly the depth cap" does not, in practice, succeed here the way it does for the in-memory tree walkers (`walkTree`, `flattenTree`). Raising `core.maxTreeDepth` does not change this — the byte cap is independent of it.
+- **The walk refuses no path for its length.** On the node adapter the OS refuses a `readdir` past its `PATH_MAX` with `PATH_TOO_LONG`, before a one-character-per-level path reaches the default 2048 `maxDepth`. The memory adapter has no such limit, so `maxDepth` (`TREE_DEPTH_EXCEEDED`) bounds a walk there. Raising `core.maxTreeDepth` does not lift the OS limit on the node adapter — it is independent of it.
 
 ## Example
 

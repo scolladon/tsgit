@@ -4,9 +4,6 @@ import { isDotGitAlias } from './path/verify-path.js';
 
 const POSIX_HOST: PathSyntaxHost = {};
 const BACKSLASH = '\\';
-const MAX_PATH_BYTES = 4096;
-const MAX_COMPONENT_BYTES = 255;
-const PATH_ENCODER = new TextEncoder();
 
 /** What path validation reads of the host: a `Context` satisfies it. */
 export interface PathSyntaxHost {
@@ -30,7 +27,6 @@ export interface PathSyntaxHost {
  *   drive-letter qualifier (`C:...`) — a `:` anywhere else in the path is
  *   POSIX-legal and git-accepted (pinned: `foo:bar/x`), so it is not
  *   rejected.
- * - Length caps: total path ≤ 4096 bytes; each component ≤ 255 bytes.
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
   rejectBackslash(input);
@@ -44,7 +40,6 @@ export const validateWorkingTreePath = (input: string): FilePath => {
  */
 export const validateWorkingTreePathOn = (input: string, host: PathSyntaxHost): FilePath => {
   if (host.windowsPathSyntax === true) rejectBackslash(input);
-  rejectInputShape(input);
   rejectLeadingColon(input);
   const components = input.split('/');
   for (const component of components) {
@@ -57,7 +52,7 @@ export const validateWorkingTreePathOn = (input: string, host: PathSyntaxHost): 
  * Narrow defence-in-depth for a walker consuming raw `readdir` entries
  * (`walk-working-tree.ts`): the same traversal/injection protections as
  * {@link validateWorkingTreePath} — absolute path, NUL,
- * dot/dotdot/empty component, control characters, length caps, and a
+ * dot/dotdot/empty component, control characters, and a
  * backslash on a Windows path-syntax host — MINUS the
  * `.git`-alias and `:` rejections. A directory a real filesystem legitimately
  * returns named `git~1`, `.git:stream`, or carrying an HFS ignorable
@@ -70,7 +65,6 @@ export const validateWorkingTreePathOn = (input: string, host: PathSyntaxHost): 
  */
 export const validateWalkedEntryPath = (input: string, host: PathSyntaxHost): FilePath => {
   if (host.windowsPathSyntax === true) rejectBackslash(input);
-  rejectInputShape(input);
   const components = input.split('/');
   for (const component of components) {
     rejectTraversalShape(component, input);
@@ -88,32 +82,14 @@ const rejectBackslash = (input: string): void => {
   if (input.includes(BACKSLASH)) reject(input);
 };
 
-const rejectInputShape = (input: string): void => {
-  // Stryker disable next-line ConditionalExpression: equivalent — when this fast-path guard is removed (`if (false)`), the empty string still splits to `['']`, whose empty component is rejected by `rejectTraversalShape` with the identical `pathspecOutsideRepo('')` error.
-  if (input === '') reject(input);
-  if (byteLength(input) > MAX_PATH_BYTES) reject(input);
-  // Stryker disable next-line ConditionalExpression,MethodExpression: equivalent — a leading or trailing `/` always produces an empty path component, which `rejectTraversalShape` rejects regardless; this guard only changes which line throws, not the accept/reject verdict or the error data.
-  if (input.startsWith('/')) reject(input);
-  // Stryker disable next-line ConditionalExpression: equivalent — a NUL byte is code 0x00, always `<= 0x1f`, so the per-component control-char scan rejects it regardless of this fast-path guard.
-  if (input.includes('\0')) reject(input);
-};
-
 const rejectTraversalShape = (component: string, original: string): void => {
   if (component === '') reject(original); // empty component → trailing slash or // sequence.
   if (component === '.' || component === '..') reject(original);
-  // Single pass: the control-char scan and the ASCII/non-ASCII split fall
-  // out of the same charCodeAt loop. A pure-ASCII component's UTF-8 byte
-  // length is exactly its UTF-16 code-unit length, so the common case never
-  // pays the allocating TextEncoder-based byteLength() below.
-  let asciiOnly = true;
-  // Stryker disable next-line EqualityOperator: equivalent — `i <= component.length` reads one past the end where `charCodeAt` returns NaN; `NaN <= 0x1f` and `NaN === 0x7f` are both false, so the extra iteration never rejects (and `NaN > 0x7f` is also false, so `asciiOnly` is unaffected).
+  // Stryker disable next-line EqualityOperator: equivalent — `i <= component.length` reads one past the end where `charCodeAt` returns NaN; `NaN <= 0x1f` and `NaN === 0x7f` are both false, so the extra iteration never rejects.
   for (let i = 0; i < component.length; i += 1) {
     const code = component.charCodeAt(i);
     if (code <= 0x1f || code === 0x7f) reject(original);
-    if (code > 0x7f) asciiOnly = false;
   }
-  const componentByteLength = asciiOnly ? component.length : byteLength(component);
-  if (componentByteLength > MAX_COMPONENT_BYTES) reject(original);
 };
 
 const rejectComponent = (component: string, original: string): void => {
@@ -138,5 +114,3 @@ const LEADING_MAGIC_OR_DRIVE_LETTER = /^[A-Za-z]?:/;
 const rejectLeadingColon = (input: string): void => {
   if (LEADING_MAGIC_OR_DRIVE_LETTER.test(input)) reject(input);
 };
-
-const byteLength = (s: string): number => PATH_ENCODER.encode(s).length;

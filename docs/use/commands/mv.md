@@ -90,6 +90,7 @@ A directory source selects its members by raw path bytes. A lossy member (a non-
 - `MV_OVERLAPPING_SOURCES` — a source is a directory containing another source (`mv a a/b dir`).
 - `EMPTY_PATHSPEC` — no sources were given.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
+- `PATH_TOO_LONG` — the file system refused a destination as too long; `path` names that destination, repository-relative (inside a directory move, the leaf's destination). Nothing is moved and the index is unchanged.
 
 The first four are per-source and, under `skipErrors`, are collected in
 `skipped` instead of thrown; the rest are structural and always thrown.

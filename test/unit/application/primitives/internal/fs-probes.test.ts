@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   isAbsent,
+  isPathTooLong,
   lstatIfPresent,
   lstatIfReachable,
   readUtf8IfPresent,
@@ -10,6 +11,7 @@ import {
 import {
   fileNotFound,
   notADirectory,
+  pathTooLong,
   permissionDenied,
   type TsgitError,
 } from '../../../../../src/domain/error.js';
@@ -335,6 +337,27 @@ describe('removeIfPresent', () => {
 
         // Assert
         await expect(result).rejects.toBe(denied);
+      });
+    });
+  });
+});
+
+describe('isPathTooLong', () => {
+  describe.each([
+    { refusal: 'PATH_TOO_LONG', error: pathTooLong('/repo/x'), expected: true },
+    { refusal: 'FILE_NOT_FOUND', error: fileNotFound('/repo/x'), expected: false },
+    { refusal: 'no code', error: new Error('PATH_TOO_LONG'), expected: false },
+  ])('Given a refusal carrying $refusal', ({ error, expected }) => {
+    describe('When classified', () => {
+      it(`Then it is ${expected ? 'a name-too-long fault' : 'not a name-too-long fault'}`, () => {
+        // Arrange
+        const sut = isPathTooLong;
+
+        // Act
+        const result = sut(error);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

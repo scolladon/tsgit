@@ -108,6 +108,12 @@ Exit codes and data match git; only the wording or the named path differs.
 
 - **32.1 row A22** — `--detach <path>` message (A22). Evidence: [faithfulness-triage-2026-10](spike/faithfulness-triage-2026-10.md).
 
+- **32.73** `rm` of a tracked entry the host cannot stat refuses with a code that hides the name-too-long fault — pinned against git 2.56.0. `S = 's'×300` planted index-only. git `rm -q S` exits 128 (`fatal: git rm: 'S': File name too long`), index unchanged; tsgit `repo.rm([S])` refuses with `CHECKOUT_OVERWRITE_DIRTY` from `removeFile`'s catch-all (`src/application/commands/internal/working-tree.ts`), index unchanged.
+  ```
+  git rm -q <s300> -> exit 128; ls-files unchanged
+  tsgit rm([S])    -> threw {"code":"CHECKOUT_OVERWRITE_DIRTY","localChanges":["<s300>"],"untracked":[]}; ls-files unchanged
+  ```
+
 ## Rare configuration and edge input
 
 A well-formed repository, but a configuration, layout or argument shape few callers produce.
@@ -167,6 +173,37 @@ A well-formed repository, but a configuration, layout or argument shape few call
   ```
   ls-files -t  git:   S a/f S a/g H b/f H top    disk: ./a/f ./b/f ./top
   ls-files -t  tsgit: H a/f S a/g H b/f H top    disk: ./a/f ./b/f ./top
+  ```
+
+- **32.68** `status` and `add .` throw on a directory beyond the host PATH_MAX where git warns and walks on — pinned against git 2.56.0 (macOS); at the filing bar but over the net-zero cap (ADR-1170) of the long-pathspec-refusals run. Tracked `D/x` with `D = <a200>/<b200>/<c200>/<d200>`, plus an untracked `D/<e200>/<f200>/<g200>/x` (absolute path 1486 bytes). git `status --porcelain` and `add .` exit 0 and warn `could not open directory 'D/<e200>/…': File name too long`; tsgit `repo.status()` and `repo.add(['.'])` throw from the working-tree walk (`src/application/primitives/walk-working-tree.ts`).
+  ```
+  git status --porcelain -> exit 0, warning: could not open directory '<a200>/<b200>/…': File name too long
+  git add .              -> exit 0, same warning
+  tsgit status() / add(['.']) -> threw {"code":"PATH_TOO_LONG","path":"<tmp>/<a200>/<b200>/<c200>/<d200>/<e200>"}
+  ```
+
+- **32.69** `add .` throws on a tracked entry the host cannot stat, where git reports it and stages the rest — pinned against git 2.56.0. `S = 's'×300` planted index-only with `update-index --add --cacheinfo`, `base` modified. git `add .` exits 0, prints `S: File name too long` and stages `base`; tsgit `repo.add(['.'])` throws and stages nothing (`src/application/commands/add.ts`).
+  ```
+  git add .        -> exit 0; ls-files -s base -> 5ea2ed41… (new content)
+  tsgit add(['.']) -> threw {"code":"PATH_TOO_LONG","path":"<tmp>/<s300>"}; ls-files -s base -> 61780798… (old)
+  ```
+
+- **32.70** `checkout -- .` stops at the first file it cannot create, where git reports it and restores the others — pinned against git 2.56.0. Same setup as 32.69. git exits 255 with `error: unable to create file S…` and restores `base`; tsgit `repo.checkout({ paths: ['.'] })` throws and leaves `base` modified (`src/application/commands/checkout.ts`).
+  ```
+  git checkout -- .              -> exit 255; diff --name-only -> (empty)
+  tsgit checkout({paths:['.']})  -> threw {"code":"PATH_TOO_LONG","path":"<tmp>/<s300>"}; diff --name-only -> base
+  ```
+
+- **32.71** `grep` of the index throws from the attributes lookup of a path beyond PATH_MAX, where git warns and reports the hit — pinned against git 2.56.0 (macOS). `P = '<q50>/'×98 + 'x'` (4999 bytes) planted index-only. git `grep --cached -c idx` exits 0, prints `P:1` and warns `unable to access '…/.gitattributes'`; tsgit `repo.grep({ patterns: [/idx/], target: 'index' })` throws (`src/application/commands/grep.ts`).
+  ```
+  git grep --cached -c idx -> exit 0, <q50>/…/x:1, warning: unable to access '<q50>/…/.gitattributes'
+  tsgit grep               -> threw {"code":"PATH_TOO_LONG","path":"<tmp>/<q50>/…/.gitattributes"}
+  ```
+
+- **32.72** `mv` with `skipErrors` throws on a rename the host refuses as too long, where `git mv -k` skips it — pinned against git 2.56.0. `base` tracked, destination `S = 's'×300`. git `mv -k base S` exits 0 and moves nothing (without `-k`: 128, rename failed); tsgit throws `PATH_TOO_LONG` naming `S` with or without `skipErrors`, nothing moved (`src/application/commands/mv.ts`).
+  ```
+  git mv -k base <s300> -> exit 0
+  tsgit mv(['base'], S, {skipErrors:true}) -> threw {"code":"PATH_TOO_LONG","path":"<s300>"}
   ```
 
 ## Performance off the hot path

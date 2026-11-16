@@ -47,6 +47,8 @@ A pathspec is a literal unless it holds `*`, `?`, `[` or `\`. A literal matches 
 
 On a POSIX host a `\` in a pathspec is a matching escape only: it is never looked up on disk. Under Windows path syntax a pathspec holding `\` is refused with `PATHSPEC_OUTSIDE_REPO`.
 
+A pathspec has no length or `**` limit of its own; a body longer than the file system allows matches nothing on disk.
+
 An unmatched positive pathspec refuses the whole call with `PATHSPEC_NO_MATCH` under the index lock, before any object write: the index is unchanged and no loose object is left behind. A pathspec whose spelled path exists on disk is not refused when it is a glob, or a literal that ignore rules do not hide (an empty directory stages nothing and succeeds); a literal naming an ignored path is reported in `ignored` rather than staged (see [Ignored paths](#ignored-paths)). Index entries count as matches, so a glob also selects tracked paths under an ignored directory and conflicted (unmerged) paths, which `add` stages as git's index-side pass does.
 
 ## Skip-worktree entries

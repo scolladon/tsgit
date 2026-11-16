@@ -5,6 +5,7 @@ import { mv } from '../../../../src/application/commands/mv.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { pathTooLong, permissionDenied } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -1023,6 +1024,124 @@ describe('mv on a directory holding a lossy member', () => {
           ['d/�', [0x64, 0x2f, 0xff]],
           ['e/y', undefined],
         ]);
+      });
+    });
+  });
+});
+
+describe('mv — a move the file system refuses', () => {
+  const failingRename = (ctx: Context, fault: TsgitError): Context => ({
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      rename: async () => {
+        throw fault;
+      },
+    },
+  });
+
+  describe('Given a rename the file system refuses as too long', () => {
+    describe('When mv', () => {
+      it('Then it names the destination and leaves the index and the source unchanged', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const refusing = failingRename(ctx, pathTooLong('/abs/a.txt'));
+        const sut = mv;
+
+        // Act
+        const err = await expectError(() => sut(refusing, ['a.txt'], 'b.txt'), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'b.txt' });
+        expect(await indexEntry(ctx, 'a.txt')).toBeDefined();
+        expect(await indexEntry(ctx, 'b.txt')).toBeUndefined();
+        expect(await exists(ctx, 'a.txt')).toBe(true);
+      });
+    });
+
+    describe('When mv moves into a directory', () => {
+      it('Then it names the target inside that directory', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a', 'd/k': 'k' });
+        const refusing = failingRename(ctx, pathTooLong('/abs/a.txt'));
+        const sut = mv;
+
+        // Act
+        const err = await expectError(() => sut(refusing, ['a.txt'], 'd'), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'd/a.txt' });
+      });
+    });
+  });
+
+  describe('Given a directory move whose leaf rename the file system refuses as too long', () => {
+    describe('When mv', () => {
+      it('Then it names that leaf inside the destination', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const refusing = failingRename(ctx, pathTooLong('/abs/d/f'));
+        const sut = mv;
+
+        // Act
+        const err = await expectError(() => sut(refusing, ['d'], 'e'), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'e/f' });
+      });
+    });
+  });
+
+  describe('Given a directory move whose source descendant the file system refuses as too long', () => {
+    describe('When mv', () => {
+      it('Then the refusal keeps naming that source descendant', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const fault = pathTooLong('/abs/d/f');
+        const descendant = work(ctx, 'd/f');
+        const refusing: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (path: string) => {
+              if (path === descendant) throw fault;
+              return ctx.fs.lstat(path);
+            },
+          },
+        };
+        const sut = mv;
+
+        // Act
+        const outcome = sut(refusing, ['d'], 'e');
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a rename the file system refuses for another reason', () => {
+    describe('When mv', () => {
+      it('Then it rethrows that very error', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const fault = permissionDenied('/abs/a.txt');
+        const refusing: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rename: async () => {
+              throw fault;
+            },
+          },
+        };
+        const sut = mv;
+
+        // Act
+        const outcome = sut(refusing, ['a.txt'], 'b.txt');
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
       });
     });
   });

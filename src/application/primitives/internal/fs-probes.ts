@@ -79,6 +79,9 @@ export const isAbsent = (error: unknown): boolean => {
   return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 };
 
+/** The file system refused the path, or a component of it, as too long. */
+export const isPathTooLong = (error: unknown): boolean => errorDataCode(error) === 'PATH_TOO_LONG';
+
 /** `rm`, answered without a refusal where the path is {@link isAbsent absent}. */
 export async function removeIfPresent(fs: FileSystem, path: string): Promise<void> {
   try {

@@ -4,7 +4,9 @@ subjects:
 ---
 # 1043 — The browser-bundle cap is raised by the measured delta after the dead-mode offset
 
-- **Status:** accepted
+> **Superseded by [ADR-1191](1191-pathspecs-carry-no-length-or-wildcard-budget.md)** for the pathspec-budget clause: the 256-byte and four-`**` budgets are deleted. The browser-bundle cap procedure is carried forward.
+
+- **Status:** superseded by ADR-1191
 - **Date:** 2026-10-22
 - **Design:** docs/design/pathspec-glob-dialect.md · **Supersedes/Refines:** none
 

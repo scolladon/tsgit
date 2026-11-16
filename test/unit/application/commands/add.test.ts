@@ -10,6 +10,7 @@ import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { pathTooLong } from '../../../../src/domain/error.js';
 import {
   type GitIndex,
   type IndexEntry,
@@ -1534,6 +1535,7 @@ describe('add', () => {
   describe('Given a tracked file deleted from disk and a stat that fails on it', () => {
     describe.each([
       { label: 'PERMISSION_DENIED', fault: permissionDenied('x/y') },
+      { label: 'PATH_TOO_LONG', fault: pathTooLong('x/y') },
       { label: 'a plain Error', fault: new Error('boom') },
     ])('When the fault is $label', ({ fault }) => {
       it('Then add({ all: true }) rethrows it and stages no removal', async () => {
@@ -4808,6 +4810,200 @@ describe('add of an unseen pathspec whose spelled path exists on disk', () => {
 
         // Assert
         expect(err.data).toEqual(pathspecNoMatch('d/x\\y').data);
+      });
+    });
+  });
+});
+
+const refusingTooLong = (ctx: Context, names: ReadonlyArray<string>): Context => {
+  const refused = new Set(names.map((name) => `${ctx.layout.workDir}/${name}`));
+  const baseLstat = ctx.fs.lstat;
+  const fs = new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+      return async (p: string) => {
+        if (refused.has(p)) throw pathTooLong(p);
+        return baseLstat(p);
+      };
+    },
+  });
+  return { ...ctx, fs };
+};
+
+const refusingFirstStatTooLong = (ctx: Context, names: ReadonlyArray<string>): Context => {
+  const pending = new Set(names.map((name) => `${ctx.layout.workDir}/${name}`));
+  const baseLstat = ctx.fs.lstat;
+  const fs = new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+      return async (p: string) => {
+        if (pending.delete(p)) throw pathTooLong(p);
+        return baseLstat(p);
+      };
+    },
+  });
+  return { ...ctx, fs };
+};
+
+describe('add — a pathspec probe the file system refuses as too long', () => {
+  describe('Given a glob pathspec whose disk probe is refused as too long', () => {
+    describe('When add', () => {
+      it('Then the pathspec matches nothing', async () => {
+        // Arrange
+        const ctx = refusingTooLong(await seedFreshRepo({ a: 'a' }), ['long*']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['long*']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('long*').data);
+      });
+    });
+  });
+
+  describe('Given a literal pathspec whose disk probe is refused as too long', () => {
+    describe('When add', () => {
+      it('Then the pathspec matches nothing', async () => {
+        // Arrange
+        const ctx = refusingTooLong(await seedFreshRepo({ a: 'a' }), ['long']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['long']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('long').data);
+      });
+    });
+  });
+
+  describe('Given a renormalized pathspec whose disk probe is refused as too long', () => {
+    describe('When add', () => {
+      it('Then the pathspec matches nothing', async () => {
+        // Arrange
+        const tracked = await seedFreshRepo({ 'a.txt': 'a' });
+        await add(tracked, ['a.txt']);
+        const ctx = refusingTooLong(tracked, ['long']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['long'], RENORMALIZE), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('long').data);
+      });
+    });
+  });
+
+  describe('Given a literal and a path beneath it both refused as too long', () => {
+    describe('When add names the path beneath', () => {
+      it('Then the pathspec matches nothing', async () => {
+        // Arrange
+        const ctx = refusingTooLong(await seedFreshRepo({ a: 'a' }), ['long', 'long/x']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['long/x']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual(pathspecNoMatch('long/x').data);
+      });
+    });
+  });
+
+  describe('Given the whole tree excluding a path beneath a prefix refused as too long', () => {
+    describe('When add', () => {
+      it('Then the other files are staged', async () => {
+        // Arrange
+        const ctx = refusingTooLong(await seedFreshRepo({ a: 'a' }), ['long', 'long/x']);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.', '!long/x']);
+
+        // Assert
+        expect(result.added).toEqual(['a']);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose leading directory the file system refuses as too long', () => {
+    describe('When add({ all: true })', () => {
+      it('Then it rejects and the index still lists the file', async () => {
+        // Arrange
+        const seeded = await seedFreshRepo({ 'x/y': 'one' });
+        await add(seeded, ['x/y']);
+        await seeded.fs.rm(`${seeded.layout.workDir}/x/y`);
+        await seeded.fs.rm(`${seeded.layout.workDir}/x`);
+        const ctx = refusingTooLong(seeded, ['x']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, [], { all: true }), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual(pathTooLong(`${seeded.layout.workDir}/x`).data);
+        expect((await readIndex(seeded)).entries.map((e) => e.path)).toEqual(['x/y']);
+      });
+    });
+  });
+
+  describe('Given a modified tracked file an ignore rule hides and a stat refused as too long', () => {
+    describe('When add names the ignored spelling', () => {
+      it('Then it rejects', async () => {
+        // Arrange
+        const seeded = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
+        await writeWork(seeded, 'x.log', 'bb');
+        const ctx = refusingFirstStatTooLong(seeded, ['x.log']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['*.log']), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual(pathTooLong(`${seeded.layout.workDir}/x.log`).data);
+      });
+    });
+  });
+
+  describe('Given a tracked gitlink whose stat is refused as too long', () => {
+    describe('When add stages the whole tree', () => {
+      it('Then it rejects', async () => {
+        // Arrange
+        const seeded = await seedFreshRepo({ 'sub/f': 'a' });
+        await add(seeded, ['sub/f']);
+        await rewriteEntries(seeded, (entry) =>
+          entry.path === 'sub/f'
+            ? { ...entry, path: 'sub' as FilePath, mode: FILE_MODE.GITLINK }
+            : entry,
+        );
+        const ctx = refusingFirstStatTooLong(seeded, ['sub']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['.']), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual(pathTooLong(`${seeded.layout.workDir}/sub`).data);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose renormalize stat is refused as too long', () => {
+    describe('When add renormalizes it', () => {
+      it('Then it rejects', async () => {
+        // Arrange
+        const seeded = await seedFreshRepo({ 'a.txt': 'a' });
+        await add(seeded, ['a.txt']);
+        const ctx = refusingTooLong(seeded, ['a.txt']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['a.txt'], RENORMALIZE), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual(pathTooLong(`${seeded.layout.workDir}/a.txt`).data);
       });
     });
   });

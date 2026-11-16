@@ -4,8 +4,10 @@ import {
   assertNoSymlinkedLeadingPath,
   resolvePathspec,
 } from '../../../../../src/application/commands/internal/resolve-pathspec.js';
-import { TsgitError } from '../../../../../src/domain/error.js';
+import { pathTooLong, permissionDenied, TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
+import { matchesPathspec } from '../../../../../src/domain/pathspec/match-pathspec.js';
+import type { Context } from '../../../../../src/ports/context.js';
 
 const path = (s: string): FilePath => s as FilePath;
 
@@ -210,10 +212,25 @@ describe('resolvePathspec', () => {
         { pattern: 'a\\b\0', label: 'a NUL byte' },
         { pattern: 'a\\b\u0001', label: 'a control byte' },
         { pattern: 'a\\b/.git/x', label: 'a `.git` component' },
-        { pattern: `a\\${'b'.repeat(5000)}`, label: 'an over-long body' },
       ])('Then $label is still refused', ({ pattern }) => {
         // Arrange + Assert
         expectError(() => resolvePathspec([pattern]), 'PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
+  describe('Given a backslash body longer than 4096 bytes', () => {
+    describe('When resolved', () => {
+      it('Then it is one wildcard entry', () => {
+        // Arrange
+        const sut = resolvePathspec;
+        const pattern = `a\\b/${Array.from({ length: 21 }, () => 'c'.repeat(200)).join('/')}`;
+
+        // Act
+        const result = sut([pattern]);
+
+        // Assert
+        expect(result.matcher.map((e) => [e.body, e.isLiteral])).toEqual([[pattern, false]]);
       });
     });
   });
@@ -280,40 +297,66 @@ describe('resolvePathspec', () => {
     });
   });
 
-  describe('Given a pattern exceeding the per-pattern length cap', () => {
+  describe('Given a pathspec no budget limits', () => {
+    const LITERAL_300 = `${'a'.repeat(100)}/${'b'.repeat(100)}/${'c'.repeat(98)}`;
+    const STAR_SHAPE = `${'a'.repeat(200)}/${'b'.repeat(200)}/x`;
+
     describe('When resolved', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange — components are each ≤ 255 bytes (passes the working-tree
-        // path validator) but the overall pattern is > 256 bytes (trips
-        // the pathspec-specific cap that bounds regex compilation cost).
-        const seg = 'a'.repeat(100);
-        const huge = `${seg}/${seg}/${seg}`;
-        expect(huge.length).toBeGreaterThan(256);
+      it.each([
+        {
+          label: 'a 300-byte literal',
+          pattern: LITERAL_300,
+          entry: { body: LITERAL_300, isLiteral: true, negated: false },
+          target: LITERAL_300,
+          matched: true,
+        },
+        {
+          label: 'a 300-byte single component',
+          pattern: 's'.repeat(300),
+          entry: { body: 's'.repeat(300), isLiteral: true, negated: false },
+          target: 's'.repeat(300),
+          matched: true,
+        },
+        {
+          label: 'five `**`',
+          pattern: '**a**b**c**d**x',
+          entry: { body: '**a**b**c**d**x', isLiteral: false, negated: false },
+          target: STAR_SHAPE.replace('/x', '/a-b-c-d-x'),
+          matched: true,
+        },
+        {
+          label: 'ten `*`',
+          pattern: '**********',
+          entry: { body: '**********', isLiteral: false, negated: false },
+          target: STAR_SHAPE,
+          matched: true,
+        },
+        {
+          label: 'a 300-byte negated body',
+          pattern: `!${LITERAL_300}`,
+          entry: { body: LITERAL_300, isLiteral: true, negated: true },
+          target: LITERAL_300,
+          matched: false,
+        },
+        {
+          label: 'a 300-byte directory-only body',
+          pattern: `${LITERAL_300}/`,
+          entry: { body: `${LITERAL_300}/`, isLiteral: true, negated: false },
+          target: `${LITERAL_300}/x`,
+          matched: true,
+        },
+      ])('Then $label resolves to its entry', ({ pattern, entry, target, matched }) => {
+        // Arrange
+        const sut = resolvePathspec;
 
         // Act
-        const err = expectError(() => resolvePathspec([huge]), 'INVALID_OPTION');
+        const result = sut([pattern]);
 
         // Assert
-        const data = err.data as { option: string; reason: string };
-        expect(data.option).toBe('paths');
-        expect(data.reason).toMatch(/max length/i);
-      });
-    });
-  });
-
-  describe('Given a pattern with more than the **-token cap', () => {
-    describe('When resolved', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange — `**/**/**/**/**/**` has six `**` tokens; cap is 4.
-        const pattern = '**/**/**/**/**/**';
-
-        // Act
-        const err = expectError(() => resolvePathspec([pattern]), 'INVALID_OPTION');
-
-        // Assert
-        const data = err.data as { option: string; reason: string };
-        expect(data.option).toBe('paths');
-        expect(data.reason).toMatch(/\*\*-token count/);
+        expect(
+          result.matcher.map((e) => ({ body: e.body, isLiteral: e.isLiteral, negated: e.negated })),
+        ).toEqual([entry]);
+        expect(matchesPathspec(result.matcher, path(target))).toBe(matched);
       });
     });
   });
@@ -322,11 +365,6 @@ describe('resolvePathspec', () => {
     describe('When resolved', () => {
       it.each([
         {
-          pattern: '**/**/**/**',
-          // Kills the `>` → `>=` mutant on the **-cap.
-          label: 'exactly the **-token cap (4 tokens) accepts (boundary)',
-        },
-        {
           pattern: 'x',
           // Kills L40 StringLiteral `'!'` → `""`: with `startsWith("")`
           // always true, `body` would become `'x'.slice(1)` === `''`, which
@@ -334,49 +372,13 @@ describe('resolvePathspec', () => {
           label:
             'a non-negated single-char pattern does NOT throw (the `!`-strip slices only when `raw.startsWith("!")`)',
         },
-        {
-          pattern: 'a*a*a*a*a*',
-          // Kills L66 cond1 `===`→`true` and cond2 `===`→`true`: forcing
-          // either operand true makes `a*a*a*a*a*` count 5 pairs and throw.
-          label:
-            'a pattern of isolated single `*` separated by literals does NOT throw (zero `**` pairs)',
-        },
       ])('Then $label', ({ pattern }) => {
         // Arrange + Assert
         expect(() => resolvePathspec([pattern])).not.toThrow();
       });
     });
   });
-
-  describe('Given a pattern exactly at the byte cap (256 bytes)', () => {
-    describe('When resolved', () => {
-      it('Then it does NOT throw (boundary)', () => {
-        // Arrange — 127 + 1 (`/`) + 128 = exactly 256 UTF-8 bytes; each
-        // component is ≤ 255 bytes so the working-tree validator passes.
-        const pattern = `${'a'.repeat(127)}/${'a'.repeat(128)}`;
-        // Assert
-        expect(PATTERN_BYTE_LENGTH(pattern)).toBe(256);
-
-        // Act / Assert — kills L51 EqualityOperator `>` → `>=`.
-        expect(() => resolvePathspec([pattern])).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given ten consecutive `*`', () => {
-    describe('When resolved', () => {
-      it('Then it throws INVALID_OPTION (counts 5 `**` pairs, over the cap)', () => {
-        // Arrange + Assert
-        // Kills L66 cond1 `===`→`!==` and cond2 `===`→`!==`: both `!==`
-        // mutants undercount `**********` to ≤ 4, so they would NOT throw.
-        const err = expectError(() => resolvePathspec(['**********']), 'INVALID_OPTION');
-        expect((err.data as { reason: string }).reason).toMatch(/\*\*-token count/);
-      });
-    });
-  });
 });
-
-const PATTERN_BYTE_LENGTH = (s: string): number => new TextEncoder().encode(s).byteLength;
 
 const expectAsyncError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
   let caught: unknown;
@@ -388,6 +390,20 @@ const expectAsyncError = async (fn: () => Promise<unknown>, code: string): Promi
   expect(caught).toBeInstanceOf(TsgitError);
   expect((caught as TsgitError).data.code).toBe(code);
   return caught as TsgitError;
+};
+
+const refusing = (ctx: Context, name: string, fault: (path: string) => TsgitError): Context => {
+  const refused = `${ctx.layout.workDir}/${name}`;
+  const fs = new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+      return async (p: string) => {
+        if (p === refused) throw fault(p);
+        return target.lstat(p);
+      };
+    },
+  });
+  return { ...ctx, fs };
 };
 
 describe('assertNoSymlinkedLeadingPath', () => {
@@ -464,6 +480,59 @@ describe('assertNoSymlinkedLeadingPath', () => {
         await expect(
           assertNoSymlinkedLeadingPath(ctx, [path('dir/file'), path('top-level.txt')]),
         ).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a target whose leading prefix the file system refuses as too long', () => {
+    describe('When checked', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = refusing(createMemoryContext(), 'long', pathTooLong);
+        const sut = assertNoSymlinkedLeadingPath;
+
+        // Act
+        const outcome = sut(ctx, [path('long/x')]);
+
+        // Assert
+        await expect(outcome).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a target whose leading prefix is refused with PERMISSION_DENIED', () => {
+    describe('When checked', () => {
+      it('Then it rejects with that fault', async () => {
+        // Arrange
+        const ctx = refusing(createMemoryContext(), 'long', permissionDenied);
+        const sut = assertNoSymlinkedLeadingPath;
+
+        // Act
+        const err = await expectAsyncError(() => sut(ctx, [path('long/x')]), 'PERMISSION_DENIED');
+
+        // Assert
+        expect(err.data).toEqual(permissionDenied(`${ctx.layout.workDir}/long`).data);
+      });
+    });
+  });
+
+  describe('Given a too-long prefix target followed by a target beyond a symlink', () => {
+    describe('When checked', () => {
+      it('Then the later target is still refused', async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await seeded.fs.symlink('/outside-the-repo', `${seeded.layout.workDir}/dir`);
+        const ctx = refusing(seeded, 'long', pathTooLong);
+        const sut = assertNoSymlinkedLeadingPath;
+
+        // Act
+        const err = await expectAsyncError(
+          () => sut(ctx, [path('long/x'), path('dir/file')]),
+          'PATHSPEC_BEYOND_SYMLINK',
+        );
+
+        // Assert
+        expect((err.data as { path: string }).path).toBe('dir/file');
       });
     });
   });
