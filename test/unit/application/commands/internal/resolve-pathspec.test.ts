@@ -308,38 +308,44 @@ describe('resolvePathspec', () => {
           pattern: LITERAL_300,
           entry: { body: LITERAL_300, isLiteral: true, negated: false },
           target: LITERAL_300,
+          matched: true,
         },
         {
           label: 'a 300-byte single component',
           pattern: 's'.repeat(300),
           entry: { body: 's'.repeat(300), isLiteral: true, negated: false },
           target: 's'.repeat(300),
+          matched: true,
         },
         {
           label: 'five `**`',
           pattern: '**a**b**c**d**x',
           entry: { body: '**a**b**c**d**x', isLiteral: false, negated: false },
           target: STAR_SHAPE.replace('/x', '/a-b-c-d-x'),
+          matched: true,
         },
         {
           label: 'ten `*`',
           pattern: '**********',
           entry: { body: '**********', isLiteral: false, negated: false },
           target: STAR_SHAPE,
+          matched: true,
         },
         {
           label: 'a 300-byte negated body',
           pattern: `!${LITERAL_300}`,
           entry: { body: LITERAL_300, isLiteral: true, negated: true },
-          target: undefined,
+          target: LITERAL_300,
+          matched: false,
         },
         {
           label: 'a 300-byte directory-only body',
           pattern: `${LITERAL_300}/`,
           entry: { body: `${LITERAL_300}/`, isLiteral: true, negated: false },
           target: `${LITERAL_300}/x`,
+          matched: true,
         },
-      ])('Then $label resolves to its entry', ({ pattern, entry, target }) => {
+      ])('Then $label resolves to its entry', ({ pattern, entry, target, matched }) => {
         // Arrange
         const sut = resolvePathspec;
 
@@ -350,9 +356,7 @@ describe('resolvePathspec', () => {
         expect(
           result.matcher.map((e) => ({ body: e.body, isLiteral: e.isLiteral, negated: e.negated })),
         ).toEqual([entry]);
-        if (target !== undefined) {
-          expect(matchesPathspec(result.matcher, path(target))).toBe(true);
-        }
+        expect(matchesPathspec(result.matcher, path(target))).toBe(matched);
       });
     });
   });
@@ -485,9 +489,13 @@ describe('assertNoSymlinkedLeadingPath', () => {
       it('Then it resolves', async () => {
         // Arrange
         const ctx = refusing(createMemoryContext(), 'long', pathTooLong);
+        const sut = assertNoSymlinkedLeadingPath;
 
-        // Act + Assert
-        await expect(assertNoSymlinkedLeadingPath(ctx, [path('long/x')])).resolves.toBeUndefined();
+        // Act
+        const outcome = sut(ctx, [path('long/x')]);
+
+        // Assert
+        await expect(outcome).resolves.toBeUndefined();
       });
     });
   });
@@ -497,12 +505,10 @@ describe('assertNoSymlinkedLeadingPath', () => {
       it('Then it rejects with that fault', async () => {
         // Arrange
         const ctx = refusing(createMemoryContext(), 'long', permissionDenied);
+        const sut = assertNoSymlinkedLeadingPath;
 
         // Act
-        const err = await expectAsyncError(
-          () => assertNoSymlinkedLeadingPath(ctx, [path('long/x')]),
-          'PERMISSION_DENIED',
-        );
+        const err = await expectAsyncError(() => sut(ctx, [path('long/x')]), 'PERMISSION_DENIED');
 
         // Assert
         expect(err.data).toEqual(permissionDenied(`${ctx.layout.workDir}/long`).data);
@@ -517,10 +523,11 @@ describe('assertNoSymlinkedLeadingPath', () => {
         const seeded = createMemoryContext();
         await seeded.fs.symlink('/outside-the-repo', `${seeded.layout.workDir}/dir`);
         const ctx = refusing(seeded, 'long', pathTooLong);
+        const sut = assertNoSymlinkedLeadingPath;
 
         // Act
         const err = await expectAsyncError(
-          () => assertNoSymlinkedLeadingPath(ctx, [path('long/x'), path('dir/file')]),
+          () => sut(ctx, [path('long/x'), path('dir/file')]),
           'PATHSPEC_BEYOND_SYMLINK',
         );
 

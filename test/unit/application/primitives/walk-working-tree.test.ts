@@ -406,8 +406,10 @@ describe('walkWorkingTree', () => {
         const wide = '\u6f22'.repeat(100);
         const ctx = await seedFs({ [ascii]: '1', [wide]: '2' });
 
+        const sut = walkWorkingTree;
+
         // Act
-        const result = await collect(walkWorkingTree(ctx));
+        const result = await collect(sut(ctx));
 
         // Assert
         expect(result.sort()).toEqual([ascii, wide].sort());
@@ -462,8 +464,10 @@ describe('walkWorkingTree', () => {
         const ctx = createMemoryContext();
         await seedDeepEmptyWorkingTree(ctx, 2049);
 
+        const sut = walkWorkingTree;
+
         // Act
-        const err = await expectError(() => collect(walkWorkingTree(ctx)), 'TREE_DEPTH_EXCEEDED');
+        const err = await expectError(() => collect(sut(ctx)), 'TREE_DEPTH_EXCEEDED');
 
         // Assert
         expect(err.data).toEqual({ code: 'TREE_DEPTH_EXCEEDED', depth: 2049 });

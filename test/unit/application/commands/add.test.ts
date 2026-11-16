@@ -4830,6 +4830,21 @@ const refusingTooLong = (ctx: Context, names: ReadonlyArray<string>): Context =>
   return { ...ctx, fs };
 };
 
+const refusingFirstStatTooLong = (ctx: Context, names: ReadonlyArray<string>): Context => {
+  const pending = new Set(names.map((name) => `${ctx.layout.workDir}/${name}`));
+  const baseLstat = ctx.fs.lstat;
+  const fs = new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+      return async (p: string) => {
+        if (pending.delete(p)) throw pathTooLong(p);
+        return baseLstat(p);
+      };
+    },
+  });
+  return { ...ctx, fs };
+};
+
 describe('add — a pathspec probe the file system refuses as too long', () => {
   describe('Given a glob pathspec whose disk probe is refused as too long', () => {
     describe('When add', () => {
@@ -4940,7 +4955,7 @@ describe('add — a pathspec probe the file system refuses as too long', () => {
         // Arrange
         const seeded = await seedTrackedThenIgnored({ 'x.log': 'a' }, '*.log\n');
         await writeWork(seeded, 'x.log', 'bb');
-        const ctx = refusingTooLong(seeded, ['x.log']);
+        const ctx = refusingFirstStatTooLong(seeded, ['x.log']);
         const sut = add;
 
         // Act
@@ -4948,6 +4963,29 @@ describe('add — a pathspec probe the file system refuses as too long', () => {
 
         // Assert
         expect(err.data).toEqual(pathTooLong(`${seeded.layout.workDir}/x.log`).data);
+      });
+    });
+  });
+
+  describe('Given a tracked gitlink whose stat is refused as too long', () => {
+    describe('When add stages the whole tree', () => {
+      it('Then it rejects', async () => {
+        // Arrange
+        const seeded = await seedFreshRepo({ 'sub/f': 'a' });
+        await add(seeded, ['sub/f']);
+        await rewriteEntries(seeded, (entry) =>
+          entry.path === 'sub/f'
+            ? { ...entry, path: 'sub' as FilePath, mode: FILE_MODE.GITLINK }
+            : entry,
+        );
+        const ctx = refusingFirstStatTooLong(seeded, ['sub']);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['.']), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual(pathTooLong(`${seeded.layout.workDir}/sub`).data);
       });
     });
   });

@@ -102,11 +102,20 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     });
 
     const writeAt = async (repo: string, name: string, content: string): Promise<void> => {
-      const length = path.join(repo, name).length;
-      expect(length, `${name.length}-byte name, absolute length ${length}`).toBeLessThan(pathMax);
+      const length = Buffer.byteLength(path.join(repo, name));
+      expect(
+        length,
+        `${Buffer.byteLength(name)}-byte name, absolute length ${length}`,
+      ).toBeLessThan(pathMax);
       await mkdir(path.dirname(path.join(repo, name)), { recursive: true });
       await writeFile(path.join(repo, name), content);
     };
+
+    const PINNED_DATES = {
+      GIT_AUTHOR_DATE: '1700000000 +0000',
+      GIT_COMMITTER_DATE: '1700000000 +0000',
+    } as const;
+    const pinnedEnv = () => ({ ...runGitEnv(), ...PINNED_DATES });
 
     const twin = async (
       side: string,
@@ -133,7 +142,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           '-m',
           'm',
         ],
-        { env: runGitEnv() },
+        { env: pinnedEnv() },
       );
       for (const name of modified) await writeAt(repo, name, 'changed\n');
       return repo;
@@ -779,31 +788,72 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
-    describe('When git and tsgit act on a wide name no host can create (row L3)', () => {
-      it.skipIf(canHoldWideComponent)('Then add, rm, checkout and grep find no match', async () => {
-        // Arrange
-        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+    describe('Given a wide name that is not on disk (row L3)', () => {
+      describe('When git and tsgit add it', () => {
+        it('Then both find no match', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo, ctx } = await twins([]);
+          const sut = add;
 
-        // Act
-        const gitAdd = tryRunGitWithExit(['-C', gitRepo, 'add', '--', CJK100]);
-        const addErr = await caught(() => add(ctx, [CJK100]));
-        const gitRm = tryRunGitWithExit(['-C', gitRepo, 'rm', '--', CJK100]);
-        const rmErr = await caught(() => rm(ctx, [CJK100]));
-        const gitCheckout = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', CJK100]);
-        const checkoutErr = await caught(() => checkout(ctx, { paths: [CJK100] }));
-        const gitGrep = tryRunGitWithExit(['-C', gitRepo, 'grep', '-l', 'needle', '--', CJK100]);
-        const grepResult = await grep(ctx, { patterns: [/needle/], paths: [CJK100] });
+          // Act
+          const gitAdd = tryRunGitWithExit(['-C', gitRepo, 'add', '--', CJK100]);
+          const err = await caught(() => sut(ctx, [CJK100]));
 
-        // Assert
-        expect(gitAdd.exitCode).toBe(GIT_EXIT_FATAL);
-        expect(addErr.data).toEqual(pathspecNoMatch(CJK100).data);
-        expect(gitRm.exitCode).toBe(GIT_EXIT_FATAL);
-        expect(rmErr.data).toEqual(pathspecNoMatch(CJK100).data);
-        expect(gitCheckout.exitCode).toBe(GIT_EXIT_ERROR);
-        expect(checkoutErr.data).toEqual(pathspecNoMatch(CJK100).data);
-        expect(gitGrep.exitCode).toBe(GIT_EXIT_ERROR);
-        expect(grepResult.paths).toEqual([]);
-        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+          // Assert
+          expect(gitAdd.exitCode).toBe(GIT_EXIT_FATAL);
+          expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
+          expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        });
+      });
+
+      describe('When git and tsgit rm it', () => {
+        it('Then both find no match', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo, ctx } = await twins([]);
+          const sut = rm;
+
+          // Act
+          const gitRm = tryRunGitWithExit(['-C', gitRepo, 'rm', '--', CJK100]);
+          const err = await caught(() => sut(ctx, [CJK100]));
+
+          // Assert
+          expect(gitRm.exitCode).toBe(GIT_EXIT_FATAL);
+          expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
+          expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        });
+      });
+
+      describe('When git and tsgit check it out', () => {
+        it('Then both find no match', async () => {
+          // Arrange
+          const { gitRepo, tsgitRepo, ctx } = await twins([]);
+          const sut = checkout;
+
+          // Act
+          const gitCheckout = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', CJK100]);
+          const err = await caught(() => sut(ctx, { paths: [CJK100] }));
+
+          // Assert
+          expect(gitCheckout.exitCode).toBe(GIT_EXIT_ERROR);
+          expect(err.data).toEqual(pathspecNoMatch(CJK100).data);
+          expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        });
+      });
+
+      describe('When git and tsgit grep it', () => {
+        it('Then both report no hit', async () => {
+          // Arrange
+          const { gitRepo, ctx } = await twins([]);
+          const sut = grep;
+
+          // Act
+          const gitGrep = tryRunGitWithExit(['-C', gitRepo, 'grep', '-l', 'needle', '--', CJK100]);
+          const result = await sut(ctx, { patterns: [/needle/], paths: [CJK100] });
+
+          // Assert
+          expect(gitGrep.exitCode).toBe(GIT_EXIT_ERROR);
+          expect(result.paths).toEqual([]);
+        });
       });
     });
 
@@ -845,7 +895,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               '-m',
               'w',
             ],
-            { env: runGitEnv() },
+            { env: pinnedEnv() },
           );
           runGit(['-C', repo, 'checkout', '-q', 'main']);
         }
