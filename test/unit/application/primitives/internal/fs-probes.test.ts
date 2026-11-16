@@ -342,17 +342,23 @@ describe('removeIfPresent', () => {
   });
 });
 
-describe('Given isPathTooLong', () => {
-  describe('When classifying an error', () => {
-    it('Then only a PATH_TOO_LONG refusal is a name-too-long fault', () => {
-      // Arrange
-      const sut = isPathTooLong;
+describe('isPathTooLong', () => {
+  describe.each([
+    { refusal: 'PATH_TOO_LONG', error: pathTooLong('/repo/x'), expected: true },
+    { refusal: 'FILE_NOT_FOUND', error: fileNotFound('/repo/x'), expected: false },
+    { refusal: 'no code', error: new Error('PATH_TOO_LONG'), expected: false },
+  ])('Given a refusal carrying $refusal', ({ error, expected }) => {
+    describe('When classified', () => {
+      it(`Then it is ${expected ? 'a name-too-long fault' : 'not a name-too-long fault'}`, () => {
+        // Arrange
+        const sut = isPathTooLong;
 
-      // Act
-      const results = [sut(pathTooLong('/x')), sut(fileNotFound('/x')), sut('PATH_TOO_LONG')];
+        // Act
+        const result = sut(error);
 
-      // Assert
-      expect(results).toEqual([true, false, false]);
+        // Assert
+        expect(result).toBe(expected);
+      });
     });
   });
 });
