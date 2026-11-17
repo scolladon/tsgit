@@ -579,57 +579,63 @@ describe('checkout', () => {
 describe('checkout — mutation hardening', () => {
   describe('Given opts with rev key set to undefined', () => {
     describe('When checkout', () => {
-      it('Then throws INVALID_OPTION (rev is not switch mode)', async () => {
-        // Arrange — `'rev' in opts` is true but `opts.rev === undefined`.
-        // isSwitch must be false; with the `!== undefined` guard mutated away,
-        // switchMode would be true and route into switchBranch instead of throwing.
-        const { ctx } = await seedWithBranches();
+      it('Then it stays on HEAD', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithBranches();
 
         // Act
-        let caught: unknown;
-        try {
-          await checkout(ctx, { rev: undefined } as unknown as Parameters<typeof checkout>[1]);
-        } catch (err) {
-          caught = err;
-        }
+        const result = await checkout(ctx, {
+          rev: undefined,
+        } as unknown as Parameters<typeof checkout>[1]);
 
-        // Assert — neither switch nor paths mode → "either rev or paths" branch.
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('INVALID_OPTION');
-        if (data.code === 'INVALID_OPTION') {
-          expect(data.option).toBe('rev');
-          expect((caught as TsgitError).message).toBe(
-            'INVALID_OPTION: invalid option: rev — either rev or paths must be provided',
-          );
-        }
+        // Assert
+        expect(result).toEqual({
+          branch: 'refs/heads/main',
+          id: commitId,
+          detached: false,
+          changedPaths: 0,
+        });
+      });
+    });
+  });
+
+  describe('Given opts with rev undefined and paths', () => {
+    describe('When checkout', () => {
+      it('Then it restores the path', async () => {
+        // Arrange
+        const { ctx } = await seedWithBranches();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'edited');
+
+        // Act
+        await checkout(ctx, {
+          rev: undefined,
+          paths: ['a.txt'],
+        } as unknown as Parameters<typeof checkout>[1]);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('a');
       });
     });
   });
 
   describe('Given opts with paths key set to undefined', () => {
     describe('When checkout', () => {
-      it('Then throws INVALID_OPTION (paths is not paths mode)', async () => {
-        // Arrange — `'paths' in opts` is true but `opts.paths === undefined`.
-        // isPaths must be false; mutating the `!== undefined` guard away would
-        // make pathsMode true and route into pathRestore.
-        const { ctx } = await seedWithBranches();
+      it('Then it is not path mode and stays on HEAD', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithBranches();
 
         // Act
-        let caught: unknown;
-        try {
-          await checkout(ctx, { paths: undefined } as unknown as Parameters<typeof checkout>[1]);
-        } catch (err) {
-          caught = err;
-        }
+        const result = await checkout(ctx, {
+          paths: undefined,
+        } as unknown as Parameters<typeof checkout>[1]);
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('INVALID_OPTION');
-        if (data.code === 'INVALID_OPTION') {
-          expect(data.option).toBe('rev');
-        }
+        expect(result).toEqual({
+          branch: 'refs/heads/main',
+          id: commitId,
+          detached: false,
+          changedPaths: 0,
+        });
       });
     });
   });
@@ -1253,30 +1259,22 @@ describe('checkout — mutation hardening', () => {
 
   describe('Given neither rev nor paths', () => {
     describe('When checkout', () => {
-      it('Then the error names the rev option and the requirement reason (L262 literals)', async () => {
-        // Arrange — pins the L262 string literals 'rev' and
-        // 'either rev or paths must be provided'.
-        const { ctx } = await seedWithBranches();
+      it('Then it stays on HEAD and adds no HEAD reflog entry', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithBranches();
+        const before = (await readReflog(ctx, 'HEAD' as RefName)).length;
 
         // Act
-        let caught: unknown;
-        try {
-          await checkout(ctx, {} as unknown as Parameters<typeof checkout>[1]);
-        } catch (err) {
-          caught = err;
-        }
+        const result = await checkout(ctx, {} as unknown as Parameters<typeof checkout>[1]);
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('INVALID_OPTION');
-        if (data.code === 'INVALID_OPTION') {
-          expect(data.option).toBe('rev');
-          expect(data.reason).toBe('either rev or paths must be provided');
-        }
-        expect((caught as TsgitError).message).toBe(
-          'INVALID_OPTION: invalid option: rev — either rev or paths must be provided',
-        );
+        expect(result).toEqual({
+          branch: 'refs/heads/main',
+          id: commitId,
+          detached: false,
+          changedPaths: 0,
+        });
+        expect((await readReflog(ctx, 'HEAD' as RefName)).length).toBe(before);
       });
     });
   });

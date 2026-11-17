@@ -3,6 +3,7 @@ import {
   checkoutNonCommit,
   checkoutStartPointNotCommit,
   invalidOption,
+  noInitialCommit,
   pathspecNoMatch,
   revparseUnresolved,
 } from '../../domain/commands/error.js';
@@ -83,7 +84,8 @@ export interface CheckoutCreateBranch {
 }
 
 export interface CheckoutSwitchOptions {
-  readonly rev: string;
+  /** The commit to switch to; omitted means HEAD, as git's bare `checkout [-b <name>]`. */
+  readonly rev?: string;
   readonly detach?: boolean;
   readonly force?: boolean;
   readonly createBranch?: CheckoutCreateBranch;
@@ -111,8 +113,6 @@ export interface CheckoutResult {
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
 const INDEX_SOURCE = 'index';
 
-const isSwitch = (opts: CheckoutOptions): opts is CheckoutSwitchOptions =>
-  'rev' in opts && opts.rev !== undefined;
 const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
 
@@ -156,10 +156,13 @@ const resolveSwitchTarget = async (ctx: Context, arg: string): Promise<ObjectId 
  * A switch argument no revision answers: git hands it on as a pathspec, which
  * matches nothing — or, under `-b`, names a start point no branch can come from.
  */
-const unresolvedSwitch = (opts: CheckoutSwitchOptions) =>
+const unresolvedSwitch = (opts: TargetedSwitch) =>
   opts.createBranch === undefined
     ? pathspecNoMatch(opts.rev)
     : checkoutStartPointNotCommit(opts.rev, opts.createBranch.name);
+
+/** A switch whose target is spelled: an omitted `rev` already reads as HEAD. */
+type TargetedSwitch = CheckoutSwitchOptions & { readonly rev: string };
 
 /** What a switch argument names: its spelling, the branch it attaches to, and the object. */
 interface SwitchTarget {
@@ -173,7 +176,7 @@ const HEAD_ALIAS = '@';
 const HEAD_NAME = 'HEAD';
 
 /** git's `parse_branchname_arg`: the branch `refs/heads/<arg>` names, else the revision ladder. */
-const resolveSwitch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<SwitchTarget> => {
+const resolveSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<SwitchTarget> => {
   const arg = previousCheckoutArg(opts.rev);
   const named = await resolveSwitchTarget(ctx, arg);
   const branchName = arg === HEAD_ALIAS ? HEAD_NAME : await interpretBranchName(ctx, arg);
@@ -335,14 +338,14 @@ const materializeSwitch = async (
 
 /** git's update_refs_for_switch: a bare HEAD name that resolved to no branch moves nothing. */
 const HEAD_SPELLINGS: ReadonlySet<string> = new Set(['HEAD', '@']);
-const staysOnHead = (opts: CheckoutSwitchOptions, branchRef: RefName | undefined): boolean =>
+const staysOnHead = (opts: TargetedSwitch, branchRef: RefName | undefined): boolean =>
   HEAD_SPELLINGS.has(opts.rev) &&
   opts.detach !== true &&
   opts.createBranch === undefined &&
   branchRef === undefined;
 
 interface SwitchFinish {
-  readonly opts: CheckoutSwitchOptions;
+  readonly opts: TargetedSwitch;
   readonly priorHead: HeadState;
   readonly branchName: string;
   readonly arg: string;
@@ -401,10 +404,7 @@ interface ResolvedSwitch {
  * git names the argument through `get_oid_mb` first, branch or not — its warnings and its read
  * of core.warnAmbiguousRefs happen either way.
  */
-const resolveCommitSwitch = async (
-  ctx: Context,
-  opts: CheckoutSwitchOptions,
-): Promise<ResolvedSwitch> => {
+const resolveCommitSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<ResolvedSwitch> => {
   const { arg, branchName, onBranch, object } = await resolveSwitch(ctx, opts);
   const oid = await switchCommit(ctx, object);
   await assertBranchCreatable(ctx, opts);
@@ -416,8 +416,33 @@ const resolveCommitSwitch = async (
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const priorHead = await readHeadRaw(ctx);
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
-  // git's merge_working_tree reads an unborn HEAD as no commit: the null oid, the empty tree.
   const headOid = await resolveRefOrMissing(ctx, HEAD_NAME);
+  if (opts.rev === undefined && headOid === undefined) return switchUnbornToNewBranch(ctx, opts);
+  return switchToCommit(ctx, { ...opts, rev: opts.rev ?? HEAD_NAME }, priorHead, headOid);
+};
+
+/** git's switch_unborn_to_new_branch: an unborn HEAD only changes the branch it names. */
+const switchUnbornToNewBranch = async (
+  ctx: Context,
+  opts: CheckoutSwitchOptions,
+): Promise<CheckoutResult> => {
+  const request = opts.createBranch;
+  if (request === undefined) throw noInitialCommit();
+  await assertBranchCreatable(ctx, opts);
+  const target = validateRefName(`${HEADS_PREFIX}${request.name}`);
+  await getRefStore(ctx).applyRefUpdates([
+    { kind: 'setSymbolic', name: HEAD_NAME as RefName, target },
+  ]);
+  return { branch: target, id: zeroOid(ctx.hashConfig), detached: false, changedPaths: 0 };
+};
+
+const switchToCommit = async (
+  ctx: Context,
+  opts: TargetedSwitch,
+  priorHead: HeadState,
+  headOid: ObjectId | undefined,
+): Promise<CheckoutResult> => {
+  // git's merge_working_tree reads an unborn HEAD as no commit: the null oid, the empty tree.
   const oldOid = headOid ?? zeroOid(ctx.hashConfig);
   const resolved = await resolveCommitSwitch(ctx, opts);
   // Git objects are content-addressed and immutable: the target tree is read outside the lock.
@@ -667,14 +692,9 @@ const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<Che
   }
 };
 
-/** Refuses `rev` with `paths`, or neither. */
+/** Refuses `rev` with `paths`. */
 const assertSingleCheckoutMode = (opts: CheckoutOptions): void => {
-  const switchMode = isSwitch(opts);
-  const pathsMode = isPaths(opts);
-  if (switchMode && pathsMode) {
+  if (isPaths(opts) && 'rev' in opts && opts.rev !== undefined) {
     throw invalidOption('paths', 'cannot be combined with rev');
-  }
-  if (!switchMode && !pathsMode) {
-    throw invalidOption('rev', 'either rev or paths must be provided');
   }
 };
