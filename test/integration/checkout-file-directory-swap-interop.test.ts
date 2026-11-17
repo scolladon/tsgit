@@ -15,6 +15,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -31,6 +32,7 @@ import {
   makePeerPair,
   type PeerPair,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const buildHistory = (dir: string): void => {
@@ -515,6 +517,241 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           expect(lstatSync(path.join(pair.ours, 'd')).isFile()).toBe(true);
           expectSameState();
+        });
+      });
+    });
+  },
+);
+
+type Row = {
+  readonly id: string;
+  readonly start: 'main' | 'hf' | 'tgt';
+  readonly stage: (dir: string) => void;
+  readonly options: { readonly rev: string; readonly force?: boolean };
+  readonly gitArgs: ReadonlyArray<string>;
+  readonly untrackedHeader?: string;
+};
+
+const put = (dir: string, name: string, body: string): void => {
+  writeFileSync(path.join(dir, name), body);
+};
+
+const stageFileAtDir = (dir: string): void => {
+  put(dir, 'dir', 's\n');
+  git(dir, 'add', 'dir');
+};
+
+const stageNestedUnderDir = (dir: string): void => {
+  mkdirSync(path.join(dir, 'dir'));
+  put(dir, 'dir/x', 's\n');
+  git(dir, 'add', 'dir/x');
+};
+
+const UNTRACKED_FILES_HEADER =
+  'error: The following untracked working tree files would be overwritten by checkout:';
+const UNTRACKED_DIRECTORY_HEADER =
+  'error: Updating the following directories would lose untracked files in them:';
+
+const ROWS: ReadonlyArray<Row> = [
+  {
+    id: 'A3/A4 a staged file where the target needs a directory',
+    start: 'main',
+    stage: stageFileAtDir,
+    options: { rev: 'tgt' },
+    gitArgs: ['checkout', 'tgt'],
+  },
+  {
+    id: 'A5 the staged file is removed from disk',
+    start: 'main',
+    stage: (dir) => {
+      stageFileAtDir(dir);
+      rmSync(path.join(dir, 'dir'));
+    },
+    options: { rev: 'tgt' },
+    gitArgs: ['checkout', 'tgt'],
+  },
+  {
+    id: 'A6 the staged file is modified after staging',
+    start: 'main',
+    stage: (dir) => {
+      stageFileAtDir(dir);
+      put(dir, 'dir', 'modified\n');
+    },
+    options: { rev: 'tgt' },
+    gitArgs: ['checkout', 'tgt'],
+  },
+  {
+    id: 'A7 head holds a file where the target needs a directory',
+    start: 'hf',
+    stage: () => undefined,
+    options: { rev: 'tgt' },
+    gitArgs: ['checkout', 'tgt'],
+  },
+  {
+    id: 'A8 head holds a file changed in the index',
+    start: 'hf',
+    stage: (dir) => {
+      put(dir, 'dir', 'S\n');
+      git(dir, 'add', 'dir');
+    },
+    options: { rev: 'tgt' },
+    gitArgs: ['checkout', 'tgt'],
+  },
+  {
+    id: 'A9 an unstaged file where the target needs a directory',
+    start: 'main',
+    stage: (dir) => put(dir, 'dir', 's\n'),
+    options: { rev: 'tgt' },
+    gitArgs: ['checkout', 'tgt'],
+  },
+  {
+    id: 'A10 forced over a staged file',
+    start: 'main',
+    stage: stageFileAtDir,
+    options: { rev: 'tgt', force: true },
+    gitArgs: ['checkout', '-f', 'tgt'],
+  },
+  {
+    id: 'A11 a staged file where head and target both hold a directory',
+    start: 'tgt',
+    stage: (dir) => {
+      git(dir, 'rm', '-r', '-q', '--cached', 'dir');
+      rmSync(path.join(dir, 'dir'), { recursive: true, force: true });
+      stageFileAtDir(dir);
+    },
+    options: { rev: 'tgt3' },
+    gitArgs: ['checkout', 'tgt3'],
+  },
+  {
+    id: 'V1 a staged directory where the target needs a file',
+    start: 'main',
+    stage: stageNestedUnderDir,
+    options: { rev: 'hf' },
+    gitArgs: ['checkout', 'hf'],
+  },
+  {
+    id: 'V2 an untracked file beside the staged directory entry',
+    start: 'main',
+    stage: (dir) => {
+      stageNestedUnderDir(dir);
+      put(dir, 'dir/u', 'u\n');
+    },
+    options: { rev: 'hf' },
+    gitArgs: ['checkout', 'hf'],
+    untrackedHeader: UNTRACKED_DIRECTORY_HEADER,
+  },
+  {
+    id: 'V3 the staged directory entry is modified after staging',
+    start: 'main',
+    stage: (dir) => {
+      stageNestedUnderDir(dir);
+      put(dir, 'dir/x', 'modified\n');
+    },
+    options: { rev: 'hf' },
+    gitArgs: ['checkout', 'hf'],
+  },
+];
+
+const buildTwin = (dir: string): void => {
+  put(dir, 'f', 'f\n');
+  git(dir, 'add', 'f');
+  git(dir, 'commit', '-q', '-m', 'main');
+  git(dir, 'checkout', '-q', '-b', 'tgt');
+  mkdirSync(path.join(dir, 'dir'));
+  put(dir, 'dir/x', 'x\n');
+  git(dir, 'add', 'dir/x');
+  git(dir, 'commit', '-q', '-m', 'tgt');
+  git(dir, 'checkout', '-q', '-b', 'tgt3');
+  put(dir, 'g', 'g\n');
+  git(dir, 'add', 'g');
+  git(dir, 'commit', '-q', '-m', 'tgt3');
+  git(dir, 'checkout', '-q', 'main');
+  git(dir, 'checkout', '-q', '-b', 'hf');
+  put(dir, 'dir', 'D\n');
+  git(dir, 'add', 'dir');
+  git(dir, 'commit', '-q', '-m', 'hf');
+  git(dir, 'checkout', '-q', 'main');
+};
+
+const shapeAtDir = (dir: string): string | ReadonlyArray<string> | undefined => {
+  const at = path.join(dir, 'dir');
+  if (!existsSync(at)) return undefined;
+  return lstatSync(at).isDirectory() ? readdirSync(at).sort() : readFileSync(at, 'utf8');
+};
+
+const blockOf = (header: string, paths: ReadonlyArray<string>): string =>
+  [header, ...paths.map((p) => `\t${p}`)].join('\n');
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'checkout interop — a staged path the target needs for a file or a directory',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('checkout-staged-file-dir');
+      initBothRepos(pair.peer, pair.ours);
+      buildTwin(pair.peer);
+      buildTwin(pair.ours);
+    });
+
+    afterEach(async () => {
+      await pair.dispose();
+    });
+
+    describe.each(['false', 'true'] as const)('Given core.ignorecase is %s', (ignoreCase) => {
+      describe.each(ROWS)('When $id', (row) => {
+        it('Then tsgit switches or refuses exactly as git does', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            git(dir, 'config', 'core.ignorecase', ignoreCase);
+            if (row.start !== 'main') git(dir, 'checkout', '-q', row.start);
+            row.stage(dir);
+          }
+          const repo = await openRepository({ cwd: pair.ours });
+
+          try {
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', pair.peer, ...row.gitArgs]);
+            const caught = await repo.checkout(row.options).then(
+              () => undefined,
+              (error: unknown) => error as TsgitError,
+            );
+
+            // Assert
+            expect(caught === undefined).toBe(peerRun.exitCode === 0);
+            if (caught !== undefined) {
+              const data = caught.data as {
+                readonly code: string;
+                readonly localChanges: ReadonlyArray<string>;
+                readonly untracked: ReadonlyArray<string>;
+              };
+              expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+              if (data.localChanges.length > 0) {
+                expect(peerRun.stderr).toContain(
+                  blockOf(
+                    'error: Your local changes to the following files would be overwritten by checkout:',
+                    data.localChanges,
+                  ),
+                );
+              }
+              if (data.untracked.length > 0) {
+                expect(peerRun.stderr).toContain(
+                  blockOf(row.untrackedHeader ?? UNTRACKED_FILES_HEADER, data.untracked),
+                );
+              }
+            }
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+            expect(git(pair.ours, 'status', '--porcelain', '--untracked-files=all')).toBe(
+              git(pair.peer, 'status', '--porcelain', '--untracked-files=all'),
+            );
+            expect(tryRunGit(['-C', pair.ours, 'symbolic-ref', '-q', 'HEAD']).stdout).toBe(
+              tryRunGit(['-C', pair.peer, 'symbolic-ref', '-q', 'HEAD']).stdout,
+            );
+            expect(shapeAtDir(pair.ours)).toEqual(shapeAtDir(pair.peer));
+          } finally {
+            await repo.dispose();
+          }
         });
       });
     });

@@ -113,6 +113,7 @@ export interface MaterializeTreeOpts {
    * The tree HEAD points at, set only by a non-forced branch switch. It turns the
    * index→target diff into git's two-way merge: a path HEAD and the target agree on keeps
    * its index entry and work file, and a path the index changed to a third version refuses.
+   * A kept path the switch needs for a file or a directory does not stay.
    */
   readonly headTree?: ObjectId;
   /**
@@ -457,7 +458,7 @@ const agreementWithHead = async (
   return { agreed: (key) => carry.kept.has(key) || isBelowShared(sharedDirs, key) };
 };
 
-/** Kept entries a written target path displaces. */
+/** Kept entries a written target path displaces: under a file it writes, or in the way of a directory it needs. */
 interface Displaced {
   /** Leave the carry and meet the one-way diff as deletions: dirty-checked, then removed. */
   readonly deletions: ReadonlySet<IndexPathKey>;
@@ -498,6 +499,7 @@ const clearedObstructions = async (
   return going;
 };
 
+/** Splits the kept entries a written path displaces: beneath a written file, or in the way of a written directory. */
 const displacedByTarget = async (
   ctx: Context,
   index: GitIndex,
@@ -507,8 +509,12 @@ const displacedByTarget = async (
   const dirs = new Set<string>(written.flatMap((t) => leadingDirectoriesOf(t.path)));
   const over = kept.filter((e) => dirs.has(escapedPathOf(e)));
   const going = await clearedObstructions(ctx, index, over);
+  const files = new Set<string>(written.map((t) => t.path));
+  const beneath = kept.filter((e) =>
+    leadingDirectoriesOf(escapedPathOf(e)).some((d) => files.has(d)),
+  );
   return {
-    deletions: keysOf(going),
+    deletions: keysOf([...beneath, ...going]),
     dropped: keysOf(over.filter((e) => !going.includes(e))),
   };
 };

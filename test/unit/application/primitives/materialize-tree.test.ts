@@ -2056,6 +2056,80 @@ describe('materializeTree carrying staged changes (headTree)', () => {
       });
     });
   });
+
+  const buildStagedDirectory = async () => {
+    const ctx = await buildSeededContext();
+    const f = await writeBlob(ctx, 'f');
+    const d = await writeBlob(ctx, 'D');
+    const s = await writeBlob(ctx, 's');
+    const headTree = await flatTree(ctx, { f });
+    const targetTree = await flatTree(ctx, { f, d });
+    await writeWork(ctx, 'f', 'f');
+    await writeWork(ctx, 'd/x', 's');
+    const xEntry = indexEntryFromStat(
+      await ctx.fs.lstat(`${ctx.layout.workDir}/d/x`),
+      FILE_MODE.REGULAR,
+      s,
+      'd/x' as FilePath,
+    );
+    const currentIndex = indexOf([makeIndexEntry('f', f), xEntry]);
+    return { ctx, headTree, targetTree, currentIndex };
+  };
+
+  describe('Given a staged d/x neither head nor target has, and a target writing file d', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then d/x leaves the index and d is written', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } = await buildStagedDirectory();
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['d', 'f']);
+        expect(await readWork(ctx, 'd')).toBe('D');
+      });
+    });
+
+    describe('When d/x was modified after staging', () => {
+      it('Then it refuses d/x as a local change', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } = await buildStagedDirectory();
+        await writeWork(ctx, 'd/x', 'modified');
+
+        // Act
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['d/x'],
+          untracked: [],
+        });
+      });
+    });
+
+    describe('When an untracked d/u sits beside d/x', () => {
+      it('Then it refuses d as untracked', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } = await buildStagedDirectory();
+        await writeWork(ctx, 'd/u', 'u');
+
+        // Act
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['d'],
+        });
+      });
+    });
+  });
 });
 
 describe('materializeTree unmerged paths', () => {
