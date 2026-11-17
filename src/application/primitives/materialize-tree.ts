@@ -637,6 +637,15 @@ interface CarrySplit {
   readonly removals: ReadonlyArray<ChangesetEntry>;
 }
 
+const indexWithout = (
+  index: MaterializeTreeOpts['currentIndex'],
+  carried: ReadonlySet<IndexEntry>,
+  dropped: ReadonlySet<IndexPathKey>,
+): MaterializeTreeOpts['currentIndex'] => ({
+  ...index,
+  entries: index.entries.filter((e) => !carried.has(e) && !dropped.has(indexPathKey(e))),
+});
+
 const carriedOptsOf = (
   opts: MaterializeTreeOpts,
   allTarget: ReadonlyArray<TargetEntry>,
@@ -644,15 +653,7 @@ const carriedOptsOf = (
 ): CarriedOpts => {
   const carried = new Set(stageZero.filter((e) => isKept(indexPathKey(e))));
   return {
-    opts: {
-      ...opts,
-      currentIndex: {
-        ...opts.currentIndex,
-        entries: opts.currentIndex.entries.filter(
-          (e) => !carried.has(e) && !dropped.has(indexPathKey(e)),
-        ),
-      },
-    },
+    opts: { ...opts, currentIndex: indexWithout(opts.currentIndex, carried, dropped) },
     allTarget: [
       ...allTarget.filter((e) => !isKept(indexPathKey(e)) && !droppedTarget.has(indexPathKey(e))),
       ...outsideTarget,
