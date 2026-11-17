@@ -757,3 +757,136 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+type SparseRow = {
+  readonly id: string;
+  readonly patterns: ReadonlyArray<string>;
+  readonly target: Readonly<Record<string, string>>;
+  readonly stage: (dir: string) => void;
+};
+
+const stageBlobAt = (dir: string, entryPath: string, skip: boolean): void => {
+  put(dir, 'staged.tmp', 'staged\n');
+  const blob = git(dir, 'hash-object', '-w', 'staged.tmp').trim();
+  rmSync(path.join(dir, 'staged.tmp'));
+  git(dir, 'update-index', '--add', '--cacheinfo', `100644,${blob},${entryPath}`);
+  if (skip) git(dir, 'update-index', '--skip-worktree', entryPath);
+};
+
+const SPARSE_ROWS: ReadonlyArray<SparseRow> = [
+  {
+    id: 'SP1 a clean staged file in the patterns where the target holds an excluded directory entry',
+    patterns: ['/*', '!/dir/x'],
+    target: { 'dir/x': 'x\n' },
+    stage: (dir) => {
+      put(dir, 'dir', 'staged\n');
+      git(dir, 'add', 'dir');
+    },
+  },
+  {
+    id: 'SP2 a skip-worktree file where the target holds an excluded directory entry',
+    patterns: ['/g'],
+    target: { 'dir/x': 'x\n' },
+    stage: (dir) => stageBlobAt(dir, 'dir', true),
+  },
+  {
+    id: 'SP3 a skip-worktree directory entry where the target holds an excluded file',
+    patterns: ['/g'],
+    target: { dir: 'd\n' },
+    stage: (dir) => stageBlobAt(dir, 'dir/a', true),
+  },
+  {
+    id: 'SP4 a skip-worktree directory entry where the target holds a file inside the patterns',
+    patterns: ['/g', '/dir'],
+    target: { dir: 'd\n' },
+    stage: (dir) => stageBlobAt(dir, 'dir/a', true),
+  },
+  {
+    id: 'SP4 with an untracked file already standing at the target file path',
+    patterns: ['/g', '/dir'],
+    target: { dir: 'd\n' },
+    stage: (dir) => {
+      stageBlobAt(dir, 'dir/a', true);
+      put(dir, 'dir', 'untracked\n');
+    },
+  },
+  {
+    id: 'SP5 a staged directory entry on disk where the target holds an excluded file',
+    patterns: ['/g', '/dir/*'],
+    target: { dir: 'd\n' },
+    stage: (dir) => {
+      mkdirSync(path.join(dir, 'dir'));
+      put(dir, 'dir/a', 'staged\n');
+      git(dir, 'add', '--sparse', 'dir/a');
+    },
+  },
+];
+
+const buildSparseTwin = (dir: string, row: SparseRow, ignoreCase: string): void => {
+  put(dir, 'g', 'g\n');
+  for (const [name, body] of Object.entries(row.target)) {
+    mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    put(dir, name, body);
+  }
+  git(dir, 'add', '.');
+  git(dir, 'commit', '-q', '-m', 'side');
+  git(dir, 'branch', 'side');
+  git(dir, 'config', 'core.ignorecase', ignoreCase);
+  git(dir, 'sparse-checkout', 'set', '--no-cone', ...row.patterns);
+  git(dir, 'checkout', '-q', '--orphan', 'o');
+  git(dir, 'rm', '-q', '-r', '--cached', '--sparse', '.');
+  for (const name of readdirSync(dir)) {
+    if (name !== '.git') rmSync(path.join(dir, name), { recursive: true, force: true });
+  }
+  row.stage(dir);
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'checkout interop — a file and a directory colliding where a sparse pattern excludes one side',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('checkout-sparse-file-dir');
+      initBothRepos(pair.peer, pair.ours);
+    });
+
+    afterEach(async () => {
+      await pair.dispose();
+    });
+
+    describe.each(['false', 'true'] as const)('Given core.ignorecase is %s', (ignoreCase) => {
+      describe.each(SPARSE_ROWS)('When $id', (row) => {
+        it('Then tsgit switches as git does and leaves the same index and work tree', async () => {
+          // Arrange
+          buildSparseTwin(pair.peer, row, ignoreCase);
+          buildSparseTwin(pair.ours, row, ignoreCase);
+          const repo = await openRepository({ cwd: pair.ours });
+
+          try {
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', pair.peer, 'checkout', 'side']);
+            const caught = await repo.checkout({ rev: 'side' }).then(
+              () => undefined,
+              (error: unknown) => error as TsgitError,
+            );
+
+            // Assert
+            expect(peerRun.exitCode).toBe(0);
+            expect(caught).toBeUndefined();
+            expect(git(pair.ours, 'ls-files', '-s', '-t')).toBe(
+              git(pair.peer, 'ls-files', '-s', '-t'),
+            );
+            expect(git(pair.ours, 'status', '--porcelain', '--untracked-files=all')).toBe(
+              git(pair.peer, 'status', '--porcelain', '--untracked-files=all'),
+            );
+            expect(shapeAtDir(pair.ours)).toEqual(shapeAtDir(pair.peer));
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+  },
+);

@@ -33,6 +33,7 @@ import {
   type IndexPath,
   type IndexPathKey,
   indexPathKey,
+  keyOfPath,
 } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
@@ -466,7 +467,7 @@ interface Displaced {
   readonly dropped: ReadonlySet<IndexPathKey>;
 }
 
-const keysOf = (entries: ReadonlyArray<IndexEntry>): Set<IndexPathKey> =>
+const keysOf = (entries: ReadonlyArray<IndexPath>): Set<IndexPathKey> =>
   new Set(entries.map(indexPathKey));
 
 /** git's icase_exists: a stat-clean tracked file in an added path's way may be replaced. */
@@ -499,6 +500,30 @@ const clearedObstructions = async (
   return going;
 };
 
+/** Index of the first entry at or after `needle` in byte order; `sorted` is in index order. */
+const firstAtOrAfter = (sorted: ReadonlyArray<IndexEntry>, needle: FilePath): number => {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (comparePaths(escapedPathOf(sorted[mid] as IndexEntry), needle) < 0) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+};
+
+/** The entries of `sorted` (index order) lying beneath the directory `path`: one contiguous run. */
+const entriesBeneath = (sorted: ReadonlyArray<IndexEntry>, path: string): IndexEntry[] => {
+  const prefix = `${path}${PATH_SEPARATOR}`;
+  const found: IndexEntry[] = [];
+  for (let i = firstAtOrAfter(sorted, prefix as FilePath); i < sorted.length; i++) {
+    const entry = sorted[i] as IndexEntry;
+    if (!escapedPathOf(entry).startsWith(prefix)) break;
+    found.push(entry);
+  }
+  return found;
+};
+
 /** Splits the kept entries a written path displaces: beneath a written file, or in the way of a written directory. */
 const displacedByTarget = async (
   ctx: Context,
@@ -509,27 +534,97 @@ const displacedByTarget = async (
   const dirs = new Set<string>(written.flatMap((t) => leadingDirectoriesOf(t.path)));
   const over = kept.filter((e) => dirs.has(escapedPathOf(e)));
   const going = await clearedObstructions(ctx, index, over);
-  const files = new Set<string>(written.map((t) => t.path));
-  const beneath = kept.filter((e) =>
-    leadingDirectoriesOf(escapedPathOf(e)).some((d) => files.has(d)),
-  );
+  const beneath = written.flatMap((t) => entriesBeneath(kept, t.path));
   return {
     deletions: keysOf([...beneath, ...going]),
     dropped: keysOf(over.filter((e) => !going.includes(e))),
   };
 };
 
+/**
+ * A file and a directory colliding where a sparse pattern excludes one side: the directory side
+ * stays in the index, the file side leaves it, and the work tree is left alone.
+ */
+interface SparseCollisions {
+  /** Target files that give way to an index entry beneath them. */
+  readonly targetFiles: ReadonlySet<IndexPathKey>;
+  /** Index files that give way to a target path beneath them. */
+  readonly indexFiles: ReadonlySet<IndexPathKey>;
+  /** Sparse movers inside the patterns beneath a target file that gives way. */
+  readonly surfaced: ReadonlySet<IndexPathKey>;
+}
+
+const NO_SPARSE_COLLISIONS: SparseCollisions = {
+  targetFiles: new Set(),
+  indexFiles: new Set(),
+  surfaced: new Set(),
+};
+
+interface IndexSides {
+  /** Agreed entries the switch leaves alone, in index order. */
+  readonly kept: ReadonlyArray<IndexEntry>;
+  /** Sparse movers the target lacks, in index order. */
+  readonly movers: ReadonlyArray<IndexEntry>;
+}
+
+/** The index entries lying beneath a target file; an in-pattern one is the displacement's to rule on for kept entries. */
+const indexBeneath = (
+  sparse: SparseMatcher,
+  sides: IndexSides,
+  target: TargetEntry,
+): IndexEntry[] => {
+  const movers = entriesBeneath(sides.movers, target.path);
+  return sparse(target.path) ? movers : [...movers, ...entriesBeneath(sides.kept, target.path)];
+};
+
+/** The index files a target path stands beneath, a kept one only when the target is outside the patterns. */
+const indexFilesAbove = (
+  sparse: SparseMatcher,
+  keys: { readonly kept: ReadonlySet<IndexPathKey>; readonly movers: ReadonlySet<IndexPathKey> },
+  target: TargetEntry,
+): IndexPathKey[] =>
+  leadingDirectoriesOf(target.path)
+    .map((dir) => keyOfPath(dir as FilePath))
+    .filter((key) => keys.movers.has(key) || (!sparse(target.path) && keys.kept.has(key)));
+
+const sparseCollisions = (
+  sparse: SparseMatcher,
+  sides: IndexSides,
+  written: ReadonlyArray<TargetEntry>,
+): SparseCollisions => {
+  const keys = { kept: keysOf(sides.kept), movers: keysOf(sides.movers) };
+  const targetFiles = new Set<IndexPathKey>();
+  const indexFiles = new Set<IndexPathKey>();
+  const surfaced = new Set<IndexPathKey>();
+  for (const target of written) {
+    const below = indexBeneath(sparse, sides, target);
+    if (below.length > 0) targetFiles.add(indexPathKey(target));
+    if (sparse(target.path)) {
+      for (const key of keysOf(below.filter((e) => sparse(e.path)))) surfaced.add(key);
+    }
+    for (const key of indexFilesAbove(sparse, keys, target)) indexFiles.add(key);
+  }
+  return { targetFiles, indexFiles, surfaced };
+};
+
+const surfacedEntry = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  flags: { ...entry.flags, skipWorktree: false },
+});
+
 interface CarrySplit {
   readonly stageZero: ReadonlyArray<IndexEntry>;
   readonly isKept: (key: IndexPathKey) => boolean;
   readonly dropped: ReadonlySet<IndexPathKey>;
+  readonly droppedTarget: ReadonlySet<IndexPathKey>;
   readonly outsideTarget: ReadonlyArray<IndexEntry>;
+  readonly surfaced: ReadonlyArray<IndexEntry>;
 }
 
 const carriedOptsOf = (
   opts: MaterializeTreeOpts,
   allTarget: ReadonlyArray<TargetEntry>,
-  { stageZero, isKept, dropped, outsideTarget }: CarrySplit,
+  { stageZero, isKept, dropped, droppedTarget, outsideTarget, surfaced }: CarrySplit,
 ): CarriedOpts => {
   const carried = new Set(stageZero.filter((e) => isKept(indexPathKey(e))));
   return {
@@ -542,9 +637,37 @@ const carriedOptsOf = (
         ),
       },
     },
-    allTarget: [...allTarget.filter((e) => !isKept(indexPathKey(e))), ...outsideTarget],
-    carried: [...carried],
+    allTarget: [
+      ...allTarget.filter((e) => !isKept(indexPathKey(e)) && !droppedTarget.has(indexPathKey(e))),
+      ...outsideTarget,
+    ],
+    carried: [...carried, ...surfaced.map(surfacedEntry)],
   };
+};
+
+const inPatternOf = (
+  sparse: SparseMatcher | undefined,
+  written: ReadonlyArray<TargetEntry>,
+): ReadonlyArray<TargetEntry> =>
+  sparse === undefined ? written : written.filter((t) => sparse(t.path));
+
+/** git leaves a path alone when an untracked file already stands where one of its directories belongs. */
+const shadowedByFile = async (
+  ctx: Context,
+  surfaced: ReadonlyArray<IndexEntry>,
+): Promise<IndexEntry[]> => {
+  const workdir = requireWorkTree(ctx, 'materializeTree');
+  const shadowed: IndexEntry[] = [];
+  for (const entry of surfaced) {
+    for (const dir of leadingDirectoriesOf(escapedPathOf(entry))) {
+      const stat = await lstatIfReachable(ctx.fs, joinPath(workdir, dir));
+      if (stat !== undefined && !stat.isDirectory) {
+        shadowed.push(entry);
+        break;
+      }
+    }
+  }
+  return shadowed;
 };
 
 /** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
@@ -562,20 +685,38 @@ const carryHeadAgreement = async (
     stageZero,
   );
   const movers = sparseMovers(opts.sparse, stageZero);
-  const agreedKept = (key: IndexPathKey): boolean => agreed(key) && !movers.has(key);
+  const agreedKept = (e: IndexPath): boolean =>
+    agreed(indexPathKey(e)) && !movers.has(indexPathKey(e));
+  const kept = stageZero.filter(agreedKept);
+  const keptKeys = keysOf([...kept, ...allTarget.filter(agreedKept)]);
+  const outside = stagedOutsideTarget(stageZero, allTarget, agreed, movers);
+  // An agreed path displaces nothing.
+  const written = allTarget.filter((e) => !keptKeys.has(indexPathKey(e)));
+  const collisions =
+    opts.sparse === undefined
+      ? NO_SPARSE_COLLISIONS
+      : sparseCollisions(opts.sparse, { kept, movers: outside }, written);
   const displaced = await displacedByTarget(
     ctx,
     opts.currentIndex,
-    stageZero.filter((e) => agreedKept(indexPathKey(e))),
-    allTarget.filter((e) => !agreedKept(indexPathKey(e))), // an agreed path displaces nothing
+    kept,
+    inPatternOf(opts.sparse, written).filter((t) => !collisions.targetFiles.has(indexPathKey(t))),
   );
-  const isKept = (key: IndexPathKey): boolean =>
-    agreedKept(key) && !displaced.deletions.has(key) && !displaced.dropped.has(key);
+  const dropped = new Set([...displaced.dropped, ...collisions.indexFiles]);
+  const shadowed = await shadowedByFile(
+    ctx,
+    outside.filter((e) => collisions.surfaced.has(indexPathKey(e))),
+  );
+  const shadowedKeys = keysOf(shadowed);
   return carriedOptsOf(opts, allTarget, {
     stageZero,
-    isKept,
-    dropped: displaced.dropped,
-    outsideTarget: stagedOutsideTarget(stageZero, allTarget, agreed, movers),
+    isKept: (key) => keptKeys.has(key) && !displaced.deletions.has(key) && !dropped.has(key),
+    dropped,
+    droppedTarget: collisions.targetFiles,
+    outsideTarget: outside.filter(
+      (e) => !collisions.indexFiles.has(indexPathKey(e)) && !shadowedKeys.has(indexPathKey(e)),
+    ),
+    surfaced: shadowed,
   });
 };
 
