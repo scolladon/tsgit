@@ -436,6 +436,19 @@ const switchUnbornToNewBranch = async (
   return { branch: target, id: zeroOid(ctx.hashConfig), detached: false, changedPaths: 0 };
 };
 
+const switchRequestOf = async (
+  ctx: Context,
+  opts: TargetedSwitch,
+  headOid: ObjectId | undefined,
+  resolved: ResolvedSwitch,
+): Promise<SwitchRequest> => {
+  // Git objects are content-addressed and immutable: the target tree is read outside the lock.
+  const target = await readTree(ctx, resolved.oid);
+  // A defined matcher (`core.sparseCheckout` on) restricts the switch to in-pattern files.
+  const matcher = await loadSparseMatcher(ctx);
+  return { opts, targetTree: target.id, headOid, matcher, ...resolved };
+};
+
 const switchToCommit = async (
   ctx: Context,
   opts: TargetedSwitch,
@@ -445,11 +458,7 @@ const switchToCommit = async (
   // git's merge_working_tree reads an unborn HEAD as no commit: the null oid, the empty tree.
   const oldOid = headOid ?? zeroOid(ctx.hashConfig);
   const resolved = await resolveCommitSwitch(ctx, opts);
-  // Git objects are content-addressed and immutable: the target tree is read outside the lock.
-  const target = await readTree(ctx, resolved.oid);
-  // A defined matcher (`core.sparseCheckout` on) restricts the switch to in-pattern files.
-  const matcher = await loadSparseMatcher(ctx);
-  const request = { opts, targetTree: target.id, headOid, matcher, ...resolved };
+  const request = await switchRequestOf(ctx, opts, headOid, resolved);
   const { written, deleted } = await materializeSwitch(ctx, request);
   return finishSwitch(ctx, {
     opts,
