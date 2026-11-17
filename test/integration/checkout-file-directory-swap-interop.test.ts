@@ -853,6 +853,22 @@ const SPARSE_ROWS: ReadonlyArray<SparseRow> = [
     },
   },
   {
+    id: 'P1 a skip-worktree file absent from disk where the target holds a directory entry in the patterns',
+    patterns: ['/g', '/dir'],
+    target: { 'dir/x': 'x\n' },
+    stage: (dir) => stageBlobAt(dir, 'dir', true),
+  },
+  {
+    id: 'P2 a skip-worktree file absent from disk with an untracked directory standing at its path',
+    patterns: ['/g', '/dir'],
+    target: { 'dir/x': 'x\n' },
+    stage: (dir) => {
+      stageBlobAt(dir, 'dir', true);
+      mkdirSync(path.join(dir, 'dir'));
+      put(dir, 'dir/other', 'untracked\n');
+    },
+  },
+  {
     id: 'R-A a staged directory entry in the patterns on disk where the target holds a file',
     patterns: ['/g', '/dir'],
     target: { dir: 'd\n' },
@@ -920,7 +936,7 @@ const buildSparseTwin = (dir: string, row: SparseRow, ignoreCase: string): void 
 };
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'checkout interop — a file and a directory colliding where a sparse pattern excludes one side',
+  'checkout interop — a file and a directory colliding under sparse checkout',
   { timeout: 60_000 },
   () => {
     let pair: PeerPair;

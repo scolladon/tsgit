@@ -2395,6 +2395,56 @@ describe('materializeTree carrying staged changes (headTree)', () => {
       });
     });
 
+    describe('Given a skip-worktree file dir absent from disk and a target dir/x inside the pattern', () => {
+      describe('When the branch switch materialises', () => {
+        it('Then the directory is written and dir is not indexed', async () => {
+          // Arrange
+          const { ctx, options } = await seedSwitch({
+            staged: { path: 'dir', skip: true, onDisk: false },
+            target: ['dir/x'],
+            sparse: (p) => p === 'g' || p === 'dir' || p.startsWith('dir/'),
+          });
+
+          // Act
+          const sut = materializeTree;
+          const result = await sut(ctx, options);
+
+          // Assert
+          expect(summaryOf(result.newIndexEntries)).toEqual([
+            ['dir/x', false],
+            ['g', false],
+          ]);
+          expect([result.written, result.deleted]).toEqual([1, 0]);
+        });
+      });
+    });
+
+    describe('Given a skip-worktree file dir absent from disk, an untracked directory dir/other and a target dir/x inside the pattern', () => {
+      describe('When the branch switch materialises', () => {
+        it('Then the directory is written, dir is not indexed and dir/other stays', async () => {
+          // Arrange
+          const { ctx, options } = await seedSwitch({
+            staged: { path: 'dir', skip: true, onDisk: false },
+            target: ['dir/x'],
+            sparse: (p) => p === 'g' || p === 'dir' || p.startsWith('dir/'),
+            occupantDirectory: 'untracked',
+          });
+
+          // Act
+          const sut = materializeTree;
+          const result = await sut(ctx, options);
+
+          // Assert
+          expect(summaryOf(result.newIndexEntries)).toEqual([
+            ['dir/x', false],
+            ['g', false],
+          ]);
+          expect([result.written, result.deleted]).toEqual([1, 0]);
+          expect(await readWork(ctx, 'dir/other')).toBe('untracked');
+        });
+      });
+    });
+
     describe.each([
       ['unchanged', 'staged'],
       ['modified', 'changed'],
