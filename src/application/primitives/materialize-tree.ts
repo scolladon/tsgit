@@ -741,11 +741,28 @@ interface CarryCollisions {
   readonly removals: ReadonlyArray<ChangesetEntry>;
 }
 
+const surfacedAndReplaced = async (
+  ctx: Context,
+  { kept, outside }: CarryPartition,
+  collisions: SparseCollisions,
+): Promise<Pick<CarryCollisions, 'shadowed' | 'removals'>> => {
+  const shadowed = await shadowedByFile(
+    ctx,
+    outside.filter((e) => collisions.surfaced.has(indexPathKey(e))),
+  );
+  const removals = await removalsOf(
+    ctx,
+    [...kept, ...outside].filter((e) => collisions.replaced.has(indexPathKey(e))),
+  );
+  return { shadowed, removals };
+};
+
 const resolveCarryCollisions = async (
   ctx: Context,
   opts: MaterializeTreeOpts,
-  { kept, outside, written }: CarryPartition,
+  partition: CarryPartition,
 ): Promise<CarryCollisions> => {
+  const { kept, outside, written } = partition;
   const collisions =
     opts.sparse === undefined
       ? NO_SPARSE_COLLISIONS
@@ -757,14 +774,7 @@ const resolveCarryCollisions = async (
     inPatternOf(opts.sparse, written).filter((t) => !collisions.targetFiles.has(indexPathKey(t))),
   );
   const dropped = new Set([...displaced.dropped, ...collisions.indexFiles]);
-  const shadowed = await shadowedByFile(
-    ctx,
-    outside.filter((e) => collisions.surfaced.has(indexPathKey(e))),
-  );
-  const removals = await removalsOf(
-    ctx,
-    [...kept, ...outside].filter((e) => collisions.replaced.has(indexPathKey(e))),
-  );
+  const { shadowed, removals } = await surfacedAndReplaced(ctx, partition, collisions);
   return { collisions, displaced, dropped, shadowed, removals };
 };
 
