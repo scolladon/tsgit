@@ -18,6 +18,10 @@ on main today). tsgit refuses `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }`.
 `materializeTree`'s two-way carry (`carryHeadAgreement` / `agreementWithHead`), a primitive every
 switch, `reset` and merge uses; the one-way path already matches git.
 
+Those runs were taken under `core.ignorecase=true`. With `false`, git refuses as tsgit does, except
+that tsgit leaves both `dir` and `dir/x` in the index when no file stands at `dir`. ADR-1202
+refines what the fold replicates.
+
 ## Options considered
 
 1. **Leave it out** (design's recommendation) — ship G1 as a known difference and defer the carry
