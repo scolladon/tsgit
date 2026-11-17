@@ -69,18 +69,24 @@ describe.each(refusals)('Given the branch name $name', ({ name, reason }) => {
     });
   });
 
-  describe('When checkout -b runs on a born HEAD', () => {
-    it('Then it refuses and HEAD stays on main', async () => {
+  describe('When checkout -b names it while switching to another commit', () => {
+    it('Then it refuses and HEAD, the index and the work tree stay untouched', async () => {
       // Arrange
       const ctx = await born();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'B');
+      await add(ctx, ['a.txt']);
+      await commit(ctx, { message: 'second', author });
+      const indexBefore = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
       const sut = checkout;
 
       // Act
-      const data = await dataOf(() => sut(ctx, { rev: 'main', createBranch: { name } }));
+      const data = await dataOf(() => sut(ctx, { rev: 'HEAD~1', createBranch: { name } }));
 
       // Assert
       expect(data).toEqual(refused);
       expect(await headFile(ctx)).toBe('ref: refs/heads/main\n');
+      expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(indexBefore);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('B');
     });
   });
 

@@ -397,6 +397,15 @@ const REFUSAL_ROWS: ReadonlyArray<Row> = [
         data,
         stderr,
       },
+      {
+        id: `U6-born-switch-${name}`,
+        kind: 'born',
+        git: ['checkout', '-b', name, 'origin/other'],
+        opts: { rev: 'origin/other', createBranch: { name } },
+        gitExit: 128,
+        data,
+        stderr,
+      },
     ];
   }),
   {
@@ -516,6 +525,10 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       await writeFile(path.join(origin, 'x'), 'x\n');
       git(origin, 'add', 'f', 'x');
       git(origin, 'commit', '-q', '-m', 'root');
+      git(origin, 'checkout', '-q', '-b', 'other');
+      await writeFile(path.join(origin, 'f'), 'other\n');
+      git(origin, 'commit', '-q', '-a', '-m', 'other');
+      git(origin, 'checkout', '-q', 'main');
     });
 
     afterAll(async () => {
