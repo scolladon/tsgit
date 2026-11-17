@@ -138,4 +138,24 @@ describe('checkout of a switch target git cannot switch to', () => {
       });
     });
   });
+
+  describe('Given an unborn HEAD', () => {
+    describe.each(['HEAD', 'main'])('When checkout switches to %s', (rev) => {
+      it('Then it refuses as an unmatched pathspec and HEAD stays', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'a');
+        await add(ctx, ['f']);
+        const sut = checkout;
+
+        // Act
+        const result = await refusal(sut(ctx, { rev }));
+
+        // Assert
+        expect(result).toEqual(pathspecNoMatch(rev).data);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/main\n');
+      });
+    });
+  });
 });

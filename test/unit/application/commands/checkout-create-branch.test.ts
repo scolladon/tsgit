@@ -5,8 +5,9 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import type { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const author: AuthorIdentity = {
@@ -131,6 +132,68 @@ describe('checkout createBranch', () => {
           option: 'createBranch',
           reason: 'cannot be combined with detach',
         });
+      });
+    });
+  });
+});
+
+describe('checkout createBranch from an unborn HEAD', () => {
+  const unbornBranchRefusal = async (ctx: Context, rev: string): Promise<unknown> => {
+    try {
+      await checkout(ctx, { rev, createBranch: { name: 'x' } });
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  describe.each(['HEAD', '@', 'main'])('Given an unborn main and the start point %s', (rev) => {
+    describe('When checkout creates x from it', () => {
+      it('Then it refuses: no branch can come from that start point', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'a');
+        await add(ctx, ['f']);
+
+        // Act
+        const result = await unbornBranchRefusal(ctx, rev);
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_START_POINT_NOT_COMMIT',
+          revision: rev,
+          branch: 'x',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/x`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an orphan HEAD and a commit-backed main', () => {
+    describe('When checkout creates x from main', () => {
+      it('Then x is created at main and HEAD attaches to it', async () => {
+        // Arrange
+        const { ctx, second } = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/o\n');
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { rev: 'main', createBranch: { name: 'x' } });
+
+        // Assert
+        expect(result).toEqual({
+          branch: 'refs/heads/x',
+          id: second,
+          detached: false,
+          changedPaths: 0,
+        });
+        expect(await readText(ctx, `${ctx.layout.gitDir}/refs/heads/x`)).toBe(`${second}\n`);
+        expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/x\n');
+        const branchLog = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(branchLog.at(-1)?.message).toBe('branch: Created from main');
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog.at(-1)?.message).toBe('checkout: moving from o to x');
       });
     });
   });

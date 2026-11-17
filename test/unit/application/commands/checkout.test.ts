@@ -7,6 +7,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import * as revParseMod from '../../../../src/application/commands/rev-parse.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
@@ -15,6 +16,7 @@ import * as objectStoreMod from '../../../../src/application/primitives/object-s
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readTree } from '../../../../src/application/primitives/read-tree.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { pathspecNoMatch, TsgitError } from '../../../../src/domain/index.js';
@@ -1695,6 +1697,47 @@ describe('checkout — post-checkout hook', () => {
     });
   });
 
+  describe.each([
+    { algorithm: 'sha1' as const, width: 40 },
+    { algorithm: 'sha256' as const, width: 64 },
+  ])('Given an orphan HEAD over a commit-backed main ($algorithm)', ({ algorithm, width }) => {
+    describe('When checkout switches to main', () => {
+      it('Then HEAD attaches, the reflog old id and the hook first argument are the null oid', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner, algorithm });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'a');
+        await add(ctx, ['f']);
+        const c = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${REF_PREFIX}o\n`);
+        const nullOid = '0'.repeat(width);
+        const before = runner.calls.length;
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { rev: 'main' });
+
+        // Assert
+        expect(result).toEqual({
+          branch: 'refs/heads/main',
+          id: c.id,
+          detached: false,
+          changedPaths: 0,
+        });
+        expect(postCheckoutSince(runner, before).map((call) => call.args)).toEqual([
+          [nullOid, c.id, '1'],
+        ]);
+        const last = (await readReflog(ctx, 'HEAD' as RefName)).at(-1);
+        expect(last).toMatchObject({
+          oldId: nullOid,
+          newId: c.id,
+          message: 'checkout: moving from o to main',
+        });
+      });
+    });
+  });
+
   describe('Given a path restore whose glob matches nothing', () => {
     describe('When checkout refuses', () => {
       it('Then post-checkout does not fire', async () => {
@@ -2438,4 +2481,226 @@ describe('checkout of a glob whose only match an exclusion removes, with a post-
       });
     });
   });
+});
+
+describe('checkout — a switch from an unborn HEAD', () => {
+  const file = (ctx: ReturnType<typeof createMemoryContext>, path: string): string =>
+    `${ctx.layout.workDir}/${path}`;
+
+  const writeAndAdd = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    path: string,
+    content: string,
+  ): Promise<void> => {
+    await ctx.fs.writeUtf8(file(ctx, path), content);
+    await add(ctx, [path]);
+  };
+
+  /** git's `checkout --orphan <name>`: HEAD moves, index and work tree stay. */
+  const orphan = (ctx: ReturnType<typeof createMemoryContext>, name: string) =>
+    ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${REF_PREFIX}${name}\n`);
+
+  const seedMain = async (files: Readonly<Record<string, string>>) => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    for (const [path, content] of Object.entries(files)) await writeAndAdd(ctx, path, content);
+    const main = await commit(ctx, { message: 'first', author });
+    return { ctx, main: main.id };
+  };
+
+  /** The index file never written, as in a repository whose first checkout is this one. */
+  const seedFetched = async (files: Readonly<Record<string, string>>) => {
+    const { ctx, main } = await seedMain(files);
+    await ctx.fs.rm(`${ctx.layout.gitDir}/index`);
+    for (const path of Object.keys(files)) await ctx.fs.rm(file(ctx, path));
+    await ctx.fs.rmRecursive(file(ctx, 'dir'));
+    await orphan(ctx, 'fresh');
+    return { ctx, main };
+  };
+
+  describe('Given an orphan HEAD and a commit-backed main', () => {
+    describe('When checkout detaches at main', () => {
+      it('Then HEAD detaches and the reflog moves from the orphan', async () => {
+        // Arrange
+        const { ctx, main } = await seedMain({ f: 'a' });
+        await orphan(ctx, 'o');
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { rev: 'main', detach: true });
+
+        // Assert
+        expect(result).toEqual({ branch: undefined, id: main, detached: true, changedPaths: 0 });
+        const last = (await readReflog(ctx, 'HEAD' as RefName)).at(-1);
+        expect(last?.message).toBe('checkout: moving from o to main');
+      });
+    });
+  });
+
+  describe("Given orphan o whose staged f is main's f", () => {
+    describe('When checkout switches to side, where f differs', () => {
+      it('Then it refuses f as a local change and nothing moves', async () => {
+        // Arrange
+        const { ctx } = await seedMain({ f: 'a' });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await writeAndAdd(ctx, 'f', 'b');
+        await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'main' });
+        await orphan(ctx, 'o');
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, { rev: 'side' }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['f'],
+          untracked: [],
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${REF_PREFIX}o\n`);
+        expect(await ctx.fs.readUtf8(file(ctx, 'f'))).toBe('a');
+      });
+    });
+  });
+
+  describe('Given an index file that was never written', () => {
+    describe('When checkout switches to main', () => {
+      it('Then it checks the whole tree out as an initial checkout', async () => {
+        // Arrange
+        const { ctx } = await seedFetched({ 'dir/x': 'x', f: 'a' });
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { rev: 'main' });
+
+        // Assert
+        expect(result.changedPaths).toBe(2);
+        expect(await ctx.fs.readUtf8(file(ctx, 'dir/x'))).toBe('x');
+        expect(await ctx.fs.readUtf8(file(ctx, 'f'))).toBe('a');
+      });
+    });
+  });
+
+  describe.each([
+    ['a plain switch', {}],
+    ['a detached switch', { detach: true }],
+  ] as const)(
+    "Given an untracked f identical to main's and no index file (%s)",
+    (_label, extra) => {
+      describe('When checkout switches to main', () => {
+        it('Then it refuses f as untracked', async () => {
+          // Arrange
+          const { ctx } = await seedFetched({ f: 'a' });
+          await ctx.fs.writeUtf8(file(ctx, 'f'), 'a');
+          const sut = checkout;
+
+          // Act
+          const result = await refusalOf(() => sut(ctx, { rev: 'main', ...extra }));
+
+          // Assert
+          expect(result).toEqual({
+            code: 'CHECKOUT_OVERWRITE_DIRTY',
+            localChanges: [],
+            untracked: ['f'],
+          });
+        });
+      });
+    },
+  );
+
+  describe("Given an untracked f differing from main's and no index file", () => {
+    describe('When checkout forces the switch to main', () => {
+      it("Then f takes main's content", async () => {
+        // Arrange
+        const { ctx } = await seedFetched({ f: 'a' });
+        await ctx.fs.writeUtf8(file(ctx, 'f'), 'other');
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, { rev: 'main', force: true });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(file(ctx, 'f'))).toBe('a');
+      });
+    });
+  });
+
+  describe("Given an empty index file and an untracked f identical to main's", () => {
+    describe('When checkout switches to main', () => {
+      it('Then it refuses f as untracked', async () => {
+        // Arrange
+        const { ctx } = await seedFetched({ f: 'a' });
+        await ctx.fs.writeUtf8(file(ctx, 'f'), 'a');
+        await add(ctx, ['f']);
+        await rm(ctx, ['f'], { cached: true });
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, { rev: 'main' }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['f'],
+        });
+      });
+    });
+  });
+
+  describe.each([true, false])(
+    'Given core.ignoreCase %s and a staged dir the target has as a directory',
+    (ignoreCase) => {
+      const seedStagedDir = async () => {
+        const { ctx } = await seedMain({ f: 'a' });
+        await branchCreate(ctx, { name: 'tgt' });
+        await checkout(ctx, { rev: 'tgt' });
+        await writeAndAdd(ctx, 'dir/x', 'x');
+        await commit(ctx, { message: 'tgt', author });
+        await checkout(ctx, { rev: 'main' });
+        await rm(ctx, ['f']);
+        await ctx.fs.writeUtf8(file(ctx, 'dir'), 's');
+        await add(ctx, ['dir']);
+        await orphan(ctx, 'o');
+        await updateConfigEntries(ctx, [
+          { section: 'core', key: 'ignorecase', value: String(ignoreCase) },
+        ]);
+        return ctx;
+      };
+
+      describe('When checkout switches to tgt', () => {
+        it(
+          ignoreCase
+            ? 'Then the stat-clean staged dir is replaced by the target directory'
+            : 'Then it refuses dir as untracked',
+          async () => {
+            // Arrange
+            const ctx = await seedStagedDir();
+            const sut = checkout;
+
+            // Act
+            const result = await refusalOf(() => sut(ctx, { rev: 'tgt' }));
+
+            // Assert
+            if (ignoreCase) {
+              expect(result).toBeUndefined();
+              expect((await readIndex(ctx)).entries.map((entry) => entry.path)).toEqual([
+                'dir/x',
+                'f',
+              ]);
+              expect(await ctx.fs.readUtf8(file(ctx, 'dir/x'))).toBe('x');
+              return;
+            }
+            expect(result).toEqual({
+              code: 'CHECKOUT_OVERWRITE_DIRTY',
+              localChanges: [],
+              untracked: ['dir'],
+            });
+          },
+        );
+      });
+    },
+  );
 });

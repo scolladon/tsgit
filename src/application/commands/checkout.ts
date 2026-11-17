@@ -15,6 +15,7 @@ import {
   indexPathKey,
 } from '../../domain/git-index/index-path-key.js';
 import {
+  emptyTreeOid,
   FILE_MODE,
   type FileMode,
   type FilePath,
@@ -45,7 +46,6 @@ import { readTree } from '../primitives/read-tree.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import {
   refResolvesForReading,
-  resolveRef,
   resolveRefForReading,
   resolveRefOrMissing,
 } from '../primitives/resolve-ref.js';
@@ -237,19 +237,22 @@ const moveHead = (ctx: Context, move: HeadMove): Promise<void> => {
 };
 
 /**
- * git's two-way merge compares against HEAD's tree. A forced switch resets instead, and an index
- * that was never written is an initial checkout: its absent paths are not staged deletions.
+ * git's two-way merge compares against HEAD's tree. A forced switch resets instead, an index that
+ * was never written is an initial checkout (its absent paths are not staged deletions), and an
+ * unborn HEAD is the empty tree: every staged path is then new relative to the old side.
  */
 const headTreeOption = async (
   ctx: Context,
   opts: CheckoutSwitchOptions,
   currentIndex: GitIndex,
-  oldOid: ObjectId,
+  headOid: ObjectId | undefined,
 ): Promise<{ readonly headTree?: ObjectId }> => {
   if (opts.force === true) return {};
-  const unborn =
+  const indexNeverWritten =
     currentIndex.entries.length === 0 && !(await ctx.fs.exists(indexPath(ctx.layout.gitDir)));
-  return unborn ? {} : { headTree: (await readTree(ctx, oldOid)).id };
+  if (indexNeverWritten) return {};
+  if (headOid === undefined) return { headTree: emptyTreeOid(ctx.hashConfig) };
+  return { headTree: (await readTree(ctx, headOid)).id };
 };
 
 /** git's `reset_tree`: a forced switch rewrites every stale entry and drops a conflict the target lacks. */
@@ -260,7 +263,7 @@ interface SwitchRequest {
   readonly targetTree: ObjectId;
   readonly branchName: string;
   readonly oid: ObjectId;
-  readonly oldOid: ObjectId;
+  readonly headOid: ObjectId | undefined;
   readonly matcher: Awaited<ReturnType<typeof loadSparseMatcher>>;
 }
 
@@ -294,7 +297,7 @@ const switchMaterializeOpts = async (
     force: opts.force ?? false,
     ...(opts.force === true ? FORCED_RESET : {}),
     checkoutMetadata: await checkoutMetadataFor(ctx, request.branchName, request.oid),
-    ...(await headTreeOption(ctx, opts, currentIndex, request.oldOid)),
+    ...(await headTreeOption(ctx, opts, currentIndex, request.headOid)),
     // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
     ...(matcher !== undefined ? { sparse: matcher } : {}),
   };
@@ -413,16 +416,23 @@ const resolveCommitSwitch = async (
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const priorHead = await readHeadRaw(ctx);
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
-  const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
+  // git's merge_working_tree reads an unborn HEAD as no commit: the null oid, the empty tree.
+  const headOid = await resolveRefOrMissing(ctx, HEAD_NAME);
+  const oldOid = headOid ?? zeroOid(ctx.hashConfig);
   const resolved = await resolveCommitSwitch(ctx, opts);
   // Git objects are content-addressed and immutable: the target tree is read outside the lock.
   const target = await readTree(ctx, resolved.oid);
   // A defined matcher (`core.sparseCheckout` on) restricts the switch to in-pattern files.
   const matcher = await loadSparseMatcher(ctx);
-  const request = { opts, targetTree: target.id, oldOid, matcher, ...resolved };
+  const request = { opts, targetTree: target.id, headOid, matcher, ...resolved };
   const { written, deleted } = await materializeSwitch(ctx, request);
-  const changedPaths = written + deleted;
-  return finishSwitch(ctx, { opts, priorHead, oldOid, changedPaths, ...resolved });
+  return finishSwitch(ctx, {
+    opts,
+    priorHead,
+    oldOid,
+    changedPaths: written + deleted,
+    ...resolved,
+  });
 };
 
 /** A path of the restore universe with the content the restore would write. */
