@@ -463,6 +463,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         it.each(rows)(
           'Then $id leaves the same state as git',
           async (row) => {
+            // Arrange + Act + Assert: the row builds both twins, runs both, and compares their state
             await expectRow(row);
           },
           ROW_TIMEOUT,

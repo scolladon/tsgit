@@ -492,6 +492,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         it.each(SUCCESS_ROWS)(
           'Then $id leaves the same state as git',
           async (row) => {
+            // Arrange + Act + Assert: the row builds both twins, runs both, and compares their state
             await expectRow(row);
           },
           ROW_TIMEOUT,
@@ -504,6 +505,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         it.each(REFUSAL_ROWS)(
           'Then $id refuses as git does and leaves the same state',
           async (row) => {
+            // Arrange + Act + Assert: the row builds both twins, runs both, and compares their state
             await expectRow(row);
           },
           ROW_TIMEOUT,
@@ -516,6 +518,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         it.each(BORN_ROWS)(
           'Then $id leaves the same state as git',
           async (row) => {
+            // Arrange + Act + Assert: the row builds both twins, runs both, and compares their state
             await expectRow(row);
           },
           ROW_TIMEOUT,
