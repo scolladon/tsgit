@@ -475,11 +475,12 @@ const keysOf = (entries: ReadonlyArray<IndexPath>): Set<IndexPathKey> =>
 /** git's icase_exists: a stat-clean tracked file in an added path's way may be replaced. */
 const obstructionMayGo = async (
   ctx: Context,
+  workdir: string,
   index: GitIndex,
   entry: IndexEntry,
   contentMatches: RacyContentCheck,
 ): Promise<boolean> => {
-  const absPath = joinPath(requireWorkTree(ctx, 'materializeTree'), escapedPathOf(entry));
+  const absPath = joinPath(workdir, escapedPathOf(entry));
   const stat = await lstatIfReachable(ctx.fs, absPath);
   if (stat === undefined) return false;
   return matchesCachedStat({ entry, indexMtime: index.indexMtime }, absPath, stat, contentMatches);
@@ -488,6 +489,7 @@ const obstructionMayGo = async (
 /** The colliders git may remove: none unless core.ignoreCase; the config is read only when one exists. */
 const clearedObstructions = async (
   ctx: Context,
+  workdir: string,
   index: GitIndex,
   over: ReadonlyArray<IndexEntry>,
 ): Promise<IndexEntry[]> => {
@@ -495,7 +497,8 @@ const clearedObstructions = async (
   const contentMatches = racyContentMatcher(ctx);
   const going: IndexEntry[] = [];
   for (const entry of over) {
-    if ((await ignoreCase()) && (await obstructionMayGo(ctx, index, entry, contentMatches))) {
+    const mayGo = async () => obstructionMayGo(ctx, workdir, index, entry, contentMatches);
+    if ((await ignoreCase()) && (await mayGo())) {
       going.push(entry);
     }
   }
@@ -508,6 +511,7 @@ const firstAtOrAfter = (sorted: ReadonlyArray<IndexEntry>, needle: FilePath): nu
   let high = sorted.length;
   while (low < high) {
     const mid = (low + high) >>> 1;
+    // Stryker disable next-line EqualityOperator: equivalent — every needle is a directory prefix ending in '/', which no index path does, so no entry compares equal to it.
     if (comparePaths(escapedPathOf(sorted[mid] as IndexEntry), needle) < 0) low = mid + 1;
     else high = mid;
   }
@@ -529,13 +533,14 @@ const entriesBeneath = (sorted: ReadonlyArray<IndexEntry>, path: string): IndexE
 /** Splits the kept entries a written path displaces: beneath a written file, or in the way of a written directory. */
 const displacedByTarget = async (
   ctx: Context,
+  workdir: string,
   index: GitIndex,
   kept: ReadonlyArray<IndexEntry>,
   written: ReadonlyArray<TargetEntry>,
 ): Promise<Displaced> => {
   const dirs = new Set<string>(written.flatMap((t) => leadingDirectoriesOf(t.path)));
   const over = kept.filter((e) => dirs.has(escapedPathOf(e)));
-  const going = await clearedObstructions(ctx, index, over);
+  const going = await clearedObstructions(ctx, workdir, index, over);
   const beneath = written.flatMap((t) => entriesBeneath(kept, t.path));
   return {
     deletions: keysOf([...beneath, ...going]),
@@ -663,18 +668,12 @@ const carriedOptsOf = (
   };
 };
 
-const inPatternOf = (
-  sparse: SparseMatcher | undefined,
-  written: ReadonlyArray<TargetEntry>,
-): ReadonlyArray<TargetEntry> =>
-  sparse === undefined ? written : written.filter((t) => sparse(t.path));
-
 /** git leaves a path alone when an untracked file already stands where one of its directories belongs. */
 const shadowedByFile = async (
   ctx: Context,
+  workdir: string,
   surfaced: ReadonlyArray<IndexEntry>,
 ): Promise<IndexEntry[]> => {
-  const workdir = requireWorkTree(ctx, 'materializeTree');
   const shadowed: IndexEntry[] = [];
   for (const entry of surfaced) {
     for (const dir of leadingDirectoriesOf(escapedPathOf(entry))) {
@@ -691,9 +690,9 @@ const shadowedByFile = async (
 /** The replaced files still on disk, each as a deletion with no previous version to compare. */
 const removalsOf = async (
   ctx: Context,
+  workdir: string,
   replaced: ReadonlyArray<IndexEntry>,
 ): Promise<ChangesetEntry[]> => {
-  const workdir = requireWorkTree(ctx, 'materializeTree');
   const removals: ChangesetEntry[] = [];
   for (const entry of replaced) {
     const stat = await lstatIfReachable(ctx.fs, joinPath(workdir, escapedPathOf(entry)));
@@ -743,22 +742,28 @@ interface CarryCollisions {
 
 const surfacedAndReplaced = async (
   ctx: Context,
+  workdir: string,
   { kept, outside }: CarryPartition,
   collisions: SparseCollisions,
 ): Promise<Pick<CarryCollisions, 'shadowed' | 'removals'>> => {
   const shadowed = await shadowedByFile(
     ctx,
+    workdir,
     outside.filter((e) => collisions.surfaced.has(indexPathKey(e))),
   );
   const removals = await removalsOf(
     ctx,
+    workdir,
     [...kept, ...outside].filter((e) => collisions.replaced.has(indexPathKey(e))),
   );
   return { shadowed, removals };
 };
 
+const NOTHING_DISPLACED: Displaced = { deletions: new Set(), dropped: new Set() };
+
 const resolveCarryCollisions = async (
   ctx: Context,
+  workdir: string,
   opts: MaterializeTreeOpts,
   partition: CarryPartition,
 ): Promise<CarryCollisions> => {
@@ -767,14 +772,13 @@ const resolveCarryCollisions = async (
     opts.sparse === undefined
       ? NO_SPARSE_COLLISIONS
       : sparseCollisions(opts.sparse, { kept, movers: outside }, written);
-  const displaced = await displacedByTarget(
-    ctx,
-    opts.currentIndex,
-    kept,
-    inPatternOf(opts.sparse, written).filter((t) => !collisions.targetFiles.has(indexPathKey(t))),
-  );
+  // Under sparse checkout the collision rule already takes every displaced file out of the index.
+  const displaced =
+    opts.sparse === undefined
+      ? await displacedByTarget(ctx, workdir, opts.currentIndex, kept, written)
+      : NOTHING_DISPLACED;
   const dropped = new Set([...displaced.dropped, ...collisions.indexFiles]);
-  const { shadowed, removals } = await surfacedAndReplaced(ctx, partition, collisions);
+  const { shadowed, removals } = await surfacedAndReplaced(ctx, workdir, partition, collisions);
   return { collisions, displaced, dropped, shadowed, removals };
 };
 
@@ -800,6 +804,7 @@ const carrySplitOf = (
 /** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
 const carryHeadAgreement = async (
   ctx: Context,
+  workdir: string,
   opts: MaterializeTreeOpts,
   allTarget: ReadonlyArray<TargetEntry>,
 ): Promise<CarriedOpts> => {
@@ -813,7 +818,7 @@ const carryHeadAgreement = async (
   );
   const movers = sparseMovers(opts.sparse, stageZero);
   const partition = partitionCarry(allTarget, stageZero, agreed, movers);
-  const resolved = await resolveCarryCollisions(ctx, opts, partition);
+  const resolved = await resolveCarryCollisions(ctx, workdir, opts, partition);
   return carriedOptsOf(opts, allTarget, carrySplitOf(stageZero, partition, resolved));
 };
 
@@ -874,10 +879,12 @@ const classifyChangeset = async (
   return rewriteStaleNoops(ctx, rawChangeset, plan.indexForDiff, workdir, staleRule);
 };
 
+/** The removals join the delete wave, which the apply runs unordered, so they need no sort. */
 const withRemovals = (changeset: Changeset, removals: ReadonlyArray<ChangesetEntry>): Changeset => {
+  // Stryker disable next-line ConditionalExpression: equivalent — with no removals the rebuilt changeset holds the same entries in the same order and `tallyStats` recounts the same stats; the guard only skips the copy.
   if (removals.length === 0) return changeset;
   const entries = [...changeset.entries, ...removals];
-  return { entries: entries.sort(pathComparatorFor(entries)), stats: tallyStats(entries) };
+  return { entries, stats: tallyStats(entries) };
 };
 
 const applyOptionsOf = (
@@ -919,11 +926,12 @@ export const materializeTreeJudging = async (
   options: MaterializeTreeOpts,
   staleRule: StaleRule,
 ): Promise<JudgedMaterialization> => {
+  const workdir = requireWorkTree(ctx, 'materializeTree');
   const fullTarget = await collectTargetEntries(ctx, options.targetTree);
-  const { opts, allTarget, carried, removals } = await carryHeadAgreement(ctx, options, fullTarget);
+  const carry = await carryHeadAgreement(ctx, workdir, options, fullTarget);
+  const { opts, allTarget, carried, removals } = carry;
   const plan = planMaterialize(allTarget, opts);
   validateExcludedPaths(ctx, plan.excluded);
-  const workdir = requireWorkTree(ctx, 'materializeTree');
   const judged = await classifyChangeset(ctx, plan, opts, workdir, staleRule);
   const { verified } = judged;
   const result = await applyChangesetWithAttributes(
