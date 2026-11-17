@@ -878,7 +878,7 @@ src/domain/commands/error.ts), git's stderr rebuilt from those fields (plan-wide
 
 ### Commit
 
-`fix(checkout): pin branch creation on an unborn head against git`
+`test(checkout): pin branch creation on an unborn head against git`
 
 ## Part 6 — interop: switching from an unborn HEAD (axis 3, axis 6 unborn)
 
@@ -966,7 +966,7 @@ plan-wide table (git exit 1). Never let a row ride the platform `git init` defau
 
 ### Commit
 
-`fix(checkout): pin switches from an unborn head against git`
+`test(checkout): pin switches from an unborn head against git`
 
 ## Part 7 — docs: checkout on an unborn HEAD, the file/directory carry, api.json, backlog
 
@@ -1030,7 +1030,7 @@ npm run check:spelling && npm run check:doc-coverage \
 
 ### Commit
 
-`fix(checkout): document checkout on an unborn head and the staged file-directory carry`
+`docs(checkout): document checkout on an unborn head and the staged file-directory carry`
 
 ## Decision candidates
 
@@ -1039,7 +1039,7 @@ different ruling changes only the named part.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC-1 | Commit type for the harness and docs parts (5, 6, 7) | **A** `fix(checkout): …` (as the invocation and ADR-1199's "every commit is fix" read literally) · **B** `test(checkout): …` / `docs(checkout): …` (the 32.40 plan's docs part used `docs(pathspec)`) | **A** | The invocation binds it; release marking is unaffected either way (squash merge, PR title is the record). B is the house precedent if the user reads ADR-1199 as code commits only |
+| DC-1 | Commit type for the harness and docs parts (5, 6, 7) | **A** `fix(checkout): …` (as the invocation and ADR-1199's "every commit is fix" read literally) · **B** `test(checkout): …` / `docs(checkout): …` (the 32.40 plan's docs part used `docs(pathspec)`) | **B** (settled by the session: ADR-1199 governs release marking; ADR-1196 carried the same wording and 32.40 shipped `test:`/`docs:` commits) | The invocation binds it; release marking is unaffected either way (squash merge, PR title is the record). B is the house precedent if the user reads ADR-1199 as code commits only |
 | DC-2 | One interop file for axes 1–4/6-unborn (design) or two | **A** two files: `checkout-unborn-new-branch-interop.test.ts` (axes 1, 2, 4) + `checkout-unborn-switch-interop.test.ts` (axes 3, 6) · **B** one file `checkout-unborn-switch-interop.test.ts` | **A** | ~50 rows in one file is two parts' work in one agent lifecycle; the split follows the design's own axes and keeps each part under ~100 tool calls |
 | DC-3 | Avoid validating the branch name twice on the unborn path | **A** keep `assertBranchCreatable` returning `void`; `switchUnbornToNewBranch` calls `validateRefName` again (pure, cheap) · **B** make `assertBranchCreatable` return the validated `RefName \| undefined` and thread it | **A** | No signature churn on a function the born path uses; the second call cannot fail after the first passed, so no new branch or mutant |
 | DC-4 | `isSwitch` after `rev` becomes optional (ADR-1197: "isSwitch becomes 'not a path restore'") | **A** delete it; `checkoutInScope` keeps dispatching on `isPaths`, which is exactly "not a path restore" · **B** keep `isSwitch = (o) => !isPaths(o)` and dispatch on it | **A** | B leaves dead code or depends on narrowing a union by an all-optional (weak) type, whose false branch need not narrow to `CheckoutPathsOptions`; A is the ADR's semantics with no new symbol |
