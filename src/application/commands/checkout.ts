@@ -24,7 +24,7 @@ import {
   type RefName,
   zeroOid,
 } from '../../domain/objects/index.js';
-import { validateRefName } from '../../domain/refs/index.js';
+import { newBranchRef, validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filter.js';
@@ -208,7 +208,7 @@ const headCheckoutLabel = (head: HeadState, oldOid: ObjectId): string =>
 const assertBranchCreatable = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<void> => {
   if (opts.createBranch === undefined) return;
   if (opts.detach === true) throw invalidOption('createBranch', 'cannot be combined with detach');
-  const name = validateRefName(`${HEADS_PREFIX}${opts.createBranch.name}`);
+  const name = newBranchRef(opts.createBranch.name);
   if (await refResolvesForReading(ctx, name)) throw branchExists(name);
 };
 
@@ -429,7 +429,7 @@ const switchUnbornToNewBranch = async (
   const request = opts.createBranch;
   if (request === undefined) throw noInitialCommit();
   await assertBranchCreatable(ctx, opts);
-  const target = validateRefName(`${HEADS_PREFIX}${request.name}`);
+  const target = newBranchRef(request.name);
   await getRefStore(ctx).applyRefUpdates([
     { kind: 'setSymbolic', name: HEAD_NAME as RefName, target },
   ]);

@@ -96,7 +96,7 @@ await repo.checkout({ rev: 'main', force: true });
 - `CHECKOUT_START_POINT_NOT_COMMIT` — `createBranch` whose start point names no revision, including any start point on an unborn HEAD; `revision` and `branch` carry both.
 - `BRANCH_EXISTS` — `createBranch.name` is already a branch.
 - `INVALID_OPTION` — `createBranch` combined with `detach`.
-- `INVALID_REF` — `rev` cannot be spelled as a ref name and does not resolve as an object id.
+- `INVALID_REF` — `createBranch.name` is `HEAD` or starts with `-` (`reason: 'branch name must not be HEAD'` / `'branch name must not start with -'`), checked after the `detach` refusal and before the existing-branch one, on a born and an unborn HEAD alike; or `rev` cannot be spelled as a ref name and does not resolve as an object id.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `rev` matches more than one object.
 - `NO_INITIAL_COMMIT` — switch mode on an unborn HEAD with no `rev` and no `createBranch`. A path restore from the index on an unborn branch succeeds, as git's does: `id` is the null object id, also passed twice to `post-checkout`.
 - `MERGE_HAS_CONFLICTS { count, paths }` — a path restore from the index matched an unmerged path; nothing is restored.

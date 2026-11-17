@@ -364,6 +364,34 @@ const REFUSAL_ROWS: ReadonlyArray<Row> = [
     data: { code: 'INVALID_REF', reason: 'ref name must not contain ..' },
     stderr: "fatal: 'x..y' is not a valid branch name",
   },
+  ...(['HEAD', '-x'] as const).flatMap((name): ReadonlyArray<Row> => {
+    const data = {
+      code: 'INVALID_REF',
+      reason:
+        name === 'HEAD' ? 'branch name must not be HEAD' : 'branch name must not start with -',
+    };
+    const stderr = `fatal: '${name}' is not a valid branch name`;
+    return [
+      {
+        id: `U6-${name}`,
+        kind: 'fresh',
+        git: ['checkout', '-b', name],
+        opts: { createBranch: { name } },
+        gitExit: 128,
+        data,
+        stderr,
+      },
+      {
+        id: `U6-born-${name}`,
+        kind: 'born',
+        git: ['checkout', '-b', name],
+        opts: { createBranch: { name } },
+        gitExit: 128,
+        data,
+        stderr,
+      },
+    ];
+  }),
   {
     id: 'U8',
     kind: 'orphan',

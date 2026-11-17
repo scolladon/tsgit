@@ -73,7 +73,7 @@ await repo.branch.delete({ name: 'feature/y' });
 ## Throws
 
 - `BRANCH_EXISTS` — `create` with an existing name and no `force`; `rename` whose `to` resolves for reading and no `force`. A `to` that exists but does not resolve is not this case — the rename replaces it.
-- `INVALID_REF` — name violates git ref syntax; also `create` against a name whose loose ref file does not parse (`reason: '<ref> is broken'`), forced or not.
+- `INVALID_REF` — name violates git ref syntax; `create` and the destination of `rename` also refuse a name that is `HEAD` or starts with `-` (`reason: 'branch name must not be HEAD'` / `'branch name must not start with -'`); also `create` against a name whose loose ref file does not parse (`reason: '<ref> is broken'`), forced or not.
 - `REVPARSE_AMBIGUOUS` — `create` whose `startPoint` names more than one object through the revision ladder; `expression` is the spelling you passed and `candidates` every object it could mean.
 - `BRANCH_NOT_FOUND` — `delete` / `rename` on a name that does not exist, or an unresolvable `startPoint`. On an unborn HEAD with no `startPoint`, `name` carries the current branch's short name — the label git substituted for the omitted start point — never `HEAD`.
 - `BRANCH_NOT_FULLY_MERGED` — an unforced `delete` whose tip is not reachable from its merge reference.

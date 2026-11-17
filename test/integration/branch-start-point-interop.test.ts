@@ -26,7 +26,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { branchCreate } from '../../src/application/commands/branch.js';
+import { branchCreate, branchRename } from '../../src/application/commands/branch.js';
 import { tagCreate } from '../../src/application/commands/tag.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
@@ -780,6 +780,50 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         expect(gitResult.exitCode).toBe(128);
         expect(gitResult.stderr).toContain("fatal: a branch named 'side2-git' already exists");
         expect(err.data.code).toBe('BRANCH_EXISTS');
+      });
+    });
+  });
+
+  describe.each([
+    { name: 'HEAD', reason: 'branch name must not be HEAD' },
+    { name: '-x', reason: 'branch name must not start with -' },
+  ])('Given the branch name $name', ({ name, reason }) => {
+    describe('When git branch and tsgit branchCreate both create it', () => {
+      it('Then both refuse and neither writes a ref', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo(`bad-name-${name.replace('-', 'dash')}`);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', '--', name]);
+        const err = await catchTsgitError(() => branchCreate(ctx, { name }));
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(`fatal: '${name}' is not a valid branch name`);
+        expect(err.data).toEqual({ code: 'INVALID_REF', reason });
+        expect(git(dir, 'for-each-ref', '--format=%(refname)', 'refs/heads').trim()).toBe(
+          'refs/heads/main',
+        );
+      });
+    });
+
+    describe('When git branch -m and tsgit branchRename both rename onto it', () => {
+      it('Then both refuse and keep the source branch', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo(`bad-rename-${name.replace('-', 'dash')}`);
+        git(dir, 'branch', 'src');
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', '-m', 'src', '--', name]);
+        const err = await catchTsgitError(() => branchRename(ctx, { from: 'src', to: name }));
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(`fatal: '${name}' is not a valid branch name`);
+        expect(err.data).toEqual({ code: 'INVALID_REF', reason });
+        expect(git(dir, 'for-each-ref', '--format=%(refname)', 'refs/heads').trim()).toBe(
+          'refs/heads/main\nrefs/heads/src',
+        );
       });
     });
   });
