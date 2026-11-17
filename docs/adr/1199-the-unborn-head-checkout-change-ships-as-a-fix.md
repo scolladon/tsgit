@@ -29,3 +29,5 @@ returned as breaking, which this change does not add.
 ## Decision
 
 **ratified by the user** — option 1. Every commit of the change is `fix(…)`, none breaking.
+
+Refined by ADR-1204: the branch-name refusal it folds during review is the one breaking commit.
