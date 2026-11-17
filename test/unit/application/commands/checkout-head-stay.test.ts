@@ -61,7 +61,8 @@ describe('checkout of a bare HEAD spelling', () => {
       const before = await reflogMessages(ctx);
 
       // Act
-      const result = await checkout(ctx, {});
+      const sut = checkout;
+      const result = await sut(ctx, {});
 
       // Assert
       expect(result).toEqual({
@@ -80,7 +81,8 @@ describe('checkout of a bare HEAD spelling', () => {
       const { ctx, tip } = await seedMain();
 
       // Act
-      const result = await checkout(ctx, { detach: true });
+      const sut = checkout;
+      const result = await sut(ctx, { detach: true });
 
       // Assert
       expect(result.detached).toBe(true);

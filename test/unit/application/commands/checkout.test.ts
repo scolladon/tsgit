@@ -584,7 +584,8 @@ describe('checkout — mutation hardening', () => {
         const { ctx, commitId } = await seedWithBranches();
 
         // Act
-        const result = await checkout(ctx, {
+        const sut = checkout;
+        const result = await sut(ctx, {
           rev: undefined,
         } as unknown as Parameters<typeof checkout>[1]);
 
@@ -607,7 +608,8 @@ describe('checkout — mutation hardening', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'edited');
 
         // Act
-        await checkout(ctx, {
+        const sut = checkout;
+        await sut(ctx, {
           rev: undefined,
           paths: ['a.txt'],
         } as unknown as Parameters<typeof checkout>[1]);
@@ -625,7 +627,8 @@ describe('checkout — mutation hardening', () => {
         const { ctx, commitId } = await seedWithBranches();
 
         // Act
-        const result = await checkout(ctx, {
+        const sut = checkout;
+        const result = await sut(ctx, {
           paths: undefined,
         } as unknown as Parameters<typeof checkout>[1]);
 
@@ -2648,57 +2651,58 @@ describe('checkout — a switch from an unborn HEAD', () => {
     });
   });
 
-  describe.each([true, false])(
-    'Given core.ignoreCase %s and a staged dir the target has as a directory',
-    (ignoreCase) => {
-      const seedStagedDir = async () => {
-        const { ctx } = await seedMain({ f: 'a' });
-        await branchCreate(ctx, { name: 'tgt' });
-        await checkout(ctx, { rev: 'tgt' });
-        await writeAndAdd(ctx, 'dir/x', 'x');
-        await commit(ctx, { message: 'tgt', author });
-        await checkout(ctx, { rev: 'main' });
-        await rm(ctx, ['f']);
-        await ctx.fs.writeUtf8(file(ctx, 'dir'), 's');
-        await add(ctx, ['dir']);
-        await orphan(ctx, 'o');
-        await updateConfigEntries(ctx, [
-          { section: 'core', key: 'ignorecase', value: String(ignoreCase) },
-        ]);
-        return ctx;
-      };
+  const seedStagedDir = async (ignoreCase: boolean) => {
+    const { ctx } = await seedMain({ f: 'a' });
+    await branchCreate(ctx, { name: 'tgt' });
+    await checkout(ctx, { rev: 'tgt' });
+    await writeAndAdd(ctx, 'dir/x', 'x');
+    await commit(ctx, { message: 'tgt', author });
+    await checkout(ctx, { rev: 'main' });
+    await rm(ctx, ['f']);
+    await ctx.fs.writeUtf8(file(ctx, 'dir'), 's');
+    await add(ctx, ['dir']);
+    await orphan(ctx, 'o');
+    await updateConfigEntries(ctx, [
+      { section: 'core', key: 'ignorecase', value: String(ignoreCase) },
+    ]);
+    return ctx;
+  };
 
-      describe('When checkout switches to tgt', () => {
-        it(
-          ignoreCase
-            ? 'Then the stat-clean staged dir is replaced by the target directory'
-            : 'Then it refuses dir as untracked',
-          async () => {
-            // Arrange
-            const ctx = await seedStagedDir();
-            const sut = checkout;
+  describe('Given core.ignoreCase true and a staged dir the target has as a directory', () => {
+    describe('When checkout switches to tgt', () => {
+      it('Then the stat-clean staged dir is replaced by the target directory', async () => {
+        // Arrange
+        const ctx = await seedStagedDir(true);
+        const sut = checkout;
 
-            // Act
-            const result = await refusalOf(() => sut(ctx, { rev: 'tgt' }));
+        // Act
+        const result = await refusalOf(() => sut(ctx, { rev: 'tgt' }));
 
-            // Assert
-            if (ignoreCase) {
-              expect(result).toBeUndefined();
-              expect((await readIndex(ctx)).entries.map((entry) => entry.path)).toEqual([
-                'dir/x',
-                'f',
-              ]);
-              expect(await ctx.fs.readUtf8(file(ctx, 'dir/x'))).toBe('x');
-              return;
-            }
-            expect(result).toEqual({
-              code: 'CHECKOUT_OVERWRITE_DIRTY',
-              localChanges: [],
-              untracked: ['dir'],
-            });
-          },
-        );
+        // Assert
+        expect(result).toBeUndefined();
+        expect((await readIndex(ctx)).entries.map((entry) => entry.path)).toEqual(['dir/x', 'f']);
+        expect(await ctx.fs.readUtf8(file(ctx, 'dir/x'))).toBe('x');
       });
-    },
-  );
+    });
+  });
+
+  describe('Given core.ignoreCase false and a staged dir the target has as a directory', () => {
+    describe('When checkout switches to tgt', () => {
+      it('Then it refuses dir as untracked', async () => {
+        // Arrange
+        const ctx = await seedStagedDir(false);
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, { rev: 'tgt' }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['dir'],
+        });
+      });
+    });
+  });
 });

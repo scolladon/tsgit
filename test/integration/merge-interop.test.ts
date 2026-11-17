@@ -227,6 +227,7 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
         peerRun: { readonly exitCode: number; readonly stderr: string },
         oursRun: Promise<unknown>,
       ): Promise<void> => {
+        expect(peerRun.exitCode).toBe(ignoreCase === 'true' ? 0 : 1);
         const caught = await oursRun.then(
           () => undefined,
           (error: unknown) => error as TsgitError,

@@ -530,6 +530,12 @@ type Row = {
   readonly options: { readonly rev: string; readonly force?: boolean };
   readonly gitArgs: ReadonlyArray<string>;
   readonly untrackedHeader?: string;
+  /** git's exit status; 'byCase' means 0 under core.ignorecase=true and 1 under false */
+  readonly exit: 0 | 1 | 'byCase';
+  readonly refusal?: {
+    readonly localChanges: ReadonlyArray<string>;
+    readonly untracked: ReadonlyArray<string>;
+  };
 };
 
 const put = (dir: string, name: string, body: string): void => {
@@ -555,6 +561,8 @@ const UNTRACKED_DIRECTORY_HEADER =
 const ROWS: ReadonlyArray<Row> = [
   {
     id: 'A3/A4 a staged file where the target needs a directory',
+    exit: 'byCase',
+    refusal: { localChanges: [], untracked: ['dir'] },
     start: 'main',
     stage: stageFileAtDir,
     options: { rev: 'tgt' },
@@ -562,6 +570,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'A5 the staged file is removed from disk',
+    exit: 0,
     start: 'main',
     stage: (dir) => {
       stageFileAtDir(dir);
@@ -572,6 +581,8 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'A6 the staged file is modified after staging',
+    exit: 1,
+    refusal: { localChanges: [], untracked: ['dir'] },
     start: 'main',
     stage: (dir) => {
       stageFileAtDir(dir);
@@ -582,6 +593,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'A7 head holds a file where the target needs a directory',
+    exit: 0,
     start: 'hf',
     stage: () => undefined,
     options: { rev: 'tgt' },
@@ -589,6 +601,8 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'A8 head holds a file changed in the index',
+    exit: 1,
+    refusal: { localChanges: ['dir'], untracked: [] },
     start: 'hf',
     stage: (dir) => {
       put(dir, 'dir', 'S\n');
@@ -599,6 +613,8 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'A9 an unstaged file where the target needs a directory',
+    exit: 1,
+    refusal: { localChanges: [], untracked: ['dir'] },
     start: 'main',
     stage: (dir) => put(dir, 'dir', 's\n'),
     options: { rev: 'tgt' },
@@ -606,6 +622,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'A10 forced over a staged file',
+    exit: 0,
     start: 'main',
     stage: stageFileAtDir,
     options: { rev: 'tgt', force: true },
@@ -613,6 +630,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'A11 a staged file where head and target both hold a directory',
+    exit: 0,
     start: 'tgt',
     stage: (dir) => {
       git(dir, 'rm', '-r', '-q', '--cached', 'dir');
@@ -624,6 +642,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'V1 a staged directory where the target needs a file',
+    exit: 0,
     start: 'main',
     stage: stageNestedUnderDir,
     options: { rev: 'hf' },
@@ -631,6 +650,8 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'V2 an untracked file beside the staged directory entry',
+    exit: 1,
+    refusal: { localChanges: [], untracked: ['dir'] },
     start: 'main',
     stage: (dir) => {
       stageNestedUnderDir(dir);
@@ -642,6 +663,8 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     id: 'V3 the staged directory entry is modified after staging',
+    exit: 1,
+    refusal: { localChanges: ['dir/x'], untracked: [] },
     start: 'main',
     stage: (dir) => {
       stageNestedUnderDir(dir);
@@ -719,25 +742,23 @@ describe.skipIf(!GIT_AVAILABLE)(
             );
 
             // Assert
-            expect(caught === undefined).toBe(peerRun.exitCode === 0);
+            const expectedExit = row.exit === 'byCase' ? (ignoreCase === 'true' ? 0 : 1) : row.exit;
+            expect(peerRun.exitCode).toBe(expectedExit);
+            expect(caught === undefined).toBe(expectedExit === 0);
             if (caught !== undefined) {
-              const data = caught.data as {
-                readonly code: string;
-                readonly localChanges: ReadonlyArray<string>;
-                readonly untracked: ReadonlyArray<string>;
-              };
-              expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
-              if (data.localChanges.length > 0) {
+              const refusal = row.refusal ?? { localChanges: [], untracked: [] };
+              expect(caught.data).toEqual({ code: 'CHECKOUT_OVERWRITE_DIRTY', ...refusal });
+              if (refusal.localChanges.length > 0) {
                 expect(peerRun.stderr).toContain(
                   blockOf(
                     'error: Your local changes to the following files would be overwritten by checkout:',
-                    data.localChanges,
+                    refusal.localChanges,
                   ),
                 );
               }
-              if (data.untracked.length > 0) {
+              if (refusal.untracked.length > 0) {
                 expect(peerRun.stderr).toContain(
-                  blockOf(row.untrackedHeader ?? UNTRACKED_FILES_HEADER, data.untracked),
+                  blockOf(row.untrackedHeader ?? UNTRACKED_FILES_HEADER, refusal.untracked),
                 );
               }
             }

@@ -120,7 +120,10 @@ const headOf = (dir: string): string => {
 
 const headLogOf = async (dir: string): Promise<string> => {
   const logPath = path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'logs/HEAD').trim());
-  const text = await readFile(logPath, 'utf8').catch(() => undefined);
+  const text = await readFile(logPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
   if (text === undefined) return 'absent';
   const lines = text.trimEnd().split('\n');
   const [head = '', message = ''] = (lines.at(-1) ?? '').split('\t');
@@ -129,7 +132,10 @@ const headLogOf = async (dir: string): Promise<string> => {
 
 const hookArgsOf = async (dir: string): Promise<string> => {
   const gitDir = git(dir, 'rev-parse', '--absolute-git-dir').trim();
-  return readFile(path.join(gitDir, 'hook-args'), 'utf8').catch(() => 'absent');
+  return readFile(path.join(gitDir, 'hook-args'), 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return 'absent';
+    throw error;
+  });
 };
 
 const branchLogsOf = (dir: string): string => {
@@ -146,6 +152,7 @@ const stateOfOne = async (dir: string): Promise<ReadonlyArray<string>> => [
   probe(dir, ['ls-files', '-s']),
   probe(dir, ['status', '--porcelain', '--untracked-files=all']),
   await headLogOf(dir),
+  probe(dir, ['config', '--get-regexp', '^branch\\.']),
   await hookArgsOf(dir),
   branchLogsOf(dir),
 ];

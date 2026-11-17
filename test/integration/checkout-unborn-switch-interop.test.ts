@@ -104,7 +104,31 @@ const headOf = (dir: string): string => {
 
 const hookArgsOf = async (dir: string): Promise<string> => {
   const gitDir = git(dir, 'rev-parse', '--absolute-git-dir').trim();
-  return readFile(path.join(gitDir, 'hook-args'), 'utf8').catch(() => 'absent');
+  return readFile(path.join(gitDir, 'hook-args'), 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return 'absent';
+    throw error;
+  });
+};
+
+const headLogOf = async (dir: string): Promise<string> => {
+  // reftable keeps no logs/HEAD file, so only that format reads the reflog through `log -g`
+  if (git(dir, 'rev-parse', '--show-ref-format').trim() === 'reftable') {
+    return probe(dir, ['log', '-g', '--format=%H%x09%gs', 'HEAD']);
+  }
+  const logPath = path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'logs/HEAD').trim());
+  const text = await readFile(logPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (text === undefined) return 'absent';
+  return text
+    .trimEnd()
+    .split('\n')
+    .map((line) => {
+      const [head = '', message = ''] = line.split('\t');
+      return `${head.split(' ').slice(0, 2).join(' ')}|${message}`;
+    })
+    .join('\n');
 };
 
 const branchLogsOf = (dir: string): string => {
@@ -135,7 +159,8 @@ const stateOfOne = async (dir: string): Promise<ReadonlyArray<string>> => [
   probe(dir, ['ls-files', '-s']),
   probe(dir, ['ls-files', '-t']),
   probe(dir, ['status', '--porcelain', '--untracked-files=all']),
-  probe(dir, ['log', '-g', '--format=%H%x09%gs', 'HEAD']),
+  await headLogOf(dir),
+  probe(dir, ['config', '--get-regexp', '^branch\\.']),
   await hookArgsOf(dir),
   branchLogsOf(dir),
   await diskOf(dir),

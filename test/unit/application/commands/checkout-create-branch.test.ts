@@ -7,7 +7,6 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
-import { noInitialCommit } from '../../../../src/domain/commands/error.js';
 import type { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -337,7 +336,7 @@ describe('checkout from an unborn HEAD with no start point', () => {
         const result = await dataOf(() => sut(ctx, { createBranch: { name: 'x..y' } }));
 
         // Assert
-        expect(result).toMatchObject({ code: 'INVALID_REF' });
+        expect(result).toEqual({ code: 'INVALID_REF', reason: 'ref name must not contain ..' });
         expect(await headFile(ctx)).toBe(before);
       });
     });
@@ -438,7 +437,7 @@ describe('checkout from an unborn HEAD with no start point', () => {
         const result = await dataOf(() => sut(ctx, opts));
 
         // Assert
-        expect(result).toEqual(noInitialCommit().data);
+        expect(result).toEqual({ code: 'NO_INITIAL_COMMIT' });
         expect(await headFile(ctx)).toBe(headBefore);
         expect(await indexFile(ctx)).toEqual(indexBefore);
       });
