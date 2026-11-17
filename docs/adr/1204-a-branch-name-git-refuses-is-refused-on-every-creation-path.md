@@ -27,6 +27,9 @@ and a born `checkout -b` write `refs/heads/HEAD` or `refs/heads/-x`, and the new
 
 ## Decision
 
-**ratified by the user** — option 1, `branch.create` included. The commit carrying the rule is
+**ratified by the user** — option 1, `branch.create` included. A rename's destination is a
+creation path too: git's `branch -m x HEAD` and `branch -m x -- -x` refuse the same way (pinned),
+so `branch.rename` applies the rule to its new name. The refusal is `INVALID_REF` with a `reason`
+naming the rule, so no error-union member is added. The commit carrying the rule is
 `fix(checkout)!:`; every other commit of the change stays `fix(…)`, so ADR-1199's "none
 breaking" holds for all of them but this one.
