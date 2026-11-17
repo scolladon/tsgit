@@ -692,21 +692,19 @@ const removalsOf = async (
   return removals;
 };
 
-/** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
-const carryHeadAgreement = async (
-  ctx: Context,
-  opts: MaterializeTreeOpts,
+interface CarryPartition {
+  readonly kept: ReadonlyArray<IndexEntry>;
+  readonly keptKeys: ReadonlySet<IndexPathKey>;
+  readonly outside: IndexEntry[];
+  readonly written: ReadonlyArray<TargetEntry>;
+}
+
+const partitionCarry = (
   allTarget: ReadonlyArray<TargetEntry>,
-): Promise<CarriedOpts> => {
-  if (opts.headTree === undefined) return { opts, allTarget, carried: [], removals: [] };
-  const stageZero = opts.currentIndex.entries.filter((e) => e.flags.stage === 0);
-  const { agreed } = await agreementWithHead(
-    ctx,
-    { ...opts, headTree: opts.headTree },
-    allTarget,
-    stageZero,
-  );
-  const movers = sparseMovers(opts.sparse, stageZero);
+  stageZero: ReadonlyArray<IndexEntry>,
+  agreed: (key: IndexPathKey) => boolean,
+  movers: ReadonlySet<IndexPathKey>,
+): CarryPartition => {
   const agreedKept = (e: IndexPath): boolean =>
     agreed(indexPathKey(e)) && !movers.has(indexPathKey(e));
   const kept = stageZero.filter(agreedKept);
@@ -714,6 +712,22 @@ const carryHeadAgreement = async (
   const outside = stagedOutsideTarget(stageZero, allTarget, agreed, movers);
   // An agreed path displaces nothing.
   const written = allTarget.filter((e) => !keptKeys.has(indexPathKey(e)));
+  return { kept, keptKeys, outside, written };
+};
+
+interface CarryCollisions {
+  readonly collisions: SparseCollisions;
+  readonly displaced: Awaited<ReturnType<typeof displacedByTarget>>;
+  readonly dropped: ReadonlySet<IndexPathKey>;
+  readonly shadowed: ReadonlyArray<IndexEntry>;
+  readonly removals: ReadonlyArray<ChangesetEntry>;
+}
+
+const resolveCarryCollisions = async (
+  ctx: Context,
+  opts: MaterializeTreeOpts,
+  { kept, outside, written }: CarryPartition,
+): Promise<CarryCollisions> => {
   const collisions =
     opts.sparse === undefined
       ? NO_SPARSE_COLLISIONS
@@ -729,12 +743,20 @@ const carryHeadAgreement = async (
     ctx,
     outside.filter((e) => collisions.surfaced.has(indexPathKey(e))),
   );
-  const shadowedKeys = keysOf(shadowed);
   const removals = await removalsOf(
     ctx,
     [...kept, ...outside].filter((e) => collisions.replaced.has(indexPathKey(e))),
   );
-  return carriedOptsOf(opts, allTarget, {
+  return { collisions, displaced, dropped, shadowed, removals };
+};
+
+const carrySplitOf = (
+  stageZero: ReadonlyArray<IndexEntry>,
+  { keptKeys, outside }: CarryPartition,
+  { collisions, displaced, dropped, shadowed, removals }: CarryCollisions,
+): CarrySplit => {
+  const shadowedKeys = keysOf(shadowed);
+  return {
     stageZero,
     isKept: (key) => keptKeys.has(key) && !displaced.deletions.has(key) && !dropped.has(key),
     dropped,
@@ -744,7 +766,27 @@ const carryHeadAgreement = async (
     ),
     surfaced: shadowed,
     removals,
-  });
+  };
+};
+
+/** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
+const carryHeadAgreement = async (
+  ctx: Context,
+  opts: MaterializeTreeOpts,
+  allTarget: ReadonlyArray<TargetEntry>,
+): Promise<CarriedOpts> => {
+  if (opts.headTree === undefined) return { opts, allTarget, carried: [], removals: [] };
+  const stageZero = opts.currentIndex.entries.filter((e) => e.flags.stage === 0);
+  const { agreed } = await agreementWithHead(
+    ctx,
+    { ...opts, headTree: opts.headTree },
+    allTarget,
+    stageZero,
+  );
+  const movers = sparseMovers(opts.sparse, stageZero);
+  const partition = partitionCarry(allTarget, stageZero, agreed, movers);
+  const resolved = await resolveCarryCollisions(ctx, opts, partition);
+  return carriedOptsOf(opts, allTarget, carrySplitOf(stageZero, partition, resolved));
 };
 
 /** A staged path the target lacks and the patterns exclude still belongs to the index, as skip-worktree. */
