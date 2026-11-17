@@ -264,6 +264,34 @@ Lesson 037: each requirement is written per axis, then every pinned row is walke
     (A7). One that differs from both refuses `localChanges: [p]` through `carryStagedChanges` (A8).
     A forced switch passes no `headTree` and is unchanged (A10). The three-way merge and rebase
     refuse a staged change before the carry (M5, M6).
+- **R8 — axis 6 under sparse checkout (`opts.sparse` defined; git 2.56.0, both `core.ignorecase`
+  values agree).** In every file/directory collision between an index entry and a target entry,
+  the directory side (`p/…`) survives in the resulting index and the file side (`p`) leaves it.
+  Nothing is refused for the pair. An out-of-pattern side is never written to or removed from disk.
+  When the directory side is an in-pattern target and the file is on disk, the file is replaced
+  without a dirty check (git only warns). Without sparse, R7 stands unchanged. Pinned rows:
+  - SP1: staged file `dir` in pattern, stat-clean, target `dir/x` excluded: index `dir/x` only, work
+    file `dir` stays on disk.
+  - SP2: skip-worktree file `dir`, target `dir/x` excluded: index `dir/x` only.
+  - SP3: skip-worktree `dir/a`, target file `dir` excluded: index keeps `dir/a`, `dir` dropped.
+  - SP4: skip-worktree `dir/a`, target file `dir` in pattern: exit 0 with a warning, index keeps
+    `dir/a` (flag cleared), `dir` not written.
+  - SP5: staged `dir/a` in pattern and on disk, target file `dir` excluded: index keeps `dir/a`,
+    which stays on disk, `dir` not in the index.
+  - R-A: staged `dir/a` in pattern and on disk, target file `dir` in pattern: index keeps `dir/a`,
+    which stays on disk, `dir` not written.
+  - R-B: staged file `dir` in pattern, stat-clean, target `dir/x` in pattern: index `dir/x`, file
+    `dir` replaced, under `ignorecase=false` too.
+  - R-C: skip-worktree file `dir` present on disk, target `dir/x` in pattern: index `dir/x`,
+    `dir/x` written.
+  - Dirty variants of R-A/R-B/R-C (the work file modified after staging) follow the same rule,
+    with no dirty check.
+  - P1/P2: an untracked directory at an in-pattern target file path still refuses as without
+    sparse.
+- **R9 — branch names (ADR-1204).** A new branch named `HEAD` or starting with `-` refuses
+  `INVALID_REF` on every creation path: `branch.create`, `checkout` `createBranch` on a born and an
+  unborn HEAD, and the destination of `branch.rename`. The leading `-` is tested on the name as
+  typed, before `@{-N}` expansion; `HEAD` is tested on the expanded name.
 
 ### Every pinned row against its requirement
 
@@ -532,6 +560,7 @@ const isKept = (key: IndexPathKey): boolean =>
 |---|---|---|---|---|
 | D6 | ADR-1201's premise holds only under `core.ignorecase=true`. Under `false` (the Linux `git init` default) git refuses G1/G9 (A1, A3) exactly as tsgit does today. What does the fold replicate? | **A** git's rule whole (R7(a) as written): the forward collider never stays in the index; its file may go only under `core.ignoreCase` when stat-clean, else `untracked: [p]`. **B** only the setting-independent half: drop the collider from the index when no file stands there (A5) and leave the A2/A4/M2/M4 refusals. A macOS/Windows-initialised repository then keeps diverging. **C** reopen ADR-1201: G1/G9 are a match on Linux, so fold only A5's corrupt index | **A** | A matches git on all 26 born After rows under both settings (scratch run). B and C leave a pinned divergence that the row this change makes reachable inherits (A2), which DOCTRINE D-2 rules out. The `ignoreCase` read is lazy (only when a forward collider exists), so A costs an ordinary switch nothing. A amends ADR-1201's context ("git switches") with the setting; it does not reverse its decision |
 | D7 | The mirror direction, staged `p/…` vs a target file `p` (V1–V4): git switches under both settings (`verify_clean_subdirectory`); tsgit refuses `untracked: ['dir']`, and names V3 wrongly. ADR-1201 names only the forward direction | **A** fold it in this change as R7(b). The same `displacedByTarget` partition routes it to the one-way diff, with no extra code path. **B** leave it out: an IMPACT line, then the user files it or not under the ADR-1170 bar | **A** | Same function (`carryHeadAgreement`), same refusal path, same consumers. The V rows become reachable from an unborn HEAD through this change (V4), which is D-2's trigger. The After run shows the routing that fixes the forward direction also fixes V1–V3 with no further edit. Leaving it out means writing code to exclude it |
+| D8 | A new branch named `HEAD` or starting with `-` | Refuse `INVALID_REF` on every creation path; no recommendation recorded beyond git's `strbuf_check_branch_ref` | ADR-1204 |
 
 ## Test strategy
 
@@ -670,3 +699,12 @@ None. No parser, decoder, matcher or serializer is touched (lenses 1–4 do not 
   disagree. The data (HEAD unchanged) agrees, and tsgit throws.
 - **An unborn HEAD whose branch ref is broken** (content that does not parse): `resolveRefOrMissing`
   propagates the read failure, as `resolveRef` did. Not pinned.
+- **Case-folded collisions under `core.ignoreCase`** beyond the exact-path match, and the sparse
+  rule's own case-folded pairs: not pinned.
+- **`core.fileMode=false` and the exec bit** in the carry: not pinned.
+- **The sparse matcher on a directory-only pattern** (`/dir/`) treats it as matching a file `dir`;
+  git does not. Deferred matcher defect.
+- **Non-cone `/*`** does not cover descendants in tsgit's matcher, so no `/*` row is pinned.
+- **`checkout -b @{-N}`** is not expanded: the name is validated as typed.
+- **Under sparse, two cases where tsgit refuses and git proceeds:** git replaces a symlinked
+  leading directory and overwrites an untracked file; tsgit refuses both.
