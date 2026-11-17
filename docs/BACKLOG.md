@@ -43,7 +43,7 @@ moved 21 entries and 10 sub-rows there.
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
 | 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ · ~~32.56~~ | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
-| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · 32.44 · 32.60 · 32.67 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
+| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · 32.44 · 32.60 · 32.67 · 32.74 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B17, C6 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
@@ -783,6 +783,20 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   status --porcelain      -> " D d/f" / "?? e/"
   ```
   Not folded: out of scope (the pathspec change covers refusals, not the `mv` move strategy). Data-integrity.
+
+### Open (scoped 2026-11-17 — follow-ups surfaced by the checkout-branch-on-unborn-head run, triaged)
+
+- [ ] **32.74** `core.fileMode = false` is ignored: `add` stages the exec bit and `status` reports it — pinned against git 2.56.0 on a well-formed repository, both `core.ignorecase` values. git's own `init` writes `core.fileMode = false` on Windows, and the setting is common on WSL and shared mounts. With it set and `chmod +x f` on a tracked 100644 file, git `add f` keeps `100644` and `status` is clean. tsgit `add(['f'])` stages `100755`, which changes the next commit's tree; `status()` reports `unstaged: 'mode-changed'`; a non-forced file/directory switch refuses `CHECKOUT_OVERWRITE_DIRTY` where git switches. Cause: nothing reads `core.fileMode` (the only hit in `src` is `bootstrap.ts`, which writes it). `deriveWorkingMode` (`src/domain/objects/file-mode.ts`, used by `src/application/primitives/internal/is-entry-stat-clean.ts` and `add`) and `src/application/primitives/snapshot/workdir-entry.ts` take the mode from `stat.mode & 0o111`. Fix direction: read `core.fileMode` (local plus worktree layer, default true); when it is false, follow git's `ce_mode_from_stat` (a regular file keeps the index entry's mode, else 100644) through the stat-clean check, the status snapshot and `add`; pin interop rows for `add`, `status` and checkout. Also resolves the fileMode case of ledger 32.62.
+  ```
+  # git 2.56.0, scrubbed env; f committed at 100644
+  git config core.filemode false; chmod +x f; echo b >> f
+  git add f                 -> ls-files -s f: 100644 422c2b7ab3b3c668038da977e4e93a5fc623169c 0 f
+  tsgit add(['f'])          -> ls-files -s f: 100755 422c2b7ab3b3c668038da977e4e93a5fc623169c 0 f
+  # without the content change:
+  git status --porcelain    -> (empty)
+  tsgit status()            -> clean:false, f unstaged 'mode-changed', worktree mode 100755
+  ```
+  Not folded: out of scope (the stat-clean checks and the config layer, outside the unborn-HEAD branch switch). Data-integrity.
 
 ## Phase 11 admin tail — completed 2026-05-17
 

@@ -162,11 +162,13 @@ A well-formed repository, but a configuration, layout or argument shape few call
   git config extensions.worktreeConfig true; git config --worktree core.fileMode false; chmod +x x
   git status --porcelain: (clean)     tsgit status {"clean":false}
   ```
+  The fileMode case is not specific to `config.worktree`: tsgit ignores a local `core.fileMode = false` too, tracked as backlog 32.74.
 
 - **32.64** Non-cone `/*` and `!/*/` mis-match, so checkout drops and deletes top-level files — pre-existing, pinned against git 2.56.0. Local `core.sparseCheckout = true`, no cone key. With `/*\n!/*/\n/b/\n`, git keeps `H top` with `top` on disk, tsgit marks `S top` and deletes it; with `/*` alone git keeps everything `H`, tsgit marks every path inside a directory `S` (`src/domain/sparse/parse-sparse-checkout.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.32; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
   ```
   pattern=/*\n!/*/\n/b/\n git: S a/f S a/g H b/f H top | tsgit: S a/f S a/g H b/f S top
   pattern=/*\n            git: H a/f H a/g H b/f H top | tsgit: S a/f S a/g S b/f H top
+  pattern=/*\n (unborn HEAD, target dir/x g, checkout side) git: H dir/x H g | tsgit: S dir/x H g
   ```
 
 - **32.65** Checkout clears a skip-worktree bit git keeps once sparse is off — pre-existing, pinned against git 2.56.0. Local cone sparse on `b`, `read-tree -mu HEAD`, then `core.sparseCheckout = false` (no `sparse-checkout disable`), then checkout `other` (changes `a/f`): git writes `a/f` and keeps its bit (`S a/f S a/g H b/f H top`); tsgit gives `H a/f S a/g H b/f H top` (`src/application/commands/checkout.ts`). The disk matches; only the index bit differs. Not folded: out of scope.
@@ -206,6 +208,42 @@ A well-formed repository, but a configuration, layout or argument shape few call
   tsgit mv(['base'], S, {skipErrors:true}) -> threw {"code":"PATH_TOO_LONG","path":"<s300>"}
   ```
 
+- **32.76** Under `core.ignoreCase`, a non-forced switch refuses a staged file that differs only in case from a directory the target adds, where git switches — pinned against git 2.56.0 (macOS APFS), unborn HEAD. Staged `DIR`, target `dir/x`. git exits 0 and leaves `AD DIR`, so the staged file's working copy is lost. tsgit refuses `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }`, because the two-way carry compares file and directory collisions case-exactly (`src/application/primitives/materialize-tree.ts`). With `core.ignoreCase=false` both refuse. Not folded: adds feature behaviour.
+  ```
+  ic=true  git checkout side -> exit 0; ls-files: DIR, dir/x; status: AD DIR; disk: dir/
+  ic=true  tsgit checkout({rev:'side'}) -> {"code":"CHECKOUT_OVERWRITE_DIRTY","localChanges":[],"untracked":["dir"]}; disk: DIR
+  ic=false both refuse (git: untracked working tree files would be overwritten: dir)
+  ```
+
+- **32.77** A non-cone directory-only pattern matches a file of that name, so checkout writes a file git skips — pinned against git 2.56.0, both `core.ignorecase` values. Local `core.sparseCheckout = true`, pattern file `/g\n/dir/\n`, target tree holds a file `dir`. git marks `S dir` and does not write it. tsgit marks `H dir` and writes it, because `buildSparseMatcher(...)('dir')` is true (`src/domain/sparse/index.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.41; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
+  ```
+  matcher('/g\n/dir/\n', non-cone): dir true | dir/a true | g true | other false
+  git checkout side   -> ls-files -t: S dir H g   disk: g
+  tsgit checkout      -> ls-files -t: H dir H g   disk: dir g
+  ```
+
+- **32.78** `checkout` `createBranch` does not expand `@{-N}` — pinned against git 2.56.0. git expands `@{-1}` in a new branch name: `checkout -b '@{-1}'` recreates a deleted previous branch, and `-B '@{-1}'` resets it. tsgit passes the name to `newBranchRef` unexpanded (`src/application/commands/checkout.ts`, `assertBranchCreatable`) and refuses `INVALID_REF`. Not folded: out of scope.
+  ```
+  # previous branch feat, then deleted; on main
+  git checkout -b '@{-1}'   -> exit 0; HEAD=refs/heads/feat
+  tsgit checkout({ createBranch: { name: '@{-1}' } }) -> {"code":"INVALID_REF","reason":"ref name must not contain @{"}; no ref created
+  # previous branch -x still present: git checkout -B '@{-1}' -> exit 0, -x reset to HEAD; tsgit: same INVALID_REF
+  ```
+
+- **32.79** Under sparse checkout, a switch refuses a symlinked leading directory that git replaces — pinned against git 2.56.0, both `core.ignorecase` values. Unborn HEAD, non-cone patterns `/g /l`, staged `l/dir`, `l` a symlink to an outside directory, target `l/dir/x`. git exits 0 (index `g`, `l/dir/x`; the outside directory is untouched). tsgit refuses `CHECKOUT_OVERWRITE_DIRTY { untracked: ['l'] }` (`src/application/primitives/apply-changeset.ts`). Not folded: needs its own decision.
+  ```
+  git checkout side -> warning: ...already present and thus not updated despite sparse patterns: l; exit 0
+                       idx H g, H l/dir/x; disk ./l/dir/x; the outside directory unchanged
+  tsgit checkout({rev:'side'}) -> {"code":"CHECKOUT_OVERWRITE_DIRTY","localChanges":[],"untracked":["l"]}
+  ```
+
+- **32.80** Under sparse checkout, git overwrites an untracked file in the way of an in-pattern directory; tsgit refuses — pinned against git 2.56.0, both `core.ignorecase` values. Unborn HEAD, non-cone patterns `/g /dir`, an untracked file `dir` not in the index, target `dir/x`. git exits 0 and the untracked `dir` is lost, despite its "not updated" warning. tsgit refuses `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }` and keeps the file (`src/application/primitives/materialize-tree.ts`). Without sparse both refuse. Not folded: needs its own decision.
+  ```
+  sparse    git: exit 0; idx H dir/x H g; disk ./dir/x ./g (untracked dir gone)
+  sparse    tsgit: {"code":"CHECKOUT_OVERWRITE_DIRTY","localChanges":[],"untracked":["dir"]}; disk ./dir : untracked
+  no sparse git: exit 1 (would be overwritten: dir) | tsgit: same refusal
+  ```
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.
@@ -233,4 +271,12 @@ git supports a form that tsgit does not offer, and no caller has asked for it.
   ```
   git   .git/worktrees/wg/: … config.worktree … info/sparse-checkout
   tsgit .git/worktrees/wt/: commondir gitdir HEAD index logs ORIG_HEAD
+  ```
+
+- **32.75** No `reference-transaction` hook — pinned against git 2.56.0. git calls `.git/hooks/reference-transaction` with `preparing`, `prepared` and `committed` around every ref update. tsgit's `HookName` union (`src/domain/hooks/hook-name.ts`) has no such member, so `branchCreate` and every other ref writer update refs without calling it. The resulting ref matches git's. Not folded: out of scope.
+  ```
+  # .git/hooks/reference-transaction: echo "$1" >> log
+  git branch x                         -> log: preparing prepared committed
+  tsgit branchCreate({ name: 'x' })    -> ref written; log: (empty)
+  grep -rn reference-transaction src   -> src/application/primitives/reftable-transaction.ts:4 (doc comment only)
   ```
