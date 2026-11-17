@@ -713,7 +713,7 @@ const removalsOf = async (
 interface CarryPartition {
   readonly kept: ReadonlyArray<IndexEntry>;
   readonly keptKeys: ReadonlySet<IndexPathKey>;
-  readonly outside: IndexEntry[];
+  readonly outside: ReadonlyArray<IndexEntry>;
   readonly written: ReadonlyArray<TargetEntry>;
 }
 
