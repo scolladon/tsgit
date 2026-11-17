@@ -284,10 +284,14 @@ Lesson 037: each requirement is written per axis, then every pinned row is walke
     `dir` replaced, under `ignorecase=false` too.
   - R-C: skip-worktree file `dir` present on disk, target `dir/x` in pattern: index `dir/x`,
     `dir/x` written.
-  - Dirty variants of R-A/R-B/R-C (the work file modified after staging) follow the same rule,
-    with no dirty check.
-  - P1/P2: an untracked directory at an in-pattern target file path still refuses as without
-    sparse.
+  - Dirty variants (pinned twice per `ignorecase` value, git exits 0 in each): R-B with `dir`
+    modified after staging — index `dir/x`, the modified `dir` replaced (git only warns "already
+    present … not updated despite sparse patterns"); R-C with the on-disk `dir` differing from the
+    skip-worktree blob — same as R-B; R-A with `dir/a` modified on disk — index keeps `dir/a` at its
+    staged blob, the modified `dir/a` stays on disk, `dir` not written.
+  - P1: skip-worktree file `dir` absent from disk, target `dir/x` in pattern (`/g /dir`): index
+    `dir/x`, `g`; one path written, none deleted.
+  - P2: P1 plus an untracked directory `dir/other` on disk: same index; `dir/other` stays.
 - **R9 — branch names (ADR-1204).** A new branch named `HEAD` or starting with `-` refuses
   `INVALID_REF` on every creation path: `branch.create`, `checkout` `createBranch` on a born and an
   unborn HEAD, and the destination of `branch.rename`. The leading `-` is tested on the name as
