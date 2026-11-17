@@ -54,6 +54,45 @@ describe('Given a new branch name', () => {
     });
   });
 
+  describe('When the name as typed starts with a dash and expands to an ordinary name', () => {
+    it('Then it is refused with the dash reason', () => {
+      // Arrange
+      const sut = newBranchRef;
+
+      // Act
+      const data = dataOf(() => sut('main', '-x'));
+
+      // Assert
+      expect(data).toEqual({ code: 'INVALID_REF', reason: 'branch name must not start with -' });
+    });
+  });
+
+  describe('When the name as typed is an expression that expands to a dashed branch', () => {
+    it('Then the dashed expansion maps under refs/heads/', () => {
+      // Arrange
+      const sut = newBranchRef;
+
+      // Act
+      const result = sut('-x', '@{-1}');
+
+      // Assert
+      expect(result).toBe('refs/heads/-x');
+    });
+  });
+
+  describe('When the name as typed is an expression that expands to HEAD', () => {
+    it('Then it is refused with the HEAD reason', () => {
+      // Arrange
+      const sut = newBranchRef;
+
+      // Act
+      const data = dataOf(() => sut('HEAD', '@{-1}'));
+
+      // Assert
+      expect(data).toEqual({ code: 'INVALID_REF', reason: 'branch name must not be HEAD' });
+    });
+  });
+
   describe('When it breaks the ref-name grammar', () => {
     it('Then the grammar refusal surfaces', () => {
       // Arrange

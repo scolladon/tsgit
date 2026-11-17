@@ -233,7 +233,7 @@ interface BranchClaim {
 /** The new branch's ref, refused when it exists unforced or a worktree holds it. */
 const claimBranch = async (ctx: Context, input: BranchCreateInput): Promise<BranchClaim> => {
   const branchName = await interpretBranchName(ctx, input.name);
-  const name = newBranchRef(branchName);
+  const name = newBranchRef(branchName, input.name);
   const force = input.force === true;
   const held = await refResolvesForReading(ctx, name);
   if (!force && held) throw branchExists(name);
@@ -364,7 +364,7 @@ export const branchRename = async (
 ): Promise<BranchRenameResult> => {
   await assertOperationalRepository(ctx);
   const from = validateRefName(`${HEADS_PREFIX}${await interpretBranchName(ctx, input.from)}`);
-  const to = newBranchRef(await interpretBranchName(ctx, input.to));
+  const to = newBranchRef(await interpretBranchName(ctx, input.to), input.to);
   const id = await resolveRef(ctx, from);
   const request: RenameRequest = { from, to, force: input.force === true };
   await assertRenameAllowed(ctx, request);

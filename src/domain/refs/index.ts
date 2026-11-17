@@ -1,7 +1,6 @@
-// Error types
-
-// Validation
+// Validation of a new branch name beyond the ref-name grammar
 export { newBranchRef } from './branch-ref.js';
+// Error types
 export type { RefsError, ReftableCheck } from './error.js';
 export { invalidPackedRefs, invalidRef, invalidReftable, reftableLocked } from './error.js';
 // Loose refs

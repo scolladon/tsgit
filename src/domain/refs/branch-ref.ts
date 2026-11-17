@@ -6,12 +6,13 @@ import { validateRefName } from './ref-validation.js';
 const HEAD_BRANCH_NAME = 'HEAD';
 
 /**
- * The full ref a new branch `shortName` would occupy. On top of the ref-name
- * grammar, git refuses a branch named `HEAD` or starting with `-` — checks the
- * full `refs/heads/<name>` can no longer see.
+ * The full ref a new branch would occupy. On top of the ref-name grammar, git
+ * refuses a branch named `HEAD` or typed starting with `-` — checks the full
+ * `refs/heads/<name>` can no longer see. The dash is tested on the name as
+ * typed, before `@{-N}` expands; `HEAD` on the name it expands to.
  */
-export const newBranchRef = (shortName: string): RefName => {
+export const newBranchRef = (shortName: string, typed: string = shortName): RefName => {
   if (shortName === HEAD_BRANCH_NAME) throw invalidRef('branch name must not be HEAD');
-  if (shortName.startsWith('-')) throw invalidRef('branch name must not start with -');
+  if (typed.startsWith('-')) throw invalidRef('branch name must not start with -');
   return validateRefName(`${HEADS_PREFIX}${shortName}`);
 };

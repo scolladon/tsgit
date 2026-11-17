@@ -827,4 +827,53 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
       });
     });
   });
+
+  describe('Given @{-1} naming a previous branch -x that git created through update-ref', () => {
+    const prepare = async (slug: string): Promise<{ dir: string; ctx: Context }> => {
+      const repo = await caseRepo(slug);
+      git(repo.dir, 'update-ref', 'refs/heads/-x', 'HEAD');
+      git(repo.dir, 'symbolic-ref', 'HEAD', 'refs/heads/-x');
+      git(repo.dir, 'checkout', '-q', 'main');
+      return repo;
+    };
+
+    describe('When git branch -f and tsgit branchCreate force it by that expression', () => {
+      it('Then both accept it and -x stays a branch', async () => {
+        // Arrange
+        const git2 = await prepare('dash-expansion-create');
+        const tsgit = await prepare('dash-expansion-create-tsgit');
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', git2.dir, 'branch', '-f', '@{-1}', 'HEAD']);
+        const created = await branchCreate(tsgit.ctx, { name: '@{-1}', force: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(created.name).toBe('refs/heads/-x');
+        expect(git(tsgit.dir, 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(
+          git(git2.dir, 'for-each-ref', '--format=%(refname) %(objectname)'),
+        );
+      });
+    });
+
+    describe('When git branch -M and tsgit branchRename force a rename onto that expression', () => {
+      it('Then both accept it and leave the same branches', async () => {
+        // Arrange
+        const git2 = await prepare('dash-expansion-rename');
+        const tsgit = await prepare('dash-expansion-rename-tsgit');
+        for (const repo of [git2, tsgit]) git(repo.dir, 'branch', 'src');
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', git2.dir, 'branch', '-M', 'src', '@{-1}']);
+        const renamed = await branchRename(tsgit.ctx, { from: 'src', to: '@{-1}', force: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(renamed.to).toBe('refs/heads/-x');
+        expect(git(tsgit.dir, 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(
+          git(git2.dir, 'for-each-ref', '--format=%(refname) %(objectname)'),
+        );
+      });
+    });
+  });
 });
