@@ -721,7 +721,7 @@ const carryHeadAgreement = async (
   const displaced = await displacedByTarget(
     ctx,
     opts.currentIndex,
-    kept.filter((e) => !collisions.indexFiles.has(indexPathKey(e))),
+    kept,
     inPatternOf(opts.sparse, written).filter((t) => !collisions.targetFiles.has(indexPathKey(t))),
   );
   const dropped = new Set([...displaced.dropped, ...collisions.indexFiles]);
