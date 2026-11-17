@@ -526,7 +526,7 @@ const isKept = (key: IndexPathKey): boolean =>
 | D4 | `CheckoutResult.id` after U1 | **A** adopted: `zeroOid(ctx.hashConfig)` | ADR-1200 |
 | D5 | G1 / G9 staged file vs target directory | **B** ratified (against the recommendation): fold the two-way carry's d/f divergence in this change, with unit rows and interop pins (DOCTRINE D-2) | ADR-1201 |
 
-### Open — raised by the axis-6 re-pin
+### Settled after the axis-6 re-pin (D6 → ADR-1202, D7 → ADR-1203, both ratified as recommended)
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
