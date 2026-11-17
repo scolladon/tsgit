@@ -3,8 +3,10 @@
 > Brief: backlog 32.41 — `checkout` cannot create a branch on an unborn HEAD (git's `checkout -b x`
 > with no start point), and a start point given on an unborn HEAD throws `REF_NOT_FOUND` where git
 > refuses `'<rev>' is not a commit and a branch '<name>' cannot be created from it`. Folded: every
-> switch FROM an unborn HEAD to a real commit refuses in tsgit and succeeds in git.
-> Status: draft → self-reviewed ×3
+> switch FROM an unborn HEAD to a real commit refuses in tsgit and succeeds in git; and (ADR-1201,
+> DOCTRINE D-2) the two-way carry's file/directory displacement in `materialize-tree.ts` that the
+> unborn path inherits (axis 6).
+> Status: draft → self-reviewed ×3 → revised against ADRs 1197–1201 (axis 6 pinned, R7, §7)
 
 ## Context
 
@@ -40,7 +42,10 @@ same function and the same refusal path, so it is folded.
 | same file | `pathRestore` | precedent: an unborn HEAD reports `zeroOid(ctx.hashConfig)` as `id` and to the hook |
 | `src/application/primitives/resolve-ref.ts` | `resolveRef` (missing → `REF_NOT_FOUND`), `resolveRefOrMissing` (missing → `undefined`, any other failure propagates) | |
 | `src/application/primitives/ref-store.ts` | `applyRefUpdates([{ kind: 'setSymbolic', name: 'HEAD', target }])` | with no `reflog` field, `applyRefWrite` writes the HEAD file and no reflog line (files and reftable backends). HEAD resolves to the worktree's own HEAD in a linked worktree |
-| `src/application/primitives/materialize-tree.ts` | `MaterializeTreeOpts.headTree`, `carryHeadAgreement`, `agreementWithHead` | the two-way rule; `readTree(emptyTreeOid)` is served virtually by `object-resolver.ts` |
+| `src/application/primitives/materialize-tree.ts` | `MaterializeTreeOpts.headTree`, `carryHeadAgreement`, `agreementWithHead`, `leadingDirectoriesOf`, `collidesWithTarget` | the two-way rule; `readTree(emptyTreeOid)` is served virtually by `object-resolver.ts`. `carryHeadAgreement` sets every kept stage-0 entry aside and re-appends it after the apply, with no file/directory check against the paths the switch writes (axis 6) |
+| `src/application/primitives/internal/two-way-carry.ts` | `carryStagedChanges(head, target, index): TwoWayCarry` | per-path `kept` / `refused`; path-local, blind to d/f (unchanged by §7) |
+| `src/application/primitives/internal/occupant-clash.ts` | `classifyLeadingObstruction`, `classifyAddedPath`, `holdsSurvivor` | the pre-flight: a file at an added path's leading directory is `untracked` unless the changeset deletes it (`scope.removed`) or it is ignored (unchanged by §7) |
+| consumers passing `headTree` | `checkout.ts` `materializeSwitch`; `merge.ts` `attemptNonConflictTree` (fast-forward, squash); `apply-merge-to-worktree.ts` (three-way clean result, `force: true`); `internal/reset-worktree.ts` `attemptCheckoutWorktreeToCommit` (rebase) | `reset.ts`, `pull.ts`, `pull-into-void.ts`, `worktree.ts`, `stash.ts` pass no `headTree`, so `carryHeadAgreement` returns at its first line for them |
 | `src/domain/objects/object-id.ts` | `emptyTreeOid(config)`, `zeroOid` | |
 | `src/domain/commands/error.ts` | `checkoutStartPointNotCommit`, `pathspecNoMatch`, `noInitialCommit` (`NO_INITIAL_COMMIT`, used by `stash` and `history-rewrite`), `invalidOption`, `branchExists` | |
 | `src/application/commands/stash.ts` | `headTreeOrEmpty` | precedent: git's `reset_head` reads an unborn HEAD as the empty tree |
@@ -54,6 +59,10 @@ same function and the same refusal path, so it is folded.
   between existing members as `fix`; ADR-1190 marked a new refusal breaking; ADR-1024 marked removing
   a union member breaking. DOCTRINE D-3 covers a fix that turns a returning method into a throwing
   one. This change goes the other way (throwing → returning), so D-3 does not decide the marking.
+- Ratified for this change: ADR-1197 (D1 A), ADR-1198 (D2 A), ADR-1199 (D3 A, `fix`), ADR-1200
+  (D4 A), ADR-1201 (D5 **B**: fold the two-way carry's d/f divergence, G1 and G9).
+- DOCTRINE D-2: a row this change makes reachable that inherits a shared-primitive divergence is
+  folded whole, with unit rows for the shared half and an interop pin per affected consumer.
 
 ## Pinned matrix (git 2.56.0, tsgit main 3615a9e9, 2026-11-16)
 
@@ -118,8 +127,8 @@ identical outcomes; the other rows are deterministic file-state outcomes, run on
 | F13 | fetched + staged `g` (reftable repository), `checkout other` | 0, `A g` kept; HEAD reflog `moving from main to other` | `REF_NOT_FOUND` | same |
 | F14 | sparse (no-cone `/g`), orphan → main | 0, `f` skip-worktree, absent on disk | `REF_NOT_FOUND` | not probed after; same `materializeSwitch` path as a born sparse switch (interop row) |
 | F15 | linked worktree on orphan, `checkout --detach main` | 0; main worktree HEAD untouched | `REF_NOT_FOUND` | interop row |
-| G1 | fetched + staged file `dir`, target has `dir/x` (×3) | 0; staged `dir` dropped from index and disk, `dir/x` and `f` written | `REF_NOT_FOUND` | `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }` — **differs**, see G9 and D5 |
-| G9 | **born** `main` (`f` only) + staged `dir`, `checkout tgt` (has `dir/x`) | 0, same as G1 | `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }` on main | unchanged: a pre-existing born-HEAD divergence that G1 inherits (D5) |
+| G1 | fetched + staged file `dir`, target has `dir/x` (×3, macOS `git init`, so `core.ignorecase=true`) | 0; staged `dir` dropped from index and disk, `dir/x` and `f` written | `REF_NOT_FOUND` | first-revision scratch: `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }`. Re-pinned per `core.ignorecase` in axis 6 (A1, A2), fixed by R7 / §7 |
+| G9 | **born** `main` (`f` only) + staged `dir`, `checkout tgt` (has `dir/x`) | 0, same as G1 | `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }` on main | axis 6 (A3, A4) |
 
 (git's `merge_working_tree` with a NULL old commit uses the empty tree as the two-way "old" side;
 F5–F9 and F13 are its observable consequences.)
@@ -145,6 +154,59 @@ F5–F9 and F13 are its observable consequences.)
 No gap: tsgit refuses on the same condition and names the same thing. `test/integration/branch-start-point-interop.test.ts`
 (`Given a fresh repository whose HEAD names a branch no commit backs`) already pins B1 and its
 `--force` twin, so no row is added.
+
+### Axis 6 — the two-way carry against a file/directory swap (ADR-1201, re-pinned 2026-11-17)
+
+Twins are copies of one origin: `main` (`f`), `tgt` = main + `dir/x`, `tgt3` = tgt + `g`, `hf` =
+main + file `dir` (`D`), `dv` = main + `h`. Each row sets `core.ignorecase` explicitly in both twins
+(`ic=F` / `ic=T`), except M6, which ran under the macOS `git init` default (`true`). Row letters: A = staged file against a target directory, V = staged directory against a target file, M = merge consumers. "After" = a scratch copy of `src` with the §7 edit applied (born rows; the unborn
+rows need §2–§4 as well and were pinned on git only). "staged `dir`" = `echo s > dir; git add dir` on
+`main` (neither HEAD nor the target has `dir`). Raw outputs: `<scratch>/df/out{1..4}.txt`. A3 and A4
+ran twice per setting, A1 twice per setting; identical outcomes.
+
+**The finding that bounds the fold: the forward rows are gated on `core.ignorecase`.** The first
+revision pinned G1/G9 on macOS, where `git init` writes `core.ignorecase=true`. With
+`core.ignorecase=false` (the Linux default) git refuses A1/A3 exactly as tsgit does today. The
+switch goes through only under `ic=T` and only when the file's cached stat matches (A6 refuses when
+the content was modified after staging). This is git's `verify_absent` → `check_ok_to_remove` →
+`icase_exists`: under `ignore_case`, a file in the added path's way that is in the source index and
+`ie_match_stat`-clean may be replaced. The reverse direction (V rows) is git's
+`verify_clean_subdirectory` and does not depend on the setting.
+
+| # | Form | ic | git 2.56.0 | tsgit main | After |
+|---|---|---|---|---|---|
+| A1 | **unborn** (orphan, index emptied) + staged `dir`, `checkout tgt` (G1) | F | refuse `untracked working tree files would be overwritten: dir`, exit 1 (×2) | `REF_NOT_FOUND` | not run (needs §2–§4); same carry input as A3 with HEAD = empty tree |
+| A2 | same (G1) | T | 0; index `dir/x`, `f`; disk `dir/x` (×2) | `REF_NOT_FOUND` | as A1 |
+| A2d | unborn + staged `dir`, then `echo m > dir` | F, T | refuse untracked `dir` (both) | `REF_NOT_FOUND` | as A1 |
+| A3 | born `main` + staged `dir`, `checkout tgt` (G9) | F | refuse untracked `dir`, exit 1 (×2) | `CHECKOUT_OVERWRITE_DIRTY { localChanges: [], untracked: ['dir'] }` (match) | same (match) |
+| A4 | same (G9) | T | 0; index `dir/x`, `f`; disk `dir/x`; status clean (×2 + ×3 in the first revision) | refuse `untracked: ['dir']` | 0, same state |
+| A5 | born + staged `dir`, `rm dir` (worktree file gone) | F, T | 0; index `dir/x`, `f` | **0 but the index holds both `dir` and `dir/x`**; status `AD dir` | 0; index `dir/x`, `f` |
+| A6 | born + staged `dir`, then `echo m > dir` | F, T | refuse untracked `dir` (both) | refuse `untracked: ['dir']` (match) | same (match) |
+| A7 | HEAD `hf` (file `dir` = `D`), index = HEAD, `checkout tgt` (staged content also in HEAD) | F, T | 0; `dir/x` | 0 (match) | 0 (match) |
+| A8 | HEAD `hf`, staged `dir` = `S` (≠ HEAD, ≠ target) | F, T | refuse `local changes would be overwritten: dir` | `localChanges: ['dir']` (match) | same (match) |
+| A9 | born, **untracked** `dir` (not staged), `checkout tgt` | F, T | refuse untracked `dir` | `untracked: ['dir']` (match) | same (match) |
+| A10 | born + staged `dir`, `checkout -f tgt` | F, T | 0; `dir/x` | 0 (match; force skips the carry) | 0 (match) |
+| A11 | HEAD `tgt`, `git rm -r --cached dir`, file `dir` staged in its place, `checkout tgt3` (HEAD and target agree on `dir/x`) | F, T | 0; index `dir`, `f`, `g`; status `A dir`, `D dir/x` | 0 (match) | 0 (match): an agreed target path displaces nothing |
+| V1 | born + staged `dir/x` (neither HEAD nor target), `checkout hf` (file `dir`) | F, T | 0; index `dir`, `f`; disk file `dir` = `D` | refuse `untracked: ['dir']` | 0, same state |
+| V2 | V1 + untracked `dir/u` | F, T | refuse `Updating the following directories would lose untracked files in them: dir` | `untracked: ['dir']` | `untracked: ['dir']` (the rebase-interop mapping of that message) |
+| V3 | V1, then `echo m > dir/x` | F, T | refuse `local changes would be overwritten: dir/x` | `untracked: ['dir']` | `localChanges: ['dir/x']` |
+| V4 | **unborn** + staged `dir/x`, `checkout hf` | F, T | 0; index `dir`, `f`; disk `dir` = `D` | `REF_NOT_FOUND` | not run (needs §2–§4) |
+| M1 | born + staged `dir`, `merge tgt` (fast-forward) | F | refuse `untracked … would be overwritten by merge: dir` | `WORKING_TREE_DIRTY { localChanges: [], untracked: ['dir'] }` (match) | same (match) |
+| M2 | same | T | 0, fast-forward; index `dir/x`, `f` | refuse `untracked: ['dir']` | `{ kind: 'fast-forward' }`, same state |
+| M3 | born + staged `dir`, `merge --squash tgt` | F | refuse untracked `dir` | `WORKING_TREE_DIRTY { untracked: ['dir'] }` (match) | same (match) |
+| M4 | same | T | 0; index `dir/x`, `f` | refuse `untracked: ['dir']` | `{ kind: 'squashed' }`, same state |
+| M5 | `dv` (diverged) + staged `dir`, `merge -m m tgt` (three-way) | F, T | refuse `local changes … would be overwritten by merge: dir`, exit 2 (merge-ort's dirty-index check) | `WORKING_TREE_DIRTY { localChanges: ['dir'] }` (match) | not reached: refused before the carry |
+| M6 | born + staged `dir`, `rebase tgt` | T | refuse `cannot rebase: Your index contains uncommitted changes` | `WORKING_TREE_DIRTY { localChanges: ['dir'] }` (match) | not reached: refused before the carry |
+
+Consumers, per D-2. The carry runs only where `headTree` is passed. **Affected:** the checkout
+switch (A, V rows) and `merge.ts` `attemptNonConflictTree` (fast-forward M2, squash M4; the
+signing-failure path shares the function). **Not affected, with proof:** the three-way merge
+(`apply-merge-to-worktree.ts`) and rebase (`reset-worktree.ts`) refuse a staged change before any
+carry, in git and in tsgit (M5, M6), so no displaced kept entry can reach them. `reset --hard`
+(`reset.ts`), `pull`, `pull-into-void`, `worktree add` and `stash` pass no `headTree` (`command grep
+-n "headTree" src/application/commands/reset.ts src/application/commands/pull.ts` ⇒ no line), and
+`carryHeadAgreement` returns `{ opts, allTarget, carried: [] }` before any carry when `headTree` is
+undefined.
 
 ## Requirements
 
@@ -177,6 +239,31 @@ Lesson 037: each requirement is written per axis, then every pinned row is walke
   `INVALID_OPTION`.)
 - **R5 — axis 5.** `branch.create` is unchanged.
 - **R6 — output.** No new result field. Error codes per D2. `CheckoutSwitchOptions.rev` per D1.
+- **R7 — axis 6, the two-way carry against a file/directory swap (ADR-1201; D6, D7).** Applies
+  wherever `materializeTree` runs the two-way merge (`headTree` given, born or unborn HEAD): the
+  checkout switch, and merge's fast-forward and squash. A *kept* path is a stage-0 index entry the
+  two-way rule leaves alone because HEAD and the target agree on it (both lack it included). A
+  *written* path is a target path where HEAD and the target disagree. When a written path and a
+  kept path collide as file and directory:
+  - (a) **kept file `p`, written `p/…`.** `p` is never in the resulting index. If no file stands at
+    `p` on disk, the switch proceeds (A5; a directory at `p` is not pinned). If a file stands there, the switch refuses with
+    `CHECKOUT_OVERWRITE_DIRTY { localChanges: [], untracked: [p] }` (merge: `WORKING_TREE_DIRTY`,
+    same fields), nothing written (A1, A3, A6, M1, M3). The one exception: `core.ignoreCase` is
+    true and the file's stat matches `p`'s index entry (a racy match decided by content, as
+    `matchesCachedStat` does). Then the file is removed and `p/…` written (A2, A4, M2, M4). The
+    refusal class is `untracked` even when the file was modified after staging (A2d, A6), never
+    `localChanges`.
+  - (b) **kept `p/…`, written file `p`.** Each kept entry below `p` is judged as a deletion. Up to
+    date: removed from the index and the disk, and `p` written (V1, V4). Modified: refuse
+    `localChanges: [p/…]` (V3). An untracked file under `p`: refuse `untracked: [p]` (V2).
+    `core.ignoreCase` plays no part.
+  - (c) **Bounds.** A written path that collides with no kept path changes nothing. A target path
+    HEAD and the target agree on is kept, not written, so it displaces nothing (A11). An unstaged
+    `p` is not kept (it is not in the index) and still refuses `untracked: [p]` (A9). A staged `p`
+    equal to HEAD's `p` is not kept (HEAD and target disagree on it), so it is an ordinary deletion
+    (A7). One that differs from both refuses `localChanges: [p]` through `carryStagedChanges` (A8).
+    A forced switch passes no `headTree` and is unchanged (A10). The three-way merge and rebase
+    refuse a staged change before the carry (M5, M6).
 
 ### Every pinned row against its requirement
 
@@ -194,17 +281,26 @@ Lesson 037: each requirement is written per axis, then every pinned row is walke
 | F9 | R3 | index file exists and is empty: the empty tree. The untracked-occupant check refuses identical content, as git does |
 | F11 | R3 | no index file → `{}`, the existing initial-checkout path; it already refuses identical untracked content |
 | F14, F15 | R3 | no new logic: interop rows only |
-| G1, G9 | — | **not met**: a born-HEAD d/f divergence in `materializeTree`'s two-way carry that the unborn path inherits. The same scratch mutant (`{}`, one-way) matches git on G1, so the gap is located in `carryHeadAgreement` / `agreementWithHead`, not in the one-way diff. D5 |
+| G1, G9 | R7(a) | re-pinned as A1–A4 per `core.ignorecase`: under `ic=F` today's refusal is already git's, under `ic=T` git switches |
+| A1–A6, M1–M4 | R7(a) | §7: the forward collider leaves the carry. A stat-clean one under `ignoreCase` meets the one-way diff as a deletion, so `scope.removed` clears the leading obstruction. Any other one leaves the diff too, so `classifyLeadingObstruction` names it `untracked` when a file stands there (A1, A3, A6) and finds nothing when none does (A5). A5 also fixes today's index that holds both `dir` and `dir/x` |
+| V1–V4 | R7(b) | §7: the reverse collider leaves the carry and meets the one-way diff as a deletion, so its own dirty check gives `localChanges: ['dir/x']` (V3), and `holdsSurvivor` on the added `dir` gives `untracked: ['dir']` (V2) |
+| A7–A11, M5, M6 | R7(c) | unchanged paths: A7/A8 never enter the kept set; A9 is not in the index; A10 has no `headTree`; A11's target path is kept; M5/M6 refuse earlier. After = main on every one |
 | H1–H3 | R4 | `rev ?? 'HEAD'` before resolution; `createRequestedBranch` receives `finish.arg === 'HEAD'` (git: `Created from HEAD`) |
 | H4, H5 | R4 | D2 |
 | B1–B3 | R5 | unchanged |
 
-The walk found two gaps that the summary rule missed. (1) R3(c) must keep the
+The walk found four gaps that the summary rules missed. (1) R3(c) must keep the
 "index never written → `{}`" branch *ahead* of the unborn branch. The
 alternative (always use the empty tree on an unborn HEAD) gives the same answer on F10–F12 in the
 scratch run, but it changes nothing observable while it widens the edit. It is rejected as scope,
 not as fault. (2) U18: git lets a second worktree take an unborn branch name that another worktree's
-HEAD already names. R1 must not add a "checked out elsewhere" guard.
+HEAD already names. R1 must not add a "checked out elsewhere" guard. (3) R7: the collision is
+computed against the *written* target paths, not the whole target. Against the whole target, A11
+would drop the staged `dir` that git keeps. (4) R7(a): sending every forward collider to the one-way
+diff (the first revision's "the one-way path matches git on G1") is wrong twice over. It switches
+on A3 where git refuses under `ic=F` (the one-way diff reads no config), and it names A6
+`localChanges` where git says `untracked`. Both are read from `apply-changeset.ts`
+`evaluateChangedPath`, whose content compare judges a deletion. Not run as a scratch mutant.
 
 ## Design
 
@@ -309,7 +405,8 @@ const headTreeOption = async (
 |---|---|
 | S1–S3, S6 | `CHECKOUT_START_POINT_NOT_COMMIT { revision, branch }` (existing) |
 | S7 | `PATHSPEC_NO_MATCH { pattern, patterns }` (existing) |
-| F5, F9, F11 | `CHECKOUT_OVERWRITE_DIRTY { localChanges, untracked }` (existing) |
+| F5, F9, F11, A1–A3, A6, V2, V3 | `CHECKOUT_OVERWRITE_DIRTY { localChanges, untracked }` (existing) |
+| M1, M3 | `WORKING_TREE_DIRTY { localChanges, untracked }` (existing; `merge.ts` maps the checkout refusal) |
 | U5 / U6 / U8 / U14 | `INVALID_OPTION` / `INVALID_REF` / `BRANCH_EXISTS` / `REF_LOCKED` (existing) |
 | H4, H5 | D2 |
 
@@ -323,24 +420,118 @@ on a branch yet to be born`.
   "Create on an unborn branch: `{ createBranch }` with no `rev`" and states that an omitted `rev`
   means HEAD. Add a Behaviour bullet saying that a switch from an unborn branch uses the empty tree
   as the old side (staged additions carried, a staged path the target changes refuses, an untracked
-  occupant refuses even when its content is identical). Errors: **replace** the `REF_NOT_FOUND`
+  occupant refuses even when its content is identical). Add a Behaviour bullet for R7: a staged
+  path HEAD and the target both lack is dropped where the target needs its place for a file or a
+  directory. A staged directory's files are judged like deletions. A staged file blocks the switch
+  as an untracked occupant, unless `core.ignoreCase` is set and the file is unchanged since it was
+  staged. Errors: **replace** the `REF_NOT_FOUND`
   line (HEAD unborn no longer refuses) with D2's code. **Delete** the `BRANCH_NOT_FOUND` line: the
   switch never raises it (`command grep -c "branchNotFound\|BRANCH_NOT_FOUND"
   src/application/commands/checkout.ts` ⇒ 0). An unresolvable `rev` is `PATHSPEC_NO_MATCH`, as the
   Behaviour section already says.
 - `reports/api.json`: regenerated (`rev` optional).
+- `docs/use/commands/merge.md`: the checkout paragraph (the one ending "The checkout follows git's
+  two-way rule: … (a staged change survives a fast-forward) …") gains the R7 qualifier. A staged
+  path HEAD and the result both lack does not survive when the result needs its place for a file
+  or a directory. It is dropped, or refuses `WORKING_TREE_DIRTY` as above (M1–M4).
 - `docs/BACKLOG.md`: tick 32.41 and strike it in release-order row 3. The corrected statement above
   is recorded here, not in the tick.
 
+### 7. `materialize-tree.ts` — the carry yields to a written path it collides with (R7)
+
+Current shape (unchanged signatures, all private to the module):
+
+```ts
+const carryHeadAgreement = async (
+  ctx: Context, opts: MaterializeTreeOpts, allTarget: ReadonlyArray<TargetEntry>,
+): Promise<CarriedOpts>;                       // { opts, allTarget, carried }
+const agreementWithHead = async (…): Promise<HeadAgreement>;   // untouched
+const leadingDirectoriesOf = (path: string): string[];          // reused
+const sparseMovers = (…): Set<IndexPathKey>;                    // untouched
+const stagedOutsideTarget = (…): IndexEntry[];                   // untouched
+```
+
+Today `isKept = agreed(key) && !movers.has(key)`. Every kept entry leaves `opts.currentIndex`, its
+target twin leaves `allTarget`, and it is re-appended by `assembleIndexEntries`. Nothing compares
+it to the target paths the switch writes. The edit splits the kept set by collision.
+
+```ts
+interface Displaced {
+  /** Leave the carry and meet the one-way diff as deletions: dirty-checked, then removed. */
+  readonly uncarried: ReadonlySet<IndexPathKey>;
+  /** Leave the carry and the diff: an added path meets the file as a leading obstruction. */
+  readonly dropped: ReadonlySet<IndexPathKey>;
+}
+
+/** git's icase_exists: under core.ignoreCase, a stat-clean tracked file in an added path's way may go. */
+const obstructionMayGo = async (ctx: Context, index: GitIndex, entry: IndexEntry): Promise<boolean> => {
+  const absPath = joinPath(requireWorkTree(ctx, 'materializeTree'), escapedPathOf(entry));
+  const stat = await lstatIfReachable(ctx.fs, absPath);
+  if (stat === undefined) return false;
+  return matchesCachedStat({ entry, indexMtime: index.indexMtime }, absPath, stat, racyContentMatcher(ctx));
+};
+
+/** Kept entries a written target path displaces: git replaces them as it adds the written path. */
+const displacedByTarget = async (
+  ctx: Context, index: GitIndex, kept: ReadonlyArray<IndexEntry>, written: ReadonlyArray<TargetEntry>,
+): Promise<Displaced> => {
+  const files = new Set<string>(written.map((t) => t.path));
+  const dirs = new Set<string>(written.flatMap((t) => leadingDirectoriesOf(t.path)));
+  const beneath = kept.filter((e) => leadingDirectoriesOf(escapedPathOf(e)).some((d) => files.has(d)));
+  const over = kept.filter((e) => dirs.has(escapedPathOf(e)));
+  const going = await clearedObstructions(ctx, index, over);   // [] unless core.ignoreCase; config read lazily
+  return { uncarried: keysOf([...beneath, ...going]), dropped: keysOf(over.filter((e) => !going.includes(e))) };
+};
+```
+
+and in `carryHeadAgreement`, after `movers`:
+
+```ts
+const agreedKept = (key: IndexPathKey): boolean => agreed(key) && !movers.has(key);
+const displaced = await displacedByTarget(
+  ctx, opts.currentIndex,
+  stageZero.filter((e) => agreedKept(indexPathKey(e))),
+  allTarget.filter((e) => !agreedKept(indexPathKey(e))),      // the written paths (R7(c), A11)
+);
+const isKept = (key: IndexPathKey): boolean =>
+  agreedKept(key) && !displaced.uncarried.has(key) && !displaced.dropped.has(key);
+// currentIndex for the diff additionally drops `displaced.dropped`
+```
+
+- `clearedObstructions` filters `over` by `(await ignoreCase()) && (await obstructionMayGo(…))`. Here
+  `ignoreCase = lazily(async () => (await readConfig(ctx)).core?.ignoreCase === true)`
+  (`internal/lazily.ts`). The read is lazy by construction: an empty `over` never calls it, so an
+  ordinary switch pays no config read and no `lstat`. There is no `over.length === 0` guard, which
+  would only be an equivalent mutant. A missing file makes `obstructionMayGo` return `false`: the
+  entry is dropped and nothing obstructs (A5).
+- No change to `two-way-carry.ts`, `occupant-clash.ts` or `apply-changeset.ts`. The verdicts come
+  from the existing pre-flight once the collider is routed: deletion → `scope.removed` /
+  `evaluateChangedPath`; dropped → `classifyLeadingObstruction`.
+- Whether a forward collider is uncarried or dropped needs config, so it stays in
+  `materialize-tree.ts` and not in the pure `carryStagedChanges`. `carryHeadAgreement` is already over
+  20 lines, so the planner splits off the `CarriedOpts` assembly as part of this edit.
+- The After column of axis 6 ran a scratch copy with this edit, written inline. It matched git on
+  every born row under both settings. Proven on that scratch only; the unit and interop rows below
+  are the gate.
+
 ## Decision candidates
+
+### Ratified (D1–D5)
+
+| # | Choice | Outcome | ADR |
+|---|---|---|---|
+| D1 | How the no-start-point form is expressed | **A** adopted: `rev?: string`; an omitted `rev` means HEAD; the "neither" refusal goes | ADR-1197 |
+| D2 | Refusal for an unborn HEAD with `rev` omitted and no `createBranch` (H4, H5) | **A** adopted: `NO_INITIAL_COMMIT` | ADR-1198 |
+| D3 | Release marking | **A** adopted: `fix:`. The R7 fold also only removes refusals git does not make (A2, A4, A5, V1, M2, M4) and corrects one class (V3 `untracked` → `localChanges`), so it fits the same marking | ADR-1199 |
+| D4 | `CheckoutResult.id` after U1 | **A** adopted: `zeroOid(ctx.hashConfig)` | ADR-1200 |
+| D5 | G1 / G9 staged file vs target directory | **B** ratified (against the recommendation): fold the two-way carry's d/f divergence in this change, with unit rows and interop pins (DOCTRINE D-2) | ADR-1201 |
+
+### Open — raised by the axis-6 re-pin
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| D1 | How the no-start-point form is expressed | **A** `rev?: string` on `CheckoutSwitchOptions`. An omitted `rev` means HEAD; unborn + `createBranch` → symref; unborn without → D2. `isSwitch` becomes `!isPaths`, and the "neither" refusal goes. **B** a discriminated variant: `{ rev: string; … } \| { rev?: undefined; createBranch: CheckoutCreateBranch; detach?: undefined; force?: boolean }`. Only `-b` may omit `rev`; `{}` and `{ detach: true }` stay type errors and runtime `INVALID_OPTION`. **C** a separate `orphan` option (git `--orphan`) | **A** | A mirrors git's argv: an absent start point is HEAD. H1–H3 match git with no extra code (scratch run), and it removes a refusal git does not make (`{}` is a no-op in git). B keeps that refusal and adds a union to every reader of the type. C is a wider feature (an orphan from a *born* HEAD discards the index's parent) that no pinned row needs |
-| D2 | Refusal for an unborn HEAD with `rev` omitted and no `createBranch` (H4, H5; reachable only under D1-A, because under D1-B `assertSingleCheckoutMode` keeps refusing that shape first) | **A** reuse `NO_INITIAL_COMMIT` (existing member, no fields; already raised by `stash` and `history-rewrite` for an unborn HEAD). **B** a new `CHECKOUT_UNBORN_HEAD` member. **C** keep `INVALID_OPTION { option: 'rev' }` with a new reason | **A** | The condition is the one `NO_INITIAL_COMMIT` already names (HEAD has no commit). No union change and no `api.json` error entry. B adds a member for the same condition; C reports a valid option shape as invalid |
-| D3 | Release marking | **A** `fix:`. **B** `fix!:`. **C** `feat:` | **A** | Facts: (1) refusals git does not make are removed (U1, F1–F15, H1–H3). (2) Codes move between existing members: `REF_NOT_FOUND` → `CHECKOUT_START_POINT_NOT_COMMIT` / `PATHSPEC_NO_MATCH` (S1–S7), and `INVALID_OPTION` → `NO_INITIAL_COMMIT` (H4/H5 under D2-A). (3) An input field is widened from required to optional: source-compatible for callers, but `api.json` changes and a reader of `CheckoutSwitchOptions['rev']` now sees `string \| undefined`. (4) `docs/use/commands/checkout.md` documents `REF_NOT_FOUND` for an unborn HEAD today. Precedents ADR-1048 / ADR-1196 shipped (1) + (2) as `fix`. No union member is removed (ADR-1024) and no new refusal is added where tsgit returned (ADR-1190). B is right if the user counts a documented code change, (4), as a break. C is right if a widened input counts as a feature |
-| D4 | `CheckoutResult.id` after U1 (HEAD stays unborn) | **A** `zeroOid(ctx.hashConfig)`. **B** widen to `id: ObjectId \| undefined` | **A** | Precedent: `pathRestore` already reports the null oid for an unborn HEAD, and git hands its hooks the same. B breaks every reader of `id` for one row |
-| D5 | G1 (unborn) / G9 (born): staged file `dir` vs target `dir/x`. git drops the staged file and switches (×3, exit 0); tsgit refuses `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }` | **A** out of this change: report it (IMPACT line) and let the user decide whether to file it above the ADR-1170 bar. G1 ships as a pinned known difference in the interop suite (a `describe` that asserts both outcomes and links to the filed item, or no row). **B** fold it: change `materializeTree`'s d/f occupant judgement for a staged-but-not-in-HEAD file | **A** | The divergence exists on a born HEAD on main today (G9), in `materialize-tree.ts`'s two-way carry (`carryHeadAgreement` / `agreementWithHead`; the one-way path matches git on G1), which this change does not edit. Folding widens the change into the shared materialiser that every switch, `reset` and merge uses, on a row that loses staged content in git (the blob stays in the store) |
+| D6 | ADR-1201's premise holds only under `core.ignorecase=true`. Under `false` (the Linux `git init` default) git refuses G1/G9 (A1, A3) exactly as tsgit does today. What does the fold replicate? | **A** git's rule whole (R7(a) as written): the forward collider never stays in the index; its file may go only under `core.ignoreCase` when stat-clean, else `untracked: [p]`. **B** only the setting-independent half: drop the collider from the index when no file stands there (A5) and leave the A2/A4/M2/M4 refusals. A macOS/Windows-initialised repository then keeps diverging. **C** reopen ADR-1201: G1/G9 are a match on Linux, so fold only A5's corrupt index | **A** | A matches git on all 26 born After rows under both settings (scratch run). B and C leave a pinned divergence that the row this change makes reachable inherits (A2), which DOCTRINE D-2 rules out. The `ignoreCase` read is lazy (only when a forward collider exists), so A costs an ordinary switch nothing. A amends ADR-1201's context ("git switches") with the setting; it does not reverse its decision |
+| D7 | The mirror direction, staged `p/…` vs a target file `p` (V1–V4): git switches under both settings (`verify_clean_subdirectory`); tsgit refuses `untracked: ['dir']`, and names V3 wrongly. ADR-1201 names only the forward direction | **A** fold it in this change as R7(b). The same `displacedByTarget` partition routes it to the one-way diff, with no extra code path. **B** leave it out: an IMPACT line, then the user files it or not under the ADR-1170 bar | **A** | Same function (`carryHeadAgreement`), same refusal path, same consumers. The V rows become reachable from an unborn HEAD through this change (V4), which is D-2's trigger. The After run shows the routing that fixes the forward direction also fixes V1–V3 with no further edit. Leaving it out means writing code to exclude it |
 
 ## Test strategy
 
@@ -364,7 +555,25 @@ with its two oid columns, whether `logs/HEAD` exists, and the `post-checkout` ar
 - Axis 3: F1–F4, F5, F6, F7, F8, F9, F10, F11 (differing / identical / `detach`), F12, F13
   (reftable), F14 (no-cone sparse `/g`), F15.
 - Axis 4: H1, H2, H3, H4, H5.
-- G1 per D5.
+- Axis 6, unborn: A1, A2, A2d, V4. Each row runs twice, with `core.ignorecase` set to `false` and to
+  `true` in **both** twins (`git config` in each twin after it is built). The rows then hold on
+  Linux CI and macOS alike, and never ride the platform's `git init` default.
+
+### Cross-tool interop — axis 6 on a born HEAD (one pin per affected consumer, D-2)
+
+Every row is run under both `core.ignorecase` values, set in both twins, and compared on `ls-files
+-s`, `status --porcelain --untracked-files=all`, the disk shape at `dir` (file content or directory
+listing) and HEAD. A refusal is compared field to message (§5). V2 maps `would lose untracked files`
+to `untracked`, as `rebase-interop.test.ts` already does.
+
+- Checkout switch — extend `test/integration/checkout-file-directory-swap-interop.test.ts` (its
+  `Given main holds file f and side holds directory f/` fixture shape): A3/A4 (one row, two
+  settings), A5, A6, A7, A8, A9, A10, A11, V1, V2, V3.
+- Merge fast-forward and squash (`attemptNonConflictTree`) — extend
+  `test/integration/merge-interop.test.ts` beside `Given a change staged on a path the
+  fast-forward leaves alone`: M1/M2 (one row, two settings) and M3/M4.
+- Three-way merge and rebase are not affected (M5, M6 refuse before the carry), so they get no pin.
+  Their existing staged-change refusal rows stay as they are.
 
 ### Unit tests (memory adapter)
 
@@ -397,6 +606,31 @@ with its two oid columns, whether `logs/HEAD` exists, and the `post-checkout` ar
   HEAD detaches, reflog `moving from main to HEAD`) and H3 (`{}` writes no reflog line).
 - Linked-worktree unit rows only where the memory context already models a linked worktree.
   Otherwise U16–U18 rest on the interop suite.
+- `test/unit/application/primitives/materialize-tree.test.ts`, inside `describe('materializeTree
+  carrying staged changes (headTree)')`. Add a sibling fixture: head `f`, target `f` + `d/x`; and
+  the mirror, head `f`, target `f` + file `d`. `core.ignorecase` is written with
+  `ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tignorecase = true\n')`, the pattern
+  the filter rows at line ~1090 use. A stat-clean entry is built with `indexEntryFromStat`
+  (`src/application/primitives/internal/index-entry-from-stat.ts`) from the work file's `lstat`,
+  so its cached stat matches.
+  - `Given a staged file d neither head nor target has, and a target writing d/x`:
+    - `When ignorecase is unset` → `CHECKOUT_OVERWRITE_DIRTY { localChanges: [], untracked: ['d'] }`
+      (A3).
+    - `When ignorecase is true and d is unchanged since staging` → no `d` in `newIndexEntries`,
+      `d/x` present, `d` a directory on disk (A4).
+    - `When ignorecase is true and d was modified after staging` → `untracked: ['d']`, not
+      `localChanges` (A6). This kills a mutant that routes every forward collider to the diff.
+    - `When d is absent from disk` (both settings, `it.each`) → `newIndexEntries` holds `d/x` and
+      no `d` (A5). This kills the mutant that keeps the dropped entry in the index.
+  - `Given a staged d/x neither head nor target has, and a target writing file d`: clean → `d/x`
+    gone, `d` written (V1); `d/x` modified → `localChanges: ['d/x']` (V3); untracked `d/u` →
+    `untracked: ['d']` (V2).
+  - `Given head and target agree on d/x and the index stages file d in its place` → `d` kept, `d/x`
+    absent from the index, no refusal (A11). This kills the mutant that computes collisions against
+    the whole target.
+- `test/unit/application/commands/checkout.test.ts`, unborn block: G1 (A1/A2) through `checkout`,
+  one row per setting, so the R3 path and the R7 carry are proven together.
+- `test/unit/application/commands/merge.test.ts` (fast-forward block): M2 and M1, one row each.
 
 ### Property tests
 
@@ -413,12 +647,22 @@ None. No parser, decoder, matcher or serializer is touched (lenses 1–4 do not 
 - `switchUnbornToNewBranch` returns `changedPaths: 0`, `detached: false`, the null `id`: assert the
   whole result object.
 - Assert `err.data` fully; never `toThrow(TsgitError)` alone.
-- Stryker scope: `checkout.ts`, on the narrowed eponymous suites `checkout*.test.ts`.
+- `displacedByTarget`: `beneath` vs `over` is killed by V1 vs A4. The `files` / `dirs` sets are
+  killed by V1 / A4 respectively. The `written` filter (`!agreedKept`) is killed by A11.
+  `ignoreCase === true` is killed by A3 vs A4, the stat match by A6, the missing-file `false` by
+  A5, and `dropped` leaving `currentIndex` by A5.
+- Stryker scope: `checkout.ts`, on the narrowed eponymous suites `checkout*.test.ts`; and
+  `materialize-tree.ts`, on `materialize-tree*.test.ts` + `internal/two-way-carry.test.ts`. Per
+  the narrowed-corpus rule, a survivor only `merge.test.ts` would kill is hand-verified against the
+  full covering set.
 
 ## Out of scope
 
 - **`-B`, `--orphan`, `switch -c/-C`** (U2, U9, S4, S5): tsgit has no such surface.
-- **G1 / G9** staged-file vs target-directory: D5.
+- **A case-only alias** under `core.ignorecase=true` (staged `DIR` against a target `dir/x`): git's
+  `icase_exists` looks the index up case-insensitively, and R7 matches the exact path only. Not
+  pinned. To prove it: an axis-6 twin pair on a case-insensitive filesystem, staged `DIR`, `checkout
+  tgt`, compared with `ls-files -s`.
 - **`reference-transaction` hook** (U11): git runs it on the symref update; tsgit runs that hook for
   no ref update anywhere (`command grep -rn "reference-transaction" src` ⇒ one comment in
   `reftable-transaction.ts`, no hook call). It is a project-wide hook gap, not this change's.
