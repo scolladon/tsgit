@@ -578,6 +578,30 @@ const indexFilesAbove = (keys: ReadonlySet<IndexPathKey>, target: TargetEntry): 
     .map((dir) => keyOfPath(dir as FilePath))
     .filter((key) => keys.has(key));
 
+interface TargetContribution {
+  readonly isTargetFile: boolean;
+  readonly surfaced: Iterable<IndexPathKey>;
+  readonly indexFiles: Iterable<IndexPathKey>;
+  readonly replaced: Iterable<IndexPathKey>;
+}
+
+const contributionOf = (
+  sparse: SparseMatcher,
+  sides: IndexSides,
+  keys: ReadonlySet<IndexPathKey>,
+  target: TargetEntry,
+): TargetContribution => {
+  const inPattern = sparse(target.path);
+  const moversBelow = entriesBeneath(sides.movers, target.path);
+  const indexFiles = indexFilesAbove(keys, target);
+  return {
+    isTargetFile: moversBelow.length + entriesBeneath(sides.kept, target.path).length > 0,
+    surfaced: inPattern ? keysOf(moversBelow.filter((e) => sparse(e.path))) : [],
+    indexFiles,
+    replaced: inPattern ? indexFiles : [],
+  };
+};
+
 const sparseCollisions = (
   sparse: SparseMatcher,
   sides: IndexSides,
@@ -589,18 +613,11 @@ const sparseCollisions = (
   const replaced = new Set<IndexPathKey>();
   const surfaced = new Set<IndexPathKey>();
   for (const target of written) {
-    const inPattern = sparse(target.path);
-    const moversBelow = entriesBeneath(sides.movers, target.path);
-    if (moversBelow.length + entriesBeneath(sides.kept, target.path).length > 0) {
-      targetFiles.add(indexPathKey(target));
-    }
-    if (inPattern) {
-      for (const key of keysOf(moversBelow.filter((e) => sparse(e.path)))) surfaced.add(key);
-    }
-    for (const key of indexFilesAbove(keys, target)) {
-      indexFiles.add(key);
-      if (inPattern) replaced.add(key);
-    }
+    const contribution = contributionOf(sparse, sides, keys, target);
+    if (contribution.isTargetFile) targetFiles.add(indexPathKey(target));
+    for (const key of contribution.surfaced) surfaced.add(key);
+    for (const key of contribution.indexFiles) indexFiles.add(key);
+    for (const key of contribution.replaced) replaced.add(key);
   }
   return { targetFiles, indexFiles, replaced, surfaced };
 };
