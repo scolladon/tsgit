@@ -794,6 +794,17 @@ const stageBlobAt = (dir: string, entryPath: string, skip: boolean): void => {
   if (skip) git(dir, 'update-index', '--skip-worktree', entryPath);
 };
 
+const stageStagedDirEntry = (dir: string, onDisk: string): void => {
+  stageBlobAt(dir, 'dir/a', false);
+  mkdirSync(path.join(dir, 'dir'));
+  put(dir, 'dir/a', onDisk);
+};
+
+const stageFileOnDisk = (dir: string, skip: boolean, onDisk: string): void => {
+  stageBlobAt(dir, 'dir', skip);
+  put(dir, 'dir', onDisk);
+};
+
 const SPARSE_ROWS: ReadonlyArray<SparseRow> = [
   {
     id: 'SP1 a clean staged file in the patterns where the target holds an excluded directory entry',
@@ -830,6 +841,52 @@ const SPARSE_ROWS: ReadonlyArray<SparseRow> = [
       stageBlobAt(dir, 'dir/a', true);
       put(dir, 'dir', 'untracked\n');
     },
+  },
+  {
+    id: 'SP4 with an untracked directory already standing at the target file path',
+    patterns: ['/g', '/dir'],
+    target: { dir: 'd\n' },
+    stage: (dir) => {
+      stageBlobAt(dir, 'dir/a', true);
+      mkdirSync(path.join(dir, 'dir'));
+      put(dir, 'dir/other', 'untracked\n');
+    },
+  },
+  {
+    id: 'R-A a staged directory entry in the patterns on disk where the target holds a file',
+    patterns: ['/g', '/dir'],
+    target: { dir: 'd\n' },
+    stage: (dir) => stageStagedDirEntry(dir, 'staged\n'),
+  },
+  {
+    id: 'R-A with the staged directory entry modified on disk',
+    patterns: ['/g', '/dir'],
+    target: { dir: 'd\n' },
+    stage: (dir) => stageStagedDirEntry(dir, 'changed\n'),
+  },
+  {
+    id: 'R-B a clean staged file in the patterns where the target holds a directory entry',
+    patterns: ['/g', '/dir'],
+    target: { 'dir/x': 'x\n' },
+    stage: (dir) => stageFileOnDisk(dir, false, 'staged\n'),
+  },
+  {
+    id: 'R-B with the staged file modified on disk',
+    patterns: ['/g', '/dir'],
+    target: { 'dir/x': 'x\n' },
+    stage: (dir) => stageFileOnDisk(dir, false, 'changed\n'),
+  },
+  {
+    id: 'R-C a skip-worktree file present on disk where the target holds a directory entry in the patterns',
+    patterns: ['/g', '/dir'],
+    target: { 'dir/x': 'x\n' },
+    stage: (dir) => stageFileOnDisk(dir, true, 'staged\n'),
+  },
+  {
+    id: 'R-C with the file on disk differing from the skip-worktree entry',
+    patterns: ['/g', '/dir'],
+    target: { 'dir/x': 'x\n' },
+    stage: (dir) => stageFileOnDisk(dir, true, 'changed\n'),
   },
   {
     id: 'SP5 a staged directory entry on disk where the target holds an excluded file',
