@@ -493,7 +493,11 @@ done
 # staged-directory deletions and the symbolic-only unborn branch switch —
 # runtime code in every distribution form, none removable without dropping the
 # behaviour.
-SIZE_CAP=$((1526 * 1024))
+# Raised 1526 -> 1528 KiB by the same change's review folds: the measured pack
+# landed at 1 563 939 B, 1 315 B over, attributable to git's directory-side-wins
+# rule for a sparse file/directory collision with its gateless replacement, and
+# the branch-name rule shared by every branch-creation path.
+SIZE_CAP=$((1528 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
