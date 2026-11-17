@@ -112100,7 +112100,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "The tree HEAD points at, set only by a non-forced branch switch. It turns the\nindex→target diff into git's two-way merge: a path HEAD and the target agree on keeps\nits index entry and work file, and a path the index changed to a third version refuses."
+										"text": "The tree HEAD points at, set only by a non-forced branch switch. It turns the\nindex→target diff into git's two-way merge: a path HEAD and the target agree on keeps\nits index entry and work file, and a path the index changed to a third version refuses.\nA kept path the switch needs for a file or a directory does not stay."
 									}
 								]
 							},

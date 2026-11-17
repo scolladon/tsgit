@@ -10,7 +10,7 @@ repo.checkout(opts: CheckoutOptions): Promise<CheckoutResult>;
 type CheckoutOptions = CheckoutSwitchOptions | CheckoutPathsOptions;
 
 interface CheckoutSwitchOptions {
-  readonly rev: string;
+  readonly rev?: string;                         // omitted: HEAD
   readonly detach?: boolean;
   readonly force?: boolean;
   readonly createBranch?: CheckoutCreateBranch;  // git's `checkout -b`
@@ -32,10 +32,11 @@ interface CheckoutPathsOptions {
 
 | Mode | Triggered by | Effect |
 |---|---|---|
-| **Switch** | `{ rev }` | Materialise `rev`'s tree onto the working tree, commit a new index, move HEAD. Atomic per-file. |
+| **Switch** | `{ rev }` (an omitted `rev` means HEAD) | Materialise `rev`'s tree onto the working tree, commit a new index, move HEAD. Atomic per-file. |
 | **Restore from index** (default) | `{ paths }` (no `source` or `source: 'index'`) | Restore staged content into the working tree. Takes `index.lock` and writes the index (restored entries' stat data refreshed), as git's `checkout_paths` does. |
 | **Restore from a revision** | `{ paths, source: <revision> }` | Restore content from the tree of a commit or tree-ish: a branch or tag name, `HEAD`, an object id or an expression such as `HEAD~1`. Index entries for the listed paths are also rewritten. |
 | **Create and switch** | `{ rev, createBranch }` | Create `createBranch.name` at `rev` (with `track` / `noTrack` as [`branch.create`](branch.md) takes them), then switch to it. Refuses `INVALID_OPTION` with `detach`, and `BRANCH_EXISTS` for a name already taken, before the work tree moves. |
+| **Create on an unborn branch** | `{ createBranch }` (no `rev`) | Points HEAD at `refs/heads/<name>` and touches nothing else: no ref, index, work tree, reflog or `post-checkout`. `id` is the null object id. |
 
 ## Behaviour
 
@@ -54,6 +55,8 @@ interface CheckoutPathsOptions {
 - **Writes never follow a symlink.** A write never goes through a symlink in its leading path: links are written first, and leading directories are created one component at a time. An add beyond an untracked symlink is refused naming the link.
 - **Lossy entries stay off disk.** An entry whose name is not valid UTF-8 is never written or unlinked; it reads as deleted in [`status`](status.md), as git does on macOS.
 - **Pruning.** Directories a checkout leaves empty are removed, as git does.
+- **A switch from an unborn branch.** Once an index exists, the empty tree is the old side: staged additions are carried, a staged path the target changes refuses `CHECKOUT_OVERWRITE_DIRTY` with `localChanges`, and an untracked occupant refuses even when its content is identical. The reflog's old id and `post-checkout`'s first argument are the null object id.
+- **A staged file or directory the target needs the place of.** A staged path that neither HEAD nor the target has leaves the carry when the target writes a file or a directory there. A staged directory's files are judged like deletions. A staged file in the way of a target directory blocks as an untracked occupant, unless `core.ignoreCase` is set and the file is unchanged since it was staged.
 - **File and directory swaps.** A path may change between file and directory. A directory being replaced by a file lets ignored occupants go (with `force`, every occupant) and refuses untracked ones.
 - **Atomicity.** Per-file (matches canonical git). The index commit is atomic; working-tree writes are not all-or-nothing if power is cut mid-write.
 - **Sparse checkout.** Switch mode honours the active sparse pattern on the target branch.
@@ -90,13 +93,12 @@ await repo.checkout({ rev: 'main', force: true });
 
 - `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree, or whose target would overwrite a staged change (`localChanges`).
 - `CHECKOUT_NON_COMMIT` — switch mode where `rev` names a tree.
-- `CHECKOUT_START_POINT_NOT_COMMIT` — `createBranch` whose start point names no revision; `revision` and `branch` carry both.
+- `CHECKOUT_START_POINT_NOT_COMMIT` — `createBranch` whose start point names no revision, including any start point on an unborn HEAD; `revision` and `branch` carry both.
 - `BRANCH_EXISTS` — `createBranch.name` is already a branch.
 - `INVALID_OPTION` — `createBranch` combined with `detach`.
-- `BRANCH_NOT_FOUND` — switch mode where `rev` names no branch and resolves to nothing on the revision ladder either; `name` carries `refs/heads/<rev>`, the branch git names in its own refusal.
 - `INVALID_REF` — `rev` cannot be spelled as a ref name and does not resolve as an object id.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `rev` matches more than one object.
-- `REF_NOT_FOUND` — switch mode where HEAD itself does not resolve (an unborn branch). A path restore from the index on an unborn branch succeeds, as git's does: `id` is the null object id, also passed twice to `post-checkout`.
+- `NO_INITIAL_COMMIT` — switch mode on an unborn HEAD with no `rev` and no `createBranch`. A path restore from the index on an unborn branch succeeds, as git's does: `id` is the null object id, also passed twice to `post-checkout`.
 - `MERGE_HAS_CONFLICTS { count, paths }` — a path restore from the index matched an unmerged path; nothing is restored.
 - `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive path pattern, literal or glob, matched nothing. The refusal is atomic and lists every unmatched positive pathspec in command-line order in `patterns` (`pattern` is the first); nothing is restored.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
