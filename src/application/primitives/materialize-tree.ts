@@ -52,6 +52,7 @@ import {
   type UnmergedPaths,
   type UntrackedOccupants,
 } from './apply-changeset.js';
+import { racyContentMatcher } from './compare-working-tree-entry.js';
 import {
   type Changeset,
   type ChangesetEntry,
@@ -59,9 +60,14 @@ import {
   computeChangeset,
   pathFields,
 } from './compute-changeset.js';
+import { readConfig } from './config-read.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
+import { lstatIfReachable } from './internal/fs-probes.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { indexRuleEntries } from './internal/index-rule-entries.js';
+import { matchesCachedStat, type RacyContentCheck } from './internal/is-entry-stat-clean.js';
+import { joinPath } from './internal/join-working-tree-path.js';
+import { lazily } from './internal/lazily.js';
 import { diffTreesPruned, isBelowShared } from './internal/pruned-tree-diff.js';
 import {
   type AttributeDirection,
@@ -451,6 +457,90 @@ const agreementWithHead = async (
   return { agreed: (key) => carry.kept.has(key) || isBelowShared(sharedDirs, key) };
 };
 
+/** Kept entries a written target path displaces. */
+interface Displaced {
+  /** Leave the carry and meet the one-way diff as deletions: dirty-checked, then removed. */
+  readonly deletions: ReadonlySet<IndexPathKey>;
+  /** Leave the carry and the diff: an added path meets the file as a leading obstruction. */
+  readonly dropped: ReadonlySet<IndexPathKey>;
+}
+
+const keysOf = (entries: ReadonlyArray<IndexEntry>): Set<IndexPathKey> =>
+  new Set(entries.map(indexPathKey));
+
+/** git's icase_exists: a stat-clean tracked file in an added path's way may be replaced. */
+const obstructionMayGo = async (
+  ctx: Context,
+  index: GitIndex,
+  entry: IndexEntry,
+  contentMatches: RacyContentCheck,
+): Promise<boolean> => {
+  const absPath = joinPath(requireWorkTree(ctx, 'materializeTree'), escapedPathOf(entry));
+  const stat = await lstatIfReachable(ctx.fs, absPath);
+  if (stat === undefined) return false;
+  return matchesCachedStat({ entry, indexMtime: index.indexMtime }, absPath, stat, contentMatches);
+};
+
+/** The colliders git may remove: none unless core.ignoreCase; the config is read only when one exists. */
+const clearedObstructions = async (
+  ctx: Context,
+  index: GitIndex,
+  over: ReadonlyArray<IndexEntry>,
+): Promise<IndexEntry[]> => {
+  const ignoreCase = lazily(async () => (await readConfig(ctx)).core?.ignoreCase === true);
+  const contentMatches = racyContentMatcher(ctx);
+  const going: IndexEntry[] = [];
+  for (const entry of over) {
+    if ((await ignoreCase()) && (await obstructionMayGo(ctx, index, entry, contentMatches))) {
+      going.push(entry);
+    }
+  }
+  return going;
+};
+
+const displacedByTarget = async (
+  ctx: Context,
+  index: GitIndex,
+  kept: ReadonlyArray<IndexEntry>,
+  written: ReadonlyArray<TargetEntry>,
+): Promise<Displaced> => {
+  const dirs = new Set<string>(written.flatMap((t) => leadingDirectoriesOf(t.path)));
+  const over = kept.filter((e) => dirs.has(escapedPathOf(e)));
+  const going = await clearedObstructions(ctx, index, over);
+  return {
+    deletions: keysOf(going),
+    dropped: keysOf(over.filter((e) => !going.includes(e))),
+  };
+};
+
+interface CarrySplit {
+  readonly stageZero: ReadonlyArray<IndexEntry>;
+  readonly isKept: (key: IndexPathKey) => boolean;
+  readonly dropped: ReadonlySet<IndexPathKey>;
+  readonly outsideTarget: ReadonlyArray<IndexEntry>;
+}
+
+const carriedOptsOf = (
+  opts: MaterializeTreeOpts,
+  allTarget: ReadonlyArray<TargetEntry>,
+  { stageZero, isKept, dropped, outsideTarget }: CarrySplit,
+): CarriedOpts => {
+  const carried = new Set(stageZero.filter((e) => isKept(indexPathKey(e))));
+  return {
+    opts: {
+      ...opts,
+      currentIndex: {
+        ...opts.currentIndex,
+        entries: opts.currentIndex.entries.filter(
+          (e) => !carried.has(e) && !dropped.has(indexPathKey(e)),
+        ),
+      },
+    },
+    allTarget: [...allTarget.filter((e) => !isKept(indexPathKey(e))), ...outsideTarget],
+    carried: [...carried],
+  };
+};
+
 /** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
 const carryHeadAgreement = async (
   ctx: Context,
@@ -466,22 +556,21 @@ const carryHeadAgreement = async (
     stageZero,
   );
   const movers = sparseMovers(opts.sparse, stageZero);
-  const isKept = (key: IndexPathKey): boolean => agreed(key) && !movers.has(key);
-  const carried = new Set(stageZero.filter((e) => isKept(indexPathKey(e))));
-  return {
-    opts: {
-      ...opts,
-      currentIndex: {
-        ...opts.currentIndex,
-        entries: opts.currentIndex.entries.filter((e) => !carried.has(e)),
-      },
-    },
-    allTarget: [
-      ...allTarget.filter((e) => !isKept(indexPathKey(e))),
-      ...stagedOutsideTarget(stageZero, allTarget, agreed, movers),
-    ],
-    carried: [...carried],
-  };
+  const agreedKept = (key: IndexPathKey): boolean => agreed(key) && !movers.has(key);
+  const displaced = await displacedByTarget(
+    ctx,
+    opts.currentIndex,
+    stageZero.filter((e) => agreedKept(indexPathKey(e))),
+    allTarget.filter((e) => !agreedKept(indexPathKey(e))), // an agreed path displaces nothing
+  );
+  const isKept = (key: IndexPathKey): boolean =>
+    agreedKept(key) && !displaced.deletions.has(key) && !displaced.dropped.has(key);
+  return carriedOptsOf(opts, allTarget, {
+    stageZero,
+    isKept,
+    dropped: displaced.dropped,
+    outsideTarget: stagedOutsideTarget(stageZero, allTarget, agreed, movers),
+  });
 };
 
 /** A staged path the target lacks and the patterns exclude still belongs to the index, as skip-worktree. */

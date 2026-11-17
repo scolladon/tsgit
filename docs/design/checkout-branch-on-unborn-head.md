@@ -458,7 +458,7 @@ it to the target paths the switch writes. The edit splits the kept set by collis
 ```ts
 interface Displaced {
   /** Leave the carry and meet the one-way diff as deletions: dirty-checked, then removed. */
-  readonly uncarried: ReadonlySet<IndexPathKey>;
+  readonly deletions: ReadonlySet<IndexPathKey>;
   /** Leave the carry and the diff: an added path meets the file as a leading obstruction. */
   readonly dropped: ReadonlySet<IndexPathKey>;
 }
@@ -480,7 +480,7 @@ const displacedByTarget = async (
   const beneath = kept.filter((e) => leadingDirectoriesOf(escapedPathOf(e)).some((d) => files.has(d)));
   const over = kept.filter((e) => dirs.has(escapedPathOf(e)));
   const going = await clearedObstructions(ctx, index, over);   // [] unless core.ignoreCase; config read lazily
-  return { uncarried: keysOf([...beneath, ...going]), dropped: keysOf(over.filter((e) => !going.includes(e))) };
+  return { deletions: keysOf([...beneath, ...going]), dropped: keysOf(over.filter((e) => !going.includes(e))) };
 };
 ```
 
@@ -494,7 +494,7 @@ const displaced = await displacedByTarget(
   allTarget.filter((e) => !agreedKept(indexPathKey(e))),      // the written paths (R7(c), A11)
 );
 const isKept = (key: IndexPathKey): boolean =>
-  agreedKept(key) && !displaced.uncarried.has(key) && !displaced.dropped.has(key);
+  agreedKept(key) && !displaced.deletions.has(key) && !displaced.dropped.has(key);
 // currentIndex for the diff additionally drops `displaced.dropped`
 ```
 
@@ -507,7 +507,7 @@ const isKept = (key: IndexPathKey): boolean =>
 - No change to `two-way-carry.ts`, `occupant-clash.ts` or `apply-changeset.ts`. The verdicts come
   from the existing pre-flight once the collider is routed: deletion → `scope.removed` /
   `evaluateChangedPath`; dropped → `classifyLeadingObstruction`.
-- Whether a forward collider is uncarried or dropped needs config, so it stays in
+- Whether a forward collider is a deletion or dropped needs config, so it stays in
   `materialize-tree.ts` and not in the pure `carryStagedChanges`. `carryHeadAgreement` is already over
   20 lines, so the planner splits off the `CarriedOpts` assembly as part of this edit.
 - The After column of axis 6 ran a scratch copy with this edit, written inline. It matched git on

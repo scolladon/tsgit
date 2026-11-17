@@ -1899,6 +1899,163 @@ describe('materializeTree carrying staged changes (headTree)', () => {
       });
     });
   });
+
+  describe('Given a staged file d neither head nor target has, and a target writing d/x', () => {
+    type IgnoreCase = 'unset' | 'true' | 'false';
+
+    const writeIgnoreCase = async (ctx: SeededContext, value: IgnoreCase): Promise<void> => {
+      if (value === 'unset') return;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tignorecase = ${value}\n`);
+    };
+
+    const buildStagedFile = async (value: IgnoreCase) => {
+      const ctx = await buildSeededContext();
+      const names = ['f', 'x', 's'];
+      const blobs: Record<string, ObjectId> = {};
+      for (const name of names) blobs[name] = await writeBlob(ctx, name);
+      const headTree = await flatTree(ctx, { f: blobs.f as ObjectId });
+      const dirTree = await writeTree(ctx, [
+        treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, blobs.x as ObjectId),
+      ]);
+      const targetTree = await writeTree(ctx, [
+        treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, blobs.f as ObjectId),
+        treeEntry(FILE_MODE.DIRECTORY, 'd' as FilePath, dirTree),
+      ]);
+      await writeWork(ctx, 'f', 'f');
+      await writeWork(ctx, 'd', 's');
+      await writeIgnoreCase(ctx, value);
+      const dEntry = indexEntryFromStat(
+        await ctx.fs.lstat(`${ctx.layout.workDir}/d`),
+        FILE_MODE.REGULAR,
+        blobs.s as ObjectId,
+        'd' as FilePath,
+      );
+      const currentIndex = indexOf([makeIndexEntry('f', blobs.f as ObjectId), dEntry]);
+      return { ctx, headTree, targetTree, currentIndex };
+    };
+
+    describe.each(['unset', 'false'] as const)('When ignorecase is %s', (value) => {
+      it('Then it refuses d as an untracked occupant', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } = await buildStagedFile(value);
+
+        // Act
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['d'],
+        });
+        expect(await readWork(ctx, 'd')).toBe('s');
+      });
+    });
+
+    describe('When ignorecase is true and d is unchanged since staging', () => {
+      it('Then d leaves the index and d/x is written', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } = await buildStagedFile('true');
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['d/x', 'f']);
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
+        expect(await readWork(ctx, 'd/x')).toBe('x');
+      });
+    });
+
+    describe('When ignorecase is true and d was modified after staging', () => {
+      it('Then it refuses d as untracked, not as a local change', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } = await buildStagedFile('true');
+        await writeWork(ctx, 'd', 'modified');
+
+        // Act
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['d'],
+        });
+        expect(await readWork(ctx, 'd')).toBe('modified');
+      });
+    });
+
+    describe.each(['unset', 'true'] as const)(
+      'When d is absent from disk and ignorecase is %s',
+      (value) => {
+        it('Then d/x is written and the index holds no d', async () => {
+          // Arrange
+          const { ctx, headTree, targetTree, currentIndex } = await buildStagedFile(value);
+          await ctx.fs.rm(`${ctx.layout.workDir}/d`);
+
+          // Act
+          const sut = materializeTree;
+          const result = await sut(ctx, { targetTree, currentIndex, headTree });
+
+          // Assert
+          expect(result.newIndexEntries.map((e) => e.path)).toEqual(['d/x', 'f']);
+          expect(await readWork(ctx, 'd/x')).toBe('x');
+          expect({ written: result.written, deleted: result.deleted }).toEqual({
+            written: 1,
+            deleted: 0,
+          });
+        });
+      },
+    );
+  });
+
+  describe('Given head and target agree on d/x and the index stages file d in its place', () => {
+    describe.each(['unset', 'true'] as const)('When ignorecase is %s', (value) => {
+      it('Then d is kept and no refusal', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const f = await writeBlob(ctx, 'f');
+        const x = await writeBlob(ctx, 'x');
+        const s = await writeBlob(ctx, 's');
+        const g = await writeBlob(ctx, 'g');
+        const dirTree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, x)]);
+        const dirEntry = treeEntry(FILE_MODE.DIRECTORY, 'd' as FilePath, dirTree);
+        const headTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, f),
+          dirEntry,
+        ]);
+        const targetTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, f),
+          dirEntry,
+          treeEntry(FILE_MODE.REGULAR, 'g' as FilePath, g),
+        ]);
+        await writeWork(ctx, 'f', 'f');
+        await writeWork(ctx, 'd', 's');
+        if (value === 'true') {
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tignorecase = true\n');
+        }
+        const dEntry = indexEntryFromStat(
+          await ctx.fs.lstat(`${ctx.layout.workDir}/d`),
+          FILE_MODE.REGULAR,
+          s,
+          'd' as FilePath,
+        );
+        const currentIndex = indexOf([makeIndexEntry('f', f), dEntry]);
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['d', 'f', 'g']);
+        expect(await readWork(ctx, 'd')).toBe('s');
+      });
+    });
+  });
 });
 
 describe('materializeTree unmerged paths', () => {

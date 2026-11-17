@@ -44,6 +44,7 @@ import { readReflog } from '../../../../src/application/primitives/reflog-store.
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
+import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
 import { updateRef as seedRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
@@ -6461,6 +6462,66 @@ describe('merge — the index before the strategy runs', () => {
         expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c2.id);
         expect((await readIndex(ctx)).entries.find((e) => e.path === 'a.txt')?.id).toBe(stagedId);
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('staged');
+      });
+    });
+  });
+
+  describe('Given a file dir staged on main where the fast-forward target holds dir/x', () => {
+    const seed = async (ignorecase: 'unset' | 'true') => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'f');
+      await add(ctx, ['f']);
+      await commit(ctx, { message: 'first', author });
+      await branchCreate(ctx, { name: 'tgt' });
+      await checkout(ctx, { rev: 'tgt' });
+      await ctx.fs.mkdir(`${ctx.layout.workDir}/dir`);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir/x`, 'x');
+      await add(ctx, ['dir/x']);
+      const target = await commit(ctx, { message: 'second', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir`, 's');
+      await add(ctx, ['dir']);
+      if (ignorecase === 'true') {
+        await updateConfigEntries(ctx, [{ section: 'core', key: 'ignorecase', value: 'true' }]);
+      }
+      return { ctx, target };
+    };
+
+    describe('When ignorecase is true and merge fast-forwards', () => {
+      it('Then the merge fast-forwards, dir leaves the index and dir/x is written', async () => {
+        // Arrange
+        const { ctx, target } = await seed('true');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'tgt' });
+
+        // Assert
+        expect(result.kind).toBe('fast-forward');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(target.id);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['dir/x', 'f']);
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/dir`)).isDirectory).toBe(true);
+      });
+    });
+
+    describe('When ignorecase is unset and merge fast-forwards', () => {
+      it('Then it refuses dir as untracked and HEAD stays', async () => {
+        // Arrange
+        const { ctx } = await seed('unset');
+        const before = await resolveRef(ctx, 'HEAD' as RefName);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: 'tgt' }).catch((error: unknown) => error);
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['dir'],
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(before);
       });
     });
   });
