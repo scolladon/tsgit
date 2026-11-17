@@ -2446,6 +2446,67 @@ describe('materializeTree carrying staged changes (headTree)', () => {
     });
 
     describe.each([
+      ['inside', (p: string) => p === 'g' || p === 'dir'],
+      ['outside', (p: string) => p === 'g'],
+    ] as const)(
+      'Given a skip-worktree dir/a outside the pattern, a target file dir %s it and an untracked file at dir',
+      (_side, sparse) => {
+        describe('When the branch switch materialises', () => {
+          it('Then dir/a stays skip-worktree and the untracked file stays', async () => {
+            // Arrange
+            const { ctx, options } = await seedSwitch({
+              staged: { path: 'dir/a', skip: true, onDisk: false },
+              target: ['dir'],
+              sparse,
+              occupant: 'untracked',
+            });
+
+            // Act
+            const sut = materializeTree;
+            const result = await sut(ctx, options);
+
+            // Assert
+            expect(summaryOf(result.newIndexEntries)).toEqual([
+              ['dir/a', true],
+              ['g', false],
+            ]);
+            expect(await readWork(ctx, 'dir')).toBe('untracked');
+          });
+        });
+      },
+    );
+
+    describe('Given HEAD tracking a clean file dir and a target dir/x, all inside the pattern', () => {
+      describe('When the branch switch materialises', () => {
+        it('Then the file dir gives way to dir/x', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const blob = await writeBlob(ctx, 'staged');
+          const headTree = await targetTreeOf(ctx, blob, ['g', 'dir']);
+          const targetTree = await targetTreeOf(ctx, blob, ['g', 'dir/x']);
+          const tracked = await stagedEntryOf(ctx, blob, {
+            path: 'dir',
+            skip: false,
+            onDisk: true,
+          });
+          const currentIndex = indexOf([tracked, makeIndexEntry('g', blob)]);
+          const sparse: Pattern = (p) => p === 'g' || p === 'dir' || p.startsWith('dir/');
+
+          // Act
+          const sut = materializeTree;
+          const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse });
+
+          // Assert
+          expect(summaryOf(result.newIndexEntries)).toEqual([
+            ['dir/x', false],
+            ['g', false],
+          ]);
+          expect(await readWork(ctx, 'dir/x')).toBe('staged');
+        });
+      });
+    });
+
+    describe.each([
       ['unchanged', 'staged'],
       ['modified', 'changed'],
     ])(

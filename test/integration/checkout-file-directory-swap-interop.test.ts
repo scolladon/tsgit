@@ -89,6 +89,32 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given main holds file f, side holds directory f/ and sparse checkout covers both', () => {
+      describe('When both tools checkout side', () => {
+        it('Then f/x replaces the file f, matching git', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            git(dir, 'sparse-checkout', 'set', '--no-cone', '/b', '/f');
+          }
+          await repo.dispose();
+          repo = await openRepository({ cwd: pair.ours });
+          git(pair.peer, 'checkout', '-q', 'side');
+
+          // Act
+          await repo.checkout({ rev: 'side' });
+
+          // Assert
+          expect(readFileSync(path.join(pair.ours, 'f', 'x'), 'utf8')).toBe('x\n');
+          expect(git(pair.ours, 'ls-files', '-s', '-t')).toBe(
+            git(pair.peer, 'ls-files', '-s', '-t'),
+          );
+          expect(git(pair.ours, 'status', '--porcelain', '--untracked-files=all')).toBe(
+            git(pair.peer, 'status', '--porcelain', '--untracked-files=all'),
+          );
+        });
+      });
+    });
+
     describe('Given both tools sit on side holding directory f/ and main holds file f', () => {
       describe('When both tools checkout main', () => {
         it('Then file f replaces the directory, matching git', async () => {
@@ -826,6 +852,24 @@ const SPARSE_ROWS: ReadonlyArray<SparseRow> = [
     patterns: ['/g'],
     target: { dir: 'd\n' },
     stage: (dir) => stageBlobAt(dir, 'dir/a', true),
+  },
+  {
+    id: 'SP3 with an untracked file standing at the excluded target file path',
+    patterns: ['/g'],
+    target: { dir: 'd\n' },
+    stage: (dir) => {
+      stageBlobAt(dir, 'dir/a', true);
+      put(dir, 'dir', 'untracked\n');
+    },
+  },
+  {
+    id: 'SP4 with the directory entry excluded and an untracked file at the target file path',
+    patterns: ['/g', '/dir', '!/dir/a'],
+    target: { dir: 'd\n' },
+    stage: (dir) => {
+      stageBlobAt(dir, 'dir/a', true);
+      put(dir, 'dir', 'untracked\n');
+    },
   },
   {
     id: 'SP4 a skip-worktree directory entry where the target holds a file inside the patterns',
