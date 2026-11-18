@@ -39,6 +39,7 @@ interface ResetResult {
 - **`hard` rewrites only stale paths.** As git's one-way merge does, a tracked path is rewritten when its work-tree file is not up to date (edited, deleted, or an occupant in the way); a file whose cached stat matches is not touched, and an assume-unchanged entry keeps its flag. A skip-worktree entry is left alone. A conflicted path is reset to the target, or removed when the target lacks it. The index is written on every `hard` reset, even when the target tree is empty. A symlinked leading directory whose target stat matches is kept.
 - **Untracked files outside the target tree** are left alone in `hard` mode — only tracked paths are rewritten.
 - **`hard` displaces an occupant as git does.** A regular file or symlink in a leading path of a target entry is replaced by a directory, and a directory at the path of an added or updated entry (not a gitlink) is removed with its content. A tracked path that is now a directory is left in place when the target deletes it, with git's `unable to unlink '<path>'` warning logged; the index drops the entry either way.
+- **A gitlink's path is only removed when it is an empty directory.** When the target drops a gitlink, a populated directory, a regular file or a symlink at its path stays; git's `unable to rmdir '<path>'` warning is logged through `logger.warn`, naming `Directory not empty` or `Not a directory`, and the index drops the entry either way.
 
 ## Examples
 
