@@ -4450,7 +4450,7 @@ describe('applyChangeset over a gitlink directory', () => {
     });
   });
 
-  describe('Given a port without rmdir and a gitlink delete over a regular file', () => {
+  describe('Given a port without rmdir, a logger, and a gitlink delete over a regular file', () => {
     describe('When applyChangeset runs without force and with a logger', () => {
       it('Then it warns once that the path is not a directory', async () => {
         // Arrange
