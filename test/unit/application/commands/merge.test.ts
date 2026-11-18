@@ -3925,10 +3925,8 @@ describe('merge — sparse checkout', () => {
 
   describe('Given a resolved-merged outcome whose path the sparse matcher excludes', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then the file is still written (merged bytes have no other persistence)', async () => {
-        // Arrange — `resolved-merged` carries its merged bytes in memory only;
-        // the working-tree write is their sole persistence, so it must happen
-        // even for an out-of-pattern path, unlike a blob-backed clean outcome.
+      it('Then the file is not written', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
         const outcome: MergeOutcome = {
@@ -3942,7 +3940,55 @@ describe('merge — sparse checkout', () => {
         await writeOutcomeToTree(outcome, excludesDrop, await createMergeResultWriter(ctx, [], []));
 
         // Assert
-        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/drop.txt`)).toBe('MERGED');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/drop.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a resolved-merged outcome whose path the sparse matcher includes', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then the merged bytes are written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const outcome: MergeOutcome = {
+          status: 'resolved-merged',
+          path: 'keep.txt' as FilePath,
+          bytes: new TextEncoder().encode('MERGED'),
+          mode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        await writeOutcomeToTree(outcome, excludesDrop, await createMergeResultWriter(ctx, [], []));
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/keep.txt`)).toBe('MERGED');
+      });
+    });
+  });
+
+  describe.each([
+    ['drop.txt', true],
+    ['keep.txt', false],
+  ] as const)('Given a line-merged entry at %s', (path, skipWorktree) => {
+    describe('When buildConflictIndexEntries runs', () => {
+      it(`Then its stage-0 entry has skipWorktree ${skipWorktree}`, () => {
+        // Arrange
+        const id = 'd'.repeat(40) as ObjectId;
+        const unmarked = buildConflictIndexEntries(
+          [{ status: 'unchanged', path: path as FilePath, id, mode: FILE_MODE.REGULAR }],
+          [],
+          undefined,
+          [],
+        );
+
+        // Act
+        const result = buildConflictIndexEntries([], [], excludesDrop, unmarked);
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.id).toBe(id);
+        expect(result[0]?.flags.skipWorktree).toBe(skipWorktree);
       });
     });
   });
@@ -4012,6 +4058,72 @@ describe('merge — sparse checkout', () => {
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a sparse repo whose out-of-pattern file is present on disk', () => {
+    const seedConflict = async (warn: (message: string) => void) => {
+      const base = createMemoryContext();
+      await init(base);
+      const ctx = { ...base, logger: { warn } };
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'base-a\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'shared-b\n');
+      await add(ctx, ['src/a.txt', 'docs/b.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'FEATURE-a\n');
+      await add(ctx, ['src/a.txt']);
+      await commit(ctx, { message: 'on-feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'MAIN-a\n');
+      await add(ctx, ['src/a.txt']);
+      await commit(ctx, { message: 'on-main', author });
+      await enableSparseSrcOnly(ctx);
+      return ctx;
+    };
+
+    const skipBitOf = async (ctx: Context, path: string): Promise<boolean | undefined> =>
+      (await readIndex(ctx)).entries.find((e) => e.path === path)?.flags.skipWorktree;
+
+    describe('When a conflicting merge runs and the file is clean', () => {
+      it('Then the file is removed and its entry is skip-worktree', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = await seedConflict(warn);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
+        expect(await skipBitOf(ctx, 'docs/b.txt')).toBe(true);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When a conflicting merge runs and the file holds local changes', () => {
+      it('Then the file is kept, its entry is not skip-worktree, and one warning names it', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = await seedConflict(warn);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'dirty\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/docs/b.txt`)).toBe('dirty\n');
+        expect(await skipBitOf(ctx, 'docs/b.txt')).toBe(false);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          'The following paths are not up to date and were left despite sparse patterns:\n\tdocs/b.txt\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+        );
       });
     });
   });
@@ -7601,7 +7713,7 @@ describe('merge — trees holding a non-UTF-8 path', () => {
     });
 
     describe('When both sides cleanly edit a non-UTF-8 name in d that sparse checkout excludes and merge runs', () => {
-      it('Then d stays, as the merged content is materialised there despite the exclusion', async () => {
+      it('Then d is removed, as the excluded merged content is staged, not written', async () => {
         // Arrange
         const ctx = await seedEmptiedDirectory(
           [
@@ -7622,8 +7734,7 @@ describe('merge — trees holding a non-UTF-8 path', () => {
 
         // Assert
         expect(result.kind).toBe('conflict');
-        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
-        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
       });
     });
   });

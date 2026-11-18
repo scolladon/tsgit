@@ -462,6 +462,13 @@ const REPLAY_ROWS: ReadonlyArray<ReplayRow> = [
     operation: pick(['other']),
   }),
   replayRow({
+    id: 'merge-clean-present-clean-mover',
+    afterSparse: presentMover,
+    skipped: ['a/f', 'a/g'],
+    gitArgs: ['merge', '-q', 'other'],
+    operation: (repo) => repo.merge.run({ rev: 'other', message: 'm', author: AUTHOR }),
+  }),
+  replayRow({
     id: 'case-pick',
     seed: CASE_SEED,
     skipped: undefined,
@@ -477,6 +484,9 @@ const REPLAY_ROWS: ReadonlyArray<ReplayRow> = [
     operation: pick(['other']),
   }),
 ];
+
+const mergeOther = (repo: Repository) =>
+  repo.merge.run({ rev: 'other', message: 'm', author: AUTHOR });
 
 const FIVE_LINES = '1\n2\n3\n4\n5\n';
 const OURS_EDITS_FIRST = '1x\n2\n3\n4\n5\n';
@@ -611,6 +621,59 @@ const CONFLICT_ROWS: ReadonlyArray<ConflictRow> = [
     },
     gitArgs: ['cherry-pick', 'other'],
     operation: pick(['other']),
+  }),
+  conflictRow({
+    id: 'merge-conflict-line-merged-outside-cone',
+    seed: LINE_MERGE_SEED,
+    prepare: advanceAndReset(LINE_MERGED),
+    gitArgs: ['merge', '-q', 'other'],
+    operation: mergeOther,
+  }),
+  conflictRow({
+    id: 'merge-conflict-take-theirs-outside-cone',
+    seed: TAKE_THEIRS_SEED,
+    prepare: advanceAndReset(IN_CONE_CONFLICT),
+    gitArgs: ['merge', '-q', 'other'],
+    operation: mergeOther,
+  }),
+  conflictRow({
+    id: 'merge-conflict-retires-clean-mover',
+    prepare: advanceAndReset(CONE_CONFLICT),
+    afterSparse: presentMover,
+    gitArgs: ['merge', '-q', 'other'],
+    operation: mergeOther,
+  }),
+  conflictRow({
+    id: 'merge-conflict-keeps-dirty-mover',
+    prepare: advanceAndReset(CONE_CONFLICT),
+    afterSparse: (dir) => {
+      presentMover(dir);
+      writeFileSync(join(dir, 'a', 'g'), 'dirty\n');
+    },
+    gitArgs: ['merge', '-q', 'other'],
+    operation: mergeOther,
+  }),
+  conflictRow({
+    id: 'octopus-conflict-retires-clean-mover',
+    prepare: (dir) => {
+      const base = runGit(['-C', dir, 'rev-parse', 'main']).trim();
+      const first = commitOn(
+        dir,
+        [...BASE_SEED.main.filter((e) => e.path !== 'top'), regular('top', 't2\n')],
+        base,
+      );
+      const last = commitOn(
+        dir,
+        BASE_SEED.main.filter((e) => e.path !== 'b/f'),
+        base,
+      );
+      runGit(['-C', dir, 'update-ref', 'refs/heads/first', first]);
+      runGit(['-C', dir, 'update-ref', 'refs/heads/last', last]);
+      advanceAndReset(CONE_CONFLICT)(dir);
+    },
+    afterSparse: presentMover,
+    gitArgs: ['merge', '-q', 'first', 'last'],
+    operation: (repo) => repo.merge.run({ rev: ['first', 'last'], message: 'm', author: AUTHOR }),
   }),
 ];
 

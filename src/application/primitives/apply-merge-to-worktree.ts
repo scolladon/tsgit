@@ -222,7 +222,7 @@ export const gitlinkSurvivorId = (conflict: MergeConflict): ObjectId | undefined
 /** A `MergeOutcome` known to change a path the merge actually writes — the
  *  'conflict' variant is excluded before this type is ever reached (its own
  *  path lives on `MergeConflict`, handled separately). */
-type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
+export type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
 export type DeletedOutcome = Extract<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
 type WrittenOutcome = Exclude<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
 
@@ -343,12 +343,14 @@ const writeConflictWorktree = async (
 };
 
 /** True when sparse checkout is on and the patterns exclude the path. */
-const isExcluded = (sparse: SparseMatcher | undefined, path: FilePath): boolean =>
+export const isExcluded = (sparse: SparseMatcher | undefined, path: FilePath): boolean =>
   sparse !== undefined && !sparse(path);
 
 /** git writes a clean outcome only inside the patterns; a conflict is always written. */
-const isMaterialised = (outcome: ChangedOutcome, sparse: SparseMatcher | undefined): boolean =>
-  !isExcluded(sparse, outcome.path);
+export const isMaterialised = (
+  outcome: ChangedOutcome,
+  sparse: SparseMatcher | undefined,
+): boolean => !isExcluded(sparse, outcome.path);
 
 /** The changed paths the conflict stop writes or removes: an excluded clean write is dropped. */
 const materialisedPaths = (
