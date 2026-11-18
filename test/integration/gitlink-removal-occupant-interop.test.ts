@@ -11,6 +11,7 @@
  *   interopSurface: checkout
  */
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -225,13 +226,11 @@ const OP_NAMES = Object.keys(OPS) as Op[];
 const PLACEMENTS: Placement[] = ['index-only', 'in-head'];
 const OCCUPANTS: Occupant[] = ['file', 'symlink', 'dir', 'emptydir'];
 const isStash = (op: Op): boolean => op.startsWith('stash');
-// `stash push -u` over a populated directory is exercised with the untracked walk.
-const isUntrackedWalkOfDirectory = (op: Op, occupant: Occupant): boolean =>
-  op === 'stash-push-u' && occupant === 'dir';
 const isKeptOccupantRow = (placement: Placement, occupant: Occupant): boolean =>
   placement === 'index-only' && (occupant === 'file' || occupant === 'symlink');
 
 const STASH_REF_PROBE = ['rev-parse', '-q', '--verify', 'stash^3'];
+const UNTRACKED_TREE_PROBE = ['rev-parse', '-q', '--verify', 'stash^3^{tree}'];
 
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'gitlink removal occupant interop',
@@ -249,9 +248,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
         describe.each(OP_NAMES)('When %s runs over a path indexed as a gitlink', (op) => {
           const cells = PLACEMENTS.flatMap((placement) =>
-            OCCUPANTS.filter((occupant) => !isUntrackedWalkOfDirectory(op, occupant)).map(
-              (occupant) => ({ placement, occupant }),
-            ),
+            OCCUPANTS.map((occupant) => ({ placement, occupant })),
           );
           it.each(cells)(
             'Then $placement with a $occupant at its path ends as git ends',
@@ -273,6 +270,12 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
                 expect(runGitTwin(pair.ours, STASH_REF_PROBE).exitCode).toBe(
                   runGitTwin(pair.peer, STASH_REF_PROBE).exitCode,
                 );
+
+                if (op === 'stash-push-u') {
+                  expect(runGitTwin(pair.ours, UNTRACKED_TREE_PROBE).stdout).toBe(
+                    runGitTwin(pair.peer, UNTRACKED_TREE_PROBE).stdout,
+                  );
+                }
               }
             },
           );
@@ -312,6 +315,35 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             },
           );
         });
+
+        describe.each(PLACEMENTS)(
+          'Given a %s gitlink over a populated directory and an untracked u.txt, When stash push -u runs',
+          (placement) => {
+            it('Then it collects only u.txt and keeps the directory as git does', async () => {
+              // Arrange
+              const build = (dir: string): void => {
+                buildIndexed(dir, ignorecase, placement, 'dir');
+                writeFileSync(path.join(dir, 'u.txt'), 'u\n');
+              };
+              build(pair.peer);
+              build(pair.ours);
+              const untrackedTree = (dir: string): string =>
+                tryRunGitWithExit(['-C', dir, 'ls-tree', '-r', '--name-only', 'stash^3']).stdout;
+
+              // Act
+              const result = await compareTwins(pair, OPS['stash-push-u'].git('HEAD'), (repo) =>
+                repo.stash.push({ includeUntracked: true }),
+              );
+
+              // Assert
+              expect(result.tsgit).toEqual(result.git);
+              expect(untrackedTree(pair.ours)).toBe(untrackedTree(pair.peer));
+              expect(untrackedTree(pair.peer)).toBe('u.txt\n');
+              expect(result.git.occupant).toBe('dir:x');
+              expect(existsSync(path.join(pair.ours, 'u.txt'))).toBe(false);
+            });
+          },
+        );
 
         describe.each(['file', 'symlink'] as const)(
           'Given a %s at the path of a gitlink a branch change removes',

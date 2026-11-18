@@ -125,7 +125,7 @@ import {
   type StashStackEntry,
 } from '../primitives/stash-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
-import { MAX_WORKING_TREE_BLOB_BYTES } from '../primitives/types.js';
+import { MAX_WORKING_TREE_BLOB_BYTES, type WalkIgnorePredicate } from '../primitives/types.js';
 import { walkWorkingTreeReporting } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -634,9 +634,22 @@ interface UntrackedListing {
 
 const NO_UNTRACKED: UntrackedListing = { files: [], emptyDirectories: [] };
 
+const isStageZeroGitlink = (entry: IndexEntry): boolean =>
+  entry.flags.stage === 0 && isGitlink(entry.mode);
+
+// A gitlink's directory is the submodule's checkout: its content is never the superproject's untracked data.
+const gitlinkPrunedIgnore = (
+  index: GitIndex,
+  repoIgnore: WalkIgnorePredicate,
+): WalkIgnorePredicate => {
+  const gitlinks = new Set(index.entries.filter(isStageZeroGitlink).map(indexPathKey));
+  return (path, isDirectory) =>
+    (isDirectory && gitlinks.has(keyOfPath(path))) || repoIgnore(path, isDirectory);
+};
+
 const listUntracked = async (ctx: Context, index: GitIndex): Promise<UntrackedListing> => {
   const tracked = new Set(index.entries.map(indexPathKey));
-  const ignore = await buildRepoIgnorePredicate(ctx);
+  const ignore = gitlinkPrunedIgnore(index, await buildRepoIgnorePredicate(ctx));
   const files: UntrackedFile[] = [];
   const emptyDirectories: FilePath[] = [];
   const reportEmpty = (directory: FilePath): void => {

@@ -41,6 +41,7 @@ import type {
   ObjectId,
   RefName,
 } from '../../../../src/domain/objects/index.js';
+import { emptyTreeOid } from '../../../../src/domain/objects/object-id.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type {
   CommandRequest,
@@ -1475,6 +1476,67 @@ describe('stash push', () => {
       });
     });
   });
+
+  describe.each(['index-only', 'in-head'] as const)(
+    'Given a %s gitlink new whose directory holds x and an edited a.txt',
+    (placement) => {
+      const setup = async (): Promise<Context> => {
+        const ctx = await setupRepo();
+        await write(ctx, 'new/x', 'x\n');
+        await replaceIndexEntries(ctx, [
+          ...(await readIndex(ctx)).entries,
+          indexEntryFromStat(
+            await ctx.fs.lstat(`${ctx.layout.workDir}/new`),
+            FILE_MODE.GITLINK as IndexEntry['mode'],
+            GITLINK_A,
+            'new' as FilePath,
+          ),
+        ]);
+        if (placement === 'in-head') await commit(ctx, { message: 'gitlink', author });
+        await write(ctx, 'a.txt', 'edited\n');
+        return ctx;
+      };
+
+      describe('When push runs with includeUntracked', () => {
+        it('Then the untracked commit is the empty tree and the directory content stays', async () => {
+          // Arrange
+          const ctx = await setup();
+
+          // Act
+          const result = await stashPush(ctx, { includeUntracked: true });
+
+          // Assert
+          if (result.kind !== 'saved') throw new Error('expected saved');
+          const w = await commitOf(ctx, result.stash);
+          expect(w.parents).toHaveLength(3);
+          expect((await commitOf(ctx, w.parents[2] as ObjectId)).tree).toBe(
+            emptyTreeOid(ctx.hashConfig),
+          );
+          expect(await read(ctx, 'new/x')).toBe('x\n');
+        });
+      });
+
+      describe('When push runs with includeUntracked and an untracked u.txt', () => {
+        it('Then only u.txt is collected and removed while the directory content stays', async () => {
+          // Arrange
+          const ctx = await setup();
+          await write(ctx, 'u.txt', 'u\n');
+
+          // Act
+          const result = await stashPush(ctx, { includeUntracked: true });
+
+          // Assert
+          if (result.kind !== 'saved') throw new Error('expected saved');
+          const w = await commitOf(ctx, result.stash);
+          const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+          expect(await treeContent(ctx, uTree, 'u.txt')).toBe('u\n');
+          expect(await treeContent(ctx, uTree, 'new/x')).toBe('<absent>');
+          expect(await read(ctx, 'new/x')).toBe('x\n');
+          expect(await lstatOrUndefined(ctx, 'u.txt')).toBeUndefined();
+        });
+      });
+    },
+  );
 
   describe('Given untracked m/z and deep/er/w with includeUntracked', () => {
     describe('When push runs', () => {
