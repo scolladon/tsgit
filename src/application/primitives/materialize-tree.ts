@@ -837,30 +837,32 @@ interface DirtyMoverScope {
   readonly indexMtime: GitIndex['indexMtime'];
 }
 
-/** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
-const carryHeadAgreement = async (
+const nothingCarried = (
+  opts: MaterializeTreeOpts,
+  allTarget: ReadonlyArray<TargetEntry>,
+): CarriedOpts => ({
+  opts,
+  allTarget,
+  carried: [],
+  removals: [],
+  leftDirty: [],
+  verifiedClean: new Set(),
+});
+
+interface CarryJudgement extends JudgedMovers {
+  readonly partition: CarryPartition;
+}
+
+/** Judges the out-of-pattern movers, then splits the staged paths into those kept and those still moving. */
+const judgeCarry = async (
   ctx: Context,
   workdir: string,
   opts: MaterializeTreeOpts,
-  allTarget: ReadonlyArray<TargetEntry>,
-): Promise<CarriedOpts> => {
-  if (opts.headTree === undefined) {
-    return {
-      opts,
-      allTarget,
-      carried: [],
-      removals: [],
-      leftDirty: [],
-      verifiedClean: new Set(),
-    };
-  }
-  const stageZero = opts.currentIndex.entries.filter((e) => e.flags.stage === 0);
-  const { agreed } = await agreementWithHead(
-    ctx,
-    { ...opts, headTree: opts.headTree },
-    allTarget,
-    stageZero,
-  );
+  scope: Omit<DirtyMoverScope, 'movers' | 'indexMtime'> & {
+    readonly allTarget: ReadonlyArray<TargetEntry>;
+  },
+): Promise<CarryJudgement> => {
+  const { stageZero, agreed, allTarget } = scope;
   const movers = sparseMovers(opts.sparse, stageZero);
   const { leftDirty, verifiedClean } = await dirtyMoversOf(ctx, workdir, {
     stageZero,
@@ -870,7 +872,33 @@ const carryHeadAgreement = async (
   });
   const dirtyKeys = new Set(leftDirty.map(indexPathKey));
   const stillMoving = new Set([...movers].filter((key) => !dirtyKeys.has(key)));
-  const partition = partitionCarry(allTarget, stageZero, agreed, stillMoving);
+  return {
+    leftDirty,
+    verifiedClean,
+    partition: partitionCarry(allTarget, stageZero, agreed, stillMoving),
+  };
+};
+
+/** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
+const carryHeadAgreement = async (
+  ctx: Context,
+  workdir: string,
+  opts: MaterializeTreeOpts,
+  allTarget: ReadonlyArray<TargetEntry>,
+): Promise<CarriedOpts> => {
+  if (opts.headTree === undefined) return nothingCarried(opts, allTarget);
+  const stageZero = opts.currentIndex.entries.filter((e) => e.flags.stage === 0);
+  const { agreed } = await agreementWithHead(
+    ctx,
+    { ...opts, headTree: opts.headTree },
+    allTarget,
+    stageZero,
+  );
+  const { partition, leftDirty, verifiedClean } = await judgeCarry(ctx, workdir, opts, {
+    stageZero,
+    agreed,
+    allTarget,
+  });
   const resolved = await resolveCarryCollisions(ctx, workdir, opts, partition);
   return {
     ...carriedOptsOf(opts, allTarget, carrySplitOf(stageZero, partition, resolved)),
