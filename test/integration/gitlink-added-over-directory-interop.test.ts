@@ -79,6 +79,7 @@ interface Shape {
   readonly diverged: boolean;
   readonly conflicting: boolean;
   readonly occupant: Occupant;
+  readonly secondHead?: boolean;
 }
 
 const buildAdded = (dir: string, ignorecase: string, shape: Shape): void => {
@@ -94,6 +95,12 @@ const buildAdded = (dir: string, ignorecase: string, shape: Shape): void => {
     git(dir, 'add', 'c.txt');
   }
   commit(dir, 'gitlink');
+  if (shape.secondHead === true) {
+    git(dir, 'checkout', '-q', '-b', 'H2', 'main');
+    writeFileSync(path.join(dir, 'd.txt'), 'd\n');
+    git(dir, 'add', 'd.txt');
+    commit(dir, 'second head');
+  }
   git(dir, 'checkout', '-q', 'main');
   rmSync(path.join(dir, GITLINK_PATH), { recursive: true, force: true });
   if (shape.conflicting) {
@@ -223,6 +230,12 @@ const ROWS: ReadonlyArray<Row> = [
     shape: DIVERGED,
     git: ['merge', '-s', 'resolve', '--no-edit', 'G'],
     tsgit: (repo) => repo.merge.run({ rev: 'G', strategy: 'resolve' }),
+  },
+  {
+    id: 'A3o octopus merge',
+    shape: { ...DIVERGED, secondHead: true },
+    git: ['merge', '--no-edit', 'G', 'H2'],
+    tsgit: (repo) => repo.merge.run({ rev: ['G', 'H2'] }),
   },
   {
     id: 'A4 cherry-pick',
