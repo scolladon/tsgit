@@ -243,9 +243,10 @@ symlink, non-empty dir, empty dir, absent) × **`core.ignorecase`** (false, true
   gitlink. A regular file or a symlink at that path still refuses `untracked: [path]` (S1/S2). A
   file at a *leading* component is judged as today. Out of scope: submodule recursion (no tsgit
   surface).
-- **R7 — D2, if folded (D-E).** `stash push -u` never collects a path at or beneath a stage-0
-  160000 index entry, nor an empty directory beneath one. When nothing else is untracked, the
-  stash has no untracked parent and the `-u` clean removes nothing (O9).
+- **R7 — D2, if folded (D-E).** `stash push -u` never collects a path at or beneath a 160000
+  index entry, nor an empty directory beneath one; under `core.ignorecase` the match is
+  case-blind, as git's `directory_exists_in_index_icase`. When nothing else is untracked, the
+  untracked parent holds the empty tree and the `-u` clean removes nothing (O9).
 
 ### Every pinned row against its requirement
 
@@ -435,7 +436,7 @@ this change edits (Test plan, Mutation).
   `find-would-overwrite.test.ts` adds A3's shape. `apply-changeset.test.ts` adds a non-forced
   gitlink add over a populated directory (A1).
 - If D-E = A: `test/unit/application/commands/stash.test.ts` adds `Given an index-only gitlink whose
-  directory holds x, When push runs with includeUntracked` → no untracked parent, `new/x` kept. A
+  directory holds x, When push runs with includeUntracked` → the untracked parent holds the empty tree, `new/x` kept. A
   sibling with one other untracked file → the U tree holds only that file.
 - `test/unit/application/primitives/record-ref-update.test.ts` (or its covering suite): L1 on
   the memory adapter (symlinked log dir → `DIRECTORY_NOT_EMPTY`). This already holds there, so it
@@ -503,3 +504,22 @@ is hand-verified against the full covering set.
   symlink to a directory, `checkout G`, both twins.
 - **`pruneEmptyParents` over a symlinked parent ref directory**: see the consumer table (not
   pinned, proof recipe there).
+
+## Review folds
+
+Found by the review round and pinned against git 2.56.0 under both `core.ignorecase` values:
+
+- **A conflicted gitlink is judged by the side left in tree.** A modify/delete conflict whose
+  surviving side is a gitlink, with a directory holding content at its path: git conflicts, records
+  stages 1 and 3 and keeps the directory. tsgit refused `WORKING_TREE_DIRTY` because every
+  conflicted path was judged as a regular file. `resultModesOf` now gives a conflicted path its
+  merged mode, else the one side still present.
+- **The conflict writer never reads a submodule commit.** cherry-pick, revert and stash apply wrote
+  a one-sided gitlink conflict by reading the commit as a blob from the superproject's store and
+  threw `OBJECT_NOT_FOUND` (pre-existing on main). merge already left an empty directory; the
+  shared writer now does the same.
+- **Case-variant gitlink directories under `core.ignorecase`.** With gitlink `sub` and a
+  directory `SUB/u`, git's `stash push -u` leaves `SUB/u`; tsgit stashed and removed it.
+- **Size caps.** Browser bundle 367.5 → 367.7 kB and primitives chunk 116.8 → 116.9 kB (user
+  approved): the rmdir forward, the kept-occupant warning, the gitlink mode in the occupant judge
+  and the stash prune.
