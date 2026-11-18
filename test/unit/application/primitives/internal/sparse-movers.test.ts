@@ -72,6 +72,8 @@ const present = (ctx: SeededContext, name: string): Promise<boolean> =>
 
 const conflictAt = (path: string): MergeConflict => ({ path: path as FilePath }) as MergeConflict;
 
+const GITLINK_ID = '1111111111111111111111111111111111111111' as ObjectId;
+
 const noConflicts: ReadonlyArray<MergeConflict> = [];
 
 describe('retireSparseMovers', () => {
@@ -158,20 +160,58 @@ describe('retireSparseMovers', () => {
     });
   });
 
-  describe('Given a gitlink out-of-pattern entry, When the stop retires movers', () => {
-    it('Then it is left alone', async () => {
+  describe('Given a gitlink out-of-pattern entry whose directory is empty, When the stop retires movers', () => {
+    it('Then it is retired, its directory removed and the emptied parent pruned', async () => {
       // Arrange
       const ctx = await buildSeededContext();
-      const id = await writeBlob(ctx, 'g1\n');
-      await writeWork(ctx, 'a/g', 'g1\n');
-      const index = indexOf([entryOf('a/g', id, { mode: FILE_MODE.GITLINK })]);
+      await ctx.fs.mkdir(`${workDirOf(ctx)}/a/sub`);
+      const index = indexOf([entryOf('a/sub', GITLINK_ID, { mode: FILE_MODE.GITLINK })]);
+
+      // Act
+      const result = await sut(ctx, { currentIndex: index, conflicts: noConflicts }, CONE);
+
+      // Assert
+      expect([...result.retired]).toEqual(['a/sub']);
+      expect([...result.leftDirty]).toEqual([]);
+      expect(await present(ctx, 'a')).toBe(false);
+    });
+  });
+
+  describe('Given a gitlink out-of-pattern entry whose directory is populated, When the stop retires movers', () => {
+    it('Then it is retired, the directory stays and git’s rmdir warning is logged', async () => {
+      // Arrange
+      const seeded = await buildSeededContext();
+      const warn = vi.fn();
+      const ctx = { ...seeded, logger: { warn } };
+      await writeWork(ctx, 'a/sub/inner', 'x\n');
+      const index = indexOf([entryOf('a/sub', GITLINK_ID, { mode: FILE_MODE.GITLINK })]);
+
+      // Act
+      const result = await sut(ctx, { currentIndex: index, conflicts: noConflicts }, CONE);
+
+      // Assert
+      expect([...result.retired]).toEqual(['a/sub']);
+      expect([...result.leftDirty]).toEqual([]);
+      expect(await present(ctx, 'a/sub/inner')).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("unable to rmdir 'a/sub': Directory not empty");
+    });
+  });
+
+  describe('Given a gitlink out-of-pattern entry whose leading directory is a symlink, When the stop retires movers', () => {
+    it('Then it is not retired and nothing is removed through the link', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await ctx.fs.mkdir(`${workDirOf(ctx)}/b/sub`);
+      await ctx.fs.symlink('b', `${workDirOf(ctx)}/a`);
+      const index = indexOf([entryOf('a/sub', GITLINK_ID, { mode: FILE_MODE.GITLINK })]);
 
       // Act
       const result = await sut(ctx, { currentIndex: index, conflicts: noConflicts }, CONE);
 
       // Assert
       expect([...result.retired]).toEqual([]);
-      expect(await present(ctx, 'a/g')).toBe(true);
+      expect(await present(ctx, 'b/sub')).toBe(true);
     });
   });
 

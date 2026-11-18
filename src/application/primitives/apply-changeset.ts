@@ -431,7 +431,7 @@ const applyDeleteEntry = async (
 };
 
 // git's remove_or_warn: rmdir on a gitlink; whatever refuses to go stays, with git's warning.
-const removeGitlinkDirectory = async (
+export const removeGitlinkDirectory = async (
   ctx: Context,
   abs: string,
   path: FilePath,

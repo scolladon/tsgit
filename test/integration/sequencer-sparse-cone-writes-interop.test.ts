@@ -30,6 +30,7 @@ import {
 import {
   COMMIT_ENV,
   commitOn,
+  gitlink,
   listing,
   regular,
   symlink,
@@ -586,6 +587,23 @@ const CONE_CONFLICT = [
   regular('b/f', 'm\n'),
   regular('top', 't\n'),
 ];
+const GITLINK_SEED: Seed = {
+  main: [regular('a/f', 'f1\n'), regular('b/f', 'f1\n'), regular('top', 't\n'), gitlink('a/sub')],
+  other: [regular('a/f', 'f2\n'), regular('b/f', 'f3\n'), regular('top', 't\n'), gitlink('a/sub')],
+};
+const GITLINK_CONFLICT = [
+  regular('a/f', 'f1\n'),
+  regular('b/f', 'f4\n'),
+  regular('top', 't\n'),
+  gitlink('a/sub'),
+];
+const presentGitlink =
+  (populated: boolean) =>
+  (dir: string): void => {
+    runGit(['-C', dir, 'update-index', '--no-skip-worktree', 'a/sub']);
+    mkdirSync(join(dir, 'a', 'sub'), { recursive: true });
+    if (populated) writeFileSync(join(dir, 'a', 'sub', 'inner'), 'x\n');
+  };
 const SYMLINK_VS_EDIT = [regular('a/f', 'm\n'), regular('b/f', 'f1\n'), regular('top', 't\n')];
 
 interface ConflictRow {
@@ -711,6 +729,27 @@ const CONFLICT_ROWS: ReadonlyArray<ConflictRow> = [
     },
     gitArgs: ['merge', '-q', 'other'],
     operation: mergeOther,
+  }),
+  ...([true, false] as const).flatMap((populated) => {
+    const kind = populated ? 'populated' : 'empty';
+    return [
+      conflictRow({
+        id: `pick-conflict-retires-${kind}-gitlink`,
+        seed: GITLINK_SEED,
+        prepare: advanceAndReset(GITLINK_CONFLICT),
+        afterSparse: presentGitlink(populated),
+        gitArgs: ['cherry-pick', 'other'],
+        operation: pick(['other']),
+      }),
+      conflictRow({
+        id: `merge-conflict-retires-${kind}-gitlink`,
+        seed: GITLINK_SEED,
+        prepare: advanceAndReset(GITLINK_CONFLICT),
+        afterSparse: presentGitlink(populated),
+        gitArgs: ['merge', '-q', 'other'],
+        operation: mergeOther,
+      }),
+    ];
   }),
   conflictRow({
     id: 'octopus-conflict-retires-clean-mover',

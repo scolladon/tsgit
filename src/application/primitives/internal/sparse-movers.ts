@@ -14,6 +14,8 @@ import type { MergeConflict } from '../../../domain/merge/index.js';
 import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
 import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
+import { removeGitlinkDirectory } from '../apply-changeset.js';
+import { joinPath } from './join-working-tree-path.js';
 import { pruneEmptiedDirectories, survivingDirectoriesOf } from './prune-emptied-directories.js';
 import { requireWorkTree } from './repo-state.js';
 import { notUpToDate, warnLeftDespiteSparse } from './sparse-left-dirty.js';
@@ -49,7 +51,6 @@ const moverCandidates = (
       entry.flags.stage === 0 &&
       !entry.flags.skipWorktree &&
       !isLossy(entry) &&
-      entry.mode !== FILE_MODE.GITLINK &&
       !sparse(escapedPathOf(entry)) &&
       !conflicted.has(escapedPathOf(entry)),
   );
@@ -67,14 +68,26 @@ const reachableCandidates = async (
   return candidates.filter((_, position) => !throughLink[position]);
 };
 
+/** git's unlink_entry: a gitlink goes by rmdir, so a populated directory stays; the leading directories it empties are pruned either way. */
 const removeRetired = async (
   ctx: Context,
   workdir: string,
   retired: ReadonlyArray<IndexEntry>,
 ): Promise<void> => {
-  const paths = retired.map(escapedPathOf);
-  for (const path of paths) await removeWorkingTreeFile(ctx, path);
-  await pruneEmptiedDirectories(ctx, workdir, paths, survivingDirectoriesOf([]));
+  for (const entry of retired) {
+    const path = escapedPathOf(entry);
+    if (entry.mode === FILE_MODE.GITLINK) {
+      await removeGitlinkDirectory(ctx, joinPath(workdir, path), path);
+    } else {
+      await removeWorkingTreeFile(ctx, path);
+    }
+  }
+  await pruneEmptiedDirectories(
+    ctx,
+    workdir,
+    retired.map(escapedPathOf),
+    survivingDirectoriesOf([]),
+  );
 };
 
 /** git's sparse loop on a conflict stop: an out-of-pattern file the patterns now hide leaves the work tree unless it holds local changes. */
