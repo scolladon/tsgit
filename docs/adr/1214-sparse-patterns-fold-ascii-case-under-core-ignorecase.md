@@ -4,6 +4,7 @@ subjects:
   - src/domain/sparse/parse-sparse-checkout.ts
   - src/domain/pathspec/compile-glob.ts
 ---
+<!-- cspell:ignore caseco casenc tolower -->
 # 1214 — Sparse patterns fold ASCII case under core.ignorecase
 
 - **Status:** accepted

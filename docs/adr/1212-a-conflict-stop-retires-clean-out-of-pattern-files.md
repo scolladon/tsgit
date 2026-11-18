@@ -3,6 +3,7 @@ subjects:
   - src/application/primitives/apply-merge-to-worktree.ts
   - src/application/commands/merge.ts
 ---
+<!-- cspell:ignore mpscf pscf -->
 # 1212 — A conflict stop retires clean out-of-pattern files
 
 - **Status:** accepted

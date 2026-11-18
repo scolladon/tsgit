@@ -3,6 +3,7 @@ subjects:
   - src/application/commands/stash.ts
   - src/application/commands/internal/unstage-changes-unless-new.ts
 ---
+<!-- cspell:ignore stps unstaging -->
 # 1216 — stash apply checks out skipped changes before unstaging
 
 - **Status:** accepted

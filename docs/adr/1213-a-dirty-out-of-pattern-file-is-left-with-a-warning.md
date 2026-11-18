@@ -2,6 +2,7 @@
 subjects:
   - src/application/primitives/materialize-tree.ts
 ---
+<!-- cspell:ignore dpscf dpsco dpscp -->
 # 1213 — A dirty out-of-pattern file is left with a warning
 
 - **Status:** accepted

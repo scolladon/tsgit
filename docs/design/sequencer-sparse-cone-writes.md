@@ -1,3 +1,4 @@
+<!-- cspell:ignore CASEFOLD caseco casenc dpscf dpsco dpscp fspathncmp mpscf pscf psco pscp rowdiff stps tolower twoway wtaddlocal wtaddset -->
 # Design — sequencer-sparse-cone-writes
 
 > Brief: backlog 32.60. Under a sparse checkout, `cherry-pick`, `revert`, `rebase`,
