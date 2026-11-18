@@ -289,7 +289,9 @@ const evaluateDirtyPath = async (
   }
   // Stryker disable next-line ConditionalExpression: equivalent — checkDirty only receives splitWaves' deletes and writes, which hold no noop, so an entry past the update/delete branch is always an add.
   if (entry.kind !== 'add') return undefined;
-  return verdictClash(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
+  return verdictClash(
+    await classifyOccupant(ctx, { kind: 'add', path: entry.path, mode: entry.mode }, scope),
+  );
 };
 
 type PathEvaluator = (
@@ -309,7 +311,9 @@ const untrackedClashOf = (verdict: OccupantVerdict): OccupantClash | undefined =
 const evaluateProtectedPath: PathEvaluator = async (ctx, _probe, entry, scope) => {
   if (isLossy(entry)) return undefined;
   if (entry.kind === 'add') {
-    return untrackedClashOf(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
+    return untrackedClashOf(
+      await classifyOccupant(ctx, { kind: 'add', path: entry.path, mode: entry.mode }, scope),
+    );
   }
   if (entry.previousId === undefined) return survivorClash(ctx, entry, scope);
   if (entry.kind === 'update') return undefined;

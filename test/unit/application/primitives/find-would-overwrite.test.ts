@@ -577,6 +577,66 @@ describe('findWouldOverwrite stat cache', () => {
     });
   });
 
+  describe('Given an untracked directory new holding x at a path the merge adds as a gitlink', () => {
+    describe('When findWouldOverwrite runs with that result mode', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'new/x', 'x\n');
+
+        // Act
+        const result = await findWouldOverwrite(
+          ctx,
+          set('new'),
+          indexOf([]),
+          set(),
+          new Map([['new' as FilePath, FILE_MODE.GITLINK]]),
+        );
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given an untracked directory new holding x at an added path with no result mode', () => {
+    describe('When findWouldOverwrite runs without result modes', () => {
+      it('Then the directory is untracked, the path being written as a file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'new/x', 'x\n');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('new'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: ['new'] });
+      });
+    });
+  });
+
+  describe('Given an untracked directory new holding x at a path the merge adds as a regular file', () => {
+    describe('When findWouldOverwrite runs with that result mode', () => {
+      it('Then the directory is untracked', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'new/x', 'x\n');
+
+        // Act
+        const result = await findWouldOverwrite(
+          ctx,
+          set('new'),
+          indexOf([]),
+          set(),
+          new Map([['new' as FilePath, FILE_MODE.REGULAR]]),
+        );
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: ['new'] });
+      });
+    });
+  });
+
   describe('Given an ignored file at an added path', () => {
     describe('When the added path is in the changed set', () => {
       it('Then nothing is reported', async () => {

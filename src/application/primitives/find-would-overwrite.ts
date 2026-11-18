@@ -107,6 +107,11 @@ const stage0ByPath = (currentIndex: GitIndex): Map<FilePath, IndexEntry> => {
 
 const NOTHING_REMOVED: ReadonlySet<FilePath> = new Set();
 
+const NO_RESULT_MODES: ReadonlyMap<FilePath, FileMode> = new Map();
+
+// A path no clean outcome names is a conflict's recorded path: it is written as a file.
+const CONFLICT_WRITE_MODE = FILE_MODE.REGULAR;
+
 const clashScopeOf = (
   ctx: Context,
   removed: ReadonlySet<FilePath>,
@@ -140,12 +145,13 @@ const isBlockedByObstruction = async (
 const untrackedSquat = async (
   ctx: Context,
   path: FilePath,
+  mode: FileMode,
   byPath: ReadonlyMap<FilePath, IndexEntry>,
   clashScope: ClashScope,
 ): Promise<FilePath | undefined> => {
   // An escaped name is never on disk: git's lstat of it fails, so it reads as absent.
   if (hasEscapedBytes(path)) return undefined;
-  const verdict = await classifyOccupant(ctx, { kind: 'add', path }, clashScope);
+  const verdict = await classifyOccupant(ctx, { kind: 'add', path, mode }, clashScope);
   if (verdict.kind !== 'clash') return undefined;
   // A tracked component in the way is judged as its own entry, never as an untracked squat.
   return byPath.has(verdict.clash.path) ? undefined : verdict.clash.path;
@@ -183,6 +189,8 @@ const isLocalChange = async (
  * paths the merge deletes, which never clash; a tracked one that a directory
  * holding untracked files now occupies is `untracked`, as git's `lose-untracked`.
  * Any other tracked path is reported as a local change only.
+ * `resultModes` gives the mode each added path takes; an added gitlink never
+ * counts a directory at its path as untracked data.
  * Each class is returned sorted ascending.
  */
 export const findWouldOverwrite = async (
@@ -190,6 +198,7 @@ export const findWouldOverwrite = async (
   paths: ReadonlySet<FilePath>,
   currentIndex: GitIndex,
   removed: ReadonlySet<FilePath> = NOTHING_REMOVED,
+  resultModes: ReadonlyMap<FilePath, FileMode> = NO_RESULT_MODES,
 ): Promise<WouldOverwrite> => {
   const byPath = stage0ByPath(currentIndex);
   const provider = await buildCheckinAttributeProvider(ctx);
@@ -202,7 +211,13 @@ export const findWouldOverwrite = async (
   for (const path of paths) {
     const entry = byPath.get(path);
     if (entry === undefined) {
-      const squat = await untrackedSquat(ctx, path, byPath, clashScope);
+      const squat = await untrackedSquat(
+        ctx,
+        path,
+        resultModes.get(path) ?? CONFLICT_WRITE_MODE,
+        byPath,
+        clashScope,
+      );
       if (squat !== undefined) untracked.push(squat);
     } else if (await isLocalChange(ctx, { path, entry }, clashScope, scope)) {
       const held = removed.has(path) && (await holdsUntrackedAtDeletion(ctx, path, clashScope));

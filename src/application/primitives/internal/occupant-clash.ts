@@ -3,6 +3,8 @@
  * the way git's `verify_absent` / `check_leading_path` weigh it: one classifier
  * shared by every pre-flight, so a clash is named identically wherever it is found.
  */
+import { FILE_MODE } from '../../../domain/objects/file-mode.js';
+import type { FileMode } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { racyContentMatcher } from '../compare-working-tree-entry.js';
@@ -48,7 +50,7 @@ export type OccupantVerdict =
   | { readonly kind: 'compare-content' };
 
 export type OccupantShape =
-  | { readonly kind: 'add'; readonly path: FilePath }
+  | { readonly kind: 'add'; readonly path: FilePath; readonly mode: FileMode }
   | { readonly kind: 'update' | 'delete'; readonly path: FilePath };
 
 const CLEAR: OccupantVerdict = { kind: 'clear' };
@@ -115,13 +117,18 @@ const classifyLeadingObstruction = async (
 // tracked children arrive as `delete` entries and are dirty-checked on their own.
 const classifyAddedPath = async (
   ctx: Context,
-  path: FilePath,
+  shape: Extract<OccupantShape, { readonly kind: 'add' }>,
   scope: ClashScope,
 ): Promise<OccupantVerdict> => {
+  const { path, mode } = shape;
   const absPath = joinPath(scope.workdir, path);
   const stat = await lstatIfReachable(ctx.fs, absPath);
   if (stat === undefined) return CLEAR;
-  if (stat.isDirectory) return (await holdsSurvivor(ctx, absPath, scope)) ? untracked(path) : CLEAR;
+  if (stat.isDirectory) {
+    // git's verify_clean_subdirectory returns early for a gitlink: the directory is the submodule's.
+    if (mode === FILE_MODE.GITLINK) return CLEAR;
+    return (await holdsSurvivor(ctx, absPath, scope)) ? untracked(path) : CLEAR;
+  }
   return (await scope.isIgnoredPath(absPath, false)) ? CLEAR : untracked(path);
 };
 
@@ -190,7 +197,7 @@ export const classifyOccupant = async (
     case 'add':
       return (
         (await classifyLeadingObstruction(shape.path, scope)) ??
-        classifyAddedPath(ctx, shape.path, scope)
+        classifyAddedPath(ctx, shape, scope)
       );
     case 'update':
     case 'delete':

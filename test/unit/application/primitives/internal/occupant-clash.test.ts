@@ -12,6 +12,7 @@ import { serializeAndHash } from '../../../../../src/application/primitives/inte
 import { createLeadingPathScanner } from '../../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
+import type { FileMode } from '../../../../../src/domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
@@ -43,8 +44,12 @@ const scopeOf = (ctx: Context, options: ScopeOptions = {}): ClashScope => {
   };
 };
 
-const classify = (ctx: Context, target: string, scope: ClashScope) =>
-  classifyOccupant(ctx, { kind: 'add', path: path(target) }, scope);
+const classify = (
+  ctx: Context,
+  target: string,
+  scope: ClashScope,
+  mode: FileMode = FILE_MODE.REGULAR,
+) => classifyOccupant(ctx, { kind: 'add', path: path(target), mode }, scope);
 
 const classifyChange = (
   ctx: Context,
@@ -147,6 +152,105 @@ describe('classifyOccupant', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given a directory holding an untracked file at the path a gitlink is added to', () => {
+    describe('When it is classified', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+        await ctx.fs.write(`${ctx.layout.workDir}/sub/keep.txt`, BYTES);
+
+        // Act
+        const result = await classify(ctx, 'sub', scopeOf(ctx), FILE_MODE.GITLINK);
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given an empty directory at the path a gitlink is added to', () => {
+    describe('When it is classified', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+
+        // Act
+        const result = await classify(ctx, 'sub', scopeOf(ctx), FILE_MODE.GITLINK);
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given a regular file at the path a gitlink is added to', () => {
+    describe('When it is classified', () => {
+      it('Then it is untracked at the added path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/sub`, BYTES);
+
+        // Act
+        const result = await classify(ctx, 'sub', scopeOf(ctx), FILE_MODE.GITLINK);
+
+        // Assert
+        expect(result).toEqual({ kind: 'clash', clash: { class: 'untracked', path: 'sub' } });
+      });
+    });
+  });
+
+  describe('Given a symlink to a directory at the path a gitlink is added to', () => {
+    describe('When it is classified', () => {
+      it('Then it is untracked at the added path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/real`);
+        await ctx.fs.symlink('real', `${ctx.layout.workDir}/sub`);
+
+        // Act
+        const result = await classify(ctx, 'sub', scopeOf(ctx), FILE_MODE.GITLINK);
+
+        // Assert
+        expect(result).toEqual({ kind: 'clash', clash: { class: 'untracked', path: 'sub' } });
+      });
+    });
+  });
+
+  describe('Given a directory holding an untracked file at the path a regular file is added to', () => {
+    describe('When it is classified', () => {
+      it('Then it is untracked at the added path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+        await ctx.fs.write(`${ctx.layout.workDir}/sub/keep.txt`, BYTES);
+
+        // Act
+        const result = await classify(ctx, 'sub', scopeOf(ctx), FILE_MODE.REGULAR);
+
+        // Assert
+        expect(result).toEqual({ kind: 'clash', clash: { class: 'untracked', path: 'sub' } });
+      });
+    });
+  });
+
+  describe('Given a regular file where the leading directory of an added gitlink is due', () => {
+    describe('When it is classified', () => {
+      it('Then the file is untracked at its own path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/d`, BYTES);
+
+        // Act
+        const result = await classify(ctx, 'd/s', scopeOf(ctx), FILE_MODE.GITLINK);
+
+        // Assert
+        expect(result).toEqual({ kind: 'clash', clash: { class: 'untracked', path: 'd' } });
       });
     });
   });
