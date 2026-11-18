@@ -105,6 +105,7 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   disk. A missing stash refuses `STASH_NOT_FOUND` and leaves the index untouched.
 - **Apply runs during a pending operation.** `apply`/`pop` do not refuse while a
   merge, cherry-pick, revert or rebase is pending; its state files and markers stay.
+- **Sparse checkout.** Under an active sparse checkout, a clean `apply`/`pop` without `restoreIndex` checks out a path the merge changed but left skip-worktree, through the checkout conversion, and clears its skip-worktree bit, as git's `unstage_changes_unless_new` does. With `restoreIndex` the entry the merge wrote is kept, flags included, for a path whose id and mode already agree with the staged tree; a changed entry meets the sparse patterns.
 - **Apply leaves changes unstaged.** A clean `apply` materialises the merged
   result onto the working tree and writes the index as git's
   `unstage_changes_unless_new` does: a path the merge changed goes back to its
