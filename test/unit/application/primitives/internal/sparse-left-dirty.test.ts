@@ -177,7 +177,7 @@ const NEWER_THAN_ANY_ENTRY = { seconds: 2 ** 31, nanoseconds: 0 };
 describe('notUpToDate stat short-circuit', () => {
   const sut = notUpToDate;
 
-  describe('Given a stat-clean entry whose index is older than the file, When judged', () => {
+  describe('Given a stat-clean entry whose index is newer than the file, When judged', () => {
     it('Then the file is not read and nothing is reported', async () => {
       // Arrange
       const ctx = await buildSeededContext();

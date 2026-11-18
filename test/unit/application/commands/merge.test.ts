@@ -31,6 +31,7 @@ import {
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { flattenEscapedTree } from '../../../../src/application/primitives/flatten-tree.js';
 import { survivingDirectoriesOf } from '../../../../src/application/primitives/internal/prune-emptied-directories.js';
+import * as sparseMoversMod from '../../../../src/application/primitives/internal/sparse-movers.js';
 import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
@@ -3838,9 +3839,6 @@ describe('buildConflictIndexEntries (direct)', () => {
   });
 });
 
-// The merge itself stats the index five times; the sparse retirement would add a sixth.
-const INDEX_STATS_WITHOUT_RETIREMENT = 5;
-
 describe('merge — sparse checkout', () => {
   // Matcher excluding any path that starts with `drop`.
   const excludesDrop = (p: FilePath): boolean => !p.startsWith('drop');
@@ -4152,18 +4150,15 @@ describe('merge — sparse checkout', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'MAIN\n');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'on-main', author });
-        const indexStats = vi.spyOn(ctx.fs, 'stat');
+        const retire = vi.spyOn(sparseMoversMod, 'retireSparseMovers');
         const sut = mergeRun;
 
         // Act
         const result = await sut(ctx, { rev: 'feature', author });
 
         // Assert
-        const reads = indexStats.mock.calls.filter(
-          ([path]) => path === `${ctx.layout.gitDir}/index`,
-        );
         expect(result.kind).toBe('conflict');
-        expect(reads).toHaveLength(INDEX_STATS_WITHOUT_RETIREMENT);
+        expect(retire).not.toHaveBeenCalled();
       });
     });
   });

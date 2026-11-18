@@ -98,6 +98,9 @@ const outcomeOf = async (run: () => Promise<unknown>): Promise<Outcome> => {
 
 const leftWarning = (stderr: string): ReadonlyArray<string> =>
   stderr.split('\n').filter((line) => line.includes(LEFT_HEADER));
+const GITLINK_RMDIR_WARNING = "unable to rmdir 'a/sub': Directory not empty";
+const warnsGitlinkRmdir = (lines: ReadonlyArray<string>): boolean =>
+  lines.some((line) => line.includes(GITLINK_RMDIR_WARNING));
 const leftWarnings = (warnings: ReadonlyArray<string>): ReadonlyArray<string> =>
   warnings.filter((warning) => warning.startsWith(LEFT_HEADER));
 
@@ -1039,6 +1042,7 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
           const warned = leftWarnings(run.warnings);
           expect(warned).toHaveLength(leftWarning(git.stderr).length);
           for (const warning of warned) expect(git.stderr).toContain(`warning: ${warning}\n`);
+          expect(warnsGitlinkRmdir(run.warnings)).toBe(warnsGitlinkRmdir(git.stderr.split('\n')));
         };
 
         it.skipIf(!GIT_AVAILABLE).each(CONFLICT_ROWS.filter((row) => !row.skipOnWindows))(
