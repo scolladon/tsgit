@@ -130,6 +130,7 @@ import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-inde
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkIgnorePredicate } from '../primitives/types.js';
 import { walkWorkingTreeReporting } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
+import { checkOutSkippedChanges } from './internal/check-out-skipped-changes.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
 import { FILE_FLAG } from './internal/post-checkout.js';
@@ -1370,7 +1371,8 @@ const settleCleanIndex = async (
     await reinstateIndex(ctx, lock, { stagedTree, writtenIndex });
     return;
   }
-  const { entries, restagedPaths } = unstageChangesUnlessNew(newIndexEntries, currentIndex.entries);
+  const checkedOut = await checkOutSkippedChanges(ctx, newIndexEntries, currentIndex.entries);
+  const { entries, restagedPaths } = unstageChangesUnlessNew(checkedOut, currentIndex.entries);
   await lock.commit(entries, 'replace', { restagedPaths });
 };
 

@@ -4,7 +4,7 @@
  * and in tsgit, and compares the index tags, the work tree and the outcome.
  *
  * @proves
- *   surface:        repo.checkout, repo.reset, repo.merge.run, pull
+ *   surface:        repo.checkout, repo.reset, repo.merge.run, pull, repo.stash.apply
  *   bucket:         cross-tool-interop
  *   unique:         sparse patterns govern every merge-driven work-tree write, case-folded under core.ignorecase, as canonical git applies them
  *   interopSurface: sequencer, stash, checkout, merge
@@ -184,6 +184,54 @@ const MOVER_ROWS: ReadonlyArray<MoverRow> = [
   },
 ];
 
+interface StashRow {
+  readonly id: string;
+  readonly stashed: (dir: string) => void;
+  readonly afterSparse: (dir: string) => void;
+  readonly gitExit: number;
+  readonly outcome: Outcome;
+  readonly expectedListing: ReadonlyArray<string>;
+}
+
+const stashEdits = (dir: string): void => {
+  writeFileSync(join(dir, 'a', 'f'), 'f2\n');
+  writeFileSync(join(dir, 'b', 'f'), 'f2\n');
+};
+
+const STASH_ROWS: ReadonlyArray<StashRow> = [
+  {
+    id: 'stash-skipped-change',
+    stashed: stashEdits,
+    afterSparse: () => undefined,
+    gitExit: 0,
+    outcome: { kind: 'ok' },
+    expectedListing: ['a/', 'a/f=f2\n', 'b/', 'b/f=f2\n', 'top=t\n'],
+  },
+  {
+    id: 'stash-skipped-addition',
+    stashed: (dir) => {
+      writeFileSync(join(dir, 'a', 'n'), 'n1\n');
+      runGit(['-C', dir, 'add', 'a/n']);
+      writeFileSync(join(dir, 'b', 'f'), 'f2\n');
+    },
+    afterSparse: () => undefined,
+    gitExit: 0,
+    outcome: { kind: 'ok' },
+    expectedListing: ['a/', 'a/n=n1\n', 'b/', 'b/f=f2\n', 'top=t\n'],
+  },
+  {
+    id: 'stash-skipped-untracked-blocker',
+    stashed: stashEdits,
+    afterSparse: (dir) => {
+      mkdirSync(join(dir, 'a'), { recursive: true });
+      writeFileSync(join(dir, 'a', 'f'), 'junk\n');
+    },
+    gitExit: 128,
+    outcome: { kind: 'error', code: 'STASH_APPLY_WOULD_OVERWRITE' },
+    expectedListing: ['a/', 'a/f=junk\n', 'b/', 'b/f=f1\n', 'top=t\n'],
+  },
+];
+
 const presentMover = (dir: string): void => {
   runGit(['-C', dir, 'update-index', '--no-skip-worktree', 'a/g']);
   runGit(['-C', dir, 'checkout', '--', 'a/g']);
@@ -266,6 +314,33 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
             expect(git.stderr).toContain(
               expectedWarning === undefined ? '' : `warning: ${expectedWarning}\n`,
             );
+          },
+        );
+      });
+
+      describe('When stash apply brings back a change to an out-of-pattern path', () => {
+        it.skipIf(!GIT_AVAILABLE).each(STASH_ROWS)(
+          'Then $id leaves the same index tags, work tree and outcome as git',
+          async ({ stashed, afterSparse, gitExit, outcome, expectedListing }) => {
+            // Arrange
+            for (const dir of [pair.peer, pair.ours]) {
+              seedTwin(dir, ignoreCase, BASE_SEED);
+              stashed(dir);
+              runGit(['-C', dir, 'stash', 'push', '-q'], { env: COMMIT_ENV });
+              enableSparse(dir, { cone: true });
+              afterSparse(dir);
+            }
+
+            // Act
+            const git = gitExitOf(pair.peer, ['stash', 'apply', '-q']);
+            const run = await runTsgit(pair.ours, (repo) => repo.stash.apply());
+
+            // Assert
+            expect(git.exitCode).toBe(gitExit);
+            expect(run.outcome).toEqual(outcome);
+            expect(tagged(pair.ours)).toBe(tagged(pair.peer));
+            expect(listing(pair.ours)).toEqual(listing(pair.peer));
+            expect(listing(pair.ours)).toEqual(expectedListing);
           },
         );
       });
