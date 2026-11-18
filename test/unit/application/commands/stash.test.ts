@@ -1585,6 +1585,27 @@ describe('stash push', () => {
     },
   );
 
+  describe('Given a tracked a.txt swapped on disk for a directory holding u', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then a.txt/u is collected as untracked, the directory being no gitlink', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+        await write(ctx, 'a.txt/u', 'u\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+        expect(await treeContent(ctx, uTree, 'a.txt/u')).toBe('u\n');
+      });
+    });
+  });
+
   describe('Given untracked m/z and deep/er/w with includeUntracked', () => {
     describe('When push runs', () => {
       it('Then the emptied directories m, deep/er and deep are gone from the work tree', async () => {
