@@ -95,6 +95,15 @@ export const changedPaths = (
   return paths;
 };
 
+/** The mode each clean outcome leaves at its path; a deleted or conflicted path has none. */
+export const resultModesOf = (
+  outcomes: ReadonlyArray<MergeOutcome>,
+): ReadonlyMap<FilePath, FileMode> => {
+  const modes = new Map<FilePath, FileMode>();
+  for (const outcome of outcomes) if ('mode' in outcome) modes.set(outcome.path, outcome.mode);
+  return modes;
+};
+
 /** Index entries keyed by path, stage-0 only. */
 const stage0ByPath = (currentIndex: GitIndex): Map<FilePath, IndexEntry> => {
   const byPath = new Map<FilePath, IndexEntry>();

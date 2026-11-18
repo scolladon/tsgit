@@ -42,7 +42,7 @@ import {
   type RenormalizeSettings,
 } from './build-content-merger.js';
 import { detectMergeRenames } from './detect-merge-renames.js';
-import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
+import { changedPaths, findWouldOverwrite, resultModesOf } from './find-would-overwrite.js';
 import { flattenEscapedTree } from './flatten-tree.js';
 import { writeAutoMerge } from './internal/auto-merge-ref.js';
 import { limiterFor } from './internal/concurrency.js';
@@ -529,6 +529,7 @@ export const applyMergeToWorktree = async (
     changed,
     input.currentIndex,
     new Set(merged.outcomes.filter(isDeleted).map((outcome) => outcome.path)),
+    resultModesOf(merged.outcomes),
   );
   if (overwrite.localChanges.length > 0 || overwrite.untracked.length > 0) {
     return {

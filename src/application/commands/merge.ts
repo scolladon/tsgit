@@ -84,6 +84,7 @@ import {
   changedPaths,
   findTrackedBeyondSymlink,
   findWouldOverwrite,
+  resultModesOf,
 } from '../primitives/find-would-overwrite.js';
 import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
@@ -1520,7 +1521,13 @@ const workTreeTakes = async (
   const outcomes = outcomesBetween(ours, merged, new Set());
   const changed = changedPaths(outcomes, [], ours);
   const removed = new Set(outcomes.filter(isDeleted).map((outcome) => outcome.path));
-  const found = await findWouldOverwrite(ctx, changed, await readIndex(ctx), removed);
+  const found = await findWouldOverwrite(
+    ctx,
+    changed,
+    await readIndex(ctx),
+    removed,
+    resultModesOf(outcomes),
+  );
   return found.localChanges.length === 0 && found.untracked.length === 0;
 };
 
@@ -1964,7 +1971,13 @@ const findOverwriteRefusal = async (
   const currentIndex = await readIndex(ctx);
   await assertNoneBeyondSymlink(ctx, changed, currentIndex);
   const removed = new Set(outcomes.filter(isDeleted).map((outcome) => outcome.path));
-  const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex, removed);
+  const { localChanges, untracked } = await findWouldOverwrite(
+    ctx,
+    changed,
+    currentIndex,
+    removed,
+    resultModesOf(outcomes),
+  );
   if (localChanges.length === 0 && untracked.length === 0) return undefined;
   return { kind: 'refused', localChanges, untracked };
 };

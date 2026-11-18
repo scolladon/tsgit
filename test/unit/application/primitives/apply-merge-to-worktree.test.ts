@@ -1225,6 +1225,62 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given an untracked directory holding a file at a path theirs adds as a gitlink', () => {
+    describe('When the merge is applied', () => {
+      it('Then the merge is clean and the directory keeps its file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const base = await treeWith(ctx, []);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.GITLINK, 'new' as FilePath, 'c'.repeat(40) as ObjectId),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/new/x`, new TextEncoder().encode('x\n'));
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([]),
+        });
+
+        // Assert
+        expect(result.kind).toBe('clean');
+        expect(await readWork(ctx, 'new/x')).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file at a path theirs adds as a gitlink', () => {
+    describe('When the merge is applied', () => {
+      it('Then it refuses with would-overwrite and keeps the file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const base = await treeWith(ctx, []);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.GITLINK, 'new' as FilePath, 'c'.repeat(40) as ObjectId),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/new`, new TextEncoder().encode('in the way\n'));
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([]),
+        });
+
+        // Assert
+        expect(result.kind).toBe('would-overwrite');
+        if (result.kind === 'would-overwrite') {
+          expect(result.untracked).toEqual(['new']);
+          expect(result.localChanges).toEqual([]);
+        }
+        expect(await readWork(ctx, 'new')).toBe('in the way\n');
+      });
+    });
+  });
+
   describe('Given ours deleted a file that theirs modified', () => {
     describe('When the merge is applied', () => {
       it('Then it is a modify-delete conflict that restores the surviving (theirs) content', async () => {

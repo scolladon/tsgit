@@ -6,6 +6,7 @@ import {
   changedPaths,
   findTrackedBeyondSymlink,
   findWouldOverwrite,
+  resultModesOf,
 } from '../../../../src/application/primitives/find-would-overwrite.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -876,6 +877,42 @@ describe('findTrackedBeyondSymlink', () => {
         // Assert
         expect(result.untracked).toEqual([]);
         expect(result.localChanges).toContain('f');
+      });
+    });
+  });
+});
+
+describe('resultModesOf', () => {
+  describe('Given clean outcomes of every kind', () => {
+    describe('When resultModesOf runs', () => {
+      it('Then it maps each path a clean outcome leaves to its mode', () => {
+        // Arrange
+        const id = 'a'.repeat(40) as ObjectId;
+        const outcomes = [
+          { status: 'unchanged', path: 'a' as FilePath, id, mode: FILE_MODE.REGULAR },
+          { status: 'resolved-known', path: 'g' as FilePath, id, mode: FILE_MODE.GITLINK },
+          {
+            status: 'resolved-merged',
+            path: 'm' as FilePath,
+            bytes: Uint8Array.of(),
+            mode: FILE_MODE.REGULAR,
+          },
+          { status: 'resolved-deleted', path: 'd' as FilePath },
+          { status: 'conflict', conflict: { type: 'content', path: 'k' as FilePath } },
+        ] as const;
+        const sut = resultModesOf;
+
+        // Act
+        const result = sut(outcomes);
+
+        // Assert
+        expect(result).toEqual(
+          new Map([
+            ['a', FILE_MODE.REGULAR],
+            ['g', FILE_MODE.GITLINK],
+            ['m', FILE_MODE.REGULAR],
+          ]),
+        );
       });
     });
   });
