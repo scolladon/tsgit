@@ -81,6 +81,13 @@ A damaged object, ref, index or state file, or a file the process cannot read.
   tsgit THROW {"code":"CONFIG_PARSE_ERROR","line":1,"source":"<tmp>/.git/config.worktree"}
   ```
 
+- **32.81** `branch.create` writes a ref over a symlink to an empty directory where git refuses — pre-existing, pinned against git 2.56.0. With `.git/refs/heads/x` a symlink to an empty directory under `.git`, git `branch x` exits 128 (`cannot lock ref 'refs/heads/x': there is a non-empty directory '.git/refs/heads/x' blocking reference 'refs/heads/x'`) and leaves the symlink, with no ref and no reflog. tsgit `branch.create({ name: 'x' })` returns, replaces the symlink with a loose ref file and writes the reflog, with and without `unsafeRawAdapters` (`src/application/primitives/ref-store.ts`). The `.git/logs/refs/heads/x` twin already refuses as git does once the repository wrapper forwards `rmdir`. Not folded: out of scope.
+  ```
+  # mkdir .git/empty-target; ln -s "$PWD/.git/empty-target" .git/refs/heads/x; core.logAllRefUpdates=true
+  git    exit=128  at=symlink  rev-parse refs/heads/x: none
+  tsgit  exit=0    at=file     rev-parse refs/heads/x: ok   reflog: branch: Created from main
+  ```
+
 ## Message only
 
 Exit codes and data match git; only the wording or the named path differs.
