@@ -108,6 +108,12 @@ export interface ApplyChangesetOpts {
   readonly unmergedPaths?: UnmergedPaths;
 }
 
+/** The internal apply options: the public ones plus the paths a caller already proved up to date. */
+export interface VerifiedApplyOpts extends ApplyChangesetOpts {
+  /** Paths whose work file the caller already compared with their previous version; the dirty probe skips them. */
+  readonly verifiedClean?: ReadonlySet<FilePath>;
+}
+
 export interface ApplyChangesetResult {
   readonly writtenEntries: ReadonlyArray<IndexEntry>;
   readonly written: number;
@@ -863,7 +869,7 @@ export const applyChangeset = (
 /** Checkout-direction apply: the writer reads attributes the way git's checkout does. */
 export const applyChangesetWithAttributes = (
   ctx: Context,
-  opts: ApplyChangesetOpts,
+  opts: VerifiedApplyOpts,
   direction: AttributeDirection,
 ): Promise<ApplyChangesetResult> =>
   withFilterProcessPool(ctx, () => applyChangesetInScope(ctx, opts, direction));
@@ -905,7 +911,7 @@ const createChangesetWriter = (
 
 const applyChangesetInScope = async (
   ctx: Context,
-  opts: ApplyChangesetOpts,
+  opts: VerifiedApplyOpts,
   direction: AttributeDirection | undefined,
 ): Promise<ApplyChangesetResult> => {
   const { changeset, force, workdir } = opts;
@@ -923,7 +929,8 @@ const applyChangesetInScope = async (
     opts.unmergedPaths ?? 'hidden',
   );
   if (evaluate !== undefined) {
-    await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes], ignoredOccupants, evaluate);
+    const unverified = [...deletes, ...writes].filter((e) => !opts.verifiedClean?.has(e.path));
+    await assertNoDirtyOverwrite(ctx, workdir, unverified, ignoredOccupants, evaluate);
   }
 
   // One scanner per changeset application, shared by BOTH the delete-skip

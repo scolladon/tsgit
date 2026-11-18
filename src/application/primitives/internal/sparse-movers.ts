@@ -99,7 +99,7 @@ export const retireSparseMovers = async (
   if (sparse === undefined) return NOTHING_RETIRED;
   const workdir = requireWorkTree(ctx, 'merge');
   const candidates = await reachableCandidates(ctx, moverCandidates(scope, sparse));
-  const leftDirty = await notUpToDate(ctx, workdir, candidates);
+  const leftDirty = await notUpToDate(ctx, workdir, candidates, scope.currentIndex.indexMtime);
   const isClean = (entry: IndexEntry): boolean => !leftDirty.has(indexPathKey(entry));
   const clean = candidates.filter(isClean);
   await removeRetired(ctx, workdir, clean);

@@ -1985,6 +1985,35 @@ describe('materializeTree carrying staged changes (headTree)', () => {
     });
   });
 
+  describe('Given a sparse switch and c outside the pattern, present and clean', () => {
+    describe.each([
+      ['unchanged', 'same'],
+      ['changed', 'zed'],
+    ])('When the target leaves c %s', (_, targetBlob) => {
+      it('Then the work file of c is read once', async () => {
+        // Arrange
+        const { ctx, blobs, headTree } = await buildFixture();
+        const targetTree = await flatTree(ctx, {
+          b: blobs.new as ObjectId,
+          c: blobs[targetBlob] as ObjectId,
+        });
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+        const read = vi.spyOn(ctx.fs, 'read');
+        const sut = materializeTree;
+
+        // Act
+        await sut(ctx, { targetTree, currentIndex, headTree, sparse: (path) => path !== 'c' });
+
+        // Assert
+        const reads = read.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/c`);
+        expect(reads).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a sparse switch and c skip-worktree in the index, deleted by the target', () => {
     describe('When the index still equals head', () => {
       it('Then c leaves the index and only b remains', async () => {

@@ -114,7 +114,11 @@ import {
 } from '../primitives/internal/prune-emptied-directories.js';
 import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
-import { retireSparseMovers, type SparseRetirement } from '../primitives/internal/sparse-movers.js';
+import {
+  NOTHING_RETIRED,
+  retireSparseMovers,
+  type SparseRetirement,
+} from '../primitives/internal/sparse-movers.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -1572,19 +1576,24 @@ const persistOctopusConflict = async (
   const merged = outcomesBetween(new Map(), result.merged, new Set());
   const remotes = commit.parents.filter((id) => id !== commit.ourId);
   await underIndexLock(ctx, async () => {
-    const currentIndex = await readIndex(ctx);
     await writeConflictingWorkingTree(ctx, outcomes, marked, changed, matcher);
-    const retirement = await retireSparseMovers(
-      ctx,
-      { currentIndex, conflicts: result.conflicts },
-      matcher,
-    );
+    const retirement = await retireOnConflictStop(ctx, result.conflicts, matcher);
     const paths = sortedRecordedPaths(result.conflicts);
     await writeStopState(ctx, commit.opts, commit.ourId, remotes, paths);
     const kept = keepingLeftDirty(matcher, retirement.leftDirty);
     return buildConflictIndexEntries(merged, result.conflicts, kept, []);
   });
   return conflictOutcome(commit.opts, result.conflicts, remotes[0]!, commit.ourId);
+};
+
+/** The index is read only when sparse is on: without a matcher nothing can retire. */
+const retireOnConflictStop = async (
+  ctx: Context,
+  conflicts: ReadonlyArray<MergeConflict>,
+  matcher: SparseMatcher | undefined,
+): Promise<SparseRetirement> => {
+  if (matcher === undefined) return NOTHING_RETIRED;
+  return retireSparseMovers(ctx, { currentIndex: await readIndex(ctx), conflicts }, matcher);
 };
 
 type MergeTreeResult =
@@ -1974,13 +1983,8 @@ const writeConflictState = async (
     await conflictResultTree(ctx, result.outcomes, result.conflicts, merged),
   );
   await underIndexLock(ctx, async () => {
-    const currentIndex = await readIndex(ctx);
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
-    const retirement = await retireSparseMovers(
-      ctx,
-      { currentIndex, conflicts: result.conflicts },
-      matcher,
-    );
+    const retirement = await retireOnConflictStop(ctx, result.conflicts, matcher);
     await writeStopState(ctx, opts, ourId, [theirId], sortedRecordedPaths(result.conflicts));
     const kept = keepingLeftDirty(matcher, retirement.leftDirty);
     return buildConflictIndexEntries(result.outcomes, result.conflicts, kept, merged);

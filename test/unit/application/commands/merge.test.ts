@@ -3838,6 +3838,9 @@ describe('buildConflictIndexEntries (direct)', () => {
   });
 });
 
+// The merge itself stats the index five times; the sparse retirement would add a sixth.
+const INDEX_STATS_WITHOUT_RETIREMENT = 5;
+
 describe('merge — sparse checkout', () => {
   // Matcher excluding any path that starts with `drop`.
   const excludesDrop = (p: FilePath): boolean => !p.startsWith('drop');
@@ -4127,6 +4130,40 @@ describe('merge — sparse checkout', () => {
         expect(warn).toHaveBeenCalledWith(
           'The following paths are not up to date and were left despite sparse patterns:\n\tdocs/b.txt\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
         );
+      });
+    });
+  });
+
+  describe('Given a repo without sparse checkout and a conflicting merge', () => {
+    describe('When the merge stops on the conflict', () => {
+      it('Then the index is not read on behalf of the sparse retirement', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'base\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'FEATURE\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'MAIN\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        const indexStats = vi.spyOn(ctx.fs, 'stat');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        const reads = indexStats.mock.calls.filter(
+          ([path]) => path === `${ctx.layout.gitDir}/index`,
+        );
+        expect(result.kind).toBe('conflict');
+        expect(reads).toHaveLength(INDEX_STATS_WITHOUT_RETIREMENT);
       });
     });
   });
