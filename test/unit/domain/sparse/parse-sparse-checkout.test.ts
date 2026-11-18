@@ -258,4 +258,57 @@ describe('buildSparseMatcher', () => {
       });
     });
   });
+
+  describe('Given buildSparseMatcher with ignoreCase', () => {
+    describe('When the spec is non-cone', () => {
+      it('Then the rules match ASCII case-insensitively and negations still apply', () => {
+        // Arrange
+        const { spec } = parseSparseCheckout('/top\n/b/\n!/b/x\n', false);
+
+        // Act
+        const sut = buildSparseMatcher(spec, { ignoreCase: true });
+
+        // Assert
+        expect(sut(path('TOP'))).toBe(true);
+        expect(sut(path('B/f'))).toBe(true);
+        expect(sut(path('B/X'))).toBe(false);
+      });
+    });
+
+    describe('When the spec is cone', () => {
+      it('Then the recursive directory matches ASCII case-insensitively', () => {
+        // Arrange
+        const { spec } = parseSparseCheckout('/*\n!/*/\n/b/\n', true);
+
+        // Act
+        const sut = buildSparseMatcher(spec, { ignoreCase: true });
+
+        // Assert
+        expect(sut(path('B/f'))).toBe(true);
+        expect(sut(path('x/y'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given buildSparseMatcher without ignoreCase', () => {
+    describe.each([
+      { label: 'no options', options: undefined },
+      { label: 'ignoreCase false', options: { ignoreCase: false } },
+    ])('When called with $label', ({ options }) => {
+      it.each([
+        { mode: 'non-cone', text: '/top\n/b/\n', cone: false },
+        { mode: 'cone', text: '/*\n!/*/\n/b/\n', cone: true },
+      ])('Then a $mode spec rejects a differently cased path', ({ text, cone }) => {
+        // Arrange
+        const { spec } = parseSparseCheckout(text, cone);
+
+        // Act
+        const sut = buildSparseMatcher(spec, options);
+
+        // Assert
+        expect(sut(path('B/f'))).toBe(false);
+        expect(sut(path('b/f'))).toBe(true);
+      });
+    });
+  });
 });
