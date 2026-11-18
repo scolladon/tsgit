@@ -3613,4 +3613,75 @@ describe('Given sparse checkout selects b only', () => {
       expect(await exists(ctx, 'a/g')).toBe(false);
     });
   });
+
+  describe('When b/f conflicts and a present out-of-pattern file a/g is clean', () => {
+    it('Then a/g leaves the work tree and its entry is skip-worktree under the same blob', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/a/g`, new TextEncoder().encode('g1\n'));
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          indexEntry('a/g', ours.ids['a/g'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      const entry = result.indexEntries.find((candidate) => candidate.path === 'a/g');
+      expect(entry?.flags.skipWorktree).toBe(true);
+      expect(entry?.id).toBe(ours.ids['a/g']);
+      expect(await exists(ctx, 'a/g')).toBe(false);
+    });
+  });
+
+  describe('When b/f conflicts and a present out-of-pattern file a/g holds local changes', () => {
+    it('Then a/g stays with its entry unmarked and one warning names it', async () => {
+      // Arrange
+      const seeded = await buildSeededContext();
+      const warn = vi.fn();
+      const ctx = { ...seeded, logger: { warn } };
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/a/g`, new TextEncoder().encode('dirty\n'));
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          indexEntry('a/g', ours.ids['a/g'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      const entry = result.indexEntries.find((candidate) => candidate.path === 'a/g');
+      expect(entry?.flags.skipWorktree).toBe(false);
+      expect(await readWork(ctx, 'a/g')).toBe('dirty\n');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        'The following paths are not up to date and were left despite sparse patterns:\n\ta/g\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+      );
+    });
+  });
 });

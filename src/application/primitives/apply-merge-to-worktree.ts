@@ -66,6 +66,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { renormalizeAttributeLookup } from './internal/renormalize-attributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { retireSparseMovers, withRetiredSkipped } from './internal/sparse-movers.js';
 import { withConflictStopStats } from './internal/stat-conflict-index.js';
 import {
   createLeadingPathScanner,
@@ -511,14 +512,22 @@ const materialiseConflict = async (
     ctx,
     await conflictResultTree(ctx, merged.outcomes, merged.conflicts, mergedBlobs),
   );
+  const retirement = await retireSparseMovers(
+    ctx,
+    { currentIndex, conflicts: merged.conflicts },
+    sparse,
+  );
   return {
     kind: 'conflict',
     conflicts: merged.conflicts,
-    indexEntries: await withConflictStopStats(
-      ctx,
-      buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs, sparse),
-      currentIndex,
-      materialised,
+    indexEntries: withRetiredSkipped(
+      await withConflictStopStats(
+        ctx,
+        buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs, sparse),
+        currentIndex,
+        materialised,
+      ),
+      retirement,
     ),
   };
 };

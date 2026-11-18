@@ -529,12 +529,19 @@ const LINE_MERGED = [
   regular('b/f', 'm\n'),
   regular('top', 't\n'),
 ];
+const CONE_CONFLICT = [
+  regular('a/f', 'f1\n'),
+  regular('a/g', 'g1\n'),
+  regular('b/f', 'm\n'),
+  regular('top', 't\n'),
+];
 const SYMLINK_VS_EDIT = [regular('a/f', 'm\n'), regular('b/f', 'f1\n'), regular('top', 't\n')];
 
 interface ConflictRow {
   readonly id: string;
   readonly seed: Seed;
   readonly prepare: (dir: string) => void;
+  readonly afterSparse: (dir: string) => void;
   readonly gitArgs: ReadonlyArray<string>;
   readonly operation: (repo: Repository) => Promise<unknown>;
   readonly skipOnWindows: boolean;
@@ -542,7 +549,7 @@ interface ConflictRow {
 
 const conflictRow = (
   row: Partial<ConflictRow> & Pick<ConflictRow, 'id' | 'prepare' | 'gitArgs' | 'operation'>,
-): ConflictRow => ({ seed: BASE_SEED, skipOnWindows: false, ...row });
+): ConflictRow => ({ seed: BASE_SEED, afterSparse: nothing, skipOnWindows: false, ...row });
 
 const CONFLICT_ROWS: ReadonlyArray<ConflictRow> = [
   conflictRow({
@@ -587,6 +594,23 @@ const CONFLICT_ROWS: ReadonlyArray<ConflictRow> = [
     gitArgs: ['cherry-pick', 'other'],
     operation: pick(['other']),
     skipOnWindows: true,
+  }),
+  conflictRow({
+    id: 'pick-conflict-retires-clean-mover',
+    prepare: advanceAndReset(CONE_CONFLICT),
+    afterSparse: presentMover,
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  conflictRow({
+    id: 'pick-conflict-keeps-dirty-mover',
+    prepare: advanceAndReset(CONE_CONFLICT),
+    afterSparse: (dir) => {
+      presentMover(dir);
+      writeFileSync(join(dir, 'a', 'g'), 'dirty\n');
+    },
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
   }),
 ];
 
@@ -730,22 +754,32 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
       });
 
       describe('When a replay stops on a conflict with changes outside the cone', () => {
-        const conflictRow = async ({ seed, prepare, gitArgs, operation }: ConflictRow) => {
+        const conflictRow = async ({
+          seed,
+          prepare,
+          afterSparse,
+          gitArgs,
+          operation,
+        }: ConflictRow) => {
           // Arrange
           for (const dir of [pair.peer, pair.ours]) {
             seedTwin(dir, ignoreCase, seed);
             prepare(dir);
             enableSparse(dir, { cone: true });
+            afterSparse(dir);
           }
 
           // Act
           const git = gitExitOf(pair.peer, gitArgs);
-          await runTsgit(pair.ours, operation);
+          const run = await runTsgit(pair.ours, operation);
 
           // Assert
           expect(git.exitCode).toBe(1);
           expect(tagged(pair.ours)).toBe(tagged(pair.peer));
           expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          const warned = leftWarnings(run.warnings);
+          expect(warned).toHaveLength(leftWarning(git.stderr).length);
+          for (const warning of warned) expect(git.stderr).toContain(`warning: ${warning}\n`);
         };
 
         it.skipIf(!GIT_AVAILABLE).each(CONFLICT_ROWS.filter((row) => !row.skipOnWindows))(
