@@ -66,6 +66,7 @@ import {
   conflictResultTree,
   createMergeResultWriter,
   type DeletedOutcome,
+  gitlinkSurvivorId,
   isDeleted,
   removeChangedOutcome,
   removeDisplacedFile,
@@ -84,6 +85,7 @@ import {
   changedPaths,
   findTrackedBeyondSymlink,
   findWouldOverwrite,
+  resultModesOf,
 } from '../primitives/find-would-overwrite.js';
 import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
@@ -1520,7 +1522,13 @@ const workTreeTakes = async (
   const outcomes = outcomesBetween(ours, merged, new Set());
   const changed = changedPaths(outcomes, [], ours);
   const removed = new Set(outcomes.filter(isDeleted).map((outcome) => outcome.path));
-  const found = await findWouldOverwrite(ctx, changed, await readIndex(ctx), removed);
+  const found = await findWouldOverwrite(
+    ctx,
+    changed,
+    await readIndex(ctx),
+    removed,
+    resultModesOf(outcomes),
+  );
   return found.localChanges.length === 0 && found.untracked.length === 0;
 };
 
@@ -1964,7 +1972,13 @@ const findOverwriteRefusal = async (
   const currentIndex = await readIndex(ctx);
   await assertNoneBeyondSymlink(ctx, changed, currentIndex);
   const removed = new Set(outcomes.filter(isDeleted).map((outcome) => outcome.path));
-  const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex, removed);
+  const { localChanges, untracked } = await findWouldOverwrite(
+    ctx,
+    changed,
+    currentIndex,
+    removed,
+    resultModesOf(outcomes),
+  );
   if (localChanges.length === 0 && untracked.length === 0) return undefined;
   return { kind: 'refused', localChanges, untracked };
 };
@@ -2216,12 +2230,6 @@ export const writeOutcomeToTree = async (
   await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
 };
 
-const gitlinkSurvivorId = (conflict: MergeConflict): ObjectId | undefined => {
-  const survivorMode = conflict.ourId === undefined ? conflict.theirMode : conflict.ourMode;
-  if (survivorMode !== FILE_MODE.GITLINK) return undefined;
-  return conflict.ourId ?? conflict.theirId;
-};
-
 export const writeConflictToTree = async (
   ctx: Context,
   conflict: MergeConflict,
@@ -2249,8 +2257,6 @@ export const writeConflictToTree = async (
   if (mode === undefined) return;
   const survivorId = gitlinkSurvivorId(conflict);
   if (survivorId !== undefined) {
-    // A submodule commit lives in the submodule's own store: git leaves an empty
-    // directory and never reads the id from this one.
     await writer.writeBlob(conflict.path, survivorId, FILE_MODE.GITLINK, scanner);
     return;
   }

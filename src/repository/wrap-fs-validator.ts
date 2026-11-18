@@ -101,6 +101,21 @@ const guardedUtimeNow = (
   };
 };
 
+/**
+ * `rmdir` is optional on the port: an adapter without it stays without it behind the wrapper, so
+ * `removeEmptyDirectory` keeps its `rm` fallback there; where it exists it is guarded as a write.
+ */
+const guardedRmdir = (fs: FileSystem, guard: (path: string) => void): Pick<FileSystem, 'rmdir'> => {
+  const { rmdir } = fs;
+  if (rmdir === undefined) return {};
+  return {
+    rmdir: (p) => {
+      guard(p);
+      return rmdir.call(fs, p);
+    },
+  };
+};
+
 /** Options controlling which surfaces {@link wrapFsValidator} guards. */
 export interface WrapFsValidatorOptions {
   /**
@@ -238,6 +253,7 @@ export const wrapFsValidator = (
     },
     ...guardedAtomicRename(fs, guard),
     ...guardedUtimeNow(fs, guard),
+    ...guardedRmdir(fs, guard),
     readlink: (p) => {
       readGuard(p);
       return fs.readlink(p);

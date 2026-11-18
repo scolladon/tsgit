@@ -4,6 +4,7 @@ import * as configRead from '../../../../src/application/primitives/config-read.
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { recordRefUpdate } from '../../../../src/application/primitives/record-ref-update.js';
 import { readReflog, reflogExists } from '../../../../src/application/primitives/reflog-store.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -240,6 +241,39 @@ describe('recordRefUpdate', () => {
           const entries = await readReflog(ctx, BRANCH);
           expect(entries[0]?.message).toBe('first second third');
         });
+      });
+    });
+  });
+  describe('Given the log path of a new branch is a symlink to an empty directory', () => {
+    describe('When recordRefUpdate creates the log', () => {
+      it('Then it refuses with DIRECTORY_NOT_EMPTY and keeps the symlink', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const gitDir = ctx.layout.gitDir;
+        await ctx.fs.mkdir(`${gitDir}/empty-target`);
+        await ctx.fs.mkdir(`${gitDir}/logs/refs/heads`);
+        await ctx.fs.symlink('../../../empty-target', `${gitDir}/logs/refs/heads/x`);
+        let caught: unknown;
+
+        // Act
+        try {
+          await recordRefUpdate(
+            ctx,
+            'refs/heads/x' as RefName,
+            ZERO_OID,
+            OID_A,
+            'branch: Created from main',
+          );
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'DIRECTORY_NOT_EMPTY',
+          path: `${gitDir}/logs/refs/heads/x`,
+        });
+        expect((await ctx.fs.lstat(`${gitDir}/logs/refs/heads/x`)).isSymbolicLink).toBe(true);
       });
     });
   });

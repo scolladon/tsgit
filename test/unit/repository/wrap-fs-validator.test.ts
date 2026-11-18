@@ -868,6 +868,67 @@ describe('wrapFsValidator — the optional utimeNow capability', () => {
   });
 });
 
+describe('wrapFsValidator — the optional rmdir capability', () => {
+  // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
+  // call it on the adapter, not detached from it.
+  const fsWithRmdir = (): FileSystem & { readonly removed: string[] } => {
+    const removed: string[] = [];
+    return {
+      ...stubFs(),
+      removed,
+      rmdir(this: { readonly removed: string[] }, path: string) {
+        this.removed.push(path);
+        return Promise.resolve();
+      },
+    };
+  };
+
+  describe('Given an fs with rmdir and an in-root path', () => {
+    describe('When wrapped and rmdir is called', () => {
+      it('Then rmdir is forwarded on the adapter with the path', async () => {
+        // Arrange
+        const fs = fsWithRmdir();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        await sut.rmdir?.('/repo/a');
+
+        // Assert
+        expect(fs.removed).toEqual(['/repo/a']);
+      });
+    });
+  });
+
+  describe('Given an fs with rmdir and a path outside every root', () => {
+    describe('When rmdir is called through a wrapper that does not guard reads', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO before delegating', async () => {
+        // Arrange
+        const fs = fsWithRmdir();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expectOutside(async () => sut.rmdir?.('/etc/a'));
+        expect(fs.removed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an fs without rmdir', () => {
+    describe('When wrapped', () => {
+      it("Then 'rmdir' in sut is false", () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('rmdir' in sut).toBe(false);
+      });
+    });
+  });
+});
+
 const fakeFileStat = { isFile: true } as unknown as FileStat;
 
 describe('wrapFsValidator — the optional tryLstat probe', () => {

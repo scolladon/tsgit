@@ -4384,6 +4384,94 @@ describe('applyChangeset over a gitlink directory', () => {
     });
   });
 
+  describe('Given a port without rmdir and a gitlink delete over a regular file', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it keeps the file and leaves the parent directory', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const { rmdir: _omitted, ...rest } = base.fs;
+        const ctx = { ...base, fs: rest };
+        await base.fs.write(`${WORKDIR}/d/sub`, enc('mine'));
+        const changeset = makeChangeset([makeDelete('d/sub', OLD_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await base.fs.read(`${WORKDIR}/d/sub`))).toBe('mine');
+        expect(await base.fs.exists(`${WORKDIR}/d`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a gitlink delete over a symlink', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it keeps the link', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.symlink('a', `${WORKDIR}/sub`);
+        const changeset = makeChangeset([makeDelete('sub', OLD_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect((await ctx.fs.lstat(`${WORKDIR}/sub`)).isSymbolicLink).toBe(true);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      kind: 'regular file',
+      stand: (ctx: Context) => ctx.fs.write(`${WORKDIR}/sub`, enc('mine')),
+    },
+    { kind: 'symlink', stand: (ctx: Context) => ctx.fs.symlink('a', `${WORKDIR}/sub`) },
+  ])('Given a gitlink delete over a $kind standing at its path', ({ stand }) => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it warns once that the path is not a directory', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const warn = vi.fn();
+        const ctx = { ...base, logger: { warn } };
+        await stand(ctx);
+        const changeset = makeChangeset([makeDelete('sub', OLD_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith("unable to rmdir 'sub': Not a directory");
+      });
+    });
+  });
+
+  describe('Given a port without rmdir, a logger, and a gitlink delete over a regular file', () => {
+    describe('When applyChangeset runs without force and with a logger', () => {
+      it('Then it warns once that the path is not a directory', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const { rmdir: _omitted, ...rest } = base.fs;
+        const warn = vi.fn();
+        const ctx = { ...base, fs: rest, logger: { warn } };
+        await base.fs.write(`${WORKDIR}/sub`, enc('mine'));
+        const changeset = makeChangeset([makeDelete('sub', OLD_ID, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith("unable to rmdir 'sub': Not a directory");
+      });
+    });
+  });
+
   describe('Given an untracked file d where an added file d/x is due', () => {
     describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
       it('Then it refuses d as untracked and keeps the occupant', async () => {
@@ -4691,6 +4779,78 @@ describe('applyChangeset over a gitlink directory', () => {
 
         // Assert
         expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('new');
+      });
+    });
+  });
+  describe('Given a directory holding an untracked file at a path a gitlink is added to', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it applies, leaves the directory file and writes the gitlink entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('0123456789012345678901234567890123456789'));
+        await ctx.fs.write(`${WORKDIR}/sub/keep.txt`, enc('k'));
+        const changeset = makeChangeset([makeAdd('sub', id, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub/keep.txt`))).toBe('k');
+        expect(result.writtenEntries).toHaveLength(1);
+        expect(result.writtenEntries[0]?.path).toBe('sub');
+        expect(result.writtenEntries[0]?.mode).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+
+  describe('Given a directory holding an untracked file at a path a gitlink is added to under protection', () => {
+    describe('When applyChangeset runs forced with untrackedOccupants protect', () => {
+      it('Then it applies, leaves the directory file and writes the gitlink entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('0123456789012345678901234567890123456789'));
+        await ctx.fs.write(`${WORKDIR}/sub/keep.txt`, enc('k'));
+        const changeset = makeChangeset([makeAdd('sub', id, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(ctx, {
+          changeset,
+          force: true,
+          untrackedOccupants: 'protect',
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub/keep.txt`))).toBe('k');
+        expect(result.writtenEntries).toHaveLength(1);
+        expect(result.writtenEntries[0]?.path).toBe('sub');
+        expect(result.writtenEntries[0]?.mode).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+
+  describe('Given a regular file at a path a gitlink is added to', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses the path as untracked and keeps the file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('0123456789012345678901234567890123456789'));
+        await ctx.fs.write(`${WORKDIR}/sub`, enc('mine'));
+        const changeset = makeChangeset([makeAdd('sub', id, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['sub'],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub`))).toBe('mine');
       });
     });
   });

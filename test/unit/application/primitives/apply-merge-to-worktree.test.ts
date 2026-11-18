@@ -1225,6 +1225,64 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given an untracked directory holding a file at a path theirs adds as a gitlink', () => {
+    describe('When the merge is applied', () => {
+      it('Then the merge is clean and the directory keeps its file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const base = await treeWith(ctx, []);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.GITLINK, 'new' as FilePath, 'c'.repeat(40) as ObjectId),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/new/x`, new TextEncoder().encode('x\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([]),
+        });
+
+        // Assert
+        expect(result.kind).toBe('clean');
+        expect(await readWork(ctx, 'new/x')).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file at a path theirs adds as a gitlink', () => {
+    describe('When the merge is applied', () => {
+      it('Then it refuses with would-overwrite and keeps the file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const base = await treeWith(ctx, []);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.GITLINK, 'new' as FilePath, 'c'.repeat(40) as ObjectId),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/new`, new TextEncoder().encode('in the way\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, {
+          baseTree: base,
+          oursTree: base,
+          theirsTree: theirs,
+          currentIndex: index([]),
+        });
+
+        // Assert
+        expect(result.kind).toBe('would-overwrite');
+        if (result.kind === 'would-overwrite') {
+          expect(result.untracked).toEqual(['new']);
+          expect(result.localChanges).toEqual([]);
+        }
+        expect(await readWork(ctx, 'new')).toBe('in the way\n');
+      });
+    });
+  });
+
   describe('Given ours deleted a file that theirs modified', () => {
     describe('When the merge is applied', () => {
       it('Then it is a modify-delete conflict that restores the surviving (theirs) content', async () => {
@@ -2134,6 +2192,33 @@ describe('writeMarkedConflict (direct)', () => {
         const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
         expect(target).toBe(expectedTarget);
       });
+    });
+  });
+
+  describe('Given a one-sided conflict whose surviving side is a gitlink to a commit absent from the store', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it.each([
+        {
+          side: 'theirs',
+          over: { theirId: 'c'.repeat(40) as ObjectId, theirMode: FILE_MODE.GITLINK },
+        },
+        { side: 'ours', over: { ourId: 'c'.repeat(40) as ObjectId, ourMode: FILE_MODE.GITLINK } },
+      ])(
+        'Then it leaves a directory for the $side gitlink without reading the commit',
+        async ({ over }) => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const conflict = conflictOf({ type: 'modify-delete', ...over });
+          const sut = writeMarkedConflict;
+
+          // Act
+          await sut(ctx, conflict, await createMergeResultWriter(ctx, [], []));
+
+          // Assert
+          const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+          expect(stat.isDirectory).toBe(true);
+        },
+      );
     });
   });
 

@@ -43,7 +43,7 @@ moved 21 entries and 10 sub-rows there.
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
 | 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ · ~~32.56~~ | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
-| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · 32.44 · 32.60 · 32.67 · 32.74 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
+| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · ~~32.44~~ · 32.60 · 32.67 · 32.74 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B17, C6 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
@@ -691,18 +691,7 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   100644 659b72404b70ab54da8f878f31930baac622ca49 3	bin
   ```
   Expected: a clean merge, `bin` at 100755 with theirs' blob, no conflict stages. Not folded: found by the stash apply judge's interop probes, but the locus is the shared domain tree merge, outside that change's perimeter; it ships with its own mutation run over `three-way-tree.ts` and a pass over the merge interop suites. Wrong-result.
-- [ ] **32.44** The one-way reset deletes a regular file standing at an index-only gitlink's path, where git leaves it — with gitlink `new` newly staged (`git update-index --add --cacheinfo 160000,<oid>,new`), a regular file `new` holding `precious` on disk and another tracked file edited, git 2.55 `stash push` (plain or `-u`) prints `warning: unable to rmdir 'new': Not a directory` and leaves `new` in place; tsgit's push deletes it (the I and W trees and the index match, W holds the blob, so no bytes are lost). A later `stash apply` then diverges: git refuses `untracked working tree files would be overwritten by merge: new` (exit 1), tsgit applies and stages `100644 new`. Locus: the shared one-way materialize (`materializeTreeJudging`, `src/application/primitives/materialize-tree.ts`), reached from `resetAfterPush`; removing an index-only gitlink must only `rmdir` its path and leave a non-directory occupant in place, as git's `reset --hard` does. Blast radius: every one-way materialize consumer — checkout, reset, merge, the sequencer, stash. Proven 2026-10-28 at the stash-apply-dir-file-replacement branch's 7967ac88 and pre-existing on main 23ff6c1e (the branch does not touch `materialize-tree.ts`):
-  ```
-  # git 2.55.0, scrubbed env; twins for git and tsgit
-  echo a > a.txt; git add a.txt; git commit -qm base
-  git update-index --add --cacheinfo 160000,$(git rev-parse HEAD),new
-  echo precious > new; echo edited > a.txt
-  # git stash push          ⇒ warning: unable to rmdir 'new': Not a directory ; `new` still holds precious
-  # tsgit stash.push        ⇒ `new` deleted ; same I/W trees and index
-  # git stash apply         ⇒ error: untracked working tree files would be overwritten by merge: new (exit 1)
-  # tsgit stash.apply       ⇒ applies, stages 100644 new
-  ```
-  Expected: the file left on disk after the push, and the apply refused as git refuses it. Not folded: the locus is the shared checkout engine, outside the stash change's perimeter; it ships with its own mutation run over `materialize-tree.ts` and a pass over the checkout and reset interop suites. Wrong-result.
+- [x] **32.44** Removing a gitlink lost its occupant: git removes a gitlink's path only with `rmdir`, so a regular file, a symlink or a populated directory standing there stays (with `warning: unable to rmdir '<path>': Not a directory` or `Directory not empty`), while tsgit deleted it. The locus is the repository wrapper's dropped `rmdir`, not `materialize-tree.ts`, and every op that removes a gitlink was affected: reset, checkout (forced and two-way), stash push, merge (fast-forward and three-way), cherry-pick, revert and linked worktree. The stash-apply follow-up exits 128 on git 2.56. Two neighbours folded: an added gitlink over a directory (the directory is the submodule's, not an untracked occupant) and `stash push -u` under a gitlink (what stands inside is the submodule's checkout, never collected). Proven 2026-10-28, re-pinned on git 2.56.0. · ADRs 1205–1210 · design/gitlink-rmdir-keeps-occupant.md
 
 ### Open (scoped 2026-10-31 — follow-ups surfaced by the fsck-broken-ref-chain-unreadable run, triaged)
 

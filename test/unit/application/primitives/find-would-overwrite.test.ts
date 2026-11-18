@@ -6,6 +6,7 @@ import {
   changedPaths,
   findTrackedBeyondSymlink,
   findWouldOverwrite,
+  resultModesOf,
 } from '../../../../src/application/primitives/find-would-overwrite.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -577,6 +578,69 @@ describe('findWouldOverwrite stat cache', () => {
     });
   });
 
+  describe('Given an untracked directory new holding x at a path the merge adds as a gitlink', () => {
+    describe('When findWouldOverwrite runs with that result mode', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'new/x', 'x\n');
+        const sut = findWouldOverwrite;
+
+        // Act
+        const result = await sut(
+          ctx,
+          set('new'),
+          indexOf([]),
+          set(),
+          new Map([['new' as FilePath, FILE_MODE.GITLINK]]),
+        );
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+      });
+    });
+  });
+
+  describe('Given an untracked directory new holding x at an added path with no result mode', () => {
+    describe('When findWouldOverwrite runs without result modes', () => {
+      it('Then the directory is untracked, the path being written as a file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'new/x', 'x\n');
+        const sut = findWouldOverwrite;
+
+        // Act
+        const result = await sut(ctx, set('new'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: ['new'] });
+      });
+    });
+  });
+
+  describe('Given an untracked directory new holding x at a path the merge adds as a regular file', () => {
+    describe('When findWouldOverwrite runs with that result mode', () => {
+      it('Then the directory is untracked', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'new/x', 'x\n');
+        const sut = findWouldOverwrite;
+
+        // Act
+        const result = await sut(
+          ctx,
+          set('new'),
+          indexOf([]),
+          set(),
+          new Map([['new' as FilePath, FILE_MODE.REGULAR]]),
+        );
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: ['new'] });
+      });
+    });
+  });
+
   describe('Given an ignored file at an added path', () => {
     describe('When the added path is in the changed set', () => {
       it('Then nothing is reported', async () => {
@@ -816,6 +880,105 @@ describe('findTrackedBeyondSymlink', () => {
         // Assert
         expect(result.untracked).toEqual([]);
         expect(result.localChanges).toContain('f');
+      });
+    });
+  });
+});
+
+describe('resultModesOf', () => {
+  describe('Given conflict outcomes of every side shape', () => {
+    describe('When resultModesOf runs', () => {
+      it.each([
+        {
+          label: 'the theirs side ours deleted',
+          conflict: { theirMode: FILE_MODE.GITLINK },
+          mode: FILE_MODE.GITLINK,
+        },
+        {
+          label: 'the ours side theirs deleted',
+          conflict: { ourMode: FILE_MODE.SYMLINK },
+          mode: FILE_MODE.SYMLINK,
+        },
+        {
+          label: 'the merged mode over both sides',
+          conflict: {
+            ourMode: FILE_MODE.REGULAR,
+            theirMode: FILE_MODE.REGULAR,
+            mergedMode: FILE_MODE.EXECUTABLE,
+          },
+          mode: FILE_MODE.EXECUTABLE,
+        },
+      ])('Then a conflicted path takes $label', ({ conflict, mode }) => {
+        // Arrange
+        const outcomes = [
+          {
+            status: 'conflict',
+            conflict: { type: 'modify-delete', path: 'k' as FilePath, ...conflict },
+          },
+        ] as const;
+        const sut = resultModesOf;
+
+        // Act
+        const result = sut(outcomes);
+
+        // Assert
+        expect(result).toEqual(new Map([['k', mode]]));
+      });
+
+      it('Then a conflict with both sides and no merged mode leaves its path out', () => {
+        // Arrange
+        const outcomes = [
+          {
+            status: 'conflict',
+            conflict: {
+              type: 'add-add',
+              path: 'k' as FilePath,
+              ourMode: FILE_MODE.REGULAR,
+              theirMode: FILE_MODE.GITLINK,
+            },
+          },
+        ] as const;
+        const sut = resultModesOf;
+
+        // Act
+        const result = sut(outcomes);
+
+        // Assert
+        expect(result).toEqual(new Map());
+      });
+    });
+  });
+
+  describe('Given clean outcomes of every kind', () => {
+    describe('When resultModesOf runs', () => {
+      it('Then it maps each path a clean outcome leaves to its mode', () => {
+        // Arrange
+        const id = 'a'.repeat(40) as ObjectId;
+        const outcomes = [
+          { status: 'unchanged', path: 'a' as FilePath, id, mode: FILE_MODE.REGULAR },
+          { status: 'resolved-known', path: 'g' as FilePath, id, mode: FILE_MODE.GITLINK },
+          {
+            status: 'resolved-merged',
+            path: 'm' as FilePath,
+            bytes: Uint8Array.of(),
+            mode: FILE_MODE.REGULAR,
+          },
+          { status: 'resolved-deleted', path: 'd' as FilePath },
+          { status: 'conflict', conflict: { type: 'content', path: 'k' as FilePath } },
+        ] as const;
+        const sut = resultModesOf;
+
+        // Act
+        const result = sut(outcomes);
+
+        // Assert
+        expect(result).toEqual(
+          new Map([
+            ['a', FILE_MODE.REGULAR],
+            ['g', FILE_MODE.GITLINK],
+            ['m', FILE_MODE.REGULAR],
+          ]),
+        );
       });
     });
   });

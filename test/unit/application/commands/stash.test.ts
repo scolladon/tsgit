@@ -31,6 +31,7 @@ import { readReflog } from '../../../../src/application/primitives/reflog-store.
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
+import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
@@ -41,6 +42,7 @@ import type {
   ObjectId,
   RefName,
 } from '../../../../src/domain/objects/index.js';
+import { emptyTreeOid } from '../../../../src/domain/objects/object-id.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type {
   CommandRequest,
@@ -1472,6 +1474,134 @@ describe('stash push', () => {
         // The untracked commit holds ONLY untracked files — the tracked `a.txt` is excluded.
         expect(await treeContent(ctx, uTree, 'a.txt')).toBe('<absent>');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/new.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe.each(['index-only', 'in-head'] as const)(
+    'Given a %s gitlink new whose directory holds x and an edited a.txt',
+    (placement) => {
+      const setup = async (): Promise<Context> => {
+        const ctx = await setupRepo();
+        await write(ctx, 'new/x', 'x\n');
+        await replaceIndexEntries(ctx, [
+          ...(await readIndex(ctx)).entries,
+          indexEntryFromStat(
+            await ctx.fs.lstat(`${ctx.layout.workDir}/new`),
+            FILE_MODE.GITLINK as IndexEntry['mode'],
+            GITLINK_A,
+            'new' as FilePath,
+          ),
+        ]);
+        if (placement === 'in-head') await commit(ctx, { message: 'gitlink', author });
+        await write(ctx, 'a.txt', 'edited\n');
+        return ctx;
+      };
+
+      describe('When push runs with includeUntracked', () => {
+        it('Then the untracked commit is the empty tree and the directory content stays', async () => {
+          // Arrange
+          const ctx = await setup();
+          const sut = stashPush;
+
+          // Act
+          const result = await sut(ctx, { includeUntracked: true });
+
+          // Assert
+          if (result.kind !== 'saved') throw new Error('expected saved');
+          const w = await commitOf(ctx, result.stash);
+          expect(w.parents).toHaveLength(3);
+          expect((await commitOf(ctx, w.parents[2] as ObjectId)).tree).toBe(
+            emptyTreeOid(ctx.hashConfig),
+          );
+          expect(await read(ctx, 'new/x')).toBe('x\n');
+        });
+      });
+
+      describe('When push runs with includeUntracked and an untracked u.txt', () => {
+        it('Then only u.txt is collected and removed while the directory content stays', async () => {
+          // Arrange
+          const ctx = await setup();
+          await write(ctx, 'u.txt', 'u\n');
+          const sut = stashPush;
+
+          // Act
+          const result = await sut(ctx, { includeUntracked: true });
+
+          // Assert
+          if (result.kind !== 'saved') throw new Error('expected saved');
+          const w = await commitOf(ctx, result.stash);
+          const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+          expect(await treeContent(ctx, uTree, 'u.txt')).toBe('u\n');
+          expect(await treeContent(ctx, uTree, 'new/x')).toBe('<absent>');
+          expect(await read(ctx, 'new/x')).toBe('x\n');
+          expect(await lstatOrUndefined(ctx, 'u.txt')).toBeUndefined();
+        });
+      });
+    },
+  );
+
+  describe.each([
+    { ignoreCase: true, collected: '<absent>', kept: 'x\n' },
+    { ignoreCase: false, collected: 'x\n', kept: undefined },
+  ])(
+    'Given core.ignorecase=$ignoreCase, a gitlink new and a directory NEW holding x',
+    ({ ignoreCase, collected, kept }) => {
+      describe('When push runs with includeUntracked', () => {
+        it('Then the directory is pruned only when the case is ignored', async () => {
+          // Arrange
+          const ctx = await setupRepo();
+          await write(ctx, 'NEW/x', 'x\n');
+          await replaceIndexEntries(ctx, [
+            ...(await readIndex(ctx)).entries,
+            indexEntryFromStat(
+              await ctx.fs.lstat(`${ctx.layout.workDir}/NEW`),
+              FILE_MODE.GITLINK as IndexEntry['mode'],
+              GITLINK_A,
+              'new' as FilePath,
+            ),
+          ]);
+          await updateConfigEntries(ctx, [
+            { section: 'core', key: 'ignorecase', value: String(ignoreCase) },
+          ]);
+          await write(ctx, 'a.txt', 'edited\n');
+          const sut = stashPush;
+
+          // Act
+          const result = await sut(ctx, { includeUntracked: true });
+
+          // Assert
+          if (result.kind !== 'saved') throw new Error('expected saved');
+          const w = await commitOf(ctx, result.stash);
+          const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+          expect(await treeContent(ctx, uTree, 'NEW/x')).toBe(collected);
+          expect(
+            (await lstatOrUndefined(ctx, 'NEW/x')) === undefined
+              ? undefined
+              : await read(ctx, 'NEW/x'),
+          ).toBe(kept);
+        });
+      });
+    },
+  );
+
+  describe('Given a tracked a.txt swapped on disk for a directory holding u', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then a.txt/u is collected as untracked, the directory being no gitlink', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+        await write(ctx, 'a.txt/u', 'u\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+        expect(await treeContent(ctx, uTree, 'a.txt/u')).toBe('u\n');
       });
     });
   });

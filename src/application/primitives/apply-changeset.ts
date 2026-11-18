@@ -30,12 +30,13 @@ import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import { convertToGit } from './internal/convert-blob.js';
-import { removeEmptyDirectory } from './internal/empty-directories.js';
+import { removeEmptyDirectory, removeIfEmptyDirectory } from './internal/empty-directories.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { lstatIfReachable } from './internal/fs-probes.js';
 import { indexEntryFromStat } from './internal/index-entry-from-stat.js';
@@ -288,7 +289,9 @@ const evaluateDirtyPath = async (
   }
   // Stryker disable next-line ConditionalExpression: equivalent — checkDirty only receives splitWaves' deletes and writes, which hold no noop, so an entry past the update/delete branch is always an add.
   if (entry.kind !== 'add') return undefined;
-  return verdictClash(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
+  return verdictClash(
+    await classifyOccupant(ctx, { kind: 'add', path: entry.path, mode: entry.mode }, scope),
+  );
 };
 
 type PathEvaluator = (
@@ -308,7 +311,9 @@ const untrackedClashOf = (verdict: OccupantVerdict): OccupantClash | undefined =
 const evaluateProtectedPath: PathEvaluator = async (ctx, _probe, entry, scope) => {
   if (isLossy(entry)) return undefined;
   if (entry.kind === 'add') {
-    return untrackedClashOf(await classifyOccupant(ctx, { kind: 'add', path: entry.path }, scope));
+    return untrackedClashOf(
+      await classifyOccupant(ctx, { kind: 'add', path: entry.path, mode: entry.mode }, scope),
+    );
   }
   if (entry.previousId === undefined) return survivorClash(ctx, entry, scope);
   if (entry.kind === 'update') return undefined;
@@ -425,17 +430,23 @@ const applyDeleteEntry = async (
   return (await removeDeletedFile(ctx, abs, entry.path)) ? entry.path : undefined;
 };
 
-// git's remove_or_warn: rmdir on a gitlink, warning when a directory refuses to go.
+// git's remove_or_warn: rmdir on a gitlink; whatever refuses to go stays, with git's warning.
 const removeGitlinkDirectory = async (
   ctx: Context,
   abs: string,
   path: FilePath,
 ): Promise<FilePath | undefined> => {
-  if (await removeEmptyDirectory(ctx, abs)) return path;
-  if ((await lstatIfReachable(ctx.fs, abs))?.isDirectory === true) {
-    ctx.logger?.warn?.(`unable to rmdir '${path}': Directory not empty`);
-  }
+  if (await removeIfEmptyDirectory(ctx, abs)) return path;
+  warnUnremovedGitlink(ctx, path, await lstatIfReachable(ctx.fs, abs));
   return undefined;
+};
+
+// git's warn_if_unremovable: a path already gone is silent; a populated directory and a
+// non-directory are named.
+const warnUnremovedGitlink = (ctx: Context, path: FilePath, stat: FileStat | undefined): void => {
+  if (stat === undefined) return;
+  const reason = stat.isDirectory ? 'Directory not empty' : 'Not a directory';
+  ctx.logger?.warn?.(`unable to rmdir '${path}': ${reason}`);
 };
 
 // git's unlink_entry leaves a directory standing where the entry was (warning); a file

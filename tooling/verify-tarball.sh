@@ -497,7 +497,13 @@ done
 # landed at 1 563 939 B, 1 315 B over, attributable to git's directory-side-wins
 # rule for a sparse file/directory collision with its gateless replacement, and
 # the branch-name rule shared by every branch-creation path.
-SIZE_CAP=$((1528 * 1024))
+# Raised 1528 -> 1529 KiB by a gitlink's path keeping its occupant: the measured
+# pack landed at 1 564 986 B, 314 B over the old cap, attributable to the
+# forwarded rmdir, the kept-occupant warning, the mode-aware occupant judge for
+# an added or conflicted gitlink, the shared gitlink conflict writer and the
+# case-blind stash prune — runtime code in every distribution form, none
+# removable without dropping the behaviour.
+SIZE_CAP=$((1529 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
