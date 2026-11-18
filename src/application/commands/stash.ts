@@ -1196,9 +1196,24 @@ const unstageOffHead = async (
   return { kind: 'would-overwrite', localChanges: indexOrdered(differing), untracked: [] };
 };
 
+/** git's one-way reset leaves an entry whose id and mode agree with the target exactly as the merge wrote it, flags included. */
+const keepingUnchanged = (
+  projected: ReadonlyArray<IndexEntry>,
+  written: GitIndex,
+): ReadonlyArray<IndexEntry> => {
+  const donors = new Map(
+    written.entries.filter((entry) => entry.flags.stage === 0).map((e) => [indexPathKey(e), e]),
+  );
+  return projected.map((entry) => {
+    const donor = donors.get(indexPathKey(entry));
+    return donor?.id === entry.id && donor.mode === entry.mode ? donor : entry;
+  });
+};
+
 /**
  * Reinstate the staged state (`--index`). The donor is the index the work-tree merge just wrote:
- * git's one-way reset keeps that entry, with its stat, when its id and mode agree with the target.
+ * git's one-way reset keeps that entry, with its stat and flags, when its id and mode agree with
+ * the target; a changed entry meets the sparse patterns.
  */
 const reinstateIndex = async (
   ctx: Context,
@@ -1206,12 +1221,12 @@ const reinstateIndex = async (
   args: { readonly stagedTree: ObjectId; readonly writtenIndex: GitIndex },
 ): Promise<void> => {
   const sparse = await loadSparseMatcher(ctx);
-  const entries = await buildIndexFromTree(ctx, {
+  const projected = await buildIndexFromTree(ctx, {
     targetTree: args.stagedTree,
     currentIndex: args.writtenIndex,
     ...(sparse !== undefined ? { sparse } : {}),
   });
-  await lock.commit(entries, 'replace');
+  await lock.commit(keepingUnchanged(projected, args.writtenIndex), 'replace');
 };
 
 /** Apply `stash@{index}` (default newest) onto the working tree via a 3-way merge. */

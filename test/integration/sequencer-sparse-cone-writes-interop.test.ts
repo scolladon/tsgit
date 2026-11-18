@@ -451,6 +451,26 @@ const REPLAY_ROWS: ReadonlyArray<ReplayRow> = [
     gitArgs: ['stash', 'pop', '--index', '-q'],
     operation: (repo) => repo.stash.pop({ restoreIndex: true }),
   }),
+  ...(['apply', 'pop'] as const).map((verb) =>
+    replayRow({
+      id: `stash-${verb}-index-keeps-dirty-mover`,
+      prepare: (dir) => {
+        writeFileSync(join(dir, 'b', 'f'), 'f2\n');
+        switchTo(dir, ['add', 'b/f']);
+        switchTo(dir, ['stash', 'push', '-q']);
+      },
+      afterSparse: (dir) => {
+        presentMover(dir);
+        writeFileSync(join(dir, 'a', 'g'), 'dirty\n');
+      },
+      skipped: ['a/f'],
+      gitArgs: ['stash', verb, '--index', '-q'],
+      operation: (repo) =>
+        verb === 'apply'
+          ? repo.stash.apply({ restoreIndex: true })
+          : repo.stash.pop({ restoreIndex: true }),
+    }),
+  ),
   replayRow({
     id: 'pick-present-clean-mover',
     afterSparse: presentMover,
