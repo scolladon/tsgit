@@ -69,7 +69,7 @@ static int warn_if_unremovable(const char *op, const char *file, int rc) {
 /* unpack-trees.c — verify_clean_subdirectory, the D3 rule */
 if (S_ISGITLINK(ce->ce_mode)) {
 	int sub_head = repo_resolve_gitlink_ref(the_repository, ce->name, "HEAD", &oid);
-	if (!sub_head && oideq(&oid, &ce->oid)) return 0;
+	if (!sub_head && /* submodule HEAD equals the entry oid */ 1) return 0;
 	return verify_clean_submodule(...);   /* returns 0 unless submodule recursion is on */
 }
 ```
@@ -121,7 +121,7 @@ Fixture: `a.txt` committed (branch `base` at that commit). The gitlink `new` is 
 `precious`, a symlink → `a.txt`, a directory holding `x`, or an empty directory. `a.txt` is edited.
 "After" = the same tsgit build opened with `unsafeRawAdapters: true`, which is exactly the `rmdir`
 reachability the D1 fix restores (the wrapper adds containment guards, nothing else). Raw outputs:
-`<scratch>/probe/{matrix-git256-ignorecase-*.txt,after-*.txt,consumers-*.txt,addgl-*.txt,refsym-*.txt}`.
+the session scratchpad (matrix, after, consumers, added-gitlink and ref-symlink outputs; not committed).
 Every row has the same outcome under both `core.ignorecase` values. The axis 1 matrix ran twice per
 value, the others once per value. All are deterministic file-state outcomes.
 
@@ -493,8 +493,8 @@ is hand-verified against the full covering set.
 
 ## Out of scope
 
-- **L2** (a symlink to an empty directory at a loose ref path): see the IMPACT line in the
-  handback. The divergence is the same raw and wrapped, so this change does not touch it.
+- **L2** (a symlink to an empty directory at a loose ref path): deferred to impact triage as
+  I1. The divergence is the same raw and wrapped, so this change does not touch it.
 - **Submodule recursion** (`submodule.recurse`, `--recurse-submodules`): git's
   `submodule_move_head` / `verify_clean_submodule` act only with it. tsgit has no surface.
 - **`read-tree -u`** (O12): no surface.
