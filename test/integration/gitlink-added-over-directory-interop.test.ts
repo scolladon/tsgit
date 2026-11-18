@@ -227,7 +227,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           await pair.dispose();
         });
 
-        describe('Given a directory standing at the path of an added gitlink', () => {
+        describe('When a command adds a gitlink over a directory standing at its path', () => {
           it.each(ROWS)(
             'Then $id keeps the directory and stages the gitlink as git does',
             async (row) => {
@@ -283,7 +283,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           });
         });
 
-        describe('Given a file standing at the path of an added gitlink, When checkout runs', () => {
+        describe('When checkout adds a gitlink over a file standing at its path', () => {
           it('Then it refuses as untracked and changes nothing as git does', async () => {
             // Arrange
             const shape: Shape = { ...PLAIN, occupant: 'file' };

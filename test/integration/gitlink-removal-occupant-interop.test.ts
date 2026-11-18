@@ -317,7 +317,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
 
         describe.each(PLACEMENTS)(
-          'Given a %s gitlink over a populated directory and an untracked u.txt, When stash push -u runs',
+          'When stash push -u runs over a %s gitlink holding a populated directory beside an untracked u.txt',
           (placement) => {
             it('Then it collects only u.txt and keeps the directory as git does', async () => {
               // Arrange
@@ -346,7 +346,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         );
 
         describe.each(['file', 'symlink'] as const)(
-          'Given a %s at the path of a gitlink a branch change removes',
+          'When a branch change removes a gitlink with a %s at its path',
           (occupant) => {
             const TARGET_OPS: ReadonlyArray<{
               id: TargetOp;
@@ -401,7 +401,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         );
 
         describe.each(['file', 'symlink'] as const)(
-          'Given a %s at a gitlink path in a linked worktree, When reset --hard runs',
+          'When reset --hard runs in a linked worktree over a %s at a gitlink path',
           (occupant) => {
             it('Then it keeps the occupant as git does', async () => {
               // Arrange

@@ -4733,58 +4733,61 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe.skipIf(process.platform === 'win32').each(['false', 'true'] as const)(
+    describe.each(['false', 'true'] as const)(
       'Given core.ignorecase=%s and the log path of a new branch is a symlink to an empty directory',
       (ignoreCase) => {
         describe('When both tools create the branch', () => {
-          it('Then both refuse naming the logs, keep the symlink and write no ref', async () => {
-            // Arrange
-            const { peer, ours } = await filesCasePair(`branch-create-linked-log-${ignoreCase}`);
-            const logPath = ['.git', 'logs', 'refs', 'heads', 'linked-log'];
-            for (const dir of [peer, ours]) {
-              git(dir, 'config', 'core.ignorecase', ignoreCase);
-              git(dir, 'config', 'core.logAllRefUpdates', 'true');
-              await mkdir(path.join(dir, '.git', 'empty-target'));
-              await mkdir(path.join(dir, '.git', 'logs', 'refs', 'heads'), { recursive: true });
-              await symlink('../../../empty-target', path.join(dir, ...logPath));
-            }
-            const repo = await openRepository({ cwd: ours });
-            let caught: unknown;
+          it.skipIf(process.platform === 'win32')(
+            'Then both refuse naming the logs, keep the symlink and write no ref',
+            async () => {
+              // Arrange
+              const { peer, ours } = await filesCasePair(`branch-create-linked-log-${ignoreCase}`);
+              const logPath = ['.git', 'logs', 'refs', 'heads', 'linked-log'];
+              for (const dir of [peer, ours]) {
+                git(dir, 'config', 'core.ignorecase', ignoreCase);
+                git(dir, 'config', 'core.logAllRefUpdates', 'true');
+                await mkdir(path.join(dir, '.git', 'empty-target'));
+                await mkdir(path.join(dir, '.git', 'logs', 'refs', 'heads'), { recursive: true });
+                await symlink('../../../empty-target', path.join(dir, ...logPath));
+              }
+              const repo = await openRepository({ cwd: ours });
+              let caught: unknown;
 
-            // Act
-            const gitResult = tryRunGitWithExit(['-C', peer, 'branch', 'linked-log']);
-            try {
-              await repo.branch.create({ name: 'linked-log' });
-            } catch (err) {
-              caught = err;
-            } finally {
-              await repo.dispose();
-            }
+              // Act
+              const gitResult = tryRunGitWithExit(['-C', peer, 'branch', 'linked-log']);
+              try {
+                await repo.branch.create({ name: 'linked-log' });
+              } catch (err) {
+                caught = err;
+              } finally {
+                await repo.dispose();
+              }
 
-            // Assert
-            expect(gitResult.exitCode).toBe(128);
-            expect(gitResult.stderr).toContain(
-              `cannot update the ref 'refs/heads/linked-log': there are still logs under '${path.join(...logPath)}'`,
-            );
-            expect((caught as TsgitError).data).toEqual({
-              code: 'DIRECTORY_NOT_EMPTY',
-              path: `${repo.ctx.layout.gitDir}/logs/refs/heads/linked-log`,
-            });
-            for (const dir of [peer, ours]) {
-              expect((await lstat(path.join(dir, ...logPath))).isSymbolicLink()).toBe(true);
-              expect(await readlink(path.join(dir, ...logPath))).toBe('../../../empty-target');
-              expect(
-                tryRunGitWithExit([
-                  '-C',
-                  dir,
-                  'rev-parse',
-                  '-q',
-                  '--verify',
-                  'refs/heads/linked-log',
-                ]).exitCode,
-              ).toBe(1);
-            }
-          });
+              // Assert
+              expect(gitResult.exitCode).toBe(128);
+              expect(gitResult.stderr).toContain(
+                `cannot update the ref 'refs/heads/linked-log': there are still logs under '${path.join(...logPath)}'`,
+              );
+              expect((caught as TsgitError).data).toEqual({
+                code: 'DIRECTORY_NOT_EMPTY',
+                path: `${repo.ctx.layout.gitDir}/logs/refs/heads/linked-log`,
+              });
+              for (const dir of [peer, ours]) {
+                expect((await lstat(path.join(dir, ...logPath))).isSymbolicLink()).toBe(true);
+                expect(await readlink(path.join(dir, ...logPath))).toBe('../../../empty-target');
+                expect(
+                  tryRunGitWithExit([
+                    '-C',
+                    dir,
+                    'rev-parse',
+                    '-q',
+                    '--verify',
+                    'refs/heads/linked-log',
+                  ]).exitCode,
+                ).toBe(1);
+              }
+            },
+          );
         });
       },
     );
