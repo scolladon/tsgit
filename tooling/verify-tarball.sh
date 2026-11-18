@@ -510,7 +510,13 @@ done
 # conflict-path sparse verdict and mover retirement used by the sequencer,
 # stash and merge — runtime code in every distribution form, none removable
 # without dropping the behaviour.
-SIZE_CAP=$((1532 * 1024))
+# Raised 1532 -> 1534 KiB by the same change's review folds: the measured pack
+# landed at 1 569 995 B, 1 227 B over, attributable to the out-of-pattern
+# up-to-date judge matching git's verify_uptodate (mode, type, core.filemode,
+# core.symlinks, a symlinked or unreachable leading path, a non-file occupant),
+# the leading-symlink guard on conflict-stop retirement, gitlink retirement, and
+# stash's skip-worktree carry through apply --index.
+SIZE_CAP=$((1534 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
