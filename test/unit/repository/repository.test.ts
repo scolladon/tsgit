@@ -10,9 +10,11 @@ import {
 } from '../../../src/adapters/memory/index.js';
 import { readConfig } from '../../../src/application/primitives/config-read.js';
 import { readConfigSections } from '../../../src/application/primitives/config-scoped-read.js';
+import { indexEntryFromStat } from '../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { loadShallowSet } from '../../../src/application/primitives/internal/shallow-set.js';
 import { readIndex } from '../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../src/domain/error.js';
+import type { IndexEntry } from '../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import type { Blob, FilePath, ObjectContent, ObjectId } from '../../../src/domain/objects/index.js';
@@ -20,6 +22,7 @@ import { treeEntry } from '../../../src/domain/objects/tree.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../../src/repository.js';
+import { serializeIndexFixtureAsync } from '../application/primitives/fixtures.js';
 import { writeSyntheticPack } from '../application/primitives/pack-fixture.js';
 
 const makeFallback = (): RuntimeFallback => ({
@@ -2160,6 +2163,73 @@ describe('openRepository — status refresh option', () => {
         } finally {
           vi.useRealTimers();
         }
+      });
+    });
+  });
+});
+
+describe('openRepository — the confined file system forwards rmdir', () => {
+  describe('Given an index-only gitlink over a regular file opened through the facade', () => {
+    describe('When reset hard runs', () => {
+      it('Then rmdir is reached on the path and the file survives', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        const rmdir = vi.spyOn(fs, 'rmdir');
+        const sut = await openRepository({ cwd: '/repo' }, { ...makeFallback(), fs });
+        await sut.init();
+        await sut.ctx.fs.writeUtf8('/repo/a.txt', 'a');
+        await sut.add(['a.txt']);
+        const { id } = await sut.commit({
+          message: 'seed',
+          author: {
+            name: 'Ada',
+            email: 'ada@example.com',
+            timestamp: 1_700_000_000,
+            timezoneOffset: '+0000',
+          },
+        });
+        await sut.ctx.fs.writeUtf8('/repo/new', 'precious');
+        const tracked = await readIndex(sut.ctx);
+        const entries: ReadonlyArray<IndexEntry> = [
+          ...tracked.entries,
+          indexEntryFromStat(
+            await sut.ctx.fs.lstat('/repo/a.txt'),
+            FILE_MODE.GITLINK as IndexEntry['mode'],
+            id as ObjectId,
+            'new' as FilePath,
+          ),
+        ];
+        await sut.ctx.fs.write(
+          '/repo/.git/index',
+          await serializeIndexFixtureAsync(
+            { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) },
+            sut.ctx,
+          ),
+        );
+
+        // Act
+        await sut.reset({ mode: 'hard', rev: 'HEAD' });
+
+        // Assert
+        expect(rmdir).toHaveBeenCalledWith('/repo/new');
+        expect(await sut.ctx.fs.readUtf8('/repo/new')).toBe('precious');
+        const after = await readIndex(sut.ctx);
+        expect(after.entries.map((e) => e.path)).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given a facade over a memory fs', () => {
+    describe('When its worktreeFs is built', () => {
+      it("Then 'rmdir' in the worktree fs is true", async () => {
+        // Arrange
+        const sut = await open();
+
+        // Act
+        const result = worktreeScopedFs(sut, '/repo/wt');
+
+        // Assert
+        expect('rmdir' in result).toBe(true);
       });
     });
   });
