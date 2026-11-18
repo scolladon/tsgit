@@ -4,7 +4,7 @@
  * and in tsgit, and compares the index tags, the work tree and the outcome.
  *
  * @proves
- *   surface:        repo.checkout, repo.reset, repo.merge.run, pull, repo.stash.apply
+ *   surface:        repo.checkout, repo.reset, repo.merge.run, pull, repo.stash.apply, repo.stash.pop, repo.cherryPick.run, repo.revert.run, repo.rebase.run
  *   bucket:         cross-tool-interop
  *   unique:         sparse patterns govern every merge-driven work-tree write, case-folded under core.ignorecase, as canonical git applies them
  *   interopSurface: sequencer, stash, checkout, merge
@@ -95,6 +95,12 @@ const leftWarning = (stderr: string): ReadonlyArray<string> =>
   stderr.split('\n').filter((line) => line.includes(LEFT_HEADER));
 const leftWarnings = (warnings: ReadonlyArray<string>): ReadonlyArray<string> =>
   warnings.filter((warning) => warning.startsWith(LEFT_HEADER));
+
+const skippedPaths = (dir: string): ReadonlyArray<string> =>
+  tagged(dir)
+    .split('\n')
+    .filter((line) => line.startsWith('S '))
+    .map((line) => line.split('\t')[1] ?? '');
 
 const gitExitOf = (dir: string, args: ReadonlyArray<string>) =>
   tryRunGitWithExit(['-C', dir, ...args], { env: COMMIT_ENV });
@@ -237,6 +243,240 @@ const presentMover = (dir: string): void => {
   runGit(['-C', dir, 'checkout', '--', 'a/g']);
 };
 
+const writeFiles = (dir: string, files: Readonly<Record<string, string>>): void => {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(join(dir, path, '..'), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
+};
+
+const commitFiles = (dir: string, files: Readonly<Record<string, string>>): void => {
+  writeFiles(dir, files);
+  runGit(['-C', dir, 'add', '-A']);
+  runGit(['-C', dir, 'commit', '-q', '-m', 'step'], { env: COMMIT_ENV });
+};
+
+const switchTo = (dir: string, args: ReadonlyArray<string>): void => {
+  runGit(['-C', dir, ...args], { env: COMMIT_ENV });
+};
+
+const RENAME_SEED: Seed = {
+  main: [
+    regular('a/f', 'af\n'),
+    regular('a/g', 'g1\n'),
+    regular('b/f', 'f1\n'),
+    regular('top', 't\n'),
+  ],
+  other: [
+    regular('a/f', 'af\n'),
+    regular('a/h', 'f1\n'),
+    regular('b/g', 'g1\n'),
+    regular('top', 't\n'),
+  ],
+};
+
+const ADD_SEED: Seed = {
+  main: BASE_SEED.main,
+  other: [...BASE_SEED.main, regular('a/n', 'n1\n'), regular('b/n', 'n1\n')],
+};
+
+const DELETE_SEED: Seed = {
+  main: BASE_SEED.main,
+  other: [regular('a/g', 'g1\n'), regular('b/f', 'f1\n'), regular('top', 't\n')],
+};
+
+const SECOND_PICK = [
+  regular('a/f', 'f3\n'),
+  regular('a/g', 'g1\n'),
+  regular('b/f', 'f3\n'),
+  regular('top', 't\n'),
+];
+
+interface ReplayRow {
+  readonly id: string;
+  readonly seed: Seed;
+  readonly cone: boolean | undefined;
+  readonly prepare: (dir: string) => void;
+  readonly afterSparse: (dir: string) => void;
+  readonly target: (dir: string) => string;
+  readonly gitArgs: ReadonlyArray<string>;
+  readonly operation: (repo: Repository) => Promise<unknown>;
+  readonly skipped: ReadonlyArray<string> | undefined;
+}
+
+const nothing = (): void => undefined;
+const here = (dir: string): string => dir;
+
+const replayRow = (
+  row: Partial<ReplayRow> & Pick<ReplayRow, 'id' | 'gitArgs' | 'operation'>,
+): ReplayRow => ({
+  seed: BASE_SEED,
+  cone: true,
+  prepare: nothing,
+  afterSparse: nothing,
+  target: here,
+  skipped: ['a/f', 'a/g'],
+  ...row,
+});
+
+const pick = (commits: ReadonlyArray<string>) => (repo: Repository) =>
+  repo.cherryPick.run({ commits });
+
+const checkoutOther = (dir: string): void => switchTo(dir, ['checkout', '-q', 'other']);
+
+const prepareRebase = (dir: string): void => {
+  const main = runGit(['-C', dir, 'rev-parse', 'main']).trim();
+  checkoutOther(dir);
+  switchTo(dir, ['checkout', '-q', '-b', 'tip', main]);
+  commitFiles(dir, { top: 't2\n' });
+  switchTo(dir, ['branch', '-f', 'main', 'tip']);
+  switchTo(dir, ['checkout', '-q', 'other']);
+};
+
+const prepareRebaseMerges = (dir: string): void => {
+  switchTo(dir, ['checkout', '-q', '-b', 'side', 'main']);
+  commitFiles(dir, { 'a/f': 'f2\n' });
+  switchTo(dir, ['checkout', '-q', '-b', 'topic', 'main']);
+  commitFiles(dir, { 'b/f': 'f2\n' });
+  switchTo(dir, ['merge', '-q', '--no-ff', '-m', 'merge side', 'side']);
+  switchTo(dir, ['checkout', '-q', 'main']);
+  commitFiles(dir, { top: 't2\n' });
+  switchTo(dir, ['checkout', '-q', 'topic']);
+};
+
+const prepareWorktree = (dir: string): void => {
+  switchTo(dir, ['worktree', 'add', '-q', `${dir}-wt`, '-b', 'wt', 'main']);
+  switchTo(`${dir}-wt`, ['sparse-checkout', 'set', 'b']);
+};
+
+const REPLAY_ROWS: ReadonlyArray<ReplayRow> = [
+  replayRow({
+    id: 'pick-outside-cone',
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'revert-outside-cone',
+    prepare: checkoutOther,
+    gitArgs: ['revert', '--no-edit', 'HEAD'],
+    operation: (repo) => repo.revert.run({ commits: ['HEAD'] }),
+  }),
+  replayRow({
+    id: 'pick-non-cone',
+    cone: false,
+    skipped: ['a/f', 'a/g'],
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'pick-rename-leaving-cone',
+    seed: RENAME_SEED,
+    skipped: ['a/f', 'a/h'],
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'pick-addition-outside-cone',
+    seed: ADD_SEED,
+    skipped: ['a/f', 'a/g', 'a/n'],
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'pick-deletion-outside-cone',
+    seed: DELETE_SEED,
+    skipped: ['a/g'],
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'rebase-outside-cone',
+    prepare: prepareRebase,
+    gitArgs: ['rebase', '-q', 'main'],
+    operation: (repo) => repo.rebase.run({ upstream: 'main' }),
+  }),
+  replayRow({
+    id: 'rebase-merges-outside-cone',
+    prepare: prepareRebaseMerges,
+    gitArgs: ['rebase', '-q', '--rebase-merges', 'main'],
+    operation: (repo) => repo.rebase.run({ upstream: 'main', rebaseMerges: true }),
+  }),
+  replayRow({
+    id: 'pick-in-linked-worktree',
+    cone: undefined,
+    prepare: prepareWorktree,
+    target: (dir) => `${dir}-wt`,
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'pick-range-outside-cone',
+    prepare: (dir) => {
+      const other = runGit(['-C', dir, 'rev-parse', 'other']).trim();
+      const second = commitOn(dir, SECOND_PICK, other);
+      runGit(['-C', dir, 'update-ref', 'refs/heads/second', second]);
+      runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+    },
+    gitArgs: ['cherry-pick', 'other', 'second'],
+    operation: pick(['other', 'second']),
+  }),
+  replayRow({
+    id: 'stash-apply-present-clean-mover',
+    prepare: (dir) => {
+      writeFileSync(join(dir, 'a', 'f'), 'f2\n');
+      switchTo(dir, ['stash', 'push', '-q']);
+    },
+    afterSparse: presentMover,
+    skipped: ['a/g'],
+    gitArgs: ['stash', 'apply', '-q'],
+    operation: (repo) => repo.stash.apply(),
+  }),
+  replayRow({
+    id: 'stash-pop-index-outside-cone',
+    prepare: (dir) => {
+      writeFileSync(join(dir, 'a', 'f'), 'f2\n');
+      switchTo(dir, ['add', 'a/f']);
+      writeFileSync(join(dir, 'a', 'f'), 'f3\n');
+      writeFileSync(join(dir, 'b', 'f'), 'f2\n');
+      switchTo(dir, ['stash', 'push', '-q']);
+    },
+    gitArgs: ['stash', 'pop', '--index', '-q'],
+    operation: (repo) => repo.stash.pop({ restoreIndex: true }),
+  }),
+  replayRow({
+    id: 'pick-present-clean-mover',
+    afterSparse: presentMover,
+    skipped: ['a/f', 'a/g'],
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'pick-present-dirty-mover',
+    afterSparse: (dir) => {
+      presentMover(dir);
+      writeFileSync(join(dir, 'a', 'g'), 'dirty\n');
+    },
+    skipped: ['a/f'],
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'case-pick',
+    seed: CASE_SEED,
+    skipped: undefined,
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  replayRow({
+    id: 'case-pick-non-cone',
+    seed: CASE_SEED,
+    cone: false,
+    skipped: undefined,
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+];
+
 const expectedCaseListing = (ignoreCase: string): ReadonlyArray<string> =>
   ignoreCase === 'true' ? ['B/', 'B/f=f2\n', 'top=t\n'] : ['top=t\n'];
 
@@ -342,6 +582,37 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
             expect(listing(pair.ours)).toEqual(listing(pair.peer));
             expect(listing(pair.ours)).toEqual(expectedListing);
           },
+        );
+      });
+
+      describe('When a sequencer or stash replay brings changes outside the cone', () => {
+        it.skipIf(!GIT_AVAILABLE).each(REPLAY_ROWS)(
+          'Then $id leaves the same index tags, work tree and warning as git',
+          async ({ seed, cone, prepare, afterSparse, target, gitArgs, operation, skipped }) => {
+            // Arrange
+            for (const dir of [pair.peer, pair.ours]) {
+              seedTwin(dir, ignoreCase, seed);
+              prepare(dir);
+              if (cone !== undefined) enableSparse(dir, { cone });
+              afterSparse(dir);
+              extraDirs.push(`${dir}-wt`);
+            }
+
+            // Act
+            const git = gitExitOf(target(pair.peer), gitArgs);
+            const run = await runTsgit(target(pair.ours), operation);
+
+            // Assert
+            expect(git.exitCode).toBe(0);
+            expect(run.outcome).toEqual({ kind: 'ok' });
+            expect(tagged(target(pair.ours))).toBe(tagged(target(pair.peer)));
+            expect(listing(target(pair.ours))).toEqual(listing(target(pair.peer)));
+            if (skipped !== undefined) expect(skippedPaths(target(pair.peer))).toEqual(skipped);
+            const warned = leftWarnings(run.warnings);
+            expect(warned).toHaveLength(leftWarning(git.stderr).length);
+            for (const warning of warned) expect(git.stderr).toContain(`warning: ${warning}\n`);
+          },
+          ROW_TIMEOUT,
         );
       });
 

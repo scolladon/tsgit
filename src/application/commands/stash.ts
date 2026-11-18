@@ -114,6 +114,7 @@ import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree
 import { materializeTreeJudging } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
+import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
 import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -1204,9 +1205,11 @@ const reinstateIndex = async (
   lock: IndexLock,
   args: { readonly stagedTree: ObjectId; readonly writtenIndex: GitIndex },
 ): Promise<void> => {
+  const sparse = await loadSparseMatcher(ctx);
   const entries = await buildIndexFromTree(ctx, {
     targetTree: args.stagedTree,
     currentIndex: args.writtenIndex,
+    ...(sparse !== undefined ? { sparse } : {}),
   });
   await lock.commit(entries, 'replace');
 };

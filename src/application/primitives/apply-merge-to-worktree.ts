@@ -6,8 +6,9 @@
  *
  * Three outcomes:
  * - `clean`    — the merged tree, materialised onto the working tree as the
- *                delta against `currentIndex` (only changed paths are touched),
- *                plus the post-write stage-0 index entries for the caller to
+ *                delta against `currentIndex` (only changed paths are touched,
+ *                and only those the sparse patterns select; the others are
+ *                left skip-worktree), plus the post-write stage-0 index entries for the caller to
  *                commit (or discard, as `stash apply` does).
  * - `conflict` — markers written to the working tree + stage-1/2/3 unmerged
  *                index entries (the caller commits them).
@@ -80,6 +81,7 @@ import { removeWorkingTreeFile } from './internal/write-working-tree-file.js';
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
 import { mergeCollidingRenameSources } from './merge-colliding-rename-sources.js';
 import { readBlob } from './read-blob.js';
+import { loadSparseMatcher } from './read-sparse-checkout.js';
 import { readEolSettings } from './resolve-conversion.js';
 import { synthesizeResultTree, synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 import { writeObject } from './write-object.js';
@@ -556,9 +558,11 @@ export const applyMergeToWorktree = async (
 
   if (merged.cleanMerge) {
     const mergedTree = await synthesiseMergedTree(ctx, merged.outcomes);
+    const sparse = await loadSparseMatcher(ctx);
     const materialized = await materializeTree(ctx, {
       targetTree: mergedTree,
       currentIndex: input.currentIndex,
+      ...(sparse !== undefined ? { sparse } : {}),
       // git's two-way rule: a path ours and the result agree on keeps its index entry and work file.
       headTree: input.oursTree,
       // Stryker disable next-line BooleanLiteral: equivalent — `findWouldOverwrite` has already returned every dirty path as `would-overwrite` above, so by here no changed path is dirty and `force: false` would behave identically (nothing to refuse).
