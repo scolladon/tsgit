@@ -1,6 +1,13 @@
 # ADR-076: `merge` materialises in-memory-only content even for sparse-excluded paths
 
+> **Superseded by [ADR-1211](1211-an-excluded-line-merged-path-is-staged-skip-worktree-not-written.md)**
+> for the rule that an excluded resolved-merged outcome is always written: git 2.56.0 stages it at
+> stage 0 skip-worktree under its merged blob and leaves it off disk. The blob-backed and conflict
+> clauses are carried forward.
+
 ## Status
+
+- **Status:** superseded by ADR-1211
 
 Accepted (at `38f345e`)
 
