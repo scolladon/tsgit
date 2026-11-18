@@ -97,7 +97,7 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   `no-local-changes` and the directory stays. The untracked (U) commit is always
   written when `includeUntracked` is set, as the empty tree with no parent when no
   untracked file was found, so W has three parents. `keepIndex` cleans the same way.
-- **`includeUntracked` never collects what stands inside a gitlink's directory.** For any stage-0 gitlink, staged or committed, what stands inside its directory is the submodule's checkout: it is neither stored in the untracked commit nor removed. The untracked commit is still written, as the empty tree when nothing else is untracked.
+- **`includeUntracked` never collects what stands inside a gitlink's directory.** For any stage-0 gitlink, staged or committed, what stands inside its directory is the submodule's checkout: it is neither stored in the untracked commit nor removed. Under `core.ignorecase` the match is case-blind: a directory differing from the gitlink path only in ASCII case is the submodule's too. The untracked commit is still written, as the empty tree when nothing else is untracked.
 - **Apply opens with an index refresh.** After the stash is resolved, `apply`/`pop`
   refresh the stat of stage-0 entries whose content is unchanged and write the index,
   as git's `refresh_and_write_cache` does, even when the apply then refuses. An
