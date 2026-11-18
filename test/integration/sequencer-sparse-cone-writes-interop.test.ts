@@ -188,8 +188,8 @@ const SYMLINK_MOVER_SEED: Seed = {
   ],
 };
 
-// Only a/g lies outside the cone: git clears the skip-worktree bit of any other skipped path
-// that the symlinked directory makes appear present, which tsgit keeps.
+// Only a/g lies outside the cone: git clears the skip-worktree bit of a present file when it
+// reads the index, so a second out-of-pattern path would be reported on the git side alone.
 const SOLE_MOVER_SEED: Seed = {
   main: [regular('a/g', 'g1\n'), regular('b/f', 'f1\n'), regular('top', 't\n')],
   other: [regular('a/g', 'g1\n'), regular('b/f', 'f2\n'), regular('top', 't\n')],
@@ -255,6 +255,51 @@ const MOVER_ROWS: ReadonlyArray<MoverRow> = [
     // readdir walks the link, so a/ lists what b/ holds.
     expectedListing: ['a/f=f2\n', 'a/g=g1\n', 'a@->b', 'b/', 'b/f=f2\n', 'b/g=g1\n', 'top=t\n'],
     expectedWarning: MOVER_WARNING,
+    posixOnly: true,
+  }),
+  moverRow({
+    id: 'mover-behind-symlink-to-empty-directory-retired',
+    seed: SOLE_MOVER_SEED,
+    edit: (dir) => {
+      rmSync(join(dir, 'a'), { recursive: true });
+      mkdirSync(join(dir, 'e'));
+      symlinkSync('e', join(dir, 'a'));
+    },
+    expectedListing: ['a@->e', 'b/', 'b/f=f2\n', 'e/', 'top=t\n'],
+    expectedWarning: undefined,
+    posixOnly: true,
+  }),
+  moverRow({
+    id: 'mover-behind-dangling-symlink-retired',
+    seed: SOLE_MOVER_SEED,
+    edit: (dir) => {
+      rmSync(join(dir, 'a'), { recursive: true });
+      symlinkSync('nowhere', join(dir, 'a'));
+    },
+    expectedListing: ['a@->nowhere', 'b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: undefined,
+    posixOnly: true,
+  }),
+  moverRow({
+    id: 'mover-under-a-file-kept',
+    seed: SOLE_MOVER_SEED,
+    edit: (dir) => {
+      rmSync(join(dir, 'a'), { recursive: true });
+      writeFileSync(join(dir, 'a'), 'junk\n');
+    },
+    expectedListing: ['a=junk\n', 'b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: MOVER_WARNING,
+  }),
+  moverRow({
+    id: 'symlink-mover-as-file-removed-when-symlinks-off',
+    seed: SYMLINK_MOVER_SEED,
+    edit: (dir) => {
+      rmSync(join(dir, 'a', 'g'));
+      writeFileSync(join(dir, 'a', 'g'), 'target');
+      runGit(['-C', dir, 'config', 'core.symlinks', 'false']);
+    },
+    expectedListing: ['b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: undefined,
     posixOnly: true,
   }),
   moverRow({

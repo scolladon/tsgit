@@ -75,6 +75,8 @@ export interface ParsedConfig {
     readonly ignoreCase?: boolean;
     /** `core.fileMode` — whether the executable bit of a work file is trusted (git's `trust_executable_bit`). */
     readonly fileMode?: boolean;
+    /** `core.symlinks` — whether symlinks are checked out as links (git's `has_symlinks`); git defaults to true. */
+    readonly symlinks?: boolean;
     readonly looseCompression?: number;
     /** `core.maxTreeDepth` — max tree-recursion depth; git defaults to 2048 when unset. */
     readonly maxTreeDepth?: number;
@@ -1478,6 +1480,7 @@ type MutableCore = {
   sparseCheckoutCone?: boolean;
   ignoreCase?: boolean;
   fileMode?: boolean;
+  symlinks?: boolean;
   looseCompression?: number;
   maxTreeDepth?: number;
   sshCommand?: string;
@@ -1626,13 +1629,17 @@ export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
 // cannot join the set without naming its target field, so a silent
 // mis-assignment is structurally impossible.
 const CORE_BOOLEAN_FIELDS: Readonly<
-  Record<string, 'bare' | 'sparseCheckout' | 'sparseCheckoutCone' | 'ignoreCase' | 'fileMode'>
+  Record<
+    string,
+    'bare' | 'sparseCheckout' | 'sparseCheckoutCone' | 'ignoreCase' | 'fileMode' | 'symlinks'
+  >
 > = {
   bare: 'bare',
   filemode: 'fileMode',
   ignorecase: 'ignoreCase',
   sparsecheckout: 'sparseCheckout',
   sparsecheckoutcone: 'sparseCheckoutCone',
+  symlinks: 'symlinks',
 };
 
 const CORE_BOOLEAN_KEYS = new Set([
@@ -2387,6 +2394,11 @@ const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => 
   ...(core.untrackedCache !== undefined ? { untrackedCache: core.untrackedCache } : {}),
 });
 
+/** The `[core]` fields that switch a work-tree behaviour on or off. */
+const finalizeCoreCapabilityFields = (core: MutableCore): ParsedConfig['core'] => ({
+  ...(core.symlinks !== undefined ? { symlinks: core.symlinks } : {}),
+});
+
 /** The `[core]` fields with a numeric size/count/limit grammar. Split out of
  *  `finalizeCore` to keep each half under the cognitive-complexity ceiling. */
 const finalizeCoreSizeFields = (core: MutableCore): ParsedConfig['core'] => ({
@@ -2412,7 +2424,11 @@ const finalizeCoreSizeFields = (core: MutableCore): ParsedConfig['core'] => ({
 const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
   if (core === undefined) return undefined;
   // looseCompressionFromLoose is transient (precedence flag) — not projected to ParsedConfig
-  return { ...finalizeCoreIdentityFields(core), ...finalizeCoreSizeFields(core) };
+  return {
+    ...finalizeCoreIdentityFields(core),
+    ...finalizeCoreCapabilityFields(core),
+    ...finalizeCoreSizeFields(core),
+  };
 };
 
 /** {@link ParsedConfig} with its top-level fields assignable, for `finalize` to fill in. */

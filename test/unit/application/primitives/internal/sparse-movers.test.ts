@@ -18,7 +18,7 @@ import {
 import type { MergeConflict } from '../../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, recordedStatOf } from '../fixtures.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -139,19 +139,7 @@ describe('retireSparseMovers', () => {
         const id = await writeBlob(ctx, 'g1\n');
         await arrangeWork(ctx);
         const stat = await ctx.fs.lstat(`${workDirOf(ctx)}/a/g`);
-        const nanoseconds = (ns: bigint | undefined): number =>
-          ns === undefined ? 0 : Number(ns % 1_000_000_000n);
-        const recorded = entryOf('a/g', id, {
-          mode,
-          ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
-          ctimeNanoseconds: nanoseconds(stat.ctimeNs),
-          mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
-          mtimeNanoseconds: nanoseconds(stat.mtimeNs),
-          uid: stat.uid,
-          gid: stat.gid,
-          ino: stat.ino,
-          fileSize: stat.size,
-        });
+        const recorded = entryOf('a/g', id, { mode, ...recordedStatOf(stat) });
         const index = {
           ...indexOf([recorded]),
           indexMtime: { seconds: 2 ** 31, nanoseconds: 0 },

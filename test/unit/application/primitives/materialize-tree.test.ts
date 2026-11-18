@@ -6,12 +6,12 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
-import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
 import { recordingProgress } from '../commands/fixtures.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, recordedStatOf } from './fixtures.js';
 
 const EMPTY_INDEX: GitIndex = {
   version: 2,
@@ -2033,19 +2033,10 @@ describe('materializeTree carrying staged changes (headTree)', () => {
           const { ctx, blobs, headTree, targetTree } = await buildFixture();
           await arrangeWork(ctx);
           const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/c`);
-          const nanoseconds = (ns: bigint | undefined): number =>
-            ns === undefined ? 0 : Number(ns % 1_000_000_000n);
           const recorded: IndexEntry = {
             ...makeIndexEntry('c', blobs.same as ObjectId),
             mode,
-            ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
-            ctimeNanoseconds: nanoseconds(stat.ctimeNs),
-            mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
-            mtimeNanoseconds: nanoseconds(stat.mtimeNs),
-            uid: stat.uid,
-            gid: stat.gid,
-            ino: stat.ino,
-            fileSize: stat.size,
+            ...recordedStatOf(stat),
           };
           const currentIndex: GitIndex = {
             ...indexOf([makeIndexEntry('b', blobs.old as ObjectId), recorded]),
@@ -2876,6 +2867,132 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         expect(result.newIndexEntries.map((e) => e.path)).toEqual(['g', 'é', 'é-x', 'é0']);
         expect(await readWork(ctx, 'é-x')).toBe('staged');
         expect(await readWork(ctx, 'é0')).toBe('staged');
+      });
+    });
+  });
+});
+
+describe('materializeTree out-of-pattern movers whose leading path was replaced', () => {
+  type SeededContext = Awaited<ReturnType<typeof buildSeededContext>>;
+
+  const writeWork = async (ctx: SeededContext, name: string, body: string): Promise<void> => {
+    await ctx.fs.write(`${ctx.layout.workDir}/${name}`, new TextEncoder().encode(body));
+  };
+
+  const readWork = async (ctx: SeededContext, name: string): Promise<string | undefined> =>
+    (await ctx.fs.exists(`${ctx.layout.workDir}/${name}`))
+      ? new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/${name}`))
+      : undefined;
+
+  const sparse = (path: string): boolean => path.startsWith('b/');
+  const LEFT_WARNING =
+    'The following paths are not up to date and were left despite sparse patterns:\n\ta/f\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
+
+  const buildSwitch = async (mode: FileMode) => {
+    const seeded = await buildSeededContext();
+    const warn = vi.fn();
+    const ctx = { ...seeded, logger: { warn } };
+    const af = await writeBlob(ctx, 'target');
+    const bOld = await writeBlob(ctx, 'old');
+    const bNew = await writeBlob(ctx, 'new');
+    const tree = async (b: ObjectId): Promise<ObjectId> => {
+      const a = await writeTree(ctx, [treeEntry(mode, 'f' as FilePath, af)]);
+      const bDir = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, b)]);
+      return writeTree(ctx, [
+        treeEntry(FILE_MODE.DIRECTORY, 'a' as FilePath, a),
+        treeEntry(FILE_MODE.DIRECTORY, 'b' as FilePath, bDir),
+      ]);
+    };
+    const currentIndex: GitIndex = {
+      ...EMPTY_INDEX,
+      entries: [{ ...makeIndexEntry('a/f', af), mode }, makeIndexEntry('b/f', bOld)],
+    };
+    return {
+      ctx,
+      warn,
+      currentIndex,
+      headTree: await tree(bOld),
+      targetTree: await tree(bNew),
+    };
+  };
+
+  describe.each([
+    {
+      title: 'a symlink to an empty directory',
+      arrange: async (ctx: SeededContext): Promise<void> => {
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/e`);
+        await ctx.fs.symlink('e', `${ctx.layout.workDir}/a`);
+      },
+    },
+    {
+      title: 'a dangling symlink',
+      arrange: (ctx: SeededContext): Promise<void> =>
+        ctx.fs.symlink('nowhere', `${ctx.layout.workDir}/a`),
+    },
+  ])('Given a/f outside the patterns and a now $title', ({ arrange }) => {
+    describe('When the branch switch materialises', () => {
+      it('Then a/f is retired as skip-worktree without a warning', async () => {
+        // Arrange
+        const { ctx, warn, currentIndex, headTree, targetTree } = await buildSwitch(
+          FILE_MODE.REGULAR,
+        );
+        await arrange(ctx);
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse });
+
+        // Assert
+        const retired = result.newIndexEntries.find((e) => e.path === ('a/f' as FilePath));
+        expect(retired?.flags.skipWorktree).toBe(true);
+        expect(await ctx.fs.readlink(`${ctx.layout.workDir}/a`)).toBeDefined();
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a/f outside the patterns and a regular file standing at a', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then a/f is kept with one warning and the file at a stays', async () => {
+        // Arrange
+        const { ctx, warn, currentIndex, headTree, targetTree } = await buildSwitch(
+          FILE_MODE.REGULAR,
+        );
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('junk'));
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse });
+
+        // Assert
+        const kept = result.newIndexEntries.find((e) => e.path === ('a/f' as FilePath));
+        expect(kept?.flags.skipWorktree).toBe(false);
+        expect(await readWork(ctx, 'a')).toBe('junk');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(LEFT_WARNING);
+      });
+    });
+  });
+
+  describe('Given core.symlinks off, a/f a symlink entry outside the patterns and a regular file with its bytes', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then a/f is retired as skip-worktree and its file goes without a warning', async () => {
+        // Arrange
+        const { ctx, warn, currentIndex, headTree, targetTree } = await buildSwitch(
+          FILE_MODE.SYMLINK,
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tsymlinks = false\n');
+        await writeWork(ctx, 'a/f', 'target');
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse });
+
+        // Assert
+        const retired = result.newIndexEntries.find((e) => e.path === ('a/f' as FilePath));
+        expect(retired?.flags.skipWorktree).toBe(true);
+        expect(await readWork(ctx, 'a/f')).toBeUndefined();
+        expect(warn).not.toHaveBeenCalled();
       });
     });
   });

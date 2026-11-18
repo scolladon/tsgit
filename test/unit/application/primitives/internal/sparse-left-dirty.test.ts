@@ -9,7 +9,7 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import { type IndexEntry, STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, recordedStatOf } from '../fixtures.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -148,8 +148,6 @@ describe('notUpToDate', () => {
   });
 });
 
-const NS_PER_SECOND = 1_000_000_000n;
-
 const statEntryOf = async (
   ctx: SeededContext,
   name: string,
@@ -157,18 +155,7 @@ const statEntryOf = async (
   fileSize?: number,
 ): Promise<IndexEntry> => {
   const stat = await ctx.fs.lstat(`${workDirOf(ctx)}/${name}`);
-  const nanoseconds = (ns: bigint | undefined): number =>
-    ns === undefined ? 0 : Number(ns % NS_PER_SECOND);
-  return entryOf(name, id, {
-    ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
-    ctimeNanoseconds: nanoseconds(stat.ctimeNs),
-    mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
-    mtimeNanoseconds: nanoseconds(stat.mtimeNs),
-    uid: stat.uid,
-    gid: stat.gid,
-    ino: stat.ino,
-    fileSize: fileSize ?? stat.size,
-  });
+  return entryOf(name, id, { ...recordedStatOf(stat), fileSize: fileSize ?? stat.size });
 };
 
 const OLDER_THAN_ANY_ENTRY = { seconds: 0, nanoseconds: 0 };
@@ -379,6 +366,61 @@ describe('notUpToDate mode and type', () => {
     });
   });
 
+  describe('Given core.symlinks off', () => {
+    const writeSymlinksOff = (ctx: SeededContext): Promise<void> =>
+      ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tsymlinks = false\n');
+
+    describe('When a regular file holds the bytes of a symlink entry', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'target');
+        await writeWork(ctx, 'a', 'target');
+        await writeSymlinksOff(ctx);
+        const entry = entryOf('a', id, { mode: FILE_MODE.SYMLINK });
+
+        // Act
+        const result = await sut(ctx, workDirOf(ctx), [entry], undefined);
+
+        // Assert
+        expect([...result]).toEqual([]);
+      });
+    });
+
+    describe('When a regular file holds other bytes than a symlink entry', () => {
+      it('Then the path is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'target');
+        await writeWork(ctx, 'a', 'edited');
+        await writeSymlinksOff(ctx);
+        const entry = entryOf('a', id, { mode: FILE_MODE.SYMLINK });
+
+        // Act
+        const result = await sut(ctx, workDirOf(ctx), [entry], undefined);
+
+        // Assert
+        expect([...result]).toEqual(['a']);
+      });
+    });
+
+    describe('When a symlink stands for a regular entry', () => {
+      it('Then the path is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'target');
+        await ctx.fs.symlink('target', `${workDirOf(ctx)}/a`);
+        await writeSymlinksOff(ctx);
+
+        // Act
+        const result = await sut(ctx, workDirOf(ctx), [entryOf('a', id)], undefined);
+
+        // Assert
+        expect([...result]).toEqual(['a']);
+      });
+    });
+  });
+
   describe('Given a symlink whose target is the entry content for a symlink entry, When judged', () => {
     it('Then nothing is reported', async () => {
       // Arrange
@@ -448,7 +490,7 @@ describe('judgeMovers', () => {
   });
 
   describe('Given a regular file where a leading directory is due, When judged', () => {
-    it('Then the path is neither dirty nor verified clean', async () => {
+    it('Then the path is dirty and not verified clean', async () => {
       // Arrange
       const ctx = await buildSeededContext();
       const id = await writeBlob(ctx, 'indexed');
@@ -458,8 +500,39 @@ describe('judgeMovers', () => {
       const result = await sut(ctx, workDirOf(ctx), [entryOf('a/f', id)], undefined);
 
       // Assert
-      expect([...result.dirty]).toEqual([]);
+      expect([...result.dirty]).toEqual(['a/f']);
       expect([...result.verifiedClean]).toEqual([]);
+    });
+  });
+
+  describe.each([
+    {
+      title: 'a symlink to an empty directory',
+      arrange: async (ctx: SeededContext): Promise<void> => {
+        await ctx.fs.mkdir(`${workDirOf(ctx)}/e`);
+        await ctx.fs.symlink('e', `${workDirOf(ctx)}/a`);
+      },
+    },
+    {
+      title: 'a dangling symlink',
+      arrange: (ctx: SeededContext): Promise<void> =>
+        ctx.fs.symlink('nowhere', `${workDirOf(ctx)}/a`),
+    },
+  ])('Given $title where a leading directory is due and nothing behind it', ({ arrange }) => {
+    describe('When judged', () => {
+      it('Then the path is neither dirty nor verified clean', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'indexed');
+        await arrange(ctx);
+
+        // Act
+        const result = await sut(ctx, workDirOf(ctx), [entryOf('a/f', id)], undefined);
+
+        // Assert
+        expect([...result.dirty]).toEqual([]);
+        expect([...result.verifiedClean]).toEqual([]);
+      });
     });
   });
 

@@ -11,7 +11,7 @@ import {
 } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
+import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
 import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -804,3 +804,32 @@ export const soleSourceStore = (ctx: Context, registry: PackRegistry): ObjectSto
     dispose: () => registry.dispose(),
   };
 };
+
+const NS_PER_SECOND = 1_000_000_000n;
+
+const nanosecondsOf = (ns: bigint | undefined): number =>
+  ns === undefined ? 0 : Number(ns % NS_PER_SECOND);
+
+/** The index-entry stat fields a work file's own lstat would have recorded (a stat-clean entry). */
+export const recordedStatOf = (
+  stat: FileStat,
+): Pick<
+  IndexEntry,
+  | 'ctimeSeconds'
+  | 'ctimeNanoseconds'
+  | 'mtimeSeconds'
+  | 'mtimeNanoseconds'
+  | 'uid'
+  | 'gid'
+  | 'ino'
+  | 'fileSize'
+> => ({
+  ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
+  ctimeNanoseconds: nanosecondsOf(stat.ctimeNs),
+  mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
+  mtimeNanoseconds: nanosecondsOf(stat.mtimeNs),
+  uid: stat.uid,
+  gid: stat.gid,
+  ino: stat.ino,
+  fileSize: stat.size,
+});

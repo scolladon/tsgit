@@ -50,17 +50,20 @@ interface Judgement {
   readonly isDirty: WorkingTreeDirtyCheck;
   readonly scanner: LeadingPathScanner;
   readonly trustsExecutableBit: () => Promise<boolean>;
+  readonly hasSymlinks: () => Promise<boolean>;
   readonly indexMtime: IndexMtime | undefined;
 }
 
 /** git's ie_match_stat mode test: a type change is always a change; the executable bit only when core.filemode trusts it. */
 const modeDiffers = async (
-  { trustsExecutableBit }: Judgement,
+  { trustsExecutableBit, hasSymlinks }: Judgement,
   entry: IndexEntry,
   stat: FileStat,
 ): Promise<boolean> => {
   const working = deriveWorkingMode(stat);
   if (working === entry.mode) return false;
+  // Without symlink support a symlink entry is checked out as a regular file: not a type change.
+  if (entry.mode === FILE_MODE.SYMLINK && stat.isFile && !(await hasSymlinks())) return false;
   const executableBitOnly = working !== FILE_MODE.SYMLINK && entry.mode !== FILE_MODE.SYMLINK;
   return !executableBitOnly || (await trustsExecutableBit());
 };
@@ -71,10 +74,12 @@ const verdictOf = async (
   absPath: string,
 ): Promise<Verdict> => {
   const { ctx, isDirty, scanner, indexMtime } = judgement;
+  const stat = await lstatBeyondLink(ctx, absPath);
+  // git's verify_uptodate: ENOENT is up to date, any other lstat failure is left and warned.
+  if (stat === undefined) return 'unproven';
+  if (stat === UNREACHABLE) return 'dirty';
   // git never reads through a symlinked leading directory: what it reaches there is not the entry.
   if (await scanner.hasSymlinkedLeadingPath(escapedPathOf(entry))) return 'dirty';
-  const stat = await lstatBeyondLink(ctx, absPath);
-  if (stat === undefined || stat === UNREACHABLE) return 'unproven';
   // A directory or another kind of occupant is never the entry's file, and is never read.
   if (!stat.isFile && !stat.isSymbolicLink) return 'dirty';
   if (await modeDiffers(judgement, entry, stat)) return 'dirty';
@@ -97,6 +102,7 @@ export const judgeMovers = async (
     isDirty: createWorkingTreeDirtyCheck(ctx),
     scanner: createLeadingPathScanner(ctx),
     trustsExecutableBit: lazily(async () => (await readConfig(ctx)).core?.fileMode !== false),
+    hasSymlinks: lazily(async () => (await readConfig(ctx)).core?.symlinks !== false),
     indexMtime,
   };
   const verifiable = candidates.filter(isVerifiable);
