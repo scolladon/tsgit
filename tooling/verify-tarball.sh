@@ -503,7 +503,14 @@ done
 # an added or conflicted gitlink, the shared gitlink conflict writer and the
 # case-blind stash prune — runtime code in every distribution form, none
 # removable without dropping the behaviour.
-SIZE_CAP=$((1529 * 1024))
+# Raised 1529 -> 1532 KiB by sparse-aware sequencer and stash writes: the measured
+# pack landed at 1 568 205 B, 2 509 B over the old cap, attributable to the
+# case-folding sparse matcher (cone and non-cone), the dirty out-of-pattern file
+# kept with git's warning, stash's skipped-change checkout, and the shared
+# conflict-path sparse verdict and mover retirement used by the sequencer,
+# stash and merge — runtime code in every distribution form, none removable
+# without dropping the behaviour.
+SIZE_CAP=$((1532 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
