@@ -730,26 +730,35 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
       });
 
       describe('When a replay stops on a conflict with changes outside the cone', () => {
-        it.each(CONFLICT_ROWS)(
+        const conflictRow = async ({ seed, prepare, gitArgs, operation }: ConflictRow) => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            seedTwin(dir, ignoreCase, seed);
+            prepare(dir);
+            enableSparse(dir, { cone: true });
+          }
+
+          // Act
+          const git = gitExitOf(pair.peer, gitArgs);
+          await runTsgit(pair.ours, operation);
+
+          // Assert
+          expect(git.exitCode).toBe(1);
+          expect(tagged(pair.ours)).toBe(tagged(pair.peer));
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+        };
+
+        it.skipIf(!GIT_AVAILABLE).each(CONFLICT_ROWS.filter((row) => !row.skipOnWindows))(
           'Then $id leaves the same index tags and work tree as git',
-          async ({ seed, prepare, gitArgs, operation, skipOnWindows }) => {
-            if (!GIT_AVAILABLE || (skipOnWindows && process.platform === 'win32')) return;
-            // Arrange
-            for (const dir of [pair.peer, pair.ours]) {
-              seedTwin(dir, ignoreCase, seed);
-              prepare(dir);
-              enableSparse(dir, { cone: true });
-            }
+          conflictRow,
+          ROW_TIMEOUT,
+        );
 
-            // Act
-            const git = gitExitOf(pair.peer, gitArgs);
-            await runTsgit(pair.ours, operation);
-
-            // Assert
-            expect(git.exitCode).toBe(1);
-            expect(tagged(pair.ours)).toBe(tagged(pair.peer));
-            expect(listing(pair.ours)).toEqual(listing(pair.peer));
-          },
+        it
+          .skipIf(!GIT_AVAILABLE || process.platform === 'win32')
+          .each(CONFLICT_ROWS.filter((row) => row.skipOnWindows))(
+          'Then $id leaves the same index tags and work tree as git',
+          conflictRow,
           ROW_TIMEOUT,
         );
       });
