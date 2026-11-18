@@ -9,8 +9,7 @@
  */
 import type { Context } from '../../../ports/context.js';
 import { boundedMapFor } from './concurrency.js';
-import { removeEmptyDirectory } from './empty-directories.js';
-import { lstatIfReachable } from './fs-probes.js';
+import { removeIfEmptyDirectory } from './empty-directories.js';
 import { joinPath } from './join-working-tree-path.js';
 
 export const parentDirectory = (path: string): string => {
@@ -33,17 +32,6 @@ export const survivingDirectoriesOf = (trackedPaths: Iterable<string>): Survivin
   }
   return directories;
 };
-
-const isRealDirectory = async (ctx: Context, absolute: string): Promise<boolean> => {
-  const stat = await lstatIfReachable(ctx.fs, absolute);
-  return stat?.isDirectory === true;
-};
-
-/** `rmdir` refuses a link or a file itself; the `rm` fallback would remove them, so it is guarded by a probe. */
-const removeIfEmptyDirectory = async (ctx: Context, absolute: string): Promise<boolean> =>
-  ctx.fs.rmdir === undefined
-    ? (await isRealDirectory(ctx, absolute)) && (await removeEmptyDirectory(ctx, absolute))
-    : removeEmptyDirectory(ctx, absolute);
 
 const depthOf = (dir: string): number => {
   let depth = 0;

@@ -1,10 +1,11 @@
 /**
- * Removal of empty directories in the refs and logs trees, shared by the
- * files ref store and the reflog writer: one removal attempt per directory,
- * never a recursive delete of anything that is not a directory.
+ * Removal of empty directories, shared by the files ref store, the reflog
+ * writer and the work tree's gitlink and prune removals: one removal attempt
+ * per directory, never a recursive delete of anything that is not a directory.
  */
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { Context } from '../../../ports/context.js';
+import { lstatIfReachable } from './fs-probes.js';
 
 /** The removal failures that mean "not removable", as a failing `rmdir`
  *  does for git: the directory is still non-empty (the browser adapter
@@ -29,6 +30,17 @@ export async function removeEmptyDirectory(ctx: Context, dir: string): Promise<b
     throw err;
   }
 }
+
+const isRealDirectory = async (ctx: Context, absolute: string): Promise<boolean> => {
+  const stat = await lstatIfReachable(ctx.fs, absolute);
+  return stat?.isDirectory === true;
+};
+
+/** `rmdir` refuses a link or a file itself; the `rm` fallback would remove them, so it is guarded by a probe. */
+export const removeIfEmptyDirectory = async (ctx: Context, absolute: string): Promise<boolean> =>
+  ctx.fs.rmdir === undefined
+    ? (await isRealDirectory(ctx, absolute)) && (await removeEmptyDirectory(ctx, absolute))
+    : removeEmptyDirectory(ctx, absolute);
 
 /**
  * git's `remove_dir_recurse` with `REMOVE_DIR_EMPTY_ONLY`: descends each
