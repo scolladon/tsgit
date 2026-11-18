@@ -24,10 +24,10 @@ describe('compileSparseRule with caseFold', () => {
     describe('When tested against "B/f"', () => {
       it('Then it matches', () => {
         // Arrange
-        const sut = foldedRule('/b/');
+        const sut = foldedRule;
 
         // Act
-        const result = sut.matcher.test('B/f');
+        const result = sut('/b/').matcher.test('B/f');
 
         // Assert
         expect(result).toBe(true);
@@ -39,14 +39,14 @@ describe('compileSparseRule with caseFold', () => {
     describe('When tested against "b/x"', () => {
       it('Then its matcher matches and the rule stays negated', () => {
         // Arrange
-        const sut = foldedRule('!/B/x');
+        const sut = foldedRule;
 
         // Act
-        const result = sut.matcher.test('b/x');
+        const result = sut('!/B/x');
 
         // Assert
-        expect(result).toBe(true);
-        expect(sut.negated).toBe(true);
+        expect(result.matcher.test('b/x')).toBe(true);
+        expect(result.negated).toBe(true);
       });
     });
   });

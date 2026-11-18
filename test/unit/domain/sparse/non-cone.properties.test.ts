@@ -30,13 +30,13 @@ describe('compileSparseRule properties', () => {
         fc.assert(
           fc.property(arbLine, arbPath, arbMask, (line, path, mask) => {
             // Arrange
-            const sut = compile(line, true).matcher;
+            const sut = compile;
 
             // Act
-            const result = sut.test(flipAsciiCase(path, mask));
+            const result = sut(line, true).matcher.test(flipAsciiCase(path, mask));
 
             // Assert
-            expect(result).toBe(sut.test(path));
+            expect(result).toBe(sut(line, true).matcher.test(path));
           }),
           { numRuns: NUM_RUNS },
         );
@@ -49,10 +49,10 @@ describe('compileSparseRule properties', () => {
           fc.property(arbLine, arbPath, (line, path) => {
             // Arrange
             const exact = compile(line).matcher;
-            const sut = compile(line, true).matcher;
+            const sut = compile;
 
             // Act
-            const result = sut.test(path);
+            const result = sut(line, true).matcher.test(path);
 
             // Assert
             expect(result || !exact.test(path)).toBe(true);
@@ -69,13 +69,13 @@ describe('compileSparseRule properties', () => {
         fc.assert(
           fc.property(arbLine, arbPath, (line, path) => {
             // Arrange
-            const sut = compile(line).matcher;
+            const sut = compile;
 
             // Act
-            const result = compile(line, false).matcher.test(path);
+            const result = sut(line, false).matcher.test(path);
 
             // Assert
-            expect(result).toBe(sut.test(path));
+            expect(result).toBe(sut(line).matcher.test(path));
           }),
           { numRuns: NUM_RUNS },
         );
