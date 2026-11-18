@@ -32,6 +32,7 @@ import {
   commitOn,
   listing,
   regular,
+  symlink,
   type TreeEntry,
 } from './occupant-displacement-fixtures.js';
 import { trackedContexts } from './repository-lifecycle.js';
@@ -477,6 +478,118 @@ const REPLAY_ROWS: ReadonlyArray<ReplayRow> = [
   }),
 ];
 
+const FIVE_LINES = '1\n2\n3\n4\n5\n';
+const OURS_EDITS_FIRST = '1x\n2\n3\n4\n5\n';
+const THEIRS_EDITS_LAST = '1\n2\n3\n4\n5x\n';
+
+const TAKE_THEIRS_SEED: Seed = {
+  main: [regular('a/f', 'f1\n'), regular('b/f', 'f1\n'), regular('top', 't\n')],
+  other: [regular('a/f', 'f2\n'), regular('b/f', 'f2\n'), regular('top', 't\n')],
+};
+
+const LINE_MERGE_SEED: Seed = {
+  main: [regular('a/f', FIVE_LINES), regular('b/f', 'f1\n'), regular('top', 't\n')],
+  other: [regular('a/f', THEIRS_EDITS_LAST), regular('b/f', 'f2\n'), regular('top', 't\n')],
+};
+
+const SYMLINK_SEED: Seed = {
+  main: [regular('a/f', 'f1\n'), regular('b/f', 'f1\n'), regular('top', 't\n')],
+  other: [symlink('a/f', 'elsewhere'), regular('b/f', 'f2\n'), regular('top', 't\n')],
+};
+
+const advancedMain = (dir: string, entries: ReadonlyArray<TreeEntry>): string => {
+  const main = runGit(['-C', dir, 'rev-parse', 'main']).trim();
+  const advanced = commitOn(dir, entries, main);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', advanced]);
+  return advanced;
+};
+
+const advanceAndReset = (entries: ReadonlyArray<TreeEntry>) => (dir: string) => {
+  advancedMain(dir, entries);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+};
+
+const advanceBesideOther = (entries: ReadonlyArray<TreeEntry>) => (dir: string) => {
+  checkoutOther(dir);
+  advancedMain(dir, entries);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'HEAD']);
+};
+
+const stashThenAdvance = (entries: ReadonlyArray<TreeEntry>) => (dir: string) => {
+  writeFileSync(join(dir, 'a', 'f'), THEIRS_EDITS_LAST);
+  writeFileSync(join(dir, 'b', 'f'), 'f2\n');
+  switchTo(dir, ['stash', 'push', '-q']);
+  advanceAndReset(entries)(dir);
+};
+
+const BOTH_CONFLICT = [regular('a/f', 'm\n'), regular('b/f', 'm\n'), regular('top', 't\n')];
+const IN_CONE_CONFLICT = [regular('a/f', 'f1\n'), regular('b/f', 'm\n'), regular('top', 't\n')];
+const LINE_MERGED = [
+  regular('a/f', OURS_EDITS_FIRST),
+  regular('b/f', 'm\n'),
+  regular('top', 't\n'),
+];
+const SYMLINK_VS_EDIT = [regular('a/f', 'm\n'), regular('b/f', 'f1\n'), regular('top', 't\n')];
+
+interface ConflictRow {
+  readonly id: string;
+  readonly seed: Seed;
+  readonly prepare: (dir: string) => void;
+  readonly gitArgs: ReadonlyArray<string>;
+  readonly operation: (repo: Repository) => Promise<unknown>;
+  readonly skipOnWindows: boolean;
+}
+
+const conflictRow = (
+  row: Partial<ConflictRow> & Pick<ConflictRow, 'id' | 'prepare' | 'gitArgs' | 'operation'>,
+): ConflictRow => ({ seed: BASE_SEED, skipOnWindows: false, ...row });
+
+const CONFLICT_ROWS: ReadonlyArray<ConflictRow> = [
+  conflictRow({
+    id: 'pick-conflict-take-theirs-outside-cone',
+    seed: TAKE_THEIRS_SEED,
+    prepare: advanceAndReset(IN_CONE_CONFLICT),
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  conflictRow({
+    id: 'pick-conflict-line-merged-outside-cone',
+    seed: LINE_MERGE_SEED,
+    prepare: advanceAndReset(LINE_MERGED),
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  conflictRow({
+    id: 'rebase-conflict-line-merged-outside-cone',
+    seed: LINE_MERGE_SEED,
+    prepare: advanceBesideOther(LINE_MERGED),
+    gitArgs: ['rebase', '-q', 'main'],
+    operation: (repo) => repo.rebase.run({ upstream: 'main' }),
+  }),
+  conflictRow({
+    id: 'stash-apply-conflict-line-merged-outside-cone',
+    seed: LINE_MERGE_SEED,
+    prepare: stashThenAdvance(LINE_MERGED),
+    gitArgs: ['stash', 'apply', '-q'],
+    operation: (repo) => repo.stash.apply(),
+  }),
+  conflictRow({
+    id: 'pick-conflict-on-outside-path',
+    seed: TAKE_THEIRS_SEED,
+    prepare: advanceAndReset(BOTH_CONFLICT),
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+  }),
+  conflictRow({
+    id: 'pick-conflict-distinct-types-outside-cone',
+    seed: SYMLINK_SEED,
+    prepare: advanceAndReset(SYMLINK_VS_EDIT),
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+    skipOnWindows: true,
+  }),
+];
+
 const expectedCaseListing = (ignoreCase: string): ReadonlyArray<string> =>
   ignoreCase === 'true' ? ['B/', 'B/f=f2\n', 'top=t\n'] : ['top=t\n'];
 
@@ -611,6 +724,31 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
             const warned = leftWarnings(run.warnings);
             expect(warned).toHaveLength(leftWarning(git.stderr).length);
             for (const warning of warned) expect(git.stderr).toContain(`warning: ${warning}\n`);
+          },
+          ROW_TIMEOUT,
+        );
+      });
+
+      describe('When a replay stops on a conflict with changes outside the cone', () => {
+        it.each(CONFLICT_ROWS)(
+          'Then $id leaves the same index tags and work tree as git',
+          async ({ seed, prepare, gitArgs, operation, skipOnWindows }) => {
+            if (!GIT_AVAILABLE || (skipOnWindows && process.platform === 'win32')) return;
+            // Arrange
+            for (const dir of [pair.peer, pair.ours]) {
+              seedTwin(dir, ignoreCase, seed);
+              prepare(dir);
+              enableSparse(dir, { cone: true });
+            }
+
+            // Act
+            const git = gitExitOf(pair.peer, gitArgs);
+            await runTsgit(pair.ours, operation);
+
+            // Assert
+            expect(git.exitCode).toBe(1);
+            expect(tagged(pair.ours)).toBe(tagged(pair.peer));
+            expect(listing(pair.ours)).toEqual(listing(pair.peer));
           },
           ROW_TIMEOUT,
         );

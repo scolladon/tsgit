@@ -20,7 +20,7 @@
 import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries, recordedPaths } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
-import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { type GitIndex, type IndexEntry, skipWorktreeEntry } from '../../domain/git-index/index.js';
 import { escapedPathOf, viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { validateTreePath } from '../../domain/git-index/path-validator.js';
@@ -35,6 +35,7 @@ import {
 import { mergeEscapedTrees } from '../../domain/merge/three-way-tree.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
+import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import {
   buildBlobUnchanged,
@@ -340,13 +341,40 @@ const writeConflictWorktree = async (
   }
 };
 
+/** True when sparse checkout is on and the patterns exclude the path. */
+const isExcluded = (sparse: SparseMatcher | undefined, path: FilePath): boolean =>
+  sparse !== undefined && !sparse(path);
+
+/** git writes a clean outcome only inside the patterns; a conflict is always written. */
+const isMaterialised = (outcome: ChangedOutcome, sparse: SparseMatcher | undefined): boolean =>
+  !isExcluded(sparse, outcome.path);
+
+/** The changed paths the conflict stop writes or removes: an excluded clean write is dropped. */
+const materialisedPaths = (
+  outcomes: ReadonlyArray<MergeOutcome>,
+  changed: ReadonlySet<FilePath>,
+  sparse: SparseMatcher | undefined,
+): ReadonlySet<FilePath> => {
+  const dropped = new Set(
+    outcomes.flatMap((outcome) =>
+      outcome.status === 'conflict' || isDeleted(outcome) || isMaterialised(outcome, sparse)
+        ? []
+        : [outcome.path],
+    ),
+  );
+  return new Set([...changed].filter((path) => !dropped.has(path)));
+};
+
 /** Stage-0 (clean) + stage-1/2/3 (conflicts) index entries, path/stage-sorted. */
 const buildUnmergedIndex = (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   merged: ReadonlyArray<IndexEntry>,
+  sparse: SparseMatcher | undefined,
 ): ReadonlyArray<IndexEntry> => {
-  const stage0 = [...blobBackedEntries(outcomes), ...merged];
+  const stage0 = [...blobBackedEntries(outcomes), ...merged].map((entry) =>
+    isExcluded(sparse, escapedPathOf(entry)) ? skipWorktreeEntry(entry) : entry,
+  );
   const combined = [...stage0, ...conflictsToIndexEntries(conflicts, zeroStat)];
   const byPath = pathComparatorFor(combined);
   // Stryker disable next-line ArithmeticOperator: equivalent — the stage branch only compares equal-path entries, which always arrive stage-ascending (conflictsToIndexEntries sorts conflict stages and rejects duplicate paths; stage-0 entries all share stage 0), so the comparator is a no-op on an already-ordered run regardless of sign.
@@ -470,12 +498,14 @@ const materialiseConflict = async (
   },
   changed: ReadonlySet<FilePath>,
   currentIndex: GitIndex,
+  sparse: SparseMatcher | undefined,
 ): Promise<ApplyMergeResult> => {
   // Whole-set path gate, hoisted above the write wave: a hostile name
   // anywhere in the batch refuses before the FIRST byte is written, not
   // partway through it.
   validateMergeWritePaths(indexPathRulesOf(ctx), merged.outcomes, merged.conflicts, changed);
-  await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
+  const materialised = materialisedPaths(merged.outcomes, changed, sparse);
+  await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, materialised);
   const mergedBlobs = await mergedBlobEntries(ctx, merged.outcomes);
   await writeAutoMerge(
     ctx,
@@ -486,9 +516,9 @@ const materialiseConflict = async (
     conflicts: merged.conflicts,
     indexEntries: await withConflictStopStats(
       ctx,
-      buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs),
+      buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs, sparse),
       currentIndex,
-      changed,
+      materialised,
     ),
   };
 };
@@ -556,9 +586,9 @@ export const applyMergeToWorktree = async (
     };
   }
 
+  const sparse = await loadSparseMatcher(ctx);
   if (merged.cleanMerge) {
     const mergedTree = await synthesiseMergedTree(ctx, merged.outcomes);
-    const sparse = await loadSparseMatcher(ctx);
     const materialized = await materializeTree(ctx, {
       targetTree: mergedTree,
       currentIndex: input.currentIndex,
@@ -574,7 +604,7 @@ export const applyMergeToWorktree = async (
       : mergedTree;
     return { kind: 'clean', mergedTree, indexTree, result: materialized };
   }
-  return materialiseConflict(ctx, merged, changed, input.currentIndex);
+  return materialiseConflict(ctx, merged, changed, input.currentIndex, sparse);
 };
 
 /**
