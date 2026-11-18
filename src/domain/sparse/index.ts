@@ -7,4 +7,9 @@ export {
   type ParsedSparseCheckout,
   parseSparseCheckout,
 } from './parse-sparse-checkout.js';
-export type { SparseMatcher, SparseRule, SparseSpec } from './sparse-pattern.js';
+export type {
+  SparseMatcher,
+  SparseMatchOptions,
+  SparseRule,
+  SparseSpec,
+} from './sparse-pattern.js';

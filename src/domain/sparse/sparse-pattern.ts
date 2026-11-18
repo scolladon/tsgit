@@ -28,5 +28,11 @@ export type SparseSpec =
       readonly rules: ReadonlyArray<SparseRule>;
     };
 
+/** How a sparse matcher compares paths. */
+export interface SparseMatchOptions {
+  /** `core.ignorecase`: ASCII letters match case-insensitively, as git's path comparison does. */
+  readonly ignoreCase?: boolean;
+}
+
 /** `true` ⇒ the path is in the sparse set (materialise it). */
 export type SparseMatcher = (path: FilePath) => boolean;
