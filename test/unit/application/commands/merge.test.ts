@@ -44,7 +44,10 @@ import { readReflog } from '../../../../src/application/primitives/reflog-store.
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
-import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
+import {
+  updateConfigEntries,
+  updateCoreConfig,
+} from '../../../../src/application/primitives/update-config.js';
 import { updateRef as seedRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
@@ -6521,6 +6524,63 @@ describe('merge — several heads (octopus)', () => {
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/a`)).toBe(false);
         const paths = (await readIndex(ctx)).entries.map((entry) => entry.path);
         expect(paths).toEqual(['b2', 'm', 'm', 'm']);
+      });
+    });
+  });
+
+  describe('Given a sparse repo whose out-of-pattern file is present on disk and an octopus that conflicts on its last head', () => {
+    const SPARSE_WARNING =
+      'The following paths are not up to date and were left despite sparse patterns:\n\tdocs/x\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
+
+    const seedSparseConflict = async (warn: (message: string) => void) => {
+      const base = await seedConflicting();
+      const ctx = { ...base, logger: { warn } };
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/x`, 'x\n');
+      await add(ctx, ['docs/x']);
+      await commit(ctx, { message: 'docs', author: t, committer: t });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/*\n!/*/\n/src/\n');
+      await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'true' });
+      return ctx;
+    };
+
+    const skipBitOf = async (ctx: Context, path: string): Promise<boolean | undefined> =>
+      (await readIndex(ctx)).entries.find((e) => e.path === path)?.flags.skipWorktree;
+
+    describe('When the octopus stops and the file is clean', () => {
+      it('Then the file is removed and its entry is skip-worktree, with no warning', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = await seedSparseConflict(warn);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'b2', 'c1'], author: t, committer: t });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/x`)).toBe(false);
+        expect(await skipBitOf(ctx, 'docs/x')).toBe(true);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When the octopus stops and the file holds local changes', () => {
+      it('Then the file is kept, its entry is not skip-worktree, and one warning names it', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = await seedSparseConflict(warn);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/x`, 'dirty\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'b2', 'c1'], author: t, committer: t });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/docs/x`)).toBe('dirty\n');
+        expect(await skipBitOf(ctx, 'docs/x')).toBe(false);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(SPARSE_WARNING);
       });
     });
   });

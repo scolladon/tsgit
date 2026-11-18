@@ -849,8 +849,9 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
             expect(leftWarnings(run.warnings)).toEqual(
               expectedWarning === undefined ? [] : [expectedWarning],
             );
-            expect(git.stderr).toContain(
-              expectedWarning === undefined ? '' : `warning: ${expectedWarning}\n`,
+            expect(leftWarning(git.stderr)).toHaveLength(expectedWarning === undefined ? 0 : 1);
+            expect(git.stderr.includes(`warning: ${expectedWarning}\n`)).toBe(
+              expectedWarning !== undefined,
             );
           },
         );
@@ -936,6 +937,7 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
 
           // Assert
           expect(git.exitCode).toBe(1);
+          expect(run.outcome).toEqual({ kind: 'ok' });
           expect(tagged(pair.ours)).toBe(tagged(pair.peer));
           expect(listing(pair.ours)).toEqual(listing(pair.peer));
           const warned = leftWarnings(run.warnings);

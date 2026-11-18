@@ -14,20 +14,20 @@ const rule = (line: string): SparseRule => {
 };
 
 describe('compileSparseRule with caseFold', () => {
-  const foldedRule = (line: string): SparseRule => {
-    const tokenized = tokenizeIgnoreLine(line);
-    if (tokenized === undefined) throw new Error(`unexpected skipped line: ${line}`);
-    return compileSparseRule(tokenized, line, { caseFold: true });
+  const tokenized = (line: string) => {
+    const tokens = tokenizeIgnoreLine(line);
+    if (tokens === undefined) throw new Error(`unexpected skipped line: ${line}`);
+    return tokens;
   };
 
   describe('Given "/b/"', () => {
     describe('When tested against "B/f"', () => {
       it('Then it matches', () => {
         // Arrange
-        const sut = foldedRule;
+        const sut = compileSparseRule;
 
         // Act
-        const result = sut('/b/').matcher.test('B/f');
+        const result = sut(tokenized('/b/'), '/b/', { caseFold: true }).matcher.test('B/f');
 
         // Assert
         expect(result).toBe(true);
@@ -39,10 +39,10 @@ describe('compileSparseRule with caseFold', () => {
     describe('When tested against "b/x"', () => {
       it('Then its matcher matches and the rule stays negated', () => {
         // Arrange
-        const sut = foldedRule;
+        const sut = compileSparseRule;
 
         // Act
-        const result = sut('!/B/x');
+        const result = sut(tokenized('!/B/x'), '!/B/x', { caseFold: true });
 
         // Assert
         expect(result.matcher.test('b/x')).toBe(true);

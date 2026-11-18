@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { buildConeSpec, coneMatcher } from '../../../../src/domain/sparse/cone.js';
+import { arbCaseMask, flipAsciiCase } from '../path/arbitraries.js';
 
 const NUM_RUNS = 100;
 const arbSegment = fc.stringMatching(/^[aAbB]{1,2}$/);
@@ -11,15 +12,7 @@ const arbSpec = fc.array(arbDir, { minLength: 1, maxLength: 3 }).map((dirs) => b
 const arbPath = fc
   .array(arbSegment, { minLength: 1, maxLength: 4 })
   .map((s) => FilePath.from(s.join('/')));
-const arbMask = fc.array(fc.boolean(), { maxLength: 12 });
-
-const flipAsciiCase = (text: string, mask: ReadonlyArray<boolean>): string =>
-  [...text]
-    .map((ch, i) => {
-      if (mask[i] !== true) return ch;
-      return ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase();
-    })
-    .join('');
+const arbMask = arbCaseMask();
 
 describe('coneMatcher properties', () => {
   describe('Given ignoreCase', () => {

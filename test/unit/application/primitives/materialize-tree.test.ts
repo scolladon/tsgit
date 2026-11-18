@@ -1683,6 +1683,61 @@ describe('materializeTree carrying staged changes (headTree)', () => {
       });
     });
 
+    describe('When the target changes c and c is edited in the work tree', () => {
+      const changedCFixture = async () => {
+        const { ctx: seeded, blobs, headTree } = await buildFixture();
+        const targetTree = await flatTree(seeded, {
+          b: blobs.old as ObjectId,
+          c: blobs.new as ObjectId,
+        });
+        await writeWork(seeded, 'c', 'edited');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+        return { seeded, blobs, headTree, targetTree, currentIndex };
+      };
+
+      it('Then the forced switch gives c the target id, skip-worktree, with no warning', async () => {
+        // Arrange
+        const { seeded, blobs, headTree, targetTree, currentIndex } = await changedCFixture();
+        const warn = vi.fn();
+        const ctx = { ...seeded, logger: { warn } };
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse, force: true });
+
+        // Assert
+        const entry = result.newIndexEntries.find((e) => e.path === ('c' as FilePath));
+        expect(entry?.id).toBe(blobs.new);
+        expect(entry?.flags.skipWorktree).toBe(true);
+        expect(warn).not.toHaveBeenCalled();
+      });
+
+      it('Then the unforced switch refuses with c', async () => {
+        // Arrange
+        const { seeded, headTree, targetTree, currentIndex } = await changedCFixture();
+        const warn = vi.fn();
+        const ctx = { ...seeded, logger: { warn } };
+
+        // Act
+        const sut = materializeTree;
+        const data = await refusalOf(() =>
+          sut(ctx, { targetTree, currentIndex, headTree, sparse }),
+        );
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['c'],
+          untracked: [],
+        });
+        expect(warn).not.toHaveBeenCalled();
+        expect(await readWork(ctx, 'c')).toBe('edited');
+      });
+    });
+
     describe('When c is clean in the work tree', () => {
       it('Then c becomes skip-worktree, its file goes and nothing is warned', async () => {
         // Arrange

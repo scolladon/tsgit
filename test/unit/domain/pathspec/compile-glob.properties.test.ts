@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { compileGlob } from '../../../../src/domain/pathspec/compile-glob.js';
+import { arbCaseMask, flipAsciiCase } from '../path/arbitraries.js';
 import { arbLiteralPattern } from './arbitraries.js';
 
 const NUM_RUNS = 100;
@@ -60,14 +61,7 @@ describe('compileGlob properties', () => {
   describe('Given caseFold over a small alphabet', () => {
     const arbText = fc.stringMatching(/^[aAbB/*?]{0,8}$/);
     const arbPath = fc.stringMatching(/^[aAbB/]{0,8}$/);
-    const arbMask = fc.array(fc.boolean(), { maxLength: 8 });
-    const flipAsciiCase = (text: string, mask: ReadonlyArray<boolean>): string =>
-      [...text]
-        .map((ch, i) => {
-          if (mask[i] !== true) return ch;
-          return ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase();
-        })
-        .join('');
+    const arbMask = arbCaseMask();
 
     describe('When the path has its ASCII case flipped', () => {
       it('Then the verdict is unchanged', () => {

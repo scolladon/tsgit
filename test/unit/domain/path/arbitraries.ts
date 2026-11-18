@@ -181,3 +181,20 @@ export function arbNtfsGitmodulesAlias(): fc.Arbitrary<string> {
   );
   return fc.tuple(arbBase, arbStream).map(([base, stream]) => `${base}${stream}`);
 }
+
+const MAX_CASE_MASK_LENGTH = 12;
+
+/** Which characters of a text `flipAsciiCase` flips; positions past the mask stay as they are. */
+export function arbCaseMask(): fc.Arbitrary<ReadonlyArray<boolean>> {
+  return fc.array(fc.boolean(), { maxLength: MAX_CASE_MASK_LENGTH });
+}
+
+/** Flips the ASCII case of each character the mask selects. */
+export function flipAsciiCase(text: string, mask: ReadonlyArray<boolean>): string {
+  return [...text]
+    .map((ch, i) => {
+      if (mask[i] !== true) return ch;
+      return ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase();
+    })
+    .join('');
+}

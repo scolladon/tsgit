@@ -415,7 +415,8 @@ describe('primitives/read-sparse-checkout', () => {
           await seedPatternFile(ctx, '/*\n!/*/\n/b/\n');
 
           // Act
-          const result = await loadSparseMatcher(ctx);
+          const sut = loadSparseMatcher;
+          const result = await sut(ctx);
 
           // Assert
           expect(result?.('B/f' as FilePath)).toBe(accepts);
