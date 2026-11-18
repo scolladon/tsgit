@@ -77,7 +77,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { type IsVerified, NOTHING_VERIFIED } from './internal/smudge-racily-clean.js';
-import { isVerifiable, notUpToDate, warnLeftDespiteSparse } from './internal/sparse-left-dirty.js';
+import { judgeMovers, warnLeftDespiteSparse } from './internal/sparse-left-dirty.js';
 import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
@@ -821,11 +821,11 @@ const dirtyMoversOf = async (
   const candidates = stageZero.filter(
     (e) => movers.has(indexPathKey(e)) && !e.flags.skipWorktree && agreed(indexPathKey(e)),
   );
-  const dirty = await notUpToDate(ctx, workdir, candidates, indexMtime);
+  const { dirty, verifiedClean } = await judgeMovers(ctx, workdir, candidates, indexMtime);
   return {
     leftDirty: candidates.filter((e) => dirty.has(indexPathKey(e))),
     verifiedClean: new Set(
-      candidates.filter((e) => isVerifiable(e) && !dirty.has(indexPathKey(e))).map(escapedPathOf),
+      candidates.filter((e) => verifiedClean.has(indexPathKey(e))).map(escapedPathOf),
     ),
   };
 };

@@ -2014,6 +2014,57 @@ describe('materializeTree carrying staged changes (headTree)', () => {
     });
   });
 
+  describe('Given a sparse switch and c outside the pattern, with its work file absent', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then c is retired and nothing is refused', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await ctx.fs.rm(`${ctx.layout.workDir}/c`);
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+        const sut = materializeTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree,
+          currentIndex,
+          headTree,
+          sparse: (path) => path !== 'c',
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['b', 'c', 'z']);
+        expect(result.deleted).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a sparse switch and c outside the pattern, with an untracked directory at its path', () => {
+    describe('When the branch switch materialises', () => {
+      it('Then it is refused as before, naming the path', async () => {
+        // Arrange
+        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        await ctx.fs.rm(`${ctx.layout.workDir}/c`);
+        await writeWork(ctx, 'c/x', 'untracked');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+        const sut = materializeTree;
+
+        // Act
+        const data = await refusalOf(() =>
+          sut(ctx, { targetTree, currentIndex, headTree, sparse: (path) => path !== 'c' }),
+        );
+
+        // Assert
+        expect(data).toEqual({ code: 'PERMISSION_DENIED', path: `${ctx.layout.workDir}/c` });
+      });
+    });
+  });
+
   describe('Given a sparse switch and c skip-worktree in the index, deleted by the target', () => {
     describe('When the index still equals head', () => {
       it('Then c leaves the index and only b remains', async () => {
