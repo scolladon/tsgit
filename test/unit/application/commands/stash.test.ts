@@ -2185,6 +2185,30 @@ describe('stash apply', () => {
     });
   });
 
+  describe('Given a stash staging only an executable bit the work tree leaves unset', () => {
+    describe('When apply runs with restoreIndex', () => {
+      it('Then the reinstated entry carries the staged executable mode', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const index = await readIndex(ctx);
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(
+          index.entries.map((e) => ({ ...e, mode: FILE_MODE.EXECUTABLE })),
+          'replace',
+        );
+        await stashPush(ctx, {});
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'a.txt');
+        expect(entry?.mode).toBe(FILE_MODE.EXECUTABLE);
+      });
+    });
+  });
+
   describe('Given a staged type swap stashed plain', () => {
     describe('When stash apply runs with restoreIndex', () => {
       it('Then the reinstated entry d carries the stat of the written file', async () => {
@@ -5231,6 +5255,7 @@ describe('stash apply under a cone that excludes a/', () => {
         const entry = await entryOf(ctx, 'a/f');
         expect(entry?.flags.skipWorktree).toBe(true);
         expect(entry?.id).toBe(await hashBlob(ctx, new TextEncoder().encode('f2\n')));
+        expect(await exists(ctx, 'a/f')).toBe(false);
       });
     });
   });

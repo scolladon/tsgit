@@ -1201,9 +1201,7 @@ const keepingUnchanged = (
   projected: ReadonlyArray<IndexEntry>,
   written: GitIndex,
 ): ReadonlyArray<IndexEntry> => {
-  const donors = new Map(
-    written.entries.filter((entry) => entry.flags.stage === 0).map((e) => [indexPathKey(e), e]),
-  );
+  const donors = new Map(written.entries.map((e) => [indexPathKey(e), e]));
   return projected.map((entry) => {
     const donor = donors.get(indexPathKey(entry));
     return donor?.id === entry.id && donor.mode === entry.mode ? donor : entry;
