@@ -38,6 +38,8 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 
 `materializeTree`'s `forceRewriteAll` follows git's one-way merge: a path whose index entry already matches the target is rewritten only when its work-tree file is not up to date (edited, deleted, re-stat'ed or replaced by an occupant), and `written` counts those rewrites only; [`internals.md`](internals.md) has the rule in full.
 
+`materializeTree`'s `headTree` follows git's two-way merge of a branch switch, with the empty tree as the old side when HEAD is unborn: a staged path the switch does not change is carried, and a staged file in the way of a target directory follows `core.ignoreCase` without sparse checkout, while under sparse checkout the directory side always wins; [`internals.md`](internals.md) has the rule in full.
+
 For internal building blocks referenced from command pages (`materializeTree`, `computeChangeset`, `readHeadTree`, `detectMergeRenames`, `shiftMergeSide`, `readConfig`, `findWouldOverwrite`, `resolveConversion`, `fetchPack`, `buildPack`, `hasObject`, etc.) see [`internals.md`](internals.md).
 
 ### Re-exported types
