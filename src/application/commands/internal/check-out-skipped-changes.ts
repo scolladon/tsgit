@@ -27,27 +27,25 @@ const createWriter = (ctx: Context, merged: ReadonlyArray<IndexEntry>): WorkingT
     limiter: limiterFor(ctx, 'cpuBound'),
   });
 
-const stageZeroBefore = (
-  before: ReadonlyArray<IndexEntry>,
-): ReadonlyMap<IndexPathKey, IndexEntry> =>
-  new Map(before.filter((e) => e.flags.stage === 0).map((e) => [indexPathKey(e), e]));
+const byPath = (entries: ReadonlyArray<IndexEntry>): ReadonlyMap<IndexPathKey, IndexEntry> =>
+  new Map(entries.map((e) => [indexPathKey(e), e]));
 
 const isChangedSkipped = (
   entry: IndexEntry,
   previous: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): boolean => {
-  if (entry.flags.stage !== 0 || !entry.flags.skipWorktree) return false;
+  if (!entry.flags.skipWorktree) return false;
   const was = previous.get(indexPathKey(entry));
   return was === undefined || was.id !== entry.id || was.mode !== entry.mode;
 };
 
-/** git's unstage_changes_unless_new step 2: a path the merge changed but left skip-worktree is checked out and loses its bit. */
+/** git's unstage_changes_unless_new step 2: a path the merge changed but left skip-worktree is checked out and loses its bit. Both sides are stage-0 only: stash apply refuses an unmerged index and a clean merge leaves none. */
 export const checkOutSkippedChanges = async (
   ctx: Context,
   merged: ReadonlyArray<IndexEntry>,
   before: ReadonlyArray<IndexEntry>,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const previous = stageZeroBefore(before);
+  const previous = byPath(before);
   const writer = createWriter(ctx, merged);
   const result: IndexEntry[] = [];
   for (const entry of merged) {
