@@ -211,6 +211,10 @@ sparse may skip it; an outcome whose content exists only in memory
 (`resolved-merged` merged bytes, `conflict` marker bytes) has no other home and
 is always materialised. Three integration points:
 
+> **Superseded in part by [ADR-1211](../adr/1211-an-excluded-line-merged-path-is-staged-skip-worktree-not-written.md):**
+> git 2.56.0 stages an excluded `resolved-merged` outcome at stage 0 skip-worktree under its merged
+> blob and leaves it off disk; only a `conflict` is always materialised. The blob-backed rule stands.
+
 1. **`writeOutcomeToTree`** — only the blob-backed clean statuses
    (`unchanged`, `resolved-known`) skip an excluded path. `resolved-merged` is
    **always written**: its merged bytes are computed in memory and the
@@ -341,6 +345,8 @@ with an inline `// equivalent-mutant:` justification, per CLAUDE.md.
    ([ADR-076](../adr/076-merge-conflict-materialization.md)) — conflict markers
    and `resolved-merged` bytes have no other persistence; only blob-backed
    clean outcomes honour the matcher.
+   *Superseded for `resolved-merged` by ADR-1211: an excluded line-merged path is staged
+   skip-worktree under its merged blob, not written.*
 4. **The `reset --hard` commit guard widens only under sparse** — non-sparse
    behaviour is byte-identical; the index is committed unconditionally when a
    matcher exists, matching `checkout`.
