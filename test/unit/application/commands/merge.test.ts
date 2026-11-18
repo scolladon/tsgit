@@ -3840,6 +3840,10 @@ describe('buildConflictIndexEntries (direct)', () => {
 });
 
 describe('merge — sparse checkout', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // Matcher excluding any path that starts with `drop`.
   const excludesDrop = (p: FilePath): boolean => !p.startsWith('drop');
 

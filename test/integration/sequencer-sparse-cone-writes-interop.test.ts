@@ -258,6 +258,16 @@ const MOVER_ROWS: ReadonlyArray<MoverRow> = [
     posixOnly: true,
   }),
   moverRow({
+    id: 'executable-mover-removed-when-filemode-off',
+    edit: (dir) => {
+      chmodSync(join(dir, 'a', 'g'), 0o755);
+      runGit(['-C', dir, 'config', 'core.filemode', 'false']);
+    },
+    expectedListing: ['b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: undefined,
+    posixOnly: true,
+  }),
+  moverRow({
     id: 'mover-behind-symlink-to-empty-directory-retired',
     seed: SOLE_MOVER_SEED,
     edit: (dir) => {
