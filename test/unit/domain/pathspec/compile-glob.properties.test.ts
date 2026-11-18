@@ -57,4 +57,67 @@ describe('compileGlob properties', () => {
       });
     });
   });
+  describe('Given caseFold over a small alphabet', () => {
+    const arbText = fc.stringMatching(/^[aAbB/*?]{0,8}$/);
+    const arbPath = fc.stringMatching(/^[aAbB/]{0,8}$/);
+    const arbMask = fc.array(fc.boolean(), { maxLength: 8 });
+    const flipAsciiCase = (text: string, mask: ReadonlyArray<boolean>): string =>
+      [...text]
+        .map((ch, i) => {
+          if (mask[i] !== true) return ch;
+          return ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase();
+        })
+        .join('');
+
+    describe('When the path has its ASCII case flipped', () => {
+      it('Then the verdict is unchanged', () => {
+        fc.assert(
+          fc.property(
+            arbText,
+            arbPath,
+            arbMask,
+            fc.boolean(),
+            fc.boolean(),
+            (pattern, path, mask, anchored, withDirSuffix) => {
+              // Arrange
+              const sut = compileGlob(pattern, { anchored, withDirSuffix, caseFold: true });
+
+              // Act
+              const result = sut.test(flipAsciiCase(path, mask));
+
+              // Assert
+              expect(result).toBe(sut.test(path));
+            },
+          ),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+
+    describe('When the exact matcher accepts a path', () => {
+      it('Then the folding matcher accepts it too', () => {
+        fc.assert(
+          fc.property(
+            arbText,
+            arbPath,
+            fc.boolean(),
+            fc.boolean(),
+            (pattern, path, anchored, withDirSuffix) => {
+              // Arrange
+              const options = { anchored, withDirSuffix };
+              const exact = compileGlob(pattern, options);
+              const sut = compileGlob(pattern, { ...options, caseFold: true });
+
+              // Act
+              const result = sut.test(path);
+
+              // Assert
+              expect(result || !exact.test(path)).toBe(true);
+            },
+          ),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+  });
 });

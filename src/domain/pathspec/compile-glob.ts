@@ -21,6 +21,8 @@
 //
 // See docs/adr/040-extracted-compile-glob.md.
 
+import { asciiLower } from '../pretty/ascii.js';
+
 export interface CompileGlobOptions {
   /** When true, the match is anchored at the start of the path. */
   readonly anchored: boolean;
@@ -29,6 +31,8 @@ export interface CompileGlobOptions {
    * literal `src` matches `src`, `src/foo`, and `src/a/b`.
    */
   readonly withDirSuffix?: boolean;
+  /** case-insensitive match as git's core.ignorecase does: ASCII letters compare case-insensitively; any other character stays exact. */
+  readonly caseFold?: boolean;
 }
 
 /** A compiled glob — `test` reports whether a path matches the pattern. */
@@ -196,6 +200,10 @@ const matchTokens = (
 };
 
 export const compileGlob = (pattern: string, options: CompileGlobOptions): GlobMatcher => {
-  const tokens = tokenize(pattern);
-  return { test: (path: string): boolean => matchTokens(tokens, options, path) };
+  if (options.caseFold !== true) {
+    const tokens = tokenize(pattern);
+    return { test: (path: string): boolean => matchTokens(tokens, options, path) };
+  }
+  const folded = tokenize(asciiLower(pattern));
+  return { test: (path: string): boolean => matchTokens(folded, options, asciiLower(path)) };
 };
