@@ -66,6 +66,7 @@ import {
   conflictResultTree,
   createMergeResultWriter,
   type DeletedOutcome,
+  gitlinkSurvivorId,
   isDeleted,
   removeChangedOutcome,
   removeDisplacedFile,
@@ -2229,12 +2230,6 @@ export const writeOutcomeToTree = async (
   await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
 };
 
-const gitlinkSurvivorId = (conflict: MergeConflict): ObjectId | undefined => {
-  const survivorMode = conflict.ourId === undefined ? conflict.theirMode : conflict.ourMode;
-  if (survivorMode !== FILE_MODE.GITLINK) return undefined;
-  return conflict.ourId ?? conflict.theirId;
-};
-
 export const writeConflictToTree = async (
   ctx: Context,
   conflict: MergeConflict,
@@ -2262,8 +2257,6 @@ export const writeConflictToTree = async (
   if (mode === undefined) return;
   const survivorId = gitlinkSurvivorId(conflict);
   if (survivorId !== undefined) {
-    // A submodule commit lives in the submodule's own store: git leaves an empty
-    // directory and never reads the id from this one.
     await writer.writeBlob(conflict.path, survivorId, FILE_MODE.GITLINK, scanner);
     return;
   }

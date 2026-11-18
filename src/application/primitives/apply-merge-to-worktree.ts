@@ -195,9 +195,24 @@ export const writeMarkedConflict = async (
   // guard checks anyway and skips the blob read when no mode is present.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
   if (mode === undefined) return;
+  const survivorId = gitlinkSurvivorId(conflict);
+  if (survivorId !== undefined) {
+    await writer.writeBlob(conflict.path, survivorId, FILE_MODE.GITLINK, scanner);
+    return;
+  }
   const bytes = await conflictBytes(ctx, conflict);
   if (bytes === undefined) return;
   await writer.writeBytes(conflict.path, bytes, mode, scanner);
+};
+
+/**
+ * The commit a one-sided conflict leaves at a gitlink path. A submodule commit lives in the
+ * submodule's own store: git leaves an empty directory and never reads the id from this one.
+ */
+export const gitlinkSurvivorId = (conflict: MergeConflict): ObjectId | undefined => {
+  const survivorMode = conflict.ourId === undefined ? conflict.theirMode : conflict.ourMode;
+  if (survivorMode !== FILE_MODE.GITLINK) return undefined;
+  return conflict.ourId ?? conflict.theirId;
 };
 
 /** A `MergeOutcome` known to change a path the merge actually writes — the

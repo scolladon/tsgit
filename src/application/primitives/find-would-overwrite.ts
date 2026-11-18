@@ -95,12 +95,31 @@ export const changedPaths = (
   return paths;
 };
 
-/** The mode each clean outcome leaves at its path; a deleted or conflicted path has none. */
+// git judges a conflicted path by the entry its result tree leaves there: the merged mode, else
+// the one side still present (a modify/delete leaves the surviving side in tree).
+const conflictTreeMode = (conflict: MergeConflict): FileMode | undefined => {
+  if (conflict.mergedMode !== undefined) return conflict.mergedMode;
+  if (conflict.ourMode === undefined) return conflict.theirMode;
+  return conflict.theirMode === undefined ? conflict.ourMode : undefined;
+};
+
+const treeModeOf = (outcome: MergeOutcome): FileMode | undefined => {
+  if (outcome.status === 'conflict') return conflictTreeMode(outcome.conflict);
+  return 'mode' in outcome ? outcome.mode : undefined;
+};
+
+const pathOf = (outcome: MergeOutcome): FilePath =>
+  outcome.status === 'conflict' ? outcome.conflict.path : outcome.path;
+
+/** The mode each outcome's result tree leaves at its path; a deleted path has none. */
 export const resultModesOf = (
   outcomes: ReadonlyArray<MergeOutcome>,
 ): ReadonlyMap<FilePath, FileMode> => {
   const modes = new Map<FilePath, FileMode>();
-  for (const outcome of outcomes) if ('mode' in outcome) modes.set(outcome.path, outcome.mode);
+  for (const outcome of outcomes) {
+    const mode = treeModeOf(outcome);
+    if (mode !== undefined) modes.set(pathOf(outcome), mode);
+  }
   return modes;
 };
 
@@ -118,7 +137,7 @@ const NOTHING_REMOVED: ReadonlySet<FilePath> = new Set();
 
 const NO_RESULT_MODES: ReadonlyMap<FilePath, FileMode> = new Map();
 
-// A path no clean outcome names is a conflict's recorded path: it is written as a file.
+// A path no outcome gives a tree mode is a conflict's recorded side path: it is written as a file.
 const CONFLICT_WRITE_MODE = FILE_MODE.REGULAR;
 
 const clashScopeOf = (

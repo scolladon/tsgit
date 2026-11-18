@@ -120,6 +120,25 @@ const buildStashed = (dir: string, ignorecase: string): void => {
   placeOccupant(dir, 'dir');
 };
 
+const MODIFIED_GITLINK = '0123456789abcdef0123456789abcdef01234567';
+
+// The theirs branch moves the gitlink while ours drops it: a modify/delete conflict on a gitlink.
+const buildModifyDelete = (dir: string, ignorecase: string): void => {
+  initTwin(dir, ignorecase);
+  writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+  git(dir, 'add', 'a.txt');
+  commit(dir, 'base');
+  stageGitlink(dir);
+  commit(dir, 'gitlink');
+  git(dir, 'checkout', '-q', '-b', 'T');
+  git(dir, 'update-index', '--cacheinfo', `160000,${MODIFIED_GITLINK},${GITLINK_PATH}`);
+  commit(dir, 'move');
+  git(dir, 'checkout', '-q', 'main');
+  git(dir, 'rm', '-q', '--cached', GITLINK_PATH);
+  commit(dir, 'drop');
+  placeOccupant(dir, 'dir');
+};
+
 interface Snapshot {
   readonly occupant: string;
   readonly stage: string;
@@ -281,6 +300,38 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(result.git.stage).toContain(`160000`);
             expect(result.git.occupant).toBe('dir:x');
           });
+        });
+
+        describe('When a modify/delete conflict leaves a gitlink over a directory standing at its path', () => {
+          it.each([
+            {
+              id: 'merge',
+              git: ['merge', '--no-edit', 'T'],
+              tsgit: (repo: Repository) => repo.merge.run({ rev: 'T' }),
+            },
+            {
+              id: 'cherry-pick',
+              git: ['cherry-pick', 'T'],
+              tsgit: (repo: Repository) => repo.cherryPick.run({ commits: ['T'] }),
+            },
+          ])(
+            'Then $id keeps the directory and stages both gitlink sides as git does',
+            async (row) => {
+              // Arrange
+              buildModifyDelete(pair.peer, ignorecase);
+              buildModifyDelete(pair.ours, ignorecase);
+
+              // Act
+              const result = await compareTwins(pair, row.git, row.tsgit);
+
+              // Assert
+              expect(result.git.succeeded).toBe(false);
+              expect(result.tsgitError).toBeUndefined();
+              expect({ ...result.tsgit, succeeded: false }).toEqual(result.git);
+              expect(result.git.stage).toContain(`160000 ${MODIFIED_GITLINK} 3`);
+              expect(result.git.occupant).toBe('dir:x');
+            },
+          );
         });
 
         describe('When checkout adds a gitlink over a file standing at its path', () => {

@@ -883,6 +883,69 @@ describe('findTrackedBeyondSymlink', () => {
 });
 
 describe('resultModesOf', () => {
+  describe('Given conflict outcomes of every side shape', () => {
+    describe('When resultModesOf runs', () => {
+      it.each([
+        {
+          label: 'the theirs side ours deleted',
+          conflict: { theirMode: FILE_MODE.GITLINK },
+          mode: FILE_MODE.GITLINK,
+        },
+        {
+          label: 'the ours side theirs deleted',
+          conflict: { ourMode: FILE_MODE.SYMLINK },
+          mode: FILE_MODE.SYMLINK,
+        },
+        {
+          label: 'the merged mode over both sides',
+          conflict: {
+            ourMode: FILE_MODE.REGULAR,
+            theirMode: FILE_MODE.REGULAR,
+            mergedMode: FILE_MODE.EXECUTABLE,
+          },
+          mode: FILE_MODE.EXECUTABLE,
+        },
+      ])('Then a conflicted path takes $label', ({ conflict, mode }) => {
+        // Arrange
+        const outcomes = [
+          {
+            status: 'conflict',
+            conflict: { type: 'modify-delete', path: 'k' as FilePath, ...conflict },
+          },
+        ] as const;
+        const sut = resultModesOf;
+
+        // Act
+        const result = sut(outcomes);
+
+        // Assert
+        expect(result).toEqual(new Map([['k', mode]]));
+      });
+
+      it('Then a conflict with both sides and no merged mode leaves its path out', () => {
+        // Arrange
+        const outcomes = [
+          {
+            status: 'conflict',
+            conflict: {
+              type: 'add-add',
+              path: 'k' as FilePath,
+              ourMode: FILE_MODE.REGULAR,
+              theirMode: FILE_MODE.GITLINK,
+            },
+          },
+        ] as const;
+        const sut = resultModesOf;
+
+        // Act
+        const result = sut(outcomes);
+
+        // Assert
+        expect(result).toEqual(new Map());
+      });
+    });
+  });
+
   describe('Given clean outcomes of every kind', () => {
     describe('When resultModesOf runs', () => {
       it('Then it maps each path a clean outcome leaves to its mode', () => {

@@ -2193,6 +2193,33 @@ describe('writeMarkedConflict (direct)', () => {
     });
   });
 
+  describe('Given a one-sided conflict whose surviving side is a gitlink to a commit absent from the store', () => {
+    describe('When writeMarkedConflict runs', () => {
+      it.each([
+        {
+          side: 'theirs',
+          over: { theirId: 'c'.repeat(40) as ObjectId, theirMode: FILE_MODE.GITLINK },
+        },
+        { side: 'ours', over: { ourId: 'c'.repeat(40) as ObjectId, ourMode: FILE_MODE.GITLINK } },
+      ])(
+        'Then it leaves a directory for the $side gitlink without reading the commit',
+        async ({ over }) => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const conflict = conflictOf({ type: 'modify-delete', ...over });
+          const sut = writeMarkedConflict;
+
+          // Act
+          await sut(ctx, conflict, await createMergeResultWriter(ctx, [], []));
+
+          // Assert
+          const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
+          expect(stat.isDirectory).toBe(true);
+        },
+      );
+    });
+  });
+
   // conflictContent + executable ourMode — exec bit preserved
   describe('Given a content conflict with conflictContent and executable ourMode', () => {
     describe('When writeMarkedConflict runs', () => {
