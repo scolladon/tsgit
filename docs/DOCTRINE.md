@@ -12,9 +12,9 @@ design can apply without reopening the conversation. Each entry cites the ADR th
 
 ## D-2 — A faithfulness fix is folded whole even when its second half reaches past the command under change
 
-- **Trigger:** a pinned git divergence has one half inside the command's perimeter and one half in a shared primitive every consumer uses (the loose-ref listing, for one), and folding only the inner half leaves the pinned row red.
+- **Trigger:** a pinned git divergence has one half inside the command's perimeter and one half in a shared primitive every consumer uses (the loose-ref listing, for one), and folding only the inner half leaves the pinned row red; or a row the change newly makes reachable inherits a divergence the shared primitive already has on main.
 - **Rule:** fold both halves in the same change, cover the shared half with its own unit rows and an interop pin per affected consumer; a half-fix that leaves the row red is not a fix.
-- **Evidence:** ADR-1160
+- **Evidence:** ADR-1160, ADR-1201
 - **Counter-cases:** none
 
 ## D-3 — A pinned refusal mismatch in a function the change edits is folded even when the fix breaks the API

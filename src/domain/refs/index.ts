@@ -1,13 +1,12 @@
+// Validation of a new branch name beyond the ref-name grammar
+export { newBranchRef } from './branch-ref.js';
 // Error types
 export type { RefsError, ReftableCheck } from './error.js';
 export { invalidPackedRefs, invalidRef, invalidReftable, reftableLocked } from './error.js';
-
 // Loose refs
 export { parseLooseRef, serializeDirectRef, serializeSymbolicRef } from './loose-ref.js';
-
 // Packed refs
 export { parsePackedRefs, serializePackedRefs } from './packed-refs.js';
-
 // Peel
 export type { PeelResult } from './peel.js';
 export { peelOneLevel } from './peel.js';
@@ -17,7 +16,6 @@ export { isPerWorktreeRef } from './per-worktree-ref.js';
 export { refCandidates } from './ref-candidates.js';
 // Ref types
 export type { DirectRef, LooseRef, PackedRefEntry, PackedRefs, SymbolicRef } from './ref-types.js';
-// Validation
 export { isSafeRefName, validateRefName } from './ref-validation.js';
 // Reftable codec: ref, index and obj block record grammar
 export type { ReftableRefRecord, ReftableRefValue } from './reftable/reftable-block.js';

@@ -54,6 +54,43 @@ describe('checkout of a bare HEAD spelling', () => {
     });
   });
 
+  describe('Given HEAD on main, When checkout with no rev', () => {
+    it('Then HEAD stays on main and no reflog entry is added', async () => {
+      // Arrange
+      const { ctx, tip } = await seedMain();
+      const before = await reflogMessages(ctx);
+
+      // Act
+      const sut = checkout;
+      const result = await sut(ctx, {});
+
+      // Assert
+      expect(result).toEqual({
+        branch: 'refs/heads/main',
+        id: tip,
+        detached: false,
+        changedPaths: 0,
+      });
+      expect(await reflogMessages(ctx)).toEqual(before);
+    });
+  });
+
+  describe('Given HEAD on main, When checkout with detach and no rev', () => {
+    it('Then HEAD detaches at main and the reflog logs the move from main to HEAD', async () => {
+      // Arrange
+      const { ctx, tip } = await seedMain();
+
+      // Act
+      const sut = checkout;
+      const result = await sut(ctx, { detach: true });
+
+      // Assert
+      expect(result.detached).toBe(true);
+      expect(await readHeadRaw(ctx)).toEqual({ kind: 'direct', id: tip });
+      expect((await reflogMessages(ctx)).at(-1)).toBe('checkout: moving from main to HEAD');
+    });
+  });
+
   describe('Given a detached HEAD, When checkout rev HEAD', () => {
     it('Then no reflog entry is added and the result reports branch undefined, detached true', async () => {
       // Arrange

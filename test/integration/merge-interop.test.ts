@@ -12,9 +12,10 @@
  *   unique:         merge fast-forward + clean true-merge materialise worktree+index like git
  *   interopSurface: merge
  */
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { TsgitError } from '../../src/domain/error.js';
 import { errorDataCode } from '../../src/domain/error-data-code.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
@@ -27,6 +28,7 @@ import {
   runGit,
   runGitEnv,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -189,6 +191,96 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
       });
     });
   });
+
+  describe.each(['false', 'true'] as const)(
+    'Given a file dir staged on main where tgt holds dir/x and core.ignorecase is %s',
+    (ignoreCase) => {
+      const stageFileOnMain = async (): Promise<void> => {
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'config', 'core.ignorecase', ignoreCase]);
+        }
+        await repo.dispose();
+        repo = await openRepository({ cwd: pair.ours });
+        await writeBoth('f', 'f\n');
+        await commitBoth('base', ['f']);
+        await branchBoth('tgt');
+        await mkdir(path.join(pair.peer, 'dir'));
+        await mkdir(path.join(pair.ours, 'dir'));
+        await writeBoth('dir/x', 'x\n');
+        await commitBoth('target-add', ['dir/x']);
+        await checkoutBoth('main');
+        await writeBoth('dir', 's\n');
+        runGit(['-C', pair.peer, 'add', 'dir']);
+        await repo.add(['dir']);
+      };
+
+      const untrackedBlock = (paths: ReadonlyArray<string>): string =>
+        [
+          'error: The following untracked working tree files would be overwritten by merge:',
+          ...paths.map((p) => `\t${p}`),
+        ].join('\n');
+
+      const status = (dir: string): string =>
+        runGit(['-C', dir, 'status', '--porcelain', '--untracked-files=all']);
+
+      const expectSameOutcome = async (
+        peerRun: { readonly exitCode: number; readonly stderr: string },
+        oursRun: Promise<unknown>,
+      ): Promise<void> => {
+        expect(peerRun.exitCode).toBe(ignoreCase === 'true' ? 0 : 1);
+        const caught = await oursRun.then(
+          () => undefined,
+          (error: unknown) => error as TsgitError,
+        );
+        expect(caught === undefined).toBe(peerRun.exitCode === 0);
+        if (caught === undefined) {
+          expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+          expect(status(pair.ours)).toBe(status(pair.peer));
+          expect((await stat(path.join(pair.ours, 'dir'))).isDirectory()).toBe(true);
+          expect((await stat(path.join(pair.peer, 'dir'))).isDirectory()).toBe(true);
+          return;
+        }
+        expect(caught.data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['dir'],
+        });
+        expect(peerRun.stderr).toContain(untrackedBlock(['dir']));
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        expect(await readMaybe(pair.ours, 'dir')).toBe(await readMaybe(pair.peer, 'dir'));
+      };
+
+      describe('When both tools fast-forward', () => {
+        it('Then tsgit refuses or replaces dir exactly as git does', async () => {
+          // Arrange
+          await stageFileOnMain();
+
+          // Act
+          const peerRun = tryRunGitWithExit(['-C', pair.peer, 'merge', '--ff-only', '-q', 'tgt']);
+          const oursRun = repo.merge.run({ rev: 'tgt', author: AUTHOR });
+
+          // Assert
+          await expectSameOutcome(peerRun, oursRun);
+        });
+      });
+
+      describe('When both tools squash', () => {
+        it('Then tsgit refuses or replaces dir exactly as git does', async () => {
+          // Arrange
+          await stageFileOnMain();
+
+          // Act
+          const peerRun = tryRunGitWithExit(['-C', pair.peer, 'merge', '--squash', '-q', 'tgt'], {
+            env: COMMIT_ENV,
+          });
+          const oursRun = repo.merge.run({ rev: 'tgt', squash: true, author: AUTHOR });
+
+          // Assert
+          await expectSameOutcome(peerRun, oursRun);
+        });
+      });
+    },
+  );
 
   describe('Given a change staged on a path a true merge leaves alone', () => {
     describe('When both tools merge', () => {

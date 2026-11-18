@@ -1995,7 +1995,7 @@ describe('branch', () => {
         await add(ctx, ['a.txt']);
         const second = await commit(ctx, { message: 'second', author });
         expect(second.id).not.toBe(first);
-        await branchCreate(ctx, { name: 'HEAD', startPoint: first });
+        await updateRef(ctx, 'refs/heads/HEAD' as RefName, first, { reflogMessage: 'test' });
 
         // Act — default startPoint ('HEAD') must resolve the symbolic HEAD -> second.
         const result = await branchCreate(ctx, { name: 'probe' });
