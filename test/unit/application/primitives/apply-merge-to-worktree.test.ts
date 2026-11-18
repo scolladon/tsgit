@@ -1235,9 +1235,10 @@ describe('applyMergeToWorktree', () => {
           treeEntry(FILE_MODE.GITLINK, 'new' as FilePath, 'c'.repeat(40) as ObjectId),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/new/x`, new TextEncoder().encode('x\n'));
+        const sut = applyMergeToWorktree;
 
         // Act
-        const result = await applyMergeToWorktree(ctx, {
+        const result = await sut(ctx, {
           baseTree: base,
           oursTree: base,
           theirsTree: theirs,
@@ -1261,9 +1262,10 @@ describe('applyMergeToWorktree', () => {
           treeEntry(FILE_MODE.GITLINK, 'new' as FilePath, 'c'.repeat(40) as ObjectId),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/new`, new TextEncoder().encode('in the way\n'));
+        const sut = applyMergeToWorktree;
 
         // Act
-        const result = await applyMergeToWorktree(ctx, {
+        const result = await sut(ctx, {
           baseTree: base,
           oursTree: base,
           theirsTree: theirs,

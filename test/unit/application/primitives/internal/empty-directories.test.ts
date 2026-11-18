@@ -149,6 +149,39 @@ describe('internal/empty-directories removeIfEmptyDirectory', () => {
     return { ...base, fs: rest };
   };
 
+  describe('Given a port without rmdir whose lstat refuses for a reason other than absence', () => {
+    describe('When removeIfEmptyDirectory runs', () => {
+      it('Then that refusal propagates and nothing is removed', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const dir = `${base.layout.gitDir}/guarded`;
+        await base.fs.mkdir(dir);
+        const stripped = withoutRmdir(base);
+        const rm = vi.fn(stripped.fs.rm);
+        const ctx: Context = {
+          ...stripped,
+          fs: {
+            ...stripped.fs,
+            rm,
+            lstatIfReachable: async (path: string) => {
+              if (path === dir) throw permissionDenied(path);
+              return base.fs.lstatIfReachable?.(path);
+            },
+          },
+        };
+        const sut = removeIfEmptyDirectory;
+
+        // Act
+        const refusal = await sut(ctx, dir).catch((err: TsgitError) => err.data);
+
+        // Assert
+        expect(refusal).toEqual({ code: 'PERMISSION_DENIED', path: dir });
+        expect(rm).not.toHaveBeenCalled();
+        expect(await base.fs.exists(dir)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a port without rmdir and a regular file', () => {
     describe('When removeIfEmptyDirectory runs', () => {
       it('Then it reports false and keeps the file', async () => {

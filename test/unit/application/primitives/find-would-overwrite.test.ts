@@ -584,9 +584,10 @@ describe('findWouldOverwrite stat cache', () => {
         // Arrange
         const ctx = createMemoryContext();
         await work(ctx, 'new/x', 'x\n');
+        const sut = findWouldOverwrite;
 
         // Act
-        const result = await findWouldOverwrite(
+        const result = await sut(
           ctx,
           set('new'),
           indexOf([]),
@@ -606,9 +607,10 @@ describe('findWouldOverwrite stat cache', () => {
         // Arrange
         const ctx = createMemoryContext();
         await work(ctx, 'new/x', 'x\n');
+        const sut = findWouldOverwrite;
 
         // Act
-        const result = await findWouldOverwrite(ctx, set('new'), indexOf([]));
+        const result = await sut(ctx, set('new'), indexOf([]));
 
         // Assert
         expect(result).toEqual({ localChanges: [], untracked: ['new'] });
@@ -622,9 +624,10 @@ describe('findWouldOverwrite stat cache', () => {
         // Arrange
         const ctx = createMemoryContext();
         await work(ctx, 'new/x', 'x\n');
+        const sut = findWouldOverwrite;
 
         // Act
-        const result = await findWouldOverwrite(
+        const result = await sut(
           ctx,
           set('new'),
           indexOf([]),
