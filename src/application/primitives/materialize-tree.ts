@@ -805,7 +805,7 @@ const carrySplitOf = (
   };
 };
 
-/** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
+/** Out-of-pattern movers HEAD and the target agree on whose work file is not up to date. */
 const dirtyMoversOf = async (
   ctx: Context,
   workdir: string,
@@ -824,6 +824,7 @@ interface DirtyMoverScope {
   readonly agreed: (key: IndexPathKey) => boolean;
 }
 
+/** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
 const carryHeadAgreement = async (
   ctx: Context,
   workdir: string,
