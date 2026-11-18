@@ -345,6 +345,38 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           },
         );
 
+        describe.each(PLACEMENTS)(
+          'When stash push -u runs over a %s gitlink whose directory differs from it only in case',
+          (placement) => {
+            it("Then it collects and keeps what git does under the twins' core.ignorecase", async () => {
+              // Arrange
+              const variant = GITLINK_PATH.toUpperCase();
+              const build = (dir: string): void => {
+                buildIndexed(dir, ignorecase, placement, 'emptydir');
+                rmSync(path.join(dir, GITLINK_PATH), { recursive: true, force: true });
+                placeOccupant(dir, 'dir', variant);
+                writeFileSync(path.join(dir, 'u.txt'), 'u\n');
+              };
+              build(pair.peer);
+              build(pair.ours);
+              const untrackedTree = (dir: string): string =>
+                tryRunGitWithExit(['-C', dir, 'ls-tree', '-r', '--name-only', 'stash^3']).stdout;
+              const variantKept = (dir: string): boolean =>
+                existsSync(path.join(dir, variant, 'x'));
+
+              // Act
+              const result = await compareTwins(pair, OPS['stash-push-u'].git('HEAD'), (repo) =>
+                repo.stash.push({ includeUntracked: true }),
+              );
+
+              // Assert
+              expect(result.tsgit).toEqual(result.git);
+              expect(untrackedTree(pair.ours)).toBe(untrackedTree(pair.peer));
+              expect(variantKept(pair.ours)).toBe(variantKept(pair.peer));
+            });
+          },
+        );
+
         describe.each(['file', 'symlink'] as const)(
           'When a branch change removes a gitlink with a %s at its path',
           (occupant) => {

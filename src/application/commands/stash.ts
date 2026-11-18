@@ -47,6 +47,7 @@ import {
   type ObjectId,
 } from '../../domain/objects/index.js';
 import { emptyTreeOid } from '../../domain/objects/object-id.js';
+import { asciiLower } from '../../domain/pretty/ascii.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import {
@@ -59,6 +60,7 @@ import {
   scopeOf,
   type WorkingTreeComparison,
 } from '../primitives/compare-working-tree-entry.js';
+import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
@@ -634,22 +636,26 @@ interface UntrackedListing {
 
 const NO_UNTRACKED: UntrackedListing = { files: [], emptyDirectories: [] };
 
-const isStageZeroGitlink = (entry: IndexEntry): boolean =>
-  entry.flags.stage === 0 && isGitlink(entry.mode);
+const isIndexGitlink = (entry: IndexEntry): boolean => isGitlink(entry.mode);
 
-// A gitlink's directory is the submodule's checkout: its content is never the superproject's untracked data.
+const sameCase = (key: string): string => key;
+
+// A gitlink's directory is the submodule's checkout: its content is never the superproject's
+// untracked data. Under core.ignorecase git's directory_exists_in_index_icase matches it case-blind.
 const gitlinkPrunedIgnore = (
   index: GitIndex,
   repoIgnore: WalkIgnorePredicate,
+  fold: (key: string) => string,
 ): WalkIgnorePredicate => {
-  const gitlinks = new Set(index.entries.filter(isStageZeroGitlink).map(indexPathKey));
+  const gitlinks = new Set(index.entries.filter(isIndexGitlink).map((e) => fold(indexPathKey(e))));
   return (path, isDirectory) =>
-    (isDirectory && gitlinks.has(keyOfPath(path))) || repoIgnore(path, isDirectory);
+    (isDirectory && gitlinks.has(fold(keyOfPath(path)))) || repoIgnore(path, isDirectory);
 };
 
 const listUntracked = async (ctx: Context, index: GitIndex): Promise<UntrackedListing> => {
   const tracked = new Set(index.entries.map(indexPathKey));
-  const ignore = gitlinkPrunedIgnore(index, await buildRepoIgnorePredicate(ctx));
+  const fold = (await readConfig(ctx)).core?.ignoreCase === true ? asciiLower : sameCase;
+  const ignore = gitlinkPrunedIgnore(index, await buildRepoIgnorePredicate(ctx), fold);
   const files: UntrackedFile[] = [];
   const emptyDirectories: FilePath[] = [];
   const reportEmpty = (directory: FilePath): void => {
