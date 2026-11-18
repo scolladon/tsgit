@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { materializeTree } from '../../../../src/application/primitives/materialize-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -1645,6 +1645,86 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         expect(staged?.id).toBe(blobs.staged);
         expect(staged?.flags.skipWorktree).toBe(true);
         expect(await readWork(ctx, 'n')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given c, outside the patterns, unchanged between head and target', () => {
+    const sparse = (path: string): boolean => path === 'b';
+    const WARNING =
+      'The following paths are not up to date and were left despite sparse patterns:\n\tc\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
+
+    describe.each([
+      ['unforced', {}],
+      ['forced', { force: true }],
+    ])('When the %s switch materialises with c edited in the work tree', (_title, extra) => {
+      it('Then c keeps its entry and its edited file, with one warning', async () => {
+        // Arrange
+        const { ctx: seeded, blobs, headTree, targetTree } = await buildFixture();
+        const warn = vi.fn();
+        const ctx = { ...seeded, logger: { warn } };
+        await writeWork(ctx, 'c', 'edited');
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse, ...extra });
+
+        // Assert
+        const kept = result.newIndexEntries.find((e) => e.path === ('c' as FilePath));
+        expect(kept?.id).toBe(blobs.same);
+        expect(kept?.flags.skipWorktree).toBe(false);
+        expect(await readWork(ctx, 'c')).toBe('edited');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(WARNING);
+      });
+    });
+
+    describe('When c is clean in the work tree', () => {
+      it('Then c becomes skip-worktree, its file goes and nothing is warned', async () => {
+        // Arrange
+        const { ctx: seeded, blobs, headTree, targetTree } = await buildFixture();
+        const warn = vi.fn();
+        const ctx = { ...seeded, logger: { warn } };
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          makeIndexEntry('c', blobs.same as ObjectId),
+        ]);
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse });
+
+        // Assert
+        const entry = result.newIndexEntries.find((e) => e.path === ('c' as FilePath));
+        expect(entry?.flags.skipWorktree).toBe(true);
+        expect(await readWork(ctx, 'c')).toBeUndefined();
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When c is already skip-worktree with an edited file', () => {
+      it('Then nothing is warned', async () => {
+        // Arrange
+        const { ctx: seeded, blobs, headTree, targetTree } = await buildFixture();
+        const warn = vi.fn();
+        const ctx = { ...seeded, logger: { warn } };
+        await writeWork(ctx, 'c', 'edited');
+        const hidden = makeIndexEntry('c', blobs.same as ObjectId);
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          { ...hidden, flags: { ...hidden.flags, skipWorktree: true } },
+        ]);
+
+        // Act
+        const sut = materializeTree;
+        await sut(ctx, { targetTree, currentIndex, headTree, sparse });
+
+        // Assert
+        expect(warn).not.toHaveBeenCalled();
       });
     });
   });

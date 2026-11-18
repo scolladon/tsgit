@@ -77,6 +77,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { type IsVerified, NOTHING_VERIFIED } from './internal/smudge-racily-clean.js';
+import { notUpToDate, warnLeftDespiteSparse } from './internal/sparse-left-dirty.js';
 import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
@@ -415,11 +416,14 @@ interface CarriedOpts {
   readonly carried: ReadonlyArray<IndexEntry>;
   /** Work files a directory replaces without a content check, as git does under sparse checkout. */
   readonly removals: ReadonlyArray<ChangesetEntry>;
+  /** Out-of-pattern entries whose work file is not up to date: kept in place, then warned about. */
+  readonly leftDirty: ReadonlyArray<IndexEntry>;
 }
 
 /**
  * git re-evaluates the sparse patterns of every path the index holds, so these
- * never stay put; a path absent from the index (a staged deletion) stays absent.
+ * never stay put, unless the work file is not up to date (git keeps it and warns);
+ * a path absent from the index (a staged deletion) stays absent.
  */
 const sparseMovers = (
   sparse: SparseMatcher | undefined,
@@ -655,7 +659,7 @@ const carriedOptsOf = (
   opts: MaterializeTreeOpts,
   allTarget: ReadonlyArray<TargetEntry>,
   { stageZero, isKept, dropped, droppedTarget, outsideTarget, surfaced, removals }: CarrySplit,
-): CarriedOpts => {
+): Omit<CarriedOpts, 'leftDirty'> => {
   const carried = new Set(stageZero.filter((e) => isKept(indexPathKey(e))));
   return {
     opts: { ...opts, currentIndex: indexWithout(opts.currentIndex, carried, dropped) },
@@ -802,13 +806,33 @@ const carrySplitOf = (
 };
 
 /** Applies the two-way merge of a branch switch: refuses, or sets the kept paths aside. */
+const dirtyMoversOf = async (
+  ctx: Context,
+  workdir: string,
+  { stageZero, movers, agreed }: DirtyMoverScope,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const candidates = stageZero.filter(
+    (e) => movers.has(indexPathKey(e)) && !e.flags.skipWorktree && agreed(indexPathKey(e)),
+  );
+  const dirty = await notUpToDate(ctx, workdir, candidates);
+  return candidates.filter((e) => dirty.has(indexPathKey(e)));
+};
+
+interface DirtyMoverScope {
+  readonly stageZero: ReadonlyArray<IndexEntry>;
+  readonly movers: ReadonlySet<IndexPathKey>;
+  readonly agreed: (key: IndexPathKey) => boolean;
+}
+
 const carryHeadAgreement = async (
   ctx: Context,
   workdir: string,
   opts: MaterializeTreeOpts,
   allTarget: ReadonlyArray<TargetEntry>,
 ): Promise<CarriedOpts> => {
-  if (opts.headTree === undefined) return { opts, allTarget, carried: [], removals: [] };
+  if (opts.headTree === undefined) {
+    return { opts, allTarget, carried: [], removals: [], leftDirty: [] };
+  }
   const stageZero = opts.currentIndex.entries.filter((e) => e.flags.stage === 0);
   const { agreed } = await agreementWithHead(
     ctx,
@@ -817,9 +841,15 @@ const carryHeadAgreement = async (
     stageZero,
   );
   const movers = sparseMovers(opts.sparse, stageZero);
-  const partition = partitionCarry(allTarget, stageZero, agreed, movers);
+  const leftDirty = await dirtyMoversOf(ctx, workdir, { stageZero, movers, agreed });
+  const dirtyKeys = new Set(leftDirty.map(indexPathKey));
+  const stillMoving = new Set([...movers].filter((key) => !dirtyKeys.has(key)));
+  const partition = partitionCarry(allTarget, stageZero, agreed, stillMoving);
   const resolved = await resolveCarryCollisions(ctx, workdir, opts, partition);
-  return carriedOptsOf(opts, allTarget, carrySplitOf(stageZero, partition, resolved));
+  return {
+    ...carriedOptsOf(opts, allTarget, carrySplitOf(stageZero, partition, resolved)),
+    leftDirty,
+  };
 };
 
 /** A staged path the target lacks and the patterns exclude still belongs to the index, as skip-worktree. */
@@ -929,7 +959,7 @@ export const materializeTreeJudging = async (
   const workdir = requireWorkTree(ctx, 'materializeTree');
   const fullTarget = await collectTargetEntries(ctx, options.targetTree);
   const carry = await carryHeadAgreement(ctx, workdir, options, fullTarget);
-  const { opts, allTarget, carried, removals } = carry;
+  const { opts, allTarget, carried, removals, leftDirty } = carry;
   const plan = planMaterialize(allTarget, opts);
   validateExcludedPaths(ctx, plan.excluded);
   const judged = await classifyChangeset(ctx, plan, opts, workdir, staleRule);
@@ -939,6 +969,7 @@ export const materializeTreeJudging = async (
     applyOptionsOf(opts, withRemovals(judged.changeset, removals), workdir),
     checkoutDirection(opts, plan),
   );
+  warnLeftDespiteSparse(ctx, leftDirty.map(escapedPathOf));
   const newIndexEntries = assembleIndexEntries(result, opts, plan, carried);
   return { newIndexEntries, written: result.written, deleted: result.deleted, verified };
 };

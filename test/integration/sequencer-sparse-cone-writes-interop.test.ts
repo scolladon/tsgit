@@ -144,6 +144,51 @@ const CASE_ROWS: ReadonlyArray<CaseRow> = [
   },
 ];
 
+const BASE_SEED: Seed = {
+  main: [
+    regular('a/f', 'f1\n'),
+    regular('a/g', 'g1\n'),
+    regular('b/f', 'f1\n'),
+    regular('top', 't\n'),
+  ],
+  other: [
+    regular('a/f', 'f2\n'),
+    regular('a/g', 'g1\n'),
+    regular('b/f', 'f2\n'),
+    regular('top', 't\n'),
+  ],
+};
+
+interface MoverRow {
+  readonly id: string;
+  readonly edit: (dir: string) => void;
+  readonly expectedListing: ReadonlyArray<string>;
+  readonly expectedWarning: string | undefined;
+}
+
+const REAPPLY_HINT =
+  '\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
+
+const MOVER_ROWS: ReadonlyArray<MoverRow> = [
+  {
+    id: 'dirty-mover-kept',
+    edit: (dir) => writeFileSync(join(dir, 'a', 'g'), 'dirty\n'),
+    expectedListing: ['a/', 'a/g=dirty\n', 'b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: `${LEFT_HEADER}\n\ta/g\n${REAPPLY_HINT}`,
+  },
+  {
+    id: 'clean-mover-removed',
+    edit: () => undefined,
+    expectedListing: ['b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: undefined,
+  },
+];
+
+const presentMover = (dir: string): void => {
+  runGit(['-C', dir, 'update-index', '--no-skip-worktree', 'a/g']);
+  runGit(['-C', dir, 'checkout', '--', 'a/g']);
+};
+
 const expectedCaseListing = (ignoreCase: string): ReadonlyArray<string> =>
   ignoreCase === 'true' ? ['B/', 'B/f=f2\n', 'top=t\n'] : ['top=t\n'];
 
@@ -189,6 +234,38 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
             expect(listing(pair.ours)).toEqual(listing(pair.peer));
             expect(listing(pair.ours)).toEqual(expectedCaseListing(ignoreCase));
             expect(leftWarnings(run.warnings)).toEqual(leftWarning(git.stderr));
+          },
+        );
+      });
+
+      describe('When checkout switches over an out-of-pattern file that is present', () => {
+        it.skipIf(!GIT_AVAILABLE).each(MOVER_ROWS)(
+          'Then $id leaves the same index tags, work tree and warning as git',
+          async ({ edit, expectedListing, expectedWarning }) => {
+            // Arrange
+            for (const dir of [pair.peer, pair.ours]) {
+              seedTwin(dir, ignoreCase, BASE_SEED);
+              enableSparse(dir, { cone: true });
+              presentMover(dir);
+              edit(dir);
+            }
+
+            // Act
+            const git = gitExitOf(pair.peer, ['checkout', '-q', 'other']);
+            const run = await runTsgit(pair.ours, (repo) => repo.checkout({ rev: 'other' }));
+
+            // Assert
+            expect(git.exitCode).toBe(0);
+            expect(run.outcome).toEqual({ kind: 'ok' });
+            expect(tagged(pair.ours)).toBe(tagged(pair.peer));
+            expect(listing(pair.ours)).toEqual(listing(pair.peer));
+            expect(listing(pair.ours)).toEqual(expectedListing);
+            expect(leftWarnings(run.warnings)).toEqual(
+              expectedWarning === undefined ? [] : [expectedWarning],
+            );
+            expect(git.stderr).toContain(
+              expectedWarning === undefined ? '' : `warning: ${expectedWarning}\n`,
+            );
           },
         );
       });
