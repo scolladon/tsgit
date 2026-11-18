@@ -514,6 +514,20 @@ const SYMLINK_SEED: Seed = {
   other: [symlink('a/f', 'elsewhere'), regular('b/f', 'f2\n'), regular('top', 't\n')],
 };
 
+const SYMLINKED_DIR_SEED: Seed = {
+  main: [regular('d/file', 'secret\n'), regular('b/file', 'secret\n'), regular('top', 't\n')],
+  other: [regular('b/file', 'secret\n'), symlink('d', 'b'), regular('top', 'o\n')],
+};
+const SYMLINKED_DIR_VS_EDIT = [
+  regular('d/file', 'secret\n'),
+  regular('b/file', 'secret\n'),
+  regular('top', 'm\n'),
+];
+const presentOutsideFile = (dir: string): void => {
+  runGit(['-C', dir, 'update-index', '--no-skip-worktree', 'd/file']);
+  runGit(['-C', dir, 'checkout', '--', 'd/file']);
+};
+
 const advancedMain = (dir: string, entries: ReadonlyArray<TreeEntry>): string => {
   const main = runGit(['-C', dir, 'rev-parse', 'main']).trim();
   const advanced = commitOn(dir, entries, main);
@@ -610,6 +624,24 @@ const CONFLICT_ROWS: ReadonlyArray<ConflictRow> = [
     prepare: advanceAndReset(SYMLINK_VS_EDIT),
     gitArgs: ['cherry-pick', 'other'],
     operation: pick(['other']),
+    skipOnWindows: true,
+  }),
+  conflictRow({
+    id: 'pick-conflict-symlink-replaces-outside-directory',
+    seed: SYMLINKED_DIR_SEED,
+    prepare: advanceAndReset(SYMLINKED_DIR_VS_EDIT),
+    afterSparse: presentOutsideFile,
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+    skipOnWindows: true,
+  }),
+  conflictRow({
+    id: 'merge-conflict-symlink-replaces-outside-directory',
+    seed: SYMLINKED_DIR_SEED,
+    prepare: advanceAndReset(SYMLINKED_DIR_VS_EDIT),
+    afterSparse: presentOutsideFile,
+    gitArgs: ['merge', '-q', 'other'],
+    operation: mergeOther,
     skipOnWindows: true,
   }),
   conflictRow({

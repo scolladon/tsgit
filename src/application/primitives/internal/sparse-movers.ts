@@ -17,6 +17,7 @@ import type { Context } from '../../../ports/context.js';
 import { pruneEmptiedDirectories, survivingDirectoriesOf } from './prune-emptied-directories.js';
 import { requireWorkTree } from './repo-state.js';
 import { notUpToDate, warnLeftDespiteSparse } from './sparse-left-dirty.js';
+import { createLeadingPathScanner } from './symlinked-leading-path.js';
 import { removeWorkingTreeFile } from './write-working-tree-file.js';
 
 /** What a conflict stop did to the out-of-pattern files the index still shows. */
@@ -54,6 +55,18 @@ const moverCandidates = (
   );
 };
 
+/** The pre-merge index may still list a path the merge replaced by a symlinked directory; git never reaches through the link, so neither does this. */
+const reachableCandidates = async (
+  ctx: Context,
+  candidates: ReadonlyArray<IndexEntry>,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const scanner = createLeadingPathScanner(ctx);
+  const throughLink = await Promise.all(
+    candidates.map((entry) => scanner.hasSymlinkedLeadingPath(escapedPathOf(entry))),
+  );
+  return candidates.filter((_, position) => !throughLink[position]);
+};
+
 const removeRetired = async (
   ctx: Context,
   workdir: string,
@@ -72,7 +85,7 @@ export const retireSparseMovers = async (
 ): Promise<SparseRetirement> => {
   if (sparse === undefined) return NOTHING_RETIRED;
   const workdir = requireWorkTree(ctx, 'merge');
-  const candidates = moverCandidates(scope, sparse);
+  const candidates = await reachableCandidates(ctx, moverCandidates(scope, sparse));
   const leftDirty = await notUpToDate(ctx, workdir, candidates);
   const isClean = (entry: IndexEntry): boolean => !leftDirty.has(indexPathKey(entry));
   const clean = candidates.filter(isClean);

@@ -139,6 +139,25 @@ describe('retireSparseMovers', () => {
     });
   });
 
+  describe('Given an out-of-pattern entry whose leading directory is a symlink, When the stop retires movers', () => {
+    it('Then nothing is hashed, removed or retired through the link', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'g1\n');
+      await writeWork(ctx, 'b/g', 'g1\n');
+      await ctx.fs.symlink('b', `${workDirOf(ctx)}/a`);
+      const index = indexOf([entryOf('a/g', id)]);
+
+      // Act
+      const result = await sut(ctx, { currentIndex: index, conflicts: noConflicts }, CONE);
+
+      // Assert
+      expect([...result.retired]).toEqual([]);
+      expect([...result.leftDirty]).toEqual([]);
+      expect(await present(ctx, 'b/g')).toBe(true);
+    });
+  });
+
   describe('Given a gitlink out-of-pattern entry, When the stop retires movers', () => {
     it('Then it is left alone', async () => {
       // Arrange
