@@ -1381,7 +1381,7 @@
     "dependency-cruiser": "18.8.0",
     "fast-check": "4.10.2",
     "husky": "9.1.7",
-    "isomorphic-git": "1.44.16",
+    "isomorphic-git": "1.44.17",
     "jscpd": "5.4.3",
     "knip": "6.33.0",
     "lint-staged": "17.6.1",
