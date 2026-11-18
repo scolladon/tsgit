@@ -137,8 +137,8 @@ value, the others once per value. All are deterministic file-state outcomes.
 | O6 | `stash push` | index-only | file / symlink | 0, warning, occupant kept, `?? new` | **deleted** | = git |
 | O7 | `stash push` | index-only | dir / empty | as O3/O4 | match | match |
 | O8 | `stash push -u` | index-only | file / symlink | as O6 | **deleted** | = git |
-| O9 | `stash push -u` | index-only | dir `new/x` | 0; **no untracked commit**; `new/x` kept, `?? new/x` | U tree holds `new/x`; `new/x` removed by the `-u` clean | **still differs (D2)** |
-| O10 | `stash push`, `push -u` | in-head | all four | 0; occupant replaced by the gitlink's empty dir (the reset target keeps `new`) | match | match |
+| O9 | `stash push -u` | index-only | dir `new/x` | 0; untracked parent holds the empty tree; `new/x` kept, `?? new/x` | U tree holds `new/x`; `new/x` removed by the `-u` clean | **still differs (D2)** |
+| O10 | `stash push`, `push -u` | in-head | all four | 0; occupant replaced by the gitlink's empty dir (the reset target keeps `new`); for `push -u` over dir `new/x`, `new/x` is kept | match, except `push -u` over dir `new/x`: tsgit stashes and cleans `new/x` (D2) | same as main |
 | O11 | `reset --hard` in a linked worktree | index-only | file / symlink | as O1/O2 | **deleted** | = git |
 | O12 | `read-tree -u --reset HEAD` | index-only | all four | as O1–O4 | no surface | — |
 

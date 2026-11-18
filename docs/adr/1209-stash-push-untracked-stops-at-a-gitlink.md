@@ -11,9 +11,9 @@ subjects:
 ## Context
 
 With an index-only gitlink `new` whose directory holds `new/x`, git 2.56.0's `stash push -u`
-records no untracked commit and leaves `new/x` in place: the directory is the submodule's.
-tsgit's `listUntracked` descends into it, stores `new/x` in the untracked tree and cleans it, so
-the stash commit differs. `status` already agrees with git.
+writes its untracked parent with the empty tree and leaves `new/x` in place: the directory is the
+submodule's. The same holds for a committed gitlink. tsgit's `listUntracked` descends into it,
+stores `new/x` in the untracked tree and cleans it, so the stash commit differs. `status` already agrees with git.
 
 ## Options considered
 
