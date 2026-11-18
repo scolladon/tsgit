@@ -5,10 +5,12 @@ import {
   indexPathKey,
   isLossy,
 } from '../../../domain/git-index/index-path-key.js';
-import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
+import { deriveWorkingMode, FILE_MODE } from '../../../domain/objects/file-mode.js';
+import type { FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileStat } from '../../../ports/file-system.js';
 import { createWorkingTreeDirtyCheck, type WorkingTreeDirtyCheck } from '../apply-changeset.js';
+import { readConfig } from '../config-read.js';
 import { boundedMapFor } from './concurrency.js';
 import {
   type IndexMtime,
@@ -17,6 +19,8 @@ import {
   UNREACHABLE,
 } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
+import { lazily } from './lazily.js';
+import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
 
 const NOT_UP_TO_DATE_HEADER =
   'The following paths are not up to date and were left despite sparse patterns:\n';
@@ -40,26 +44,45 @@ export interface MoverVerdicts {
 
 type Verdict = 'dirty' | 'verified-clean' | 'unproven';
 
-const isFileOrLink = (stat: FileStat | undefined | typeof UNREACHABLE): stat is FileStat =>
-  stat !== undefined && stat !== UNREACHABLE && (stat.isFile || stat.isSymbolicLink);
+/** What one judgement shares across its candidates. */
+interface Judgement {
+  readonly ctx: Context;
+  readonly isDirty: WorkingTreeDirtyCheck;
+  readonly scanner: LeadingPathScanner;
+  readonly trustsExecutableBit: () => Promise<boolean>;
+  readonly indexMtime: IndexMtime | undefined;
+}
+
+/** git's ie_match_stat mode test: a type change is always a change; the executable bit only when core.filemode trusts it. */
+const modeDiffers = async (
+  { trustsExecutableBit }: Judgement,
+  entry: IndexEntry,
+  stat: FileStat,
+): Promise<boolean> => {
+  const working = deriveWorkingMode(stat);
+  if (working === entry.mode) return false;
+  const executableBitOnly = working !== FILE_MODE.SYMLINK && entry.mode !== FILE_MODE.SYMLINK;
+  return !executableBitOnly || (await trustsExecutableBit());
+};
 
 const verdictOf = async (
-  ctx: Context,
-  isDirty: WorkingTreeDirtyCheck,
+  judgement: Judgement,
   entry: IndexEntry,
   absPath: string,
-  indexMtime: IndexMtime | undefined,
 ): Promise<Verdict> => {
+  const { ctx, isDirty, scanner, indexMtime } = judgement;
+  // git never reads through a symlinked leading directory: what it reaches there is not the entry.
+  if (await scanner.hasSymlinkedLeadingPath(escapedPathOf(entry))) return 'dirty';
   const stat = await lstatBeyondLink(ctx, absPath);
+  if (stat === undefined || stat === UNREACHABLE) return 'unproven';
+  // A directory or another kind of occupant is never the entry's file, and is never read.
+  if (!stat.isFile && !stat.isSymbolicLink) return 'dirty';
+  if (await modeDiffers(judgement, entry, stat)) return 'dirty';
   // git's ie_match_stat: a stat-clean entry is up to date without reading the file.
-  if (
-    isFileOrLink(stat) &&
-    (await matchesCachedStat({ entry, indexMtime }, absPath, stat, deferRacyToContent))
-  ) {
+  if (await matchesCachedStat({ entry, indexMtime }, absPath, stat, deferRacyToContent)) {
     return 'verified-clean';
   }
-  if (await isDirty(absPath, entry.id)) return 'dirty';
-  return isFileOrLink(stat) ? 'verified-clean' : 'unproven';
+  return (await isDirty(absPath, entry.id)) ? 'dirty' : 'verified-clean';
 };
 
 /** An out-of-pattern file whose content differs from its entry stays, as git's up-to-date check keeps it. */
@@ -69,10 +92,16 @@ export const judgeMovers = async (
   candidates: ReadonlyArray<IndexEntry>,
   indexMtime: IndexMtime | undefined,
 ): Promise<MoverVerdicts> => {
-  const isDirty = createWorkingTreeDirtyCheck(ctx);
+  const judgement: Judgement = {
+    ctx,
+    isDirty: createWorkingTreeDirtyCheck(ctx),
+    scanner: createLeadingPathScanner(ctx),
+    trustsExecutableBit: lazily(async () => (await readConfig(ctx)).core?.fileMode !== false),
+    indexMtime,
+  };
   const verifiable = candidates.filter(isVerifiable);
   const verdicts = await boundedMapFor(ctx, 'ioBound', verifiable, (entry) =>
-    verdictOf(ctx, isDirty, entry, joinPath(workdir, escapedPathOf(entry)), indexMtime),
+    verdictOf(judgement, entry, joinPath(workdir, escapedPathOf(entry))),
   );
   const keysWith = (wanted: Verdict): Set<IndexPathKey> =>
     new Set(verifiable.filter((_, i) => verdicts[i] === wanted).map(indexPathKey));

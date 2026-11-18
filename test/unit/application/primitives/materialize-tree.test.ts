@@ -2014,6 +2014,60 @@ describe('materializeTree carrying staged changes (headTree)', () => {
     });
   });
 
+  describe.each([
+    ['a regular file', async (_ctx: SeededContext): Promise<void> => undefined, FILE_MODE.REGULAR],
+    [
+      'a symlink',
+      async (ctx: SeededContext): Promise<void> => {
+        await ctx.fs.rm(`${ctx.layout.workDir}/c`);
+        await ctx.fs.symlink('same', `${ctx.layout.workDir}/c`);
+      },
+      FILE_MODE.SYMLINK,
+    ],
+  ])(
+    'Given a sparse switch and c outside the pattern, %s matching its recorded stat',
+    (_, arrangeWork, mode) => {
+      describe('When the branch switch materialises with an index older than the file', () => {
+        it('Then the work file of c is neither read nor followed', async () => {
+          // Arrange
+          const { ctx, blobs, headTree, targetTree } = await buildFixture();
+          await arrangeWork(ctx);
+          const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/c`);
+          const nanoseconds = (ns: bigint | undefined): number =>
+            ns === undefined ? 0 : Number(ns % 1_000_000_000n);
+          const recorded: IndexEntry = {
+            ...makeIndexEntry('c', blobs.same as ObjectId),
+            mode,
+            ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
+            ctimeNanoseconds: nanoseconds(stat.ctimeNs),
+            mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
+            mtimeNanoseconds: nanoseconds(stat.mtimeNs),
+            uid: stat.uid,
+            gid: stat.gid,
+            ino: stat.ino,
+            fileSize: stat.size,
+          };
+          const currentIndex: GitIndex = {
+            ...indexOf([makeIndexEntry('b', blobs.old as ObjectId), recorded]),
+            indexMtime: { seconds: 2 ** 31, nanoseconds: 0 },
+          };
+          const read = vi.spyOn(ctx.fs, 'read');
+          const readlink = vi.spyOn(ctx.fs, 'readlink');
+          const sut = materializeTree;
+
+          // Act
+          await sut(ctx, { targetTree, currentIndex, headTree, sparse: (path) => path !== 'c' });
+
+          // Assert
+          const touched = [...read.mock.calls, ...readlink.mock.calls].filter(
+            ([path]) => path === `${ctx.layout.workDir}/c`,
+          );
+          expect(touched).toEqual([]);
+        });
+      });
+    },
+  );
+
   describe('Given a sparse switch and c outside the pattern, with its work file absent', () => {
     describe('When the branch switch materialises', () => {
       it('Then c is retired and nothing is refused', async () => {
@@ -2043,9 +2097,11 @@ describe('materializeTree carrying staged changes (headTree)', () => {
 
   describe('Given a sparse switch and c outside the pattern, with an untracked directory at its path', () => {
     describe('When the branch switch materialises', () => {
-      it('Then it is refused as before, naming the path', async () => {
+      it('Then c keeps its entry and its directory, with one warning', async () => {
         // Arrange
-        const { ctx, blobs, headTree, targetTree } = await buildFixture();
+        const { ctx: seeded, blobs, headTree, targetTree } = await buildFixture();
+        const warn = vi.fn();
+        const ctx = { ...seeded, logger: { warn } };
         await ctx.fs.rm(`${ctx.layout.workDir}/c`);
         await writeWork(ctx, 'c/x', 'untracked');
         const currentIndex = indexOf([
@@ -2055,12 +2111,22 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         const sut = materializeTree;
 
         // Act
-        const data = await refusalOf(() =>
-          sut(ctx, { targetTree, currentIndex, headTree, sparse: (path) => path !== 'c' }),
-        );
+        const result = await sut(ctx, {
+          targetTree,
+          currentIndex,
+          headTree,
+          sparse: (path) => path !== 'c',
+        });
 
         // Assert
-        expect(data).toEqual({ code: 'PERMISSION_DENIED', path: `${ctx.layout.workDir}/c` });
+        const kept = result.newIndexEntries.find((e) => e.path === ('c' as FilePath));
+        expect(kept?.id).toBe(blobs.same);
+        expect(kept?.flags.skipWorktree).toBe(false);
+        expect(await readWork(ctx, 'c/x')).toBe('untracked');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          'The following paths are not up to date and were left despite sparse patterns:\n\tc\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+        );
       });
     });
   });

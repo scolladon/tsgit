@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { requireWorkTree } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
+  judgeMovers,
   notUpToDate,
   warnLeftDespiteSparse,
 } from '../../../../../src/application/primitives/internal/sparse-left-dirty.js';
@@ -241,6 +242,258 @@ describe('notUpToDate stat short-circuit', () => {
       // Assert
       expect([...result]).toEqual(['a']);
       expect(read).toHaveBeenCalled();
+    });
+  });
+});
+
+const EXECUTABLE_BITS = 0o100755;
+
+/** The memory file system models no modes: the work file's stat is made to carry the executable bits. */
+const makeExecutable = (ctx: SeededContext): void => {
+  const tryLstat = ctx.fs.tryLstat?.bind(ctx.fs);
+  if (tryLstat === undefined) throw new Error('the memory file system probes with tryLstat');
+  vi.spyOn(ctx.fs, 'tryLstat').mockImplementation(async (path) => {
+    const stat = await tryLstat(path);
+    return stat === undefined ? undefined : { ...stat, mode: EXECUTABLE_BITS };
+  });
+};
+
+const writeBody = async (ctx: SeededContext, path: string, body: string): Promise<void> => {
+  await ctx.fs.write(`${workDirOf(ctx)}/${path}`, new TextEncoder().encode(body));
+};
+
+const modeRows = [
+  {
+    title: 'an executable work file for a regular entry',
+    entryMode: FILE_MODE.REGULAR,
+    arrange: async (ctx: SeededContext): Promise<void> => {
+      await writeWork(ctx, 'a', 'indexed');
+      makeExecutable(ctx);
+    },
+  },
+  {
+    title: 'a regular work file for an executable entry',
+    entryMode: FILE_MODE.EXECUTABLE,
+    arrange: (ctx: SeededContext): Promise<void> => writeWork(ctx, 'a', 'indexed'),
+  },
+];
+
+describe('notUpToDate mode and type', () => {
+  const sut = notUpToDate;
+
+  describe.each(modeRows)('Given $title with the entry content', ({ entryMode, arrange }) => {
+    describe('When the candidates are judged', () => {
+      it('Then the path is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'indexed');
+        await arrange(ctx);
+
+        // Act
+        const result = await sut(
+          ctx,
+          workDirOf(ctx),
+          [entryOf('a', id, { mode: entryMode })],
+          undefined,
+        );
+
+        // Assert
+        expect([...result]).toEqual(['a']);
+      });
+    });
+
+    describe('When the candidates are judged with core.filemode off', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'indexed');
+        await arrange(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfilemode = false\n');
+
+        // Act
+        const result = await sut(
+          ctx,
+          workDirOf(ctx),
+          [entryOf('a', id, { mode: entryMode })],
+          undefined,
+        );
+
+        // Assert
+        expect([...result]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an executable work file for an executable entry, When judged', () => {
+    it('Then nothing is reported', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+      await writeWork(ctx, 'a', 'indexed');
+      makeExecutable(ctx);
+      const entry = entryOf('a', id, { mode: FILE_MODE.EXECUTABLE });
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entry], undefined);
+
+      // Assert
+      expect([...result]).toEqual([]);
+    });
+  });
+
+  describe.each([
+    { filemode: 'on', config: '' },
+    { filemode: 'off', config: '[core]\n\tfilemode = false\n' },
+  ])('Given core.filemode $filemode', ({ config }) => {
+    describe('When a regular file holds the bytes of a symlink entry', () => {
+      it('Then the path is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'target');
+        await writeWork(ctx, 'a', 'target');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+        const entry = entryOf('a', id, { mode: FILE_MODE.SYMLINK });
+
+        // Act
+        const result = await sut(ctx, workDirOf(ctx), [entry], undefined);
+
+        // Assert
+        expect([...result]).toEqual(['a']);
+      });
+    });
+
+    describe('When a symlink to the entry content stands for a regular entry', () => {
+      it('Then the path is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'target');
+        await ctx.fs.symlink('target', `${workDirOf(ctx)}/a`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+
+        // Act
+        const result = await sut(ctx, workDirOf(ctx), [entryOf('a', id)], undefined);
+
+        // Assert
+        expect([...result]).toEqual(['a']);
+      });
+    });
+  });
+
+  describe('Given a symlink whose target is the entry content for a symlink entry, When judged', () => {
+    it('Then nothing is reported', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'target');
+      await ctx.fs.symlink('target', `${workDirOf(ctx)}/a`);
+      const entry = entryOf('a', id, { mode: FILE_MODE.SYMLINK });
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entry], undefined);
+
+      // Assert
+      expect([...result]).toEqual([]);
+    });
+  });
+
+  describe('Given a directory standing at the entry path, When judged', () => {
+    it('Then the path is reported without hashing it', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+      await writeBody(ctx, 'a/x', 'untracked');
+      const read = vi.spyOn(ctx.fs, 'read');
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entryOf('a', id)], undefined);
+
+      // Assert
+      expect([...result]).toEqual(['a']);
+      expect(read).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Given the path reached through a symlinked directory holding the entry content, When judged', () => {
+    it('Then the path is reported', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+      await writeBody(ctx, 'b/f', 'indexed');
+      await ctx.fs.symlink('b', `${workDirOf(ctx)}/a`);
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entryOf('a/f', id)], undefined);
+
+      // Assert
+      expect([...result]).toEqual(['a/f']);
+    });
+  });
+});
+
+describe('judgeMovers', () => {
+  const sut = judgeMovers;
+
+  describe('Given no work file for the entry, When judged', () => {
+    it('Then the path is neither dirty nor verified clean', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entryOf('a', id)], undefined);
+
+      // Assert
+      expect([...result.dirty]).toEqual([]);
+      expect([...result.verifiedClean]).toEqual([]);
+    });
+  });
+
+  describe('Given a regular file where a leading directory is due, When judged', () => {
+    it('Then the path is neither dirty nor verified clean', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+      await writeWork(ctx, 'a', 'indexed');
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entryOf('a/f', id)], undefined);
+
+      // Assert
+      expect([...result.dirty]).toEqual([]);
+      expect([...result.verifiedClean]).toEqual([]);
+    });
+  });
+
+  describe('Given a work file whose content equals its entry, When judged', () => {
+    it('Then the path is verified clean', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+      await writeWork(ctx, 'a', 'indexed');
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entryOf('a', id)], undefined);
+
+      // Assert
+      expect([...result.dirty]).toEqual([]);
+      expect([...result.verifiedClean]).toEqual(['a']);
+    });
+  });
+
+  describe('Given a stat-matching symlink for a symlink entry, When judged', () => {
+    it('Then it is verified clean without reading its target', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'target');
+      await ctx.fs.symlink('target', `${workDirOf(ctx)}/a`);
+      const entry = { ...(await statEntryOf(ctx, 'a', id)), mode: FILE_MODE.SYMLINK };
+      const readlink = vi.spyOn(ctx.fs, 'readlink');
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entry], NEWER_THAN_ANY_ENTRY);
+
+      // Assert
+      expect([...result.verifiedClean]).toEqual(['a']);
+      expect(readlink).not.toHaveBeenCalled();
     });
   });
 });

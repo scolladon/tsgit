@@ -9,7 +9,7 @@
  *   unique:         sparse patterns govern every merge-driven work-tree write, case-folded under core.ignorecase, as canonical git applies them
  *   interopSurface: sequencer, stash, checkout, merge
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -170,8 +170,32 @@ const BASE_SEED: Seed = {
   ],
 };
 
+const SYMLINK_MOVER_SEED: Seed = {
+  main: [
+    regular('a/f', 'f1\n'),
+    symlink('a/g', 'target'),
+    regular('b/f', 'f1\n'),
+    regular('top', 't\n'),
+  ],
+  other: [
+    regular('a/f', 'f2\n'),
+    symlink('a/g', 'target'),
+    regular('b/f', 'f2\n'),
+    regular('top', 't\n'),
+  ],
+};
+
+// Only a/g lies outside the cone: git clears the skip-worktree bit of any other skipped path
+// that the symlinked directory makes appear present, which tsgit keeps.
+const SOLE_MOVER_SEED: Seed = {
+  main: [regular('a/g', 'g1\n'), regular('b/f', 'f1\n'), regular('top', 't\n')],
+  other: [regular('a/g', 'g1\n'), regular('b/f', 'f2\n'), regular('top', 't\n')],
+};
+
 interface MoverRow {
   readonly id: string;
+  readonly seed: Seed;
+  readonly posixOnly: boolean;
   readonly edit: (dir: string) => void;
   readonly expectedListing: ReadonlyArray<string>;
   readonly expectedWarning: string | undefined;
@@ -180,19 +204,66 @@ interface MoverRow {
 const REAPPLY_HINT =
   '\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
 
+const MOVER_WARNING = `${LEFT_HEADER}\n\ta/g\n${REAPPLY_HINT}`;
+
+const moverRow = (
+  row: Partial<MoverRow> & Pick<MoverRow, 'id' | 'edit' | 'expectedListing' | 'expectedWarning'>,
+): MoverRow => ({ seed: BASE_SEED, posixOnly: false, ...row });
+
 const MOVER_ROWS: ReadonlyArray<MoverRow> = [
-  {
+  moverRow({
     id: 'dirty-mover-kept',
     edit: (dir) => writeFileSync(join(dir, 'a', 'g'), 'dirty\n'),
     expectedListing: ['a/', 'a/g=dirty\n', 'b/', 'b/f=f2\n', 'top=t\n'],
-    expectedWarning: `${LEFT_HEADER}\n\ta/g\n${REAPPLY_HINT}`,
-  },
-  {
+    expectedWarning: MOVER_WARNING,
+  }),
+  moverRow({
     id: 'clean-mover-removed',
     edit: () => undefined,
     expectedListing: ['b/', 'b/f=f2\n', 'top=t\n'],
     expectedWarning: undefined,
-  },
+  }),
+  moverRow({
+    id: 'executable-mover-kept',
+    edit: (dir) => chmodSync(join(dir, 'a', 'g'), 0o755),
+    expectedListing: ['a/', 'a/g=g1\n', 'b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: MOVER_WARNING,
+    posixOnly: true,
+  }),
+  moverRow({
+    id: 'symlink-replaced-by-file-mover-kept',
+    seed: SYMLINK_MOVER_SEED,
+    edit: (dir) => {
+      rmSync(join(dir, 'a', 'g'));
+      writeFileSync(join(dir, 'a', 'g'), 'target');
+    },
+    expectedListing: ['a/', 'a/g=target', 'b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: MOVER_WARNING,
+    posixOnly: true,
+  }),
+  moverRow({
+    id: 'mover-through-symlinked-directory-kept',
+    seed: SOLE_MOVER_SEED,
+    edit: (dir) => {
+      rmSync(join(dir, 'a'), { recursive: true });
+      symlinkSync('b', join(dir, 'a'));
+      writeFileSync(join(dir, 'b', 'g'), 'g1\n');
+    },
+    // readdir walks the link, so a/ lists what b/ holds.
+    expectedListing: ['a/f=f2\n', 'a/g=g1\n', 'a@->b', 'b/', 'b/f=f2\n', 'b/g=g1\n', 'top=t\n'],
+    expectedWarning: MOVER_WARNING,
+    posixOnly: true,
+  }),
+  moverRow({
+    id: 'directory-at-mover-path-kept',
+    edit: (dir) => {
+      rmSync(join(dir, 'a', 'g'));
+      mkdirSync(join(dir, 'a', 'g'));
+      writeFileSync(join(dir, 'a', 'g', 'x'), 'untracked\n');
+    },
+    expectedListing: ['a/', 'a/g/', 'a/g/x=untracked\n', 'b/', 'b/f=f2\n', 'top=t\n'],
+    expectedWarning: MOVER_WARNING,
+  }),
 ];
 
 interface StashRow {
@@ -700,6 +771,17 @@ const CONFLICT_ROWS: ReadonlyArray<ConflictRow> = [
     operation: pick(['other']),
   }),
   conflictRow({
+    id: 'pick-conflict-keeps-executable-mover',
+    prepare: advanceAndReset(CONE_CONFLICT),
+    afterSparse: (dir) => {
+      presentMover(dir);
+      chmodSync(join(dir, 'a', 'g'), 0o755);
+    },
+    gitArgs: ['cherry-pick', 'other'],
+    operation: pick(['other']),
+    skipOnWindows: true,
+  }),
+  conflictRow({
     id: 'merge-conflict-line-merged-outside-cone',
     seed: LINE_MERGE_SEED,
     prepare: advanceAndReset(LINE_MERGED),
@@ -825,35 +907,49 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer sparse cone writes interop', () => {
       });
 
       describe('When checkout switches over an out-of-pattern file that is present', () => {
-        it.skipIf(!GIT_AVAILABLE).each(MOVER_ROWS)(
+        const checkoutMoverRow = async ({
+          seed,
+          edit,
+          expectedListing,
+          expectedWarning,
+        }: MoverRow) => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            seedTwin(dir, ignoreCase, seed);
+            enableSparse(dir, { cone: true });
+            presentMover(dir);
+            edit(dir);
+          }
+
+          // Act
+          const git = gitExitOf(pair.peer, ['checkout', '-q', 'other']);
+          const run = await runTsgit(pair.ours, (repo) => repo.checkout({ rev: 'other' }));
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(run.outcome).toEqual({ kind: 'ok' });
+          expect(tagged(pair.ours)).toBe(tagged(pair.peer));
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          expect(listing(pair.ours)).toEqual(expectedListing);
+          expect(leftWarnings(run.warnings)).toEqual(
+            expectedWarning === undefined ? [] : [expectedWarning],
+          );
+          expect(leftWarning(git.stderr)).toHaveLength(expectedWarning === undefined ? 0 : 1);
+          expect(git.stderr.includes(`warning: ${expectedWarning}\n`)).toBe(
+            expectedWarning !== undefined,
+          );
+        };
+
+        it.skipIf(!GIT_AVAILABLE).each(MOVER_ROWS.filter((row) => !row.posixOnly))(
           'Then $id leaves the same index tags, work tree and warning as git',
-          async ({ edit, expectedListing, expectedWarning }) => {
-            // Arrange
-            for (const dir of [pair.peer, pair.ours]) {
-              seedTwin(dir, ignoreCase, BASE_SEED);
-              enableSparse(dir, { cone: true });
-              presentMover(dir);
-              edit(dir);
-            }
+          checkoutMoverRow,
+        );
 
-            // Act
-            const git = gitExitOf(pair.peer, ['checkout', '-q', 'other']);
-            const run = await runTsgit(pair.ours, (repo) => repo.checkout({ rev: 'other' }));
-
-            // Assert
-            expect(git.exitCode).toBe(0);
-            expect(run.outcome).toEqual({ kind: 'ok' });
-            expect(tagged(pair.ours)).toBe(tagged(pair.peer));
-            expect(listing(pair.ours)).toEqual(listing(pair.peer));
-            expect(listing(pair.ours)).toEqual(expectedListing);
-            expect(leftWarnings(run.warnings)).toEqual(
-              expectedWarning === undefined ? [] : [expectedWarning],
-            );
-            expect(leftWarning(git.stderr)).toHaveLength(expectedWarning === undefined ? 0 : 1);
-            expect(git.stderr.includes(`warning: ${expectedWarning}\n`)).toBe(
-              expectedWarning !== undefined,
-            );
-          },
+        it
+          .skipIf(!GIT_AVAILABLE || process.platform === 'win32')
+          .each(MOVER_ROWS.filter((row) => row.posixOnly))(
+          'Then $id leaves the same index tags, work tree and warning as git',
+          checkoutMoverRow,
         );
       });
 

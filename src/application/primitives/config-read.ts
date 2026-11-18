@@ -73,6 +73,8 @@ export interface ParsedConfig {
     readonly sparseCheckoutCone?: boolean;
     /** `core.ignoreCase` — path comparisons fold ASCII case (git's `ignore_case`). */
     readonly ignoreCase?: boolean;
+    /** `core.fileMode` — whether the executable bit of a work file is trusted (git's `trust_executable_bit`). */
+    readonly fileMode?: boolean;
     readonly looseCompression?: number;
     /** `core.maxTreeDepth` — max tree-recursion depth; git defaults to 2048 when unset. */
     readonly maxTreeDepth?: number;
@@ -1475,6 +1477,7 @@ type MutableCore = {
   sparseCheckout?: boolean;
   sparseCheckoutCone?: boolean;
   ignoreCase?: boolean;
+  fileMode?: boolean;
   looseCompression?: number;
   maxTreeDepth?: number;
   sshCommand?: string;
@@ -1623,9 +1626,10 @@ export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
 // cannot join the set without naming its target field, so a silent
 // mis-assignment is structurally impossible.
 const CORE_BOOLEAN_FIELDS: Readonly<
-  Record<string, 'bare' | 'sparseCheckout' | 'sparseCheckoutCone' | 'ignoreCase'>
+  Record<string, 'bare' | 'sparseCheckout' | 'sparseCheckoutCone' | 'ignoreCase' | 'fileMode'>
 > = {
   bare: 'bare',
+  filemode: 'fileMode',
   ignorecase: 'ignoreCase',
   sparsecheckout: 'sparseCheckout',
   sparsecheckoutcone: 'sparseCheckoutCone',
@@ -2378,6 +2382,7 @@ const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => 
   ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
   ...(core.sparseCheckoutCone !== undefined ? { sparseCheckoutCone: core.sparseCheckoutCone } : {}),
   ...(core.ignoreCase !== undefined ? { ignoreCase: core.ignoreCase } : {}),
+  ...(core.fileMode !== undefined ? { fileMode: core.fileMode } : {}),
   ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
   ...(core.untrackedCache !== undefined ? { untrackedCache: core.untrackedCache } : {}),
 });

@@ -120,6 +120,56 @@ describe('retireSparseMovers', () => {
     });
   });
 
+  describe.each([
+    ['a regular file', FILE_MODE.REGULAR, (ctx: SeededContext) => writeWork(ctx, 'a/g', 'g1\n')],
+    [
+      'a symlink',
+      FILE_MODE.SYMLINK,
+      async (ctx: SeededContext) => {
+        await ctx.fs.mkdir(`${workDirOf(ctx)}/a`);
+        await ctx.fs.symlink('g1\n', `${workDirOf(ctx)}/a/g`);
+      },
+    ],
+  ])(
+    'Given %s matching its recorded stat, When the stop retires movers with an index older than the file',
+    (_, mode, arrangeWork) => {
+      it('Then it is retired without being read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'g1\n');
+        await arrangeWork(ctx);
+        const stat = await ctx.fs.lstat(`${workDirOf(ctx)}/a/g`);
+        const nanoseconds = (ns: bigint | undefined): number =>
+          ns === undefined ? 0 : Number(ns % 1_000_000_000n);
+        const recorded = entryOf('a/g', id, {
+          mode,
+          ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
+          ctimeNanoseconds: nanoseconds(stat.ctimeNs),
+          mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
+          mtimeNanoseconds: nanoseconds(stat.mtimeNs),
+          uid: stat.uid,
+          gid: stat.gid,
+          ino: stat.ino,
+          fileSize: stat.size,
+        });
+        const index = {
+          ...indexOf([recorded]),
+          indexMtime: { seconds: 2 ** 31, nanoseconds: 0 },
+        };
+        const read = vi.spyOn(ctx.fs, 'read');
+        const readlink = vi.spyOn(ctx.fs, 'readlink');
+
+        // Act
+        const result = await sut(ctx, { currentIndex: index, conflicts: noConflicts }, CONE);
+
+        // Assert
+        expect([...result.retired]).toEqual(['a/g']);
+        expect(read).not.toHaveBeenCalled();
+        expect(readlink).not.toHaveBeenCalled();
+      });
+    },
+  );
+
   describe('Given an entry that is skip-worktree, in the patterns, or lossy, When the stop retires movers', () => {
     it.each([
       ['a/g', { flags: { ...STAGE0_FLAGS, skipWorktree: true } }],
