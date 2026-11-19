@@ -4077,12 +4077,14 @@ describe('merge — sparse checkout', () => {
       const ctx = { ...base, logger: { warn } };
       await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'base-a\n');
       await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'shared-b\n');
-      await add(ctx, ['src/a.txt', 'docs/b.txt']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/c.txt`, 'base-c\n');
+      await add(ctx, ['src/a.txt', 'docs/b.txt', 'docs/c.txt']);
       await commit(ctx, { message: 'base', author });
       await branchCreate(ctx, { name: 'feature' });
       await checkout(ctx, { rev: 'feature' });
       await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'FEATURE-a\n');
-      await add(ctx, ['src/a.txt']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/c.txt`, 'FEATURE-c\n');
+      await add(ctx, ['src/a.txt', 'docs/c.txt']);
       await commit(ctx, { message: 'on-feature', author });
       await checkout(ctx, { rev: 'main' });
       await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'MAIN-a\n');
@@ -4132,6 +4134,23 @@ describe('merge — sparse checkout', () => {
         expect(warn).toHaveBeenCalledWith(
           'The following paths are not up to date and were left despite sparse patterns:\n\tdocs/b.txt\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
         );
+      });
+    });
+
+    describe('When a conflicting merge runs, the file holds local changes and the merge changes another excluded file cleanly', () => {
+      it('Then only the dirty file lacks the skip-worktree bit', async () => {
+        // Arrange
+        const ctx = await seedConflict(vi.fn());
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'dirty\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await skipBitOf(ctx, 'docs/b.txt')).toBe(false);
+        expect(await skipBitOf(ctx, 'docs/c.txt')).toBe(true);
       });
     });
   });

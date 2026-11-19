@@ -98,6 +98,30 @@ describe('retireSparseMovers', () => {
     });
   });
 
+  describe('Given a context without a work tree, When the stop retires movers', () => {
+    it('Then it throws WORK_TREE_REQUIRED labelled merge', async () => {
+      // Arrange
+      const seeded = await buildSeededContext();
+      const { workDir: _workDir, ...layout } = seeded.layout;
+      const ctx = { ...seeded, layout };
+      const index = indexOf([]);
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, { currentIndex: index, conflicts: noConflicts }, CONE);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect((caught as { data: unknown }).data).toEqual({
+        code: 'WORK_TREE_REQUIRED',
+        operation: 'merge',
+      });
+    });
+  });
+
   describe('Given a dirty out-of-pattern file, When the stop retires movers', () => {
     it('Then the file stays, is left dirty and one exact warning is logged', async () => {
       // Arrange

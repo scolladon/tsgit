@@ -419,6 +419,24 @@ describe('notUpToDate mode and type', () => {
         expect([...result]).toEqual(['a']);
       });
     });
+
+    describe('When an executable file holds the bytes of a regular entry', () => {
+      it('Then the path is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'indexed');
+        await writeWork(ctx, 'a', 'indexed');
+        makeExecutable(ctx);
+        await writeSymlinksOff(ctx);
+        const entry = entryOf('a', id, { mode: FILE_MODE.REGULAR });
+
+        // Act
+        const result = await sut(ctx, workDirOf(ctx), [entry], undefined);
+
+        // Assert
+        expect([...result]).toEqual(['a']);
+      });
+    });
   });
 
   describe('Given a symlink whose target is the entry content for a symlink entry, When judged', () => {
