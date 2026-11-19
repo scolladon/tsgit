@@ -152512,7 +152512,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " collects rather than throwing. The first\nfour are decided while planning; "
+								"text": " collects rather than throwing. The first\nfive are decided while planning; "
 							},
 							{
 								"kind": "code",
@@ -152542,6 +152542,10 @@
 							{
 								"type": "literal",
 								"value": "into-self"
+							},
+							{
+								"type": "literal",
+								"value": "destination-beyond-symlink"
 							},
 							{
 								"type": "literal",

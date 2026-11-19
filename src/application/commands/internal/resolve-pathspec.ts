@@ -102,7 +102,10 @@ const collapsePattern = (raw: string): string => {
 
 // git's lstat_cache records a failed lstat as "not a symlink": a prefix the file
 // system cannot name has nothing beneath it, so no later prefix can be a link.
-const beyondSymlink = async (scanner: LeadingPathScanner, target: FilePath): Promise<boolean> => {
+export const beyondSymlink = async (
+  scanner: LeadingPathScanner,
+  target: FilePath,
+): Promise<boolean> => {
   try {
     return await scanner.hasSymlinkedLeadingPath(target);
   } catch (err) {

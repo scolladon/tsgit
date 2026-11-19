@@ -1806,3 +1806,346 @@ describe('mv — a destination that differs only in case', () => {
     });
   });
 });
+
+describe('mv — a destination beyond a symbolic link', () => {
+  const TREE = {
+    f: 'f',
+    g: 'g',
+    'dir/a': 'a',
+    'dir/b': 'b',
+    'sub/keep': 'k',
+    'sub/sub2/k': 'k2',
+  };
+
+  const seedLinked = async (): Promise<Context> => {
+    const ctx = await seedAndStage(TREE);
+    await ctx.fs.symlink('sub', work(ctx, 'inner'));
+    await ctx.fs.symlink('inner', work(ctx, 'deep'));
+    await ctx.fs.symlink('nowhere', work(ctx, 'dang'));
+    await ctx.fs.symlink('f', work(ctx, 'pointer'));
+    return ctx;
+  };
+
+  const indexPaths = async (ctx: Context): Promise<ReadonlyArray<string>> =>
+    (await readIndex(ctx)).entries.map((e) => e.path);
+
+  const failingDirectoryRename = (ctx: Context, fault: TsgitError): Context => ({
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      renameDirectory: async () => {
+        throw fault;
+      },
+    },
+  });
+
+  describe.each([
+    { label: 'a link at the parent', target: 'inner/g', opts: {} },
+    { label: 'a deeper link', target: 'deep/inner/g', opts: {} },
+    { label: 'a dangling link', target: 'dang/x', opts: {} },
+    { label: 'a link to a file', target: 'pointer/x', opts: {} },
+    { label: 'a missing path below the link', target: 'inner/absent/x', opts: {} },
+    { label: 'force', target: 'inner/g', opts: { force: true } },
+    { label: 'dryRun', target: 'inner/g', opts: { dryRun: true } },
+  ])('Given a file and $label', ({ target, opts }) => {
+    describe('When mv', () => {
+      it('Then it refuses naming source and destination and changes nothing', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['f'], target, opts));
+
+        // Assert
+        expect(err?.data).toMatchObject({
+          code: 'MV_DESTINATION_BEYOND_SYMLINK',
+          source: 'f',
+          destination: target,
+        });
+        expect(await indexPaths(ctx)).toContain('f');
+        expect(await exists(ctx, 'f')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a directory and a link at the destination parent', () => {
+    describe('When mv', () => {
+      it('Then it names the first member and its repathed destination', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['dir'], 'inner/x'));
+
+        // Assert
+        expect(err?.data).toMatchObject({
+          code: 'MV_DESTINATION_BEYOND_SYMLINK',
+          source: 'dir/a',
+          destination: 'inner/x/a',
+        });
+        expect(await exists(ctx, 'dir/a')).toBe(true);
+        expect(await indexPaths(ctx)).toContain('dir/a');
+      });
+    });
+  });
+
+  describe('Given skipErrors and a file beyond a link', () => {
+    describe.each([{ dryRun: false }, { dryRun: true }])(
+      'When mv with dryRun $dryRun',
+      ({ dryRun }) => {
+        it('Then the file is skipped and nothing is written', async () => {
+          // Arrange
+          const ctx = await seedLinked();
+          const sut = mv;
+
+          // Act
+          const result = await sut(ctx, ['f'], 'inner/g', { skipErrors: true, dryRun });
+
+          // Assert
+          expect(result).toEqual({
+            moved: [],
+            skipped: [{ source: 'f', reason: 'destination-beyond-symlink' }],
+          });
+          expect(await exists(ctx, 'f')).toBe(true);
+          expect(await exists(ctx, 'sub/g')).toBe(false);
+        });
+      },
+    );
+  });
+
+  describe('Given skipErrors and a directory beyond a link', () => {
+    describe('When mv', () => {
+      it('Then the directory is renamed, its members skip and stay indexed', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['dir'], 'inner/x', { skipErrors: true });
+
+        // Assert
+        expect(result).toEqual({
+          moved: [],
+          skipped: [
+            { source: 'dir/a', reason: 'destination-beyond-symlink' },
+            { source: 'dir/b', reason: 'destination-beyond-symlink' },
+          ],
+        });
+        expect(await indexPaths(ctx)).toEqual(expect.arrayContaining(['dir/a', 'dir/b']));
+        expect(await exists(ctx, 'dir')).toBe(false);
+      });
+    });
+
+    describe('When mv with dryRun', () => {
+      it('Then the same result is reported and nothing is written', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['dir'], 'inner/x', { skipErrors: true, dryRun: true });
+
+        // Assert
+        expect(result.skipped.map((s) => s.source)).toEqual(['dir/a', 'dir/b']);
+        expect(await exists(ctx, 'dir/a')).toBe(true);
+      });
+    });
+
+    describe('When mv names a second, untracked source', () => {
+      it('Then the member skips, then the untracked source', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['dir', 'ghost'], 'inner/sub2', { skipErrors: true });
+
+        // Assert
+        expect(result.moved).toEqual([]);
+        expect(result.skipped).toEqual([
+          { source: 'dir/a', reason: 'destination-beyond-symlink' },
+          { source: 'dir/b', reason: 'destination-beyond-symlink' },
+          { source: 'ghost', reason: 'source-not-tracked' },
+        ]);
+      });
+    });
+
+    describe('When the directory rename is refused', () => {
+      it('Then rename-failed ends the skips and the directory stays', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const refusing = failingDirectoryRename(ctx, pathTooLong('/abs/dir'));
+        const sut = mv;
+
+        // Act
+        const result = await sut(refusing, ['dir'], 'inner/x', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped.at(-1)).toEqual({ source: 'dir', reason: 'rename-failed' });
+        expect(await exists(ctx, 'dir/a')).toBe(true);
+        expect(await exists(ctx, 'dir/b')).toBe(true);
+        expect(await exists(ctx, 'sub/x')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an existing destination reached through a link', () => {
+    describe.each([{ force: false }, { force: true }])('When mv with force $force', ({ force }) => {
+      it('Then it is not this refusal', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['dir'], 'inner/keep', { force }));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_DESTINATION_DIRECTORY_MISSING');
+      });
+    });
+  });
+
+  describe('Given checks that precede the link check', () => {
+    describe('When a directory moves under itself through a link', () => {
+      it('Then it is MV_INTO_SELF', async () => {
+        // Arrange
+        const ctx = await seedAndStage(TREE);
+        await ctx.fs.symlink('sub', work(ctx, 'dir/l'));
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['dir'], 'dir/l/x'));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_INTO_SELF');
+      });
+    });
+
+    describe('When the source is untracked but present', () => {
+      it('Then it is MV_SOURCE_NOT_TRACKED', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        await ctx.fs.writeUtf8(work(ctx, 'u'), 'u');
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['u'], 'inner/u'));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_SOURCE_NOT_TRACKED');
+      });
+    });
+
+    describe('When a leading component is a regular file', () => {
+      it('Then it is MV_DESTINATION_DIRECTORY_MISSING', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['dir'], 'sub/keep/x'));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_DESTINATION_DIRECTORY_MISSING');
+      });
+    });
+  });
+
+  describe('Given a file system that refuses to name the link as too long', () => {
+    describe('When mv', () => {
+      it('Then the scan tolerates it and the parent is reported missing', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const inner = work(ctx, 'inner');
+        const stubbed: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (path: string) => {
+              if (path === inner) throw pathTooLong(path);
+              return ctx.fs.lstat(path);
+            },
+          },
+        };
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(stubbed, ['f'], 'inner/g'));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_DESTINATION_DIRECTORY_MISSING');
+      });
+    });
+  });
+
+  describe('Given a trailing slash on a destination beyond a link', () => {
+    describe('When a file moves to a linked directory', () => {
+      it('Then the destination is the joined path', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['f'], 'inner/'));
+
+        // Assert
+        expect(err?.data).toMatchObject({
+          code: 'MV_DESTINATION_BEYOND_SYMLINK',
+          source: 'f',
+          destination: 'inner/f',
+        });
+      });
+    });
+
+    describe('When skipErrors moves a directory to a linked directory', () => {
+      it('Then the directory is renamed and its members skip', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['dir'], 'inner/', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped.map((s) => s.source)).toEqual(['dir/a', 'dir/b']);
+        expect(await exists(ctx, 'dir')).toBe(false);
+      });
+    });
+
+    describe.each([{ link: 'dang' }, { link: 'pointer' }])(
+      'When the destination is $link/',
+      ({ link }) => {
+        it('Then it is MV_DESTINATION_DIRECTORY_MISSING naming the slash form', async () => {
+          // Arrange
+          const ctx = await seedLinked();
+          const sut = mv;
+
+          // Act
+          const err = await captureError(() => sut(ctx, ['f'], `${link}/`));
+
+          // Assert
+          expect(err?.data).toMatchObject({
+            code: 'MV_DESTINATION_DIRECTORY_MISSING',
+            destination: `${link}/`,
+          });
+        });
+      },
+    );
+
+    describe('When two files move to a link without the slash', () => {
+      it('Then it is MV_DESTINATION_NOT_DIRECTORY', async () => {
+        // Arrange
+        const ctx = await seedLinked();
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['f', 'g'], 'inner'));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_DESTINATION_NOT_DIRECTORY');
+      });
+    });
+  });
+});

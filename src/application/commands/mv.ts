@@ -11,6 +11,7 @@
  */
 import {
   mvBadSource,
+  mvDestinationBeyondSymlink,
   mvDestinationDirectoryMissing,
   mvDestinationExists,
   mvDestinationNotDirectory,
@@ -43,6 +44,10 @@ import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from '../primitives/internal/symlinked-leading-path.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -50,6 +55,7 @@ import {
   assertOperationalRepository,
   requireWorkTree,
 } from './internal/repo-state.js';
+import { beyondSymlink } from './internal/resolve-pathspec.js';
 import { discardDirectory, renameInWorkingTree, validatePath } from './internal/working-tree.js';
 
 // Same tolerance set as `rm`: a missing-or-unparsable index is treated as
@@ -75,13 +81,14 @@ export interface MvMove {
 
 /**
  * Per-source refusals that `skipErrors` collects rather than throwing. The first
- * four are decided while planning; `rename-failed` is collected at execution.
+ * five are decided while planning; `rename-failed` is collected at execution.
  */
 export type MvSkipReason =
   | 'source-not-tracked'
   | 'bad-source'
   | 'destination-exists'
   | 'into-self'
+  | 'destination-beyond-symlink'
   | 'rename-failed'; // the working-tree rename was refused
 
 type PlanSkipReason = Exclude<MvSkipReason, 'rename-failed'>;
@@ -114,6 +121,8 @@ type Verdict =
       readonly kind: 'file' | 'directory';
       readonly entries: ReadonlyArray<IndexEntry>;
       readonly retained: ReadonlyArray<IndexEntry>;
+      /** Members that stay put because their destination lies beyond a symbolic link. */
+      readonly skippedMembers: ReadonlyArray<IndexEntry>;
     }
   | {
       readonly skip: PlanSkipReason;
@@ -311,7 +320,10 @@ const resolveDestinationMode = async (
   destination: string,
   destNoSlash: FilePath,
 ): Promise<DestinationMode> => {
-  const stat = await lstatOrUndefined(ctx, destNoSlash);
+  // A trailing slash makes git resolve a leading-and-final link (R17).
+  const stat = destination.endsWith('/')
+    ? await statOrUndefined(ctx, destNoSlash)
+    : await lstatOrUndefined(ctx, destNoSlash);
   // equivalent-mutant: lstat never reports a path as both a directory and a symlink
   // (it does not follow the final component), so when `isDirectory === true` the
   // `isSymbolicLink !== true` operand is always true — the guard stays defensive for
@@ -343,28 +355,31 @@ const buildPlan = async (
   const planned: PlanItem[] = [];
   const skipped: MvSkipped[] = [];
   for (const source of sources) {
-    const target =
-      mode.kind === 'rename'
-        ? mode.target
-        : (joinPathSegment(mode.destDir, basename(source)) as FilePath);
+    const target = targetOf(mode, source);
     const verdict = await validateMove(ctx, byPath, source, target, opts, policy);
-    if ('skip' in verdict) {
-      if (opts.skipErrors === true) {
-        skipped.push({ source, reason: verdict.skip });
-        continue;
-      }
+    if (!('skip' in verdict)) {
+      skipped.push(...skippedMembersOf(verdict));
+      planned.push({ ...verdict, source, target });
+    } else if (opts.skipErrors === true) {
+      skipped.push({ source, reason: verdict.skip });
+    } else {
       throw refusal(verdict.skip, verdict.source ?? source, verdict.target ?? target);
     }
-    planned.push({
-      kind: verdict.kind,
-      source,
-      target,
-      entries: verdict.entries,
-      retained: verdict.retained,
-    });
   }
   return { planned, skipped };
 };
+
+const targetOf = (mode: DestinationMode, source: FilePath): FilePath =>
+  mode.kind === 'rename'
+    ? mode.target
+    : (joinPathSegment(mode.destDir, basename(source)) as FilePath);
+
+const skippedMembersOf = ({
+  skippedMembers,
+}: {
+  readonly skippedMembers: ReadonlyArray<IndexEntry>;
+}): ReadonlyArray<MvSkipped> =>
+  skippedMembers.map((member) => ({ source: member.path, reason: 'destination-beyond-symlink' }));
 
 const validateMove = async (
   ctx: Context,
@@ -385,16 +400,73 @@ const validateMove = async (
   const retained = classified.entries.filter(isLossy);
   if (entries.length === 0) return { skip: 'bad-source' };
   if (target === source || target.startsWith(`${source}/`)) return { skip: 'into-self' };
+  const refused = await refuseDestination(ctx, byPath, {
+    source,
+    target,
+    kind: classified.kind,
+    policy,
+    members: classified.entries,
+    retained,
+    opts,
+  });
+  return refused ?? { kind: classified.kind, entries, retained, skippedMembers: [] };
+};
+
+interface DestinationCheck {
+  readonly source: FilePath;
+  readonly target: FilePath;
+  readonly kind: 'file' | 'directory';
+  readonly policy: DestinationPolicy;
+  readonly members: ReadonlyArray<IndexEntry>;
+  readonly retained: ReadonlyArray<IndexEntry>;
+  readonly opts: MvOptions;
+}
+
+const refuseDestination = async (
+  ctx: Context,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  { source, target, kind, policy, members, retained, opts }: DestinationCheck,
+): Promise<Verdict | undefined> => {
+  if (await destinationBeyondSymlink(ctx, policy.scanner, target)) {
+    return beyondSymlinkVerdict(kind, source, target, members, retained, opts);
+  }
   // `dirname` of a validated path is a prefix of it — still a valid repo path.
   const parent = dirname(target) as FilePath;
   // Stryker disable next-line StringLiteral: equivalent — parent is never this literal, and when parent === '' the work-tree root makes isDirectoryOnDisk('') true, so any comparison literal takes the same no-throw path (the `!== ''` short-circuit only spares a redundant lstat)
   if (parent !== '' && !(await isDirectoryOnDisk(ctx, parent))) {
     throw mvDestinationDirectoryMissing(source, target);
   }
-  if (!(await destinationFree(ctx, byPath, source, target, classified.kind, policy))) {
-    return { skip: 'destination-exists' };
+  if (await destinationFree(ctx, byPath, source, target, kind, policy)) return undefined;
+  return { skip: 'destination-exists' };
+};
+
+// An existing destination is never this refusal: it reports as present or as a
+// missing directory, whichever the plain checks decide.
+const destinationBeyondSymlink = async (
+  ctx: Context,
+  scanner: LeadingPathScanner,
+  target: FilePath,
+): Promise<boolean> =>
+  (await lstatOrUndefined(ctx, target)) === undefined && (await beyondSymlink(scanner, target));
+
+// Git renames the directory itself through the link and skips each member it
+// cannot place; a file has no such partial outcome.
+const beyondSymlinkVerdict = (
+  kind: 'file' | 'directory',
+  source: FilePath,
+  target: FilePath,
+  entries: ReadonlyArray<IndexEntry>,
+  retained: ReadonlyArray<IndexEntry>,
+  opts: MvOptions,
+): Verdict => {
+  const skip = 'destination-beyond-symlink';
+  if (kind === 'file') return { skip };
+  if (opts.skipErrors === true) {
+    return { kind, entries: [], retained, skippedMembers: entries };
   }
-  return { kind: classified.kind, entries, retained };
+  const [first] = entries;
+  if (first === undefined) return { skip: 'bad-source' };
+  return { skip, source: first.path, target: repath(first, source, target) };
 };
 
 // Git names the member it cannot address, in the view a message can carry.
@@ -440,12 +512,14 @@ const sourceExistsOnDisk = async (
 interface DestinationPolicy {
   readonly force: boolean;
   readonly ignoreCase: boolean;
+  readonly scanner: LeadingPathScanner;
 }
 
 // Read once per call: the config does not change under the index lock.
 const destinationPolicyOf = async (ctx: Context, opts: MvOptions): Promise<DestinationPolicy> => ({
   force: opts.force === true,
   ignoreCase: (await readConfig(ctx)).core?.ignoreCase === true,
+  scanner: createLeadingPathScanner(ctx),
 });
 
 const destinationFree = async (
@@ -532,6 +606,8 @@ const refusal = (reason: PlanSkipReason, source: FilePath, target: FilePath): Ts
       return mvDestinationExists(source, target);
     case 'into-self':
       return mvIntoSelf(source, target);
+    case 'destination-beyond-symlink':
+      return mvDestinationBeyondSymlink(source, target);
   }
 };
 
@@ -546,6 +622,12 @@ const lstatOrUndefined = async (
   path: FilePath,
 ): Promise<Awaited<ReturnType<Context['fs']['lstat']>> | undefined> =>
   ctx.fs.lstat(workPath(ctx, path)).catch(() => undefined);
+
+const statOrUndefined = async (
+  ctx: Context,
+  path: FilePath,
+): Promise<Awaited<ReturnType<Context['fs']['stat']>> | undefined> =>
+  ctx.fs.stat(workPath(ctx, path)).catch(() => undefined);
 
 const isDirectoryOnDisk = async (ctx: Context, path: FilePath): Promise<boolean> => {
   const stat = await lstatOrUndefined(ctx, path);
