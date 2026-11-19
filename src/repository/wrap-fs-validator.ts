@@ -69,20 +69,13 @@ const guardedPathProbe = <K extends OptionalPathProbe>(
  * their degraded path and directory moves keep their entry-by-entry path there, while an adapter
  * that provides it keeps it. Both paths get `rename`'s guard.
  */
-const guardedOptionalRename = <K extends 'atomicRename' | 'renameDirectory'>(
-  fs: FileSystem,
-  guard: (path: string) => void,
-  key: K,
-): Partial<Pick<FileSystem, K>> => {
-  const optionalRename = fs[key];
-  if (optionalRename === undefined) return {};
-  const guarded = (s: string, d: string): Promise<void> => {
+const guardedRename =
+  (fs: FileSystem, guard: (path: string) => void, rename: FileSystem['rename']) =>
+  (s: string, d: string): Promise<void> => {
     guard(s);
     guard(d);
-    return optionalRename.call(fs, s, d);
+    return rename.call(fs, s, d);
   };
-  return { [key]: guarded } as Partial<Pick<FileSystem, K>>;
-};
 
 /**
  * `utimeNow` is optional on the port (OPFS omits it): the wrapper stays without it there so
@@ -247,13 +240,13 @@ export const wrapFsValidator = (
       guard(p);
       return fs.rm(p);
     },
-    rename: (s, d) => {
-      guard(s);
-      guard(d);
-      return fs.rename(s, d);
-    },
-    ...guardedOptionalRename(fs, guard, 'atomicRename'),
-    ...guardedOptionalRename(fs, guard, 'renameDirectory'),
+    rename: guardedRename(fs, guard, fs.rename),
+    ...(fs.atomicRename === undefined
+      ? {}
+      : { atomicRename: guardedRename(fs, guard, fs.atomicRename) }),
+    ...(fs.renameDirectory === undefined
+      ? {}
+      : { renameDirectory: guardedRename(fs, guard, fs.renameDirectory) }),
     ...guardedUtimeNow(fs, guard),
     ...guardedRmdir(fs, guard),
     readlink: (p) => {
