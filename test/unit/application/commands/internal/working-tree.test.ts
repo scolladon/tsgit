@@ -287,7 +287,7 @@ describe('internal/working-tree', () => {
       });
     });
 
-    describe('Given mode 100755', () => {
+    describe('Given mode 100755 with chmod observed', () => {
       describe('When materializeFile', () => {
         it('Then chmod is called with 0o755 (not 0o644)', async () => {
           // Arrange
