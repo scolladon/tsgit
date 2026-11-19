@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  discardDirectory,
   materializeFile,
   removeDirectory,
   removeFile,
@@ -719,6 +720,60 @@ describe('internal/working-tree', () => {
 
           // Assert
           expect(err.data).toMatchObject({ path: '../escape' });
+        });
+      });
+    });
+  });
+
+  describe('discardDirectory', () => {
+    describe('Given a tree holding a file, a nested directory and an empty directory', () => {
+      describe('When discardDirectory', () => {
+        it('Then all of it is removed', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const root = ctx.layout.workDir;
+          await ctx.fs.writeUtf8(`${root}/sub/f`, 'f');
+          await ctx.fs.writeUtf8(`${root}/sub/n/g`, 'g');
+          await ctx.fs.mkdir(`${root}/sub/emp`);
+          const sut = discardDirectory;
+
+          // Act
+          await sut(ctx, 'sub');
+
+          // Assert
+          expect(await ctx.fs.exists(`${root}/sub`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a missing path', () => {
+      describe('When discardDirectory', () => {
+        it('Then it resolves', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const sut = discardDirectory;
+
+          // Act
+          const result = sut(ctx, 'sub');
+
+          // Assert
+          await expect(result).resolves.toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a path outside the repository', () => {
+      describe('When discardDirectory', () => {
+        it('Then throws PATHSPEC_OUTSIDE_REPO carrying the path', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const sut = discardDirectory;
+
+          // Act
+          const err = await expectError(() => sut(ctx, '../x'), 'PATHSPEC_OUTSIDE_REPO');
+
+          // Assert
+          expect(err.data).toMatchObject({ path: '../x' });
         });
       });
     });

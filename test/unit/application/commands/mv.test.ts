@@ -969,10 +969,13 @@ describe('mv re-validating a tracked directory member', () => {
   });
 });
 
-describe('mv on a directory holding a lossy member', () => {
-  const seedMember = (): Promise<Context> =>
-    seedRows({ 'd/y': 'y' }, [{ path: 'd/y' }, { path: 'd/�', bytes: [0x64, 0x2f, 0xff] }]);
+const seedMember = (extraMembers: Readonly<Record<string, string>> = {}): Promise<Context> =>
+  seedRows({ 'd/y': 'y', ...extraMembers }, [
+    { path: 'd/y' },
+    { path: 'd/�', bytes: [0x64, 0x2f, 0xff] },
+  ]);
 
+describe('mv on a directory holding a lossy member', () => {
   describe('Given a directory on disk holding only a lossy member', () => {
     describe('When mv renames it with skipErrors', () => {
       it('Then the directory is skipped as a bad source and nothing moves', async () => {
@@ -1249,6 +1252,231 @@ describe('mv — a move the file system refuses', () => {
 
         // Assert
         await expect(outcome).rejects.toBe(fault);
+      });
+    });
+  });
+});
+
+describe('mv — skipErrors and a rename the file system refuses', () => {
+  const failingWorkTreeRename = (
+    ctx: Context,
+    fault: TsgitError,
+    refusedName: string,
+  ): Context => ({
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      rename: async (src: string, dst: string) => {
+        if (!src.startsWith(ctx.layout.gitDir) && src.endsWith(refusedName)) throw fault;
+        return ctx.fs.rename(src, dst);
+      },
+    },
+  });
+
+  const failingDirectoryRename = (ctx: Context, fault: Error): Context => ({
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      renameDirectory: async () => {
+        throw fault;
+      },
+    },
+  });
+
+  describe('Given a tracked file whose rename refuses PATH_TOO_LONG', () => {
+    describe('When mv with skipErrors', () => {
+      it('Then base is skipped as rename-failed and index and disk keep base', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ base: 'b', 'S/k': 'k' });
+        const refusing = failingWorkTreeRename(ctx, pathTooLong('/abs/base'), 'base');
+        const sut = mv;
+
+        // Act
+        const result = await sut(refusing, ['base'], 'S', { skipErrors: true });
+
+        // Assert
+        expect(result).toEqual({
+          moved: [],
+          skipped: [{ source: 'base', reason: 'rename-failed' }],
+        });
+        expect(await indexEntry(ctx, 'base')).toBeDefined();
+        expect(await indexEntry(ctx, 'S/base')).toBeUndefined();
+        expect(await exists(ctx, 'base')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an untracked ghost and a refused base in one call', () => {
+    describe('When mv with skipErrors', () => {
+      it('Then skipped lists the planning skip first, then the rename skip', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ base: 'b', 'S/k': 'k' });
+        const refusing = failingWorkTreeRename(ctx, pathTooLong('/abs/base'), 'base');
+        const sut = mv;
+
+        // Act
+        const result = await sut(refusing, ['ghost', 'base'], 'S', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped).toEqual([
+          { source: 'ghost', reason: 'source-not-tracked' },
+          { source: 'base', reason: 'rename-failed' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given two files where only the first rename refuses', () => {
+    describe('When mv with skipErrors', () => {
+      it('Then the second moves in index and disk and the first stays', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'first.txt': '1', 'second.txt': '2', 'S/k': 'k' });
+        const refusing = failingWorkTreeRename(ctx, pathTooLong('/abs/first.txt'), 'first.txt');
+        const sut = mv;
+
+        // Act
+        const result = await sut(refusing, ['first.txt', 'second.txt'], 'S', { skipErrors: true });
+
+        // Assert
+        expect(result.moved).toEqual([{ from: 'second.txt', to: 'S/second.txt' }]);
+        expect(await indexEntry(ctx, 'S/second.txt')).toBeDefined();
+        expect(await exists(ctx, 'S/second.txt')).toBe(true);
+        expect(await indexEntry(ctx, 'first.txt')).toBeDefined();
+        expect(await exists(ctx, 'first.txt')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a directory whose renameDirectory refuses EINVAL', () => {
+    describe('When mv with skipErrors', () => {
+      it('Then the members move in the index and nothing remains at d', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f', 'd/s/t': 't' });
+        await ctx.fs.writeUtf8(work(ctx, 'd/u'), 'u');
+        await ctx.fs.mkdir(work(ctx, 'd/emp'));
+        const refusing = failingDirectoryRename(ctx, unsupportedOperation('filesystem', 'EINVAL'));
+        const sut = mv;
+
+        // Act
+        const result = await sut(refusing, ['d'], 'D', { skipErrors: true });
+
+        // Assert
+        expect((await indexView(ctx)).map(([path]) => path)).toEqual(['D/f', 'D/s/t']);
+        expect(result.moved).toEqual([
+          { from: 'd/f', to: 'D/f' },
+          { from: 'd/s/t', to: 'D/s/t' },
+        ]);
+        expect(result.skipped).toEqual([{ source: 'd', reason: 'rename-failed' }]);
+        expect(await exists(ctx, 'd')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a directory holding a lossy member whose renameDirectory refuses', () => {
+    describe('When mv with skipErrors', () => {
+      it('Then the lossy entry stays in the index under d/ and d is not deleted', async () => {
+        // Arrange
+        const ctx = await seedMember();
+        const refusing = failingDirectoryRename(ctx, unsupportedOperation('filesystem', 'EINVAL'));
+        const sut = mv;
+
+        // Act
+        await sut(refusing, ['d'], 'e', { skipErrors: true });
+
+        // Assert
+        expect(await indexView(ctx)).toEqual([
+          ['d/�', [0x64, 0x2f, 0xff]],
+          ['e/y', undefined],
+        ]);
+        expect(await exists(ctx, 'd/y')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given d refusing and e renamed into d/e', () => {
+    describe('When mv(d, e) into D with skipErrors', () => {
+      it('Then d/e is gone too', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f', 'e/x': 'x' });
+        const stubbed: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (path: string) =>
+              ctx.fs.lstat(path === work(ctx, 'D') ? work(ctx, 'd') : path),
+            renameDirectory: async (src: string) => {
+              if (src === work(ctx, 'd')) throw unsupportedOperation('filesystem', 'EINVAL');
+              return ctx.fs.rename(src, work(ctx, 'd/e'));
+            },
+          },
+        };
+        const sut = mv;
+
+        // Act
+        await sut(stubbed, ['d', 'e'], 'D', { skipErrors: true });
+
+        // Assert
+        expect(await exists(ctx, 'd/e')).toBe(false);
+        expect(await exists(ctx, 'd')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a TsgitError from renameDirectory and no skipErrors', () => {
+    describe('When mv', () => {
+      it('Then it rejects with that very error and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const fault = unsupportedOperation('filesystem', 'EINVAL');
+        const refusing = failingDirectoryRename(ctx, fault);
+        const sut = mv;
+
+        // Act
+        const outcome = sut(refusing, ['d'], 'D');
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
+        expect((await indexView(ctx)).map(([path]) => path)).toEqual(['d/f']);
+      });
+    });
+  });
+
+  describe('Given a plain Error from renameDirectory and skipErrors', () => {
+    describe('When mv', () => {
+      it('Then it rejects with that very error and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const fault = new Error('boom');
+        const refusing = failingDirectoryRename(ctx, fault);
+        const sut = mv;
+
+        // Act
+        const outcome = sut(refusing, ['d'], 'D', { skipErrors: true });
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
+        expect((await indexView(ctx)).map(([path]) => path)).toEqual(['d/f']);
+      });
+    });
+  });
+
+  describe('Given a second source whose member fails Windows path validation', () => {
+    describe('When mv into t', () => {
+      it('Then INVALID_INDEX_ENTRY and the first source has not moved on disk', async () => {
+        // Arrange
+        const seeded = await seedRows({ a: 'a', 'd/x\\y': 'y', 't/k': 'k' }, [
+          { path: 'a' },
+          { path: 'd/x\\y' },
+        ]);
+        const ctx: Context = { ...seeded, windowsPathSyntax: true };
+        const sut = mv;
+
+        // Act
+        const error = await captureError(() => sut(ctx, ['a', 'd'], 't'));
+
+        // Assert
+        expect(error?.data.code).toBe('INVALID_INDEX_ENTRY');
+        expect(await exists(ctx, 'a')).toBe(true);
       });
     });
   });

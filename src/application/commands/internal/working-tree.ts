@@ -119,6 +119,15 @@ export const removeDirectory = async (ctx: Context, rawPath: string): Promise<vo
 };
 
 /**
+ * Delete the working-tree path with everything beneath it, untracked content
+ * included — the caller has judged the tree abandoned. A missing path is not an
+ * error, so no existence check races the removal.
+ */
+export const discardDirectory = async (ctx: Context, rawPath: string): Promise<void> => {
+  await ctx.fs.rmRecursive(repoPath(ctx, validateWorkingTreePathOn(rawPath, ctx)));
+};
+
+/**
  * Move a working-tree path. Validates both ends (rejecting `..`, `.git`,
  * absolute paths, etc.) then relocates the node — carrying any untracked
  * contents along, faithful to `git mv`.

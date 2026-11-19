@@ -37,6 +37,7 @@ import { emptyPathspec } from '../../domain/index.js';
 import { encode, wellFormed } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -47,7 +48,7 @@ import {
   assertOperationalRepository,
   requireWorkTree,
 } from './internal/repo-state.js';
-import { renameInWorkingTree, validatePath } from './internal/working-tree.js';
+import { discardDirectory, renameInWorkingTree, validatePath } from './internal/working-tree.js';
 
 // Same tolerance set as `rm`: a missing-or-unparsable index is treated as
 // "no entries" so a refusal is still computed off the empty map; every other
@@ -70,8 +71,18 @@ export interface MvMove {
   readonly to: FilePath;
 }
 
-/** Per-source refusals that `skipErrors` collects rather than throwing. */
-export type MvSkipReason = 'source-not-tracked' | 'bad-source' | 'destination-exists' | 'into-self';
+/**
+ * Per-source refusals that `skipErrors` collects rather than throwing. The first
+ * four are decided while planning; `rename-failed` is collected at execution.
+ */
+export type MvSkipReason =
+  | 'source-not-tracked'
+  | 'bad-source'
+  | 'destination-exists'
+  | 'into-self'
+  | 'rename-failed'; // the working-tree rename was refused
+
+type PlanSkipReason = Exclude<MvSkipReason, 'rename-failed'>;
 
 export interface MvSkipped {
   readonly source: FilePath;
@@ -88,6 +99,7 @@ type DestinationMode =
   | { readonly kind: 'into-dir'; readonly destDir: FilePath };
 
 interface PlanItem {
+  readonly kind: 'file' | 'directory';
   readonly source: FilePath;
   readonly target: FilePath;
   readonly entries: ReadonlyArray<IndexEntry>;
@@ -96,7 +108,7 @@ interface PlanItem {
 type Verdict =
   | { readonly kind: 'file' | 'directory'; readonly entries: ReadonlyArray<IndexEntry> }
   | {
-      readonly skip: MvSkipReason;
+      readonly skip: PlanSkipReason;
       /** Names the refused member when it differs from the user's source. */
       readonly source?: FilePath;
       readonly target?: FilePath;
@@ -117,32 +129,140 @@ export const mv = async (
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'mv');
   await assertNoPendingOperation(ctx);
-  const validatedSources = sources.map((source) => validatePath(wellFormed(source)));
-  const [firstSource] = validatedSources;
-  if (firstSource === undefined) throw emptyPathspec();
-  assertNoOverlappingSources(validatedSources);
-  const wellFormedDestination = wellFormed(destination);
-  const destNoSlash = validatePath(stripTrailingSlash(wellFormedDestination));
-
+  const request = parseRequest(sources, destination);
   const lock = await acquireIndexLock(ctx);
   try {
     const byPath = await readIndexMap(ctx);
-    const mode = await resolveDestinationMode(ctx, firstSource, wellFormedDestination, destNoSlash);
-    if (mode.kind === 'rename' && validatedSources.length > 1) {
-      throw mvDestinationNotDirectory(firstSource, mode.target);
-    }
-    const { planned, skipped } = await buildPlan(ctx, byPath, validatedSources, mode, opts);
-    assertNoTargetCollision(planned);
-    const moved = plannedMoves(planned);
-    if (opts.dryRun === true) return { moved, skipped };
-    applyToIndex(indexPathRulesOf(ctx), byPath, planned);
-    for (const item of planned) {
-      await renameInWorkingTree(ctx, item.source, item.target);
-    }
-    await lock.commit(Array.from(byPath.values()), 'update');
-    return { moved, skipped };
+    const plan = await planUnderLock(ctx, byPath, request, opts);
+    if (opts.dryRun === true) return { moved: plannedMoves(plan.planned), skipped: plan.skipped };
+    return await executePlan(ctx, lock, byPath, plan, opts);
   } finally {
     await lock.release();
+  }
+};
+
+interface MvRequest {
+  readonly sources: ReadonlyArray<FilePath>;
+  readonly destination: string;
+  readonly destNoSlash: FilePath;
+}
+
+const parseRequest = (sources: ReadonlyArray<string>, destination: string): MvRequest => {
+  const validatedSources = sources.map((source) => validatePath(wellFormed(source)));
+  if (validatedSources.length === 0) throw emptyPathspec();
+  assertNoOverlappingSources(validatedSources);
+  const wellFormedDestination = wellFormed(destination);
+  const destNoSlash = validatePath(stripTrailingSlash(wellFormedDestination));
+  return { sources: validatedSources, destination: wellFormedDestination, destNoSlash };
+};
+
+const planUnderLock = async (
+  ctx: Context,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  { sources, destination, destNoSlash }: MvRequest,
+  opts: MvOptions,
+): Promise<Plan> => {
+  const mode = await resolveDestinationMode(ctx, sources[0] as FilePath, destination, destNoSlash);
+  if (mode.kind === 'rename' && sources.length > 1) {
+    throw mvDestinationNotDirectory(sources[0] as FilePath, mode.target);
+  }
+  const plan = await buildPlan(ctx, byPath, sources, mode, opts);
+  assertNoTargetCollision(plan.planned);
+  return plan;
+};
+
+interface IndexMove {
+  readonly from: IndexEntry;
+  readonly to: IndexEntry;
+}
+
+interface RepathedItem {
+  readonly item: PlanItem;
+  readonly moves: ReadonlyArray<IndexMove>;
+}
+
+interface ExecutedItem extends RepathedItem {
+  readonly outcome: 'renamed' | 'skipped';
+}
+
+// Every target is validated before the first rename, so a refused path moves nothing.
+const executePlan = async (
+  ctx: Context,
+  lock: IndexLock,
+  byPath: Map<IndexPathKey, IndexEntry>,
+  { planned, skipped }: Plan,
+  opts: MvOptions,
+): Promise<MvResult> => {
+  const pathRules = indexPathRulesOf(ctx);
+  const repathed = planned.map((item) => repathItem(pathRules, item));
+  const executed = await renameEach(ctx, repathed, opts);
+  const indexed = executed.filter(movesIndex);
+  applyToIndex(byPath, indexed);
+  await removeAbandonedSources(ctx, byPath, executed);
+  await lock.commit(Array.from(byPath.values()), 'update');
+  return {
+    moved: plannedMoves(indexed.map(({ item }) => item)),
+    skipped: [...skipped, ...renameSkipsOf(executed)],
+  };
+};
+
+const repathItem = (pathRules: IndexPathRules, item: PlanItem): RepathedItem => ({
+  item,
+  moves: item.entries.map((from) => {
+    const to = withPath(from, { path: repath(from, item.source, item.target) });
+    pathRules.validateIndexPath(to.path, NO_PARSER_OFFSET, to.mode);
+    return { from, to };
+  }),
+});
+
+const renameEach = async (
+  ctx: Context,
+  repathed: ReadonlyArray<RepathedItem>,
+  opts: MvOptions,
+): Promise<ReadonlyArray<ExecutedItem>> => {
+  const run = opts.skipErrors === true ? renameOrSkip : renameOrThrow;
+  const executed: ExecutedItem[] = [];
+  for (const { item, moves } of repathed) {
+    executed.push({ item, moves, outcome: await run(ctx, item) });
+  }
+  return executed;
+};
+
+const renameOrThrow = async (ctx: Context, item: PlanItem): Promise<'renamed'> => {
+  await renameInWorkingTree(ctx, item.source, item.target);
+  return 'renamed';
+};
+
+const renameOrSkip = async (ctx: Context, item: PlanItem): Promise<'renamed' | 'skipped'> => {
+  try {
+    return await renameOrThrow(ctx, item);
+  } catch (err) {
+    if (!(err instanceof TsgitError)) throw err;
+    return 'skipped';
+  }
+};
+
+// A directory's index entries move even when its rename was refused: git moves the
+// members it could address and leaves the rest where they were.
+const movesIndex = ({ item, outcome }: ExecutedItem): boolean =>
+  outcome === 'renamed' || item.kind === 'directory';
+
+const renameSkipsOf = (executed: ReadonlyArray<ExecutedItem>): ReadonlyArray<MvSkipped> =>
+  executed
+    .filter(({ outcome }) => outcome === 'skipped')
+    .map(({ item }) => ({ source: item.source, reason: 'rename-failed' }));
+
+// After the whole loop: a later source may have been renamed into the abandoned
+// directory, so a per-item cleanup would delete it too early.
+const removeAbandonedSources = async (
+  ctx: Context,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  executed: ReadonlyArray<ExecutedItem>,
+): Promise<void> => {
+  for (const { item, outcome } of executed) {
+    if (item.kind !== 'directory' || outcome !== 'skipped') continue;
+    if (classifySource(byPath, item.source).kind !== 'untracked') continue;
+    await discardDirectory(ctx, item.source);
   }
 };
 
@@ -207,7 +327,7 @@ const buildPlan = async (
       }
       throw refusal(verdict.skip, verdict.source ?? source, verdict.target ?? target);
     }
-    planned.push({ source, target, entries: verdict.entries });
+    planned.push({ kind: verdict.kind, source, target, entries: verdict.entries });
   }
   return { planned, skipped };
 };
@@ -335,16 +455,13 @@ const plannedMoves = (planned: ReadonlyArray<PlanItem>): ReadonlyArray<MvMove> =
 };
 
 const applyToIndex = (
-  pathRules: IndexPathRules,
   byPath: Map<IndexPathKey, IndexEntry>,
-  planned: ReadonlyArray<PlanItem>,
+  indexed: ReadonlyArray<ExecutedItem>,
 ): void => {
-  for (const item of planned) {
-    for (const entry of item.entries) {
-      const moved = withPath(entry, { path: repath(entry, item.source, item.target) });
-      pathRules.validateIndexPath(moved.path, NO_PARSER_OFFSET, moved.mode);
-      byPath.delete(indexPathKey(entry));
-      byPath.set(indexPathKey(moved), moved);
+  for (const { moves } of indexed) {
+    for (const { from, to } of moves) {
+      byPath.delete(indexPathKey(from));
+      byPath.set(indexPathKey(to), to);
     }
   }
 };
@@ -354,7 +471,7 @@ const applyToIndex = (
 const repath = (entry: IndexEntry, source: FilePath, target: FilePath): FilePath =>
   `${target}${entry.path.slice(source.length)}` as FilePath;
 
-const refusal = (reason: MvSkipReason, source: FilePath, target: FilePath): TsgitError => {
+const refusal = (reason: PlanSkipReason, source: FilePath, target: FilePath): TsgitError => {
   switch (reason) {
     case 'source-not-tracked':
       return mvSourceNotTracked(source, target);
