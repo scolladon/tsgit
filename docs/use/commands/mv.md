@@ -26,7 +26,13 @@ interface MvMove {
   readonly to: FilePath;
 }
 
-type MvSkipReason = 'source-not-tracked' | 'bad-source' | 'destination-exists' | 'into-self' | 'rename-failed';
+type MvSkipReason =
+  | 'source-not-tracked'
+  | 'bad-source'
+  | 'destination-exists'
+  | 'into-self'
+  | 'destination-beyond-symlink'
+  | 'rename-failed';
 
 interface MvResult {
   readonly moved: ReadonlyArray<MvMove>; // one per moved index entry, sorted by `from`
@@ -36,7 +42,8 @@ interface MvResult {
 
 The destination is treated as a **directory** when it is an existing directory,
 ends with `/`, or there is more than one source — each source then moves into it
-keeping its basename. Otherwise it is a single rename.
+keeping its basename. Otherwise it is a single rename. A destination ending in `/` that names a
+symbolic link to a directory is a directory destination.
 
 A directory moves in one step on the node and memory adapters, so a refusal leaves it
 untouched. On the browser adapter it moves entry by entry, and a failure midway can leave it
@@ -90,6 +97,11 @@ Both are reported in `skipped` with reason `'rename-failed'`; a directory's memb
 in `moved`. On the entry-by-entry adapter, a move failing partway under `skipErrors` also removes
 what it placed at the destination; without `skipErrors` the partial move stays.
 
+A directory whose destination lies beyond a symbolic link is still renamed through the link: its
+members stay in the index under the source and are reported in `skipped` one by one with reason
+`'destination-beyond-symlink'`, so the work tree then lacks them, as git's does. A file is skipped
+and nothing is written.
+
 ## Windows paths
 
 Under a Windows host (node runtime on win32, whatever filesystem the caller passes) a path containing `\` is refused with `INVALID_INDEX_ENTRY` and reason `backslash rejected under Windows path syntax`, as git for Windows does; parsing an index, `write-tree` and `archive` do not refuse it.
@@ -110,9 +122,10 @@ A directory source selects its members by raw path bytes. A lossy member (a non-
 - `MV_OVERLAPPING_SOURCES` — a source is a directory containing another source (`mv a a/b dir`).
 - `EMPTY_PATHSPEC` — no sources were given.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
+- `MV_DESTINATION_BEYOND_SYMLINK` — a leading directory of an absent destination is a symbolic link, wherever it points (`source` and `destination` name the pair; for a directory, its first member and that member's destination). `force` does not lift it.
 - `PATH_TOO_LONG` — the file system refused a destination as too long; `path` names that destination, repository-relative (inside a directory move, the directory's destination; entry by entry, the leaf's destination). Nothing is moved and the index is unchanged, unless `skipErrors`.
 
-The first four are planning refusals and, under `skipErrors`, are collected in
+The first four, and `MV_DESTINATION_BEYOND_SYMLINK`, are planning refusals and, under `skipErrors`, are collected in
 `skipped` under their own reason; a working-tree rename the file system refuses is collected as
 `'rename-failed'`; the rest always throw.
 

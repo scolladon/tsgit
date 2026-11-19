@@ -626,7 +626,11 @@ export const forgeOwnHash = async (dir: string, claim: number, body: Buffer): Pr
 
 interface MvVerboseResult {
   readonly moved: ReadonlyArray<{ readonly from: string; readonly to: string }>;
+  readonly skipped: ReadonlyArray<{ readonly source: string; readonly reason: string }>;
 }
+
+const skippedAtPlanning = (result: MvVerboseResult, source: string): boolean =>
+  result.skipped.some((entry) => entry.source === source && entry.reason !== 'rename-failed');
 
 const renamingLine = (from: string, to: string): string => `Renaming ${from} to ${to}`;
 
@@ -642,7 +646,9 @@ export const mvVerboseLines = (
   result: MvVerboseResult,
   directorySources: ReadonlyArray<string>,
 ): ReadonlyArray<string> => [
-  ...sources.map((source) => renamingLine(source, targetOf(source))),
+  ...sources
+    .filter((source) => !skippedAtPlanning(result, source))
+    .map((source) => renamingLine(source, targetOf(source))),
   ...sources
     .filter((source) => directorySources.includes(source))
     .flatMap((source) =>

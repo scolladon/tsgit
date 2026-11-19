@@ -14,7 +14,17 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -897,6 +907,418 @@ describe.skipIf(!GIT_AVAILABLE || !CASE_INSENSITIVE)(
           await repo.mv(['f'], 'F', { force: true });
 
           // Assert
+          await expectParity();
+        });
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'mv porcelain interop beyond a symbolic link',
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('mv-beyond-link');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      repo = await openRepository({ cwd: pair.ours });
+      await repo.init();
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    const writeBoth = async (file: string, tracked: boolean): Promise<void> => {
+      for (const dir of [pair.peer, pair.ours]) {
+        await mkdir(path.join(dir, path.dirname(file)), { recursive: true });
+        await writeFile(path.join(dir, file), `${file}\n`);
+      }
+      if (!tracked) return;
+      runGit(['-C', pair.peer, 'add', '--', file]);
+      await repo.add([file]);
+    };
+
+    const seed = async (tracked: ReadonlyArray<string>): Promise<void> => {
+      for (const file of tracked) await writeBoth(file, true);
+      for (const dir of [pair.peer, pair.ours]) {
+        await mkdir(path.join(dir, '.git', 'hooks'), { recursive: true });
+      }
+    };
+
+    const linkBoth = async (name: string, target: string, tracked: boolean): Promise<void> => {
+      for (const dir of [pair.peer, pair.ours]) {
+        await symlink(target, path.join(dir, name));
+      }
+      if (!tracked) return;
+      runGit(['-C', pair.peer, 'add', '--', name]);
+      await repo.add([name]);
+    };
+
+    // The listing follows `lnk` into each twin's own .git, whose sample hooks differ by tool;
+    // what moved through the link is asserted at its .git path.
+    const workTreeEntries = async (dir: string): Promise<ReadonlyArray<string>> =>
+      (await diskEntries(dir)).filter((entry) => !entry.startsWith(`lnk${path.sep}`));
+
+    const expectParity = async (): Promise<void> => {
+      expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+      expect(await workTreeEntries(pair.ours)).toEqual(await workTreeEntries(pair.peer));
+    };
+
+    const beyondLinkLine = (data: unknown): string => {
+      const { source, destination } = data as { source: string; destination: string };
+      return `fatal: destination is beyond a symbolic link, source=${source}, destination=${destination}`;
+    };
+
+    const expectBeyondLink = async (
+      args: ReadonlyArray<string>,
+      run: () => Promise<unknown>,
+      expected: { readonly source: string; readonly destination: string },
+    ): Promise<void> => {
+      const stageBefore = lsStage(pair.ours);
+      const diskBefore = await workTreeEntries(pair.ours);
+
+      const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', ...args]);
+      const data = await outcomeOf(run);
+
+      expect(gitRun.exitCode).toBe(128);
+      expect(data).toMatchObject({ code: 'MV_DESTINATION_BEYOND_SYMLINK', ...expected });
+      expect(gitRun.stderr).toContain(beyondLinkLine(data));
+      expect(lsStage(pair.ours)).toBe(stageBefore);
+      expect(await workTreeEntries(pair.ours)).toEqual(diskBefore);
+      await expectParity();
+    };
+
+    const seedLinkedRepo = async (): Promise<void> => {
+      await seed(['dir/a', 'dir/b', 'f', 'sub/keep']);
+      await linkBoth('lnk', '.git', true);
+      await linkBoth('inner', 'sub', true);
+      await linkBoth('dang', 'nowhere', true);
+      await linkBoth('pointer', 'f', true);
+    };
+
+    describe('Given a tracked link to the git directory', () => {
+      beforeEach(seedLinkedRepo);
+
+      describe('When a directory moves beyond the link (row Y1)', () => {
+        it('Then git and tsgit refuse naming the first member and write nothing', async () => {
+          // Arrange
+          const sut = repo;
+
+          // Act & Assert
+          await expectBeyondLink(['dir', 'lnk/hooks/x'], () => sut.mv(['dir'], 'lnk/hooks/x'), {
+            source: 'dir/a',
+            destination: 'lnk/hooks/x/a',
+          });
+          for (const dir of [pair.peer, pair.ours]) {
+            expect(await pathExists(dir, '.git/hooks/x/a')).toBe(false);
+          }
+        });
+      });
+
+      describe.each([false, true])(
+        'When a file moves beyond the link, force=%s (row Y2)',
+        (force) => {
+          it('Then git and tsgit refuse naming the file and write nothing', async () => {
+            // Arrange
+            const sut = repo;
+            const args = force
+              ? ['-f', 'f', 'lnk/hooks/pre-commit']
+              : ['f', 'lnk/hooks/pre-commit'];
+
+            // Act & Assert
+            await expectBeyondLink(args, () => sut.mv(['f'], 'lnk/hooks/pre-commit', { force }), {
+              source: 'f',
+              destination: 'lnk/hooks/pre-commit',
+            });
+            for (const dir of [pair.peer, pair.ours]) {
+              expect(await pathExists(dir, '.git/hooks/pre-commit')).toBe(false);
+            }
+          });
+        },
+      );
+
+      describe('When skipErrors moves a directory beyond the link (row Y3)', () => {
+        it('Then both rename it through the link, keep the index and tsgit skips each member', async () => {
+          // Arrange
+          const sut = repo;
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit([
+            '-C',
+            pair.peer,
+            'mv',
+            '-k',
+            '-v',
+            'dir',
+            'lnk/hooks/y',
+          ]);
+          const result = await sut.mv(['dir'], 'lnk/hooks/y', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(result.moved).toEqual([]);
+          expect(result.skipped).toEqual([
+            { source: 'dir/a', reason: 'destination-beyond-symlink' },
+            { source: 'dir/b', reason: 'destination-beyond-symlink' },
+          ]);
+          expect(linesOf(gitRun.stdout)).toEqual(
+            mvVerboseLines(['dir'], () => 'lnk/hooks/y', result, ['dir']),
+          );
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          for (const dir of [pair.peer, pair.ours]) {
+            expect(await pathExists(dir, 'dir')).toBe(false);
+            expect(await pathExists(dir, '.git/hooks/y/a')).toBe(true);
+          }
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+
+      describe('When skipErrors moves a file beyond the link (row Y4)', () => {
+        it('Then git prints nothing, tsgit skips it and nothing changes', async () => {
+          // Arrange
+          const sut = repo;
+          const stageBefore = lsStage(pair.ours);
+          const diskBefore = await workTreeEntries(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit([
+            '-C',
+            pair.peer,
+            'mv',
+            '-k',
+            '-v',
+            'f',
+            'lnk/hooks/pre-commit',
+          ]);
+          const result = await sut.mv(['f'], 'lnk/hooks/pre-commit', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(gitRun.stdout).toBe('');
+          expect(result).toEqual({
+            moved: [],
+            skipped: [{ source: 'f', reason: 'destination-beyond-symlink' }],
+          });
+          expect(mvVerboseLines(['f'], () => 'lnk/hooks/pre-commit', result, [])).toEqual([]);
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          expect(await workTreeEntries(pair.ours)).toEqual(diskBefore);
+          await expectParity();
+        });
+      });
+
+      describe('When skipErrors moves a directory and an absent source into the link (row Y5)', () => {
+        it('Then git prints one line and both rename the directory through the link', async () => {
+          // Arrange
+          const sut = repo;
+
+          // Act
+          const gitRun = tryRunGitWithExit([
+            '-C',
+            pair.peer,
+            'mv',
+            '-k',
+            '-v',
+            'dir',
+            'f2',
+            'lnk/hooks',
+          ]);
+          const result = await sut.mv(['dir', 'f2'], 'lnk/hooks', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(linesOf(gitRun.stdout)).toHaveLength(1);
+          expect(linesOf(gitRun.stdout)).toEqual(
+            mvVerboseLines(['dir', 'f2'], (source) => `lnk/hooks/${source}`, result, ['dir']),
+          );
+          for (const dir of [pair.peer, pair.ours]) {
+            expect(await pathExists(dir, '.git/hooks/dir/a')).toBe(true);
+          }
+          await expectParity();
+        });
+      });
+
+      describe('When a file moves to a destination naming the link plus a slash (row Y10)', () => {
+        it('Then git and tsgit refuse naming the destination inside the link', async () => {
+          // Arrange
+          const sut = repo;
+
+          // Act & Assert
+          await expectBeyondLink(['f', 'inner/'], () => sut.mv(['f'], 'inner/'), {
+            source: 'f',
+            destination: 'inner/f',
+          });
+        });
+      });
+    });
+
+    describe('Given a tracked link to a directory inside the work tree', () => {
+      beforeEach(seedLinkedRepo);
+
+      describe.each([
+        ['a file (row Y6)', ['f'], 'inner/g', 'f', 'inner/g'],
+        ['a directory (row Y6)', ['dir'], 'inner/x', 'dir/a', 'inner/x/a'],
+        ['a file below a dangling link (row Y8)', ['f'], 'dang/x', 'f', 'dang/x'],
+        ['a file below a link to a file (row Y8)', ['f'], 'pointer/x', 'f', 'pointer/x'],
+      ] as const)(
+        'When %s moves beyond the link',
+        (_label, sources, destination, source, expected) => {
+          it('Then git and tsgit refuse naming the pair and write nothing', async () => {
+            // Arrange
+            const sut = repo;
+
+            // Act & Assert
+            await expectBeyondLink([...sources, destination], () => sut.mv(sources, destination), {
+              source,
+              destination: expected,
+            });
+          });
+        },
+      );
+
+      describe('When skipErrors moves a directory beyond the link (row Y7)', () => {
+        it('Then both leave the members untracked under the link target and keep the index', async () => {
+          // Arrange
+          const sut = repo;
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-k', '-v', 'dir', 'inner/x']);
+          const result = await sut.mv(['dir'], 'inner/x', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(linesOf(gitRun.stdout)).toEqual(
+            mvVerboseLines(['dir'], () => 'inner/x', result, ['dir']),
+          );
+          for (const dir of [pair.peer, pair.ours]) {
+            expect(await pathExists(dir, 'sub/x/a')).toBe(true);
+          }
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          await expectParity();
+        });
+      });
+
+      describe('When a directory moves beyond a link into the directory with a slash (rows Y10, Y11)', () => {
+        it('Then git and tsgit refuse without skipErrors', async () => {
+          // Arrange
+          const sut = repo;
+
+          // Act & Assert
+          await expectBeyondLink(['dir', 'inner/'], () => sut.mv(['dir'], 'inner/'), {
+            source: 'dir/a',
+            destination: 'inner/dir/a',
+          });
+        });
+
+        it('Then both move the directory and keep the file with skipErrors', async () => {
+          // Arrange
+          const sut = repo;
+
+          // Act
+          const gitRun = tryRunGitWithExit([
+            '-C',
+            pair.peer,
+            'mv',
+            '-k',
+            '-v',
+            'dir',
+            'f',
+            'inner/',
+          ]);
+          const result = await sut.mv(['dir', 'f'], 'inner/', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(linesOf(gitRun.stdout)).toHaveLength(1);
+          expect(linesOf(gitRun.stdout)).toEqual(
+            mvVerboseLines(['dir', 'f'], (source) => `inner/${source}`, result, ['dir']),
+          );
+          for (const dir of [pair.peer, pair.ours]) {
+            expect(await pathExists(dir, 'sub/dir/a')).toBe(true);
+            expect(await pathExists(dir, 'f')).toBe(true);
+          }
+          await expectParity();
+        });
+      });
+
+      describe.each(['dang/', 'pointer/'])(
+        'When a file moves to %s, a link that is no directory (row Y12)',
+        (destination) => {
+          it('Then git and tsgit refuse as the directory missing naming the destination', async () => {
+            // Arrange
+            const sut = repo;
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'f', destination]);
+            const data = await outcomeOf(() => sut.mv(['f'], destination));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(128);
+            expect(data).toMatchObject({
+              code: 'MV_DESTINATION_DIRECTORY_MISSING',
+              destination,
+            });
+            expect(gitRun.stderr).toContain(
+              `fatal: destination directory does not exist, source=f, destination=${destination}`,
+            );
+            await expectParity();
+          });
+        },
+      );
+
+      describe('When a dry run moves a directory beyond the link (row Y13)', () => {
+        it('Then git and tsgit refuse, and with skipErrors both return and change nothing', async () => {
+          // Arrange
+          const sut = repo;
+          await expectBeyondLink(
+            ['-n', 'dir', 'inner/x'],
+            () => sut.mv(['dir'], 'inner/x', { dryRun: true }),
+            { source: 'dir/a', destination: 'inner/x/a' },
+          );
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-n', '-k', 'dir', 'inner/x']);
+          const result = await sut.mv(['dir'], 'inner/x', { dryRun: true, skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(result.moved).toEqual([]);
+          for (const dir of [pair.peer, pair.ours]) {
+            expect(await pathExists(dir, 'dir/a')).toBe(true);
+            expect(await pathExists(dir, 'sub/x')).toBe(false);
+          }
+          await expectParity();
+        });
+      });
+    });
+
+    describe('Given a tracked link inside the directory being moved', () => {
+      describe('When the directory moves into itself through the link (row Y15)', () => {
+        it('Then git and tsgit refuse as into-self', async () => {
+          // Arrange
+          const sut = repo;
+          await seed(['dir/a', 'sub/keep']);
+          await linkBoth('dir/l', '../sub', true);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'dir', 'dir/l/x']);
+          const data = await outcomeOf(() => sut.mv(['dir'], 'dir/l/x'));
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(data).toMatchObject({
+            code: 'MV_INTO_SELF',
+            source: 'dir',
+            destination: 'dir/l/x',
+          });
+          expect(gitRun.stderr).toContain(
+            'fatal: can not move directory into itself, source=dir, destination=dir/l/x',
+          );
           await expectParity();
         });
       });
