@@ -1514,24 +1514,25 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
 
       describe.each([
-        ['a file', 'f', 'destination exists'],
-        ['a directory', 'dir', 'destination already exists'],
-      ])('When %s moves onto the link itself (row Y16)', (_label, source, phrase) => {
+        ['a file', 'f', 'inner', 'destination exists'],
+        ['a directory', 'dir', 'inner', 'destination already exists'],
+        ['a file onto the git-dir link', 'f', 'lnk', 'destination exists'],
+      ])('When %s moves onto the link itself (row Y16)', (_label, source, link, phrase) => {
         it('Then git and tsgit refuse as an existing destination', async () => {
           // Arrange
           const sut = repo;
           const stageBefore = lsStage(pair.ours);
 
           // Act
-          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', source, 'inner']);
-          const data = await outcomeOf(() => sut.mv([source], 'inner'));
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', source, link]);
+          const data = await outcomeOf(() => sut.mv([source], link));
 
           // Assert
           expect(gitRun.exitCode).toBe(128);
           expect(data).toMatchObject({
             code: 'MV_DESTINATION_EXISTS',
             source,
-            destination: 'inner',
+            destination: link,
           });
           expect(gitRun.stderr).toContain(fatalLine(phrase, data));
           expect(lsStage(pair.ours)).toBe(stageBefore);
@@ -1624,7 +1625,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       ])('Given tracked target %s, tracked link %s', (trackedTarget, trackedLink) => {
         beforeEach(() => seedTarget(trackedTarget, trackedLink));
 
-        describe('When a file moves onto it without force (rows Y17, Z1, Z4)', () => {
+        describe('When a file moves onto it without force (rows Y17, Z1)', () => {
           it('Then git and tsgit refuse as an existing destination and write nothing', async () => {
             // Arrange
             const sut = repo;
@@ -1739,6 +1740,45 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(result.moved).toEqual([{ from: 'f', to: 'inner/keep' }]);
             expect(lsStage(pair.ours)).toBe(stageBefore);
             expect(await keptContent()).toEqual(['sub/keep\n', 'sub/keep\n']);
+            await expectParity();
+          });
+        });
+
+        describe('When skipErrors with force moves a file onto it (row Z6)', () => {
+          it('Then both overwrite the file behind the link and agree on the index', async () => {
+            // Arrange
+            const sut = repo;
+
+            // Act
+            runGit(['-C', pair.peer, 'mv', '-k', '-f', 'f', 'inner/keep']);
+            const result = await sut.mv(['f'], 'inner/keep', { skipErrors: true, force: true });
+
+            // Assert
+            expect(result).toEqual({ moved: [{ from: 'f', to: 'inner/keep' }], skipped: [] });
+            expect(await keptContent()).toEqual(['f\n', 'f\n']);
+            await expectParity();
+          });
+        });
+
+        describe('When a dry run without force moves a file onto it (row Z8)', () => {
+          it('Then git and tsgit refuse as an existing destination and change nothing', async () => {
+            // Arrange
+            const sut = repo;
+            const stageBefore = lsStage(pair.ours);
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-n', 'f', 'inner/keep']);
+            const data = await outcomeOf(() => sut.mv(['f'], 'inner/keep', { dryRun: true }));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(128);
+            expect(data).toMatchObject({
+              code: 'MV_DESTINATION_EXISTS',
+              source: 'f',
+              destination: 'inner/keep',
+            });
+            expect(gitRun.stderr).toContain(fatalLine('destination exists', data));
+            expect(lsStage(pair.ours)).toBe(stageBefore);
             await expectParity();
           });
         });
