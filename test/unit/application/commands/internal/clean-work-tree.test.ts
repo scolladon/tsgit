@@ -12,6 +12,7 @@ import {
   stagedGitlinkChanges,
   unstagedChangePaths,
 } from '../../../../../src/application/commands/internal/clean-work-tree.js';
+import * as trust from '../../../../../src/application/primitives/read-executable-bit-trust.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { MAX_GITMODULES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -182,6 +183,35 @@ describe('assertCleanWorkTree', () => {
 
         // Assert
         expect(lstat.mock.calls.filter(([path]) => path === work(ctx, 'd'))).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given one and then three committed files with unstaged edits', () => {
+    describe('When asserted', () => {
+      it('Then core.fileMode reads do not grow with the entry count', async () => {
+        // Arrange
+        const countReads = async (names: ReadonlyArray<string>): Promise<number> => {
+          const ctx = createMemoryContext();
+          await init(ctx);
+          for (const name of names) await ctx.fs.writeUtf8(work(ctx, name), `${name}\n`);
+          await add(ctx, [...names]);
+          const { tree } = await commit(ctx, { message: 'init', author: AUTHOR });
+          for (const name of names) await ctx.fs.writeUtf8(work(ctx, name), 'edited\n');
+          const reads = vi.spyOn(trust, 'readExecutableBitTrust');
+          await codeOf(() => assertCleanWorkTree(ctx, tree));
+          const count = reads.mock.calls.length;
+          reads.mockRestore();
+          return count;
+        };
+        const sut = countReads;
+
+        // Act
+        const one = await sut(['a']);
+        const three = await sut(['a', 'b', 'c']);
+
+        // Assert
+        expect(three).toBe(one);
       });
     });
   });

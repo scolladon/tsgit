@@ -16,6 +16,7 @@ import { compareAndRefresh, scopeOf } from '../../primitives/compare-working-tre
 import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
 import { buildCheckinAttributeProvider } from '../../primitives/internal/read-gitattributes.js';
 import { createLeadingPathScanner } from '../../primitives/internal/symlinked-leading-path.js';
+import { readExecutableBitTrust } from '../../primitives/read-executable-bit-trust.js';
 import { readIndex } from '../../primitives/read-index.js';
 import {
   configuredSubmoduleIgnore,
@@ -157,7 +158,10 @@ const unstagedDirty = async (
 ): Promise<ReadonlyArray<FilePath>> => {
   const provider = await buildCheckinAttributeProvider(ctx);
   // One leading-path memo for the whole pass: a shared directory is lstat-ed once.
-  const scope = scopeOf(provider, indexMtime, createLeadingPathScanner(ctx));
+  const scope = {
+    ...scopeOf(provider, indexMtime, createLeadingPathScanner(ctx)),
+    executableBit: await readExecutableBitTrust(ctx),
+  };
   const dirty: FilePath[] = [];
   for (const entry of stage0) {
     // Skip-worktree (sparse-excluded) entries are intentionally off-disk.

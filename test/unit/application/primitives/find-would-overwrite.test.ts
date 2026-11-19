@@ -9,6 +9,7 @@ import {
   resultModesOf,
 } from '../../../../src/application/primitives/find-would-overwrite.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import * as trust from '../../../../src/application/primitives/read-executable-bit-trust.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
@@ -91,6 +92,35 @@ describe('findWouldOverwrite', () => {
         expect(
           lstat.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/d`),
         ).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given one and then three tracked paths with local edits', () => {
+    describe('When findWouldOverwrite runs over each', () => {
+      it('Then core.fileMode reads do not grow with the entry count', async () => {
+        // Arrange
+        const countReads = async (names: ReadonlyArray<string>): Promise<number> => {
+          const ctx = createMemoryContext();
+          const entries: IndexEntry[] = [];
+          for (const name of names) {
+            await work(ctx, name, 'edited\n');
+            entries.push(entryOf(name, await blob(ctx, `${name}\n`)));
+          }
+          const reads = vi.spyOn(trust, 'readExecutableBitTrust');
+          await findWouldOverwrite(ctx, set(...names), indexOf(entries));
+          const count = reads.mock.calls.length;
+          reads.mockRestore();
+          return count;
+        };
+        const sut = countReads;
+
+        // Act
+        const one = await sut(['a']);
+        const three = await sut(['a', 'b', 'c']);
+
+        // Assert
+        expect(three).toBe(one);
       });
     });
   });
