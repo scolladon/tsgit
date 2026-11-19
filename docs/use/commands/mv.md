@@ -26,7 +26,7 @@ interface MvMove {
   readonly to: FilePath;
 }
 
-type MvSkipReason = 'source-not-tracked' | 'bad-source' | 'destination-exists' | 'into-self';
+type MvSkipReason = 'source-not-tracked' | 'bad-source' | 'destination-exists' | 'into-self' | 'rename-failed';
 
 interface MvResult {
   readonly moved: ReadonlyArray<MvMove>; // one per moved index entry, sorted by `from`
@@ -38,13 +38,20 @@ The destination is treated as a **directory** when it is an existing directory,
 ends with `/`, or there is more than one source — each source then moves into it
 keeping its basename. Otherwise it is a single rename.
 
+A directory moves in one step on the node and memory adapters, so a refusal leaves it
+untouched. On the browser adapter it moves entry by entry, and a failure midway can leave it
+partially moved.
+
+Case-only renames: under `core.ignorecase=true` a **file** whose destination differs only in
+ASCII case moves. A directory whose destination exists by case is refused whatever the setting.
+
 ## Options
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `force` | `boolean` | `false` | Overwrite an existing destination (a file source only). |
 | `dryRun` | `boolean` | `false` | Validate and report the plan without touching index or working tree. |
-| `skipErrors` | `boolean` | `false` | Skip refused source pairs (collected in `skipped`) instead of aborting. |
+| `skipErrors` | `boolean` | `false` | Skip refused source pairs, and pairs whose working-tree rename the file system refuses (collected in `skipped`), instead of aborting. |
 
 > Breaking a stale `.git/index.lock` is repository-environment policy, set once on `openRepository({ config: { breakStaleLockMs } })` — not a per-call option. It applies to every index-mutating command.
 
@@ -70,13 +77,26 @@ const { moved } = await repo.mv(['a.txt'], 'b.txt', { dryRun: true });
 const { moved, skipped } = await repo.mv(['a.txt', 'ghost.txt'], 'dir', { skipErrors: true });
 ```
 
+## Skipping errors deletes data as git does
+
+`skipErrors` mirrors `git mv -k`, including its data loss:
+
+- A refused **file** rename leaves the file where it is, in the index and on disk.
+- A refused **directory** rename still moves its tracked entries in the index, then deletes the
+  source directory with everything in it: untracked files, and anything another source of the
+  same call moved into it.
+
+Both are reported in `skipped` with reason `'rename-failed'`; a directory's members also appear
+in `moved`. On the entry-by-entry adapter, a move failing partway under `skipErrors` also removes
+what it placed at the destination; without `skipErrors` the partial move stays.
+
 ## Windows paths
 
 Under a Windows host (node runtime on win32, whatever filesystem the caller passes) a path containing `\` is refused with `INVALID_INDEX_ENTRY` and reason `backslash rejected under Windows path syntax`, as git for Windows does; parsing an index, `write-tree` and `archive` do not refuse it.
 
 ## Byte-exact paths
 
-A directory source selects its members by raw path bytes. A lossy member (a non-UTF-8 name) is a bad source (`MV_BAD_SOURCE`), or skipped under `skipErrors`, since lossy entries are never touched on disk. Every moved path is re-validated against git's index-entry rules before the index is written.
+A directory source selects its members by raw path bytes. A lossy member (a non-UTF-8 name) is a bad source (`MV_BAD_SOURCE`), or skipped under `skipErrors`, since lossy entries are never touched on disk. A directory holding a lossy member keeps its source, and a partial move of it stays at the destination. Every moved path is re-validated against git's index-entry rules before the index is written.
 
 ## Throws
 
@@ -90,10 +110,11 @@ A directory source selects its members by raw path bytes. A lossy member (a non-
 - `MV_OVERLAPPING_SOURCES` — a source is a directory containing another source (`mv a a/b dir`).
 - `EMPTY_PATHSPEC` — no sources were given.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
-- `PATH_TOO_LONG` — the file system refused a destination as too long; `path` names that destination, repository-relative (inside a directory move, the leaf's destination). Nothing is moved and the index is unchanged.
+- `PATH_TOO_LONG` — the file system refused a destination as too long; `path` names that destination, repository-relative (inside a directory move, the directory's destination; entry by entry, the leaf's destination). Nothing is moved and the index is unchanged, unless `skipErrors`.
 
-The first four are per-source and, under `skipErrors`, are collected in
-`skipped` instead of thrown; the rest are structural and always thrown.
+The first four are planning refusals and, under `skipErrors`, are collected in
+`skipped` under their own reason; a working-tree rename the file system refuses is collected as
+`'rename-failed'`; the rest always throw.
 
 ## See also
 

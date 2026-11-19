@@ -209,12 +209,6 @@ A well-formed repository, but a configuration, layout or argument shape few call
   tsgit grep               -> threw {"code":"PATH_TOO_LONG","path":"<tmp>/<q50>/…/.gitattributes"}
   ```
 
-- **32.72** `mv` with `skipErrors` throws on a rename the host refuses as too long, where `git mv -k` skips it — pinned against git 2.56.0. `base` tracked, destination `S = 's'×300`. git `mv -k base S` exits 0 and moves nothing (without `-k`: 128, rename failed); tsgit throws `PATH_TOO_LONG` naming `S` with or without `skipErrors`, nothing moved (`src/application/commands/mv.ts`).
-  ```
-  git mv -k base <s300> -> exit 0
-  tsgit mv(['base'], S, {skipErrors:true}) -> threw {"code":"PATH_TOO_LONG","path":"<s300>"}
-  ```
-
 - **32.76** Under `core.ignoreCase`, a non-forced switch refuses a staged file that differs only in case from a directory the target adds, where git switches — pinned against git 2.56.0 (macOS APFS), unborn HEAD. Staged `DIR`, target `dir/x`. git exits 0 and leaves `AD DIR`, so the staged file's working copy is lost. tsgit refuses `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }`, because the two-way carry compares file and directory collisions case-exactly (`src/application/primitives/materialize-tree.ts`). With `core.ignoreCase=false` both refuse. Not folded: adds feature behaviour.
   ```
   ic=true  git checkout side -> exit 0; ls-files: DIR, dir/x; status: AD DIR; disk: dir/
