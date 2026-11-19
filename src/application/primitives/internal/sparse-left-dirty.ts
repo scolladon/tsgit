@@ -39,7 +39,7 @@ export interface MoverVerdicts {
   /** Content differs from the entry: the file stays. */
   readonly dirty: ReadonlySet<IndexPathKey>;
   /** A regular file or symlink stood there and matched its entry; nothing else was proven. */
-  readonly verifiedClean: ReadonlySet<IndexPathKey>;
+  readonly verifiedClean: ReadonlySet<FilePath>;
 }
 
 type Verdict = 'dirty' | 'verified-clean' | 'unproven';
@@ -109,9 +109,12 @@ export const judgeMovers = async (
   const verdicts = await boundedMapFor(ctx, 'ioBound', verifiable, (entry) =>
     verdictOf(judgement, entry, joinPath(workdir, escapedPathOf(entry))),
   );
-  const keysWith = (wanted: Verdict): Set<IndexPathKey> =>
-    new Set(verifiable.filter((_, i) => verdicts[i] === wanted).map(indexPathKey));
-  return { dirty: keysWith('dirty'), verifiedClean: keysWith('verified-clean') };
+  const entriesWith = (wanted: Verdict): ReadonlyArray<IndexEntry> =>
+    verifiable.filter((_, i) => verdicts[i] === wanted);
+  return {
+    dirty: new Set(entriesWith('dirty').map(indexPathKey)),
+    verifiedClean: new Set(entriesWith('verified-clean').map(escapedPathOf)),
+  };
 };
 
 export const notUpToDate = async (

@@ -824,9 +824,7 @@ const dirtyMoversOf = async (
   const { dirty, verifiedClean } = await judgeMovers(ctx, workdir, candidates, indexMtime);
   return {
     leftDirty: candidates.filter((e) => dirty.has(indexPathKey(e))),
-    verifiedClean: new Set(
-      candidates.filter((e) => verifiedClean.has(indexPathKey(e))).map(escapedPathOf),
-    ),
+    verifiedClean,
   };
 };
 
