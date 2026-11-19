@@ -1675,7 +1675,7 @@ describe('cleanFilterFailed error', () => {
     });
   });
 
-  describe('Given cleanFilterFailed factory', () => {
+  describe('Given cleanFilterFailed factory and its message prefix', () => {
     describe('When reading .message prefix', () => {
       it('Then message starts with "clean filter" (not "smudge filter" via case fall-through)', () => {
         // Arrange & Act
