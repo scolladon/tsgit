@@ -10,6 +10,7 @@
 import { TsgitError } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import { isPathTooLong } from './fs-probes.js';
 import { joinPath } from './join-working-tree-path.js';
 import { createPromiseMemo, type PromiseMemo } from './promise-memo.js';
 import { requireWorkTree } from './repo-state.js';
@@ -254,4 +255,18 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
     ensureLeadingDirectories,
     invalidateAll,
   };
+};
+
+// git's lstat_cache records a failed lstat as "not a symlink": a prefix the file
+// system cannot name has nothing beneath it, so no later prefix can be a link.
+export const beyondSymlink = async (
+  scanner: LeadingPathScanner,
+  target: FilePath,
+): Promise<boolean> => {
+  try {
+    return await scanner.hasSymlinkedLeadingPath(target);
+  } catch (err) {
+    if (isPathTooLong(err)) return false;
+    throw err;
+  }
 };

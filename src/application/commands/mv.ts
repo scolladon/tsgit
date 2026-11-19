@@ -50,6 +50,7 @@ import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
+  beyondSymlink,
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
@@ -60,7 +61,6 @@ import {
   assertOperationalRepository,
   requireWorkTree,
 } from './internal/repo-state.js';
-import { beyondSymlink } from './internal/resolve-pathspec.js';
 import { discardDirectory, renameInWorkingTree, validatePath } from './internal/working-tree.js';
 
 // Same tolerance set as `rm`: a missing-or-unparsable index is treated as
@@ -85,8 +85,8 @@ export interface MvMove {
 }
 
 /**
- * Per-source refusals that `skipErrors` collects rather than throwing. The first
- * five are decided while planning; `rename-failed` is collected at execution.
+ * Per-source refusals that `skipErrors` collects rather than throwing. Every reason
+ * but `rename-failed` is decided while planning; `rename-failed` is collected at execution.
  */
 export type MvSkipReason =
   | 'source-not-tracked'
@@ -275,8 +275,9 @@ const renameOrSkip = async (ctx: Context, item: PlanItem): Promise<'renamed' | '
   }
 };
 
+// An item without index moves leaves the index at its source, so what it moved stays.
 const abandonsSource = (item: PlanItem): boolean =>
-  item.kind === 'directory' && item.retained.length === 0;
+  item.kind === 'directory' && item.retained.length === 0 && item.entries.length > 0;
 
 const removePartialMove = async (ctx: Context, target: FilePath): Promise<void> => {
   if ((await lstatOrUndefined(ctx, target)) === undefined) return;
@@ -294,15 +295,16 @@ const renameSkipsOf = (executed: ReadonlyArray<ExecutedItem>): ReadonlyArray<MvS
     .map(({ item }) => ({ source: item.source, reason: 'rename-failed' }));
 
 // After the whole loop: a later source may have been renamed into the abandoned
-// directory, so a per-item cleanup would delete it too early. A skipped file keeps
-// its index entry, so only a directory can classify as untracked here.
+// directory, so a per-item cleanup would delete it too early. Only a directory is
+// cleaned: the index replacement rule can drop a skipped file's entry, and its path
+// then names whatever now stands there, which git keeps.
 const removeAbandonedSources = async (
   ctx: Context,
   byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
   executed: ReadonlyArray<ExecutedItem>,
 ): Promise<void> => {
   for (const { item, outcome } of executed) {
-    if (outcome !== 'skipped') continue;
+    if (item.kind !== 'directory' || outcome !== 'skipped') continue;
     if (classifySource(byPath, item.source).kind !== 'untracked') continue;
     await discardDirectory(ctx, item.source);
   }
@@ -330,11 +332,7 @@ const resolveDestinationMode = async (
   const stat = destination.endsWith('/')
     ? await statOrUndefined(ctx, destNoSlash)
     : await lstatOrUndefined(ctx, destNoSlash);
-  // equivalent-mutant: lstat never reports a path as both a directory and a symlink
-  // (it does not follow the final component), so when `isDirectory === true` the
-  // `isSymbolicLink !== true` operand is always true — the guard stays defensive for
-  // adapters that might diverge from that contract.
-  if (stat?.isDirectory === true && stat.isSymbolicLink !== true) {
+  if (stat?.isDirectory === true) {
     return { kind: 'into-dir', destDir: destNoSlash };
   }
   if (destination.endsWith('/')) {
@@ -409,7 +407,8 @@ const validateMove = async (
     target,
     kind: classified.kind,
     policy,
-    members: classified.entries,
+    first: classified.entries[0],
+    members: entries,
     retained,
     opts,
   });
@@ -434,6 +433,9 @@ interface DestinationCheck {
   readonly target: FilePath;
   readonly kind: 'file' | 'directory';
   readonly policy: DestinationPolicy;
+  /** The first tracked member, which a refusal names; without `skipErrors` it is addressable. */
+  readonly first: IndexEntry;
+  /** The addressable members: what actually moves. */
   readonly members: ReadonlyArray<IndexEntry>;
   readonly retained: ReadonlyArray<IndexEntry>;
   readonly opts: MvOptions;
@@ -442,10 +444,11 @@ interface DestinationCheck {
 const refuseDestination = async (
   ctx: Context,
   byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
-  { source, target, kind, policy, members, retained, opts }: DestinationCheck,
+  check: DestinationCheck,
 ): Promise<Verdict | undefined> => {
+  const { source, target, kind, policy } = check;
   if (await destinationBeyondSymlink(ctx, policy.scanner, target)) {
-    return beyondSymlinkVerdict(kind, source, target, members, retained, opts);
+    return beyondSymlinkVerdict(check);
   }
   // `dirname` of a validated path is a prefix of it — still a valid repo path.
   const parent = dirname(target) as FilePath;
@@ -468,21 +471,20 @@ const destinationBeyondSymlink = async (
 
 // Git renames the directory itself through the link and skips each member it
 // cannot place; a file has no such partial outcome.
-const beyondSymlinkVerdict = (
-  kind: 'file' | 'directory',
-  source: FilePath,
-  target: FilePath,
-  entries: ReadonlyArray<IndexEntry>,
-  retained: ReadonlyArray<IndexEntry>,
-  opts: MvOptions,
-): Verdict => {
+const beyondSymlinkVerdict = ({
+  kind,
+  source,
+  target,
+  first,
+  members,
+  retained,
+  opts,
+}: DestinationCheck): Verdict => {
   const skip = 'destination-beyond-symlink';
   if (kind === 'file') return { skip };
   if (opts.skipErrors === true) {
-    return { kind, entries: [], retained, skippedMembers: entries };
+    return { kind, entries: [], retained, skippedMembers: members };
   }
-  const [first] = entries;
-  if (first === undefined) return { skip: 'bad-source' };
   return { skip, source: first.path, target: repath(first, source, target) };
 };
 
@@ -496,9 +498,11 @@ const memberBadSource = (member: IndexEntry, source: FilePath, target: FilePath)
   };
 };
 
+type TrackedEntries = readonly [IndexEntry, ...IndexEntry[]];
+
 type SourceClass =
-  | { readonly kind: 'file'; readonly entries: ReadonlyArray<IndexEntry> }
-  | { readonly kind: 'directory'; readonly entries: ReadonlyArray<IndexEntry> }
+  | { readonly kind: 'file'; readonly entries: TrackedEntries }
+  | { readonly kind: 'directory'; readonly entries: TrackedEntries }
   | { readonly kind: 'untracked' };
 
 const classifySource = (
@@ -511,8 +515,9 @@ const classifySource = (
   const entries = Array.from(byPath.values()).filter((entry) =>
     hasBytePrefix(pathBytesOf(entry), prefix),
   );
-  if (entries.length > 0) return { kind: 'directory', entries };
-  return { kind: 'untracked' };
+  const [first, ...rest] = entries;
+  if (first === undefined) return { kind: 'untracked' };
+  return { kind: 'directory', entries: [first, ...rest] };
 };
 
 const sourceExistsOnDisk = async (
@@ -531,7 +536,7 @@ const sourceExistsOnDisk = async (
 const untrackedVerdictOf = async (ctx: Context, source: FilePath): Promise<PlanSkipReason> => {
   const stat = await lstatOrUndefined(ctx, source);
   if (stat === undefined) return 'bad-source';
-  return stat.isDirectory && !stat.isSymbolicLink ? 'source-directory-empty' : 'source-not-tracked';
+  return stat.isDirectory ? 'source-directory-empty' : 'source-not-tracked';
 };
 
 interface DestinationPolicy {

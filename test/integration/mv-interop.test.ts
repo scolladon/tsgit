@@ -15,11 +15,13 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
   stat,
   symlink,
@@ -1739,6 +1741,37 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             'fatal: can not move directory into itself, source=dir, destination=dir/l/x',
           );
           await expectParity();
+        });
+      });
+    });
+
+    describe('Given a skipped file whose index entry another move replaces', () => {
+      describe('When skipErrors and force move b and D/b/k into D/ with D/b a link to a read-only directory', () => {
+        it('Then both exit 0 with the index {D/b} and keep what the link leads to', async () => {
+          // Arrange
+          const sut = repo;
+          await seed(['D/b/k', 'b']);
+          for (const dir of [pair.peer, pair.ours]) {
+            await rename(path.join(dir, 'D', 'b'), path.join(dir, 'realdir'));
+            await symlink('../realdir', path.join(dir, 'D', 'b'));
+            await chmod(path.join(dir, 'realdir'), 0o555);
+          }
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-k', '-f', 'b', 'D/b/k', 'D/']);
+          const outcome = await sut
+            .mv(['b', 'D/b/k'], 'D/', { skipErrors: true, force: true })
+            .then(() => 'resolved')
+            .catch((err: unknown) => err);
+          for (const dir of [pair.peer, pair.ours]) await chmod(path.join(dir, 'realdir'), 0o755);
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(outcome).toBe('resolved');
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          for (const dir of [pair.peer, pair.ours]) {
+            await expect(readFile(path.join(dir, 'realdir', 'k'), 'utf8')).resolves.toBe('D/b/k\n');
+          }
         });
       });
     });

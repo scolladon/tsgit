@@ -2566,3 +2566,85 @@ describe('mv — an existing destination through a link and the index replacemen
     });
   });
 });
+
+describe('mv — a skipped file whose index entry another move replaces', () => {
+  describe('Given D/b/k and b tracked, D/b made a link, and force with skipErrors', () => {
+    describe('When mv(b, D/b/k) into D/', () => {
+      it('Then it does not throw, D/b replaces D/b/k in the index and the link target stays', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'D/b/k': 'k', b: 'b', 'real/k': 'k', 'real/x': 'x' });
+        await ctx.fs.rmRecursive(work(ctx, 'D/b'));
+        await ctx.fs.symlink('../real', work(ctx, 'D/b'));
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['b', 'D/b/k'], 'D/', { skipErrors: true, force: true });
+
+        // Assert
+        expect(result.moved).toEqual([{ from: 'b', to: 'D/b' }]);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual([
+          'D/b',
+          'real/k',
+          'real/x',
+        ]);
+        expect(await readWork(ctx, 'real/x')).toBe('x');
+      });
+    });
+  });
+});
+
+describe('mv on a lossy member of a directory beyond a symbolic link', () => {
+  describe('Given d/y, a lossy d/<0xff> member and a link standing at the destination parent', () => {
+    describe('When mv moves d beyond the link with skipErrors', () => {
+      it('Then only the addressable member is reported skipped', async () => {
+        // Arrange
+        const ctx = await seedRows({ 'd/y': 'y', 'sub/keep': 'k' }, [
+          { path: 'd/y' },
+          { path: 'd/�', bytes: [0x64, 0x2f, 0xff] },
+        ]);
+        await ctx.fs.symlink('sub', work(ctx, 'inner'));
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['d'], 'inner/x', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped).toEqual([{ source: 'd/y', reason: 'destination-beyond-symlink' }]);
+        expect(result.moved).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('mv — a partial move of a directory beyond a symbolic link without renameDirectory', () => {
+  describe('Given dir/a and dir/b, lnk -> sub and a rename fault at the 2nd leaf', () => {
+    describe('When mv(dir, lnk/x) with skipErrors', () => {
+      it('Then what was moved beyond the link is kept', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'dir/a': 'a', 'dir/b': 'b', 'sub/keep': 'k' });
+        await ctx.fs.symlink('sub', work(ctx, 'lnk'));
+        const inner = withoutDirectoryRename(ctx);
+        let seen = 0;
+        const faulting: Context = {
+          ...inner,
+          fs: {
+            ...inner.fs,
+            rename: async (src: string, dst: string) => {
+              seen += 1;
+              if (seen === 2) throw permissionDenied('/abs/x');
+              return ctx.fs.rename(src, dst);
+            },
+          },
+        };
+        const sut = mv;
+
+        // Act
+        await sut(faulting, ['dir'], 'lnk/x', { skipErrors: true });
+
+        // Assert
+        expect(await readWork(ctx, 'sub/x/a')).toBe('a');
+        expect(await readWork(ctx, 'dir/b')).toBe('b');
+      });
+    });
+  });
+});
