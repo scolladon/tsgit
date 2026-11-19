@@ -359,11 +359,10 @@ const materialisedPaths = (
   sparse: SparseMatcher | undefined,
 ): ReadonlySet<FilePath> => {
   const dropped = new Set(
-    outcomes.flatMap((outcome) =>
-      outcome.status === 'conflict' || isDeleted(outcome) || isMaterialised(outcome, sparse)
-        ? []
-        : [outcome.path],
-    ),
+    outcomes
+      .filter((outcome): outcome is ChangedOutcome => outcome.status !== 'conflict')
+      .filter((outcome) => !isDeleted(outcome) && !isMaterialised(outcome, sparse))
+      .map((outcome) => outcome.path),
   );
   return new Set([...changed].filter((path) => !dropped.has(path)));
 };

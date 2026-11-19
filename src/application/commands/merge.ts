@@ -1949,9 +1949,7 @@ const keepingLeftDirty = (
   matcher: SparseMatcher | undefined,
   leftDirty: SparseRetirement['leftDirty'],
 ): SparseMatcher | undefined =>
-  matcher === undefined || leftDirty.size === 0
-    ? matcher
-    : (path) => matcher(path) || leftDirty.has(keyOfPath(path));
+  matcher === undefined ? matcher : (path) => matcher(path) || leftDirty.has(keyOfPath(path));
 
 /**
  * AUTO_MERGE, then — under the index lock — the working tree, the stop state

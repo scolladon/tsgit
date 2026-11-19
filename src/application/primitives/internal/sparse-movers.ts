@@ -16,7 +16,7 @@ import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
 import { removeGitlinkDirectory } from '../apply-changeset.js';
 import { joinPath } from './join-working-tree-path.js';
-import { pruneEmptiedDirectories, survivingDirectoriesOf } from './prune-emptied-directories.js';
+import { pruneEmptiedDirectories, type SurvivingDirectories } from './prune-emptied-directories.js';
 import { requireWorkTree } from './repo-state.js';
 import { notUpToDate, warnLeftDespiteSparse } from './sparse-left-dirty.js';
 import { createLeadingPathScanner } from './symlinked-leading-path.js';
@@ -29,6 +29,9 @@ export interface SparseRetirement {
   /** Kept because not up to date: their entries stay as they are. */
   readonly leftDirty: ReadonlySet<IndexPathKey>;
 }
+
+/** A retired path's emptied parents may all go: the merge keeps no tracked path under them. */
+const NO_SURVIVING_DIRECTORIES: SurvivingDirectories = new Set();
 
 export const NOTHING_RETIRED: SparseRetirement = { retired: new Set(), leftDirty: new Set() };
 
@@ -82,12 +85,7 @@ const removeRetired = async (
       await removeWorkingTreeFile(ctx, path);
     }
   }
-  await pruneEmptiedDirectories(
-    ctx,
-    workdir,
-    retired.map(escapedPathOf),
-    survivingDirectoriesOf([]),
-  );
+  await pruneEmptiedDirectories(ctx, workdir, retired.map(escapedPathOf), NO_SURVIVING_DIRECTORIES);
 };
 
 /** git's sparse loop on a conflict stop: an out-of-pattern file the patterns now hide leaves the work tree unless it holds local changes. */
