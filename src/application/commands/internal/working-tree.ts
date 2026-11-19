@@ -1,5 +1,5 @@
 import { checkoutOverwriteDirty } from '../../../domain/commands/error.js';
-import { dirname, pathTooLong, TsgitError } from '../../../domain/error.js';
+import { pathTooLong, TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
@@ -208,6 +208,8 @@ const moveTreeEntryByEntry = async (ctx: Context, from: MoveEnd, to: MoveEnd): P
 type RenameOp = (from: string, to: string) => Promise<void>;
 
 // The source was just read, so a name-too-long refusal from here can only mean the destination.
+// The destination's parent always exists here, as git's rename(2) requires: mv refuses a
+// missing one while planning, and the entry-by-entry move creates every directory first.
 const renameNamingDestination = async (
   ctx: Context,
   op: RenameOp,
@@ -215,8 +217,6 @@ const renameNamingDestination = async (
   to: MoveEnd,
 ): Promise<void> => {
   try {
-    const parentDir = dirname(to.abs);
-    if (parentDir !== '') await ctx.fs.mkdir(parentDir);
     await op.call(ctx.fs, from.abs, to.abs);
   } catch (err) {
     if (isPathTooLong(err)) throw pathTooLong(to.rel);
