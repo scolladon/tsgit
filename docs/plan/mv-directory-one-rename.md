@@ -1,6 +1,6 @@
 # Plan — mv-directory-one-rename
 
-> Source: design doc `docs/design/mv-directory-one-rename.md` · ADRs 1217, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1225, 1226
+> Source: design doc `docs/design/mv-directory-one-rename.md` · ADRs 1217, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1225, 1226, 1227
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
@@ -34,6 +34,8 @@ The design's P1–P6 are kept in order; three are split by the sizing rules.
 | P6 docs | 10 | design § 7 |
 | P7 destination beyond a symbolic link | 11 (the error code), 12 (the check and its `skipErrors` arms) | R15, R16, R17, ADR-1226 |
 | P8 interop + docs for P7 | 13 | R15, R16, R17 cross-tool; design § 7 |
+| P9 existing destination through a link + index replacement | 14 | R18, ADR-1227 |
+| P10 absent untracked source | 15 | R19, ADR-1227 |
 
 Every part commits alone; parts are sequential on one working tree and build on each
 other. Shared files across parts are deliberate: parts 3–4 (working-tree), 5–7 (mv.ts)
@@ -44,7 +46,11 @@ changes the public surface (decision P-4). Interop parts 8 and 9 are the cross-t
 rows. Parts 11–13 were added after parts 1–10 landed (ADR-1226): they reopen mv.ts, mv.test.ts,
 mv-interop, interop-helpers and mv.md because those parts are already committed, not by choice
 of slicing. The error code (11) and the check (12) are split by the six-file ceiling; 13 is the
-cross-tool proof and the prose for 12.
+cross-tool proof and the prose for 12. Parts 14 and 15 (ADR-1227) come after Part 13 and build on
+its code: Part 12's beyond-symlink gate, `statOrUndefined` and `DestinationPolicy.scanner`, and
+Part 13's link describe in mv-interop. Each carries its own unit rows, interop rows and docs
+(four and five files), so no interop-only part is added for them. They reopen the same files for
+the same reason as 11–13: the earlier parts are committed by the time these were planned.
 
 ## Repo-wide traps every part inherits
 
@@ -76,7 +82,12 @@ N3 = B (ADR-1225), ADR-1226 (the behaviour of Parts 11–13). Open in the design
 written for each recommendation: **N4 = A** (one `skipped` entry per member), **N5 = A** (a new
 `MV_DESTINATION_BEYOND_SYMLINK`; with B, Part 11 is dropped and Part 12 calls
 `pathspecBeyondSymlink(destination)`), **N6 = A** (a later part, not planned here; with B, Part 13
-also adds the two ledger rows). The plan-level choices below are load-bearing for the run's shape; each
+also adds the two ledger rows). N6 is settled by ADR-1227 (Parts 14 and 15). Open from the
+ADR-1227 revision, plan written for each recommendation: **N7 = A** (`moved` does not list the
+entries the replacement removes), **N8 = A** (a later Part 16, not planned here; with B, Part 15
+adds one `docs/known-divergences.md` row and its file count becomes six), **N9 = A** (a forced
+move through a link into `.git` is copied; with B, Part 14 gains a resolved-path check and an ADR
+is needed first). The plan-level choices below are load-bearing for the run's shape; each
 has a recommendation the plan is written for.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
@@ -1142,3 +1153,231 @@ Phase gate after this part: `npm run validate`.
 ### Commit
 
 `test(mv): pin a destination beyond a symbolic link against git and document it`
+
+## Part 14 — Treat an existing destination through a link as git does, and apply git's index replacement
+
+### Context
+
+Files edited: `src/application/commands/mv.ts`, `test/unit/application/commands/mv.test.ts`,
+`test/integration/mv-interop.test.ts`, `docs/use/commands/mv.md`.
+
+Design: § 9, R18, rows Z1–Z21 of "Pinned matrix — an existing destination through a link, and
+the index replacement" (and Y17, Y18). Written for N7 = A (no new result field) and N9 = A (copy
+git's forced write through a link into `.git`). Depends on Parts 12 and 13: the beyond-symlink
+gate already sits between the `into-self` line and the parent check, `statOrUndefined` exists
+beside `lstatOrUndefined`, and mv-interop has the `skipIf(!GIT_AVAILABLE || win32)` describe
+"mv porcelain interop beyond a symbolic link" with `linkBoth(name, target, tracked)`. No public
+surface change (no api.json regeneration): `MvResult`, the codes and the skip reasons are
+unchanged.
+
+- `src/application/commands/mv.ts`, current shape (after Parts 1–13):
+  - `validateMove(ctx, byPath, source, target, opts, policy): Promise<Verdict>`: after the
+    beyond-symlink gate, the block
+    `const parent = dirname(target) as FilePath;` / the `// Stryker disable next-line StringLiteral: …`
+    comment / `if (parent !== '' && !(await isDirectoryOnDisk(ctx, parent))) { throw mvDestinationDirectoryMissing(source, target); }`.
+    The `if` and the Stryker comment line above it stay byte-identical (it is the existing
+    approved directive and its text names `isDirectoryOnDisk`, which is why the helper keeps
+    its name; do not edit or add any directive).
+  - `isDirectoryOnDisk(ctx, path)` (bottom of the file: `lstatOrUndefined` + an
+    `equivalent-mutant` comment + `stat?.isDirectory === true && stat.isSymbolicLink !== true`):
+    keep the name and signature, change the body to
+    `(await statOrUndefined(ctx, path))?.isDirectory === true`, and replace the
+    `equivalent-mutant` comment by a one-line why-comment ("`stat` follows the parent's own link,
+    as `rename(2)` does"). The `isSymbolicLink` operand goes: `stat` never reports a link, so it
+    would be dead code. Its one caller is the parent check (confirm with Grep).
+  - `destinationFree(ctx, byPath, source, target, kind, policy)`: unchanged. Its
+    `lstatOrUndefined(ctx, target)` already resolves a leading link, so `'inner/keep'` reads as
+    present.
+  - `applyToIndex(byPath: Map<IndexPathKey, IndexEntry>, indexed: ReadonlyArray<ExecutedItem>): void`
+    (today: a nested loop doing `byPath.delete(indexPathKey(from))` then
+    `byPath.set(indexPathKey(to), to)` per move). Rewrite as design § 9: flatten the moves,
+    delete every `from` first, snapshot `const remaining = Array.from(byPath.values())` (index
+    order: `readIndexMap` inserted entries in on-disk order and only deletions happened), then for
+    each `to` delete `conflictsWith(byPath, remaining, to.path)` and `set` the `to`. New
+    `conflictsWith(byPath, remaining, path)` returns
+    `[...entriesAtLeadingDirectories(byPath, path), ...entriesBeneath(remaining, path)]`.
+  - Imports: `entriesAtLeadingDirectories`, `entriesBeneath` from
+    ../../domain/git-index/directory-file-conflict.js (read-only; signatures
+    `entriesAtLeadingDirectories(byKey: ReadonlyMap<IndexPathKey, IndexEntry>, path: FilePath): ReadonlyArray<IndexEntry>`
+    — stage-0 entries at `a`, `'a/x'` for `'a/x/y'`; `entriesBeneath(sorted: ReadonlyArray<IndexEntry>, path: FilePath): ReadonlyArray<IndexEntry>`
+    — binary search, every stage, lossy entries by bytes). Precedent consumer:
+    src/application/commands/add.ts `dropBeneathInserted`.
+- `test/unit/application/commands/mv.test.ts`: module helpers `seedAndStage(workingTree)`,
+  `work(ctx, path)`, `exists(ctx, path)`, `readWork(ctx, path)`, `indexEntry(ctx, path)`,
+  `expectError(fn, code)`, `captureError`; `add` is already imported (stage a link with
+  `add(ctx, ['inner'])` after `ctx.fs.symlink('sub', work(ctx, 'inner'))`; port signature
+  `symlink(target, path)`). Part 12's `describe('mv — a destination beyond a symbolic link')` holds
+  the guard row "an existing `'sub/keep'` reached as `'inner/keep'` still rejects
+  `MV_DESTINATION_DIRECTORY_MISSING`, with and without `force`": **flip it** to the R18
+  expectations below; it keeps killing the gate's `lstat === undefined` operand (with that
+  operand forced true, `'inner/keep'` would refuse `MV_DESTINATION_BEYOND_SYMLINK`). Add a sibling
+  top-level `describe('mv — an existing destination through a link and the index replacement')`
+  after it.
+- Index drift fixtures (memory adapter, no git): `seedAndStage({ f: 'F', 'x/y': 'Y' })`, then
+  `ctx.fs.rmRecursive(work(ctx, 'x'))` and `ctx.fs.write(work(ctx, 'x'), encode('X'))` makes `x`
+  a file on disk while the index holds `'x/y'`; `seedAndStage({ f: 'F', t: 'T' })`, then
+  `ctx.fs.rm(work(ctx, 't'))`, `ctx.fs.mkdir(work(ctx, 't'))`, write `'t/keep'`, makes `t` a
+  directory while the index holds the file `t`. Use whatever byte-encoding helper the file
+  already uses for `ctx.fs.write` (Grep `ctx.fs.write(` in it).
+- Trap: confirm the memory adapter resolves the leading link on `rename` (`walk(dst, 'create')`)
+  and on `mkdir` of the link itself (`mkdirThroughLeafSymlink` returns for a link to a directory).
+  If `rename` does not follow `inner`, assert the unit row's disk outcome as `!exists('f')` plus
+  the index and leave "`'sub/keep'` holds `F`" to the interop row; never weaken the index assertion.
+- `test/integration/mv-interop.test.ts`: two places.
+  - Inside Part 13's link describe, reusing its `prepare`, `writeBoth`, `seed`, `linkBoth`,
+    `expectParity` (`lsStage` + `diskEntries`), `outcomeOf(run)` (the rejection's `data`) and
+    `tryRunGitWithExit(args)` (returns `{ stdout, stderr, exitCode }`): rows Y17/Z1 (tracked and
+    untracked `'sub/keep'`), Y18/Z2, Z4 (untracked `inner`), Z5 (`-k` vs `skipErrors`), Z7 (`-n -f`
+    vs `dryRun` + `force`), Z9 (`deep/real/dl -> ../../sub`), Z10, Z11/Z12 (`'inner/'` with
+    `'sub/f'`), Z21 (`lnk -> .git`, .git/description: read it in both twins and compare to `F`).
+  - Inside the top-level `describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', …)` (every
+    platform with git, like its existing `-f` row "When repo.mv -f overwrites one with the other"),
+    rows Z15–Z20 with the drift built by `node:fs/promises` calls in both twins after `seed`
+    (`rm`, `mkdir`, `writeFile` are already imported). Compare `lsStage(pair.ours)` to
+    `lsStage(pair.peer)`.
+  - Rebuild git's refusal from tsgit's fields, never compare tsgit to a literal message:
+    a file source `` `fatal: destination exists, source=${data.source}, destination=${data.destination}` ``,
+    a directory source `` `fatal: destination already exists, source=…, destination=…` `` (the
+    existing row 6-d's convention), contained in git's stderr.
+- `docs/use/commands/mv.md`: the options table's `force` row (near line 54), the Throws entry of
+  `MV_DESTINATION_DIRECTORY_MISSING` (near line 103), and a short "Index replacement" paragraph
+  after the lossy-member paragraph (near line 99): content as design § 7's ADR-1227 bullet. No ADR
+  numbers in docs/use prose.
+
+### TDD steps
+
+1. RED → GREEN — planning through a link (memory, tracked `f sub/keep`, link `inner -> sub`
+   tracked): `mv(['f'], 'inner/keep')` rejects `{ code: 'MV_DESTINATION_EXISTS', source: 'f',
+   destination: 'inner/keep' }` (try/catch on `.data`), index and disk unchanged; the same with
+   `sub/keep` untracked; `skipErrors: true` → `{ moved: [], skipped: [{ source: 'f', reason:
+   'destination-exists' }] }`; `dryRun: true` → the same refusal; `mv(['dir'], 'inner/keep',
+   { force: true })` → `MV_DESTINATION_EXISTS { source: 'dir', destination: 'inner/keep' }`.
+   Flip Part 12's guard row. Isolated guard: a tracked regular file `g` and `mv(['f'], 'g/x')` still
+   rejects `MV_DESTINATION_DIRECTORY_MISSING { source: 'f', destination: 'g/x' }` (kills
+   `isDirectory === true` → `true`). GREEN: `isDirectoryOnDisk` reads with `statOrUndefined`.
+2. RED → GREEN — the forced move and the replacement through a link: `force: true` on
+   `f → inner/keep` returns `{ moved: [{ from: 'f', to: 'inner/keep' }], skipped: [] }`; the index
+   has no `f` and no `inner`, has `inner/keep` with `f`'s oid and mode, and `sub/keep` with its
+   original oid; `exists('f')` is false and `inner` is still a link (`ctx.fs.lstat`). With `inner`
+   untracked: the index holds `inner/keep` and `sub/keep`. A deeper link
+   `deep/real/dl -> ../../sub` (tracked): `f → deep/real/dl/keep` with `force` removes
+   `deep/real/dl`, keeps `inner`. `dryRun` + `force` returns the same `moved` and writes nothing.
+   GREEN: `applyToIndex` + `conflictsWith`.
+3. RED → GREEN — the replacement without a link (each row isolates one operand of
+   `conflictsWith`): entries beneath (`x/y` in the index, `x` a file on disk) — `mv(['f'], 'x',
+   { force: true })` leaves `x` and no `x/y`; leading directory (`t` a file in the index, `t/keep`
+   on disk) — `mv(['f'], 't/keep', { force: true })` leaves `t/keep` and no `t`; no `force`:
+   `mv(['dir'], 't/d')` leaves `t/d/a` and no `t`, `mv(['f'], 't/new')` leaves `t/new` and no
+   `t`. A directory move into an empty target (`mv(['dir'], 'e')`, existing rows) still lists
+   every member (kills an emptied `from`-deletion loop through the index read-back).
+4. GUARD — interop rows as the Context lists. Every row is a GUARD; a red row is a divergence →
+   blocker protocol, never a test edit to make it pass. For Z21 also assert `.git/description`
+   holds `F\n` in both twins (git's data-destroying arm, N9 = A).
+5. Docs — the mv.md edits; `npm run check:spelling`.
+6. REFACTOR — `validateMove`, `applyToIndex` and `conflictsWith` ≤ 20 lines each, no boolean
+   parameter, no new directive.
+
+### Gate
+
+`npx vitest run test/unit/application/commands/mv.test.ts test/integration/mv-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/mv.ts test/unit/application/commands/mv.test.ts test/integration/mv-interop.test.ts && npm run check:spelling && npm run check:doc-links`
+
+### Commit
+
+`fix(mv): move onto an existing destination through a symbolic link and replace index entries as git mv does`
+
+## Part 15 — Refuse an absent untracked source as a bad source
+
+### Context
+
+Files edited: `src/application/commands/mv.ts`, `test/unit/application/commands/mv.test.ts`,
+`test/integration/mv-interop.test.ts`, `test/integration/pathspec-length-interop.test.ts`,
+`docs/use/commands/mv.md`.
+
+Design: § 10, R19, rows U1–U12 of "Pinned matrix — an absent untracked source". Depends on Part
+14 only by file order (both edit `validateMove`); no shared code. Written for N8 = A (a present
+directory without a tracked member keeps `MV_SOURCE_NOT_TRACKED` here; a later part changes it if N8 = A is ratified). No
+public surface change: `MV_BAD_SOURCE` and `'bad-source'` already exist (no api.json).
+
+- `src/application/commands/mv.ts`, `validateMove`'s first two lines:
+  `const classified = classifySource(byPath, source);` and
+  `if (classified.kind === 'untracked') return { skip: 'source-not-tracked' };`. Replace the
+  second with `return { skip: await untrackedVerdictOf(ctx, source) }` and add
+  `const untrackedVerdictOf = async (ctx: Context, source: FilePath): Promise<PlanSkipReason> => (await lstatOrUndefined(ctx, source)) === undefined ? 'bad-source' : 'source-not-tracked';`
+  beside `sourceExistsOnDisk`, with a why-comment ("git's `lstat` of the source fails first").
+  `lstatOrUndefined` (not `statOrUndefined`): a dangling untracked link is present (row U6).
+  `buildPlan`/`refusal()` need no change: the verdict has no `source`/`target` override, so
+  `refusal('bad-source', source, target)` names the user's source and the mode's target (U2:
+  `'dir/ghost'`).
+- `test/unit/application/commands/mv.test.ts` — every row that asserts the old answer for an
+  absent path (find them with Grep on `MV_SOURCE_NOT_TRACKED` and `source-not-tracked`):
+  - `describe('Given skipErrors and a mix of one bad and one good source')` (absent
+    `ghost.txt`): `skipped` becomes `[{ source: 'ghost.txt', reason: 'bad-source' }]`.
+  - `describe('Given an untracked source')` ("Then throws MV_SOURCE_NOT_TRACKED carrying source
+    and destination", absent `ghost.txt` → `z.txt`): becomes the absent case, `MV_BAD_SOURCE {
+    source: 'ghost.txt', destination: 'z.txt' }`; add a sibling `describe('Given an untracked
+    file present on disk')` writing `loose.txt` with `ctx.fs.write(work(ctx, 'loose.txt'), …)`
+    without staging it → `MV_SOURCE_NOT_TRACKED { source: 'loose.txt', destination: 'z.txt' }`
+    (U5). The two rows together kill `untrackedVerdictOf`'s ternary.
+  - `describe('Given one bad source among good ones without skipErrors')` →
+    `expectError(…, 'MV_BAD_SOURCE')`; `describe('Given an mv that throws before commit')` (lock
+    release) → `'MV_BAD_SOURCE'`.
+  - The three tolerance rows `describe('Given a corrupt index (INVALID_INDEX_HEADER)')`,
+    `(INVALID_INDEX_ENTRY)` and `describe('Given readIndex racing to FILE_NOT_FOUND')` call
+    `seedRepo(ctx, {})` and expect `MV_SOURCE_NOT_TRACKED` for an absent `a.txt`: change their
+    seeding to `seedRepo(ctx, { workingTree: { 'a.txt': 'a' } })` so `a.txt` is on disk and the
+    row still proves "the index reads as empty" with `MV_SOURCE_NOT_TRACKED`. Leave the
+    `PERMISSION_DENIED` propagation row as it is.
+  - `describe('Given an untracked ghost and a refused base in one call')` (absent `ghost`):
+    the first `skipped` entry becomes `{ source: 'ghost', reason: 'bad-source' }`.
+  - Part 12's row "Two sources `['dir', 'ghost']` into `'inner/sub2'`" in
+    `describe('mv — a destination beyond a symbolic link')`: `ghost`'s entry becomes
+    `{ source: 'ghost', reason: 'bad-source' }`.
+  - New rows next to "Given an untracked source": into a directory (`mv(['ghost'], 'dir')` with
+    a tracked `'dir/keep'`) → `{ source: 'ghost', destination: 'dir/ghost' }` (U2); a missing
+    parent (`'missing/z'`) → `MV_BAD_SOURCE` (U3); `dryRun` → `MV_BAD_SOURCE` (U4); an untracked
+    dangling link `ctx.fs.symlink('nowhere', work(ctx, 'dl2'))` → `MV_SOURCE_NOT_TRACKED` (U6,
+    kills an `lstat` → `stat` swap); `skipErrors` with `['ghost', 'loose.txt', 'gone', 'f']` into
+    `dir` (`gone` tracked then removed with `ctx.fs.rm`) → `skipped` `[{ ghost, 'bad-source' },
+    { loose.txt, 'source-not-tracked' }, { gone, 'bad-source' }]` and `f` moved (U10).
+- `test/integration/mv-interop.test.ts`: the top-level row `describe('Given an untracked source
+  path')` / "Then it refuses like git mv and mutates nothing" (absent `ghost.txt` → `dest.txt`,
+  `expect(code).toBe('MV_SOURCE_NOT_TRACKED')`): switch git to `tryRunGitWithExit` (returns
+  `{ stdout, stderr, exitCode }`), expect exit 128, `code` `MV_BAD_SOURCE`, and git's stderr to
+  contain the message rebuilt from tsgit's `data` (`` `fatal: bad source, source=${data.source}, destination=${data.destination}` ``).
+  Add beside it: a present untracked file (U5: `not under version control`, `MV_SOURCE_NOT_TRACKED`)
+  and the `-k -v` mix (U10: `ghost untracked gone f` into `dir`; `lsStage` parity, git's stdout
+  lines equal `mvVerboseLines(['ghost', 'untracked', 'gone', 'f'], (s) => 'dir/' + s, result, [])`;
+  verify the helper's parameter order in test/integration/interop-helpers.ts before writing it).
+  In Part 13's link describe (tracked links need `win32` skipped): U6, an untracked dangling link
+  `dl2 -> nowhere` (`linkBoth('dl2', 'nowhere', false)`), both refusing `not under version control`.
+- `test/integration/pathspec-length-interop.test.ts` (constants `S300`, `P5000`, `DIR805`,
+  `BASE`, helpers `twins`, `caught`, `snapshotOf`, `tryRunGitWithExit`, `GIT_EXIT_FATAL`): the
+  `describe.each` "When git and tsgit move the missing $from to short (row $id)" → title "Then
+  both refuse it as a bad source", `err.data` `{ code: 'MV_BAD_SOURCE', source: row.from,
+  destination: 'short' }`, and git's stderr contains the rebuilt `bad source, source=${row.from}`
+  line (U12). Row M7 ("move the missing S300 to short skipping errors") → `skipped`
+  `[{ source: S300, reason: 'bad-source' }]`. Keep the `(row Mn)` title convention.
+- `docs/use/commands/mv.md`, the Throws list (near line 103): `MV_SOURCE_NOT_TRACKED` — a source
+  present on disk is not in the index; `MV_BAD_SOURCE` — a source is missing from the working
+  tree, tracked or not. No other prose changes.
+
+### TDD steps
+
+1. RED → GREEN — the absent case (`ghost.txt` → `MV_BAD_SOURCE`) and the present case
+   (`loose.txt` → `MV_SOURCE_NOT_TRACKED`) as isolated rows; GREEN: `untrackedVerdictOf`.
+2. RED → GREEN — U2, U3, U4, U6 and U10 at unit level.
+3. Update the existing rows listed in the Context (each is red after step 1's GREEN; change the
+   expectation or the seeding exactly as listed, nothing else).
+4. GUARD — the interop rows in mv-interop and pathspec-length-interop. A red row is a divergence
+   → blocker protocol.
+5. Docs — the Throws list; `npm run check:spelling`.
+6. REFACTOR — `validateMove` ≤ 20 lines.
+
+### Gate
+
+`npx vitest run test/unit/application/commands/mv.test.ts test/integration/mv-interop.test.ts test/integration/pathspec-length-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/mv.ts test/unit/application/commands/mv.test.ts test/integration/mv-interop.test.ts test/integration/pathspec-length-interop.test.ts && npm run check:spelling && npm run check:doc-links`
+Phase gate after this part: `npm run validate`.
+
+### Commit
+
+`fix(mv): refuse an absent untracked source as a bad source as git mv does`
