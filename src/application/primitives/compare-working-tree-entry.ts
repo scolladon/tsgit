@@ -344,6 +344,13 @@ const belowSymlinkedDirectory = (
     .hasSymlinkedLeadingPath(entry.path)
     .catch(() => true);
 
+const isResolved = (scope: ComparisonScope): scope is ResolvedScope =>
+  scope.executableBit !== undefined;
+
+// A caller walking many entries resolves the trust once; only a bare scope pays the copy.
+const resolveScope = async (ctx: Context, scope: ComparisonScope): Promise<ResolvedScope> =>
+  isResolved(scope) ? scope : { ...scope, executableBit: await readExecutableBitTrust(ctx) };
+
 /**
  * The comparison plus its refresh verdict, from the single `lstat` the
  * comparison already took — no second stat, no extra read.
@@ -358,10 +365,7 @@ export const compareAndRefresh = async (
   if (await belowSymlinkedDirectory(ctx, entry, scope)) return { delta: { status: 'absent' } };
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { delta: { status: 'absent' } };
-  const resolved = {
-    ...scope,
-    executableBit: scope.executableBit ?? (await readExecutableBitTrust(ctx)),
-  };
+  const resolved = await resolveScope(ctx, scope);
   const delta =
     entry.mode === FILE_MODE.GITLINK
       ? await compareGitlink(ctx, entry, stat, resolved)
