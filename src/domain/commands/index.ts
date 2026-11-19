@@ -34,6 +34,7 @@ export {
   mvIntoSelf,
   mvMultipleSourcesSameTarget,
   mvOverlappingSources,
+  mvSourceDirectoryEmpty,
   mvSourceNotTracked,
   nonFastForward,
   noOperationInProgress,

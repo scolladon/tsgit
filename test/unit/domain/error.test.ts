@@ -62,6 +62,7 @@ import {
   mvIntoSelf,
   mvMultipleSourcesSameTarget,
   mvOverlappingSources,
+  mvSourceDirectoryEmpty,
   mvSourceNotTracked,
   networkError,
   notADirectory,
@@ -1035,6 +1036,25 @@ describe('domain error — AdapterError', () => {
           });
           expect(result.message).toBe(
             'MV_DESTINATION_BEYOND_SYMLINK: destination is beyond a symbolic link, source=dir/a, destination=lnk/x/a',
+          );
+        });
+      });
+    });
+
+    describe("Given mvSourceDirectoryEmpty('ud', 'z')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const result = mvSourceDirectoryEmpty('ud' as FilePath, 'z' as FilePath);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'MV_SOURCE_DIRECTORY_EMPTY',
+            source: 'ud',
+            destination: 'z',
+          });
+          expect(result.message).toBe(
+            'MV_SOURCE_DIRECTORY_EMPTY: source directory is empty, source=ud, destination=z',
           );
         });
       });

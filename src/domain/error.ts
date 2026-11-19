@@ -730,6 +730,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `destination directory does not exist, source=${data.source}, destination=${data.destination}`;
     case 'MV_DESTINATION_BEYOND_SYMLINK':
       return `destination is beyond a symbolic link, source=${data.source}, destination=${data.destination}`;
+    case 'MV_SOURCE_DIRECTORY_EMPTY':
+      return `source directory is empty, source=${data.source}, destination=${data.destination}`;
     case 'MV_MULTIPLE_SOURCES_SAME_TARGET':
       return `multiple sources for the same target, source=${data.source}, destination=${data.destination}`;
     case 'MV_OVERLAPPING_SOURCES':
