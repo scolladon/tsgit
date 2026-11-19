@@ -1,6 +1,10 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
-import { deriveWorkingMode, FILE_MODE } from '../../../domain/objects/file-mode.js';
+import {
+  type ExecutableBitTrust,
+  FILE_MODE,
+  indexModeFromStat,
+} from '../../../domain/objects/file-mode.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileStat } from '../../../ports/file-system.js';
 import { lstatIfPresent } from './fs-probes.js';
@@ -97,7 +101,11 @@ export const isEntryStatClean = (
 export interface CachedStat {
   readonly entry: IndexEntry;
   readonly indexMtime: IndexMtime | undefined;
+  readonly executableBit: ExecutableBitTrust;
 }
+
+/** A tracked path's cached stat before the core.fileMode policy is attached. */
+export type TrackedStat = Omit<CachedStat, 'executableBit'>;
 
 /** Decides a racy, stat-matching entry by its content. */
 export type RacyContentCheck = (
@@ -124,12 +132,16 @@ export const lstatBeyondLink = async (
 // git's `ie_match_stat`: the cached stat fields settle it, and a racy entry (its mtime not
 // older than the index file's) is settled by the content instead.
 export const matchesCachedStat = async (
-  { entry, indexMtime }: CachedStat,
+  { entry, indexMtime, executableBit }: CachedStat,
   absPath: string,
   stat: FileStat,
   contentMatches: RacyContentCheck,
 ): Promise<boolean> => {
-  if (deriveWorkingMode(stat) !== entry.mode || !matchesContentStat(entry, stat)) return false;
+  if (
+    indexModeFromStat(stat, entry.mode, executableBit) !== entry.mode ||
+    !matchesContentStat(entry, stat)
+  )
+    return false;
   if (indexMtime !== undefined && !isRacy(entry, indexMtime)) return true;
   return contentMatches(entry, absPath, stat);
 };

@@ -400,7 +400,76 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a stat that differs from the entry only by the exec bit', () => {
+    describe('When the bit is ignored', () => {
+      it('Then the cached stat matches', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+        const stat: FileStat = { ...BASE_STAT, mode: 0o100755 };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'ignored' },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(true);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When the bit is trusted', () => {
+      it('Then it does not match', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+        const stat: FileStat = { ...BASE_STAT, mode: 0o100755 };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a symlink stat for a regular entry', () => {
+    describe('When the bit is ignored', () => {
+      it('Then it does not match', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+        const stat: FileStat = {
+          ...BASE_STAT,
+          mode: 0o120000,
+          isFile: false,
+          isSymbolicLink: true,
+        };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'ignored' },
           ABS_PATH,
           stat,
           contentMatches,
@@ -422,7 +491,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
           ABS_PATH,
           stat,
           contentMatches,
@@ -443,7 +512,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -467,7 +536,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: RACY_INDEX_MTIME },
+          { entry: BASE_ENTRY, indexMtime: RACY_INDEX_MTIME, executableBit: 'trusted' },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -488,7 +557,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: undefined },
+          { entry: BASE_ENTRY, indexMtime: undefined, executableBit: 'trusted' },
           ABS_PATH,
           BASE_STAT,
           contentMatches,

@@ -89,7 +89,10 @@ const verdictOf = async (
   if (!stat.isFile && !stat.isSymbolicLink) return 'dirty';
   if (await modeDiffers(judgement, entry, stat)) return 'dirty';
   // git's ie_match_stat: a stat-clean entry is up to date without reading the file.
-  if (await matchesCachedStat({ entry, indexMtime }, absPath, stat, deferRacyToContent)) {
+  const executableBit = await judgement.executableBit();
+  if (
+    await matchesCachedStat({ entry, indexMtime, executableBit }, absPath, stat, deferRacyToContent)
+  ) {
     return 'verified-clean';
   }
   return (await isDirty(absPath, entry.id)) ? 'dirty' : 'verified-clean';

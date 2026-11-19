@@ -5,32 +5,46 @@ import {
   indexPathKey,
   isLossy,
 } from '../../../domain/git-index/index-path-key.js';
-import { FILE_MODE } from '../../../domain/objects/file-mode.js';
+import { type ExecutableBitTrust, FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { racyContentMatcher } from '../compare-working-tree-entry.js';
 import type { ChangesetEntry } from '../compute-changeset.js';
+import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { boundedMapFor } from './concurrency.js';
 import type { RacyContentCheck } from './is-entry-stat-clean.js';
 import { lstatBeyondLink, matchesCachedStat, UNREACHABLE } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
+import { lazily } from './lazily.js';
 import { createLeadingPathScanner } from './symlinked-leading-path.js';
 
 // Only a stage-0 entry yields a noop to look up, and git refuses an index mixing stage 0 with a higher stage for one path.
 const entryByKey = (index: GitIndex): Map<IndexPathKey, IndexEntry> =>
   new Map(index.entries.map((e) => [indexPathKey(e), e] as const));
 
+// The racy-content check and the lazily read core.fileMode policy one scan shares.
+interface StatJudge {
+  readonly contentMatches: RacyContentCheck;
+  readonly executableBit: () => Promise<ExecutableBitTrust>;
+}
+
 const isUpToDate = async (
   ctx: Context,
   cached: IndexEntry,
   indexMtime: GitIndex['indexMtime'],
   absPath: string,
-  contentMatches: RacyContentCheck,
+  judge: StatJudge,
 ): Promise<boolean> => {
   const stat = await lstatBeyondLink(ctx, absPath);
   if (stat === undefined || stat === UNREACHABLE) return false;
   if (cached.mode === FILE_MODE.GITLINK) return stat.isDirectory;
-  return matchesCachedStat({ entry: cached, indexMtime }, absPath, stat, contentMatches);
+  const executableBit = await judge.executableBit();
+  return matchesCachedStat(
+    { entry: cached, indexMtime, executableBit },
+    absPath,
+    stat,
+    judge.contentMatches,
+  );
 };
 
 /**
@@ -56,7 +70,10 @@ export const upgradeStaleNoops = async (
   rule: StaleRule = 'oneway',
 ): Promise<StaleJudgment> => {
   const cachedByKey = entryByKey(index);
-  const contentMatches = racyContentMatcher(ctx);
+  const judge: StatJudge = {
+    contentMatches: racyContentMatcher(ctx),
+    executableBit: lazily(() => readExecutableBitTrust(ctx)),
+  };
   const scanner = createLeadingPathScanner(ctx);
   const upToDate = new Set<FilePath>();
   const judged = await boundedMapFor(ctx, 'ioBound', entries, async (entry) => {
@@ -68,8 +85,7 @@ export const upgradeStaleNoops = async (
     }
     const absPath = joinPath(workdir, entry.path);
     const fresh =
-      cached !== undefined &&
-      (await isUpToDate(ctx, cached, index.indexMtime, absPath, contentMatches));
+      cached !== undefined && (await isUpToDate(ctx, cached, index.indexMtime, absPath, judge));
     if (!fresh) return { ...entry, kind: 'update' as const };
     upToDate.add(entry.path);
     return entry;

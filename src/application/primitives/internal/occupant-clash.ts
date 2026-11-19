@@ -8,13 +8,14 @@ import type { FileMode } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { racyContentMatcher } from '../compare-working-tree-entry.js';
+import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { createConcurrencyLimiter } from './concurrency-limiter.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { buildRepoIgnorePredicate } from './ignore-evaluator.js';
 import {
-  type CachedStat,
   lstatBeyondLink,
   matchesCachedStat,
+  type TrackedStat,
   UNREACHABLE,
 } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -24,7 +25,7 @@ import type { LeadingPathScanner } from './symlinked-leading-path.js';
 
 export type IgnoredProbe = (absPath: string, isDirectory: boolean) => Promise<boolean>;
 
-export type TrackedLookup = (path: FilePath) => Promise<CachedStat | undefined>;
+export type TrackedLookup = (path: FilePath) => Promise<TrackedStat | undefined>;
 
 // What the clash check weighs an occupant against: the paths the changeset deletes,
 // the repo's ignore rules (git removes ignored files along with a directory that
@@ -151,7 +152,13 @@ const classifyThroughLink = async (
   if (reached === UNREACHABLE) return localChange(path);
   const tracked = await scope.tracked(path);
   if (tracked === undefined) return localChange(path);
-  const unchanged = await matchesCachedStat(tracked, absPath, reached, racyContentMatcher(ctx));
+  const executableBit = await readExecutableBitTrust(ctx);
+  const unchanged = await matchesCachedStat(
+    { ...tracked, executableBit },
+    absPath,
+    reached,
+    racyContentMatcher(ctx),
+  );
   return unchanged ? CLEAR : localChange(path);
 };
 
