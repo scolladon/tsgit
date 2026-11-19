@@ -337,7 +337,7 @@ export class MemoryFileSystem implements FileSystem {
     this.assertRenamable(normalizedSrc, normalizedDst, src);
     if (normalizedSrc === normalizedDst) return;
     if (this.directories.has(normalizedSrc)) {
-      this.renameDirectory(normalizedSrc, normalizedDst);
+      this.relocateDirectory(normalizedSrc, normalizedDst);
       return;
     }
     this.renameLeaf(normalizedSrc, normalizedDst);
@@ -347,6 +347,11 @@ export class MemoryFileSystem implements FileSystem {
   // deletes and the sets, so it is already atomic with respect to the event
   // loop; the capability is that guarantee exposed under its own name.
   atomicRename = async (src: string, dst: string): Promise<void> => {
+    await this.rename(src, dst);
+  };
+
+  // The same single synchronous re-keying moves a directory whole.
+  renameDirectory = async (src: string, dst: string): Promise<void> => {
     await this.rename(src, dst);
   };
 
@@ -403,7 +408,7 @@ export class MemoryFileSystem implements FileSystem {
    * entry at `src` or under `src/` to the corresponding `dst` path. Mirrors a
    * POSIX directory rename (what the node adapter does natively).
    */
-  private renameDirectory(src: string, dst: string): void {
+  private relocateDirectory(src: string, dst: string): void {
     this.ensureParentDirs(dst);
     // Stryker disable next-line ConditionalExpression: equivalent — remap only runs (via the guard below) when key===src or key startsWith `${src}/`; at key===src the else-arm slices to '' and yields dst, identical to the then-arm, so forcing the condition false is observationally identical for every key remap receives.
     const remap = (key: string): string => (key === src ? dst : `${dst}${key.slice(src.length)}`);

@@ -1,5 +1,5 @@
 import { checkoutOverwriteDirty } from '../../../domain/commands/error.js';
-import { dirname, pathTooLong, TsgitError } from '../../../domain/error.js';
+import { pathTooLong, TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
@@ -9,6 +9,7 @@ import {
   validateWorkingTreePathOn,
 } from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
+import { removeEmptyDirectoryTree } from '../../primitives/internal/empty-directories.js';
 import { isPathTooLong, lstatIfPresent } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
@@ -118,26 +119,43 @@ export const removeDirectory = async (ctx: Context, rawPath: string): Promise<vo
 };
 
 /**
+ * Delete the working-tree path with everything beneath it, untracked content
+ * included — the caller has judged the tree abandoned. A missing path is not an
+ * error, so no existence check races the removal.
+ */
+export const discardDirectory = async (ctx: Context, rawPath: string): Promise<void> => {
+  await ctx.fs.rmRecursive(repoPath(ctx, validateWorkingTreePathOn(rawPath, ctx)));
+};
+
+/**
  * Move a working-tree path. Validates both ends (rejecting `..`, `.git`,
  * absolute paths, etc.) then relocates the node — carrying any untracked
  * contents along, faithful to `git mv`.
  *
- * A directory is moved by recursing into its entries and renaming each leaf
- * (file or symlink), then removing the emptied source directory. `ctx.fs.rename`
- * is not used directly on a directory because only the Node adapter renames
- * directories natively — the memory and OPFS adapters are file-oriented, so a
- * leaf-by-leaf move is the portable, adapter-agnostic primitive. Each leaf's
- * destination parent is created first (`fs.rename` does not create parents).
+ * A directory is renamed in one step where the port can (`renameDirectory`).
+ * Otherwise the whole subtree is read first, every directory is recreated, each
+ * leaf is moved, and only the empty source directories are removed. A fault
+ * after the first move leaves a partial move, like the browser's own `rename`.
+ * The destination parent is created first (a rename does not create parents).
  */
 export const renameInWorkingTree = async (
   ctx: Context,
   rawFrom: string,
   rawTo: string,
 ): Promise<void> => {
-  const from = validatePath(rawFrom);
-  const to = validatePath(rawTo);
-  await moveNode(ctx, { abs: repoPath(ctx, from), rel: from }, { abs: repoPath(ctx, to), rel: to });
+  const from = moveEnd(ctx, validatePath(rawFrom));
+  const to = moveEnd(ctx, validatePath(rawTo));
+  const stat = await ctx.fs.lstat(from.abs);
+  if (!isPlainDirectory(stat)) return renameNamingDestination(ctx, ctx.fs.rename, from, to);
+  const renameDirectory = ctx.fs.renameDirectory;
+  if (renameDirectory !== undefined) return renameNamingDestination(ctx, renameDirectory, from, to);
+  return moveTreeEntryByEntry(ctx, from, to);
 };
+
+const moveEnd = (ctx: Context, rel: FilePath): MoveEnd => ({ abs: repoPath(ctx, rel), rel });
+
+const isPlainDirectory = (stat: { isDirectory: boolean; isSymbolicLink: boolean }): boolean =>
+  stat.isDirectory && !stat.isSymbolicLink;
 
 /** One end of a move: its absolute path and the repository-relative path an error names. */
 interface MoveEnd {
@@ -150,33 +168,67 @@ const childOf = (end: MoveEnd, name: string): MoveEnd => ({
   rel: `${end.rel}/${name}` as FilePath,
 });
 
-const moveNode = async (ctx: Context, from: MoveEnd, to: MoveEnd): Promise<void> => {
-  const fromAbs = from.abs;
-  const stat = await ctx.fs.lstat(fromAbs);
-  if (stat.isDirectory && !stat.isSymbolicLink) {
-    for (const child of await ctx.fs.readdir(fromAbs)) {
-      await moveNode(ctx, childOf(from, child.name), childOf(to, child.name));
+/** The directories (pre-order, the root first) and leaves found beneath a directory. */
+interface Collected {
+  readonly dirs: readonly MoveEnd[];
+  readonly leaves: readonly MoveEnd[];
+}
+
+const collect = async (ctx: Context, dir: MoveEnd): Promise<Collected> => {
+  const dirs: MoveEnd[] = [dir];
+  const leaves: MoveEnd[] = [];
+  for (const entry of await ctx.fs.readdir(dir.abs)) {
+    const child = childOf(dir, entry.name);
+    if (!isPlainDirectory(await ctx.fs.lstat(child.abs))) {
+      leaves.push(child);
+      continue;
     }
-    // The loop emptied the directory; remove the shell. `rm` is leaf-only per
-    // the port (the Node adapter throws EISDIR on a directory), so the
-    // directory-capable `rmRecursive` is the portable removal here.
-    await ctx.fs.rmRecursive(fromAbs);
-    return;
+    const nested = await collect(ctx, child);
+    dirs.push(...nested.dirs);
+    leaves.push(...nested.leaves);
   }
-  // A root-level target (parent is the work-tree root, which always exists)
-  // yields an empty `dirname`; skip the mkdir rather than create an empty path
-  // the fs validator rejects. Non-root parents are created as before.
-  await moveLeaf(ctx, fromAbs, to);
+  return { dirs, leaves };
 };
 
-// The source leaf was just read, so a name-too-long refusal from here can only mean the destination.
-const moveLeaf = async (ctx: Context, fromAbs: string, to: MoveEnd): Promise<void> => {
+const mapTo = (end: MoveEnd, from: MoveEnd, to: MoveEnd): MoveEnd => ({
+  abs: to.abs + end.abs.slice(from.abs.length),
+  rel: (to.rel + end.rel.slice(from.rel.length)) as FilePath,
+});
+
+const moveTreeEntryByEntry = async (ctx: Context, from: MoveEnd, to: MoveEnd): Promise<void> => {
+  const { dirs, leaves } = await collect(ctx, from);
+  for (const dir of dirs) await ctx.fs.mkdir(mapTo(dir, from, to).abs);
+  for (const leaf of leaves) {
+    await renameNamingDestination(ctx, ctx.fs.rename, leaf, mapTo(leaf, from, to));
+  }
+  // What remains is exactly what the renames left behind, so a `false` needs no handling.
+  await removeEmptyDirectoryTree(ctx, from.abs);
+};
+
+type RenameOp = (from: string, to: string) => Promise<void>;
+
+// The source was just read, so a name-too-long refusal from here can only mean the destination.
+// The destination's parent always exists here, as git's rename(2) requires: mv refuses a
+// missing one while planning, and the entry-by-entry move creates every directory first.
+const renameNamingDestination = async (
+  ctx: Context,
+  op: RenameOp,
+  from: MoveEnd,
+  to: MoveEnd,
+): Promise<void> => {
   try {
-    const parentDir = dirname(to.abs);
-    if (parentDir !== '') await ctx.fs.mkdir(parentDir);
-    await ctx.fs.rename(fromAbs, to.abs);
+    await op.call(ctx.fs, from.abs, to.abs);
   } catch (err) {
     if (isPathTooLong(err)) throw pathTooLong(to.rel);
-    throw err;
+    throw relativeTo(err, [from, to]);
   }
+};
+
+// The adapter names the absolute path it was handed; a caller only knows the repository-relative one.
+const relativeTo = (err: unknown, ends: ReadonlyArray<MoveEnd>): unknown => {
+  if (!(err instanceof TsgitError) || !('path' in err.data)) return err;
+  const { path } = err.data;
+  const end = ends.find(({ abs }) => abs === path);
+  if (end === undefined) return err;
+  return new TsgitError({ ...err.data, path: end.rel });
 };

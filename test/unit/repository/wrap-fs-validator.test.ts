@@ -807,6 +807,73 @@ describe('wrapFsValidator — the optional atomicRename capability', () => {
   });
 });
 
+describe('wrapFsValidator — the optional renameDirectory capability', () => {
+  // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
+  // call it on the adapter, not detached from it.
+  const fsWithRenameDirectory = (): FileSystem & { readonly renamed: string[][] } => {
+    const renamed: string[][] = [];
+    return {
+      ...stubFs(),
+      renamed,
+      renameDirectory(this: { readonly renamed: string[][] }, src: string, dst: string) {
+        this.renamed.push([src, dst]);
+        return Promise.resolve();
+      },
+    };
+  };
+
+  describe('Given an adapter providing renameDirectory and two in-root paths', () => {
+    describe('When renameDirectory is called through the wrapper', () => {
+      it('Then it delegates on the adapter with both paths', async () => {
+        // Arrange
+        const fs = fsWithRenameDirectory();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        await sut.renameDirectory?.('/repo/d', '/repo/e');
+
+        // Assert
+        expect(fs.renamed).toEqual([['/repo/d', '/repo/e']]);
+      });
+    });
+  });
+
+  describe.each([
+    { side: 'source', src: '/etc/d', dst: '/repo/e' },
+    { side: 'destination', src: '/repo/d', dst: '/etc/e' },
+  ])(
+    'Given an adapter providing renameDirectory and a $side outside every root',
+    ({ src, dst }) => {
+      describe('When renameDirectory is called through a wrapper that does not guard reads', () => {
+        it('Then it throws PATHSPEC_OUTSIDE_REPO without renaming, as rename does', async () => {
+          // Arrange
+          const fs = fsWithRenameDirectory();
+          const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+          // Act + Assert
+          await expectOutside(async () => sut.renameDirectory?.(src, dst));
+          expect(fs.renamed).toEqual([]);
+        });
+      });
+    },
+  );
+
+  describe('Given an adapter without renameDirectory, as the browser adapter is', () => {
+    describe('When the wrapper is built', () => {
+      it('Then the wrapper exposes no renameDirectory either, so callers keep their degraded path', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('renameDirectory' in sut).toBe(false);
+      });
+    });
+  });
+});
+
 describe('wrapFsValidator — the optional utimeNow capability', () => {
   // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
   // call it on the adapter, not detached from it.

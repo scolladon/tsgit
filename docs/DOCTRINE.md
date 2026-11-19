@@ -23,3 +23,10 @@ design can apply without reopening the conversation. Each entry cites the ADR th
 - **Rule:** fold it in the same change with an ADR and mark the commit breaking (`!`); never park a pinned refusal mismatch in the divergence ledger because its fix breaks the API.
 - **Evidence:** ADR-1190
 - **Counter-cases:** none
+
+## D-4 — Faithfulness binds git's data-destroying arms on skip and error paths
+
+- **Trigger:** a pinned git behaviour on a skip or error path (`-k`, a refused rename) deletes or strands user data, and the design recommends a safe divergence instead.
+- **Rule:** copy git's observable outcome, data loss included, and record the upstream defect in the ADR; never diverge because git's behaviour looks broken. A write outside the repository still goes to the user for security sign-off.
+- **Evidence:** ADR-1220, ADR-936, ADR-937
+- **Counter-cases:** none

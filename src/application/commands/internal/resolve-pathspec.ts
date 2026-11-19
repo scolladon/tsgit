@@ -8,10 +8,9 @@ import {
 } from '../../../domain/pathspec/index.js';
 import { globSpecialIndex } from '../../../domain/pathspec/wildcard.js';
 import type { Context } from '../../../ports/context.js';
-import { isPathTooLong } from '../../primitives/internal/fs-probes.js';
 import {
+  beyondSymlink,
   createLeadingPathScanner,
-  type LeadingPathScanner,
 } from '../../primitives/internal/symlinked-leading-path.js';
 import { validatePath } from './working-tree.js';
 
@@ -98,17 +97,6 @@ const collapsePattern = (raw: string): string => {
   validatePathspecBody(kept);
   const directoryOnly = isElided(components[components.length - 1] as string);
   return `${negation}${kept}${directoryOnly ? SEPARATOR : ''}`;
-};
-
-// git's lstat_cache records a failed lstat as "not a symlink": a prefix the file
-// system cannot name has nothing beneath it, so no later prefix can be a link.
-const beyondSymlink = async (scanner: LeadingPathScanner, target: FilePath): Promise<boolean> => {
-  try {
-    return await scanner.hasSymlinkedLeadingPath(target);
-  } catch (err) {
-    if (isPathTooLong(err)) return false;
-    throw err;
-  }
 };
 
 // Refuse a pathspec body — literal or glob — that names a file beyond a

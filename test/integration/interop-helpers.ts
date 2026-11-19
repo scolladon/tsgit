@@ -623,3 +623,37 @@ export const forgeOwnHash = async (dir: string, claim: number, body: Buffer): Pr
   await writeFile(target, deflateSync(raw));
   return sha1;
 };
+
+interface MvVerboseResult {
+  readonly moved: ReadonlyArray<{ readonly from: string; readonly to: string }>;
+  readonly skipped: ReadonlyArray<{ readonly source: string; readonly reason: string }>;
+}
+
+const skippedAtPlanning = (result: MvVerboseResult, source: string): boolean =>
+  result.skipped.some((entry) => entry.source === source && entry.reason !== 'rename-failed');
+
+const renamingLine = (from: string, to: string): string => `Renaming ${from} to ${to}`;
+
+/**
+ * Rebuilds the `Renaming X to Y` lines `git mv -v` prints, from `mv`'s
+ * structured result: one line per argv source, then (git appends the members of
+ * a directory source to its work list) one per `moved` entry under a directory
+ * source, grouped by argv source.
+ */
+export const mvVerboseLines = (
+  sources: ReadonlyArray<string>,
+  targetOf: (source: string) => string,
+  result: MvVerboseResult,
+  directorySources: ReadonlyArray<string>,
+): ReadonlyArray<string> => [
+  ...sources
+    .filter((source) => !skippedAtPlanning(result, source))
+    .map((source) => renamingLine(source, targetOf(source))),
+  ...sources
+    .filter((source) => directorySources.includes(source))
+    .flatMap((source) =>
+      result.moved
+        .filter(({ from }) => from.startsWith(`${source}/`))
+        .map(({ from, to }) => renamingLine(from, to)),
+    ),
+];

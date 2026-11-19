@@ -64,24 +64,18 @@ const guardedPathProbe = <K extends OptionalPathProbe>(
 };
 
 /**
- * `atomicRename` is optional on the port for the same reason: an adapter that omits it (OPFS) has
- * to stay without it behind the wrapper, so lock-file protocols keep their degraded path there,
- * while an adapter that provides it keeps its atomic commit. Both paths get `rename`'s guard.
+ * `atomicRename` and `renameDirectory` are optional on the port for the same reason: an adapter
+ * that omits one (OPFS) has to stay without it behind the wrapper, so lock-file protocols keep
+ * their degraded path and directory moves keep their entry-by-entry path there, while an adapter
+ * that provides it keeps it. Both paths get `rename`'s guard.
  */
-const guardedAtomicRename = (
-  fs: FileSystem,
-  guard: (path: string) => void,
-): Pick<FileSystem, 'atomicRename'> => {
-  const { atomicRename } = fs;
-  if (atomicRename === undefined) return {};
-  return {
-    atomicRename: (s, d) => {
-      guard(s);
-      guard(d);
-      return atomicRename.call(fs, s, d);
-    },
+const guardedRename =
+  (fs: FileSystem, guard: (path: string) => void, rename: FileSystem['rename']) =>
+  (s: string, d: string): Promise<void> => {
+    guard(s);
+    guard(d);
+    return rename.call(fs, s, d);
   };
-};
 
 /**
  * `utimeNow` is optional on the port (OPFS omits it): the wrapper stays without it there so
@@ -246,12 +240,13 @@ export const wrapFsValidator = (
       guard(p);
       return fs.rm(p);
     },
-    rename: (s, d) => {
-      guard(s);
-      guard(d);
-      return fs.rename(s, d);
-    },
-    ...guardedAtomicRename(fs, guard),
+    rename: guardedRename(fs, guard, fs.rename),
+    ...(fs.atomicRename === undefined
+      ? {}
+      : { atomicRename: guardedRename(fs, guard, fs.atomicRename) }),
+    ...(fs.renameDirectory === undefined
+      ? {}
+      : { renameDirectory: guardedRename(fs, guard, fs.renameDirectory) }),
     ...guardedUtimeNow(fs, guard),
     ...guardedRmdir(fs, guard),
     readlink: (p) => {

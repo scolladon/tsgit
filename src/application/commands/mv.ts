@@ -11,15 +11,21 @@
  */
 import {
   mvBadSource,
+  mvDestinationBeyondSymlink,
   mvDestinationDirectoryMissing,
   mvDestinationExists,
   mvDestinationNotDirectory,
   mvIntoSelf,
   mvMultipleSourcesSameTarget,
   mvOverlappingSources,
+  mvSourceDirectoryEmpty,
   mvSourceNotTracked,
 } from '../../domain/commands/error.js';
 import { basename, dirname, TsgitError } from '../../domain/error.js';
+import {
+  entriesAtLeadingDirectories,
+  entriesBeneath,
+} from '../../domain/git-index/directory-file-conflict.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { withPath } from '../../domain/git-index/index-entry.js';
 import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
@@ -36,10 +42,18 @@ import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/pa
 import { emptyPathspec } from '../../domain/index.js';
 import { encode, wellFormed } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import { asciiLower } from '../../domain/pretty/ascii.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from '../primitives/config-read.js';
+import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import {
+  beyondSymlink,
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from '../primitives/internal/symlinked-leading-path.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -47,7 +61,7 @@ import {
   assertOperationalRepository,
   requireWorkTree,
 } from './internal/repo-state.js';
-import { renameInWorkingTree, validatePath } from './internal/working-tree.js';
+import { discardDirectory, renameInWorkingTree, validatePath } from './internal/working-tree.js';
 
 // Same tolerance set as `rm`: a missing-or-unparsable index is treated as
 // "no entries" so a refusal is still computed off the empty map; every other
@@ -70,8 +84,20 @@ export interface MvMove {
   readonly to: FilePath;
 }
 
-/** Per-source refusals that `skipErrors` collects rather than throwing. */
-export type MvSkipReason = 'source-not-tracked' | 'bad-source' | 'destination-exists' | 'into-self';
+/**
+ * Per-source refusals that `skipErrors` collects rather than throwing. Every reason
+ * but `rename-failed` is decided while planning; `rename-failed` is collected at execution.
+ */
+export type MvSkipReason =
+  | 'source-not-tracked'
+  | 'source-directory-empty'
+  | 'bad-source'
+  | 'destination-exists'
+  | 'into-self'
+  | 'destination-beyond-symlink'
+  | 'rename-failed'; // the working-tree rename was refused
+
+type PlanSkipReason = Exclude<MvSkipReason, 'rename-failed'>;
 
 export interface MvSkipped {
   readonly source: FilePath;
@@ -88,15 +114,24 @@ type DestinationMode =
   | { readonly kind: 'into-dir'; readonly destDir: FilePath };
 
 interface PlanItem {
+  readonly kind: 'file' | 'directory';
   readonly source: FilePath;
   readonly target: FilePath;
   readonly entries: ReadonlyArray<IndexEntry>;
+  /** Lossy members left in place, which keep the source directory alive. */
+  readonly retained: ReadonlyArray<IndexEntry>;
 }
 
 type Verdict =
-  | { readonly kind: 'file' | 'directory'; readonly entries: ReadonlyArray<IndexEntry> }
   | {
-      readonly skip: MvSkipReason;
+      readonly kind: 'file' | 'directory';
+      readonly entries: ReadonlyArray<IndexEntry>;
+      readonly retained: ReadonlyArray<IndexEntry>;
+      /** Members that stay put because their destination lies beyond a symbolic link. */
+      readonly skippedMembers: ReadonlyArray<IndexEntry>;
+    }
+  | {
+      readonly skip: PlanSkipReason;
       /** Names the refused member when it differs from the user's source. */
       readonly source?: FilePath;
       readonly target?: FilePath;
@@ -117,32 +152,163 @@ export const mv = async (
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'mv');
   await assertNoPendingOperation(ctx);
-  const validatedSources = sources.map((source) => validatePath(wellFormed(source)));
+  const request = parseRequest(sources, destination);
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const byPath = await readIndexMap(ctx);
+    const plan = await planUnderLock(ctx, byPath, request, opts);
+    if (opts.dryRun === true) return { moved: plannedMoves(plan.planned), skipped: plan.skipped };
+    return await executePlan(ctx, lock, byPath, plan, opts);
+  } finally {
+    await lock.release();
+  }
+};
+
+interface MvRequest {
+  readonly sources: ReadonlyArray<FilePath>;
+  readonly firstSource: FilePath;
+  readonly destination: string;
+  readonly destNoSlash: FilePath;
+}
+
+const parseRequest = (sources: ReadonlyArray<string>, destination: string): MvRequest => {
+  const validatedSources = sources.map((source) =>
+    validatePath(stripTrailingSlash(wellFormed(source))),
+  );
   const [firstSource] = validatedSources;
   if (firstSource === undefined) throw emptyPathspec();
   assertNoOverlappingSources(validatedSources);
   const wellFormedDestination = wellFormed(destination);
   const destNoSlash = validatePath(stripTrailingSlash(wellFormedDestination));
+  return {
+    sources: validatedSources,
+    firstSource,
+    destination: wellFormedDestination,
+    destNoSlash,
+  };
+};
 
-  const lock = await acquireIndexLock(ctx);
+const planUnderLock = async (
+  ctx: Context,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  { sources, firstSource, destination, destNoSlash }: MvRequest,
+  opts: MvOptions,
+): Promise<Plan> => {
+  const mode = await resolveDestinationMode(ctx, firstSource, destination, destNoSlash);
+  if (mode.kind === 'rename' && sources.length > 1) {
+    throw mvDestinationNotDirectory(firstSource, mode.target);
+  }
+  const policy = await destinationPolicyOf(ctx, opts);
+  const plan = await buildPlan(ctx, byPath, sources, mode, opts, policy);
+  assertNoTargetCollision(plan.planned);
+  return plan;
+};
+
+interface IndexMove {
+  readonly from: IndexEntry;
+  readonly to: IndexEntry;
+}
+
+interface RepathedItem {
+  readonly item: PlanItem;
+  readonly moves: ReadonlyArray<IndexMove>;
+}
+
+interface ExecutedItem extends RepathedItem {
+  readonly outcome: 'renamed' | 'skipped';
+}
+
+// Every target is validated before the first rename, so a refused path moves nothing.
+const executePlan = async (
+  ctx: Context,
+  lock: IndexLock,
+  byPath: Map<IndexPathKey, IndexEntry>,
+  { planned, skipped }: Plan,
+  opts: MvOptions,
+): Promise<MvResult> => {
+  const pathRules = indexPathRulesOf(ctx);
+  const repathed = planned.map((item) => repathItem(pathRules, item));
+  const executed = await renameEach(ctx, repathed, opts);
+  const indexed = executed.filter(movesIndex);
+  applyToIndex(byPath, indexed);
+  await removeAbandonedSources(ctx, byPath, executed);
+  await lock.commit(Array.from(byPath.values()), 'update');
+  return {
+    moved: plannedMoves(indexed.map(({ item }) => item)),
+    skipped: [...skipped, ...renameSkipsOf(executed)],
+  };
+};
+
+const repathItem = (pathRules: IndexPathRules, item: PlanItem): RepathedItem => ({
+  item,
+  moves: item.entries.map((from) => {
+    const to = withPath(from, { path: repath(from, item.source, item.target) });
+    pathRules.validateIndexPath(to.path, NO_PARSER_OFFSET, to.mode);
+    return { from, to };
+  }),
+});
+
+const renameEach = async (
+  ctx: Context,
+  repathed: ReadonlyArray<RepathedItem>,
+  opts: MvOptions,
+): Promise<ReadonlyArray<ExecutedItem>> => {
+  const run = opts.skipErrors === true ? renameOrSkip : renameOrThrow;
+  const executed: ExecutedItem[] = [];
+  for (const { item, moves } of repathed) {
+    executed.push({ item, moves, outcome: await run(ctx, item) });
+  }
+  return executed;
+};
+
+const renameOrThrow = async (ctx: Context, item: PlanItem): Promise<'renamed'> => {
+  await renameInWorkingTree(ctx, item.source, item.target);
+  return 'renamed';
+};
+
+const renameOrSkip = async (ctx: Context, item: PlanItem): Promise<'renamed' | 'skipped'> => {
+  const targetWasAbsent = (await lstatOrUndefined(ctx, item.target)) === undefined;
   try {
-    const byPath = await readIndexMap(ctx);
-    const mode = await resolveDestinationMode(ctx, firstSource, wellFormedDestination, destNoSlash);
-    if (mode.kind === 'rename' && validatedSources.length > 1) {
-      throw mvDestinationNotDirectory(firstSource, mode.target);
-    }
-    const { planned, skipped } = await buildPlan(ctx, byPath, validatedSources, mode, opts);
-    assertNoTargetCollision(planned);
-    const moved = plannedMoves(planned);
-    if (opts.dryRun === true) return { moved, skipped };
-    applyToIndex(indexPathRulesOf(ctx), byPath, planned);
-    for (const item of planned) {
-      await renameInWorkingTree(ctx, item.source, item.target);
-    }
-    await lock.commit(Array.from(byPath.values()), 'update');
-    return { moved, skipped };
-  } finally {
-    await lock.release();
+    return await renameOrThrow(ctx, item);
+  } catch (err) {
+    if (!(err instanceof TsgitError)) throw err;
+    if (targetWasAbsent && abandonsSource(item)) await removePartialMove(ctx, item.target);
+    return 'skipped';
+  }
+};
+
+// An item without index moves leaves the index at its source, so what it moved stays.
+const abandonsSource = (item: PlanItem): boolean =>
+  item.kind === 'directory' && item.retained.length === 0 && item.entries.length > 0;
+
+const removePartialMove = async (ctx: Context, target: FilePath): Promise<void> => {
+  if ((await lstatOrUndefined(ctx, target)) === undefined) return;
+  await discardDirectory(ctx, target);
+};
+
+// A directory's index entries move even when its rename was refused: git moves the
+// members it could address and leaves the rest where they were.
+const movesIndex = ({ item, outcome }: ExecutedItem): boolean =>
+  outcome === 'renamed' || item.kind === 'directory';
+
+const renameSkipsOf = (executed: ReadonlyArray<ExecutedItem>): ReadonlyArray<MvSkipped> =>
+  executed
+    .filter(({ outcome }) => outcome === 'skipped')
+    .map(({ item }) => ({ source: item.source, reason: 'rename-failed' }));
+
+// After the whole loop: a later source may have been renamed into the abandoned
+// directory, so a per-item cleanup would delete it too early. Only a directory is
+// cleaned: the index replacement rule can drop a skipped file's entry, and its path
+// then names whatever now stands there, which git keeps.
+const removeAbandonedSources = async (
+  ctx: Context,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  executed: ReadonlyArray<ExecutedItem>,
+): Promise<void> => {
+  for (const { item, outcome } of executed) {
+    if (item.kind !== 'directory' || outcome !== 'skipped') continue;
+    if (classifySource(byPath, item.source).kind !== 'untracked') continue;
+    await discardDirectory(ctx, item.source);
   }
 };
 
@@ -164,12 +330,11 @@ const resolveDestinationMode = async (
   destination: string,
   destNoSlash: FilePath,
 ): Promise<DestinationMode> => {
-  const stat = await lstatOrUndefined(ctx, destNoSlash);
-  // equivalent-mutant: lstat never reports a path as both a directory and a symlink
-  // (it does not follow the final component), so when `isDirectory === true` the
-  // `isSymbolicLink !== true` operand is always true — the guard stays defensive for
-  // adapters that might diverge from that contract.
-  if (stat?.isDirectory === true && stat.isSymbolicLink !== true) {
+  // A trailing slash makes git resolve a leading-and-final link (R17).
+  const stat = destination.endsWith('/')
+    ? await statOrUndefined(ctx, destNoSlash)
+    : await lstatOrUndefined(ctx, destNoSlash);
+  if (stat?.isDirectory === true) {
     return { kind: 'into-dir', destDir: destNoSlash };
   }
   if (destination.endsWith('/')) {
@@ -191,26 +356,37 @@ const buildPlan = async (
   sources: ReadonlyArray<FilePath>,
   mode: DestinationMode,
   opts: MvOptions,
+  policy: DestinationPolicy,
 ): Promise<Plan> => {
   const planned: PlanItem[] = [];
   const skipped: MvSkipped[] = [];
   for (const source of sources) {
-    const target =
-      mode.kind === 'rename'
-        ? mode.target
-        : (joinPathSegment(mode.destDir, basename(source)) as FilePath);
-    const verdict = await validateMove(ctx, byPath, source, target, opts);
-    if ('skip' in verdict) {
-      if (opts.skipErrors === true) {
-        skipped.push({ source, reason: verdict.skip });
-        continue;
-      }
+    const target = targetOf(mode, source);
+    const verdict = await validateMove(ctx, byPath, source, target, opts, policy);
+    if (!('skip' in verdict)) {
+      skipped.push(...skippedMembersOf(verdict));
+      const { kind, entries, retained } = verdict;
+      planned.push({ kind, source, target, entries, retained });
+    } else if (opts.skipErrors === true) {
+      skipped.push({ source, reason: verdict.skip });
+    } else {
       throw refusal(verdict.skip, verdict.source ?? source, verdict.target ?? target);
     }
-    planned.push({ source, target, entries: verdict.entries });
   }
   return { planned, skipped };
 };
+
+const targetOf = (mode: DestinationMode, source: FilePath): FilePath =>
+  mode.kind === 'rename'
+    ? mode.target
+    : (joinPathSegment(mode.destDir, basename(source)) as FilePath);
+
+const skippedMembersOf = ({
+  skippedMembers,
+}: {
+  readonly skippedMembers: ReadonlyArray<IndexEntry>;
+}): ReadonlyArray<MvSkipped> =>
+  skippedMembers.map((member) => ({ source: member.path, reason: 'destination-beyond-symlink' }));
 
 const validateMove = async (
   ctx: Context,
@@ -218,27 +394,100 @@ const validateMove = async (
   source: FilePath,
   target: FilePath,
   opts: MvOptions,
+  policy: DestinationPolicy,
 ): Promise<Verdict> => {
   const classified = classifySource(byPath, source);
-  if (classified.kind === 'untracked') return { skip: 'source-not-tracked' };
+  if (classified.kind === 'untracked') return { skip: await untrackedVerdictOf(ctx, source) };
   if (!(await sourceExistsOnDisk(ctx, source, classified.kind))) return { skip: 'bad-source' };
-  const lossyMember = classified.entries.find(isLossy);
+  const unmovable = unmovableMembers(classified.entries, source, target, opts);
+  if (unmovable !== undefined) return unmovable;
+  const entries = classified.entries.filter((entry) => !isLossy(entry));
+  const retained = classified.entries.filter(isLossy);
+  if (target === source || target.startsWith(`${source}/`)) return { skip: 'into-self' };
+  const refused = await refuseDestination(ctx, byPath, {
+    source,
+    target,
+    kind: classified.kind,
+    policy,
+    first: classified.entries[0],
+    members: entries,
+    retained,
+    opts,
+  });
+  return refused ?? { kind: classified.kind, entries, retained, skippedMembers: [] };
+};
+
+const unmovableMembers = (
+  members: ReadonlyArray<IndexEntry>,
+  source: FilePath,
+  target: FilePath,
+  opts: MvOptions,
+): Verdict | undefined => {
+  const lossyMember = members.find(isLossy);
   if (lossyMember !== undefined && opts.skipErrors !== true) {
     return memberBadSource(lossyMember, source, target);
   }
-  const entries = classified.entries.filter((entry) => !isLossy(entry));
-  if (entries.length === 0) return { skip: 'bad-source' };
-  if (target === source || target.startsWith(`${source}/`)) return { skip: 'into-self' };
+  return members.every(isLossy) ? { skip: 'bad-source' } : undefined;
+};
+
+interface DestinationCheck {
+  readonly source: FilePath;
+  readonly target: FilePath;
+  readonly kind: 'file' | 'directory';
+  readonly policy: DestinationPolicy;
+  /** The first tracked member, which a refusal names; without `skipErrors` it is addressable. */
+  readonly first: IndexEntry;
+  /** The addressable members: what actually moves. */
+  readonly members: ReadonlyArray<IndexEntry>;
+  readonly retained: ReadonlyArray<IndexEntry>;
+  readonly opts: MvOptions;
+}
+
+const refuseDestination = async (
+  ctx: Context,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  check: DestinationCheck,
+): Promise<Verdict | undefined> => {
+  const { source, target, kind, policy } = check;
+  if (await destinationBeyondSymlink(ctx, policy.scanner, target)) {
+    return beyondSymlinkVerdict(check);
+  }
   // `dirname` of a validated path is a prefix of it — still a valid repo path.
   const parent = dirname(target) as FilePath;
   // Stryker disable next-line StringLiteral: equivalent — parent is never this literal, and when parent === '' the work-tree root makes isDirectoryOnDisk('') true, so any comparison literal takes the same no-throw path (the `!== ''` short-circuit only spares a redundant lstat)
   if (parent !== '' && !(await isDirectoryOnDisk(ctx, parent))) {
     throw mvDestinationDirectoryMissing(source, target);
   }
-  if (!(await destinationFree(ctx, byPath, target, classified.kind, opts.force === true))) {
-    return { skip: 'destination-exists' };
+  if (await destinationFree(ctx, byPath, source, target, kind, policy)) return undefined;
+  return { skip: 'destination-exists' };
+};
+
+// An existing destination is never this refusal: it reports as present or as a
+// missing directory, whichever the plain checks decide.
+const destinationBeyondSymlink = async (
+  ctx: Context,
+  scanner: LeadingPathScanner,
+  target: FilePath,
+): Promise<boolean> =>
+  (await lstatOrUndefined(ctx, target)) === undefined && (await beyondSymlink(scanner, target));
+
+// Git renames the directory itself through the link and skips each member it
+// cannot place; a file has no such partial outcome.
+const beyondSymlinkVerdict = ({
+  kind,
+  source,
+  target,
+  first,
+  members,
+  retained,
+  opts,
+}: DestinationCheck): Verdict => {
+  const skip = 'destination-beyond-symlink';
+  if (kind === 'file') return { skip };
+  if (opts.skipErrors === true) {
+    return { kind, entries: [], retained, skippedMembers: members };
   }
-  return { kind: classified.kind, entries };
+  return { skip, source: first.path, target: repath(first, source, target) };
 };
 
 // Git names the member it cannot address, in the view a message can carry.
@@ -251,9 +500,11 @@ const memberBadSource = (member: IndexEntry, source: FilePath, target: FilePath)
   };
 };
 
+type TrackedEntries = readonly [IndexEntry, ...IndexEntry[]];
+
 type SourceClass =
-  | { readonly kind: 'file'; readonly entries: ReadonlyArray<IndexEntry> }
-  | { readonly kind: 'directory'; readonly entries: ReadonlyArray<IndexEntry> }
+  | { readonly kind: 'file'; readonly entries: TrackedEntries }
+  | { readonly kind: 'directory'; readonly entries: TrackedEntries }
   | { readonly kind: 'untracked' };
 
 const classifySource = (
@@ -266,8 +517,9 @@ const classifySource = (
   const entries = Array.from(byPath.values()).filter((entry) =>
     hasBytePrefix(pathBytesOf(entry), prefix),
   );
-  if (entries.length > 0) return { kind: 'directory', entries };
-  return { kind: 'untracked' };
+  const [first, ...rest] = entries;
+  if (first === undefined) return { kind: 'untracked' };
+  return { kind: 'directory', entries: [first, ...rest] };
 };
 
 const sourceExistsOnDisk = async (
@@ -281,19 +533,44 @@ const sourceExistsOnDisk = async (
   return stat.isFile || stat.isSymbolicLink;
 };
 
+// git's `lstat` of the source fails before it consults the index, so an absent path is a bad source.
+// A plain directory without a tracked member is "empty" to git; a link or a file is just untracked.
+const untrackedVerdictOf = async (ctx: Context, source: FilePath): Promise<PlanSkipReason> => {
+  const stat = await lstatOrUndefined(ctx, source);
+  if (stat === undefined) return 'bad-source';
+  return stat.isDirectory ? 'source-directory-empty' : 'source-not-tracked';
+};
+
+interface DestinationPolicy {
+  readonly force: boolean;
+  readonly ignoreCase: boolean;
+  readonly scanner: LeadingPathScanner;
+}
+
+// Read once per call: the config does not change under the index lock.
+const destinationPolicyOf = async (ctx: Context, opts: MvOptions): Promise<DestinationPolicy> => ({
+  force: opts.force === true,
+  ignoreCase: (await readConfig(ctx)).core?.ignoreCase === true,
+  scanner: createLeadingPathScanner(ctx),
+});
+
 const destinationFree = async (
   ctx: Context,
   byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  source: FilePath,
   target: FilePath,
   kind: 'file' | 'directory',
-  force: boolean,
+  policy: DestinationPolicy,
 ): Promise<boolean> => {
-  const exists =
-    byPath.has(keyOfPath(target)) || (await lstatOrUndefined(ctx, target)) !== undefined;
-  if (!exists) return true;
+  // Git's escape: a file whose target is its own case variant is the same path on a
+  // case-insensitive store. A directory source has no such escape.
+  const caseVariantOfFile =
+    kind === 'file' && policy.ignoreCase && asciiLower(source) === asciiLower(target);
+  const onDisk = !caseVariantOfFile && (await lstatOrUndefined(ctx, target)) !== undefined;
+  if (!byPath.has(keyOfPath(target)) && !onDisk) return true;
   // `force` overwrites only a file source; a directory source over an existing
   // path is always refused (verified against git: `mv -f dir present-file` fails).
-  return kind === 'file' && force;
+  return kind === 'file' && policy.force;
 };
 
 // Refuse moving both a directory and something inside it (`mv a a/b dir`) — the
@@ -335,35 +612,50 @@ const plannedMoves = (planned: ReadonlyArray<PlanItem>): ReadonlyArray<MvMove> =
 };
 
 const applyToIndex = (
-  pathRules: IndexPathRules,
   byPath: Map<IndexPathKey, IndexEntry>,
-  planned: ReadonlyArray<PlanItem>,
+  indexed: ReadonlyArray<ExecutedItem>,
 ): void => {
-  for (const item of planned) {
-    for (const entry of item.entries) {
-      const moved = withPath(entry, { path: repath(entry, item.source, item.target) });
-      pathRules.validateIndexPath(moved.path, NO_PARSER_OFFSET, moved.mode);
-      byPath.delete(indexPathKey(entry));
-      byPath.set(indexPathKey(moved), moved);
+  const moves = indexed.flatMap((executed) => executed.moves);
+  for (const { from } of moves) byPath.delete(indexPathKey(from));
+  const remaining = Array.from(byPath.values());
+  for (const { to } of moves) {
+    for (const conflict of conflictsWith(byPath, remaining, to.path)) {
+      byPath.delete(indexPathKey(conflict));
     }
+    byPath.set(indexPathKey(to), to);
   }
 };
+
+// Git's replacement: a file where a directory is needed, or a directory's entries
+// where a file now lands, leave the index. `remaining` keeps index order for the search.
+const conflictsWith = (
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  remaining: ReadonlyArray<IndexEntry>,
+  path: FilePath,
+): ReadonlyArray<IndexEntry> => [
+  ...entriesAtLeadingDirectories(byPath, path),
+  ...entriesBeneath(remaining, path),
+];
 
 // `entry.path` is `source` (file) or `${source}/…` (directory member), so the
 // suffix after `source` (possibly empty) reparents onto `target` unchanged.
 const repath = (entry: IndexEntry, source: FilePath, target: FilePath): FilePath =>
   `${target}${entry.path.slice(source.length)}` as FilePath;
 
-const refusal = (reason: MvSkipReason, source: FilePath, target: FilePath): TsgitError => {
+const refusal = (reason: PlanSkipReason, source: FilePath, target: FilePath): TsgitError => {
   switch (reason) {
     case 'source-not-tracked':
       return mvSourceNotTracked(source, target);
+    case 'source-directory-empty':
+      return mvSourceDirectoryEmpty(source, target);
     case 'bad-source':
       return mvBadSource(source, target);
     case 'destination-exists':
       return mvDestinationExists(source, target);
     case 'into-self':
       return mvIntoSelf(source, target);
+    case 'destination-beyond-symlink':
+      return mvDestinationBeyondSymlink(source, target);
   }
 };
 
@@ -379,9 +671,13 @@ const lstatOrUndefined = async (
 ): Promise<Awaited<ReturnType<Context['fs']['lstat']>> | undefined> =>
   ctx.fs.lstat(workPath(ctx, path)).catch(() => undefined);
 
+const statOrUndefined = async (
+  ctx: Context,
+  path: FilePath,
+): Promise<Awaited<ReturnType<Context['fs']['stat']>> | undefined> =>
+  ctx.fs.stat(workPath(ctx, path)).catch(() => undefined);
+
 const isDirectoryOnDisk = async (ctx: Context, path: FilePath): Promise<boolean> => {
-  const stat = await lstatOrUndefined(ctx, path);
-  // equivalent-mutant: lstat never reports a path as both a directory and a symlink, so
-  // when `isDirectory === true` the `isSymbolicLink !== true` operand is always true.
-  return stat?.isDirectory === true && stat.isSymbolicLink !== true;
+  // `stat` follows the parent's own link, as `rename(2)` does.
+  return (await statOrUndefined(ctx, path))?.isDirectory === true;
 };

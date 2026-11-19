@@ -250,6 +250,17 @@ export interface FileSystem {
    */
   readonly atomicRename?: (src: string, dst: string) => Promise<void>;
 
+  /**
+   * Rename the directory `src`, its whole subtree included (empty subdirectories and entries the
+   * caller never listed), to `dst` in one platform step: either every entry moves or none does.
+   * Refusals are `rename`'s, by delegation; a `dst` inside `src` (an alias by case folding
+   * included) refuses UNSUPPORTED_OPERATION and moves nothing. OPTIONAL: present only where the
+   * platform renames a directory natively. Node and memory provide it; OPFS cannot rename a
+   * directory, so the browser adapter omits it, and a caller that finds it absent moves the
+   * subtree entry by entry and must tolerate a partial move.
+   */
+  readonly renameDirectory?: (src: string, dst: string) => Promise<void>;
+
   /** Read the target of a symbolic link. Throws FILE_NOT_FOUND if not a symlink. */
   readonly readlink: (path: string) => Promise<string>;
 

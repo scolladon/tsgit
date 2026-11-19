@@ -447,6 +447,16 @@ export type CommandError =
       readonly destination: FilePath;
     }
   | {
+      readonly code: 'MV_DESTINATION_BEYOND_SYMLINK';
+      readonly source: FilePath;
+      readonly destination: FilePath;
+    }
+  | {
+      readonly code: 'MV_SOURCE_DIRECTORY_EMPTY';
+      readonly source: FilePath;
+      readonly destination: FilePath;
+    }
+  | {
       readonly code: 'MV_MULTIPLE_SOURCES_SAME_TARGET';
       readonly source: FilePath;
       readonly destination: FilePath;
@@ -1414,6 +1424,12 @@ export const mvDestinationDirectoryMissing = (
   source: FilePath,
   destination: FilePath,
 ): TsgitError => new TsgitError({ code: 'MV_DESTINATION_DIRECTORY_MISSING', source, destination });
+
+export const mvDestinationBeyondSymlink = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_DESTINATION_BEYOND_SYMLINK', source, destination });
+
+export const mvSourceDirectoryEmpty = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_SOURCE_DIRECTORY_EMPTY', source, destination });
 
 export const mvMultipleSourcesSameTarget = (source: FilePath, destination: FilePath): TsgitError =>
   new TsgitError({ code: 'MV_MULTIPLE_SOURCES_SAME_TARGET', source, destination });

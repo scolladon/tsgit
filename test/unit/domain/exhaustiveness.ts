@@ -231,6 +231,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'MV_INTO_SELF':
     case 'MV_DESTINATION_NOT_DIRECTORY':
     case 'MV_DESTINATION_DIRECTORY_MISSING':
+    case 'MV_DESTINATION_BEYOND_SYMLINK':
+    case 'MV_SOURCE_DIRECTORY_EMPTY':
     case 'MV_MULTIPLE_SOURCES_SAME_TARGET':
     case 'MV_OVERLAPPING_SOURCES':
     case 'RM_STAGED_CHANGES':

@@ -112,3 +112,36 @@ export const pathArb = (): fc.Arbitrary<string> =>
   fc
     .array(fc.constantFrom(...PRINTABLE_ASCII), { minLength: 0, maxLength: 24 })
     .map((chars) => chars.join(''));
+
+/** A generated working-tree entry: a file, a symlink or a (possibly empty) directory. */
+export type TreeEntry =
+  | { readonly kind: 'file'; readonly bytes: Uint8Array }
+  | { readonly kind: 'symlink'; readonly target: string }
+  | { readonly kind: 'directory'; readonly entries: Readonly<Record<string, TreeEntry>> };
+
+const MAX_TREE_DEPTH = 4;
+const MAX_ENTRIES_PER_DIRECTORY = 5;
+const ENTRY_NAME = /^[a-z]{1,8}$/;
+
+const leafEntryArb = (): fc.Arbitrary<TreeEntry> =>
+  fc.oneof(
+    fc.uint8Array({ maxLength: 16 }).map((bytes): TreeEntry => ({ kind: 'file', bytes })),
+    fc.stringMatching(ENTRY_NAME).map((target): TreeEntry => ({ kind: 'symlink', target })),
+  );
+
+const entriesArb = (depth: number): fc.Arbitrary<Readonly<Record<string, TreeEntry>>> =>
+  fc.dictionary(fc.stringMatching(ENTRY_NAME), treeEntryArb(depth), {
+    maxKeys: MAX_ENTRIES_PER_DIRECTORY,
+  });
+
+const treeEntryArb = (depth: number): fc.Arbitrary<TreeEntry> =>
+  depth <= 0
+    ? leafEntryArb()
+    : fc.oneof(
+        leafEntryArb(),
+        entriesArb(depth - 1).map((entries): TreeEntry => ({ kind: 'directory', entries })),
+      );
+
+/** A directory tree of 0 to 4 levels and 0 to 5 uniquely named entries per directory. */
+export const directoryTreeArb = (): fc.Arbitrary<Readonly<Record<string, TreeEntry>>> =>
+  entriesArb(MAX_TREE_DEPTH - 1);

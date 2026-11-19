@@ -209,12 +209,6 @@ A well-formed repository, but a configuration, layout or argument shape few call
   tsgit grep               -> threw {"code":"PATH_TOO_LONG","path":"<tmp>/<q50>/…/.gitattributes"}
   ```
 
-- **32.72** `mv` with `skipErrors` throws on a rename the host refuses as too long, where `git mv -k` skips it — pinned against git 2.56.0. `base` tracked, destination `S = 's'×300`. git `mv -k base S` exits 0 and moves nothing (without `-k`: 128, rename failed); tsgit throws `PATH_TOO_LONG` naming `S` with or without `skipErrors`, nothing moved (`src/application/commands/mv.ts`).
-  ```
-  git mv -k base <s300> -> exit 0
-  tsgit mv(['base'], S, {skipErrors:true}) -> threw {"code":"PATH_TOO_LONG","path":"<s300>"}
-  ```
-
 - **32.76** Under `core.ignoreCase`, a non-forced switch refuses a staged file that differs only in case from a directory the target adds, where git switches — pinned against git 2.56.0 (macOS APFS), unborn HEAD. Staged `DIR`, target `dir/x`. git exits 0 and leaves `AD DIR`, so the staged file's working copy is lost. tsgit refuses `CHECKOUT_OVERWRITE_DIRTY { untracked: ['dir'] }`, because the two-way carry compares file and directory collisions case-exactly (`src/application/primitives/materialize-tree.ts`). With `core.ignoreCase=false` both refuse. Not folded: adds feature behaviour.
   ```
   ic=true  git checkout side -> exit 0; ls-files: DIR, dir/x; status: AD DIR; disk: dir/
@@ -256,6 +250,8 @@ A well-formed repository, but a configuration, layout or argument shape few call
 - **32.84** A non-cone sparse matcher costs ~2.6 s per 20k index paths with 62 literal rules — measured at a0cd84e1. `compileGlob`'s per-character step (`stepLiteral`, `src/domain/pathspec/compile-glob.ts`) allocates a `Uint8Array(path.length + 1)` per literal token, so a literal `withDirSuffix` pattern costs 1.5–2.4 µs per path against 0.2 µs for `*`; only `src/domain/sparse/non-cone.ts` passes `withDirSuffix`, and cone mode costs 5 ms. Fix shape: a literal-pattern fast path (prefix compare plus a `/` or end-of-path boundary). Non-cone mode is deprecated in git. Not folded: out of scope.
 
 - **32.85** Spike — `stash apply --index` of a stash holding a staged change to an excluded path leaves git's entry `H` with the file absent; tsgit leaves it `S` — pinned against git 2.56.0. Cone sparse on `b`, `a/f` staged `f2` through `update-index --no-skip-worktree` with work file `f1`, `git stash`, then `git stash apply --index` vs `repo.stash.apply({ restoreIndex: true })` (`src/application/commands/stash.ts`): both stage blob `9de77c1` and leave `a/` absent; git's `status` reports `MD a/f`, tsgit's `M  a/f`. Question: which step of git's `do_apply_stash` index restore clears the bit without writing the file, and does every `--index` restore of a skip-worktree path do it? Not folded: needs a probe.
+
+- **32.86** A forced `mv` onto an existing file through an untracked symbolic link to a directory outside the work tree refuses `PERMISSION_DENIED` where git writes outside — pinned against git 2.56.0. Tracked `file`, an outside directory holding `full/o`, and an untracked link `link -> ../out/full`: git `mv -f file link/o` exits 0, overwrites the outside `o` and stages `link/o`; tsgit `mv(['file'], 'link/o', { force: true })` throws `PERMISSION_DENIED { path: 'link/o' }` from the working-tree rename (`src/application/commands/internal/working-tree.ts`), index and work tree unchanged. The refusal is ADR-625's write-side leading-path containment, kept on purpose; the in-tree case (ADR-1227) renames through the link as git does. Lifting the guard would need an ADR and a security review. Not folded: needs its own decision.
 
 ## Performance off the hot path
 

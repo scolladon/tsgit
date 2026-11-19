@@ -55,12 +55,14 @@ import {
   hashFailed,
   httpError,
   mvBadSource,
+  mvDestinationBeyondSymlink,
   mvDestinationDirectoryMissing,
   mvDestinationExists,
   mvDestinationNotDirectory,
   mvIntoSelf,
   mvMultipleSourcesSameTarget,
   mvOverlappingSources,
+  mvSourceDirectoryEmpty,
   mvSourceNotTracked,
   networkError,
   notADirectory,
@@ -1020,6 +1022,44 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe("Given mvDestinationBeyondSymlink('dir/a', 'lnk/x/a')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const result = mvDestinationBeyondSymlink('dir/a' as FilePath, 'lnk/x/a' as FilePath);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'MV_DESTINATION_BEYOND_SYMLINK',
+            source: 'dir/a',
+            destination: 'lnk/x/a',
+          });
+          expect(result.message).toBe(
+            'MV_DESTINATION_BEYOND_SYMLINK: destination is beyond a symbolic link, source=dir/a, destination=lnk/x/a',
+          );
+        });
+      });
+    });
+
+    describe("Given mvSourceDirectoryEmpty('ud', 'z')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const result = mvSourceDirectoryEmpty('ud' as FilePath, 'z' as FilePath);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'MV_SOURCE_DIRECTORY_EMPTY',
+            source: 'ud',
+            destination: 'z',
+          });
+          expect(result.message).toBe(
+            'MV_SOURCE_DIRECTORY_EMPTY: source directory is empty, source=ud, destination=z',
+          );
+        });
+      });
+    });
+
     describe("Given mvIntoSelf('a.txt', 'a.txt')", () => {
       describe('When checking data and message', () => {
         it('Then code/source/destination and the faithful message render', () => {
@@ -1655,7 +1695,7 @@ describe('cleanFilterFailed error', () => {
     });
   });
 
-  describe('Given cleanFilterFailed factory', () => {
+  describe('Given cleanFilterFailed factory and its message prefix', () => {
     describe('When reading .message prefix', () => {
       it('Then message starts with "clean filter" (not "smudge filter" via case fall-through)', () => {
         // Arrange & Act
