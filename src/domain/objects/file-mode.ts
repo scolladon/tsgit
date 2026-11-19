@@ -117,3 +117,16 @@ export function deriveWorkingMode(stat: {
 
 /** Whether the work file's executable bit is trusted: git's core.fileMode. */
 export type ExecutableBitTrust = 'trusted' | 'ignored';
+
+const isRegularFileMode = (mode: FileMode): boolean =>
+  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
+
+/** git's ce_mode_from_stat, core.fileMode arm: an untrusted exec bit defers to the donor entry. */
+export const indexModeFromStat = (
+  stat: { readonly isSymbolicLink: boolean; readonly mode: number },
+  donor: FileMode | undefined,
+  trust: ExecutableBitTrust,
+): FileMode => {
+  if (trust === 'trusted' || stat.isSymbolicLink) return deriveWorkingMode(stat);
+  return donor !== undefined && isRegularFileMode(donor) ? donor : FILE_MODE.REGULAR;
+};

@@ -26,7 +26,12 @@ import { isSameKind } from '../../domain/diff/mode-kind.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
-import { deriveWorkingMode, FILE_MODE, type FileMode } from '../../domain/objects/file-mode.js';
+import {
+  type ExecutableBitTrust,
+  FILE_MODE,
+  type FileMode,
+  indexModeFromStat,
+} from '../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -52,6 +57,7 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
+import { readExecutableBitTrust } from './read-executable-bit-trust.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 import { resolveFilterDriver, streamsThroughFilter } from './resolve-filter-driver.js';
 
@@ -194,7 +200,11 @@ export interface ComparisonScope {
   readonly filterDriversConfigured?: boolean;
   /** The scan's shared leading-path memo; a comparison outside a scan builds its own. */
   readonly scanner?: LeadingPathScanner;
+  /** core.fileMode, resolved once per scan; a comparison outside a scan reads it. */
+  readonly executableBit?: ExecutableBitTrust;
 }
+
+type ResolvedScope = ComparisonScope & { readonly executableBit: ExecutableBitTrust };
 
 /**
  * A comparison verdict plus, when the file is content-identical yet its stat
@@ -282,11 +292,15 @@ const compareGitlink = async (
   ctx: Context,
   entry: IndexEntry,
   stat: FileStat,
-  scope: ComparisonScope,
+  scope: ResolvedScope,
 ): Promise<WorkingTreeDelta> => {
   // git's `CE_VALID`: an assume-valid entry is trusted without a probe once the stat cache is armed.
   if (entry.flags.assumeValid && scope.indexMtime !== undefined) return GITLINK_UNCHANGED;
-  if (!stat.isDirectory) return { status: 'type-changed', worktreeMode: deriveWorkingMode(stat) };
+  if (!stat.isDirectory)
+    return {
+      status: 'type-changed',
+      worktreeMode: indexModeFromStat(stat, FILE_MODE.GITLINK, scope.executableBit),
+    };
   const head = await checkedOutHead(ctx, entry.path);
   const status = head === undefined || head === entry.id ? 'unchanged' : 'modified';
   return { status, worktreeMode: FILE_MODE.GITLINK };
@@ -310,9 +324,9 @@ export const compareFile = async (
   entry: IndexEntry,
   absPath: string,
   stat: FileStat,
-  scope: ComparisonScope,
+  scope: ResolvedScope,
 ): Promise<WorkingTreeDelta> => {
-  const worktreeMode = deriveWorkingMode(stat);
+  const worktreeMode = indexModeFromStat(stat, entry.mode, scope.executableBit);
   const settled = statOnlyVerdict(entry, stat, worktreeMode, scope.indexMtime);
   return settled ?? (await compareContent(ctx, entry, absPath, stat, worktreeMode, scope));
 };
@@ -344,10 +358,14 @@ export const compareAndRefresh = async (
   if (await belowSymlinkedDirectory(ctx, entry, scope)) return { delta: { status: 'absent' } };
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { delta: { status: 'absent' } };
+  const resolved = {
+    ...scope,
+    executableBit: scope.executableBit ?? (await readExecutableBitTrust(ctx)),
+  };
   const delta =
     entry.mode === FILE_MODE.GITLINK
-      ? await compareGitlink(ctx, entry, stat, scope)
-      : await compareFile(ctx, entry, absPath, stat, scope);
+      ? await compareGitlink(ctx, entry, stat, resolved)
+      : await compareFile(ctx, entry, absPath, stat, resolved);
   if (delta.status === 'unchanged' && shouldRefresh(entry, stat)) {
     return { delta, refreshed: withStatData(entry, stat) };
   }
@@ -394,8 +412,12 @@ export const compareWorkingTreeEntry = async (
 /** git's racy branch of ie_match_stat: content decides, checkin attributes built once per checker. */
 export const racyContentMatcher = (ctx: Context): RacyContentCheck => {
   const provider = lazily(() => buildCheckinAttributeProvider(ctx));
+  const executableBit = lazily(() => readExecutableBitTrust(ctx));
   return async (entry, absPath, stat) => {
-    const { status } = await compareFile(ctx, entry, absPath, stat, scopeOf(await provider()));
+    const { status } = await compareFile(ctx, entry, absPath, stat, {
+      ...scopeOf(await provider()),
+      executableBit: await executableBit(),
+    });
     return !isWorkingTreeModified(status);
   };
 };

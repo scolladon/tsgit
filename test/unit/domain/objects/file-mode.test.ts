@@ -6,6 +6,7 @@ import {
   deriveWorkingMode,
   FILE_MODE,
   type FileMode,
+  indexModeFromStat,
   isDirectory,
   matchFileModeBytes,
   normalizeFileMode,
@@ -171,6 +172,53 @@ describe('file-mode', () => {
 
           // Assert
           expect(result).toBe('100644');
+        });
+      });
+    });
+  });
+
+  describe('indexModeFromStat', () => {
+    const EXECUTABLE_FILE = { isSymbolicLink: false, mode: 0o100755 };
+    const PLAIN_FILE = { isSymbolicLink: false, mode: 0o100644 };
+    const LINK = { isSymbolicLink: true, mode: 0o120777 };
+    const DONORS: ReadonlyArray<FileMode | undefined> = [
+      undefined,
+      FILE_MODE.REGULAR,
+      FILE_MODE.EXECUTABLE,
+      FILE_MODE.SYMLINK,
+      FILE_MODE.GITLINK,
+    ];
+    const ignoredExpectation = (donor: FileMode | undefined): FileMode =>
+      donor === FILE_MODE.EXECUTABLE ? FILE_MODE.EXECUTABLE : FILE_MODE.REGULAR;
+
+    describe.each(
+      DONORS.flatMap((donor) => [
+        { label: 'executable regular', stat: EXECUTABLE_FILE, donor, trusted: '100755' },
+        { label: 'plain regular', stat: PLAIN_FILE, donor, trusted: '100644' },
+        { label: 'symbolic link', stat: LINK, donor, trusted: '120000' },
+      ]),
+    )('Given a $label work file and donor $donor', ({ stat, donor, trusted, label }) => {
+      describe('When the bit is trusted', () => {
+        it('Then the index mode is the one the stat gives', () => {
+          // Arrange & Act
+          const result = indexModeFromStat(stat, donor, 'trusted');
+
+          // Assert
+          expect(result).toBe(trusted);
+        });
+      });
+
+      describe('When the bit is ignored', () => {
+        it('Then the index mode is the donor when regular, else the plain mode', () => {
+          // Arrange
+          const expected =
+            label === 'symbolic link' ? FILE_MODE.SYMLINK : ignoredExpectation(donor);
+
+          // Act
+          const result = indexModeFromStat(stat, donor, 'ignored');
+
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });

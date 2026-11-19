@@ -1846,3 +1846,107 @@ describe('racyContentMatcher', () => {
     });
   });
 });
+
+const ignoreExecutableBit = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfilemode = false\n');
+  invalidateConfigCache(ctx);
+};
+
+/** The memory file system models no modes: report every lstat with this mode. */
+const lstatReportsMode = (ctx: Context, mode: number): void => {
+  const lstat = ctx.fs.lstat.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path) => ({ ...(await lstat(path)), mode }));
+};
+
+describe('compareWorkingTreeEntry under core.fileMode = false', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a regular entry whose working file gained the exec bit and core.filemode = false', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then returns 'unchanged'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ignoreExecutableBit(ctx);
+        lstatReportsMode(ctx, 0o100755);
+
+        // Act
+        const result = await compareWorkingTreeEntry(ctx, entry);
+
+        // Assert
+        expect(result).toBe('unchanged');
+      });
+    });
+  });
+
+  describe('Given an executable entry whose working file lost the exec bit and core.filemode = false', () => {
+    describe('When comparing the entry to the working tree', () => {
+      it("Then returns 'unchanged'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ignoreExecutableBit(ctx);
+        const executableEntry: IndexEntry = { ...entry, mode: '100755' };
+
+        // Act
+        const result = await compareWorkingTreeEntry(ctx, executableEntry);
+
+        // Assert
+        expect(result).toBe('unchanged');
+      });
+    });
+  });
+
+  describe('Given a symlink entry replaced by an executable regular file and core.filemode = false', () => {
+    describe('When compareWorkingTreeDelta', () => {
+      it('Then type-changed with worktreeMode 100644', async () => {
+        // Arrange
+        const { ctx, entry } = await seedSymlink('l', 'target');
+        await ctx.fs.rm(work(ctx, 'l'));
+        await ctx.fs.writeUtf8(work(ctx, 'l'), 'target');
+        await ignoreExecutableBit(ctx);
+        lstatReportsMode(ctx, 0o100755);
+
+        // Act
+        const result = await compareWorkingTreeDelta(ctx, entry);
+
+        // Assert
+        expect(result).toEqual({ status: 'type-changed', worktreeMode: '100644' });
+      });
+    });
+  });
+
+  describe('Given a gitlink entry whose path holds an executable regular file and core.filemode = false', () => {
+    describe('When compareWorkingTreeDelta', () => {
+      it('Then type-changed with worktreeMode 100644', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('sub', 'file\n');
+        await ignoreExecutableBit(ctx);
+        lstatReportsMode(ctx, 0o100755);
+
+        // Act
+        const result = await compareWorkingTreeDelta(ctx, gitlinkOf(entry));
+
+        // Assert
+        expect(result).toEqual({ status: 'type-changed', worktreeMode: '100644' });
+      });
+    });
+  });
+
+  describe('Given the default config and a scope that ignores the bit', () => {
+    describe('When compareAndRefresh on an exec-bit-only change', () => {
+      it("Then returns 'unchanged'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        lstatReportsMode(ctx, 0o100755);
+
+        // Act
+        const sut = compareAndRefresh;
+        const result = await sut(ctx, entry, { executableBit: 'ignored' });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+      });
+    });
+  });
+});
