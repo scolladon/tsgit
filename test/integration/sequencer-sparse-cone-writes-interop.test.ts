@@ -9,7 +9,15 @@
  *   unique:         sparse patterns govern every merge-driven work-tree write, case-folded under core.ignorecase, as canonical git applies them
  *   interopSurface: sequencer, stash, checkout, merge
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -190,6 +198,8 @@ const SYMLINK_MOVER_SEED: Seed = {
 
 // Only a/g lies outside the cone: git clears the skip-worktree bit of a present file when it
 // reads the index, so a second out-of-pattern path would be reported on the git side alone.
+const BACKDATED_SECONDS = 1_000_000_000;
+
 const SOLE_MOVER_SEED: Seed = {
   main: [regular('a/g', 'g1\n'), regular('b/f', 'f1\n'), regular('top', 't\n')],
   other: [regular('a/g', 'g1\n'), regular('b/f', 'f2\n'), regular('top', 't\n')],
@@ -248,9 +258,12 @@ const MOVER_ROWS: ReadonlyArray<MoverRow> = [
     id: 'mover-through-symlinked-directory-kept',
     seed: SOLE_MOVER_SEED,
     edit: (dir) => {
+      // b/g is written before a/ is freed and backdated, so its stat never matches a/g's
+      // cached one: on ext4 a recycled inode with a same-second mtime would make git retire it.
+      writeFileSync(join(dir, 'b', 'g'), 'g1\n');
+      utimesSync(join(dir, 'b', 'g'), BACKDATED_SECONDS, BACKDATED_SECONDS);
       rmSync(join(dir, 'a'), { recursive: true });
       symlinkSync('b', join(dir, 'a'));
-      writeFileSync(join(dir, 'b', 'g'), 'g1\n');
     },
     // readdir walks the link, so a/ lists what b/ holds.
     expectedListing: ['a/f=f2\n', 'a/g=g1\n', 'a@->b', 'b/', 'b/f=f2\n', 'b/g=g1\n', 'top=t\n'],
