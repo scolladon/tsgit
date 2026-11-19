@@ -22,13 +22,10 @@ import {
   keyOfPath,
   viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
+import { unmergedModeDonor } from '../../domain/git-index/unmerged-mode-donor.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
-import {
-  deriveWorkingMode,
-  FILE_MODE,
-  type FileMode,
-  type RefName,
-} from '../../domain/objects/index.js';
+import { type ExecutableBitTrust, indexModeFromStat } from '../../domain/objects/file-mode.js';
+import { FILE_MODE, type FileMode, type RefName } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import type {
@@ -47,6 +44,7 @@ import {
   type TrackedScan,
   verifiedBy,
 } from '../primitives/internal/scan-tracked-entries.js';
+import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { isUnreadableRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
@@ -632,20 +630,22 @@ const conflictStage = (entry: IndexEntry): BlobSide => ({ id: entry.id, mode: en
  * Build the unmerged entries, carrying the conflict state, the present per-stage
  * blobs, and the conflicted file's on-disk mode (`worktree`, git's `mW`; omitted
  * when the file is absent). A conflicted path has no stage-0 entry, so it is
- * absent from the working-tree pass and its mode is read here — `lstat`-derived
- * only, since git does no content hash for `mW`. The result is byte-ordered by
+ * absent from the working-tree pass and its mode is read here — git's `mW`: the
+ * stat under the donor rule (no content hash). The result is byte-ordered by
  * path: `groupUnmergedEntries` preserves the order of the index (whose entries
  * are required to be byte-sorted, a git index invariant), and fanning the
  * per-path `lstat`s through the `ioBound` bucket does not disturb that —
  * `boundedMap` returns results in INPUT order regardless of completion order.
  */
-const buildUnmergedEntries = (
+const buildUnmergedEntries = async (
   ctx: Context,
   groups: ReadonlyMap<FilePath, UnmergedEntryGroup>,
   workDir: string,
-): Promise<UnmergedEntry[]> =>
-  boundedMapFor(ctx, 'ioBound', [...groups], async ([path, group]) => {
-    const worktreeMode = await readWorktreeMode(ctx, workDir, path);
+): Promise<UnmergedEntry[]> => {
+  if (groups.size === 0) return [];
+  const probe = { workDir, executableBit: await readExecutableBitTrust(ctx) };
+  return boundedMapFor(ctx, 'ioBound', [...groups], async ([path, group]) => {
+    const worktreeMode = await readWorktreeMode(ctx, probe, path, unmergedModeDonor(group));
     return {
       kind: classifyUnmerged(group),
       path: viewOfEscaped(path),
@@ -655,15 +655,22 @@ const buildUnmergedEntries = (
       ...(worktreeMode !== undefined && { worktree: { mode: worktreeMode } }),
     };
   });
+};
 
-/** The conflicted file's on-disk git mode, or `undefined` when it is absent. */
+interface WorktreeProbe {
+  readonly workDir: string;
+  readonly executableBit: ExecutableBitTrust;
+}
+
+/** The conflicted file's git mode (the stat under the donor rule), or `undefined` when it is absent. */
 const readWorktreeMode = async (
   ctx: Context,
-  workDir: string,
+  { workDir, executableBit }: WorktreeProbe,
   path: FilePath,
+  donor: FileMode | undefined,
 ): Promise<FileMode | undefined> => {
   // A lossy name reads as absent, with no fs call naming it.
   if (hasEscapedBytes(path)) return undefined;
   const stat = await ctx.fs.lstat(joinPath(workDir, path)).catch(() => undefined);
-  return stat === undefined ? undefined : deriveWorkingMode(stat);
+  return stat === undefined ? undefined : indexModeFromStat(stat, donor, executableBit);
 };

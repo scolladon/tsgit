@@ -86,6 +86,7 @@ const tsgitStatusRows = async (repo: Repository): Promise<ReadonlyArray<string>>
 
 const BASE_FILE: SeedFile = { path: 'f', content: 'one\n' };
 const EXECUTABLE_FILE: SeedFile = { ...BASE_FILE, executable: true };
+const SEED_FILE: SeedFile = { path: 'seed', content: 's\n' };
 
 interface StatusRow {
   readonly id: string;
@@ -143,6 +144,47 @@ const STATUS_ROWS: ReadonlyArray<StatusRow> = [
     expected: [],
   },
 ];
+
+interface ConflictShape {
+  readonly id: string;
+  readonly base: SeedFile | undefined;
+  readonly prepareMain: (dir: string) => void;
+  readonly prepareOther: (dir: string) => void;
+}
+
+const writeFileWith = (name: string, content: string, permissions: number) => (dir: string) => {
+  writeFileSync(join(dir, name), content);
+  chmodSync(join(dir, name), permissions);
+};
+const gitRemove = (name: string) => (dir: string) => sh(dir, 'rm', '-q', name);
+
+const CONFLICT_SHAPES: ReadonlyArray<ConflictShape> = [
+  {
+    id: 'UD with ours 100755 over base 100644',
+    base: BASE_FILE,
+    prepareMain: writeFileWith('f', 'two\n', EXECUTABLE_PERMISSIONS),
+    prepareOther: gitRemove('f'),
+  },
+  {
+    id: 'AA with ours 100755 and theirs 100644',
+    base: undefined,
+    prepareMain: writeFileWith('f', 'main\n', EXECUTABLE_PERMISSIONS),
+    prepareOther: writeFileWith('f', 'other\n', PLAIN_PERMISSIONS),
+  },
+  {
+    id: 'DU with base 100755 and theirs 100644',
+    base: EXECUTABLE_FILE,
+    prepareMain: gitRemove('f'),
+    prepareOther: writeFileWith('f', 'two\n', PLAIN_PERMISSIONS),
+  },
+];
+
+const gitConflictModes = (dir: string): ReadonlyArray<string> =>
+  sh(dir, 'status', '--porcelain=v2')
+    .split('\n')
+    .filter((line) => line.startsWith('u '))
+    .map((line) => line.split(' '))
+    .map((cols) => `${cols[1]} ${cols[6]} ${cols[10]}`);
 
 describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
   let pair: PeerPair;
@@ -322,6 +364,41 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
             expect(ours).toEqual({ main: ['M 100644 100755 f'], linked: [] });
             for (const dir of [pair.peer, pair.ours])
               rmSync(linkedOf(dir), { recursive: true, force: true });
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(CONFLICT_SHAPES)('Given a $id conflict and core.fileMode=false', (shape) => {
+      describe('When both tools report the status', () => {
+        it(
+          'Then the work-tree mode is the donor stage mode, not the stat',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, [shape.base ?? SEED_FILE]);
+            for (const dir of [pair.peer, pair.ours]) {
+              sh(dir, 'checkout', '-q', '-b', 'other');
+              shape.prepareOther(dir);
+              sh(dir, 'add', '-A');
+              sh(dir, 'commit', '-q', '-m', 'other');
+              sh(dir, 'checkout', '-q', 'main');
+              shape.prepareMain(dir);
+              sh(dir, 'add', '-A');
+              sh(dir, 'commit', '-q', '-m', 'main');
+              tryRunGitWithExit(['-C', dir, 'merge', 'other'], { env: COMMIT_ENV });
+              setFileMode('false')(dir);
+              chmodTo(PLAIN_PERMISSIONS)(dir);
+            }
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            const status = await sut.status();
+
+            // Assert
+            expect(gitConflictModes(pair.peer)).toHaveLength(1);
+            expect(gitConflictModes(pair.peer)[0]).toMatch(/^\S+ 100755 f$/);
+            expect(status.unmerged.map((u) => u.worktree?.mode)).toEqual(['100755']);
           },
           ROW_TIMEOUT,
         );

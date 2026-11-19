@@ -18,6 +18,7 @@ import {
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { lstatIfReachable } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
+import * as trust from '../../../../src/application/primitives/read-executable-bit-trust.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
 import { pathTooLong, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
@@ -1862,6 +1863,126 @@ describe('status on escaped paths', () => {
         ).toEqual([]);
         expect(result.untracked).toEqual([TWIN_VIEW]);
         vi.restoreAllMocks();
+      });
+    });
+  });
+});
+
+describe('status — unmerged work-tree mode under core.fileMode = false', () => {
+  const stageEntry = (id: ObjectId, stage: 1 | 2 | 3, mode: FileMode): IndexEntry => ({
+    ...indexEntryOf({
+      name: new TextEncoder().encode('f.txt'),
+      view: 'f.txt' as FilePath,
+      id,
+      lossy: false,
+    }),
+    mode,
+    flags: { ...STAGE0_FLAGS, stage },
+  });
+
+  const seedUnmerged = async (
+    stages: ReadonlyArray<readonly [1 | 2 | 3, FileMode]>,
+    config: string,
+  ): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const id = await blobIn(ctx, 'f');
+    const lock = await acquireIndexLock(ctx);
+    await lock.commit(
+      stages.map(([stage, mode]) => stageEntry(id, stage, mode)),
+      'update',
+    );
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'f');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+    __resetConfigCacheForTests();
+    return ctx;
+  };
+
+  const UNTRUSTED = '[core]\n\tfilemode = false\n';
+  const TRUSTED = '[core]\n\tfilemode = true\n';
+
+  describe.each([
+    {
+      label: 'ours 100755 and theirs 100644 (AA)',
+      stages: [
+        [2, '100755' as FileMode],
+        [3, '100644' as FileMode],
+      ] as const,
+    },
+    {
+      label: 'base 100755 and theirs 100644 only (DU)',
+      stages: [
+        [1, '100755' as FileMode],
+        [3, '100644' as FileMode],
+      ] as const,
+    },
+  ])(
+    'Given an unmerged path with $label, a non-executable work file and core.filemode = false',
+    ({ stages }) => {
+      describe('When status', () => {
+        it('Then worktree.mode is 100755', async () => {
+          // Arrange
+          const ctx = await seedUnmerged(stages, UNTRUSTED);
+          const sut = status;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.unmerged[0]?.worktree?.mode).toBe('100755');
+        });
+      });
+    },
+  );
+
+  describe('Given the same shape under the default config', () => {
+    describe('When status', () => {
+      it('Then worktree.mode follows the stat', async () => {
+        // Arrange
+        const ctx = await seedUnmerged(
+          [
+            [2, '100755' as FileMode],
+            [3, '100644' as FileMode],
+          ],
+          TRUSTED,
+        );
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.unmerged[0]?.worktree?.mode).toBe('100644');
+      });
+    });
+  });
+
+  describe('Given one and then three edited tracked files', () => {
+    describe('When status runs over each', () => {
+      it('Then core.fileMode reads do not grow with the entry count', async () => {
+        // Arrange
+        const countReads = async (names: ReadonlyArray<string>): Promise<number> => {
+          const ctx = createMemoryContext();
+          await init(ctx);
+          for (const name of names) await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'a');
+          await add(ctx, [...names]);
+          await commit(ctx, { message: 'first', author });
+          for (const name of names)
+            await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'edited');
+          const reads = vi.spyOn(trust, 'readExecutableBitTrust');
+          await status(ctx, { refresh: false });
+          const count = reads.mock.calls.length;
+          reads.mockRestore();
+          return count;
+        };
+        const sut = countReads;
+
+        // Act
+        const one = await sut(['a.txt']);
+        const three = await sut(['a.txt', 'b.txt', 'c.txt']);
+
+        // Assert
+        expect(three).toBe(one);
       });
     });
   });
