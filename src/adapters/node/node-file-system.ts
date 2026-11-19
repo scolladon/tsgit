@@ -1646,6 +1646,11 @@ export class NodeFileSystem implements FileSystem {
     await this.rename(src, dst);
   };
 
+  // `rename(2)` moves a directory with its whole subtree in one step.
+  renameDirectory = async (src: string, dst: string): Promise<void> => {
+    await this.rename(src, dst);
+  };
+
   readlink = async (path: string): Promise<string> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);

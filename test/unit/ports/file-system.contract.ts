@@ -216,6 +216,14 @@ async function utimeNow(fs: FileSystem, path: string): Promise<void> {
   return fs.utimeNow(path);
 }
 
+/** The adapters this suite runs against provide the optional one-step directory rename. */
+async function renameDirectory(fs: FileSystem, src: string, dst: string): Promise<void> {
+  if (fs.renameDirectory === undefined) {
+    throw new Error('the adapter under contract provides no renameDirectory');
+  }
+  return fs.renameDirectory(src, dst);
+}
+
 /** Every adapter this suite runs against provides the optional non-throwing lstat probe. */
 async function tryLstat(fs: FileSystem, path: string): Promise<FileStat | undefined> {
   if (fs.tryLstat === undefined) {
@@ -697,6 +705,68 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
       // Assert
       expect(await env.fs.read(`${dir}/child.bin`)).toEqual(data);
+    });
+
+    describe('Given the optional renameDirectory', () => {
+      it('Given a directory holding a file, an empty subdirectory and a nested file, When renameDirectory moves it, Then every entry sits under the destination and the source is gone', async () => {
+        // Arrange
+        const src = `${env.rootDir}/rd-src`;
+        const dst = `${env.rootDir}/rd-dst`;
+        const top = new Uint8Array([1, 2]);
+        const nested = new Uint8Array([3]);
+        await env.fs.write(`${src}/a.bin`, top);
+        await env.fs.mkdir(`${src}/emp`);
+        await env.fs.write(`${src}/s/b.bin`, nested);
+
+        // Act
+        await renameDirectory(env.fs, src, dst);
+
+        // Assert
+        expect(await env.fs.read(`${dst}/a.bin`)).toEqual(top);
+        expect(await env.fs.read(`${dst}/s/b.bin`)).toEqual(nested);
+        expect(await env.fs.exists(`${dst}/emp`)).toBe(true);
+        expect(await env.fs.exists(src)).toBe(false);
+      });
+
+      it('Given a directory, When renameDirectory targets a path inside it, Then it refuses UNSUPPORTED_OPERATION and nothing moves', async () => {
+        // Arrange
+        const src = `${env.rootDir}/rd-self`;
+        const data = new Uint8Array([7]);
+        await env.fs.write(`${src}/a.bin`, data);
+        let caught: unknown;
+
+        // Act
+        try {
+          await renameDirectory(env.fs, src, `${src}/inner`);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const { data: errData } = caught as TsgitError;
+        expect(errData.code).toBe('UNSUPPORTED_OPERATION');
+        expect((errData as { operation?: unknown }).operation).toBe('filesystem');
+        expect(typeof (errData as { reason?: unknown }).reason).toBe('string');
+        expect(await env.fs.read(`${src}/a.bin`)).toEqual(data);
+        expect(await env.fs.exists(`${src}/inner`)).toBe(false);
+      });
+
+      it('Given no entry at the source, When renameDirectory, Then it refuses FILE_NOT_FOUND', async () => {
+        // Arrange
+        const src = `${env.rootDir}/rd-missing`;
+        let caught: unknown;
+
+        // Act
+        try {
+          await renameDirectory(env.fs, src, `${env.rootDir}/rd-missing-dst`);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        assertFileNotFound(caught);
+      });
     });
 
     it('Given existing file, When writeExclusive, Then throws FILE_EXISTS', async () => {
