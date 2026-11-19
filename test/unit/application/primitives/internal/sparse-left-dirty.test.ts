@@ -252,18 +252,7 @@ describe('notUpToDate stat short-circuit', () => {
   });
 });
 
-const EXECUTABLE_BITS = 0o100755;
 const EXT_ON = '[extensions]\n\tworktreeConfig = true\n';
-
-/** The memory file system models no modes: the work file's stat is made to carry the executable bits. */
-const makeExecutable = (ctx: SeededContext): void => {
-  const tryLstat = ctx.fs.tryLstat?.bind(ctx.fs);
-  if (tryLstat === undefined) throw new Error('the memory file system probes with tryLstat');
-  vi.spyOn(ctx.fs, 'tryLstat').mockImplementation(async (path) => {
-    const stat = await tryLstat(path);
-    return stat === undefined ? undefined : { ...stat, mode: EXECUTABLE_BITS };
-  });
-};
 
 const writeBody = async (ctx: SeededContext, path: string, body: string): Promise<void> => {
   await ctx.fs.write(`${workDirOf(ctx)}/${path}`, new TextEncoder().encode(body));
@@ -275,7 +264,7 @@ const modeRows = [
     entryMode: FILE_MODE.REGULAR,
     arrange: async (ctx: SeededContext): Promise<void> => {
       await writeWork(ctx, 'a', 'indexed');
-      makeExecutable(ctx);
+      withExecutableWorkFile(ctx);
     },
   },
   {
@@ -393,7 +382,7 @@ describe('notUpToDate mode and type', () => {
       const ctx = await buildSeededContext();
       const id = await writeBlob(ctx, 'indexed');
       await writeWork(ctx, 'a', 'indexed');
-      makeExecutable(ctx);
+      withExecutableWorkFile(ctx);
       const entry = entryOf('a', id, { mode: FILE_MODE.EXECUTABLE });
 
       // Act
@@ -502,7 +491,7 @@ describe('notUpToDate mode and type', () => {
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, 'indexed');
         await writeWork(ctx, 'a', 'indexed');
-        makeExecutable(ctx);
+        withExecutableWorkFile(ctx);
         await writeSymlinksOff(ctx);
         const entry = entryOf('a', id, { mode: FILE_MODE.REGULAR });
 

@@ -31,6 +31,10 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import {
+  EXECUTABLE_STAT_MODE,
+  withExecutableWorkFile,
+} from '../../support/executable-work-file.js';
 import { instrumentedContext, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { asBareContext, seedRepo } from './fixtures.js';
@@ -5015,17 +5019,6 @@ describe('add — a pathspec probe the file system refuses as too long', () => {
   });
 });
 
-const EXECUTABLE_BITS = 0o100755;
-
-/** The memory file system models no modes: the work file's lstat is made to carry the executable bits. */
-const makeExecutable = (ctx: TrackedCtx, path: string): void => {
-  const lstat = ctx.fs.lstat.bind(ctx.fs);
-  vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p) => {
-    const stat = await lstat(p);
-    return p.endsWith(`/${path}`) ? { ...stat, mode: EXECUTABLE_BITS } : stat;
-  });
-};
-
 const writeFileModeConfig = async (ctx: TrackedCtx, value: 'true' | 'false'): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tfilemode = ${value}\n`);
   invalidateConfigCache(ctx);
@@ -5143,7 +5136,7 @@ describe('add — core.filemode', () => {
           }
           await writeWork(ctx, 'x.txt', content);
           await writeFileModeConfig(ctx, fileMode);
-          if (executable) makeExecutable(ctx, 'x.txt');
+          if (executable) withExecutableWorkFile(ctx, 'x.txt');
           const sut = add;
 
           // Act
@@ -5169,7 +5162,7 @@ describe('add — core.filemode', () => {
           ...(await baseLstat(filePath)),
           mtimeMs: 1000,
           ctimeMs: 1000,
-          mode: EXECUTABLE_BITS,
+          mode: EXECUTABLE_STAT_MODE,
         };
         const id = await writeObject(ctx, {
           type: 'blob',

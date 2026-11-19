@@ -9,6 +9,7 @@ import {
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
 import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/index.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import {
   indexExtensionsOf,
@@ -811,8 +812,6 @@ describe('Given an unmerged h that an ignore rule hides from the walk', () => {
   });
 });
 
-const EXECUTABLE_BITS = 0o100755;
-
 interface DonorRow {
   readonly title: string;
   readonly stages: ReadonlyArray<IndexRow>;
@@ -877,11 +876,7 @@ describe('add — an unmerged path under core.filemode = false', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, FILEMODE_FALSE);
         invalidateConfigCache(ctx);
         if (executable) {
-          const lstat = ctx.fs.lstat.bind(ctx.fs);
-          vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p) => {
-            const stat = await lstat(p);
-            return p.endsWith('/f') ? { ...stat, mode: EXECUTABLE_BITS } : stat;
-          });
+          withExecutableWorkFile(ctx, 'f');
         }
         const sut = add;
 
