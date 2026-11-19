@@ -271,14 +271,17 @@ describe('mv', () => {
       it('Then throws MV_BAD_SOURCE carrying source and destination', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const sut = mv;
 
         // Act
-        const err = await expectError(() => mv(ctx, ['ghost.txt'], 'z.txt'), 'MV_BAD_SOURCE');
+        const err = await captureError(() => sut(ctx, ['ghost.txt'], 'z.txt'));
 
         // Assert
-        if (err.data.code !== 'MV_BAD_SOURCE') throw new Error('unexpected error shape');
-        expect(err.data.source).toBe('ghost.txt');
-        expect(err.data.destination).toBe('z.txt');
+        expect(err?.data).toMatchObject({
+          code: 'MV_BAD_SOURCE',
+          source: 'ghost.txt',
+          destination: 'z.txt',
+        });
       });
     });
 
@@ -286,14 +289,17 @@ describe('mv', () => {
       it('Then the destination is the path inside the directory', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'dir/keep': 'k' });
+        const sut = mv;
 
         // Act
-        const err = await expectError(() => mv(ctx, ['ghost'], 'dir'), 'MV_BAD_SOURCE');
+        const err = await captureError(() => sut(ctx, ['ghost'], 'dir'));
 
         // Assert
-        if (err.data.code !== 'MV_BAD_SOURCE') throw new Error('unexpected error shape');
-        expect(err.data.source).toBe('ghost');
-        expect(err.data.destination).toBe('dir/ghost');
+        expect(err?.data).toMatchObject({
+          code: 'MV_BAD_SOURCE',
+          source: 'ghost',
+          destination: 'dir/ghost',
+        });
       });
     });
 
@@ -301,9 +307,13 @@ describe('mv', () => {
       it('Then throws MV_BAD_SOURCE', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const sut = mv;
 
-        // Act / Assert
-        await expectError(() => mv(ctx, ['ghost.txt'], 'missing/z'), 'MV_BAD_SOURCE');
+        // Act
+        const err = await captureError(() => sut(ctx, ['ghost.txt'], 'missing/z'));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_BAD_SOURCE');
       });
     });
 
@@ -311,9 +321,13 @@ describe('mv', () => {
       it('Then throws MV_BAD_SOURCE', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
+        const sut = mv;
 
-        // Act / Assert
-        await expectError(() => mv(ctx, ['ghost.txt'], 'z.txt', { dryRun: true }), 'MV_BAD_SOURCE');
+        // Act
+        const err = await captureError(() => sut(ctx, ['ghost.txt'], 'z.txt', { dryRun: true }));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_BAD_SOURCE');
       });
     });
   });
@@ -324,17 +338,17 @@ describe('mv', () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
         await ctx.fs.write(work(ctx, 'loose.txt'), new TextEncoder().encode('l'));
+        const sut = mv;
 
         // Act
-        const err = await expectError(
-          () => mv(ctx, ['loose.txt'], 'z.txt'),
-          'MV_SOURCE_NOT_TRACKED',
-        );
+        const err = await captureError(() => sut(ctx, ['loose.txt'], 'z.txt'));
 
         // Assert
-        if (err.data.code !== 'MV_SOURCE_NOT_TRACKED') throw new Error('unexpected error shape');
-        expect(err.data.source).toBe('loose.txt');
-        expect(err.data.destination).toBe('z.txt');
+        expect(err?.data).toMatchObject({
+          code: 'MV_SOURCE_NOT_TRACKED',
+          source: 'loose.txt',
+          destination: 'z.txt',
+        });
       });
     });
   });
@@ -345,9 +359,13 @@ describe('mv', () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
         await ctx.fs.symlink('nowhere', work(ctx, 'dl2'));
+        const sut = mv;
 
-        // Act / Assert
-        await expectError(() => mv(ctx, ['dl2'], 'z'), 'MV_SOURCE_NOT_TRACKED');
+        // Act
+        const err = await captureError(() => sut(ctx, ['dl2'], 'z'));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_SOURCE_NOT_TRACKED');
       });
     });
   });
@@ -432,9 +450,10 @@ describe('mv', () => {
         const ctx = await seedAndStage({ f: 'f', gone: 'g', 'dir/keep': 'k' });
         await ctx.fs.rm(work(ctx, 'gone'));
         await ctx.fs.write(work(ctx, 'loose.txt'), new TextEncoder().encode('l'));
+        const sut = mv;
 
         // Act
-        const result = await mv(ctx, ['ghost', 'loose.txt', 'gone', 'f'], 'dir', {
+        const result = await sut(ctx, ['ghost', 'loose.txt', 'gone', 'f'], 'dir', {
           skipErrors: true,
         });
 
@@ -2428,6 +2447,46 @@ describe('mv — an existing destination through a link and the index replacemen
         expect(result).toEqual({ moved: [{ from: 'f', to: 'inner/keep' }], skipped: [] });
         expect(await indexPaths(ctx)).toEqual(before);
         expect(await exists(ctx, 'f')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given skipErrors, force and an existing destination through a link', () => {
+    describe('When mv', () => {
+      it('Then the file replaces the target as it does without skipErrors', async () => {
+        // Arrange
+        const ctx = await seedLinked(true);
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['f'], 'inner/keep', { skipErrors: true, force: true });
+
+        // Assert
+        expect(result).toEqual({ moved: [{ from: 'f', to: 'inner/keep' }], skipped: [] });
+        expect(await readWork(ctx, 'sub/keep')).toBe('F');
+        expect(await indexEntry(ctx, 'inner')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given dryRun without force and an existing destination through a link', () => {
+    describe('When mv', () => {
+      it('Then it refuses MV_DESTINATION_EXISTS and changes nothing', async () => {
+        // Arrange
+        const ctx = await seedLinked(true);
+        const before = await indexPaths(ctx);
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['f'], 'inner/keep', { dryRun: true }));
+
+        // Assert
+        expect(err?.data).toMatchObject({
+          code: 'MV_DESTINATION_EXISTS',
+          source: 'f',
+          destination: 'inner/keep',
+        });
+        expect(await indexPaths(ctx)).toEqual(before);
       });
     });
   });

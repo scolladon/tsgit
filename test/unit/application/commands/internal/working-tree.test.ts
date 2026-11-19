@@ -1051,6 +1051,27 @@ describe('internal/working-tree', () => {
       });
     });
 
+    describe('Given renameDirectory rejecting a plain Error', () => {
+      describe('When renameInWorkingTree moves the directory', () => {
+        it('Then that very error is rethrown', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await base.fs.mkdir(`${base.layout.workDir}/old`);
+          const sentinel = new Error('x');
+          const renameDirectory = vi.fn(async () => {
+            throw sentinel;
+          });
+          const ctx: Context = { ...base, fs: { ...base.fs, renameDirectory } };
+
+          // Act
+          const outcome = renameInWorkingTree(ctx, 'old', 'new');
+
+          // Assert
+          await expect(outcome).rejects.toBe(sentinel);
+        });
+      });
+    });
+
     describe('Given renameDirectory refusing with the absolute destination path', () => {
       describe('When renameInWorkingTree moves the directory', () => {
         it('Then the refusal names the repository-relative destination', async () => {

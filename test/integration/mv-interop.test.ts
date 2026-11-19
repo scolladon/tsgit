@@ -16,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -214,7 +215,7 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
       await writeFile(path.join(dir, 't', 'keep'), 'KEEP\n');
     };
 
-    describe('When mv -f moves a file onto a path that is a file on disk and a directory in the index (rows Z15, Z16)', () => {
+    describe('When mv -f moves a file onto a path that is a file on disk and a directory in the index (row Z16)', () => {
       it('Then the entries beneath leave the index as in git', async () => {
         // Arrange
         await seed([
@@ -233,9 +234,35 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
     });
 
     describe.each([
-      ['a forced file (row Z17)', ['-f', 'f', 't/keep'], ['f'], 't/keep', { force: true }],
-      ['a plain file (row Z18)', ['f', 't/new'], ['f'], 't/new', {}],
-      ['a directory (rows Z19, Z20)', ['dir', 't/d'], ['dir'], 't/d', {}],
+      ['Z15', 'x', fileOverDirectory, [{ path: 'x/y', content: 'Y\n' }]],
+      ['Z17', 't/keep', directoryOverFile, [{ path: 't', content: 'T\n' }]],
+    ] as const)(
+      'When mv moves a file without force onto a drifted path (row %s)',
+      (_row, destination, drift, extra) => {
+        it('Then git and tsgit refuse as an existing destination and change nothing', async () => {
+          // Arrange
+          await seed([{ path: 'f', content: 'F\n' }, ...extra]);
+          await driftBoth(drift);
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'f', destination]);
+          const data = await outcomeOf(() => repo.mv(['f'], destination));
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(data).toMatchObject({ code: 'MV_DESTINATION_EXISTS', source: 'f', destination });
+          expect(gitRun.stderr).toContain(fatalLine('destination exists', data));
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      },
+    );
+
+    describe.each([
+      ['a forced file (row Z18)', ['-f', 'f', 't/keep'], ['f'], 't/keep', { force: true }],
+      ['a plain file (row Z20)', ['f', 't/new'], ['f'], 't/new', {}],
+      ['a directory (row Z19)', ['dir', 't/d'], ['dir'], 't/d', {}],
     ] as const)(
       'When mv moves %s beneath a path that is a directory on disk and a file in the index',
       (_label, gitArgs, sources, destination, opts) => {
@@ -802,6 +829,11 @@ const outcomeOf = async (run: () => Promise<unknown>): Promise<TsgitError['data'
 const linesOf = (stdout: string): ReadonlyArray<string> =>
   stdout.split('\n').filter((line) => line !== '');
 
+const fatalLine = (phrase: string, data: unknown): string => {
+  const { source, destination } = data as { source: string; destination: string };
+  return `fatal: ${phrase}, source=${source}, destination=${destination}`;
+};
+
 describe.skipIf(!GIT_AVAILABLE || !CASE_INSENSITIVE)(
   'mv porcelain interop on a case-insensitive host',
   () => {
@@ -1151,11 +1183,6 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       expect(await workTreeEntries(pair.ours)).toEqual(await workTreeEntries(pair.peer));
     };
 
-    const beyondLinkLine = (data: unknown): string => {
-      const { source, destination } = data as { source: string; destination: string };
-      return `fatal: destination is beyond a symbolic link, source=${source}, destination=${destination}`;
-    };
-
     const expectBeyondLink = async (
       args: ReadonlyArray<string>,
       run: () => Promise<unknown>,
@@ -1169,7 +1196,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
       expect(gitRun.exitCode).toBe(128);
       expect(data).toMatchObject({ code: 'MV_DESTINATION_BEYOND_SYMLINK', ...expected });
-      expect(gitRun.stderr).toContain(beyondLinkLine(data));
+      expect(gitRun.stderr).toContain(fatalLine('destination is beyond a symbolic link', data));
       expect(lsStage(pair.ours)).toBe(stageBefore);
       expect(await workTreeEntries(pair.ours)).toEqual(diskBefore);
       await expectParity();
@@ -1202,7 +1229,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           // Assert
           expect(gitRun.exitCode).toBe(128);
           expect(data).toMatchObject({ code: 'MV_SOURCE_NOT_TRACKED', source: 'dl2' });
-          expect(gitRun.stderr).toContain('fatal: not under version control, source=dl2');
+          expect(gitRun.stderr).toContain(fatalLine('not under version control', data));
           expect(lsStage(pair.ours)).toBe(stageBefore);
           await expectParity();
         });
@@ -1455,6 +1482,77 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
       });
 
+      describe('When skipErrors moves a file and a directory into the link with a slash (row Y11)', () => {
+        it('Then both move the directory and keep the file, the file coming first', async () => {
+          // Arrange
+          const sut = repo;
+
+          // Act
+          const gitRun = tryRunGitWithExit([
+            '-C',
+            pair.peer,
+            'mv',
+            '-k',
+            '-v',
+            'f',
+            'dir',
+            'inner/',
+          ]);
+          const result = await sut.mv(['f', 'dir'], 'inner/', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(linesOf(gitRun.stdout)).toEqual(
+            mvVerboseLines(['f', 'dir'], (source) => `inner/${source}`, result, ['dir']),
+          );
+          for (const dir of [pair.peer, pair.ours]) {
+            expect(await pathExists(dir, 'sub/dir/a')).toBe(true);
+            expect(await pathExists(dir, 'f')).toBe(true);
+          }
+          await expectParity();
+        });
+      });
+
+      describe.each([
+        ['a file', 'f', 'destination exists'],
+        ['a directory', 'dir', 'destination already exists'],
+      ])('When %s moves onto the link itself (row Y16)', (_label, source, phrase) => {
+        it('Then git and tsgit refuse as an existing destination', async () => {
+          // Arrange
+          const sut = repo;
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', source, 'inner']);
+          const data = await outcomeOf(() => sut.mv([source], 'inner'));
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(data).toMatchObject({
+            code: 'MV_DESTINATION_EXISTS',
+            source,
+            destination: 'inner',
+          });
+          expect(gitRun.stderr).toContain(fatalLine(phrase, data));
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          await expectParity();
+        });
+      });
+
+      describe('When two files bound for the same name move into the link (row Y20)', () => {
+        it('Then git and tsgit refuse the first as beyond the link before the collision', async () => {
+          // Arrange
+          const sut = repo;
+          await writeBoth('dup/f', true);
+
+          // Act & Assert
+          await expectBeyondLink(['f', 'dup/f', 'inner/'], () => sut.mv(['f', 'dup/f'], 'inner/'), {
+            source: 'f',
+            destination: 'inner/f',
+          });
+        });
+      });
+
       describe.each(['dang/', 'pointer/'])(
         'When a file moves to %s, a link that is no directory (row Y12)',
         (destination) => {
@@ -1473,7 +1571,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               destination,
             });
             expect(gitRun.stderr).toContain(
-              `fatal: destination directory does not exist, source=f, destination=${destination}`,
+              fatalLine('destination directory does not exist', data),
             );
             await expectParity();
           });
@@ -1519,11 +1617,6 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         await readFile(path.join(pair.ours, 'sub', 'keep'), 'utf8'),
       ];
 
-      const existsLine = (data: unknown, phrase: string): string => {
-        const { source, destination } = data as { source: string; destination: string };
-        return `fatal: ${phrase}, source=${source}, destination=${destination}`;
-      };
-
       describe.each([
         [true, true],
         [false, true],
@@ -1548,13 +1641,13 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               source: 'f',
               destination: 'inner/keep',
             });
-            expect(gitRun.stderr).toContain(existsLine(data, 'destination exists'));
+            expect(gitRun.stderr).toContain(fatalLine('destination exists', data));
             expect(lsStage(pair.ours)).toBe(stageBefore);
             await expectParity();
           });
         });
 
-        describe('When a file moves onto it with force (rows Y17, Z1, Z4)', () => {
+        describe('When a file moves onto it with force (rows Y18, Z2, Z3, Z4)', () => {
           it('Then both overwrite the file behind the link and agree on the index', async () => {
             // Arrange
             const sut = repo;
@@ -1575,7 +1668,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         beforeEach(() => seedTarget(true, true));
 
         describe.each([false, true])(
-          'When a directory moves onto it, force=%s (row Z2)',
+          'When a directory moves onto it, force=%s (row Z10)',
           (force) => {
             it('Then git and tsgit refuse as an existing destination', async () => {
               // Arrange
@@ -1589,7 +1682,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               // Assert
               expect(gitRun.exitCode).toBe(128);
               expect(data).toMatchObject({ code: 'MV_DESTINATION_EXISTS' });
-              expect(gitRun.stderr).toContain(existsLine(data, 'destination already exists'));
+              expect(gitRun.stderr).toContain(fatalLine('destination already exists', data));
               await expectParity();
             });
           },
@@ -1650,7 +1743,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           });
         });
 
-        describe('When a file moves into the linked directory holding the same name (rows Z11, Z12)', () => {
+        describe('When a file moves into the linked directory holding the same name (row Z11)', () => {
           it('Then git and tsgit refuse as an existing destination', async () => {
             // Arrange
             const sut = repo;
@@ -1662,8 +1755,56 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             // Assert
             expect(gitRun.exitCode).toBe(128);
             expect(data).toMatchObject({ code: 'MV_DESTINATION_EXISTS', destination: 'inner/f' });
-            expect(gitRun.stderr).toContain(existsLine(data, 'destination exists'));
+            expect(gitRun.stderr).toContain(fatalLine('destination exists', data));
             await expectParity();
+          });
+        });
+      });
+
+      describe('Given the linked directory holding an untracked file of the same name', () => {
+        beforeEach(() => seedTarget(true, true));
+
+        describe.each([
+          ['Z12', ['-f', 'f', 'inner/'], { force: true }, 'inner/'],
+          ['Z12', ['-f', 'f', 'inner/f'], { force: true }, 'inner/f'],
+          ['Z13', ['-k', '-f', 'f', 'inner/'], { force: true, skipErrors: true }, 'inner/'],
+        ] as const)(
+          'When a file is forced into it (row %s, %j)',
+          (_row, gitArgs, opts, destination) => {
+            it('Then both overwrite the file behind the link and drop the link from the index', async () => {
+              // Arrange
+              const sut = repo;
+
+              // Act
+              runGit(['-C', pair.peer, 'mv', ...gitArgs]);
+              const result = await sut.mv(['f'], destination, opts);
+
+              // Assert
+              expect(result).toEqual({ moved: [{ from: 'f', to: 'inner/f' }], skipped: [] });
+              expect(lsStage(pair.ours)).not.toContain('\tinner\n');
+              for (const dir of [pair.peer, pair.ours]) {
+                await expect(readFile(path.join(dir, 'sub', 'f'), 'utf8')).resolves.toBe('f\n');
+              }
+              await expectParity();
+            });
+          },
+        );
+
+        describe('When a file is forced onto the link itself (row Z14)', () => {
+          it('Then both replace the link with a regular file holding the blob', async () => {
+            // Arrange
+            const sut = repo;
+
+            // Act
+            runGit(['-C', pair.peer, 'mv', '-f', 'f', 'inner']);
+            await sut.mv(['f'], 'inner', { force: true });
+
+            // Assert
+            for (const dir of [pair.peer, pair.ours]) {
+              expect((await lstat(path.join(dir, 'inner'))).isFile()).toBe(true);
+              await expect(readFile(path.join(dir, 'inner'), 'utf8')).resolves.toBe('f\n');
+            }
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
           });
         });
       });
@@ -1693,15 +1834,64 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     });
 
     describe('Given a tracked link to the git directory and an existing file behind it', () => {
+      beforeEach(async () => {
+        await seed(['f']);
+        await linkBoth('lnk', '.git', true);
+        for (const dir of [pair.peer, pair.ours]) {
+          await writeFile(path.join(dir, '.git', 'description'), 'original\n');
+        }
+      });
+
+      describe('When a file moves onto it without force (row Z21)', () => {
+        it('Then git and tsgit refuse as an existing destination and leave the file', async () => {
+          // Arrange
+          const sut = repo;
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'f', 'lnk/description']);
+          const data = await outcomeOf(() => sut.mv(['f'], 'lnk/description'));
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(data).toMatchObject({
+            code: 'MV_DESTINATION_EXISTS',
+            source: 'f',
+            destination: 'lnk/description',
+          });
+          expect(gitRun.stderr).toContain(fatalLine('destination exists', data));
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          for (const dir of [pair.peer, pair.ours]) {
+            await expect(readFile(path.join(dir, '.git', 'description'), 'utf8')).resolves.toBe(
+              'original\n',
+            );
+          }
+        });
+      });
+
+      describe('When skipErrors and force move a file onto it (row Z21)', () => {
+        it('Then both overwrite the file inside the git directory', async () => {
+          // Arrange
+          const sut = repo;
+
+          // Act
+          runGit(['-C', pair.peer, 'mv', '-k', '-f', 'f', 'lnk/description']);
+          await sut.mv(['f'], 'lnk/description', { skipErrors: true, force: true });
+
+          // Assert
+          for (const dir of [pair.peer, pair.ours]) {
+            await expect(readFile(path.join(dir, '.git', 'description'), 'utf8')).resolves.toBe(
+              'f\n',
+            );
+          }
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+
       describe('When a file is forced onto it (row Z21)', () => {
         it('Then both overwrite the file inside the git directory', async () => {
           // Arrange
           const sut = repo;
-          await seed(['f']);
-          await linkBoth('lnk', '.git', true);
-          for (const dir of [pair.peer, pair.ours]) {
-            await writeFile(path.join(dir, '.git', 'description'), 'original\n');
-          }
 
           // Act
           runGit(['-C', pair.peer, 'mv', '-f', 'f', 'lnk/description']);
@@ -1737,9 +1927,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             source: 'dir',
             destination: 'dir/l/x',
           });
-          expect(gitRun.stderr).toContain(
-            'fatal: can not move directory into itself, source=dir, destination=dir/l/x',
-          );
+          expect(gitRun.stderr).toContain(fatalLine('can not move directory into itself', data));
           await expectParity();
         });
       });
