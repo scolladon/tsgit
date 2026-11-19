@@ -352,6 +352,79 @@ describe('mv', () => {
     });
   });
 
+  describe('Given a directory holding no tracked member', () => {
+    describe.each([
+      { shape: 'only an untracked file', source: 'ud' },
+      { shape: 'nothing at all', source: 'emp' },
+    ])('When mv of a directory holding $shape', ({ source }) => {
+      it.each([{ dryRun: false }, { dryRun: true }])(
+        'Then throws MV_SOURCE_DIRECTORY_EMPTY and leaves disk untouched (dryRun $dryRun)',
+        async ({ dryRun }) => {
+          // Arrange
+          const ctx = await seedAndStage({ f: 'f' });
+          await ctx.fs.mkdir(work(ctx, 'ud'));
+          await ctx.fs.write(work(ctx, 'ud/u'), new TextEncoder().encode('u'));
+          await ctx.fs.mkdir(work(ctx, 'emp'));
+          const sut = mv;
+
+          // Act
+          const err = await captureError(() => sut(ctx, [source], 'z', { dryRun }));
+
+          // Assert
+          expect(err?.data).toEqual({
+            code: 'MV_SOURCE_DIRECTORY_EMPTY',
+            source,
+            destination: 'z',
+          });
+          expect(await exists(ctx, source)).toBe(true);
+          expect(await exists(ctx, 'ud/u')).toBe(true);
+          expect(await exists(ctx, 'z')).toBe(false);
+        },
+      );
+    });
+
+    describe('When mv with skipErrors alongside a movable file', () => {
+      it('Then each is skipped as source-directory-empty and the file moves', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ f: 'f', 'dir/keep': 'k' });
+        await ctx.fs.mkdir(work(ctx, 'ud'));
+        await ctx.fs.write(work(ctx, 'ud/u'), new TextEncoder().encode('u'));
+        await ctx.fs.mkdir(work(ctx, 'emp'));
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['ud', 'emp', 'f'], 'dir', { skipErrors: true });
+
+        // Assert
+        expect(result.moved).toEqual([{ from: 'f', to: 'dir/f' }]);
+        expect(result.skipped).toEqual([
+          { source: 'ud', reason: 'source-directory-empty' },
+          { source: 'emp', reason: 'source-directory-empty' },
+        ]);
+        expect(await exists(ctx, 'ud/u')).toBe(true);
+        expect(await exists(ctx, 'emp')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an untracked symbolic link to a directory', () => {
+    describe('When mv', () => {
+      it('Then throws MV_SOURCE_NOT_TRACKED because a link is not a plain directory', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ f: 'f' });
+        await ctx.fs.mkdir(work(ctx, 'real'));
+        await ctx.fs.symlink('real', work(ctx, 'shortcut'));
+        const sut = mv;
+
+        // Act
+        const err = await captureError(() => sut(ctx, ['shortcut'], 'z'));
+
+        // Assert
+        expect(err?.data.code).toBe('MV_SOURCE_NOT_TRACKED');
+      });
+    });
+  });
+
   describe('Given untracked, absent and tracked-then-removed sources into a directory', () => {
     describe('When mv with skipErrors', () => {
       it('Then each is skipped with its own reason and the good one moves', async () => {

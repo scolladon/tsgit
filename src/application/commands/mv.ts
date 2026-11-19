@@ -18,6 +18,7 @@ import {
   mvIntoSelf,
   mvMultipleSourcesSameTarget,
   mvOverlappingSources,
+  mvSourceDirectoryEmpty,
   mvSourceNotTracked,
 } from '../../domain/commands/error.js';
 import { basename, dirname, TsgitError } from '../../domain/error.js';
@@ -89,6 +90,7 @@ export interface MvMove {
  */
 export type MvSkipReason =
   | 'source-not-tracked'
+  | 'source-directory-empty'
   | 'bad-source'
   | 'destination-exists'
   | 'into-self'
@@ -525,8 +527,12 @@ const sourceExistsOnDisk = async (
 };
 
 // git's `lstat` of the source fails before it consults the index, so an absent path is a bad source.
-const untrackedVerdictOf = async (ctx: Context, source: FilePath): Promise<PlanSkipReason> =>
-  (await lstatOrUndefined(ctx, source)) === undefined ? 'bad-source' : 'source-not-tracked';
+// A plain directory without a tracked member is "empty" to git; a link or a file is just untracked.
+const untrackedVerdictOf = async (ctx: Context, source: FilePath): Promise<PlanSkipReason> => {
+  const stat = await lstatOrUndefined(ctx, source);
+  if (stat === undefined) return 'bad-source';
+  return stat.isDirectory && !stat.isSymbolicLink ? 'source-directory-empty' : 'source-not-tracked';
+};
 
 interface DestinationPolicy {
   readonly force: boolean;
@@ -633,6 +639,8 @@ const refusal = (reason: PlanSkipReason, source: FilePath, target: FilePath): Ts
   switch (reason) {
     case 'source-not-tracked':
       return mvSourceNotTracked(source, target);
+    case 'source-directory-empty':
+      return mvSourceDirectoryEmpty(source, target);
     case 'bad-source':
       return mvBadSource(source, target);
     case 'destination-exists':

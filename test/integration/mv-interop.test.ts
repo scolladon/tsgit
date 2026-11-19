@@ -360,6 +360,71 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
     });
   });
 
+  describe('Given a source directory without a tracked member', () => {
+    const seedDirectories = async (): Promise<void> => {
+      await seed([
+        { path: 'f', content: 'f\n' },
+        { path: 'dir/keep', content: 'k\n' },
+      ]);
+      await writeBoth({ path: 'ud/u', content: 'u\n' });
+      for (const dir of [pair.peer, pair.ours]) await mkdir(path.join(dir, 'emp'));
+    };
+
+    describe.each([{ source: 'ud' }, { source: 'emp' }])(
+      'When repo.mv is asked to move $source',
+      ({ source }) => {
+        it('Then it refuses as an empty source directory like git mv and mutates nothing', async () => {
+          // Arrange
+          await seedDirectories();
+          const before = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', source, 'z']);
+          const data = await outcomeOf(() => repo.mv([source], 'z'));
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(data).toMatchObject({ code: 'MV_SOURCE_DIRECTORY_EMPTY', source });
+          const { destination } = data as { destination: string };
+          expect(gitRun.stderr).toContain(
+            `fatal: source directory is empty, source=${source}, destination=${destination}`,
+          );
+          expect(lsStage(pair.ours)).toBe(before);
+          expect(await pathExists(pair.ours, 'ud/u')).toBe(true);
+          expect(await pathExists(pair.ours, 'emp')).toBe(true);
+        });
+      },
+    );
+
+    describe('When repo.mv skips errors', () => {
+      it('Then git and tsgit skip both directories, move the file and agree on disk', async () => {
+        // Arrange
+        await seedDirectories();
+        const sources = ['ud', 'emp', 'f'];
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-k', '-v', ...sources, 'dir']);
+        const result = await repo.mv(sources, 'dir', { skipErrors: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result.skipped).toEqual([
+          { source: 'ud', reason: 'source-directory-empty' },
+          { source: 'emp', reason: 'source-directory-empty' },
+        ]);
+        expect(linesOf(gitRun.stdout)).toEqual(
+          mvVerboseLines(sources, (source) => `dir/${source}`, result, []),
+        );
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        for (const dir of [pair.peer, pair.ours]) {
+          expect(await pathExists(dir, 'ud/u')).toBe(true);
+          expect(await pathExists(dir, 'emp')).toBe(true);
+          expect(await pathExists(dir, 'dir/f')).toBe(true);
+        }
+      });
+    });
+  });
+
   describe('Given a destination that is already tracked', () => {
     describe('When repo.mv moves onto it without force', () => {
       it('Then it refuses like git mv and mutates nothing', async () => {

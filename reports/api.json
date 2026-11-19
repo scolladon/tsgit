@@ -152650,6 +152650,10 @@
 							},
 							{
 								"type": "literal",
+								"value": "source-directory-empty"
+							},
+							{
+								"type": "literal",
 								"value": "bad-source"
 							},
 							{

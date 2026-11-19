@@ -28,6 +28,7 @@ interface MvMove {
 
 type MvSkipReason =
   | 'source-not-tracked'
+  | 'source-directory-empty'
   | 'bad-source'
   | 'destination-exists'
   | 'into-self'
@@ -119,6 +120,7 @@ A directory source selects its members by raw path bytes. A lossy member (a non-
 ## Throws
 
 - `MV_SOURCE_NOT_TRACKED` — a source present on disk is not in the index.
+- `MV_SOURCE_DIRECTORY_EMPTY` — a source is a directory (not a symbolic link) holding no tracked member: only untracked files, or nothing.
 - `MV_BAD_SOURCE` — a source is missing from the working tree, tracked or not.
 - `MV_DESTINATION_EXISTS` — the destination already exists and `force` was not set (or the source is a directory).
 - `MV_INTO_SELF` — a source is moved onto itself or into its own subtree.
@@ -131,7 +133,7 @@ A directory source selects its members by raw path bytes. A lossy member (a non-
 - `MV_DESTINATION_BEYOND_SYMLINK` — a leading directory of an absent destination is a symbolic link, wherever it points (`source` and `destination` name the pair; for a directory, its first member and that member's destination). `force` does not lift it.
 - `PATH_TOO_LONG` — the file system refused a destination as too long; `path` names that destination, repository-relative (inside a directory move, the directory's destination; entry by entry, the leaf's destination). Nothing is moved and the index is unchanged, unless `skipErrors`.
 
-The first four, and `MV_DESTINATION_BEYOND_SYMLINK`, are planning refusals and, under `skipErrors`, are collected in
+The first five, and `MV_DESTINATION_BEYOND_SYMLINK`, are planning refusals and, under `skipErrors`, are collected in
 `skipped` under their own reason; a working-tree rename the file system refuses is collected as
 `'rename-failed'`; the rest always throw.
 
