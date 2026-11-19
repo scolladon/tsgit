@@ -103,6 +103,29 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
     tree: writeTreeOf(dir),
   });
 
+  describe.each([
+    { label: 'a tracked directory', files: ['dir/a'], source: 'dir/' },
+    { label: 'a tracked file', files: ['file'], source: 'file/' },
+  ])('Given $label written with a trailing slash', ({ files, source }) => {
+    describe('When git mv and repo.mv move it to x', () => {
+      it('Then both strip the slash, move it and agree on the index and tree', async () => {
+        // Arrange
+        await seed(files.map((file) => ({ path: file, content: 'x\n' })));
+        const sut = repo;
+
+        // Act
+        runGit(['-C', pair.peer, 'mv', source, 'x']);
+        await sut.mv([source], 'x');
+
+        // Assert
+        const peer = snapshot(pair.peer);
+        const ours = snapshot(pair.ours);
+        expect(ours.stage).toBe(peer.stage);
+        expect(ours.tree).toBe(peer.tree);
+      });
+    });
+  });
+
   describe('Given a tracked file staged in both repos', () => {
     describe('When repo.mv renames it and git mv renames the peer', () => {
       it('Then the index, tree, and working tree match canonical git', async () => {

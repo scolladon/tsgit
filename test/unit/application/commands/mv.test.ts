@@ -2707,3 +2707,55 @@ describe('mv — a partial move of a directory beyond a symbolic link without re
     });
   });
 });
+
+describe('mv — a source written with a trailing slash', () => {
+  describe('Given a tracked directory', () => {
+    describe("When mv(['dir/'], 'x')", () => {
+      it('Then the directory moves as git moves it', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'dir/a': 'a' });
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['dir/'], 'x');
+
+        // Assert
+        expect(result.moved).toEqual([{ from: 'dir/a', to: 'x/a' }]);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['x/a']);
+      });
+    });
+  });
+
+  describe('Given a tracked file', () => {
+    describe("When mv(['file/'], 'x')", () => {
+      it('Then the file moves as git moves it', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ file: 'f' });
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['file/'], 'x');
+
+        // Assert
+        expect(result.moved).toEqual([{ from: 'file', to: 'x' }]);
+      });
+    });
+  });
+
+  describe('Given an empty directory', () => {
+    describe("When mv(['emp/'], 'x')", () => {
+      it('Then it refuses MV_SOURCE_DIRECTORY_EMPTY naming the source without its slash', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ f: 'f' });
+        await ctx.fs.mkdir(work(ctx, 'emp'));
+        const sut = mv;
+
+        // Act
+        const error = await expectError(() => sut(ctx, ['emp/'], 'x'), 'MV_SOURCE_DIRECTORY_EMPTY');
+
+        // Assert
+        expect(error.data).toMatchObject({ source: 'emp', destination: 'x' });
+      });
+    });
+  });
+});

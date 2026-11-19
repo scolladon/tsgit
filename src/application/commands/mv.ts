@@ -172,7 +172,9 @@ interface MvRequest {
 }
 
 const parseRequest = (sources: ReadonlyArray<string>, destination: string): MvRequest => {
-  const validatedSources = sources.map((source) => validatePath(wellFormed(source)));
+  const validatedSources = sources.map((source) =>
+    validatePath(stripTrailingSlash(wellFormed(source))),
+  );
   const [firstSource] = validatedSources;
   if (firstSource === undefined) throw emptyPathspec();
   assertNoOverlappingSources(validatedSources);
