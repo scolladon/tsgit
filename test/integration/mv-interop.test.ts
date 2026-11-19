@@ -65,6 +65,8 @@ const pathExists = async (dir: string, rel: string): Promise<boolean> => {
   }
 };
 
+const GIT_DIE_HEAD = 200;
+
 describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
   let pair: PeerPair;
   let repo: Repository;
@@ -590,11 +592,12 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     });
 
     // process.chdir is refused in vitest workers and an absolute mkdir of the chain is
-    // ENAMETOOLONG, so the shell walks the chain with relative steps.
+    // ENAMETOOLONG, so the shell walks the chain with relative steps. `cd -P` makes dash
+    // chdir to each component itself instead of composing a logical path past PATH_MAX.
     const inChain = (cwd: string, steps: ReadonlyArray<string>, command: string): void => {
       execFileSync(
         'sh',
-        ['-c', 'for c in "$@"; do cd "$c" || exit 1; done; eval "$CMD"', 'sh', ...steps],
+        ['-c', 'for c in "$@"; do cd -P "$c" || exit 1; done; eval "$CMD"', 'sh', ...steps],
         {
           cwd,
           env: { ...process.env, CMD: command },
@@ -605,7 +608,12 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     const buildChain = (cwd: string, steps: ReadonlyArray<string>): void => {
       execFileSync(
         'sh',
-        ['-c', 'for c in "$@"; do mkdir "$c" && cd "$c" || exit 1; done; : > leaf', 'sh', ...steps],
+        [
+          '-c',
+          'for c in "$@"; do mkdir "$c" && cd -P "$c" || exit 1; done; : > leaf',
+          'sh',
+          ...steps,
+        ],
         { cwd },
       );
     };
@@ -728,7 +736,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         runGit(['-C', repo, 'add', '--', `${L200}/f`, `${L200}/s/t`, 'b']);
         execFileSync(
           'sh',
-          ['-c', 'for c in "$@"; do mkdir "$c" && cd "$c" || exit 1; done', 'sh', ...steps],
+          ['-c', 'for c in "$@"; do mkdir "$c" && cd -P "$c" || exit 1; done', 'sh', ...steps],
           {
             cwd: repo,
           },
@@ -782,9 +790,8 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
         // Assert
         expect(gitRun.exitCode).toBe(128);
-        expect(gitRun.stderr).toContain(
-          `renaming '${L200}' to '${dest}/${L200}' failed: File name too long`,
-        );
+        // git's die() cuts its message at 4 KiB, which a Linux-length destination exceeds.
+        expect(gitRun.stderr).toContain(`renaming '${L200}' to '${dest.slice(0, GIT_DIE_HEAD)}`);
         expect(data).toEqual({ code: 'PATH_TOO_LONG', path: `${dest}/${L200}` });
         expect(stageOf(tsgitRepo)).toEqual(stageBefore);
         expect(stageOf(gitRepo)).toEqual(stageBefore);
