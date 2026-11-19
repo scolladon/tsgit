@@ -56,7 +56,7 @@ ASCII case moves. A directory whose destination exists by case is refused whatev
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `force` | `boolean` | `false` | Overwrite an existing destination (a file source only). |
+| `force` | `boolean` | `false` | Overwrite an existing destination (a file source only), including one reached through a symbolic link, where the file behind the link is overwritten. |
 | `dryRun` | `boolean` | `false` | Validate and report the plan without touching index or working tree. |
 | `skipErrors` | `boolean` | `false` | Skip refused source pairs, and pairs whose working-tree rename the file system refuses (collected in `skipped`), instead of aborting. |
 
@@ -100,7 +100,13 @@ what it placed at the destination; without `skipErrors` the partial move stays.
 A directory whose destination lies beyond a symbolic link is still renamed through the link: its
 members stay in the index under the source and are reported in `skipped` one by one with reason
 `'destination-beyond-symlink'`, so the work tree then lacks them, as git's does. A file is skipped
-and nothing is written.
+and nothing is written. A destination that already exists behind a link is not this case: it is an
+existing destination, refused as `MV_DESTINATION_EXISTS` or, with `force`, overwritten.
+
+Index replacement: once the moves are applied, an entry at a leading directory of a new path (a
+file the index holds where a directory is now needed) and every entry beneath a new path (what a
+file now replaces) leave the index, as `git mv` does. This includes a tracked link that the
+moved path now passes through; `moved` lists only the moves, never what they replaced.
 
 ## Windows paths
 
@@ -117,7 +123,7 @@ A directory source selects its members by raw path bytes. A lossy member (a non-
 - `MV_DESTINATION_EXISTS` — the destination already exists and `force` was not set (or the source is a directory).
 - `MV_INTO_SELF` — a source is moved onto itself or into its own subtree.
 - `MV_DESTINATION_NOT_DIRECTORY` — multiple sources but the destination is not a directory.
-- `MV_DESTINATION_DIRECTORY_MISSING` — the destination directory does not exist (`mv` never creates it).
+- `MV_DESTINATION_DIRECTORY_MISSING` — the destination's parent is not a directory once symbolic links are followed (`mv` never creates it).
 - `MV_MULTIPLE_SOURCES_SAME_TARGET` — two sources resolve to the same destination path.
 - `MV_OVERLAPPING_SOURCES` — a source is a directory containing another source (`mv a a/b dir`).
 - `EMPTY_PATHSPEC` — no sources were given.

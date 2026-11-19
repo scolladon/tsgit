@@ -196,6 +196,67 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
     });
   });
 
+  describe('Given an index that disagrees with the working tree', () => {
+    const driftBoth = async (action: (dir: string) => Promise<void>): Promise<void> => {
+      for (const dir of [pair.peer, pair.ours]) await action(dir);
+    };
+
+    const fileOverDirectory = (dir: string): Promise<void> =>
+      rm(path.join(dir, 'x'), { recursive: true }).then(() =>
+        writeFile(path.join(dir, 'x'), 'X\n'),
+      );
+
+    const directoryOverFile = async (dir: string): Promise<void> => {
+      await rm(path.join(dir, 't'));
+      await mkdir(path.join(dir, 't'));
+      await writeFile(path.join(dir, 't', 'keep'), 'KEEP\n');
+    };
+
+    describe('When mv -f moves a file onto a path that is a file on disk and a directory in the index (rows Z15, Z16)', () => {
+      it('Then the entries beneath leave the index as in git', async () => {
+        // Arrange
+        await seed([
+          { path: 'f', content: 'F\n' },
+          { path: 'x/y', content: 'Y\n' },
+        ]);
+        await driftBoth(fileOverDirectory);
+
+        // Act
+        runGit(['-C', pair.peer, 'mv', '-f', 'f', 'x']);
+        await repo.mv(['f'], 'x', { force: true });
+
+        // Assert
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+      });
+    });
+
+    describe.each([
+      ['a forced file (row Z17)', ['-f', 'f', 't/keep'], ['f'], 't/keep', { force: true }],
+      ['a plain file (row Z18)', ['f', 't/new'], ['f'], 't/new', {}],
+      ['a directory (rows Z19, Z20)', ['dir', 't/d'], ['dir'], 't/d', {}],
+    ] as const)(
+      'When mv moves %s beneath a path that is a directory on disk and a file in the index',
+      (_label, gitArgs, sources, destination, opts) => {
+        it('Then the leading file leaves the index as in git', async () => {
+          // Arrange
+          await seed([
+            { path: 'f', content: 'F\n' },
+            { path: 't', content: 'T\n' },
+            { path: 'dir/a', content: 'A\n' },
+          ]);
+          await driftBoth(directoryOverFile);
+
+          // Act
+          runGit(['-C', pair.peer, 'mv', ...gitArgs]);
+          await repo.mv(sources, destination, opts);
+
+          // Assert
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      },
+    );
+  });
+
   describe('Given a staged file whose working copy was edited but not re-staged', () => {
     describe('When repo.mv renames it like git mv', () => {
       it('Then the staged blob travels unchanged and the edit rides the working file', async () => {
@@ -1293,6 +1354,218 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(await pathExists(dir, 'sub/x')).toBe(false);
           }
           await expectParity();
+        });
+      });
+    });
+
+    describe('an existing destination reached through a link', () => {
+      const seedTarget = async (trackedTarget: boolean, trackedLink: boolean): Promise<void> => {
+        await seed(['dir/a', 'f']);
+        await writeBoth('sub/keep', trackedTarget);
+        await writeBoth('sub/f', false);
+        await linkBoth('inner', 'sub', trackedLink);
+      };
+
+      const keptContent = async (): Promise<ReadonlyArray<string>> => [
+        await readFile(path.join(pair.peer, 'sub', 'keep'), 'utf8'),
+        await readFile(path.join(pair.ours, 'sub', 'keep'), 'utf8'),
+      ];
+
+      const existsLine = (data: unknown, phrase: string): string => {
+        const { source, destination } = data as { source: string; destination: string };
+        return `fatal: ${phrase}, source=${source}, destination=${destination}`;
+      };
+
+      describe.each([
+        [true, true],
+        [false, true],
+        [true, false],
+      ])('Given tracked target %s, tracked link %s', (trackedTarget, trackedLink) => {
+        beforeEach(() => seedTarget(trackedTarget, trackedLink));
+
+        describe('When a file moves onto it without force (rows Y17, Z1, Z4)', () => {
+          it('Then git and tsgit refuse as an existing destination and write nothing', async () => {
+            // Arrange
+            const sut = repo;
+            const stageBefore = lsStage(pair.ours);
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'f', 'inner/keep']);
+            const data = await outcomeOf(() => sut.mv(['f'], 'inner/keep'));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(128);
+            expect(data).toMatchObject({
+              code: 'MV_DESTINATION_EXISTS',
+              source: 'f',
+              destination: 'inner/keep',
+            });
+            expect(gitRun.stderr).toContain(existsLine(data, 'destination exists'));
+            expect(lsStage(pair.ours)).toBe(stageBefore);
+            await expectParity();
+          });
+        });
+
+        describe('When a file moves onto it with force (rows Y17, Z1, Z4)', () => {
+          it('Then both overwrite the file behind the link and agree on the index', async () => {
+            // Arrange
+            const sut = repo;
+
+            // Act
+            runGit(['-C', pair.peer, 'mv', '-f', 'f', 'inner/keep']);
+            const result = await sut.mv(['f'], 'inner/keep', { force: true });
+
+            // Assert
+            expect(result.moved).toEqual([{ from: 'f', to: 'inner/keep' }]);
+            expect(await keptContent()).toEqual(['f\n', 'f\n']);
+            await expectParity();
+          });
+        });
+      });
+
+      describe('Given the existing destination and a source directory', () => {
+        beforeEach(() => seedTarget(true, true));
+
+        describe.each([false, true])(
+          'When a directory moves onto it, force=%s (row Z2)',
+          (force) => {
+            it('Then git and tsgit refuse as an existing destination', async () => {
+              // Arrange
+              const sut = repo;
+              const args = force ? ['-f', 'dir', 'inner/keep'] : ['dir', 'inner/keep'];
+
+              // Act
+              const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', ...args]);
+              const data = await outcomeOf(() => sut.mv(['dir'], 'inner/keep', { force }));
+
+              // Assert
+              expect(gitRun.exitCode).toBe(128);
+              expect(data).toMatchObject({ code: 'MV_DESTINATION_EXISTS' });
+              expect(gitRun.stderr).toContain(existsLine(data, 'destination already exists'));
+              await expectParity();
+            });
+          },
+        );
+
+        describe('When skipErrors moves a file onto it (row Z5)', () => {
+          it('Then git prints nothing, tsgit skips it and nothing changes', async () => {
+            // Arrange
+            const sut = repo;
+
+            // Act
+            const gitRun = tryRunGitWithExit([
+              '-C',
+              pair.peer,
+              'mv',
+              '-k',
+              '-v',
+              'f',
+              'inner/keep',
+            ]);
+            const result = await sut.mv(['f'], 'inner/keep', { skipErrors: true });
+
+            // Assert
+            expect(gitRun.exitCode).toBe(0);
+            expect(gitRun.stdout).toBe('');
+            expect(result).toEqual({
+              moved: [],
+              skipped: [{ source: 'f', reason: 'destination-exists' }],
+            });
+            await expectParity();
+          });
+        });
+
+        describe('When a dry run with force moves a file onto it (row Z7)', () => {
+          it('Then both report the move and change nothing', async () => {
+            // Arrange
+            const sut = repo;
+            const stageBefore = lsStage(pair.ours);
+
+            // Act
+            const gitRun = tryRunGitWithExit([
+              '-C',
+              pair.peer,
+              'mv',
+              '-n',
+              '-f',
+              'f',
+              'inner/keep',
+            ]);
+            const result = await sut.mv(['f'], 'inner/keep', { dryRun: true, force: true });
+
+            // Assert
+            expect(gitRun.exitCode).toBe(0);
+            expect(result.moved).toEqual([{ from: 'f', to: 'inner/keep' }]);
+            expect(lsStage(pair.ours)).toBe(stageBefore);
+            expect(await keptContent()).toEqual(['sub/keep\n', 'sub/keep\n']);
+            await expectParity();
+          });
+        });
+
+        describe('When a file moves into the linked directory holding the same name (rows Z11, Z12)', () => {
+          it('Then git and tsgit refuse as an existing destination', async () => {
+            // Arrange
+            const sut = repo;
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'f', 'inner/']);
+            const data = await outcomeOf(() => sut.mv(['f'], 'inner/'));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(128);
+            expect(data).toMatchObject({ code: 'MV_DESTINATION_EXISTS', destination: 'inner/f' });
+            expect(gitRun.stderr).toContain(existsLine(data, 'destination exists'));
+            await expectParity();
+          });
+        });
+      });
+
+      describe('Given a link two levels down', () => {
+        describe('When a file is forced through the deeper link (row Z9)', () => {
+          it('Then that link leaves the index and the shallower one stays', async () => {
+            // Arrange
+            const sut = repo;
+            await seedTarget(true, true);
+            for (const dir of [pair.peer, pair.ours]) {
+              await mkdir(path.join(dir, 'deep', 'real'), { recursive: true });
+            }
+            await linkBoth('deep/real/dl', '../../sub', true);
+
+            // Act
+            runGit(['-C', pair.peer, 'mv', '-f', 'f', 'deep/real/dl/keep']);
+            await sut.mv(['f'], 'deep/real/dl/keep', { force: true });
+
+            // Assert
+            expect(lsStage(pair.ours)).not.toContain('deep/real/dl\n');
+            expect(lsStage(pair.ours)).toContain('inner');
+            await expectParity();
+          });
+        });
+      });
+    });
+
+    describe('Given a tracked link to the git directory and an existing file behind it', () => {
+      describe('When a file is forced onto it (row Z21)', () => {
+        it('Then both overwrite the file inside the git directory', async () => {
+          // Arrange
+          const sut = repo;
+          await seed(['f']);
+          await linkBoth('lnk', '.git', true);
+          for (const dir of [pair.peer, pair.ours]) {
+            await writeFile(path.join(dir, '.git', 'description'), 'original\n');
+          }
+
+          // Act
+          runGit(['-C', pair.peer, 'mv', '-f', 'f', 'lnk/description']);
+          await sut.mv(['f'], 'lnk/description', { force: true });
+
+          // Assert
+          for (const dir of [pair.peer, pair.ours]) {
+            await expect(readFile(path.join(dir, '.git', 'description'), 'utf8')).resolves.toBe(
+              'f\n',
+            );
+          }
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
         });
       });
     });

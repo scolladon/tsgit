@@ -21,6 +21,10 @@ import {
   mvSourceNotTracked,
 } from '../../domain/commands/error.js';
 import { basename, dirname, TsgitError } from '../../domain/error.js';
+import {
+  entriesAtLeadingDirectories,
+  entriesBeneath,
+} from '../../domain/git-index/directory-file-conflict.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { withPath } from '../../domain/git-index/index-entry.js';
 import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
@@ -359,7 +363,8 @@ const buildPlan = async (
     const verdict = await validateMove(ctx, byPath, source, target, opts, policy);
     if (!('skip' in verdict)) {
       skipped.push(...skippedMembersOf(verdict));
-      planned.push({ ...verdict, source, target });
+      const { kind, entries, retained } = verdict;
+      planned.push({ kind, source, target, entries, retained });
     } else if (opts.skipErrors === true) {
       skipped.push({ source, reason: verdict.skip });
     } else {
@@ -392,13 +397,10 @@ const validateMove = async (
   const classified = classifySource(byPath, source);
   if (classified.kind === 'untracked') return { skip: 'source-not-tracked' };
   if (!(await sourceExistsOnDisk(ctx, source, classified.kind))) return { skip: 'bad-source' };
-  const lossyMember = classified.entries.find(isLossy);
-  if (lossyMember !== undefined && opts.skipErrors !== true) {
-    return memberBadSource(lossyMember, source, target);
-  }
+  const unmovable = unmovableMembers(classified.entries, source, target, opts);
+  if (unmovable !== undefined) return unmovable;
   const entries = classified.entries.filter((entry) => !isLossy(entry));
   const retained = classified.entries.filter(isLossy);
-  if (entries.length === 0) return { skip: 'bad-source' };
   if (target === source || target.startsWith(`${source}/`)) return { skip: 'into-self' };
   const refused = await refuseDestination(ctx, byPath, {
     source,
@@ -410,6 +412,19 @@ const validateMove = async (
     opts,
   });
   return refused ?? { kind: classified.kind, entries, retained, skippedMembers: [] };
+};
+
+const unmovableMembers = (
+  members: ReadonlyArray<IndexEntry>,
+  source: FilePath,
+  target: FilePath,
+  opts: MvOptions,
+): Verdict | undefined => {
+  const lossyMember = members.find(isLossy);
+  if (lossyMember !== undefined && opts.skipErrors !== true) {
+    return memberBadSource(lossyMember, source, target);
+  }
+  return members.every(isLossy) ? { skip: 'bad-source' } : undefined;
 };
 
 interface DestinationCheck {
@@ -583,13 +598,27 @@ const applyToIndex = (
   byPath: Map<IndexPathKey, IndexEntry>,
   indexed: ReadonlyArray<ExecutedItem>,
 ): void => {
-  for (const { moves } of indexed) {
-    for (const { from, to } of moves) {
-      byPath.delete(indexPathKey(from));
-      byPath.set(indexPathKey(to), to);
+  const moves = indexed.flatMap((executed) => executed.moves);
+  for (const { from } of moves) byPath.delete(indexPathKey(from));
+  const remaining = Array.from(byPath.values());
+  for (const { to } of moves) {
+    for (const conflict of conflictsWith(byPath, remaining, to.path)) {
+      byPath.delete(indexPathKey(conflict));
     }
+    byPath.set(indexPathKey(to), to);
   }
 };
+
+// Git's replacement: a file where a directory is needed, or a directory's entries
+// where a file now lands, leave the index. `remaining` keeps index order for the search.
+const conflictsWith = (
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  remaining: ReadonlyArray<IndexEntry>,
+  path: FilePath,
+): ReadonlyArray<IndexEntry> => [
+  ...entriesAtLeadingDirectories(byPath, path),
+  ...entriesBeneath(remaining, path),
+];
 
 // `entry.path` is `source` (file) or `${source}/…` (directory member), so the
 // suffix after `source` (possibly empty) reparents onto `target` unchanged.
@@ -630,8 +659,6 @@ const statOrUndefined = async (
   ctx.fs.stat(workPath(ctx, path)).catch(() => undefined);
 
 const isDirectoryOnDisk = async (ctx: Context, path: FilePath): Promise<boolean> => {
-  const stat = await lstatOrUndefined(ctx, path);
-  // equivalent-mutant: lstat never reports a path as both a directory and a symlink, so
-  // when `isDirectory === true` the `isSymbolicLink !== true` operand is always true.
-  return stat?.isDirectory === true && stat.isSymbolicLink !== true;
+  // `stat` follows the parent's own link, as `rename(2)` does.
+  return (await statOrUndefined(ctx, path))?.isDirectory === true;
 };
