@@ -57,6 +57,7 @@ import {
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import {
   compareAndRefresh,
+  type RefreshedComparison,
   scopeOf,
   type WorkingTreeComparison,
 } from '../primitives/compare-working-tree-entry.js';
@@ -321,15 +322,13 @@ const isDirectoryAt = async (ctx: Context, path: FilePath): Promise<boolean> =>
  * git keeps the index entry for a path its work tree cannot answer for: a directory standing
  * there, or — for an index-only path — nothing reachable at all.
  */
-const snapshotState = async (
-  ctx: Context,
-  { entry, indexed }: { readonly entry: IndexEntry; readonly indexed: boolean },
-  status: WorkingTreeComparison,
-): Promise<SnapshotState> => {
-  if (status === 'absent') return indexed ? 'absent' : 'unchanged';
-  // Stryker disable next-line ConditionalExpression: equivalent — an unchanged non-gitlink entry never has a directory at its path (a directory compares type-changed), so the fall-through returns the same status after one extra lstat.
-  if (status === 'unchanged') return status;
-  return (await isDirectoryAt(ctx, entry.path)) ? 'occluded' : status;
+const snapshotState = (
+  { indexed }: { readonly indexed: boolean },
+  { delta, directoryInPlace }: RefreshedComparison,
+): SnapshotState => {
+  if (directoryInPlace === true) return 'occluded';
+  if (delta.status === 'absent') return indexed ? 'absent' : 'unchanged';
+  return delta.status;
 };
 
 /**
@@ -357,15 +356,11 @@ const classifyEntry = async (
   if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
     return { kind: 'indexed', entry, state: 'beyond-symlink' };
   }
-  const { delta } = await compareAndRefresh(ctx, entry, {
+  const comparison = await compareAndRefresh(ctx, entry, {
     ...scopeOf(scope.provider, scope.indexMtime, scope.scanner),
     executableBit: scope.executableBit,
   });
-  return {
-    kind: 'indexed',
-    entry,
-    state: await snapshotState(ctx, { entry, indexed }, delta.status),
-  };
+  return { kind: 'indexed', entry, state: snapshotState({ indexed }, comparison) };
 };
 
 /** A HEAD path the index lost: recorded from the work tree where a file or link stands, else not at all. */

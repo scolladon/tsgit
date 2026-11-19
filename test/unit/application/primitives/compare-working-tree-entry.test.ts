@@ -301,6 +301,60 @@ describe('compareWorkingTreeEntry', () => {
     });
   });
 
+  describe.each([
+    ['regular file', '100644'],
+    ['symlink', '120000'],
+  ] as const)('Given a tracked %s replaced by a directory', (_kind, mode) => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'absent' with no work-tree mode", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt/inner'), 'inner\n');
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, { ...entry, mode });
+
+        // Assert
+        expect(result).toEqual({ status: 'absent' });
+      });
+    });
+
+    describe('When comparing with the refresh verdict', () => {
+      it('Then reports the directory standing in place', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt/inner'), 'inner\n');
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, { ...entry, mode });
+
+        // Assert
+        expect(result).toEqual({ delta: { status: 'absent' }, directoryInPlace: true });
+      });
+    });
+  });
+
+  describe('Given a tracked file that was deleted', () => {
+    describe('When comparing with the refresh verdict', () => {
+      it('Then no directory is reported in place', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry);
+
+        // Assert
+        expect(result).toEqual({ delta: { status: 'absent' } });
+      });
+    });
+  });
+
   describe('Given a gitlink whose checked-out HEAD moved', () => {
     describe('When comparing the delta', () => {
       it("Then returns 'modified' with the gitlink mode", async () => {

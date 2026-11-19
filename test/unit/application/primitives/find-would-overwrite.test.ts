@@ -70,6 +70,27 @@ const layOutMovedSubmodule = async (ctx: Context): Promise<void> => {
 };
 
 describe('findWouldOverwrite', () => {
+  describe.each([
+    ['regular file', FILE_MODE.REGULAR],
+    ['symlink', FILE_MODE.SYMLINK],
+  ] as const)('Given a tracked %s replaced by a directory', (_kind, mode) => {
+    describe('When the changed set names the path', () => {
+      it('Then it is a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'm/inner', 'inner\n');
+        const entry = entryOf('m', await blob(ctx, 'one\n'), mode);
+        const sut = findWouldOverwrite;
+
+        // Act
+        const result = await sut(ctx, set('m'), indexOf([entry]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: ['m'], untracked: [] });
+      });
+    });
+  });
+
   describe('Given three tracked files sharing a directory', () => {
     describe('When the changed set names all three', () => {
       it('Then the directory is lstat-ed once for the whole scan', async () => {

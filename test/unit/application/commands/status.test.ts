@@ -1324,6 +1324,26 @@ describe('status — unmerged column', () => {
     });
   });
 
+  describe('Given a conflicted file replaced by a directory', () => {
+    describe('When status', () => {
+      it('Then the worktree side is omitted while the stage blobs remain', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.rm(`${ctx.layout.workDir}/file.txt`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt/inner`, 'inner\n');
+
+        // Act
+        const result = await status(ctx);
+
+        // Assert
+        const entry = result.unmerged[0];
+        expect(entry?.path).toBe('file.txt');
+        expect(entry?.worktree).toBeUndefined();
+        expect(entry?.ours).toBeDefined();
+      });
+    });
+  });
+
   describe('Given a modify/delete conflict (one side modifies, the other deletes)', () => {
     describe('When status', () => {
       it('Then it is deleted-by-them with the base and ours stages but no theirs', async () => {

@@ -206,8 +206,9 @@ const isLocalChange = async (
   // git's `verify_uptodate_1` returns early for a gitlink: a moved checkout is not local work.
   if (entry.mode === FILE_MODE.GITLINK) return false;
   if (await isBlockedByObstruction(ctx, path, clashScope)) return true;
-  const { delta } = await compareAndRefresh(ctx, entry, scope);
-  return isWorkingTreeModified(delta.status);
+  const { delta, directoryInPlace } = await compareAndRefresh(ctx, entry, scope);
+  // git's `verify_uptodate` counts a directory where a file is tracked as a change, though `check_removed` reads it as gone.
+  return directoryInPlace === true || isWorkingTreeModified(delta.status);
 };
 
 /**

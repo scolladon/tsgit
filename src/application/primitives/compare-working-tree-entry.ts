@@ -213,6 +213,12 @@ type ResolvedScope = ComparisonScope & { readonly executableBit: ExecutableBitTr
 export interface RefreshedComparison {
   readonly delta: WorkingTreeDelta;
   readonly refreshed?: IndexEntry;
+  /**
+   * A plain directory stands at a non-gitlink path. git's `check_removed` reads it as removed
+   * (the delta is `absent`), while `verify_uptodate` counts it as a change; this lets the
+   * overwrite check tell it from a path that is simply gone.
+   */
+  readonly directoryInPlace?: true;
 }
 
 /** A comparison scope from optional parts; a loop passes its one scanner so every entry shares the leading-path memo. */
@@ -365,6 +371,9 @@ export const compareAndRefresh = async (
   if (await belowSymlinkedDirectory(ctx, entry, scope)) return { delta: { status: 'absent' } };
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { delta: { status: 'absent' } };
+  if (stat.isDirectory && entry.mode !== FILE_MODE.GITLINK) {
+    return { delta: { status: 'absent' }, directoryInPlace: true };
+  }
   const resolved = await resolveScope(ctx, scope);
   const delta =
     entry.mode === FILE_MODE.GITLINK

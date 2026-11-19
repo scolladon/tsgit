@@ -662,7 +662,7 @@ interface WorktreeProbe {
   readonly executableBit: ExecutableBitTrust;
 }
 
-/** The conflicted file's git mode (the stat under the donor rule), or `undefined` when it is absent. */
+/** The conflicted file's git mode (the stat under the donor rule), or `undefined` when it is absent or a directory, as git's `mW` reads 000000. */
 const readWorktreeMode = async (
   ctx: Context,
   { workDir, executableBit }: WorktreeProbe,
@@ -672,5 +672,6 @@ const readWorktreeMode = async (
   // A lossy name reads as absent, with no fs call naming it.
   if (hasEscapedBytes(path)) return undefined;
   const stat = await ctx.fs.lstat(joinPath(workDir, path)).catch(() => undefined);
-  return stat === undefined ? undefined : indexModeFromStat(stat, donor, executableBit);
+  if (stat === undefined || stat.isDirectory) return undefined;
+  return indexModeFromStat(stat, donor, executableBit);
 };
