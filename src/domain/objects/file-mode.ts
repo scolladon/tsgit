@@ -114,3 +114,6 @@ export function deriveWorkingMode(stat: {
   if (stat.isSymbolicLink) return FILE_MODE.SYMLINK;
   return (stat.mode & 0o111) !== 0 ? FILE_MODE.EXECUTABLE : FILE_MODE.REGULAR;
 }
+
+/** Whether the work file's executable bit is trusted: git's core.fileMode. */
+export type ExecutableBitTrust = 'trusted' | 'ignored';

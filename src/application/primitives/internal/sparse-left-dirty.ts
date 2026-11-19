@@ -5,12 +5,17 @@ import {
   indexPathKey,
   isLossy,
 } from '../../../domain/git-index/index-path-key.js';
-import { deriveWorkingMode, FILE_MODE } from '../../../domain/objects/file-mode.js';
+import {
+  deriveWorkingMode,
+  type ExecutableBitTrust,
+  FILE_MODE,
+} from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileStat } from '../../../ports/file-system.js';
 import { createWorkingTreeDirtyCheck, type WorkingTreeDirtyCheck } from '../apply-changeset.js';
 import { readConfig } from '../config-read.js';
+import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { boundedMapFor } from './concurrency.js';
 import {
   type IndexMtime,
@@ -49,14 +54,14 @@ interface Judgement {
   readonly ctx: Context;
   readonly isDirty: WorkingTreeDirtyCheck;
   readonly scanner: LeadingPathScanner;
-  readonly trustsExecutableBit: () => Promise<boolean>;
+  readonly executableBit: () => Promise<ExecutableBitTrust>;
   readonly hasSymlinks: () => Promise<boolean>;
   readonly indexMtime: IndexMtime | undefined;
 }
 
 /** git's ie_match_stat mode test: a type change is always a change; the executable bit only when core.filemode trusts it. */
 const modeDiffers = async (
-  { trustsExecutableBit, hasSymlinks }: Judgement,
+  { executableBit, hasSymlinks }: Judgement,
   entry: IndexEntry,
   stat: FileStat,
 ): Promise<boolean> => {
@@ -65,7 +70,7 @@ const modeDiffers = async (
   // Without symlink support a symlink entry is checked out as a regular file: not a type change.
   if (entry.mode === FILE_MODE.SYMLINK && stat.isFile && !(await hasSymlinks())) return false;
   const executableBitOnly = working !== FILE_MODE.SYMLINK && entry.mode !== FILE_MODE.SYMLINK;
-  return !executableBitOnly || (await trustsExecutableBit());
+  return !executableBitOnly || (await executableBit()) === 'trusted';
 };
 
 const verdictOf = async (
@@ -101,7 +106,7 @@ export const judgeMovers = async (
     ctx,
     isDirty: createWorkingTreeDirtyCheck(ctx),
     scanner: createLeadingPathScanner(ctx),
-    trustsExecutableBit: lazily(async () => (await readConfig(ctx)).core?.fileMode !== false),
+    executableBit: lazily(() => readExecutableBitTrust(ctx)),
     hasSymlinks: lazily(async () => (await readConfig(ctx)).core?.symlinks !== false),
     indexMtime,
   };

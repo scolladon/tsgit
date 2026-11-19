@@ -234,6 +234,7 @@ describe('notUpToDate stat short-circuit', () => {
 });
 
 const EXECUTABLE_BITS = 0o100755;
+const EXT_ON = '[extensions]\n\tworktreeConfig = true\n';
 
 /** The memory file system models no modes: the work file's stat is made to carry the executable bits. */
 const makeExecutable = (ctx: SeededContext): void => {
@@ -307,6 +308,62 @@ describe('notUpToDate mode and type', () => {
 
         // Assert
         expect([...result]).toEqual([]);
+      });
+    });
+
+    describe('When the candidates are judged with core.filemode false only in config.worktree', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'indexed');
+        await arrange(ctx);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `${EXT_ON}[core]\n\tfilemode = true\n`,
+        );
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config.worktree`,
+          '[core]\n\tfilemode = false\n',
+        );
+
+        // Act
+        const result = await sut(
+          ctx,
+          workDirOf(ctx),
+          [entryOf('a', id, { mode: entryMode })],
+          undefined,
+        );
+
+        // Assert
+        expect([...result]).toEqual([]);
+      });
+    });
+
+    describe('When the candidates are judged with core.filemode true in config.worktree over a false local', () => {
+      it('Then the path is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'indexed');
+        await arrange(ctx);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `${EXT_ON}[core]\n\tfilemode = false\n`,
+        );
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config.worktree`,
+          '[core]\n\tfilemode = true\n',
+        );
+
+        // Act
+        const result = await sut(
+          ctx,
+          workDirOf(ctx),
+          [entryOf('a', id, { mode: entryMode })],
+          undefined,
+        );
+
+        // Assert
+        expect([...result]).toEqual(['a']);
       });
     });
   });

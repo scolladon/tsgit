@@ -19,8 +19,8 @@ interface WorktreeSparseKeys {
   readonly cone?: boolean | undefined;
 }
 
-/** One sparse key as written in `config.worktree`, key lower-cased. */
-export interface SparseKeyEntry {
+/** One `[core]` entry as written in a config file, key lower-cased. */
+export interface CoreKeyEntry {
   readonly key: string;
   readonly value: string | null;
 }
@@ -30,19 +30,27 @@ const ENABLED_KEY = 'sparsecheckout';
 const CONE_KEY = 'sparsecheckoutcone';
 const SPARSE_KEYS: ReadonlySet<string> = new Set([ENABLED_KEY, CONE_KEY]);
 
-/** Every sparse-key entry under a subsectionless `[core]`, in file order. */
-export const sparseKeyEntries = (
+/** Every wanted-key entry under a subsectionless `[core]`, in file order. */
+export const coreKeyEntries = (
   sections: ReadonlyArray<IniSection>,
-): ReadonlyArray<SparseKeyEntry> =>
+  keys: ReadonlySet<string>,
+): ReadonlyArray<CoreKeyEntry> =>
   sections
     .filter((section) => section.section.toLowerCase() === CORE_SECTION)
     .filter((section) => section.subsection === undefined)
     .flatMap((section) => section.entries)
     .map((entry) => ({ key: entry.key.toLowerCase(), value: entry.value }))
-    .filter((entry) => SPARSE_KEYS.has(entry.key));
+    .filter((entry) => keys.has(entry.key));
 
-const lastValidBoolean = (
-  entries: ReadonlyArray<SparseKeyEntry>,
+export type SparseKeyEntry = CoreKeyEntry;
+
+export const sparseKeyEntries = (
+  sections: ReadonlyArray<IniSection>,
+): ReadonlyArray<SparseKeyEntry> => coreKeyEntries(sections, SPARSE_KEYS);
+
+/** The last entry for `wanted` that parses as a git boolean; invalid entries are skipped. */
+export const lastValidBoolean = (
+  entries: ReadonlyArray<CoreKeyEntry>,
   wanted: string,
 ): boolean | undefined =>
   entries
@@ -66,7 +74,7 @@ export const isWorktreeConfigExtensionOn = async (ctx: Context): Promise<boolean
 
 const readWorktreeKeys = async (ctx: Context): Promise<WorktreeSparseKeys> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return {};
-  const entries = sparseKeyEntries(await readActiveWorktreeSections(ctx));
+  const entries = coreKeyEntries(await readActiveWorktreeSections(ctx), SPARSE_KEYS);
   return {
     enabled: lastValidBoolean(entries, ENABLED_KEY),
     cone: lastValidBoolean(entries, CONE_KEY),
