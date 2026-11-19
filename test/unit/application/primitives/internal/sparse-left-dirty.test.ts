@@ -182,6 +182,31 @@ describe('notUpToDate stat short-circuit', () => {
     });
   });
 
+  describe('Given a stat-clean entry whose file differs only by a set exec bit, with core.filemode = false, When judged', () => {
+    it('Then the stat settles it and nothing is reported', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+      await writeWork(ctx, 'a', 'edited');
+      const entry = await statEntryOf(ctx, 'a', id);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfilemode = false\n');
+      for (const probe of ['lstat', 'lstatIfReachable', 'tryLstat'] as const) {
+        const original = ctx.fs[probe]?.bind(ctx.fs);
+        if (original === undefined) continue;
+        vi.spyOn(ctx.fs, probe).mockImplementation(async (path: string) => {
+          const stat = await original(path);
+          return stat === undefined ? stat : { ...stat, mode: 0o100755 };
+        });
+      }
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entry], NEWER_THAN_ANY_ENTRY);
+
+      // Assert
+      expect([...result]).toEqual([]);
+    });
+  });
+
   describe('Given a stat-dirty entry with the same content, When judged', () => {
     it('Then the content fallback reports nothing', async () => {
       // Arrange

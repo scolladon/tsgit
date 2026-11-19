@@ -74,6 +74,24 @@ const ROWS: ReadonlyArray<Row> = [
     expected: 'trusted',
   },
   {
+    id: 'C7 local false then true',
+    local: `[core]\n${FILEMODE_OFF}\tfilemode = true\n`,
+    worktree: '',
+    expected: 'trusted',
+  },
+  {
+    id: 'C7 local true then false',
+    local: `[core]\n\tfilemode = true\n${FILEMODE_OFF}`,
+    worktree: '',
+    expected: 'ignored',
+  },
+  {
+    id: 'C7 worktree true then false',
+    local: EXT_ON,
+    worktree: `[core]\n\tfilemode = true\n${FILEMODE_OFF}`,
+    expected: 'ignored',
+  },
+  {
     id: 'C7 worktree bogus over local false',
     local: `${EXT_ON}[core]\n${FILEMODE_OFF}`,
     worktree: '[core]\n\tfilemode = bogus\n',

@@ -1845,6 +1845,43 @@ describe('racyContentMatcher', () => {
       });
     });
   });
+
+  describe('Given a staged file whose stat shows a set exec bit and nothing else changed, with core.filemode = false', () => {
+    describe('When the matcher judges it', () => {
+      it('Then the content matches', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'one\n');
+        await ignoreExecutableBit(ctx);
+        const sut = racyContentMatcher;
+        const matcher = sut(ctx);
+        const stat = { ...(await ctx.fs.lstat(work(ctx, 'a.txt'))), mode: 0o100755 };
+
+        // Act
+        const result = await matcher(entry, work(ctx, 'a.txt'), stat);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a staged file whose stat shows a set exec bit and nothing else changed, with the default config', () => {
+    describe('When the matcher judges it', () => {
+      it('Then the content differs', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'one\n');
+        const sut = racyContentMatcher;
+        const matcher = sut(ctx);
+        const stat = { ...(await ctx.fs.lstat(work(ctx, 'a.txt'))), mode: 0o100755 };
+
+        // Act
+        const result = await matcher(entry, work(ctx, 'a.txt'), stat);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
 });
 
 const ignoreExecutableBit = async (ctx: Context): Promise<void> => {

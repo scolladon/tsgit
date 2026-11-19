@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { materializeTree } from '../../../../src/application/primitives/materialize-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -2240,6 +2241,48 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         expect(await readWork(ctx, 'd/x')).toBe('x');
       });
     });
+
+    describe.each([
+      ['false', 'd leaves the index and d/x is written'],
+      ['unset', 'it refuses d as untracked'],
+    ] as const)(
+      'When ignorecase is true, d differs only by a set exec bit and core.filemode is %s',
+      (fileMode, outcome) => {
+        it(`Then ${outcome}`, async () => {
+          // Arrange
+          const { ctx, headTree, targetTree, currentIndex } = await buildStagedFile('true');
+          const fileModeLine = fileMode === 'false' ? '\tfileMode = false\n' : '';
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            `[core]\n\tignorecase = true\n${fileModeLine}`,
+          );
+          invalidateConfigCache(ctx);
+          for (const probe of ['lstat', 'lstatIfReachable', 'tryLstat'] as const) {
+            const original = ctx.fs[probe]?.bind(ctx.fs);
+            if (original === undefined) continue;
+            vi.spyOn(ctx.fs, probe).mockImplementation(async (path: string) => {
+              const stat = await original(path);
+              return stat === undefined ? stat : { ...stat, mode: 0o100755 };
+            });
+          }
+          const sut = materializeTree;
+
+          // Act
+          const run = () => sut(ctx, { targetTree, currentIndex, headTree });
+
+          // Assert
+          if (fileMode === 'unset') {
+            expect(await refusalOf(run)).toEqual({
+              code: 'CHECKOUT_OVERWRITE_DIRTY',
+              localChanges: [],
+              untracked: ['d'],
+            });
+            return;
+          }
+          expect((await run()).newIndexEntries.map((e) => e.path)).toEqual(['d/x', 'f']);
+        });
+      },
+    );
 
     describe('When ignorecase is true and d was modified after staging', () => {
       it('Then it refuses d as untracked, not as a local change', async () => {

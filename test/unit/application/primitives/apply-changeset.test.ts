@@ -5435,6 +5435,29 @@ describe('applyChangeset over an exec-bit-only local change', () => {
     });
   });
 
+  describe('Given a symlink entry checked out as a regular file, with the link target changing in the switch', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it applies, the regular stand-in never counting as a mode change', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('target-a'));
+        const newId = await writeBlob(ctx, enc('target-b'));
+        await ctx.fs.write(`${WORKDIR}/link`, enc('target-a'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('link', oldId, newId, FILE_MODE.SYMLINK)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.readlink(`${WORKDIR}/link`)).toBe('target-b');
+      });
+    });
+  });
+
   describe('Given an update whose target only flips the mode over an untouched -x file', () => {
     describe('When the changeset is applied', () => {
       it('Then it applies', async () => {

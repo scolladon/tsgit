@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import type { ChangesetEntry } from '../../../../../src/application/primitives/compute-changeset.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import { indexEntryFromStat } from '../../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import type { IndexMtime } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
 import { serializeAndHash } from '../../../../../src/application/primitives/internal/serialize-and-hash.js';
@@ -80,6 +81,19 @@ const judge = async (
     ctx.layout.workDir ?? '',
   );
   return result.entries.map((e) => e.kind);
+};
+
+const EXECUTABLE_STAT_MODE = 0o100755;
+
+const withExecutableWorkFile = (ctx: Context): void => {
+  for (const probe of ['lstat', 'lstatIfReachable', 'tryLstat'] as const) {
+    const original = ctx.fs[probe]?.bind(ctx.fs);
+    if (original === undefined) continue;
+    vi.spyOn(ctx.fs, probe).mockImplementation(async (path: string) => {
+      const stat = await original(path);
+      return stat === undefined ? stat : { ...stat, mode: EXECUTABLE_STAT_MODE };
+    });
+  }
 };
 
 describe('upgradeStaleNoops', () => {
@@ -225,6 +239,42 @@ describe('upgradeStaleNoops', () => {
         const entry = await seed(ctx, 'a.txt', 'one\n');
         vi.setSystemTime(new Date(FROZEN_NOW.getTime() + 5000));
         await ctx.fs.write(workOf(ctx, 'a.txt'), BYTES('one\n'));
+
+        // Act
+        const kinds = await judge(ctx, [entry], NON_RACY);
+
+        // Assert
+        expect(kinds).toEqual(['update']);
+      });
+    });
+  });
+
+  describe('Given an entry whose file differs only by a set exec bit, with core.filemode = false', () => {
+    describe('When it is judged', () => {
+      it('Then it stays a noop', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entry = await seed(ctx, 'a.txt', 'one\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfileMode = false\n');
+        invalidateConfigCache(ctx);
+        withExecutableWorkFile(ctx);
+
+        // Act
+        const kinds = await judge(ctx, [entry], NON_RACY);
+
+        // Assert
+        expect(kinds).toEqual(['noop']);
+      });
+    });
+  });
+
+  describe('Given an entry whose file differs only by a set exec bit, with the default config', () => {
+    describe('When it is judged', () => {
+      it('Then it becomes an update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entry = await seed(ctx, 'a.txt', 'one\n');
+        withExecutableWorkFile(ctx);
 
         // Act
         const kinds = await judge(ctx, [entry], NON_RACY);

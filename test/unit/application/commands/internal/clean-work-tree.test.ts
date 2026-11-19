@@ -12,6 +12,7 @@ import {
   stagedGitlinkChanges,
   unstagedChangePaths,
 } from '../../../../../src/application/commands/internal/clean-work-tree.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import * as trust from '../../../../../src/application/primitives/read-executable-bit-trust.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { MAX_GITMODULES_BYTES } from '../../../../../src/application/primitives/types.js';
@@ -323,6 +324,69 @@ describe('assertCleanWorkTree', () => {
 
         // Assert
         expect(code).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+
+  describe('Given an exec-bit-only change on a committed file', () => {
+    const EXECUTABLE_STAT_MODE = 0o100755;
+
+    const withExecutableWorkFile = (ctx: Context): void => {
+      for (const probe of ['lstat', 'lstatIfReachable'] as const) {
+        const original = ctx.fs[probe]?.bind(ctx.fs);
+        if (original === undefined) continue;
+        vi.spyOn(ctx.fs, probe).mockImplementation(async (path: string) => {
+          const stat = await original(path);
+          return stat === undefined ? stat : { ...stat, mode: EXECUTABLE_STAT_MODE };
+        });
+      }
+    };
+
+    const seedExecutable = async (
+      fileMode?: string,
+    ): Promise<{ ctx: Context; headTree: ObjectId }> => {
+      const seeded = await seedClean('a.sh', 'run\n');
+      if (fileMode !== undefined) {
+        await seeded.ctx.fs.writeUtf8(
+          `${seeded.ctx.layout.gitDir}/config`,
+          `[core]\n\tfileMode = ${fileMode}\n`,
+        );
+        invalidateConfigCache(seeded.ctx);
+      }
+      withExecutableWorkFile(seeded.ctx);
+      return seeded;
+    };
+
+    describe('When asserted with core.filemode = false', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const { ctx, headTree } = await seedExecutable('false');
+        const sut = assertCleanWorkTree;
+
+        // Act
+        const run = sut(ctx, headTree);
+
+        // Assert
+        await expect(run).resolves.toBeUndefined();
+      });
+    });
+
+    describe('When asserted with the default config', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY naming the path', async () => {
+        // Arrange
+        const { ctx, headTree } = await seedExecutable();
+        const sut = assertCleanWorkTree;
+
+        // Act
+        const error = await sut(ctx, headTree).then(
+          () => undefined,
+          (err: TsgitError) => err,
+        );
+
+        // Assert
+        expect(error?.data.code).toBe('WORKING_TREE_DIRTY');
+        if (error?.data.code !== 'WORKING_TREE_DIRTY') throw error;
+        expect(error.data.localChanges).toEqual(['a.sh']);
       });
     });
   });
