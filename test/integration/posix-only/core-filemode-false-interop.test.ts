@@ -22,8 +22,11 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createNodeContext } from '../../../src/adapters/node/node-adapter.js';
+import { pull } from '../../../src/application/commands/pull.js';
 import type { ChangeKind } from '../../../src/application/commands/status.js';
 import type { Repository } from '../../../src/repository.js';
+import { backendTransport } from '../http-backend-transport.js';
 import {
   GIT_AVAILABLE,
   lsStage,
@@ -33,7 +36,7 @@ import {
   tryRunGitWithExit,
 } from '../interop-helpers.js';
 import { COMMIT_ENV } from '../occupant-displacement-fixtures.js';
-import { trackedRepositories } from '../repository-lifecycle.js';
+import { trackedContexts, trackedRepositories } from '../repository-lifecycle.js';
 
 const AUTHOR = {
   name: 'Ada',
@@ -54,7 +57,10 @@ const UNSTAGED_COLUMN: Readonly<Record<ChangeKind, string>> = {
   added: 'A',
 };
 
+const REMOTE_NAME = 'peer.git';
+
 const open = trackedRepositories();
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 interface SeedFile {
   readonly path: string;
@@ -112,6 +118,8 @@ interface StatusRow {
 }
 
 const setFileMode = (value: string) => (dir: string) => sh(dir, 'config', 'core.fileMode', value);
+const addFileMode = (value: string) => (dir: string) =>
+  sh(dir, 'config', '--add', 'core.fileMode', value);
 const chmodTo = (permissions: number) => (dir: string) => chmodSync(join(dir, 'f'), permissions);
 const inOrder =
   (...steps: ReadonlyArray<(dir: string) => void>) =>
@@ -153,6 +161,18 @@ const STATUS_ROWS: ReadonlyArray<StatusRow> = [
       chmodSync(join(dir, 'l'), EXECUTABLE_PERMISSIONS);
     }),
     expected: ['T 120000 100644 l'],
+  },
+  {
+    id: 'repeated-key-false-then-true',
+    files: [BASE_FILE],
+    prepare: inOrder(addFileMode('false'), addFileMode('true'), chmodTo(EXECUTABLE_PERMISSIONS)),
+    expected: ['M 100644 100755 f'],
+  },
+  {
+    id: 'repeated-key-true-then-false',
+    files: [BASE_FILE],
+    prepare: inOrder(addFileMode('true'), addFileMode('false'), chmodTo(EXECUTABLE_PERMISSIONS)),
+    expected: [],
   },
   {
     id: 'worktree-config-overrides-local',
@@ -637,29 +657,32 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
             // Arrange
             seedBoth(ignoreCase, [BASE_FILE]);
             const linkedOf = (dir: string): string => `${dir}-linked`;
-            for (const dir of [pair.peer, pair.ours]) {
-              sh(dir, 'config', 'extensions.worktreeConfig', 'true');
-              setFileMode('true')(dir);
-              sh(dir, 'worktree', 'add', '-q', '-b', 'linked', linkedOf(dir));
-              sh(linkedOf(dir), 'config', '--worktree', 'core.fileMode', 'false');
-              chmodTo(EXECUTABLE_PERMISSIONS)(dir);
-              chmodTo(EXECUTABLE_PERMISSIONS)(linkedOf(dir));
+            try {
+              for (const dir of [pair.peer, pair.ours]) {
+                sh(dir, 'config', 'extensions.worktreeConfig', 'true');
+                setFileMode('true')(dir);
+                sh(dir, 'worktree', 'add', '-q', '-b', 'linked', linkedOf(dir));
+                sh(linkedOf(dir), 'config', '--worktree', 'core.fileMode', 'false');
+                chmodTo(EXECUTABLE_PERMISSIONS)(dir);
+                chmodTo(EXECUTABLE_PERMISSIONS)(linkedOf(dir));
+              }
+              const main = await open({ cwd: pair.ours });
+              const linked = await open({ cwd: linkedOf(pair.ours) });
+
+              // Act
+              const ours = {
+                main: await tsgitStatusRows(main),
+                linked: await tsgitStatusRows(linked),
+              };
+
+              // Assert
+              expect(gitStatusRows(pair.peer)).toEqual(['M 100644 100755 f']);
+              expect(gitStatusRows(linkedOf(pair.peer))).toEqual([]);
+              expect(ours).toEqual({ main: ['M 100644 100755 f'], linked: [] });
+            } finally {
+              for (const dir of [pair.peer, pair.ours])
+                rmSync(linkedOf(dir), { recursive: true, force: true });
             }
-            const main = await open({ cwd: pair.ours });
-            const linked = await open({ cwd: linkedOf(pair.ours) });
-
-            // Act
-            const ours = {
-              main: await tsgitStatusRows(main),
-              linked: await tsgitStatusRows(linked),
-            };
-
-            // Assert
-            expect(gitStatusRows(pair.peer)).toEqual(['M 100644 100755 f']);
-            expect(gitStatusRows(linkedOf(pair.peer))).toEqual([]);
-            expect(ours).toEqual({ main: ['M 100644 100755 f'], linked: [] });
-            for (const dir of [pair.peer, pair.ours])
-              rmSync(linkedOf(dir), { recursive: true, force: true });
           },
           ROW_TIMEOUT,
         );
@@ -782,6 +805,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
 
             // Assert
             expect(git.exitCode).not.toBe(0);
+            expect(git.stderr).toContain(`would be overwritten by ${row.operation}`);
+            expect(git.stderr).toContain(`\t${row.chmodPath}\n`);
             expect(data).toEqual({
               code: row.refusal,
               localChanges: [row.chmodPath],
@@ -821,6 +846,99 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
             for (const [name, executable] of Object.entries(row.expectedExecWhenIgnored)) {
               expect(ownerExec(pair.peer, name)).toBe(executable);
               expect(ownerExec(pair.ours, name)).toBe(executable);
+            }
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe('Given a symlink entry checked out as a regular file, core.symlinks=false and a switch changing the link target', () => {
+      describe('When both tools switch unforced', () => {
+        it(
+          'Then both switch and agree on the index',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, [{ path: 'l', content: '', linkTo: 'a' }]);
+            for (const dir of [pair.peer, pair.ours]) {
+              sh(dir, 'checkout', '-q', '-b', 'other');
+              rmSync(join(dir, 'l'));
+              symlinkSync('b', join(dir, 'l'));
+              commitAll(dir, 'other');
+              sh(dir, 'checkout', '-q', 'main');
+              sh(dir, 'config', 'core.symlinks', 'false');
+              rmSync(join(dir, 'l'));
+              writeFileSync(join(dir, 'l'), 'a');
+            }
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            const git = tryRunGitWithExit(['-C', pair.peer, 'checkout', 'other'], {
+              env: COMMIT_ENV,
+            });
+            await sut.checkout({ rev: 'other' });
+
+            // Assert
+            expect(git.exitCode).toBe(0);
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe('Given a committed file that gained the exec bit, core.fileMode=false and a diverged upstream', () => {
+      describe('When both tools pull --rebase', () => {
+        it(
+          'Then both rebase and agree on the index',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, [BASE_FILE, { path: 'g', content: 'g\n' }]);
+            const remoteRoot = `${pair.peer}-remote`;
+            const remotePath = join(remoteRoot, REMOTE_NAME);
+            const remoteWork = `${pair.peer}-remote-work`;
+            try {
+              mkdirSync(remoteRoot);
+              runGit(['clone', '-q', '--bare', pair.peer, remotePath], { env: COMMIT_ENV });
+              for (const dir of [pair.peer, pair.ours]) {
+                sh(dir, 'remote', 'add', 'origin', remotePath);
+                sh(dir, 'fetch', '-q', 'origin');
+                sh(dir, 'branch', '-q', '--set-upstream-to=origin/main', 'main');
+              }
+              sh(pair.ours, 'remote', 'set-url', 'origin', `https://example.com/${REMOTE_NAME}`);
+              runGit(['clone', '-q', remotePath, remoteWork], { env: COMMIT_ENV });
+              sh(remoteWork, 'config', 'user.name', 'Ada');
+              sh(remoteWork, 'config', 'user.email', 'ada@example.com');
+              writeFileSync(join(remoteWork, 'g'), 'upstream\n');
+              sh(remoteWork, 'commit', '-q', '-a', '-m', 'upstream');
+              sh(remoteWork, 'push', '-q', 'origin', 'main');
+              for (const dir of [pair.peer, pair.ours]) {
+                writeFileSync(join(dir, 'h'), 'local\n');
+                commitAll(dir, 'local');
+                setFileMode('false')(dir);
+                chmodTo(EXECUTABLE_PERMISSIONS)(dir);
+              }
+              const ctx = {
+                ...createTrackedNodeContext({ workDir: pair.ours }),
+                transport: backendTransport(remoteRoot),
+              };
+              const sut = pull;
+
+              // Act
+              const git = tryRunGitWithExit(['-C', pair.peer, 'pull', '--rebase'], {
+                env: COMMIT_ENV,
+              });
+              await sut(ctx, { rebase: true });
+
+              // Assert
+              expect(git.exitCode).toBe(0);
+              expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+              expect(sh(pair.ours, 'rev-parse', 'HEAD^{tree}')).toBe(
+                sh(pair.peer, 'rev-parse', 'HEAD^{tree}'),
+              );
+            } finally {
+              for (const dir of [remoteRoot, remoteWork])
+                rmSync(dir, { recursive: true, force: true });
             }
           },
           ROW_TIMEOUT,
