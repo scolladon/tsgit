@@ -236,6 +236,7 @@ export const findWouldOverwrite = async (
   const scanner = createLeadingPathScanner(ctx);
   const scope = {
     ...scopeOf(provider, currentIndex.indexMtime, scanner),
+    ignoreAssumeValid: true as const,
     executableBit: await readExecutableBitTrust(ctx),
   };
   const clashScope = clashScopeOf(ctx, removed, scanner, byPath, currentIndex.indexMtime);

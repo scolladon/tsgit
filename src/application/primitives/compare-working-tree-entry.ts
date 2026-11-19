@@ -202,6 +202,8 @@ export interface ComparisonScope {
   readonly scanner?: LeadingPathScanner;
   /** core.fileMode, resolved once per scan; a comparison outside a scan reads it. */
   readonly executableBit?: ExecutableBitTrust;
+  /** git's `CE_MATCH_IGNORE_VALID`: `verify_uptodate` judges an assume-valid entry by its stat like any other. */
+  readonly ignoreAssumeValid?: true;
 }
 
 type ResolvedScope = ComparisonScope & { readonly executableBit: ExecutableBitTrust };
@@ -289,19 +291,12 @@ export const checkedOutHead = async (
   }
 };
 
-const GITLINK_UNCHANGED: WorkingTreeDelta = {
-  status: 'unchanged',
-  worktreeMode: FILE_MODE.GITLINK,
-};
-
 const compareGitlink = async (
   ctx: Context,
   entry: IndexEntry,
   stat: FileStat,
   scope: ResolvedScope,
 ): Promise<WorkingTreeDelta> => {
-  // git's `CE_VALID`: an assume-valid entry is trusted without a probe once the stat cache is armed.
-  if (entry.flags.assumeValid && scope.indexMtime !== undefined) return GITLINK_UNCHANGED;
   if (!stat.isDirectory)
     return {
       status: 'type-changed',
@@ -358,13 +353,41 @@ const resolveScope = async (ctx: Context, scope: ComparisonScope): Promise<Resol
   isResolved(scope) ? scope : { ...scope, executableBit: await readExecutableBitTrust(ctx) };
 
 /**
- * A directory where a file is indexed reads removed to git's `check_removed`, except for an
- * assume-valid entry, which refresh marks up to date so the removal check never sees it.
+ * git's `CE_VALID`: once the stat cache is armed an assume-valid entry is trusted over any
+ * work-tree change — a mode, a kind, a directory — without a probe or a read.
+ */
+const isTrusted = (entry: IndexEntry, scope: ComparisonScope): boolean =>
+  entry.flags.assumeValid && scope.indexMtime !== undefined && scope.ignoreAssumeValid !== true;
+
+const judgedEntry = (entry: IndexEntry, scope: ComparisonScope): IndexEntry =>
+  scope.ignoreAssumeValid === true
+    ? { ...entry, flags: { ...entry.flags, assumeValid: false } }
+    : entry;
+
+/**
+ * A directory where a file is indexed reads removed to git's `check_removed`, except for a
+ * trusted entry, which refresh marks up to date so the removal check never sees it.
  */
 const directoryDelta = (entry: IndexEntry, scope: ComparisonScope): WorkingTreeDelta =>
-  entry.flags.assumeValid && scope.indexMtime !== undefined
-    ? { status: 'unchanged' }
-    : { status: 'absent' };
+  isTrusted(entry, scope) ? { status: 'unchanged' } : { status: 'absent' };
+
+/**
+ * git's `verify_uptodate` on an assume-valid entry: refresh leaves its stat data stale, so
+ * `ie_match_stat` calls any stat drift a change without reading the content.
+ */
+const staleAssumedStatDelta = (
+  entry: IndexEntry,
+  stat: FileStat,
+  scope: ResolvedScope,
+): WorkingTreeDelta | undefined => {
+  if (scope.ignoreAssumeValid !== true || !entry.flags.assumeValid) return undefined;
+  if (matchesContentStat(entry, stat)) return undefined;
+  const worktreeMode = indexModeFromStat(stat, entry.mode, scope.executableBit);
+  return {
+    status: isSameKind(worktreeMode, entry.mode) ? 'modified' : 'type-changed',
+    worktreeMode,
+  };
+};
 
 /**
  * The comparison plus its refresh verdict, from the single `lstat` the
@@ -383,11 +406,13 @@ export const compareAndRefresh = async (
   if (stat.isDirectory && entry.mode !== FILE_MODE.GITLINK) {
     return { delta: directoryDelta(entry, scope), directoryInPlace: true };
   }
+  if (isTrusted(entry, scope)) return { delta: { status: 'unchanged', worktreeMode: entry.mode } };
   const resolved = await resolveScope(ctx, scope);
   const delta =
     entry.mode === FILE_MODE.GITLINK
       ? await compareGitlink(ctx, entry, stat, resolved)
-      : await compareFile(ctx, entry, absPath, stat, resolved);
+      : (staleAssumedStatDelta(entry, stat, resolved) ??
+        (await compareFile(ctx, judgedEntry(entry, scope), absPath, stat, resolved)));
   if (delta.status === 'unchanged' && shouldRefresh(entry, stat)) {
     return { delta, refreshed: withStatData(entry, stat) };
   }

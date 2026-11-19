@@ -26,6 +26,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { refuseReadOnSymlink } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -361,6 +362,61 @@ describe('compareWorkingTreeEntry', () => {
 
           // Assert
           expect(result).toEqual({ delta: { status }, directoryInPlace: true });
+        });
+      });
+    },
+  );
+
+  describe.each([
+    ['armed', true, 'unchanged', FILE_MODE.REGULAR],
+    ['unarmed', false, 'mode-changed', FILE_MODE.EXECUTABLE],
+  ] as const)(
+    'Given an assume-valid file whose exec bit was set and a %s stat cache',
+    (_label, armed, status, worktreeMode) => {
+      describe('When comparing', () => {
+        it(`Then reports ${status}`, async () => {
+          // Arrange
+          const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+          withExecutableWorkFile(ctx);
+          const assumed = { ...entry, flags: { ...entry.flags, assumeValid: true } };
+          const indexMtime = armed
+            ? { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 }
+            : undefined;
+          const sut = compareAndRefresh;
+
+          // Act
+          const result = await sut(ctx, assumed, indexMtime === undefined ? {} : { indexMtime });
+
+          // Assert
+          expect(result).toEqual({ delta: { status, worktreeMode } });
+        });
+      });
+    },
+  );
+
+  describe.each([
+    ['armed', true, 'unchanged', FILE_MODE.REGULAR],
+    ['unarmed', false, 'type-changed', FILE_MODE.SYMLINK],
+  ] as const)(
+    'Given an assume-valid file replaced by a symlink and a %s stat cache',
+    (_label, armed, status, worktreeMode) => {
+      describe('When comparing', () => {
+        it(`Then reports ${status}`, async () => {
+          // Arrange
+          const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+          await ctx.fs.rm(work(ctx, 'a.txt'));
+          await ctx.fs.symlink('elsewhere', work(ctx, 'a.txt'));
+          const assumed = { ...entry, flags: { ...entry.flags, assumeValid: true } };
+          const indexMtime = armed
+            ? { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 }
+            : undefined;
+          const sut = compareAndRefresh;
+
+          // Act
+          const result = await sut(ctx, assumed, indexMtime === undefined ? {} : { indexMtime });
+
+          // Assert
+          expect(result).toEqual({ delta: { status, worktreeMode } });
         });
       });
     },
