@@ -28,6 +28,7 @@ import type {
 import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { FileStat, WriteOptions } from '../../../../src/ports/file-system.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { buildSeededContext, serializeIndexFixtureAsync } from './fixtures.js';
 import { createInterleavingFs } from './support/interleaving-fs.js';
 
@@ -5325,18 +5326,6 @@ describe('applyChangeset over an exec-bit-only local change', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
-
-  const EXECUTABLE_STAT_MODE = 0o100755;
-
-  const withExecutableWorkFile = (ctx: Context): void => {
-    const probe = ctx.fs.lstatIfReachable;
-    if (probe === undefined) throw new Error('the memory adapter probes lstatIfReachable');
-    const original = probe.bind(ctx.fs);
-    vi.spyOn(ctx.fs, 'lstatIfReachable').mockImplementation(async (path) => {
-      const stat = await original(path);
-      return stat === undefined ? stat : { ...stat, mode: EXECUTABLE_STAT_MODE };
-    });
-  };
 
   const refusalOf = async (run: Promise<unknown>): Promise<TsgitError> => {
     try {

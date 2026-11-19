@@ -30,6 +30,7 @@ import type {
 } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../../support/executable-work-file.js';
 
 const AUTHOR: AuthorIdentity = { name: 'T', email: 't@x', timestamp: 1, timezoneOffset: '+0000' };
 const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
@@ -329,19 +330,6 @@ describe('assertCleanWorkTree', () => {
   });
 
   describe('Given an exec-bit-only change on a committed file', () => {
-    const EXECUTABLE_STAT_MODE = 0o100755;
-
-    const withExecutableWorkFile = (ctx: Context): void => {
-      for (const probe of ['lstat', 'lstatIfReachable'] as const) {
-        const original = ctx.fs[probe]?.bind(ctx.fs);
-        if (original === undefined) continue;
-        vi.spyOn(ctx.fs, probe).mockImplementation(async (path: string) => {
-          const stat = await original(path);
-          return stat === undefined ? stat : { ...stat, mode: EXECUTABLE_STAT_MODE };
-        });
-      }
-    };
-
     const seedExecutable = async (
       fileMode?: string,
     ): Promise<{ ctx: Context; headTree: ObjectId }> => {

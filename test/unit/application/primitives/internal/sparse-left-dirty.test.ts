@@ -9,6 +9,7 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import { type IndexEntry, STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
+import { withExecutableWorkFile } from '../../../support/executable-work-file.js';
 import { buildSeededContext, recordedStatOf } from '../fixtures.js';
 
 afterEach(() => {
@@ -190,14 +191,7 @@ describe('notUpToDate stat short-circuit', () => {
       await writeWork(ctx, 'a', 'edited');
       const entry = await statEntryOf(ctx, 'a', id);
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfilemode = false\n');
-      for (const probe of ['lstat', 'lstatIfReachable', 'tryLstat'] as const) {
-        const original = ctx.fs[probe]?.bind(ctx.fs);
-        if (original === undefined) continue;
-        vi.spyOn(ctx.fs, probe).mockImplementation(async (path: string) => {
-          const stat = await original(path);
-          return stat === undefined ? stat : { ...stat, mode: 0o100755 };
-        });
-      }
+      withExecutableWorkFile(ctx);
 
       // Act
       const result = await sut(ctx, workDirOf(ctx), [entry], NEWER_THAN_ANY_ENTRY);

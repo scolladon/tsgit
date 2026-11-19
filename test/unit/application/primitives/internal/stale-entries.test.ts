@@ -11,6 +11,7 @@ import { STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../../support/executable-work-file.js';
 
 const NON_RACY: IndexMtime = { seconds: 4_000_000_000, nanoseconds: 0 };
 const FROZEN_NOW = new Date('2026-01-01T00:00:00Z');
@@ -81,19 +82,6 @@ const judge = async (
     ctx.layout.workDir ?? '',
   );
   return result.entries.map((e) => e.kind);
-};
-
-const EXECUTABLE_STAT_MODE = 0o100755;
-
-const withExecutableWorkFile = (ctx: Context): void => {
-  for (const probe of ['lstat', 'lstatIfReachable', 'tryLstat'] as const) {
-    const original = ctx.fs[probe]?.bind(ctx.fs);
-    if (original === undefined) continue;
-    vi.spyOn(ctx.fs, probe).mockImplementation(async (path: string) => {
-      const stat = await original(path);
-      return stat === undefined ? stat : { ...stat, mode: EXECUTABLE_STAT_MODE };
-    });
-  }
 };
 
 describe('upgradeStaleNoops', () => {

@@ -11,6 +11,7 @@ import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mo
 import type { FilePath, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { recordingProgress } from '../commands/fixtures.js';
 import { buildSeededContext, recordedStatOf } from './fixtures.js';
 
@@ -2242,47 +2243,49 @@ describe('materializeTree carrying staged changes (headTree)', () => {
       });
     });
 
-    describe.each([
-      ['false', 'd leaves the index and d/x is written'],
-      ['unset', 'it refuses d as untracked'],
-    ] as const)(
-      'When ignorecase is true, d differs only by a set exec bit and core.filemode is %s',
-      (fileMode, outcome) => {
-        it(`Then ${outcome}`, async () => {
-          // Arrange
-          const { ctx, headTree, targetTree, currentIndex } = await buildStagedFile('true');
-          const fileModeLine = fileMode === 'false' ? '\tfileMode = false\n' : '';
-          await ctx.fs.writeUtf8(
-            `${ctx.layout.gitDir}/config`,
-            `[core]\n\tignorecase = true\n${fileModeLine}`,
-          );
-          invalidateConfigCache(ctx);
-          for (const probe of ['lstat', 'lstatIfReachable', 'tryLstat'] as const) {
-            const original = ctx.fs[probe]?.bind(ctx.fs);
-            if (original === undefined) continue;
-            vi.spyOn(ctx.fs, probe).mockImplementation(async (path: string) => {
-              const stat = await original(path);
-              return stat === undefined ? stat : { ...stat, mode: 0o100755 };
-            });
-          }
-          const sut = materializeTree;
+    const buildExecutableStagedFile = async (fileModeLine: string) => {
+      const staged = await buildStagedFile('true');
+      await staged.ctx.fs.writeUtf8(
+        `${staged.ctx.layout.gitDir}/config`,
+        `[core]\n\tignorecase = true\n${fileModeLine}`,
+      );
+      invalidateConfigCache(staged.ctx);
+      withExecutableWorkFile(staged.ctx);
+      return staged;
+    };
 
-          // Act
-          const run = () => sut(ctx, { targetTree, currentIndex, headTree });
+    describe('When ignorecase is true, d differs only by a set exec bit and core.filemode is false', () => {
+      it('Then d leaves the index and d/x is written', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } =
+          await buildExecutableStagedFile('\tfileMode = false\n');
 
-          // Assert
-          if (fileMode === 'unset') {
-            expect(await refusalOf(run)).toEqual({
-              code: 'CHECKOUT_OVERWRITE_DIRTY',
-              localChanges: [],
-              untracked: ['d'],
-            });
-            return;
-          }
-          expect((await run()).newIndexEntries.map((e) => e.path)).toEqual(['d/x', 'f']);
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['d/x', 'f']);
+      });
+    });
+
+    describe('When ignorecase is true, d differs only by a set exec bit and core.filemode is unset', () => {
+      it('Then it refuses d as untracked', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } = await buildExecutableStagedFile('');
+
+        // Act
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['d'],
         });
-      },
-    );
+      });
+    });
 
     describe('When ignorecase is true and d was modified after staging', () => {
       it('Then it refuses d as untracked, not as a local change', async () => {
