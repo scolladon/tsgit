@@ -338,6 +338,53 @@ describe('compareWorkingTreeEntry', () => {
     });
   });
 
+  describe.each([
+    ['armed', true, 'unchanged'],
+    ['unarmed', false, 'absent'],
+  ] as const)(
+    'Given an assume-valid file replaced by a directory and a %s stat cache',
+    (_label, armed, status) => {
+      describe('When comparing with the refresh verdict', () => {
+        it(`Then reports ${status} with the directory standing in place`, async () => {
+          // Arrange
+          const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+          await ctx.fs.rm(work(ctx, 'a.txt'));
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt/inner'), 'inner\n');
+          const assumed = { ...entry, flags: { ...entry.flags, assumeValid: true } };
+          const indexMtime = armed
+            ? { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 }
+            : undefined;
+          const sut = compareAndRefresh;
+
+          // Act
+          const result = await sut(ctx, assumed, indexMtime === undefined ? {} : { indexMtime });
+
+          // Assert
+          expect(result).toEqual({ delta: { status }, directoryInPlace: true });
+        });
+      });
+    },
+  );
+
+  describe('Given a file that is not assume-valid replaced by a directory and an armed stat cache', () => {
+    describe('When comparing with the refresh verdict', () => {
+      it("Then reports 'absent' with the directory standing in place", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt/inner'), 'inner\n');
+        const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry, { indexMtime });
+
+        // Assert
+        expect(result).toEqual({ delta: { status: 'absent' }, directoryInPlace: true });
+      });
+    });
+  });
+
   describe('Given a tracked file that was deleted', () => {
     describe('When comparing with the refresh verdict', () => {
       it('Then no directory is reported in place', async () => {

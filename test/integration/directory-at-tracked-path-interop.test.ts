@@ -22,6 +22,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { TsgitError } from '../../src/domain/index.js';
 import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
@@ -44,6 +45,7 @@ const ROW_TIMEOUT = 60_000;
 const NO_WORKTREE_MODE = '000000';
 const TRACKED = 'm';
 const SIDE = 'side';
+const GIT_FATAL_EXIT = 128;
 
 const open = trackedRepositories();
 
@@ -85,6 +87,37 @@ const seedTwin = (
   writeFileSync(join(dir, TRACKED, 'inner'), 'inner\n');
 };
 
+/** `m` is assume-unchanged and a directory stands at it; `side` and `main` both moved on. */
+const seedAssumeUnchanged = (
+  dir: string,
+  ignoreCase: string,
+  fileMode: string,
+  sideTouchesTracked: boolean,
+): void => {
+  sh(dir, 'config', 'core.ignorecase', ignoreCase);
+  sh(dir, 'config', 'core.filemode', fileMode);
+  writeFileSync(join(dir, 'base'), 'base\n');
+  writeFileSync(join(dir, TRACKED), 'one\n');
+  sh(dir, 'add', '-A');
+  sh(dir, 'commit', '-q', '-m', 'base');
+  sh(dir, 'checkout', '-q', '-b', SIDE);
+  if (sideTouchesTracked) writeFileSync(join(dir, TRACKED), 'two\n');
+  else writeFileSync(join(dir, 'bystander'), 'b\n');
+  sh(dir, 'add', '-A');
+  sh(dir, 'commit', '-q', '-m', 'side');
+  sh(dir, 'checkout', '-q', 'main');
+  writeFileSync(join(dir, 'c'), 'c\n');
+  sh(dir, 'add', 'c');
+  sh(dir, 'commit', '-q', '-m', 'main2');
+  sh(dir, 'update-index', '--assume-unchanged', TRACKED);
+  rmSync(join(dir, TRACKED));
+  mkdirSync(join(dir, TRACKED));
+  writeFileSync(join(dir, TRACKED, 'inner'), 'inner\n');
+};
+
+const stashCount = (dir: string): number =>
+  sh(dir, 'stash', 'list').split('\n').filter(Boolean).length;
+
 const gitUnstagedRows = (dir: string): ReadonlyArray<string> =>
   sh(dir, 'status', '--porcelain=v2', '-uno')
     .split('\n')
@@ -104,12 +137,18 @@ const tsgitUnstagedRows = async (repo: Repository): Promise<ReadonlyArray<string
       `.${change.unstaged === undefined ? '.' : COLUMN[change.unstaged]} N... ${change.head?.mode} ${change.index?.mode} ${change.worktree?.mode ?? NO_WORKTREE_MODE} ${change.path}`,
   );
 
-const attempt = async (run: () => Promise<unknown>): Promise<'ok' | 'refused'> => {
+interface Attempt {
+  readonly status: 'ok' | 'refused';
+  readonly data?: unknown;
+}
+
+const attempt = async (run: () => Promise<unknown>): Promise<Attempt> => {
   try {
     await run();
-    return 'ok';
-  } catch {
-    return 'refused';
+    return { status: 'ok' };
+  } catch (err) {
+    if (err instanceof TsgitError) return { status: 'refused', data: err.data };
+    throw err;
   }
 };
 
@@ -179,7 +218,7 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
             const result = await attempt(() => sut.stash.push({}));
 
             // Assert
-            expect(result).toBe(gitRun);
+            expect(result.status).toBe(gitRun);
             expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
             expect(sh(pair.ours, 'ls-tree', '-r', 'stash@{0}^{tree}')).toBe(
               sh(pair.peer, 'ls-tree', '-r', 'stash@{0}^{tree}'),
@@ -202,17 +241,18 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
             const sut = await open({ cwd: pair.ours });
 
             // Act
-            const gitRun = gitAttempt(
-              pair.peer,
-              'rm',
-              '-q',
-              ...('force' in options ? ['-f'] : []),
-              TRACKED,
-            );
+            const gitExit = tryRunGitWithExit(
+              ['-C', pair.peer, 'rm', '-q', ...('force' in options ? ['-f'] : []), TRACKED],
+              { env: COMMIT_ENV },
+            ).exitCode;
+            const gitRun = gitExit === 0 ? 'ok' : 'refused';
             const result = await attempt(() => sut.rm([TRACKED], options));
 
             // Assert
-            expect(result).toBe(gitRun);
+            expect(gitRun).toBe('refused');
+            expect(gitExit).toBe(GIT_FATAL_EXIT);
+            expect(result.data).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY' });
+            expect(result.status).toBe(gitRun);
             expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
             expect(onDisk(pair.ours)).toBe(onDisk(pair.peer));
           },
@@ -233,7 +273,7 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
             const result = await attempt(() => sut.rm([TRACKED], { cached: true }));
 
             // Assert
-            expect(result).toBe(gitRun);
+            expect(result.status).toBe(gitRun);
             expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
             expect(onDisk(pair.ours)).toBe(onDisk(pair.peer));
           },
@@ -242,41 +282,57 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
       });
 
       describe.each([
-        ['checkout', (repo: Repository) => repo.checkout({ rev: SIDE }), ['checkout', SIDE]],
+        [
+          'checkout',
+          (repo: Repository) => repo.checkout({ rev: SIDE }),
+          ['checkout', SIDE],
+          'CHECKOUT_OVERWRITE_DIRTY',
+        ],
         [
           'merge',
           (repo: Repository) => repo.merge.run({ rev: SIDE, message: 'm', author: AUTHOR }),
           ['merge', '-m', 'm', SIDE],
+          'WORKING_TREE_DIRTY',
         ],
         [
           'cherry-pick',
           (repo: Repository) => repo.cherryPick.run({ commits: [SIDE] }),
           ['cherry-pick', SIDE],
+          'WORKING_TREE_DIRTY',
         ],
-        ['rebase', (repo: Repository) => repo.rebase.run({ upstream: SIDE }), ['rebase', SIDE]],
-      ] as const)('When both tools %s a branch rewriting the path', (_label, run, gitArgs) => {
-        it(
-          'Then both refuse and leave the index and the directory alone',
-          async () => {
-            // Arrange
-            seedBoth(ignoreCase, kind);
-            const sut = await open({ cwd: pair.ours });
-            const indexBefore = lsStage(pair.ours);
+        [
+          'rebase',
+          (repo: Repository) => repo.rebase.run({ upstream: SIDE }),
+          ['rebase', SIDE],
+          'WORKING_TREE_DIRTY',
+        ],
+      ] as const)(
+        'When both tools %s a branch rewriting the path',
+        (_label, run, gitArgs, refusalCode) => {
+          it(
+            'Then both refuse and leave the index and the directory alone',
+            async () => {
+              // Arrange
+              seedBoth(ignoreCase, kind);
+              const sut = await open({ cwd: pair.ours });
+              const indexBefore = lsStage(pair.ours);
 
-            // Act
-            const gitRun = gitAttempt(pair.peer, ...gitArgs);
-            const result = await attempt(() => run(sut));
+              // Act
+              const gitRun = gitAttempt(pair.peer, ...gitArgs);
+              const result = await attempt(() => run(sut));
 
-            // Assert
-            expect(gitRun).toBe('refused');
-            expect(result).toBe('refused');
-            expect(lsStage(pair.ours)).toBe(indexBefore);
-            expect(lsStage(pair.peer)).toBe(indexBefore);
-            expect(onDisk(pair.ours)).toBe('directory:inner');
-          },
-          ROW_TIMEOUT,
-        );
-      });
+              // Assert
+              expect(gitRun).toBe('refused');
+              expect(result.status).toBe('refused');
+              expect(result.data).toMatchObject({ code: refusalCode, localChanges: [TRACKED] });
+              expect(lsStage(pair.ours)).toBe(indexBefore);
+              expect(lsStage(pair.peer)).toBe(indexBefore);
+              expect(onDisk(pair.ours)).toBe('directory:inner');
+            },
+            ROW_TIMEOUT,
+          );
+        },
+      );
 
       describe('When both tools check out a branch leaving the path alone', () => {
         it(
@@ -292,7 +348,7 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
 
             // Assert
             expect(gitRun).toBe('ok');
-            expect(result).toBe('ok');
+            expect(result.status).toBe('ok');
             expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
             expect(existsSync(join(pair.ours, TRACKED, 'inner'))).toBe(true);
           },
@@ -300,6 +356,110 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
         );
       });
     });
+
+    describe.each(['false', 'true'] as const)(
+      'Given an assume-unchanged file replaced by a directory under core.fileMode=%s',
+      (fileMode) => {
+        const seedAssumed = (sideTouchesTracked: boolean): void => {
+          seedAssumeUnchanged(pair.peer, ignoreCase, fileMode, sideTouchesTracked);
+          seedAssumeUnchanged(pair.ours, ignoreCase, fileMode, sideTouchesTracked);
+        };
+
+        describe('When both tools report the status', () => {
+          it(
+            'Then both trust the entry and report nothing',
+            async () => {
+              // Arrange
+              seedAssumed(true);
+              const sut = await open({ cwd: pair.ours });
+
+              // Act
+              const result = await tsgitUnstagedRows(sut);
+
+              // Assert
+              expect(result).toEqual(gitUnstagedRows(pair.peer));
+              expect(result).toEqual([]);
+            },
+            ROW_TIMEOUT,
+          );
+        });
+
+        describe('When both tools stash push', () => {
+          it(
+            'Then neither saves a stash and the directory with its content survives',
+            async () => {
+              // Arrange
+              seedAssumed(true);
+              const sut = await open({ cwd: pair.ours });
+              const indexBefore = lsStage(pair.ours);
+
+              // Act
+              const gitRun = gitAttempt(pair.peer, 'stash', 'push');
+              const result = await attempt(() => sut.stash.push({}));
+
+              // Assert
+              expect(result.status).toBe(gitRun);
+              expect(stashCount(pair.peer)).toBe(0);
+              expect(stashCount(pair.ours)).toBe(0);
+              expect(lsStage(pair.ours)).toBe(indexBefore);
+              expect(lsStage(pair.peer)).toBe(indexBefore);
+              expect(onDisk(pair.ours)).toBe('directory:inner');
+              expect(onDisk(pair.peer)).toBe('directory:inner');
+            },
+            ROW_TIMEOUT,
+          );
+        });
+
+        describe('When both tools rebase onto a branch leaving the path alone', () => {
+          it(
+            'Then both pass the clean-tree pre-flight and keep the directory',
+            async () => {
+              // Arrange
+              seedAssumed(false);
+              const sut = await open({ cwd: pair.ours });
+
+              // Act
+              const gitRun = gitAttempt(pair.peer, 'rebase', SIDE);
+              const result = await attempt(() => sut.rebase.run({ upstream: SIDE }));
+
+              // Assert
+              expect(gitRun).toBe('ok');
+              expect(result.status).toBe('ok');
+              expect(onDisk(pair.ours)).toBe(onDisk(pair.peer));
+              expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+            },
+            ROW_TIMEOUT,
+          );
+        });
+
+        describe('When both tools check out a branch rewriting the path', () => {
+          it(
+            'Then both refuse and leave the index and the directory alone',
+            async () => {
+              // Arrange
+              seedAssumed(true);
+              const sut = await open({ cwd: pair.ours });
+              const indexBefore = lsStage(pair.ours);
+
+              // Act
+              const gitRun = gitAttempt(pair.peer, 'checkout', SIDE);
+              const result = await attempt(() => sut.checkout({ rev: SIDE }));
+
+              // Assert
+              expect(gitRun).toBe('refused');
+              expect(result.status).toBe('refused');
+              expect(result.data).toMatchObject({
+                code: 'CHECKOUT_OVERWRITE_DIRTY',
+                localChanges: [TRACKED],
+              });
+              expect(lsStage(pair.ours)).toBe(indexBefore);
+              expect(onDisk(pair.ours)).toBe('directory:inner');
+            },
+            ROW_TIMEOUT,
+          );
+        });
+      },
+    );
 
     describe.each([
       ['a regular file stage', '100755'],

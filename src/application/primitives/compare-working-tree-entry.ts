@@ -215,7 +215,7 @@ export interface RefreshedComparison {
   readonly refreshed?: IndexEntry;
   /**
    * A plain directory stands at a non-gitlink path. git's `check_removed` reads it as removed
-   * (the delta is `absent`), while `verify_uptodate` counts it as a change; this lets the
+   * (the delta is `absent`, or `unchanged` for an assume-valid entry), while `verify_uptodate` counts it as a change; this lets the
    * overwrite check tell it from a path that is simply gone.
    */
   readonly directoryInPlace?: true;
@@ -358,6 +358,15 @@ const resolveScope = async (ctx: Context, scope: ComparisonScope): Promise<Resol
   isResolved(scope) ? scope : { ...scope, executableBit: await readExecutableBitTrust(ctx) };
 
 /**
+ * A directory where a file is indexed reads removed to git's `check_removed`, except for an
+ * assume-valid entry, which refresh marks up to date so the removal check never sees it.
+ */
+const directoryDelta = (entry: IndexEntry, scope: ComparisonScope): WorkingTreeDelta =>
+  entry.flags.assumeValid && scope.indexMtime !== undefined
+    ? { status: 'unchanged' }
+    : { status: 'absent' };
+
+/**
  * The comparison plus its refresh verdict, from the single `lstat` the
  * comparison already took — no second stat, no extra read.
  */
@@ -372,7 +381,7 @@ export const compareAndRefresh = async (
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { delta: { status: 'absent' } };
   if (stat.isDirectory && entry.mode !== FILE_MODE.GITLINK) {
-    return { delta: { status: 'absent' }, directoryInPlace: true };
+    return { delta: directoryDelta(entry, scope), directoryInPlace: true };
   }
   const resolved = await resolveScope(ctx, scope);
   const delta =
