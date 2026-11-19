@@ -12,9 +12,11 @@
  *   unique:         mv porcelain index+tree state matches canonical git mv
  *   interopSurface: mv
  */
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
@@ -22,9 +24,11 @@ import {
   GIT_AVAILABLE,
   lsStage,
   makePeerPair,
+  mvVerboseLines,
   type PeerPair,
   runGit,
   tryRunGit,
+  tryRunGitWithExit,
   writeTreeOf,
 } from './interop-helpers.js';
 
@@ -37,6 +41,15 @@ interface StateSnapshot {
   readonly stage: string;
   readonly tree: string;
 }
+
+const pathExists = async (dir: string, rel: string): Promise<boolean> => {
+  try {
+    await stat(path.join(dir, rel));
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
   let pair: PeerPair;
@@ -75,15 +88,6 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
     stage: lsStage(dir),
     tree: writeTreeOf(dir),
   });
-
-  const pathExists = async (dir: string, rel: string): Promise<boolean> => {
-    try {
-      await stat(path.join(dir, rel));
-      return true;
-    } catch {
-      return false;
-    }
-  };
 
   describe('Given a tracked file staged in both repos', () => {
     describe('When repo.mv renames it and git mv renames the peer', () => {
@@ -282,4 +286,235 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
       });
     });
   });
+
+  describe('Given a directory holding an empty directory and an untracked file', () => {
+    describe('When repo.mv renames it and git mv renames the peer (row E)', () => {
+      it('Then both twins hold the empty directory, the tracked and the untracked file', async () => {
+        // Arrange
+        await seed([{ path: 'd/f', content: 'f\n' }]);
+        await mkdir(path.join(pair.peer, 'd/emp'));
+        await mkdir(path.join(pair.ours, 'd/emp'));
+        await writeBoth({ path: 'd/u', content: 'u\n' });
+
+        // Act
+        runGit(['-C', pair.peer, 'mv', 'd', 'e']);
+        await repo.mv(['d'], 'e');
+
+        // Assert
+        for (const dir of [pair.peer, pair.ours]) {
+          expect(await pathExists(dir, 'e/emp')).toBe(true);
+          expect(await pathExists(dir, 'e/f')).toBe(true);
+          expect(await pathExists(dir, 'e/u')).toBe(true);
+          expect(await pathExists(dir, 'd')).toBe(false);
+        }
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+      });
+    });
+  });
 });
+
+const Q200 = 'q'.repeat(200);
+const L200 = 'l'.repeat(200);
+const GIT_IDENTITY = [
+  '-c',
+  'user.name=t',
+  '-c',
+  'user.email=t@example.com',
+  '-c',
+  'commit.gpgsign=false',
+];
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'Given directories whose contents reach past PATH_MAX',
+  () => {
+    let root = '';
+    let pathMax = 0;
+    let counter = 0;
+    const repos: Repository[] = [];
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-deep-')));
+      pathMax = Number(execFileSync('getconf', ['PATH_MAX', root]).toString().trim());
+    });
+
+    afterEach(async () => {
+      await Promise.all(repos.splice(0).map((repo) => repo.dispose()));
+    });
+
+    afterAll(() => {
+      execFileSync('rm', ['-rf', root]);
+    });
+
+    // process.chdir is refused in vitest workers and an absolute mkdir of the chain is
+    // ENAMETOOLONG, so the shell walks the chain with relative steps.
+    const inChain = (cwd: string, steps: ReadonlyArray<string>, command: string): void => {
+      execFileSync(
+        'sh',
+        ['-c', 'for c in "$@"; do cd "$c" || exit 1; done; eval "$CMD"', 'sh', ...steps],
+        {
+          cwd,
+          env: { ...process.env, CMD: command },
+        },
+      );
+    };
+
+    const buildChain = (cwd: string, steps: ReadonlyArray<string>): void => {
+      execFileSync(
+        'sh',
+        ['-c', 'for c in "$@"; do mkdir "$c" && cd "$c" || exit 1; done; : > leaf', 'sh', ...steps],
+        { cwd },
+      );
+    };
+
+    const holdsLeaf = (cwd: string, steps: ReadonlyArray<string>): boolean => {
+      try {
+        inChain(cwd, steps, 'test -f leaf');
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const levelsPastPathMax = (): number => Math.floor(pathMax / (Q200.length + 1)) + 2;
+    const chain = (): string[] => Array.from({ length: levelsPastPathMax() }, () => Q200);
+
+    const newTwin = (side: string): string => {
+      counter += 1;
+      const repo = path.join(root, `${side}-${counter}`);
+      runGit(['init', '-q', '-b', 'main', repo]);
+      return repo;
+    };
+
+    const commitAll = (repo: string): void => {
+      runGit(['-C', repo, 'add', '-A']);
+      runGit(['-C', repo, ...GIT_IDENTITY, 'commit', '-q', '-m', 'm']);
+    };
+
+    const openTsgit = async (cwd: string): Promise<Repository> => {
+      const repo = await openRepository({ cwd });
+      repos.push(repo);
+      return repo;
+    };
+
+    const stageOf = (repo: string): string => runGit(['-C', repo, 'ls-files', '-s']);
+
+    const seedTwin = async (side: string, tracked: ReadonlyArray<string>, deepUnder: string) => {
+      const repo = newTwin(side);
+      for (const file of tracked) {
+        await mkdir(path.join(repo, path.dirname(file)), { recursive: true });
+        await writeFile(path.join(repo, file), 'x\n');
+      }
+      runGit(['-C', repo, 'add', '--', ...tracked]);
+      await mkdir(path.join(repo, deepUnder), { recursive: true });
+      buildChain(path.join(repo, deepUnder), chain());
+      return repo;
+    };
+
+    describe.each([
+      { id: 'row 1', tracked: ['d/f'], deepUnder: 'd', kept: 'e/f', leafUnder: 'e' },
+      { id: 'row 2', tracked: ['d/z'], deepUnder: 'd/a', kept: 'e/z', leafUnder: 'e/a' },
+    ])('When git and tsgit rename a directory holding an untracked deep chain ($id)', (row) => {
+      it('Then both rename it in one step and agree on the index and the disk', async () => {
+        // Arrange
+        const gitRepo = await seedTwin('git', row.tracked, row.deepUnder);
+        const tsgitRepo = await seedTwin('tsgit', row.tracked, row.deepUnder);
+        const leaf = path.join(tsgitRepo, row.deepUnder, ...chain(), 'leaf');
+        expect(Buffer.byteLength(leaf)).toBeGreaterThan(pathMax);
+        const sut = await openTsgit(tsgitRepo);
+
+        // Act
+        runGit(['-C', gitRepo, 'mv', 'd', 'e']);
+        await sut.mv(['d'], 'e');
+
+        // Assert
+        expect(stageOf(tsgitRepo)).toEqual(stageOf(gitRepo));
+        for (const dir of [gitRepo, tsgitRepo]) {
+          expect(await pathExists(dir, row.kept)).toBe(true);
+          expect(await pathExists(dir, 'd')).toBe(false);
+          expect(holdsLeaf(path.join(dir, row.leafUnder), chain())).toBe(true);
+        }
+      });
+    });
+
+    describe('When git and tsgit rename a directory holding a deep chain in a linked worktree (row 3)', () => {
+      it('Then both rename it in one step and agree on the index and the disk', async () => {
+        // Arrange
+        const linked: string[] = [];
+        for (const side of ['git', 'tsgit']) {
+          const main = newTwin(side);
+          await mkdir(path.join(main, 'd'));
+          await writeFile(path.join(main, 'd/f'), 'x\n');
+          commitAll(main);
+          const wt = `${main}-wt`;
+          runGit(['-C', main, 'worktree', 'add', '-q', '-b', `${side}-wt`, wt]);
+          buildChain(path.join(wt, 'd'), chain());
+          linked.push(wt);
+        }
+        const [gitWt, tsgitWt] = linked as [string, string];
+        const sut = await openTsgit(tsgitWt);
+
+        // Act
+        runGit(['-C', gitWt, 'mv', 'd', 'e']);
+        await sut.mv(['d'], 'e');
+
+        // Assert
+        expect(stageOf(tsgitWt)).toEqual(stageOf(gitWt));
+        for (const dir of [gitWt, tsgitWt]) {
+          expect(await pathExists(dir, 'e/f')).toBe(true);
+          expect(await pathExists(dir, 'd')).toBe(false);
+          expect(holdsLeaf(path.join(dir, 'e'), chain())).toBe(true);
+        }
+      });
+    });
+
+    describe('When git and tsgit skip errors moving a long directory and a file under a deep destination (row H)', () => {
+      it('Then both move the file, refuse the directory and agree on the index and the disk', async () => {
+        // Arrange
+        const destLength = pathMax - 150;
+        const whole = Math.floor(destLength / (Q200.length + 1));
+        const remainder = destLength - whole * (Q200.length + 1);
+        const steps = [...Array.from({ length: whole }, () => Q200), 'r'.repeat(remainder - 1)];
+        const dest = steps.join('/');
+        const twinsOf: string[] = [];
+        for (const side of ['git', 'tsgit']) {
+          const repo = newTwin(side);
+          for (const file of [`${L200}/f`, `${L200}/s/t`, 'b']) {
+            await mkdir(path.join(repo, path.dirname(file)), { recursive: true });
+            await writeFile(path.join(repo, file), 'x\n');
+          }
+          await writeFile(path.join(repo, `${L200}/u`), 'u\n');
+          runGit(['-C', repo, 'add', '--', `${L200}/f`, `${L200}/s/t`, 'b']);
+          execFileSync(
+            'sh',
+            ['-c', 'for c in "$@"; do mkdir "$c" && cd "$c" || exit 1; done', 'sh', ...steps],
+            {
+              cwd: repo,
+            },
+          );
+          twinsOf.push(repo);
+        }
+        const [gitRepo, tsgitRepo] = twinsOf as [string, string];
+        expect(Buffer.byteLength(`${dest}/${L200}`)).toBeGreaterThan(pathMax);
+        expect(Buffer.byteLength(path.join(tsgitRepo, dest, 'b'))).toBeLessThan(pathMax);
+        const sut = await openTsgit(tsgitRepo);
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '-k', '-v', '--', L200, 'b', dest]);
+        const result = await sut.mv([L200, 'b'], dest, { skipErrors: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result.skipped).toEqual([{ source: L200, reason: 'rename-failed' }]);
+        expect(gitRun.stdout.split('\n').filter((line) => line !== '')).toEqual(
+          mvVerboseLines([L200, 'b'], (source) => `${dest}/${source}`, result, [L200]),
+        );
+        expect(stageOf(tsgitRepo)).toEqual(stageOf(gitRepo));
+        for (const dir of [gitRepo, tsgitRepo]) {
+          expect(await pathExists(dir, L200)).toBe(false);
+          expect(await pathExists(dir, 'b')).toBe(false);
+          inChain(dir, steps, 'test -f b');
+        }
+      });
+    });
+  },
+);

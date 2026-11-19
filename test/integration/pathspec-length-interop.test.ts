@@ -33,7 +33,13 @@ import { rm } from '../../src/application/commands/rm.js';
 import { status } from '../../src/application/commands/status.js';
 import { pathspecNoMatch } from '../../src/domain/commands/error.js';
 import { TsgitError } from '../../src/domain/error.js';
-import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  mvVerboseLines,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const P805 = `${['a', 'b', 'c', 'd'].map((c) => c.repeat(200)).join('/')}/x`; // 805 bytes, tracked
 const DIR805 = P805.slice(0, -'/x'.length);
@@ -1052,6 +1058,55 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         expect(gitRun.exitCode).toBe(0);
         expect(result.skipped).toEqual([{ source: S300, reason: 'source-not-tracked' }]);
         expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit move the directory d to S300 skipping errors (row M8)', () => {
+      it('Then both succeed, tsgit reporting the refused rename and agreeing on index and disk', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([], ['d/u'], ['d/f', 'd/s/t']);
+        const sut = mv;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '-k', '-v', '--', 'd', S300]);
+        const result = await sut(ctx, ['d'], S300, { skipErrors: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result.skipped).toEqual([{ source: 'd', reason: 'rename-failed' }]);
+        expect(gitRun.stdout.split('\n').filter((line) => line !== '')).toEqual(
+          mvVerboseLines(['d'], () => S300, result, ['d']),
+        );
+        expect(runGit(['-C', tsgitRepo, 'ls-files', '-s'])).toEqual(
+          runGit(['-C', gitRepo, 'ls-files', '-s']),
+        );
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).not.toContain('d');
+        expect(await filesOf(tsgitRepo)).toContain(BASE);
+      });
+    });
+
+    describe('When git and tsgit move base to S300 skipping errors (row M9)', () => {
+      it('Then both succeed and leave the index and the disk as they were', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, ctx } = await twins([]);
+        const before = { snapshot: snapshotOf(tsgitRepo), files: await filesOf(tsgitRepo) };
+        const sut = mv;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '-k', '-v', '--', BASE, S300]);
+        const result = await sut(ctx, [BASE], S300, { skipErrors: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result).toEqual({ moved: [], skipped: [{ source: BASE, reason: 'rename-failed' }] });
+        expect(gitRun.stdout.split('\n').filter((line) => line !== '')).toEqual(
+          mvVerboseLines([BASE], () => S300, result, []),
+        );
+        expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
+        expect(snapshotOf(tsgitRepo)).toEqual(before.snapshot);
+        expect(await filesOf(tsgitRepo)).toEqual(await filesOf(gitRepo));
+        expect(await filesOf(tsgitRepo)).toEqual(before.files);
       });
     });
   },
