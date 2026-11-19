@@ -934,7 +934,7 @@ describe('internal/working-tree', () => {
 
     describe('Given an adapter without renameDirectory whose rename faults on the second leaf', () => {
       describe('When renameInWorkingTree moves the directory', () => {
-        it('Then that fault rejects, the first leaf moved, the second stayed, and every write lies under the destination', async () => {
+        it('Then that fault rejects naming the repository-relative leaf, the first leaf moved, the second stayed, and every write lies under the destination', async () => {
           // Arrange
           const base = createMemoryContext();
           const root = base.layout.workDir;
@@ -961,7 +961,9 @@ describe('internal/working-tree', () => {
           const outcome = renameInWorkingTree(ctx, 'old', 'new');
 
           // Assert
-          await expect(outcome).rejects.toBe(fault);
+          await expect(outcome).rejects.toMatchObject({
+            data: { code: 'PERMISSION_DENIED', path: 'old/b' },
+          });
           expect(await base.fs.exists(`${root}/new/a`)).toBe(true);
           expect(await base.fs.exists(`${root}/old/b`)).toBe(true);
           expect(await base.fs.exists(`${root}/old`)).toBe(true);
@@ -1045,6 +1047,29 @@ describe('internal/working-tree', () => {
 
           // Assert
           await expect(outcome).rejects.toBe(fault);
+        });
+      });
+    });
+
+    describe('Given renameDirectory refusing with the absolute destination path', () => {
+      describe('When renameInWorkingTree moves the directory', () => {
+        it('Then the refusal names the repository-relative destination', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          const root = base.layout.workDir;
+          await base.fs.mkdir(`${root}/old`);
+          const renameDirectory = vi.fn(async () => {
+            throw permissionDenied(`${root}/new`);
+          });
+          const ctx: Context = { ...base, fs: { ...base.fs, renameDirectory } };
+
+          // Act
+          const outcome = renameInWorkingTree(ctx, 'old', 'new');
+
+          // Assert
+          await expect(outcome).rejects.toMatchObject({
+            data: { code: 'PERMISSION_DENIED', path: 'new' },
+          });
         });
       });
     });

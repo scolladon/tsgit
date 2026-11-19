@@ -220,6 +220,15 @@ const renameNamingDestination = async (
     await op.call(ctx.fs, from.abs, to.abs);
   } catch (err) {
     if (isPathTooLong(err)) throw pathTooLong(to.rel);
-    throw err;
+    throw relativeTo(err, [from, to]);
   }
+};
+
+// The adapter names the absolute path it was handed; a caller only knows the repository-relative one.
+const relativeTo = (err: unknown, ends: ReadonlyArray<MoveEnd>): unknown => {
+  if (!(err instanceof TsgitError) || !('path' in err.data)) return err;
+  const { path } = err.data;
+  const end = ends.find(({ abs }) => abs === path);
+  if (end === undefined) return err;
+  return new TsgitError({ ...err.data, path: end.rel });
 };
