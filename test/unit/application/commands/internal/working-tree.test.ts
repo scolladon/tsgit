@@ -782,7 +782,7 @@ describe('internal/working-tree', () => {
   describe('renameInWorkingTree', () => {
     describe('Given a directory containing a leaf file', () => {
       describe('When renameInWorkingTree moves the directory', () => {
-        it('Then, without renameDirectory, it reads the directory, creates the destination, renames each leaf and removes nothing recursively', async () => {
+        it('Then without renameDirectory it reads the directory, creates the destination, renames each leaf and removes nothing recursively', async () => {
           // Arrange — the memory adapter's `rename` moves a whole subtree in one call,
           // so end-state alone cannot tell recursion from a direct directory rename.
           // Spies pin the portable leaf-by-leaf primitive the directory branch must use.

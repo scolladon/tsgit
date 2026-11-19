@@ -391,7 +391,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       runGit(['-C', repo, ...GIT_IDENTITY, 'commit', '-q', '-m', 'm']);
     };
 
-    const openTsgit = async (cwd: string): Promise<Repository> => {
+    const openTrackedRepository = async (cwd: string): Promise<Repository> => {
       const repo = await openRepository({ cwd });
       repos.push(repo);
       return repo;
@@ -421,7 +421,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         const tsgitRepo = await seedTwin('tsgit', row.tracked, row.deepUnder);
         const leaf = path.join(tsgitRepo, row.deepUnder, ...chain(), 'leaf');
         expect(Buffer.byteLength(leaf)).toBeGreaterThan(pathMax);
-        const sut = await openTsgit(tsgitRepo);
+        const sut = await openTrackedRepository(tsgitRepo);
 
         // Act
         runGit(['-C', gitRepo, 'mv', 'd', 'e']);
@@ -452,7 +452,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           linked.push(wt);
         }
         const [gitWt, tsgitWt] = linked as [string, string];
-        const sut = await openTsgit(tsgitWt);
+        const sut = await openTrackedRepository(tsgitWt);
 
         // Act
         runGit(['-C', gitWt, 'mv', 'd', 'e']);
@@ -497,7 +497,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         const [gitRepo, tsgitRepo] = twinsOf as [string, string];
         expect(Buffer.byteLength(`${dest}/${L200}`)).toBeGreaterThan(pathMax);
         expect(Buffer.byteLength(path.join(tsgitRepo, dest, 'b'))).toBeLessThan(pathMax);
-        const sut = await openTsgit(tsgitRepo);
+        const sut = await openTrackedRepository(tsgitRepo);
 
         // Act
         const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '-k', '-v', '--', L200, 'b', dest]);

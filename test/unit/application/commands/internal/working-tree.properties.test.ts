@@ -41,15 +41,23 @@ const listing = async (ctx: Context, dir: string, prefix = ''): Promise<string[]
   return lines.sort();
 };
 
+type ContextShape = (base: Context) => Context;
+
+const asIs: ContextShape = (base) => base;
+
+const withoutDirectoryRename: ContextShape = (base) => {
+  const { renameDirectory: _absent, ...bare } = base.fs;
+  return { ...base, fs: bare };
+};
+
 const moved = async (
   entries: Readonly<Record<string, TreeEntry>>,
-  withCapability: boolean,
+  shape: ContextShape,
 ): Promise<{ readonly ctx: Context; readonly root: string }> => {
   const base = createMemoryContext();
   const root = `${base.layout.workDir}`;
   await seed(base, `${root}/old`, entries);
-  const { renameDirectory: _absent, ...bare } = base.fs;
-  const ctx: Context = withCapability ? base : { ...base, fs: bare };
+  const ctx = shape(base);
   await renameInWorkingTree(ctx, 'old', 'new');
   return { ctx, root };
 };
@@ -61,16 +69,16 @@ describe('renameInWorkingTree entry by entry', () => {
         await fc.assert(
           fc.asyncProperty(directoryTreeArb(), async (entries) => {
             // Arrange
-            const oracle = await moved(entries, true);
+            const oracle = await moved(entries, asIs);
 
             // Act
-            const sut = await moved(entries, false);
+            const result = await moved(entries, withoutDirectoryRename);
 
             // Assert
-            expect(await listing(sut.ctx, `${sut.root}/new`)).toEqual(
+            expect(await listing(result.ctx, `${result.root}/new`)).toEqual(
               await listing(oracle.ctx, `${oracle.root}/new`),
             );
-            expect(await sut.ctx.fs.exists(`${sut.root}/old`)).toBe(false);
+            expect(await result.ctx.fs.exists(`${result.root}/old`)).toBe(false);
           }),
           { numRuns: NUM_RUNS },
         );
