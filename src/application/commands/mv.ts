@@ -36,7 +36,9 @@ import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/pa
 import { emptyPathspec } from '../../domain/index.js';
 import { encode, wellFormed } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import { asciiLower } from '../../domain/pretty/ascii.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from '../primitives/config-read.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
@@ -172,7 +174,8 @@ const planUnderLock = async (
   if (mode.kind === 'rename' && sources.length > 1) {
     throw mvDestinationNotDirectory(sources[0] as FilePath, mode.target);
   }
-  const plan = await buildPlan(ctx, byPath, sources, mode, opts);
+  const policy = await destinationPolicyOf(ctx, opts);
+  const plan = await buildPlan(ctx, byPath, sources, mode, opts, policy);
   assertNoTargetCollision(plan.planned);
   return plan;
 };
@@ -327,6 +330,7 @@ const buildPlan = async (
   sources: ReadonlyArray<FilePath>,
   mode: DestinationMode,
   opts: MvOptions,
+  policy: DestinationPolicy,
 ): Promise<Plan> => {
   const planned: PlanItem[] = [];
   const skipped: MvSkipped[] = [];
@@ -335,7 +339,7 @@ const buildPlan = async (
       mode.kind === 'rename'
         ? mode.target
         : (joinPathSegment(mode.destDir, basename(source)) as FilePath);
-    const verdict = await validateMove(ctx, byPath, source, target, opts);
+    const verdict = await validateMove(ctx, byPath, source, target, opts, policy);
     if ('skip' in verdict) {
       if (opts.skipErrors === true) {
         skipped.push({ source, reason: verdict.skip });
@@ -360,6 +364,7 @@ const validateMove = async (
   source: FilePath,
   target: FilePath,
   opts: MvOptions,
+  policy: DestinationPolicy,
 ): Promise<Verdict> => {
   const classified = classifySource(byPath, source);
   if (classified.kind === 'untracked') return { skip: 'source-not-tracked' };
@@ -378,7 +383,7 @@ const validateMove = async (
   if (parent !== '' && !(await isDirectoryOnDisk(ctx, parent))) {
     throw mvDestinationDirectoryMissing(source, target);
   }
-  if (!(await destinationFree(ctx, byPath, target, classified.kind, opts.force === true))) {
+  if (!(await destinationFree(ctx, byPath, source, target, classified.kind, policy))) {
     return { skip: 'destination-exists' };
   }
   return { kind: classified.kind, entries, retained };
@@ -424,19 +429,34 @@ const sourceExistsOnDisk = async (
   return stat.isFile || stat.isSymbolicLink;
 };
 
+interface DestinationPolicy {
+  readonly force: boolean;
+  readonly ignoreCase: boolean;
+}
+
+// Read once per call: the config does not change under the index lock.
+const destinationPolicyOf = async (ctx: Context, opts: MvOptions): Promise<DestinationPolicy> => ({
+  force: opts.force === true,
+  ignoreCase: (await readConfig(ctx)).core?.ignoreCase === true,
+});
+
 const destinationFree = async (
   ctx: Context,
   byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  source: FilePath,
   target: FilePath,
   kind: 'file' | 'directory',
-  force: boolean,
+  policy: DestinationPolicy,
 ): Promise<boolean> => {
-  const exists =
-    byPath.has(keyOfPath(target)) || (await lstatOrUndefined(ctx, target)) !== undefined;
-  if (!exists) return true;
+  // Git's escape: a file whose target is its own case variant is the same path on a
+  // case-insensitive store. A directory source has no such escape.
+  const caseVariantOfFile =
+    kind === 'file' && policy.ignoreCase && asciiLower(source) === asciiLower(target);
+  const onDisk = !caseVariantOfFile && (await lstatOrUndefined(ctx, target)) !== undefined;
+  if (!byPath.has(keyOfPath(target)) && !onDisk) return true;
   // `force` overwrites only a file source; a directory source over an existing
   // path is always refused (verified against git: `mv -f dir present-file` fails).
-  return kind === 'file' && force;
+  return kind === 'file' && policy.force;
 };
 
 // Refuse moving both a directory and something inside it (`mv a a/b dir`) — the

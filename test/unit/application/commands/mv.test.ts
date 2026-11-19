@@ -4,6 +4,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { mv } from '../../../../src/application/commands/mv.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   pathTooLong,
@@ -1667,6 +1668,124 @@ describe('mv — skipErrors and a partial entry-by-entry move', () => {
         expect((await indexView(ctx)).map(([path]) => path)).toEqual(['d/f', 'd/g']);
         expect(await exists(ctx, 'e/f')).toBe(true);
         expect(await exists(ctx, 'd/g')).toBe(true);
+      });
+    });
+  });
+
+  describe('mv — a destination that differs only in case', () => {
+    const aliasing = (ctx: Context, alias: string, real: string): Context => ({
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        lstat: async (path: string) => {
+          const aliased = work(ctx, alias);
+          const mapped =
+            path === aliased || path.startsWith(`${aliased}/`)
+              ? work(ctx, real) + path.slice(aliased.length)
+              : path;
+          return ctx.fs.lstat(mapped);
+        },
+      },
+    });
+    const setIgnoreCase = (ctx: Context, value: string): Promise<void> =>
+      updateConfigEntries(ctx, [{ section: 'core', key: 'ignorecase', value }]);
+
+    describe('Given core.ignorecase true and F aliasing f', () => {
+      describe('When mv(f, F)', () => {
+        it('Then the index holds F, not f, and the disk holds F', async () => {
+          // Arrange
+          const ctx = await seedAndStage({ f: 'f' });
+          await setIgnoreCase(ctx, 'true');
+          const sut = mv;
+
+          // Act
+          await sut(aliasing(ctx, 'F', 'f'), ['f'], 'F');
+
+          // Assert
+          expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['F']);
+          expect(await exists(ctx, 'F')).toBe(true);
+          expect(await exists(ctx, 'f')).toBe(false);
+        });
+      });
+    });
+
+    describe.each([
+      { label: 'false', configure: (ctx: Context) => setIgnoreCase(ctx, 'false') },
+      { label: 'absent', configure: async () => undefined },
+    ])('Given core.ignorecase $label and F aliasing f', ({ configure }) => {
+      describe('When mv(f, F)', () => {
+        it('Then it refuses MV_DESTINATION_EXISTS and the index is unchanged', async () => {
+          // Arrange
+          const ctx = await seedAndStage({ f: 'f' });
+          await configure(ctx);
+          const sut = mv;
+
+          // Act
+          const error = await expectError(
+            () => sut(aliasing(ctx, 'F', 'f'), ['f'], 'F'),
+            'MV_DESTINATION_EXISTS',
+          );
+
+          // Assert
+          expect(error.data).toMatchObject({ source: 'f', destination: 'F' });
+          expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['f']);
+        });
+      });
+    });
+
+    describe('Given core.ignorecase true and an existing G that is not a case variant', () => {
+      describe('When mv(f, G)', () => {
+        it('Then it refuses MV_DESTINATION_EXISTS', async () => {
+          // Arrange
+          const ctx = await seedAndStage({ f: 'f', G: 'g' });
+          await setIgnoreCase(ctx, 'true');
+          const sut = mv;
+
+          // Act
+          const error = await expectError(() => sut(ctx, ['f'], 'G'), 'MV_DESTINATION_EXISTS');
+
+          // Assert
+          expect(error.data).toMatchObject({ source: 'f', destination: 'G' });
+        });
+      });
+    });
+
+    describe('Given core.ignorecase true, a directory a/d and A aliasing a', () => {
+      describe('When mv(a/d, A)', () => {
+        it('Then it refuses MV_DESTINATION_EXISTS with index and disk unchanged', async () => {
+          // Arrange
+          const ctx = await seedAndStage({ 'a/d/x': 'x' });
+          await setIgnoreCase(ctx, 'true');
+          const sut = mv;
+
+          // Act
+          const error = await expectError(
+            () => sut(aliasing(ctx, 'A', 'a'), ['a/d'], 'A'),
+            'MV_DESTINATION_EXISTS',
+          );
+
+          // Assert
+          expect(error.data).toMatchObject({ source: 'a/d', destination: 'A/d' });
+          expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['a/d/x']);
+          expect(await exists(ctx, 'a/d/x')).toBe(true);
+        });
+      });
+    });
+
+    describe('Given core.ignorecase true and A aliasing a', () => {
+      describe('When mv(a/g, A)', () => {
+        it('Then a/g moves to A/g', async () => {
+          // Arrange
+          const ctx = await seedAndStage({ 'a/g': 'g' });
+          await setIgnoreCase(ctx, 'true');
+          const sut = mv;
+
+          // Act
+          await sut(aliasing(ctx, 'A', 'a'), ['a/g'], 'A');
+
+          // Assert
+          expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['A/g']);
+        });
       });
     });
   });
