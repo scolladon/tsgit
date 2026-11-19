@@ -298,6 +298,39 @@ const ADD_ROWS: ReadonlyArray<AddRow> = [
   },
 ];
 
+interface StashRow {
+  readonly id: string;
+  readonly files: ReadonlyArray<SeedFile>;
+  readonly prepare: (dir: string) => void;
+  readonly expectedTreeMode: string;
+  readonly restore: 'apply' | 'pop';
+  readonly expectedStatusAfterRestore: ReadonlyArray<string>;
+  readonly expectedExecAfterRestore: boolean;
+}
+
+const STASH_ROWS: ReadonlyArray<StashRow> = [
+  {
+    id: 'T2 100644 entry gaining the bit with new content',
+    files: [BASE_FILE],
+    prepare: inOrder(setFileMode('false'), writeFileWith('f', 'two\n', EXECUTABLE_PERMISSIONS)),
+    expectedTreeMode: '100644',
+    restore: 'apply',
+    expectedStatusAfterRestore: ['M 100644 100644 f'],
+    expectedExecAfterRestore: false,
+  },
+  {
+    id: 'T3 100755 entry losing the bit with new content',
+    files: [EXECUTABLE_FILE],
+    prepare: inOrder(setFileMode('false'), writeFileWith('f', 'two\n', PLAIN_PERMISSIONS)),
+    expectedTreeMode: '100755',
+    restore: 'pop',
+    expectedStatusAfterRestore: ['M 100755 100755 f'],
+    expectedExecAfterRestore: true,
+  },
+];
+
+const stashTree = (dir: string): string => sh(dir, 'ls-tree', '-r', 'refs/stash');
+
 describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
   let pair: PeerPair;
 
@@ -509,6 +542,41 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
             expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
             expect(lsStage(pair.ours)).toMatch(new RegExp(`^${row.expectedMode} `));
             expect(ownerExec(pair.ours, row.path)).toBe(ownerExec(pair.peer, row.path));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(STASH_ROWS)('Given the $id row and core.fileMode=false', (row) => {
+      describe('When both tools stash push then restore it', () => {
+        it(
+          'Then the work-tree trees agree and record the donor mode',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, row.files);
+            row.prepare(pair.peer);
+            row.prepare(pair.ours);
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            sh(pair.peer, 'stash', 'push');
+            await sut.stash.push({});
+            const afterPush = {
+              trees: { peer: stashTree(pair.peer), ours: stashTree(pair.ours) },
+              exec: { peer: ownerExec(pair.peer, 'f'), ours: ownerExec(pair.ours, 'f') },
+            };
+            sh(pair.peer, 'stash', row.restore);
+            await sut.stash[row.restore]({});
+
+            // Assert
+            expect(afterPush.trees.ours).toBe(afterPush.trees.peer);
+            expect(afterPush.trees.peer).toMatch(new RegExp(`^${row.expectedTreeMode} blob `));
+            expect(afterPush.exec.ours).toBe(afterPush.exec.peer);
+            expect(gitStatusRows(pair.peer)).toEqual(row.expectedStatusAfterRestore);
+            expect(await tsgitStatusRows(sut)).toEqual(row.expectedStatusAfterRestore);
+            expect(ownerExec(pair.peer, 'f')).toBe(row.expectedExecAfterRestore);
+            expect(ownerExec(pair.ours, 'f')).toBe(row.expectedExecAfterRestore);
           },
           ROW_TIMEOUT,
         );

@@ -7,6 +7,7 @@ import { rm } from '../../../../src/application/commands/rm.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { deriveGitlinkContext } from '../../../../src/application/primitives/internal/submodule-context.js';
+import * as trustMod from '../../../../src/application/primitives/read-executable-bit-trust.js';
 import {
   invalidateIndexCache,
   readIndex,
@@ -1217,6 +1218,48 @@ describe('rm stat cache', () => {
 
         // Assert
         expect(reads).not.toContain(path);
+      });
+    });
+  });
+});
+
+describe('rm core.fileMode policy', () => {
+  const FROZEN_CLOCK_MS = 1_700_000_000_000;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  describe('Given one and then three tracked files', () => {
+    describe('When rm runs over each', () => {
+      it('Then core.fileMode reads do not grow with the entry count', async () => {
+        // Arrange
+        const sut = rm;
+        const readsFor = async (count: number): Promise<number> => {
+          // A frozen clock makes every entry racy in both runs, so the reads cannot depend on the second boundary.
+          vi.useFakeTimers({ toFake: ['Date'] });
+          vi.setSystemTime(FROZEN_CLOCK_MS);
+          const ctx = createMemoryContext();
+          const names = Array.from({ length: count }, (_, i) => `f${i}.txt`);
+          await seedRepo(ctx, {
+            workingTree: Object.fromEntries(names.map((name) => [name, 'v1\n'])),
+          });
+          await add(ctx, names);
+          await commit(ctx, { message: 'seed', author: AUTHOR });
+          const spy = vi.spyOn(trustMod, 'readExecutableBitTrust');
+          await sut(ctx, names);
+          const calls = spy.mock.calls.length;
+          spy.mockRestore();
+          return calls;
+        };
+
+        // Act
+        const one = await readsFor(1);
+        const three = await readsFor(3);
+
+        // Assert
+        expect(three).toBe(one);
       });
     });
   });

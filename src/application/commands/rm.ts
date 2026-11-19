@@ -34,6 +34,7 @@ import {
   resolveUndoRecordOf,
 } from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec } from '../../domain/index.js';
+import type { ExecutableBitTrust } from '../../domain/objects/file-mode.js';
 import { FILE_MODE } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import { MATCH_LEVEL, type MatchLevel } from '../../domain/pathspec/wildcard.js';
@@ -55,6 +56,7 @@ import {
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
+import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { removeConfigSectionInText } from '../primitives/update-config-sections.js';
@@ -365,6 +367,7 @@ interface ValveDeps {
   readonly provider: AttributeProvider;
   readonly indexMtime: GitIndex['indexMtime'];
   readonly childStatus: ChildStatus;
+  readonly executableBit: ExecutableBitTrust;
 }
 
 /**
@@ -373,13 +376,18 @@ interface ValveDeps {
  */
 const localModificationOf = async (
   ctx: Context,
-  { scanner, provider, indexMtime, childStatus }: ValveDeps,
+  { scanner, provider, indexMtime, childStatus, executableBit }: ValveDeps,
   entry: IndexEntry,
 ): Promise<GitlinkLocalModification> => {
   if (entry.mode === FILE_MODE.GITLINK) {
     return gitlinkLocalModification(ctx, scanner, entry, childStatus);
   }
-  const scope = { provider, scanner, ...(indexMtime !== undefined && { indexMtime }) };
+  const scope = {
+    provider,
+    scanner,
+    executableBit,
+    ...(indexMtime !== undefined && { indexMtime }),
+  };
   const { delta } = await compareAndRefresh(ctx, entry, scope);
   if (delta.status === 'absent') return 'vanished';
   return isWorkingTreeModified(delta.status) ? 'modified' : 'clean';
@@ -398,7 +406,8 @@ const classifyEntries = async (
   // git runs the checkout's status with `--ignore-submodules=none -uall`.
   const childStatus: ChildStatus = (child) =>
     statusForDirtyCheck(child, { submoduleIgnore: 'none' });
-  const deps = { scanner, provider, indexMtime, childStatus };
+  const executableBit = await readExecutableBitTrust(ctx);
+  const deps = { scanner, provider, indexMtime, childStatus, executableBit };
   const both: FilePath[] = [];
   const stagedOnly: FilePath[] = [];
   const localOnly: FilePath[] = [];

@@ -41,11 +41,11 @@ import { subjectLine } from '../../domain/objects/commit-message.js';
 import { compareBytes, encodeEscaped, hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
-  type AuthorIdentity,
-  deriveWorkingMode,
-  type FilePath,
-  type ObjectId,
-} from '../../domain/objects/index.js';
+  type ExecutableBitTrust,
+  type FileMode,
+  indexModeFromStat,
+} from '../../domain/objects/file-mode.js';
+import type { AuthorIdentity, FilePath, ObjectId } from '../../domain/objects/index.js';
 import { emptyTreeOid } from '../../domain/objects/object-id.js';
 import { asciiLower } from '../../domain/pretty/ascii.js';
 import type { Context } from '../../ports/context.js';
@@ -112,6 +112,7 @@ import {
 } from '../primitives/internal/write-converted-entry.js';
 import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTreeJudging } from '../primitives/materialize-tree.js';
+import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
@@ -209,17 +210,19 @@ const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> =>
 interface ConversionScope {
   readonly provider: AttributeProvider;
   readonly settings: EolSettings;
+  readonly executableBit: ExecutableBitTrust;
 }
 
 interface HashedFile {
   readonly id: ObjectId;
-  readonly mode: ReturnType<typeof deriveWorkingMode>;
+  readonly mode: FileMode;
   readonly notice?: EolNotice;
 }
 
 const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
   provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
+  executableBit: await readExecutableBitTrust(ctx),
 });
 
 /** The blob bytes git stores for a work-tree file: symlink targets verbatim, files cleaned. */
@@ -253,6 +256,8 @@ interface HashRequest {
   readonly scope: ConversionScope;
   /** The stage-0 blob, for git's index-CRLF rule; absent for untracked files. */
   readonly indexBlob?: ObjectId;
+  /** The stage-0 entry's mode, git's donor; absent for HEAD-only and untracked files. */
+  readonly indexMode?: FileMode;
 }
 
 const hashFileAt = async (
@@ -263,7 +268,7 @@ const hashFileAt = async (
   await admitWrite(ctx, request.path);
   const { bytes, notice } = await cleanedContent(ctx, joinPath(workDir, request.path), request);
   const id = await hashBlob(ctx, bytes, { write: true });
-  const mode = deriveWorkingMode(request.stat);
+  const mode = indexModeFromStat(request.stat, request.indexMode, request.scope.executableBit);
   return notice === undefined ? { id, mode } : { id, mode, notice };
 };
 
@@ -302,6 +307,7 @@ interface SnapshotScope {
   readonly provider: AttributeProvider;
   readonly indexMtime: GitIndex['indexMtime'];
   readonly scanner: LeadingPathScanner;
+  readonly executableBit: ExecutableBitTrust;
 }
 
 const statReachable = (ctx: Context, path: FilePath): Promise<FileStat | undefined> =>
@@ -351,11 +357,10 @@ const classifyEntry = async (
   if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
     return { kind: 'indexed', entry, state: 'beyond-symlink' };
   }
-  const { delta } = await compareAndRefresh(
-    ctx,
-    entry,
-    scopeOf(scope.provider, scope.indexMtime, scope.scanner),
-  );
+  const { delta } = await compareAndRefresh(ctx, entry, {
+    ...scopeOf(scope.provider, scope.indexMtime, scope.scanner),
+    executableBit: scope.executableBit,
+  });
   return {
     kind: 'indexed',
     entry,
@@ -453,11 +458,17 @@ const keepLeadingGitlinks = (
 const classifyTracked = async (
   ctx: Context,
   index: GitIndex,
-  provider: AttributeProvider,
+  { provider, executableBit }: ConversionScope,
   head: EscapedFlatTree | undefined,
 ): Promise<ReadonlyArray<TrackedEntry>> => {
   const scanner = createLeadingPathScanner(ctx);
-  const scope: SnapshotScope = { head, provider, indexMtime: index.indexMtime, scanner };
+  const scope: SnapshotScope = {
+    head,
+    provider,
+    indexMtime: index.indexMtime,
+    scanner,
+    executableBit,
+  };
   const classify = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', index.entries, async (entry) => {
       try {
@@ -526,7 +537,7 @@ const projectEntry = async (
     path: entry.path,
     stat,
     scope,
-    ...(tracked.kind === 'indexed' && { indexBlob: entry.id }),
+    ...(tracked.kind === 'indexed' && { indexBlob: entry.id, indexMode: entry.mode }),
   });
   return { entry: stage0Entry(entry.path, id, mode), notice };
 };
@@ -616,7 +627,7 @@ const findLocalChanges = async (
   const scope = await buildConversionScope(ctx);
   const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
   const head = iTree === base.bTree ? undefined : await flattenEscapedTree(ctx, base.bTree);
-  const tracked = await classifyTracked(ctx, index, scope.provider, head);
+  const tracked = await classifyTracked(ctx, index, scope, head);
   const stagedBeyondGitlinks = differsBeyondGitlinks(index, head);
   const untracked = await untrackedChanges(ctx, opts, index);
   return { iTree, stagedBeyondGitlinks, scope, tracked, ...untracked };
