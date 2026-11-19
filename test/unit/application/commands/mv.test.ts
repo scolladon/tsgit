@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { mv } from '../../../../src/application/commands/mv.js';
@@ -1477,6 +1477,196 @@ describe('mv — skipErrors and a rename the file system refuses', () => {
         // Assert
         expect(error?.data.code).toBe('INVALID_INDEX_ENTRY');
         expect(await exists(ctx, 'a')).toBe(true);
+      });
+    });
+  });
+});
+
+describe('mv — skipErrors and a partial entry-by-entry move', () => {
+  const withoutDirectoryRename = (ctx: Context): Context => {
+    const { renameDirectory: _absent, ...fs } = ctx.fs;
+    return { ...ctx, fs };
+  };
+
+  const faultOnRename = (
+    ctx: Context,
+    { at, fault }: { at: number; fault: TsgitError },
+  ): Context => {
+    const inner = withoutDirectoryRename(ctx);
+    let seen = 0;
+    return {
+      ...inner,
+      fs: {
+        ...inner.fs,
+        rename: async (src: string, dst: string) => {
+          if (!src.startsWith(ctx.layout.gitDir)) seen += 1;
+          if (seen === at && !src.startsWith(ctx.layout.gitDir)) throw fault;
+          return ctx.fs.rename(src, dst);
+        },
+      },
+    };
+  };
+
+  // Simulates a case-insensitive host: /repo/T/D and /repo/T/d are the same directory.
+  const foldingCase = (ctx: Context): Context => {
+    const fold = (arg: unknown): unknown =>
+      typeof arg === 'string' && arg.startsWith('/repo/T/D')
+        ? `/repo/T/d${arg.slice('/repo/T/D'.length)}`
+        : arg;
+    const fs = new Proxy(ctx.fs, {
+      get: (target, key) => {
+        const member = Reflect.get(target, key, target);
+        if (typeof member !== 'function') return member;
+        return (...args: unknown[]) => member.apply(target, args.map(fold));
+      },
+    });
+    return { ...ctx, fs };
+  };
+
+  describe('Given d (tracked d/f, d/g, untracked d/u, empty d/emp) and a rename fault at the 2nd leaf', () => {
+    describe('When mv(d, e) with skipErrors', () => {
+      it('Then d is skipped, the index holds e/f and e/g and neither d nor e exists', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f', 'd/g': 'g' });
+        await ctx.fs.writeUtf8(work(ctx, 'd/u'), 'u');
+        await ctx.fs.mkdir(work(ctx, 'd/emp'));
+        const faulting = faultOnRename(ctx, { at: 2, fault: permissionDenied('/abs/x') });
+        const sut = mv;
+
+        // Act
+        const result = await sut(faulting, ['d'], 'e', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped).toEqual([{ source: 'd', reason: 'rename-failed' }]);
+        expect((await indexView(ctx)).map(([path]) => path)).toEqual(['e/f', 'e/g']);
+        expect(await exists(ctx, 'd')).toBe(false);
+        expect(await exists(ctx, 'e')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a file base whose rename writes the destination S and then throws', () => {
+    describe('When mv(base, S) with skipErrors', () => {
+      it('Then S keeps base bytes, base exists and the index keeps base', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ base: 'b' });
+        const writing: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rename: async (src: string, dst: string) => {
+              if (src.startsWith(ctx.layout.gitDir) || !src.endsWith('base')) {
+                return ctx.fs.rename(src, dst);
+              }
+              await ctx.fs.writeUtf8(dst, await ctx.fs.readUtf8(src));
+              throw permissionDenied('/abs/base');
+            },
+          },
+        };
+        const sut = mv;
+
+        // Act
+        const result = await sut(writing, ['base'], 'S', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped).toEqual([{ source: 'base', reason: 'rename-failed' }]);
+        expect(await readWork(ctx, 'S')).toBe('b');
+        expect(await exists(ctx, 'base')).toBe(true);
+        expect(await indexEntry(ctx, 'base')).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given d/y, d/z and a lossy d/<0xff> member and a rename fault at the 2nd leaf', () => {
+    describe('When mv(d, e) with skipErrors', () => {
+      it('Then the first leaf stays under e, the other under d, the lossy entry stays indexed and d exists', async () => {
+        // Arrange
+        const ctx = await seedMember({ 'd/z': 'z' });
+        const faulting = faultOnRename(ctx, { at: 2, fault: permissionDenied('/abs/x') });
+        const sut = mv;
+
+        // Act
+        await sut(faulting, ['d'], 'e', { skipErrors: true });
+
+        // Assert
+        expect(await exists(ctx, 'e/y')).toBe(true);
+        expect(await exists(ctx, 'd/z')).toBe(true);
+        expect((await indexView(ctx)).map(([path]) => path)).toContain('d/�');
+        expect(await exists(ctx, 'd')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given x/d and y/D moved into T where T/D aliases T/d and a rename fault at the 3rd leaf', () => {
+    describe('When mv(x/d, y/D) into T with skipErrors', () => {
+      it('Then T/d/f survives, y/D is gone and only y/D is skipped', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'x/d/f': 'f', 'y/D/g': 'g', 'T/keep': 'k' });
+        await ctx.fs.writeUtf8(work(ctx, 'y/D/u'), 'u');
+        const faulting = foldingCase(
+          faultOnRename(ctx, { at: 3, fault: permissionDenied('/abs/x') }),
+        );
+        const sut = mv;
+
+        // Act
+        const result = await sut(faulting, ['x/d', 'y/D'], 'T', { skipErrors: true });
+
+        // Assert
+        expect(await exists(ctx, 'T/d/f')).toBe(true);
+        expect(await exists(ctx, 'y/D')).toBe(false);
+        expect(result.skipped).toEqual([{ source: 'y/D', reason: 'rename-failed' }]);
+      });
+    });
+  });
+
+  describe('Given the first mkdir of /repo/e faulting', () => {
+    describe('When mv(d, e) with skipErrors', () => {
+      it('Then rmRecursive is called with /repo/d and never with /repo/e', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f', 'd/g': 'g' });
+        const inner = withoutDirectoryRename(ctx);
+        const rmRecursive = vi.fn(inner.fs.rmRecursive.bind(inner.fs));
+        const faulting: Context = {
+          ...inner,
+          fs: {
+            ...inner.fs,
+            rmRecursive,
+            mkdir: async (path: string) => {
+              if (path === work(ctx, 'e')) throw permissionDenied(path);
+              return inner.fs.mkdir(path);
+            },
+          },
+        };
+        const sut = mv;
+
+        // Act
+        await sut(faulting, ['d'], 'e', { skipErrors: true });
+
+        // Assert
+        const removed = rmRecursive.mock.calls.map(([path]) => path);
+        expect(removed).toContain(work(ctx, 'd'));
+        expect(removed).not.toContain(work(ctx, 'e'));
+      });
+    });
+  });
+
+  describe('Given the same fixture as the partial move and no skipErrors', () => {
+    describe('When mv(d, e)', () => {
+      it('Then it rejects with the fault, the index is unchanged and the partial move stays', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f', 'd/g': 'g' });
+        const fault = permissionDenied('/abs/x');
+        const faulting = faultOnRename(ctx, { at: 2, fault });
+        const sut = mv;
+
+        // Act
+        const outcome = sut(faulting, ['d'], 'e');
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
+        expect((await indexView(ctx)).map(([path]) => path)).toEqual(['d/f', 'd/g']);
+        expect(await exists(ctx, 'e/f')).toBe(true);
+        expect(await exists(ctx, 'd/g')).toBe(true);
       });
     });
   });

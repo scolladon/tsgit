@@ -103,10 +103,16 @@ interface PlanItem {
   readonly source: FilePath;
   readonly target: FilePath;
   readonly entries: ReadonlyArray<IndexEntry>;
+  /** Lossy members left in place, which keep the source directory alive. */
+  readonly retained: ReadonlyArray<IndexEntry>;
 }
 
 type Verdict =
-  | { readonly kind: 'file' | 'directory'; readonly entries: ReadonlyArray<IndexEntry> }
+  | {
+      readonly kind: 'file' | 'directory';
+      readonly entries: ReadonlyArray<IndexEntry>;
+      readonly retained: ReadonlyArray<IndexEntry>;
+    }
   | {
       readonly skip: PlanSkipReason;
       /** Names the refused member when it differs from the user's source. */
@@ -234,12 +240,22 @@ const renameOrThrow = async (ctx: Context, item: PlanItem): Promise<'renamed'> =
 };
 
 const renameOrSkip = async (ctx: Context, item: PlanItem): Promise<'renamed' | 'skipped'> => {
+  const targetWasAbsent = (await lstatOrUndefined(ctx, item.target)) === undefined;
   try {
     return await renameOrThrow(ctx, item);
   } catch (err) {
     if (!(err instanceof TsgitError)) throw err;
+    if (targetWasAbsent && abandonsSource(item)) await removePartialMove(ctx, item.target);
     return 'skipped';
   }
+};
+
+const abandonsSource = (item: PlanItem): boolean =>
+  item.kind === 'directory' && item.retained.length === 0;
+
+const removePartialMove = async (ctx: Context, target: FilePath): Promise<void> => {
+  if ((await lstatOrUndefined(ctx, target)) === undefined) return;
+  await discardDirectory(ctx, target);
 };
 
 // A directory's index entries move even when its rename was refused: git moves the
@@ -327,7 +343,13 @@ const buildPlan = async (
       }
       throw refusal(verdict.skip, verdict.source ?? source, verdict.target ?? target);
     }
-    planned.push({ kind: verdict.kind, source, target, entries: verdict.entries });
+    planned.push({
+      kind: verdict.kind,
+      source,
+      target,
+      entries: verdict.entries,
+      retained: verdict.retained,
+    });
   }
   return { planned, skipped };
 };
@@ -347,6 +369,7 @@ const validateMove = async (
     return memberBadSource(lossyMember, source, target);
   }
   const entries = classified.entries.filter((entry) => !isLossy(entry));
+  const retained = classified.entries.filter(isLossy);
   if (entries.length === 0) return { skip: 'bad-source' };
   if (target === source || target.startsWith(`${source}/`)) return { skip: 'into-self' };
   // `dirname` of a validated path is a prefix of it — still a valid repo path.
@@ -358,7 +381,7 @@ const validateMove = async (
   if (!(await destinationFree(ctx, byPath, target, classified.kind, opts.force === true))) {
     return { skip: 'destination-exists' };
   }
-  return { kind: classified.kind, entries };
+  return { kind: classified.kind, entries, retained };
 };
 
 // Git names the member it cannot address, in the view a message can carry.
