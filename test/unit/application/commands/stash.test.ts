@@ -4685,6 +4685,35 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
     });
   });
 
+  describe('Given an assume-valid committed file replaced by a directory', () => {
+    describe('When push runs', () => {
+      it('Then it reports no local changes and leaves the directory and the index untouched', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'v1\n', 'add f');
+        const tracked = await readIndex(ctx);
+        const assumed = tracked.entries.map((entry) =>
+          entry.path === 'f' ? { ...entry, flags: { ...entry.flags, assumeValid: true } } : entry,
+        );
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync({ ...tracked, entries: assumed }, ctx),
+        );
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await write(ctx, 'f/inner', 'inner\n');
+        const indexBefore = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+        expect(await read(ctx, 'f/inner')).toBe('inner\n');
+        expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(indexBefore);
+      });
+    });
+  });
+
   describe('Given a staged new file deleted from the work tree', () => {
     describe('When push runs', () => {
       it('Then the work-tree tree keeps the index entry', async () => {

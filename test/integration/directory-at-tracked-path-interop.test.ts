@@ -12,6 +12,7 @@
  *   interopSurface: status, rm, stash, checkout, merge, sequencer
  */
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -87,12 +88,36 @@ const seedTwin = (
   writeFileSync(join(dir, TRACKED, 'inner'), 'inner\n');
 };
 
-/** `m` is assume-unchanged and a directory stands at it; `side` and `main` both moved on. */
+type Replacement = 'directory' | 'exec-bit' | 'symlink' | 'none';
+
+/** git without nanosecond stat compares whole seconds: the change must land in a later second than the index entry's. */
+const NEXT_SECOND_MS = 1100;
+const sleepSync = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+const replaceAssumed = (dir: string, replacement: Replacement): void => {
+  if (replacement === 'none') return;
+  if (replacement === 'exec-bit') {
+    chmodSync(join(dir, TRACKED), 0o755);
+    return;
+  }
+  rmSync(join(dir, TRACKED));
+  if (replacement === 'symlink') {
+    symlinkSync('elsewhere', join(dir, TRACKED));
+    return;
+  }
+  mkdirSync(join(dir, TRACKED));
+  writeFileSync(join(dir, TRACKED, 'inner'), 'inner\n');
+};
+
+/** `m` is assume-unchanged and `replacement` stands at it; `side` and `main` both moved on. */
 const seedAssumeUnchanged = (
   dir: string,
   ignoreCase: string,
   fileMode: string,
   sideTouchesTracked: boolean,
+  replacement: Replacement = 'directory',
 ): void => {
   sh(dir, 'config', 'core.ignorecase', ignoreCase);
   sh(dir, 'config', 'core.filemode', fileMode);
@@ -110,10 +135,29 @@ const seedAssumeUnchanged = (
   sh(dir, 'add', 'c');
   sh(dir, 'commit', '-q', '-m', 'main2');
   sh(dir, 'update-index', '--assume-unchanged', TRACKED);
-  rmSync(join(dir, TRACKED));
-  mkdirSync(join(dir, TRACKED));
-  writeFileSync(join(dir, TRACKED, 'inner'), 'inner\n');
+  replaceAssumed(dir, replacement);
 };
+
+const OVERWRITING_OPERATIONS = [
+  {
+    label: 'checkout',
+    run: (repo: Repository) => repo.checkout({ rev: SIDE }),
+    gitArgs: ['checkout', SIDE],
+    refusalCode: 'CHECKOUT_OVERWRITE_DIRTY',
+  },
+  {
+    label: 'merge',
+    run: (repo: Repository) => repo.merge.run({ rev: SIDE, message: 'm', author: AUTHOR }),
+    gitArgs: ['merge', '-m', 'm', SIDE],
+    refusalCode: 'WORKING_TREE_DIRTY',
+  },
+  {
+    label: 'cherry-pick',
+    run: (repo: Repository) => repo.cherryPick.run({ commits: [SIDE] }),
+    gitArgs: ['cherry-pick', SIDE],
+    refusalCode: 'WORKING_TREE_DIRTY',
+  },
+] as const;
 
 const stashCount = (dir: string): number =>
   sh(dir, 'stash', 'list').split('\n').filter(Boolean).length;
@@ -456,6 +500,102 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
               expect(onDisk(pair.ours)).toBe('directory:inner');
             },
             ROW_TIMEOUT,
+          );
+        });
+      },
+    );
+
+    describe.each(['false', 'true'] as const)(
+      'Given an assume-unchanged file changed in place under core.fileMode=%s',
+      (fileMode) => {
+        describe.each([
+          ['exec-bit', 'its exec bit set', 'file'],
+          ['symlink', 'a symlink swapped in', 'symlink'],
+        ] as const)('and %s', (replacement, _label, shape) => {
+          const seedAssumed = (): void => {
+            seedAssumeUnchanged(pair.peer, ignoreCase, fileMode, true, 'none');
+            seedAssumeUnchanged(pair.ours, ignoreCase, fileMode, true, 'none');
+            sleepSync(NEXT_SECOND_MS);
+            replaceAssumed(pair.peer, replacement);
+            replaceAssumed(pair.ours, replacement);
+          };
+
+          describe('When both tools report the status', () => {
+            it(
+              'Then both trust the entry and report nothing',
+              async () => {
+                // Arrange
+                seedAssumed();
+                const sut = await open({ cwd: pair.ours });
+
+                // Act
+                const result = await tsgitUnstagedRows(sut);
+
+                // Assert
+                expect(result).toEqual(gitUnstagedRows(pair.peer));
+                expect(result).toEqual([]);
+              },
+              ROW_TIMEOUT,
+            );
+          });
+
+          describe('When both tools stash push', () => {
+            it(
+              'Then neither saves a stash and the work tree and index survive',
+              async () => {
+                // Arrange
+                seedAssumed();
+                const sut = await open({ cwd: pair.ours });
+                const indexBefore = lsStage(pair.ours);
+
+                // Act
+                const gitRun = gitAttempt(pair.peer, 'stash', 'push');
+                const result = await attempt(() => sut.stash.push({}));
+
+                // Assert
+                expect(result.status).toBe(gitRun);
+                expect(stashCount(pair.peer)).toBe(0);
+                expect(stashCount(pair.ours)).toBe(0);
+                expect(lsStage(pair.ours)).toBe(indexBefore);
+                expect(lsStage(pair.peer)).toBe(indexBefore);
+                expect(onDisk(pair.ours)).toBe(shape);
+                expect(onDisk(pair.peer)).toBe(shape);
+              },
+              ROW_TIMEOUT,
+            );
+          });
+
+          describe.each(
+            OVERWRITING_OPERATIONS.filter(
+              // git refuses a stale-stat entry under core.fileMode=false; tsgit's checkout and merge guards hash the content instead.
+              ({ label }) =>
+                !(label !== 'cherry-pick' && fileMode === 'false' && replacement === 'exec-bit'),
+            ),
+          )(
+            'When both tools $label a branch rewriting the path',
+            ({ run, gitArgs, refusalCode }) => {
+              it(
+                'Then both refuse as the overwrite check ignores the assume-unchanged bit',
+                async () => {
+                  // Arrange
+                  seedAssumed();
+                  const sut = await open({ cwd: pair.ours });
+                  const indexBefore = lsStage(pair.ours);
+
+                  // Act
+                  const gitRun = gitAttempt(pair.peer, ...gitArgs);
+                  const result = await attempt(() => run(sut));
+
+                  // Assert
+                  expect(gitRun).toBe('refused');
+                  expect(result.status).toBe('refused');
+                  expect(result.data).toMatchObject({ code: refusalCode, localChanges: [TRACKED] });
+                  expect(lsStage(pair.ours)).toBe(indexBefore);
+                  expect(onDisk(pair.ours)).toBe(onDisk(pair.peer));
+                },
+                ROW_TIMEOUT,
+              );
+            },
           );
         });
       },
