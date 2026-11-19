@@ -14,6 +14,7 @@ import {
 } from '../../../../../src/application/primitives/read-index.js';
 import type { FilePath } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../../support/executable-work-file.js';
 
 const T = 1_800_000_000_000;
 const author = {
@@ -55,6 +56,32 @@ afterEach(() => {
 });
 
 describe('scanTrackedEntries', () => {
+  describe.each([
+    ['the default', '', 'mode-changed'],
+    ['core.filemode = false', '[core]\n\tfilemode = false\n', 'unchanged'],
+  ] as const)(
+    'Given a committed file differing only by a set exec bit under %s',
+    (_label, config, status) => {
+      describe('When scanning the tracked entries', () => {
+        it(`Then the file reads ${status}`, async () => {
+          // Arrange
+          const ctx = await seedSettled();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+          invalidateConfigCache(ctx);
+          withExecutableWorkFile(ctx);
+          const index = await freshIndex(ctx);
+          const sut = scanTrackedEntries;
+
+          // Act
+          const result = await sut(ctx, index, index.entries, () => {});
+
+          // Assert
+          expect(result.workingMap.get(A)?.status).toBe(status);
+        });
+      });
+    },
+  );
+
   describe('Given two committed files sharing a directory', () => {
     describe('When scanning the tracked entries', () => {
       it('Then the directory is lstat-ed once', async () => {

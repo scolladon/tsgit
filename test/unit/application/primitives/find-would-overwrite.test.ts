@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import {
   changedPaths,
   findTrackedBeyondSymlink,
@@ -18,6 +19,7 @@ import type { MergeConflict } from '../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 
 const blob = (ctx: Context, content: string): Promise<ObjectId> =>
   writeObject(ctx, {
@@ -90,6 +92,33 @@ describe('findWouldOverwrite', () => {
       });
     });
   });
+
+  describe.each([
+    ['the default', '', ['a']],
+    ['core.filemode = false', '[core]\n\tfilemode = false\n', []],
+  ] as const)(
+    'Given a file differing only by a set exec bit under %s',
+    (_label, config, expected) => {
+      describe('When the changed set names the path', () => {
+        it(`Then the local changes are ${JSON.stringify(expected)}`, async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+          invalidateConfigCache(ctx);
+          await work(ctx, 'a', 'one\n');
+          const entry = entryOf('a', await blob(ctx, 'one\n'));
+          withExecutableWorkFile(ctx);
+          const sut = findWouldOverwrite;
+
+          // Act
+          const result = await sut(ctx, set('a'), indexOf([entry]));
+
+          // Assert
+          expect(result).toEqual({ localChanges: expected, untracked: [] });
+        });
+      });
+    },
+  );
 
   describe('Given three tracked files sharing a directory', () => {
     describe('When the changed set names all three', () => {

@@ -4,6 +4,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { deriveGitlinkContext } from '../../../../src/application/primitives/internal/submodule-context.js';
@@ -37,6 +38,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { indexExtensionsOf } from '../primitives/helpers/index-extensions.js';
 import { seedIndex, stagesOf } from './add-index-fixtures.js';
@@ -1229,6 +1231,52 @@ describe('rm core.fileMode policy', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  const seedCommittedFile = async (config: string): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, { workingTree: { 'a.txt': 'v1\n' } });
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'seed', author: AUTHOR });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+    invalidateConfigCache(ctx);
+    withExecutableWorkFile(ctx);
+    return ctx;
+  };
+
+  describe('Given a committed file differing only by a set exec bit and the default core.fileMode', () => {
+    describe('When rm runs without an override', () => {
+      it('Then it refuses with RM_LOCAL_MODIFICATIONS and keeps the entry', async () => {
+        // Arrange
+        const ctx = await seedCommittedFile('');
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['a.txt']), 'RM_LOCAL_MODIFICATIONS');
+
+        // Assert
+        if (err.data.code !== 'RM_LOCAL_MODIFICATIONS') throw new Error('unexpected error shape');
+        expect(err.data.paths).toEqual(['a.txt']);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toContain('a.txt');
+      });
+    });
+  });
+
+  describe('Given a committed file differing only by a set exec bit and core.fileMode = false', () => {
+    describe('When rm runs without an override', () => {
+      it('Then it removes the entry and the file', async () => {
+        // Arrange
+        const ctx = await seedCommittedFile('[core]\n\tfilemode = false\n');
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['a.txt']);
+
+        // Assert
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).not.toContain('a.txt');
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(false);
+      });
+    });
   });
 
   describe('Given one and then three tracked files', () => {
