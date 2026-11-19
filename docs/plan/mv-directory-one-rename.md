@@ -1,6 +1,6 @@
 # Plan — mv-directory-one-rename
 
-> Source: design doc `docs/design/mv-directory-one-rename.md` · ADRs 1217, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1225
+> Source: design doc `docs/design/mv-directory-one-rename.md` · ADRs 1217, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1225, 1226
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
@@ -32,6 +32,8 @@ The design's P1–P6 are kept in order; three are split by the sizing rules.
 | P4 case-only file rename | 7 | R9 |
 | P5 interop | 8 (PATH_MAX-derived rows), 9 (case-insensitive-host rows) | R2, R3, R4, R10, R11, R12, R14 cross-tool |
 | P6 docs | 10 | design § 7 |
+| P7 destination beyond a symbolic link | 11 (the error code), 12 (the check and its `skipErrors` arms) | R15, R16, R17, ADR-1226 |
+| P8 interop + docs for P7 | 13 | R15, R16, R17 cross-tool; design § 7 |
 
 Every part commits alone; parts are sequential on one working tree and build on each
 other. Shared files across parts are deliberate: parts 3–4 (working-tree), 5–7 (mv.ts)
@@ -39,7 +41,10 @@ and 8–9 (mv-interop) are split by the sizing ceiling and each lands a distinct
 slice on the previous part's code; `reports/api.json` is regenerated in each part that
 changes the public surface (decision P-4). Interop parts 8 and 9 are the cross-tool proof of behaviour landed in parts 3–7
 (allowed standalone by the run's constraints); every behaviour part carries its own unit
-rows.
+rows. Parts 11–13 were added after parts 1–10 landed (ADR-1226): they reopen mv.ts, mv.test.ts,
+mv-interop, interop-helpers and mv.md because those parts are already committed, not by choice
+of slicing. The error code (11) and the check (12) are split by the six-file ceiling; 13 is the
+cross-tool proof and the prose for 12.
 
 ## Repo-wide traps every part inherits
 
@@ -67,7 +72,11 @@ rows.
 ## Decision candidates
 
 Settled upstream (not candidates): D1–D6 (ADR-1217..1222), N1 (ADR-1223), N2 (ADR-1224),
-N3 = B (ADR-1225). The plan-level choices below are load-bearing for the run's shape; each
+N3 = B (ADR-1225), ADR-1226 (the behaviour of Parts 11–13). Open in the design, and the plan is
+written for each recommendation: **N4 = A** (one `skipped` entry per member), **N5 = A** (a new
+`MV_DESTINATION_BEYOND_SYMLINK`; with B, Part 11 is dropped and Part 12 calls
+`pathspecBeyondSymlink(destination)`), **N6 = A** (a later part, not planned here; with B, Part 13
+also adds the two ledger rows). The plan-level choices below are load-bearing for the run's shape; each
 has a recommendation the plan is written for.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
@@ -883,3 +892,253 @@ Phase gate after this part: `npm run validate`.
 ### Commit
 
 `docs(mv): document one-step directory moves and the data skipErrors deletes`
+
+## Part 11 — The mv refusal code for a destination beyond a symbolic link
+
+### Context
+
+Files edited: `src/domain/commands/error.ts`, `src/domain/commands/index.ts`,
+`src/domain/error.ts`, `test/unit/domain/error.test.ts`, `test/unit/domain/exhaustiveness.ts`,
+`reports/api.json` (regenerated, never hand-edited).
+
+Written for design candidate N5 = A. With N5 = B this part is dropped.
+
+Public-surface decision: `MV_DESTINATION_BEYOND_SYMLINK` (a `TsgitErrorData` member) and
+`mvDestinationBeyondSymlink` (re-exported through src/domain/index.ts's
+`export * from './commands/index.js'`) are **public**. Surface gates (.claude/workflow/surface-gates.md
+§ "New error code"): the union, the exhaustiveness switch, api.json. No barrel-surface set test
+exists for the domain factories (checked: `mvIntoSelf` appears only in test/unit/domain/error.test.ts
+under test/). The `MV_*` codes are documented on docs/use/commands/mv.md, not docs/use/errors.md;
+that page changes in Part 13.
+
+- `src/domain/commands/error.ts`: the union arm list holding
+  `| { readonly code: 'MV_INTO_SELF'; readonly source: FilePath; readonly destination: FilePath }`
+  (near line 438). Add after `MV_DESTINATION_DIRECTORY_MISSING`'s arm:
+  `| { readonly code: 'MV_DESTINATION_BEYOND_SYMLINK'; readonly source: FilePath; readonly destination: FilePath }`
+  (biome may wrap it across lines like its neighbours). The factory block "`mv` refusal
+  factories" (near line 1393) holds
+  `export const mvDestinationDirectoryMissing = (source: FilePath, destination: FilePath): TsgitError => …`;
+  add after it
+  `export const mvDestinationBeyondSymlink = (source: FilePath, destination: FilePath): TsgitError =>
+  new TsgitError({ code: 'MV_DESTINATION_BEYOND_SYMLINK', source, destination });`.
+- `src/domain/commands/index.ts`: the alphabetical `export { … } from './error.js'` list
+  (`mvBadSource`, `mvDestinationDirectoryMissing`, …, near line 29): add `mvDestinationBeyondSymlink`
+  before `mvDestinationDirectoryMissing`.
+- `src/domain/error.ts`: the message `switch` (`case 'MV_DESTINATION_DIRECTORY_MISSING':` near
+  line 729, ends in `const _exhaustive: never = data;` near line 861). Add
+  `case 'MV_DESTINATION_BEYOND_SYMLINK': return \`destination is beyond a symbolic link, source=${data.source}, destination=${data.destination}\`;`
+  — git's text, pinned (design § Pinned matrix — destination beyond a symbolic link, row Y1).
+- `test/unit/domain/exhaustiveness.ts`: `assertExhaustiveSwitch`, the `case 'MV_…':` run near
+  line 228: add `case 'MV_DESTINATION_BEYOND_SYMLINK':`.
+- `test/unit/domain/error.test.ts`: factories are imported from ../../../src/domain/index.js
+  (the block listing `mvIntoSelf`, near line 49). Clone the
+  `describe("Given mvDestinationExists('a.txt', 'keep.txt')")` block (near line 1005): data
+  `{ code, source, destination }` with `toEqual` and the full message
+  `'MV_DESTINATION_BEYOND_SYMLINK: destination is beyond a symbolic link, source=dir/a, destination=lnk/x/a'`.
+
+### TDD steps
+
+1. RED — the error.test.ts row for `mvDestinationBeyondSymlink('dir/a', 'lnk/x/a')`: data and
+   message. Fails to compile (no export).
+2. GREEN — the union arm, the factory, the barrel line, the message case, the exhaustiveness case.
+   `npm run check:types` green proves every `never` switch is wired.
+3. REFACTOR — none. Run `npm run docs:json` and stage `reports/api.json`.
+
+### Gate
+
+`npx vitest run test/unit/domain/error.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/commands/error.ts src/domain/commands/index.ts src/domain/error.ts test/unit/domain/error.test.ts test/unit/domain/exhaustiveness.ts && npm run check:spelling`
+Before commit: `npm run docs:json` (commit the regenerated `reports/api.json`).
+
+### Commit
+
+`feat(mv): add the refusal code for a destination beyond a symbolic link`
+
+## Part 12 — Refuse a destination beyond a symbolic link
+
+### Context
+
+Files edited: `src/application/commands/mv.ts`,
+`src/application/commands/internal/resolve-pathspec.ts`,
+`test/unit/application/commands/mv.test.ts`, `reports/api.json` (regenerated).
+
+Design: § 8, R15–R17, rows Y1–Y20 of "Pinned matrix — destination beyond a symbolic link".
+Written for N4 = A (one `skipped` entry per member). Depends on Part 11 (with N5 = B, replace
+`mvDestinationBeyondSymlink(source, target)` by `pathspecBeyondSymlink(target)` and drop the
+Part 11 dependency).
+
+Public-surface decision: `MvSkipReason` gains `'destination-beyond-symlink'` → **public**
+(api.json). `beyondSymlink`'s new export is internal (commands/internal, consumed by `mv.ts`
+only).
+
+- `src/application/commands/internal/resolve-pathspec.ts`: the module-private
+  `const beyondSymlink = async (scanner: LeadingPathScanner, target: FilePath): Promise<boolean>`
+  (near line 105, comment "git's lstat_cache records a failed lstat as 'not a symlink'") becomes
+  `export const`. Body unchanged: `scanner.hasSymlinkedLeadingPath(target)`, and an
+  `isPathTooLong(err)` catch answering `false`. Its existing callers and tests stay as they are.
+- Scanner: `createLeadingPathScanner(ctx: Context): LeadingPathScanner` and the
+  `LeadingPathScanner` type in src/application/primitives/internal/symlinked-leading-path.ts
+  (read-only). `hasSymlinkedLeadingPath(path)` scans the leading components only (never the
+  leaf), stops at a missing component, reports a regular file as `kind: 'file'` (not a link), and
+  memoizes each prefix for the scanner's lifetime. Import it into mv.ts from
+  ../primitives/internal/symlinked-leading-path.js; import `beyondSymlink` from
+  ./internal/resolve-pathspec.js.
+- `src/application/commands/mv.ts`, current shape (after Parts 1–10):
+  - `export type MvSkipReason = 'source-not-tracked' | 'bad-source' | 'destination-exists' | 'into-self' | 'rename-failed'`
+    with its doc comment "The first four are decided while planning". Add
+    `| 'destination-beyond-symlink'` before `'rename-failed'`; the comment says the first five.
+    `type PlanSkipReason = Exclude<MvSkipReason, 'rename-failed'>` picks it up unchanged.
+  - `type Verdict` success arm `{ kind; entries; retained }`: add
+    `readonly skippedMembers: ReadonlyArray<IndexEntry>`; every existing success return passes `[]`.
+  - `interface DestinationPolicy { force; ignoreCase }` + `destinationPolicyOf(ctx, opts)`: add
+    `readonly scanner: LeadingPathScanner`, built with `createLeadingPathScanner(ctx)`.
+  - `validateMove(ctx, byPath, source, target, opts, policy): Promise<Verdict>`: insert after the
+    `into-self` line and **before** the `parent`/`isDirectoryOnDisk` check (whose Stryker comment
+    line must stay directly above its `if`):
+    `if (await destinationBeyondSymlink(ctx, policy.scanner, target)) return beyondSymlinkVerdict(…)`.
+    `validateMove` is already near 20 lines; if the insertion pushes it over, extract the
+    destination half (parent check + `destinationFree`) into a helper.
+  - New `destinationBeyondSymlink(ctx, scanner, target)`:
+    `(await lstatOrUndefined(ctx, target)) === undefined && (await beyondSymlink(scanner, target))`.
+    The first operand is load-bearing (rows Y16–Y18: an existing destination is never this
+    refusal).
+  - New `beyondSymlinkVerdict(kind, source, target, entries, members, opts): Verdict` as design § 8:
+    file → `{ skip: 'destination-beyond-symlink' }`; directory + `skipErrors` →
+    `{ kind: 'directory', entries: [], retained: members, skippedMembers: entries }`; directory
+    without → `{ skip, source: first.path, target: repath(first, source, target) }` with
+    `first = entries[0]` (non-empty: `if (entries.length === 0) return { skip: 'bad-source' }`
+    precedes). Avoid a boolean parameter: pass `opts` (the record), as `validateMove` does.
+  - `buildPlan`: on a success verdict, push
+    `verdict.skippedMembers.map((member) => ({ source: member.path, reason: 'destination-beyond-symlink' }))`
+    into `skipped` before pushing the plan item.
+  - `refusal(reason: PlanSkipReason, source, target)`: add
+    `case 'destination-beyond-symlink': return mvDestinationBeyondSymlink(source, target);` and the
+    import from ../../domain/commands/error.js.
+  - `resolveDestinationMode(ctx, firstSource, destination, destNoSlash)`: read
+    `destination.endsWith('/') ? await statOrUndefined(ctx, destNoSlash) : await lstatOrUndefined(ctx, destNoSlash)`
+    (R17). New `statOrUndefined` beside `lstatOrUndefined`, same shape over `ctx.fs.stat`.
+  - Unchanged and relied on: `executePlan` → `repathItem` (no moves for `entries: []`) →
+    `renameEach` (the directory is renamed) → `movesIndex` (directory: always, no-op) →
+    `removeAbandonedSources` (members remain → no deletion) and `abandonsSource`
+    (`retained.length === 0` false → no partial-move removal).
+- `test/unit/application/commands/mv.test.ts` (1808 lines): module helpers `seedAndStage(workingTree)`
+  (memory context, seeds and stages), `work(ctx, path)`, `exists(ctx, path)`, `readWork`,
+  `indexEntry(ctx, path)`, `expectError(fn, code)`; `captureError` near line 852; `indexView` and
+  `seedMember` in `describe('mv on a directory holding a lossy member')`; `failingRename` in
+  `describe('mv — a move the file system refuses')`. Add a new top-level
+  `describe('mv — a destination beyond a symbolic link')` after
+  `describe('mv — a destination that differs only in case')`. Create links with
+  `ctx.fs.symlink(target, work(ctx, name))` (port signature `(target, path)`) after
+  `seedAndStage`; the link need not be tracked (row Y8). Memory layout: /repo, /repo/.git.
+- Trap: check first that the memory adapter's `lstat`, `exists` and `renameDirectory` resolve a
+  **leading** link (`walkLookup(path, 'no-follow')` follows every component but the last). If its
+  rename does not follow `inner` to `sub`, assert the directory row's disk outcome with
+  `!exists('dir')` plus the index, and leave the through-the-link disk shape to Part 13's interop.
+
+### TDD steps
+
+1. RED → GREEN — file pairs without `skipErrors` (`it.each`): `f → inner/g` (link at the parent),
+   `f → deep/dl/g` (deeper link), `f → dang/x` (dangling), `f → pointer/x` (link to a file),
+   `f → inner/absent/x` (missing below the link), and `force: true` on `f → inner/g`. Each rejects
+   `{ code: 'MV_DESTINATION_BEYOND_SYMLINK', source: 'f', destination: <target> }` (try/catch on
+   `.data`), index and disk unchanged. Add `dryRun: true` → same refusal (row Y13).
+2. RED → GREEN — a directory `dir` (`dir/a`, `dir/b`) → `inner/x`: rejects with
+   `{ source: 'dir/a', destination: 'inner/x/a' }` (first member), nothing changed.
+3. RED → GREEN — `skipErrors`: file → `{ moved: [], skipped: [{ source: 'f', reason:
+   'destination-beyond-symlink' }] }`, nothing written. Directory → returns, `moved` `[]`,
+   `skipped` `[{ source: 'dir/a', … }, { source: 'dir/b', … }]` in that order, index still
+   `dir/a dir/b`, `dir` gone from disk. Two sources `['dir', 'ghost']` into `inner/sub2` (seed
+   `sub/sub2/k` so it is a real directory reached through the link: into-directory mode without
+   the slash, so this row does not need step 5) → the member skips, then `{ source: 'ghost', reason: 'source-not-tracked' }`. `dryRun` + `skipErrors` → the
+   same result, nothing written. A directory whose `renameDirectory` refuses (`failingRename`)
+   under `skipErrors` → `skipped` ends with `{ source: 'dir', reason: 'rename-failed' }`, `dir` and
+   every file under it still exist, nothing removed under the target (R11/R14 inert).
+4. RED → GREEN — order and gate guards (each isolated): an existing `sub/keep` reached as
+   `inner/keep` (row Y17) still rejects `MV_DESTINATION_DIRECTORY_MISSING`, with and without
+   `force` (kills the `lstat === undefined` operand); `dir → dir/l/x` with `dir/l` a link rejects
+   `MV_INTO_SELF` (row Y15); an untracked present `u → inner/u` rejects `MV_SOURCE_NOT_TRACKED`
+   (row Y14); `dir → sub/keep/x` (a regular file in a leading component) rejects
+   `MV_DESTINATION_DIRECTORY_MISSING` (row Y19); an `lstat` stub (`{ ...ctx.fs, lstat }`) raising
+   `pathTooLong` for exactly `<root>/inner` (on the ctx handed to `mv`, so the scanner built in
+   `destinationPolicyOf` sees it too) makes `f → inner/g` reject
+   `MV_DESTINATION_DIRECTORY_MISSING`, not `PATH_TOO_LONG` nor the new code (the tolerance).
+5. RED → GREEN — R17: `f → 'inner/'` rejects `{ source: 'f', destination: 'inner/f' }`;
+   `skipErrors` `dir → 'inner/'` renames `dir` (member skips as step 3); `f → 'dang/'` and
+   `f → 'pointer/'` reject `MV_DESTINATION_DIRECTORY_MISSING { destination: 'dang/' }` (resp.
+   `'pointer/'`); `['f', 'g'] → 'inner'` (no slash) rejects `MV_DESTINATION_NOT_DIRECTORY`.
+6. REFACTOR — `validateMove` and `buildPlan` ≤ 20 lines; run `npm run docs:json` and stage
+   `reports/api.json`.
+
+### Gate
+
+`npx vitest run test/unit/application/commands/mv.test.ts test/unit/application/commands/internal/resolve-pathspec.test.ts && npm run check:types && ./node_modules/.bin/biome check src/application/commands/mv.ts src/application/commands/internal/resolve-pathspec.ts test/unit/application/commands/mv.test.ts && npm run check:spelling`
+Before commit: `npm run docs:json` (commit the regenerated `reports/api.json`).
+
+### Commit
+
+`fix(mv): refuse a destination beyond a symbolic link as git mv does`
+
+## Part 13 — Interop and docs: a destination beyond a symbolic link
+
+### Context
+
+Files edited: `test/integration/mv-interop.test.ts`, `test/integration/interop-helpers.ts`,
+`docs/use/commands/mv.md`.
+
+No src/ delta: cross-tool proof of Part 12 plus its docs (decision P-1's shape). Every interop
+row is a GUARD; a red row is a divergence → blocker protocol, never a test edit to make it pass.
+
+- `test/integration/mv-interop.test.ts` (905 lines): add a top-level
+  `describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')('mv porcelain interop beyond a symbolic link', …)`
+  after the case-insensitive block (near line 612), copying that block's per-test
+  `prepare` (`makePeerPair`, `runGit(['init', '-q', '-b', 'main', pair.peer])`,
+  `openRepository({ cwd: pair.ours })` + `repo.init()`), `afterEach` dispose, `writeBoth`, `seed`,
+  `expectParity` (`lsStage` + `diskEntries`, near line 595). Add a `linkBoth(name, target,
+  tracked)` helper: `symlinkSync(target, path.join(dir, name))` in both twins, then
+  `runGit(['-C', pair.peer, 'add', '--', name])` and `repo.add([name])` when tracked. Use
+  `pathExists(dir, rel)` (near line 46; `stat` follows links) for `.git/hooks/<name>/a` and
+  `sub/<name>/a`. `outcomeOf(run)` (near line 600) returns the rejection's `data`;
+  `tryRunGitWithExit(args)` returns `{ status, stdout, stderr }` (verify the field names).
+- Rebuild git's refusal from tsgit's fields, never compare tsgit to a string:
+  `` `fatal: destination is beyond a symbolic link, source=${data.source}, destination=${data.destination}` ``
+  must be contained in git's stderr.
+- `test/integration/interop-helpers.ts`: `mvVerboseLines(sources, targetOf, result,
+  directorySources)` (near line 639) and `interface MvVerboseResult { moved }`. Widen the
+  interface with `readonly skipped: ReadonlyArray<{ readonly source: string; readonly reason: string }>`
+  and drop from the per-source lines every source that `skipped` names with a reason other than
+  `'rename-failed'` (git prints nothing for a planning skip, rows Y4, Y5; a refused rename still
+  prints, rows F, 5-k). Callers in parts 8 and 9 already pass the full `MvResult`; confirm they
+  still compile and pass.
+- `docs/use/commands/mv.md` (signature block `type MvSkipReason = …` near line 29; options table
+  `skipErrors` row near line 54; "Skipping errors deletes data as git does" near line 82; Throws
+  list near line 103; closing "The first four are planning refusals" near line 115): content as
+  design § 7's ADR-1226 bullet. No ADR numbers in docs/use prose.
+
+### TDD steps
+
+1. GUARD — row Y1/Y2: tracked `dir/a dir/b f`, tracked `lnk -> .git`; `git mv dir lnk/hooks/x`
+   and `git mv f lnk/hooks/pre-commit` exit 128 vs tsgit rejecting with the rebuilt message
+   contained in git's stderr; `expectParity()` unchanged; `.git/hooks/x` absent in both.
+2. GUARD — rows Y3, Y4, Y5: `-k -v` vs `skipErrors: true`: Y3 `dir → lnk/hooks/y`:
+   `ls-files -s` parity (still `dir/…`), `dir` absent and `.git/hooks/y/a` present in both, git's
+   stdout lines equal `mvVerboseLines(['dir'], …, result, ['dir'])` (one line), `skipped` per
+   member. Y4 file: git stdout empty and `mvVerboseLines` `[]`, nothing changed. Y5
+   `['dir', 'f2'] → lnk/hooks`: one line, `.git/hooks/dir/a` in both.
+3. GUARD — rows Y6, Y7, Y8 with `inner -> sub` (tracked `sub/keep`), `dang -> nowhere`,
+   `pointer -> f`: refusals parity (each pair of Y6/Y8); Y7 `-k -v dir inner/x`: `sub/x/a` present
+   and untracked in both, `ls-files -s` parity.
+4. GUARD — rows Y10–Y12: `f → inner/` refusal rebuilt with `destination=inner/f`; `-k -v dir f
+   inner/` → `sub/dir/a` in both, `f` kept, one `-v` line; `f → dang/`, `f → pointer/`: git
+   `destination directory does not exist` vs tsgit `MV_DESTINATION_DIRECTORY_MISSING` with the
+   same `destination`.
+5. GUARD — rows Y13, Y15: `-n` refuses in both; `-n -k` git exit 0 vs `dryRun + skipErrors`
+   returning, nothing changed in either; `dir → dir/l/x` into-self in both.
+6. Docs — the mv.md edits; `npm run check:spelling`.
+
+### Gate
+
+`npx vitest run test/integration/mv-interop.test.ts test/integration/pathspec-length-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check test/integration/mv-interop.test.ts test/integration/interop-helpers.ts && npm run check:spelling && npm run check:doc-links`
+Phase gate after this part: `npm run validate`.
+
+### Commit
+
+`test(mv): pin a destination beyond a symbolic link against git and document it`

@@ -8,6 +8,7 @@
 > `skipErrors` copies git's data-destroying `-k` arms; ledger row 32.72 is folded) → revised
 > against ADR-1223 (N1: a refused rename is a `skipped` entry, `'rename-failed'`) and ADR-1224
 > (N2 deviates: under `skipErrors` a partial entry-by-entry move is removed from the destination)
+> → revised against ADR-1226 (a destination beyond a symbolic link: R15–R17, § 8, rows Y1–Y20)
 
 ## Context
 
@@ -76,6 +77,9 @@ it. Since ADR-815..825 the memory adapter renames directories natively. The doc 
   **ADR-1223** (a refused rename under `skipErrors` is reported as `skipped`,
   `reason: 'rename-failed'`), **ADR-1224** (under `skipErrors` a failed entry-by-entry move ends in
   git's state: what it created at the destination is removed; without `skipErrors` ADR-1218 stands).
+- **ADR-1226**: `mv` refuses a destination beyond a symbolic link as git does; under `skipErrors`
+  each refused member is skipped in the index while the directory itself is still renamed through
+  the link (§ 8).
 - ADR-1170 (filing bar). Ledger row **32.72** (`mv -k` throws on a file rename the host refuses,
   where git skips) leaves `docs/known-divergences.md` (ADR-1220, D-2).
 
@@ -150,6 +154,34 @@ it. Since ADR-815..825 the memory adapter renames directories natively. The doc 
   destination absent at planning, the precondition R14 starts from.
 - **R10 — no hard-coded host limits.** Deep fixtures derive their depth from `getconf PATH_MAX <root>`.
   The case-insensitive rows probe the host instead of trusting `process.platform`.
+- **R15 — refuse a destination beyond a symbolic link (rows Y1, Y2, Y6, Y8, Y10, Y13, ADR-1226), without
+  `skipErrors`.** When a pair's destination is absent on disk and one of its leading components
+  (never the destination itself) is a symbolic link, `mv` refuses at planning, before anything is
+  written, `dryRun` included: `MV_DESTINATION_BEYOND_SYMLINK { source, destination }`. A file
+  source names itself and its target. A directory source names its first member in index order and
+  that member's destination (git: `source=dir/a, destination=lnk/hooks/x/a`). The check is
+  shape-based: a link to `.git`, to a directory inside the work tree, to a file, a dangling link,
+  a tracked or untracked link, at the destination's parent or at a deeper ancestor all refuse, and
+  `force` does not lift it (row Y2). It runs after `source-not-tracked`, `bad-source` and
+  `into-self` (rows Y14, Y15) and before tsgit's destination-directory check (rows Y6, Y8). A
+  destination that exists on disk, the link itself (row Y16) or an entry reached through it (rows
+  Y17, Y18), is not this refusal (§ 8, N6). A regular file in a leading component is not a link
+  (row Y19).
+- **R16 — `skipErrors` arms (rows Y3–Y5, Y7, Y11, Y13, ADR-1226).** A file pair beyond a link is
+  skipped and writes nothing: `skipped` holds `{ source, reason: 'destination-beyond-symlink' }`.
+  A directory pair is still renamed on disk, through the link, while every member's index entry
+  stays under the source: no member is in `moved`, `skipped` holds one
+  `{ source: <member>, reason: 'destination-beyond-symlink' }` per addressable member, in index
+  order (N4). The source is not deleted afterwards (members remain in the index, R11's condition is
+  false), and a failed rename of that directory removes nothing at the destination (R14's third
+  guard: the source is kept). `dryRun` with `skipErrors` returns the same `moved`/`skipped` and
+  writes nothing (row Y13).
+- **R17 — a destination ending in `/` resolves through a link (rows Y10–Y12, Y20).** `mv f inner/`
+  with `inner` a symbolic link to a directory is into-directory mode, as git's `lstat("inner/")`
+  follows the link; the target `inner/f` then meets R15. A trailing-slash destination naming a
+  dangling link or a link to a file still refuses `MV_DESTINATION_DIRECTORY_MISSING` (rows Y11,
+  Y12). Without the slash, a link is not a directory (row Y9: two sources into `inner` refuse
+  `MV_DESTINATION_NOT_DIRECTORY`, as today).
 
 ## Design
 
@@ -228,6 +260,54 @@ this outcome (§ 4).
 tsgit's index-path rules accept the `S300/…` entries row 5-k′ needs: today's 5-k′ and
 `pathspec-length-interop` row M2 both throw from the rename, i.e. after `applyToIndex` validated the
 repathed paths in memory.
+
+### Pinned matrix — destination beyond a symbolic link (ADR-1226)
+
+git 2.56.0, macOS APFS, same isolation (`env -i`, isolated `HOME`, `GIT_CONFIG_NOSYSTEM=1`, a
+user-only config, `commit.gpgsign=false`), a fresh `mktemp -d` repository per command. Run 2/2:
+Y3, Y11, Y12, Y15, Y18, Y20, `mv dir inner/` (Y10), `mv untracked inner/u` (Y14) and the `-k` half
+of Y17; every other command 1/1. The session pinned Y1–Y5 2/2 beforehand. Fixture: tracked `dir/a dir/b dir/s/t f g sub/keep dup/f`, tracked links `lnk -> .git`,
+`inner -> sub`, `dang -> nowhere`, `pointer -> f`, `deep/real/dl -> ../sub`, an untracked link
+`loose -> sub` and an untracked file `untracked`. "Unchanged" means `ls-files` and the disk listing
+equal the fixture. The tsgit column is the branch before this revision: Y1 was pinned by the
+session; the other rows are read off `validateMove` and `resolveDestinationMode` (lstat semantics:
+a leading link is followed, the last component is not).
+
+| Row | Command | git | tsgit before |
+|---|---|---|---|
+| Y1 | `mv dir lnk/hooks/x` | exit 128 `destination is beyond a symbolic link, source=dir/a, destination=lnk/hooks/x/a`. Unchanged | moves: index `lnk/hooks/x/…`, disk `.git/hooks/x/…` |
+| Y2 | `mv f lnk/hooks/pre-commit`; `mv -f f lnk/hooks/pre-commit` | both exit 128, same message with `source=f, destination=lnk/hooks/pre-commit`. Unchanged | moves `f` into `.git/hooks/pre-commit` |
+| Y3 | `mv -k -v dir lnk/hooks/y` | exit 0, stdout `Renaming dir to lnk/hooks/y` (no member lines). Index unchanged (`dir/a dir/b dir/s/t`); disk: `dir` gone, `.git/hooks/y/{a,b,s/t}` | moves, index `lnk/hooks/y/…` |
+| Y4 | `mv -k -v f lnk/hooks/pre-commit` | exit 0, no stdout. Unchanged | moves |
+| Y5 | `mv -k -v dir f2 lnk/hooks` (`f2` absent) | exit 0, stdout `Renaming dir to lnk/hooks/dir` only. Index unchanged; `dir` now at `.git/hooks/dir` | moves `dir`, skips `f2` as `bad-source` |
+| Y6 | `mv f inner/g`; `mv dir inner/x` | exit 128 `… beyond a symbolic link, source=f, destination=inner/g` / `source=dir/a, destination=inner/x/a`. Unchanged | `MV_DESTINATION_DIRECTORY_MISSING` (`lstat('inner')` is a link, not a directory) |
+| Y7 | `mv -k -v dir inner/x` | exit 0, `Renaming dir to inner/x`. Index unchanged; disk `sub/x/{a,b,s/t}` (untracked), `dir` gone | `MV_DESTINATION_DIRECTORY_MISSING` (thrown under `skipErrors` too) |
+| Y8 | `mv f loose/g` (untracked link), `mv f deep/real/dl/g` (deeper ancestor), `mv f dang/x` (dangling), `mv f pointer/x` (link to a file), `mv dir/a inner/absent/x` (missing below the link) | each exit 128, `beyond a symbolic link` naming that pair. Unchanged | `MV_DESTINATION_DIRECTORY_MISSING` |
+| Y9 | `mv -k -v f dir inner`; `mv -k -v dir f inner` | exit 128 `destination 'inner' is not a directory` | `MV_DESTINATION_NOT_DIRECTORY` (parity) |
+| Y10 | `mv f inner/`; `mv dir inner/` | exit 128 `… source=f, destination=inner/f` / `source=dir/a, destination=inner/dir/a` (into-directory mode through the link) | `MV_DESTINATION_DIRECTORY_MISSING { destination: 'inner/' }` |
+| Y11 | `mv -k -v dir inner/`; `mv -k -v dir f inner/`; `mv -k -v f dir inner/` | exit 0, `Renaming dir to inner/dir` only. Index unchanged; disk `sub/dir/…`, `f` kept | `MV_DESTINATION_DIRECTORY_MISSING` |
+| Y12 | `mv f dang/`; `mv f pointer/` | exit 128 `destination directory does not exist, source=f, destination=dang/` (resp. `pointer/`) | parity |
+| Y13 | `mv -n dir lnk/hooks/x`; `mv -n -k -v dir lnk/hooks/x` | exit 128 after `Checking rename of 'dir' …` and `… 'dir/a' …`; with `-k`: exit 0, `Checking` lines for `dir`, `dir/a`, `dir/b`, then `Renaming dir to lnk/hooks/x`. Unchanged | plan returned (`dir/… → lnk/hooks/x/…`) |
+| Y14 | `mv untracked inner/u` (an untracked file); the same with the file absent | exit 128 `not under version control, source=untracked, destination=inner/u` / `bad source, …` | parity for the present file; the absent one refuses `MV_SOURCE_NOT_TRACKED` (git: `bad source`), with or without a link; outside this revision |
+| Y15 | `mv dir dir/l/x` (`dir/l -> ../sub` tracked) | exit 128 `can not move directory into itself, source=dir, destination=dir/l/x` | parity |
+| Y16 | `mv f lnk`; `mv f inner`; `mv dir inner` | exit 128 `destination exists` / `destination already exists` (the link is the destination, not a leading component) | parity |
+| Y17 | `mv f inner/keep`; `mv -k -v f inner/keep` | exit 128 `destination exists, source=f, destination=inner/keep`; `-k`: exit 0, unchanged | `MV_DESTINATION_DIRECTORY_MISSING` (N6) |
+| Y18 | `mv -f f inner/keep` | **exit 0**: `f` renamed through the link onto `sub/keep`; index drops `f` **and the `inner` link entry**, adds `inner/keep` | `MV_DESTINATION_DIRECTORY_MISSING` (N6) |
+| Y19 | `mv dir sub/keep/x` (a regular file in a leading component) | exit 128 `renaming 'dir' to 'sub/keep/x' failed: Not a directory` | `MV_DESTINATION_DIRECTORY_MISSING` (unchanged, outside this revision) |
+| Y20 | `mv f dup/f inner/` (both target `inner/f`) | exit 128 `beyond a symbolic link, source=f, destination=inner/f`: the first pair refuses before the collision is seen | `MV_DESTINATION_DIRECTORY_MISSING` |
+
+**git's check, a reading of the rows** (inferred from the order of the refusals and from `-v`, not
+from the source): in `builtin/mv.c`'s per-entry chain, after `bad source`, `into itself`, a
+directory's `destination already exists`, `not under version control` and a file's `lstat(dst) ==
+0` → `destination exists` (lifted by `-f`), an entry whose destination has a symbolic link in a
+leading component (`has_symlink_leading_path`) is `destination is beyond a symbolic link`. A
+directory source's own entry (mode `WORKING_DIRECTORY`) does not reach that check, so it is
+refused only through its members, which are appended to the work list and checked one by one; the
+first member refuses without `-k`. Under `-k` each refused member is dropped from the list and the
+directory's own entry stays, so `rename(dir, …)` runs through the link and the index keeps every
+member (Y3, Y7). The `-v` line for the directory is printed by the rename loop; a dropped file
+entry prints nothing (Y4, Y5). Y18 shows the `-f` branch never reaching the link check: the
+destination exists, so the chain stops there.
 
 
 ### 1. Port — an optional directory-rename capability (ADR-1217)
@@ -506,9 +586,21 @@ No new error code (ADR-1219):
 | 6-d | `MV_DESTINATION_EXISTS { source: 'a/d', destination: 'A/d' }` under both `core.ignorecase` values (unchanged) |
 | 5-n | the plan (unchanged) |
 | one-step rename too long | `PATH_TOO_LONG { path: <repo-relative destination> }` (ADR-1194) |
+| Y1, Y6 (directory), Y10 (directory) | `MV_DESTINATION_BEYOND_SYMLINK { source: 'dir/a', destination: 'lnk/hooks/x/a' }` (first member, index order). Nothing changed |
+| Y2, Y6, Y8, Y10 (file) | `MV_DESTINATION_BEYOND_SYMLINK { source: 'f', destination: 'lnk/hooks/pre-commit' }`, `force` included. Nothing changed |
+| Y3, Y5, Y7, Y11 (directory, `skipErrors`) | returns. `moved` has no member of `dir`; `skipped` holds `{ source: 'dir/a' }`, `{ source: 'dir/b' }`, `{ source: 'dir/s/t' }` with `reason: 'destination-beyond-symlink'` (N4), after the planning skips of earlier sources; disk: `dir` renamed through the link |
+| Y4 (file, `skipErrors`) | returns `{ moved: [], skipped: [{ source: 'f', reason: 'destination-beyond-symlink' }] }`; nothing written |
+| Y13 | `dryRun`: the refusal; `dryRun` + `skipErrors`: Y3's `moved`/`skipped`, nothing written |
+| Y12, Y14–Y16, Y9 | unchanged (parity) |
+| Y17, Y18 | unchanged: `MV_DESTINATION_DIRECTORY_MISSING` (N6) |
+
+The message, rebuilt by `src/domain/error.ts` from the fields as the other `MV_*` codes are:
+`destination is beyond a symbolic link, source=<source>, destination=<destination>` (N5).
 
 `reports/api.json` changes: one optional member on `FileSystem`, and one literal
-(`'rename-failed'`) in `MvSkipReason` (ADR-1223). No new exported name.
+(`'rename-failed'`) in `MvSkipReason` (ADR-1223). ADR-1226 adds one literal
+(`'destination-beyond-symlink'`) to `MvSkipReason`, one `TsgitErrorData` variant and one
+exported factory `mvDestinationBeyondSymlink` (N5 = A).
 
 ### 6. Breaking-change assessment
 
@@ -524,6 +616,12 @@ No new error code (ADR-1219):
 | `MvSkipReason` gains `'rename-failed'` (ADR-1223) | `skipped` gains entries for execution-time refusals; the union widens | a consumer's exhaustive `switch` over `MvSkipReason` stops compiling → breaking, covered by the same `!` |
 | leaf path under `skipErrors` (ADR-1224) | threw the adapter's write fault with a partial move on disk; now returns, and the partial move is removed with the source | refusal git does not make removed; data-destroying by design (D-4) → `fix` |
 | row 6-d | refuses today, still refuses: the `ignore_case` escape is scoped to file sources | no change |
+| Y1, Y2 (ADR-1226) | returned after writing through the link; now throws `MV_DESTINATION_BEYOND_SYMLINK` | a new refusal from a returning call → breaking (ADR-1190, D-3), under the same `!` |
+| Y6, Y8, Y10 | threw `MV_DESTINATION_DIRECTORY_MISSING`; now throw `MV_DESTINATION_BEYOND_SYMLINK` | a consumer matching the old code stops matching → breaking, same `!` |
+| Y3, Y5 under `skipErrors` | returned with the index repathed through the link; now return with the index unchanged and per-member `skipped` entries | wrong result → `fix`; the disk outcome (directory renamed through the link) is git's, by design (ADR-1226, D-4) |
+| Y4 under `skipErrors` | returned after writing through the link; now returns having written nothing | wrong result → `fix` |
+| Y7, Y11 under `skipErrors` | threw `MV_DESTINATION_DIRECTORY_MISSING`; now return | refusal git does not make removed → `fix` (ADR-1048) |
+| `MvSkipReason` gains `'destination-beyond-symlink'`; `TsgitErrorData` gains `MV_DESTINATION_BEYOND_SYMLINK` | the unions widen | an exhaustive `switch` stops compiling → breaking, same `!` |
 
 So the change is `fix(mv)!:` (ADR-1222). The `-k` arms add no throw to a returning call.
 
@@ -552,10 +650,110 @@ destination (the lossy-member paragraph gains this). The
   always throw. The `MvResult` block's `reason` comment lists the five reasons.
 - `docs/use/commands/mv.md`, case-only renames: the `core.ignorecase` sentence says it applies to a
   file source only; a directory whose destination exists by case refuses whatever the setting.
-- `docs/use/errors.md`: no row change (`UNSUPPORTED_OPERATION` already covers row 5).
+- `docs/use/commands/mv.md`, destination beyond a symbolic link (ADR-1226): the `MvSkipReason`
+  signature line gains `'destination-beyond-symlink'`; the Throws list gains
+  `MV_DESTINATION_BEYOND_SYMLINK` (a leading directory of the destination is a symbolic link,
+  wherever it points); the "Skipping errors deletes data as git does" section gains: a directory
+  whose destination lies beyond a symbolic link is still renamed through the link, its members stay
+  in the index under the source and are reported in `skipped` one by one, so the work tree then
+  lacks them, as git's does; a file is skipped and nothing is written. The closing sentence's
+  "first four" planning refusals become five. A destination ending in `/` that names a link to a
+  directory is a directory destination.
+- `docs/use/errors.md`: no row change (`UNSUPPORTED_OPERATION` already covers row 5; the `MV_*`
+  codes are documented on the command page, not there).
 - `docs/design/mv-atomic-rename.md`: untouched (history). This doc supersedes its leaf-loop drift.
 - `docs/known-divergences.md`: **remove row 32.72** and its code block (folded, ADR-1220).
 - `docs/BACKLOG.md`: tick 32.67 and strike it from the release-order table.
+
+### 8. Destination beyond a symbolic link (ADR-1226)
+
+**Where it lives.** One planning check in `validateMove`, after `into-self` and before the
+destination-directory check, so the order of rows Y6, Y8, Y14 and Y15 holds:
+
+```ts
+// validateMove, after the into-self line
+if (await destinationBeyondSymlink(ctx, policy.scanner, target)) {
+  return beyondSymlinkVerdict(classified.kind, source, target, entries, classified.entries, opts);
+}
+// … then the parent-directory check and destinationFree, unchanged
+
+// git's chain reaches the link check only when the destination does not exist (Y16–Y18)
+const destinationBeyondSymlink = async (ctx, scanner, target): Promise<boolean> =>
+  (await lstatOrUndefined(ctx, target)) === undefined && (await beyondSymlink(scanner, target));
+```
+
+**Which primitive it reuses.** `createLeadingPathScanner(ctx).hasSymlinkedLeadingPath` from
+src/application/primitives/internal/symlinked-leading-path.ts, the `has_symlinked_leading_path`
+equivalent `add`, `stash`, checkout's stale-entry pass and `merge` already use. Shape-based (it
+fires for a link inside the work tree, Y6), it never scans the leaf (Y16), it stops at a missing
+component (nothing lies beneath), and a regular file in a leading component is reported as
+`kind: 'file'`, not a link (Y19). Wrapped in `beyondSymlink(scanner, target)` from
+src/application/commands/internal/resolve-pathspec.ts, which maps a `PATH_TOO_LONG` from a prefix
+`lstat` to "not a link" (git's `lstat_cache` records a failed `lstat` that way); today it is
+module-private, and this change exports it unchanged rather than copying it. Without that wrapper
+a too-long prefix would turn rows H and 5-k′ into a `PATH_TOO_LONG` throw at planning.
+
+**One scanner per call.** `DestinationPolicy` gains `readonly scanner: LeadingPathScanner`, built
+in `destinationPolicyOf` beside `force` and `ignoreCase`. Its per-prefix memo then spans every
+pair of the call.
+
+**`lstat` cost.** Per pair: one `lstat(target)` for the gate, plus one `lstat` per leading prefix
+of `target` not yet in the scanner's memo. Into-directory mode shares `destDir`, so N sources
+cost one prefix walk in total and one map lookup each after it. A directory's members cost
+**nothing**: the scan is on the pair's target, not per member. That is equivalent to git's
+per-member scan because every member destination is `target/<rest>`, its leading components are
+`target`'s leading components plus `target` and the directories below it, and the gate has just
+proved `target` absent, where the walk stops. The verdict is therefore the same for every member,
+which is why git names the first one.
+
+**The verdict.**
+
+```ts
+const beyondSymlinkVerdict = (kind, source, target, entries, members, opts): Verdict => {
+  if (kind === 'file') return { skip: 'destination-beyond-symlink' };
+  if (opts.skipErrors === true) return { kind, entries: [], retained: members, skippedMembers: entries };
+  const first = entries[0] as IndexEntry; // non-empty: the bad-source line above returned otherwise
+  return { skip: 'destination-beyond-symlink', source: first.path, target: repath(first, source, target) };
+};
+```
+
+- A file pair: `buildPlan`'s skip arm. Without `skipErrors` `refusal()` throws
+  `mvDestinationBeyondSymlink(source, target)`; with it `skipped` gets `{ source, reason }` and the
+  pair writes nothing (Y4).
+- A directory pair without `skipErrors`: the refusal names the first addressable member and its
+  destination (Y1). A lossy member never reaches here without `skipErrors`: `memberBadSource`
+  refused first. `entries` keep index order (`classifySource` walks `byPath`, read in index
+  order), so the first is git's first.
+- A directory pair with `skipErrors`: a `PlanItem` with `entries: []`, so no member is repathed,
+  moved or validated, and `retained` = every member, the field that already means "members left in
+  the index under the source". The directory still goes through `renameEach` and is renamed
+  through the link, as git's `WORKING_DIRECTORY` entry is (Y3, Y7). `retained` being non-empty
+  keeps R11 and R14 inert: `removeAbandonedSources` finds members under the source, and
+  `abandonsSource` is false, so a failed rename of this directory deletes nothing (git:
+  `index_range_of_same_dir(src)` is not empty). The success arm of `Verdict` gains
+  `readonly skippedMembers: ReadonlyArray<IndexEntry>` (empty on every other path); `buildPlan`
+  appends `{ source: member.path, reason: 'destination-beyond-symlink' }` for each one, in order,
+  where it appends planning skips today.
+- `MvSkipReason` gains `'destination-beyond-symlink'`. It is a planning reason, so
+  `PlanSkipReason` (an `Exclude` of `'rename-failed'`) includes it and `refusal()` gains its arm.
+  The literal follows git's own reason; no naming alternative is a candidate.
+
+**R17 — trailing slash.** `resolveDestinationMode` reads the destination with
+`ctx.fs.stat` (follows a link) when `destination` ends in `/`, and with `lstat` otherwise, through
+a `statOrUndefined` twin of `lstatOrUndefined`. git's `lstat("inner/")` resolves the link because
+of the slash; `stat("inner")` is the port's way to ask the same question. A dangling link or a link
+to a file is not a directory under either call (Y12). The existing `isSymbolicLink !== true`
+operand stays: `stat` never reports a link, so it remains the documented equivalent mutant.
+
+**What R15 leaves as it is (N6).** Rows Y17 and Y18: a destination that exists on disk through a
+link. git refuses `destination exists` (Y17) or, with `-f`, renames through the link and replaces
+the link's own index entry by `inner/keep` (Y18). tsgit refuses both with
+`MV_DESTINATION_DIRECTORY_MISSING`, before and after this change, because its parent check
+`isDirectoryOnDisk(dirname(target))` does not follow the parent's final link. The gate's
+`lstat(target) === undefined` keeps R15 from turning that into a wrong `beyond` refusal, so the
+change does not widen the gap. Closing it needs an index directory/file replacement rule tsgit's
+`mv` does not have (git's `ADD_CACHE_OK_TO_REPLACE` dropping `inner`), which is new behaviour,
+not this refusal.
 
 ## Decision candidates
 
@@ -574,6 +772,14 @@ New candidate raised by the ADR-1224 revision:
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
 | N3 | Under `skipErrors`, a partial entry-by-entry move of a directory that keeps its source because a lossy member stays in the index. git has no such state: it moves every member's index entry and deletes the source. The state comes from tsgit's own lossy-member rule (`validateMove` drops lossy members under `skipErrors`; `docs/use/commands/mv.md`: lossy entries are never touched on disk), which keeps the entry under the source, so R11 keeps the source. ADR-1224's "remove what the move created" assumed the source is deleted too; here the leaves already moved exist **only** at the destination | **A** remove the destination anyway: the leaves already moved are deleted while their source directory survives, a loss neither git nor the no-fault path produces. **B** do not remove the destination when the source is kept: the moved leaves stay at the destination, the rest in the source, nothing is lost (ADR-1218's degradation, restricted to this arm). **C** move the moved leaves back into the source, then let R11 decide: reaches git's state, but it is a rollback ADR-1218 rejected, and the move back can fault in turn | **B** | D-4 binds git's data-destroying arms; it does not license destroying data git keeps, which A does. C is the only exact match, but it adds a second fault surface and a rollback path for an arm that needs a lossy (non-UTF-8) index entry, an adapter without `renameDirectory` (OPFS cannot hold such a name) and a write fault mid-move, none pinned. B costs one guard operand (`item.retained.length === 0`) and stays inside ADR-1224's stated premise (index repathed, source deleted, nothing at the destination), which holds exactly when no lossy member keeps the source. The design is written for B; A drops `abandonsSource`'s second operand and the `retained` field, C adds a reverse-move step in `renameOrSkip` |
+
+New candidates raised by the ADR-1226 revision:
+
+| # | Choice | Alternatives (≤3) | Recommendation | Why |
+|---|---|---|---|---|
+| N4 | How `skipped` reports a directory whose members lie beyond a link under `skipErrors` (Y3, Y7). git drops each member entry and still renames the directory | **A** one entry per addressable member, `{ source: 'dir/a', reason: 'destination-beyond-symlink' }`, in index order. **B** one entry for the pair, `{ source: 'dir', reason }`. **C** no entry | **A** | A is git's granularity: the refusal is per member and git's message names the member. It keeps both arrays literal: `moved` is the index truth (nothing moved), `skipped` lists exactly the paths whose index entry stayed, and the directory, which **was** renamed, is in neither. The `-v` rebuild then needs no reason-specific rule (the directory's line is printed because `dir` is not a skipped source). B reports as skipped a directory that was renamed, the inverse of `'rename-failed'` (ADR-1223), where the directory was not renamed and its members did move. C leaves a caller unable to tell from the result that the work tree now lacks every member. Cost of A: `skipped.source` can name a path that is not an argv source; the docs say so |
+| N5 | The error for R15. ADR-1226's Consequences name `PATHSPEC_BEYOND_SYMLINK` "naming the member's source and destination", but that code's data is `{ path }` only (src/domain/commands/error.ts) | **A** a new `MV_DESTINATION_BEYOND_SYMLINK { source, destination }`, factory `mvDestinationBeyondSymlink(source, destination)`, beside the other `MV_*` codes; ADR-1226's Consequences amended to name it. **B** reuse `PATHSPEC_BEYOND_SYMLINK { path: <destination> }`: no new code, the source is lost from the data (an interop test must re-derive the member from the destination). **C** widen `PATHSPEC_BEYOND_SYMLINK` with an optional `source`: one code, two shapes, and its message builder must branch | **A** | ADR-202 gives `mv` granular `MV_*` codes, and every one of git's `bad` reasons carries `{ source, destination }` (ADR-249: the fields rebuild git's `source=…, destination=…` line). A is the only option that satisfies ADR-1226's "naming the member's source and destination" as written. Its cost is one extra plan part (the code, its message, the exhaustiveness switch and `api.json`, plan Part 11), because the six-file ceiling cannot hold it with the behaviour. B collapses Parts 11 and 12 into one |
+| N6 | Rows Y17, Y18: an existing destination reached through a link. Before and after this change tsgit refuses `MV_DESTINATION_DIRECTORY_MISSING` where git refuses `destination exists` (Y17) or, with `-f`, succeeds through the link and replaces the link's index entry (Y18) | **A** fold now: the parent check follows a final link, and `mv` gains git's index directory/file replacement on add (drop `inner` when adding `inner/keep`). **B** record both rows in `docs/known-divergences.md` under the filing bar (ADR-1170) and keep this revision to the refusal. **C** schedule a backlog item | **A**, as its own part after Part 13, re-pinned first | Same function, same refusal family, and the gate in § 8 was shaped around it, so it is inside the change's perimeter by the fold rule. It is not part of Parts 11–13 because it is new behaviour (an index replacement rule `mv` lacks, Y18 deletes a tracked link's entry), and the index outcome of a replacement under a directory member is unpinned. B is the lighter path if the user scopes the run to ADR-1226 |
 
 Pre-decided by existing ADRs, not candidates: the `PATH_TOO_LONG` relabel to the repo-relative
 destination (ADR-1194); refusing before writing the index without `skipErrors` (mv design +
@@ -823,6 +1029,26 @@ raises `PATH_TOO_LONG` past `PATH_MAX` (long-pathspec-refusals X2, out of scope)
 
 As § Design 7, including the removal of ledger row 32.72.
 
+### P7 — destination beyond a symbolic link (ADR-1226)
+
+- The error code (N5 = A): `MV_DESTINATION_BEYOND_SYMLINK` in the `TsgitErrorData` union and
+  `mvDestinationBeyondSymlink` in src/domain/commands/error.ts, its message in src/domain/error.ts,
+  its re-export in src/domain/commands/index.ts, its case in the shared exhaustiveness switch and
+  a data + message row in test/unit/domain/error.test.ts.
+- `mv.ts` as § 8: `destinationBeyondSymlink`, `beyondSymlinkVerdict`, `Verdict.skippedMembers`,
+  `DestinationPolicy.scanner`, the `refusal()` arm, `statOrUndefined` and R17's branch; export
+  `beyondSymlink` from resolve-pathspec.ts. Unit rows on the memory adapter with links created by
+  `ctx.fs.symlink(target, path)` (the check reads the disk; the link need not be tracked, Y8).
+
+### P8 — interop and docs for P7
+
+Rows Y1–Y5, Y7, Y10–Y13 and Y15 in test/integration/mv-interop.test.ts, `skipIf(!GIT_AVAILABLE ||
+win32)` (a tracked link needs `core.symlinks`). Each compares `ls-files -s` and the disk listing
+of both twins, `pathExists` for `.git/hooks/<name>` / `sub/<name>`, rebuilds git's refusal line
+from `data.source`/`data.destination`, and, for the `-k -v` rows, git's stdout with
+`mvVerboseLines`, which learns to drop a source that `skipped` names with a planning reason (git
+prints nothing for it, Y4, Y5). Docs as § 7.
+
 ## Test strategy notes
 
 ### Property tests
@@ -866,6 +1092,14 @@ P2 stay (ADR-136).
 - Equivalent-mutant watch: `abandonsSource` predicts R11's post-loop condition (§ 4, "R11 and R14
   compose"). A mutant replacing `retained.length === 0` with `true` is **not** equivalent: the
   lossy row sees the moved leaf deleted.
+- Beyond a symbolic link (P7): isolated rows for the gate's two operands (an existing destination
+  through a link, Y17, must stay `MV_DESTINATION_DIRECTORY_MISSING`; an absent one beyond a link
+  refuses), for `beyondSymlinkVerdict`'s `kind === 'file'` and `skipErrors === true` arms (file
+  with and without the flag, directory with and without it), for the first-member naming (two
+  members, the refusal names the first), for the `skippedMembers` order, for the tolerance (an
+  `lstat` stub raising `PATH_TOO_LONG` on the link's prefix must not refuse) and for R17's
+  ternary (`f inner/` into-directory mode vs two sources into `inner` refusing
+  `MV_DESTINATION_NOT_DIRECTORY`). The order against `into-self` is killed by Y15 at unit level.
 - Stryker scope: `working-tree.ts`, `wrap-fs-validator.ts` (new block), the two adapter one-liners
   and `mv.ts` hunks. Run on narrowed eponymous suites (`.claude/workflow/mutation.md`).
 
@@ -881,6 +1115,12 @@ P2 stay (ADR-136).
   failing after the write): R14 is scoped to directory items, as ADR-1224 is; the file pair keeps
   ADR-1220's R12 outcome and the browser `rename`'s documented non-atomicity. The P3 file-pair row
   pins that the removal does not reach it.
+- **An absent untracked source** (Y14's second command): tsgit refuses `MV_SOURCE_NOT_TRACKED`
+  where git refuses `bad source`, link or not. Pre-existing ordering in `validateMove`, unrelated
+  to links; reported to the session, not folded.
+- **A destination present in the index but absent on disk beyond a link**: unpinned. § 8 checks
+  the link before `destinationFree`, so it would refuse `MV_DESTINATION_BEYOND_SYMLINK`.
+- **Windows**: the P8 rows need tracked links and are skipped there.
 - **The leaf path's descendant `PATH_TOO_LONG` naming an absolute path**: unreachable on the
   first-party adapters without the capability (browser: no `PATH_MAX`). It keeps ADR-1194's
   "names itself" consequence.
