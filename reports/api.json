@@ -152629,7 +152629,15 @@
 							},
 							{
 								"kind": "text",
-								"text": " collects rather than throwing. The first\nfive are decided while planning; "
+								"text": " collects rather than throwing. Every reason\nbut "
+							},
+							{
+								"kind": "code",
+								"text": "`rename-failed`"
+							},
+							{
+								"kind": "text",
+								"text": " is decided while planning; "
 							},
 							{
 								"kind": "code",
