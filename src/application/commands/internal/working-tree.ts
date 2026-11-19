@@ -122,22 +122,29 @@ export const removeDirectory = async (ctx: Context, rawPath: string): Promise<vo
  * absolute paths, etc.) then relocates the node — carrying any untracked
  * contents along, faithful to `git mv`.
  *
- * A directory is moved by recursing into its entries and renaming each leaf
- * (file or symlink), then removing the emptied source directory. `ctx.fs.rename`
- * is not used directly on a directory because only the Node adapter renames
- * directories natively — the memory and OPFS adapters are file-oriented, so a
- * leaf-by-leaf move is the portable, adapter-agnostic primitive. Each leaf's
- * destination parent is created first (`fs.rename` does not create parents).
+ * A directory is renamed in one step where the port can (`renameDirectory`);
+ * an adapter without it recurses into the entries and renames each leaf, then
+ * removes the emptied source directory. The destination parent is created first
+ * (a rename does not create parents).
  */
 export const renameInWorkingTree = async (
   ctx: Context,
   rawFrom: string,
   rawTo: string,
 ): Promise<void> => {
-  const from = validatePath(rawFrom);
-  const to = validatePath(rawTo);
-  await moveNode(ctx, { abs: repoPath(ctx, from), rel: from }, { abs: repoPath(ctx, to), rel: to });
+  const from = moveEnd(ctx, validatePath(rawFrom));
+  const to = moveEnd(ctx, validatePath(rawTo));
+  const stat = await ctx.fs.lstat(from.abs);
+  if (!isPlainDirectory(stat)) return renameNamingDestination(ctx, ctx.fs.rename, from, to);
+  const renameDirectory = ctx.fs.renameDirectory;
+  if (renameDirectory !== undefined) return renameNamingDestination(ctx, renameDirectory, from, to);
+  return moveNode(ctx, from, to);
 };
+
+const moveEnd = (ctx: Context, rel: FilePath): MoveEnd => ({ abs: repoPath(ctx, rel), rel });
+
+const isPlainDirectory = (stat: { isDirectory: boolean; isSymbolicLink: boolean }): boolean =>
+  stat.isDirectory && !stat.isSymbolicLink;
 
 /** One end of a move: its absolute path and the repository-relative path an error names. */
 interface MoveEnd {
@@ -153,7 +160,7 @@ const childOf = (end: MoveEnd, name: string): MoveEnd => ({
 const moveNode = async (ctx: Context, from: MoveEnd, to: MoveEnd): Promise<void> => {
   const fromAbs = from.abs;
   const stat = await ctx.fs.lstat(fromAbs);
-  if (stat.isDirectory && !stat.isSymbolicLink) {
+  if (isPlainDirectory(stat)) {
     for (const child of await ctx.fs.readdir(fromAbs)) {
       await moveNode(ctx, childOf(from, child.name), childOf(to, child.name));
     }
@@ -166,15 +173,22 @@ const moveNode = async (ctx: Context, from: MoveEnd, to: MoveEnd): Promise<void>
   // A root-level target (parent is the work-tree root, which always exists)
   // yields an empty `dirname`; skip the mkdir rather than create an empty path
   // the fs validator rejects. Non-root parents are created as before.
-  await moveLeaf(ctx, fromAbs, to);
+  await renameNamingDestination(ctx, ctx.fs.rename, from, to);
 };
 
-// The source leaf was just read, so a name-too-long refusal from here can only mean the destination.
-const moveLeaf = async (ctx: Context, fromAbs: string, to: MoveEnd): Promise<void> => {
+type RenameOp = (from: string, to: string) => Promise<void>;
+
+// The source was just read, so a name-too-long refusal from here can only mean the destination.
+const renameNamingDestination = async (
+  ctx: Context,
+  op: RenameOp,
+  from: MoveEnd,
+  to: MoveEnd,
+): Promise<void> => {
   try {
     const parentDir = dirname(to.abs);
     if (parentDir !== '') await ctx.fs.mkdir(parentDir);
-    await ctx.fs.rename(fromAbs, to.abs);
+    await op.call(ctx.fs, from.abs, to.abs);
   } catch (err) {
     if (isPathTooLong(err)) throw pathTooLong(to.rel);
     throw err;

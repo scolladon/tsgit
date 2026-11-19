@@ -5,7 +5,11 @@ import { mv } from '../../../../src/application/commands/mv.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { pathTooLong, permissionDenied } from '../../../../src/domain/error.js';
+import {
+  pathTooLong,
+  permissionDenied,
+  unsupportedOperation,
+} from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -1040,6 +1044,21 @@ describe('mv — a move the file system refuses', () => {
     },
   });
 
+  const failingDirectoryRename = (ctx: Context, fault: TsgitError): Context => ({
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      renameDirectory: async () => {
+        throw fault;
+      },
+    },
+  });
+
+  const withoutDirectoryRename = (ctx: Context): Context => {
+    const { renameDirectory: _absent, ...fs } = ctx.fs;
+    return { ...ctx, fs };
+  };
+
   describe('Given a rename the file system refuses as too long', () => {
     describe('When mv', () => {
       it('Then it names the destination and leaves the index and the source unchanged', async () => {
@@ -1075,12 +1094,77 @@ describe('mv — a move the file system refuses', () => {
     });
   });
 
-  describe('Given a directory move whose leaf rename the file system refuses as too long', () => {
+  describe('Given a directory move whose rename the file system refuses as too long', () => {
     describe('When mv', () => {
+      it('Then it names the destination directory', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const refusing = failingDirectoryRename(ctx, pathTooLong('/abs/d'));
+        const sut = mv;
+
+        // Act
+        const err = await expectError(() => sut(refusing, ['d'], 'e'), 'PATH_TOO_LONG');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'e' });
+      });
+    });
+  });
+
+  describe('Given a directory whose source descendant the file system refuses as too long', () => {
+    const refuseDescendant = (ctx: Context, fault: TsgitError): Context => {
+      const descendant = work(ctx, 'd/f');
+      return {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          lstat: async (path: string) => {
+            if (path === descendant) throw fault;
+            return ctx.fs.lstat(path);
+          },
+        },
+      };
+    };
+
+    describe('When mv with renameDirectory', () => {
+      it('Then the move succeeds and the index holds e/f', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const refusing = refuseDescendant(ctx, pathTooLong('/abs/d/f'));
+        const sut = mv;
+
+        // Act
+        await sut(refusing, ['d'], 'e');
+
+        // Assert
+        expect(await indexEntry(ctx, 'e/f')).toBeDefined();
+        expect(await exists(ctx, 'e/f')).toBe(true);
+      });
+    });
+
+    describe('When mv without renameDirectory', () => {
+      it('Then the refusal keeps naming that source descendant', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const fault = pathTooLong('/abs/d/f');
+        const refusing = withoutDirectoryRename(refuseDescendant(ctx, fault));
+        const sut = mv;
+
+        // Act
+        const outcome = sut(refusing, ['d'], 'e');
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a directory move whose leaf rename the file system refuses as too long', () => {
+    describe('When mv without renameDirectory', () => {
       it('Then it names that leaf inside the destination', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'd/f': 'f' });
-        const refusing = failingRename(ctx, pathTooLong('/abs/d/f'));
+        const refusing = failingRename(withoutDirectoryRename(ctx), pathTooLong('/abs/d/f'));
         const sut = mv;
 
         // Act
@@ -1092,23 +1176,13 @@ describe('mv — a move the file system refuses', () => {
     });
   });
 
-  describe('Given a directory move whose source descendant the file system refuses as too long', () => {
-    describe('When mv', () => {
-      it('Then the refusal keeps naming that source descendant', async () => {
+  describe('Given a directory rename refused UNSUPPORTED_OPERATION EINVAL', () => {
+    describe('When mv without skipErrors', () => {
+      it('Then it rejects with that very error, the index keeps d/f and the source is on disk', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'd/f': 'f' });
-        const fault = pathTooLong('/abs/d/f');
-        const descendant = work(ctx, 'd/f');
-        const refusing: Context = {
-          ...ctx,
-          fs: {
-            ...ctx.fs,
-            lstat: async (path: string) => {
-              if (path === descendant) throw fault;
-              return ctx.fs.lstat(path);
-            },
-          },
-        };
+        const fault = unsupportedOperation('filesystem', 'EINVAL');
+        const refusing = failingDirectoryRename(ctx, fault);
         const sut = mv;
 
         // Act
@@ -1116,6 +1190,9 @@ describe('mv — a move the file system refuses', () => {
 
         // Assert
         await expect(outcome).rejects.toBe(fault);
+        expect(await indexEntry(ctx, 'd/f')).toBeDefined();
+        expect(await indexEntry(ctx, 'e/f')).toBeUndefined();
+        expect(await exists(ctx, 'd/f')).toBe(true);
       });
     });
   });

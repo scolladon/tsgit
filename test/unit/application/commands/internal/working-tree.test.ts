@@ -7,6 +7,7 @@ import {
   renameInWorkingTree,
   validatePath,
 } from '../../../../../src/application/commands/internal/working-tree.js';
+import { pathTooLong } from '../../../../../src/domain/error.js';
 import {
   permissionDenied,
   TsgitError,
@@ -30,6 +31,11 @@ const leafStat = (): FileStat => ({
   isDirectory: false,
   isSymbolicLink: false,
 });
+
+const withoutDirectoryRename = (fs: FileSystem): FileSystem => {
+  const { renameDirectory: _absent, ...rest } = fs;
+  return rest;
+};
 
 const expectError = async (
   fn: () => unknown | Promise<unknown>,
@@ -721,7 +727,7 @@ describe('internal/working-tree', () => {
   describe('renameInWorkingTree', () => {
     describe('Given a directory containing a leaf file', () => {
       describe('When renameInWorkingTree moves the directory', () => {
-        it('Then it recurses leaf-by-leaf — readdir, mkdir the leaf parent, rename each leaf, rmRecursive the shell', async () => {
+        it('Then, without renameDirectory, it recurses leaf-by-leaf — readdir, mkdir the leaf parent, rename each leaf, rmRecursive the shell', async () => {
           // Arrange — the memory adapter's `rename` moves a whole subtree in one call,
           // so end-state alone cannot tell recursion from a direct directory rename.
           // Spies pin the portable leaf-by-leaf primitive the directory branch must use.
@@ -729,11 +735,12 @@ describe('internal/working-tree', () => {
           const root = base.layout.workDir;
           await base.fs.mkdir(`${root}/old`);
           await base.fs.writeUtf8(`${root}/old/f.txt`, 'data');
+          const bare = withoutDirectoryRename(base.fs);
           const readdir = vi.fn(base.fs.readdir);
           const mkdir = vi.fn(base.fs.mkdir);
           const rmRecursive = vi.fn(base.fs.rmRecursive);
           const rename = vi.fn(base.fs.rename);
-          const ctx: Context = { ...base, fs: { ...base.fs, readdir, mkdir, rmRecursive, rename } };
+          const ctx: Context = { ...base, fs: { ...bare, readdir, mkdir, rmRecursive, rename } };
 
           // Act
           await renameInWorkingTree(ctx, 'old', 'new');
@@ -749,6 +756,107 @@ describe('internal/working-tree', () => {
           expect(rename).not.toHaveBeenCalledWith(`${root}/old`, `${root}/new`);
           // And the move actually landed.
           expect(await base.fs.readUtf8(`${root}/new/f.txt`)).toBe('data');
+        });
+      });
+    });
+
+    describe('Given a directory and an adapter with renameDirectory', () => {
+      describe('When renameInWorkingTree moves it', () => {
+        it('Then it renames the directory once and reads nothing beneath it', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          const root = base.layout.workDir;
+          await base.fs.mkdir(`${root}/old`);
+          await base.fs.writeUtf8(`${root}/old/f.txt`, 'data');
+          const renameDirectory = vi.fn(
+            base.fs.renameDirectory as NonNullable<FileSystem['renameDirectory']>,
+          );
+          const readdir = vi.fn(base.fs.readdir);
+          const rmRecursive = vi.fn(base.fs.rmRecursive);
+          const rename = vi.fn(base.fs.rename);
+          const ctx: Context = {
+            ...base,
+            fs: { ...base.fs, renameDirectory, readdir, rmRecursive, rename },
+          };
+
+          // Act
+          await renameInWorkingTree(ctx, 'old', 'new');
+
+          // Assert
+          expect(renameDirectory).toHaveBeenCalledTimes(1);
+          expect(renameDirectory).toHaveBeenCalledWith(`${root}/old`, `${root}/new`);
+          expect(readdir).not.toHaveBeenCalled();
+          expect(rmRecursive).not.toHaveBeenCalled();
+          expect(rename).not.toHaveBeenCalled();
+          expect(await base.fs.readUtf8(`${root}/new/f.txt`)).toBe('data');
+        });
+      });
+    });
+
+    describe('Given renameDirectory refusing PATH_TOO_LONG for the absolute source', () => {
+      describe('When renameInWorkingTree moves the directory', () => {
+        it('Then the error names the repository-relative destination', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await base.fs.mkdir(`${base.layout.workDir}/old`);
+          const renameDirectory = vi.fn(async () => {
+            throw pathTooLong('/abs/old');
+          });
+          const ctx: Context = { ...base, fs: { ...base.fs, renameDirectory } };
+
+          // Act
+          const err = await expectError(
+            () => renameInWorkingTree(ctx, 'old', 'new'),
+            'PATH_TOO_LONG',
+          );
+
+          // Assert
+          expect(err.data).toEqual({ code: 'PATH_TOO_LONG', path: 'new' });
+        });
+      });
+    });
+
+    describe('Given renameDirectory refusing PERMISSION_DENIED', () => {
+      describe('When renameInWorkingTree moves the directory', () => {
+        it('Then that very error is rethrown', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await base.fs.mkdir(`${base.layout.workDir}/old`);
+          const fault = permissionDenied('/abs/old');
+          const renameDirectory = vi.fn(async () => {
+            throw fault;
+          });
+          const ctx: Context = { ...base, fs: { ...base.fs, renameDirectory } };
+
+          // Act
+          const outcome = renameInWorkingTree(ctx, 'old', 'new');
+
+          // Assert
+          await expect(outcome).rejects.toBe(fault);
+        });
+      });
+    });
+
+    describe('Given a symlink to a directory as the source', () => {
+      describe('When renameInWorkingTree moves it', () => {
+        it('Then it goes through rename, never renameDirectory', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          const root = base.layout.workDir;
+          await base.fs.mkdir(`${root}/real`);
+          await base.fs.symlink('real', `${root}/link`);
+          const renameDirectory = vi.fn(
+            base.fs.renameDirectory as NonNullable<FileSystem['renameDirectory']>,
+          );
+          const rename = vi.fn(base.fs.rename);
+          const ctx: Context = { ...base, fs: { ...base.fs, renameDirectory, rename } };
+
+          // Act
+          await renameInWorkingTree(ctx, 'link', 'moved');
+
+          // Assert
+          expect(rename).toHaveBeenCalledWith(`${root}/link`, `${root}/moved`);
+          expect(renameDirectory).not.toHaveBeenCalled();
         });
       });
     });
