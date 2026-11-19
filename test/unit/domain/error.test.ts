@@ -1025,15 +1025,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then code/source/destination and the faithful message render', () => {
           // Arrange & Act
-          const sut = mvDestinationBeyondSymlink('dir/a' as FilePath, 'lnk/x/a' as FilePath);
+          const result = mvDestinationBeyondSymlink('dir/a' as FilePath, 'lnk/x/a' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MV_DESTINATION_BEYOND_SYMLINK',
             source: 'dir/a',
             destination: 'lnk/x/a',
           });
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'MV_DESTINATION_BEYOND_SYMLINK: destination is beyond a symbolic link, source=dir/a, destination=lnk/x/a',
           );
         });
