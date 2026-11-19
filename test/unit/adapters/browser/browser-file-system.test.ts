@@ -33,6 +33,19 @@ describe('BrowserFileSystem', () => {
         expect(result).toBe(false);
       });
     });
+
+    describe('When checking for the renameDirectory capability', () => {
+      it('Then the adapter does not expose renameDirectory (structurally absent, not merely undefined)', () => {
+        // Arrange
+        const sut = new BrowserFileSystem({} as unknown as FileSystemDirectoryHandle);
+
+        // Act
+        const result = 'renameDirectory' in sut;
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
   });
 });
 
