@@ -42,12 +42,6 @@ export const coreKeyEntries = (
     .map((entry) => ({ key: entry.key.toLowerCase(), value: entry.value }))
     .filter((entry) => keys.has(entry.key));
 
-export type SparseKeyEntry = CoreKeyEntry;
-
-export const sparseKeyEntries = (
-  sections: ReadonlyArray<IniSection>,
-): ReadonlyArray<SparseKeyEntry> => coreKeyEntries(sections, SPARSE_KEYS);
-
 /** The last entry for `wanted` that parses as a git boolean; invalid entries are skipped. */
 export const lastValidBoolean = (
   entries: ReadonlyArray<CoreKeyEntry>,

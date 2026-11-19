@@ -42,7 +42,7 @@ the end of the part that creates it — each part below is ordered so that holds
 | `readSparseConfig`, `SparseConfig` | src/application/primitives/read-sparse-config.ts | internal |
 | `updateConfigFileEntries`, `updateScopedConfigEntries` | src/application/primitives/update-config.ts | internal (not added to the primitives barrel) |
 | `enableWorktreeConfig` | src/application/primitives/internal/enable-worktree-config.ts | internal |
-| `assertWorktreeSparseBooleansValid` | src/application/primitives/internal/repo-state.ts | internal (not added to the commands/internal/repo-state.ts shim) |
+| `assertWorktreeCoreBooleansValid` | src/application/primitives/internal/repo-state.ts | internal (not added to the commands/internal/repo-state.ts shim) |
 
 **Test conventions (every part).** `describe('Given …')` > `describe('When …')` >
 `it('Then …')`; AAA section comments; the System Under Test variable `sut` is the
@@ -684,13 +684,13 @@ export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Pr
 };
 ```
 
-Target: both become `const root = await memoizeGateVerdict(...); await assertWorktreeSparseBooleansValid(ctx); return root;`.
+Target: both become `const root = await memoizeGateVerdict(...); await assertWorktreeCoreBooleansValid(ctx); return root;`.
 The check stays OUTSIDE the memo: the memo is keyed on the local file's mtime only.
 `readSingleScope`'s own stat keeps the check fresh, and its `(session, gitDir)` bucket
 keeps linked worktrees apart.
 
 ```ts
-export const assertWorktreeSparseBooleansValid = async (ctx: Context): Promise<void> => {
+export const assertWorktreeCoreBooleansValid = async (ctx: Context): Promise<void> => {
   if (!(await isWorktreeScopeActive(ctx))) return;
   const sections = await readConfigSections({ ctx, scope: 'worktree' });
   // first [core] (no subsection) entry, file order, whose lowercased key is
@@ -723,7 +723,7 @@ export const assertWorktreeSparseBooleansValid = async (ctx: Context): Promise<v
 Unit test fixtures: copy the `seedRepo` (writes HEAD) and `seedConfig` helpers from
 test/unit/application/commands/internal/repo-state.test.ts:23-29 into the new file. Add
 `seedWorktreeConfig`. `withFormatRefusal` (same file :37) is the refused-layout
-precedent. `sut` = the function under test (`assertWorktreeSparseBooleansValid`,
+precedent. `sut` = the function under test (`assertWorktreeCoreBooleansValid`,
 `assertOperationalRepository`, `assertOperationalRepositorySettingsFirst`).
 
 Interop shapes (git prepares on both, then tsgit status/checkout vs git's; use
@@ -754,7 +754,7 @@ for M1/O3 the `openRepository` call itself is the refusal under test:
 2. **GUARD (interop)** — O1, O2 (the local eager gate already refuses first), R11
    (extension off), M1 / O3 (`readRepositoryFormat` refuses at open). Each passes now
    and must stay green.
-3. **RED (unit, repo-state-worktree-sparse.test.ts)** — `sut = assertWorktreeSparseBooleansValid`.
+3. **RED (unit, repo-state-worktree-sparse.test.ts)** — `sut = assertWorktreeCoreBooleansValid`.
    Separate tests for each condition: (a) bad `sparseCheckout` ⇒ `.data` =
    `{ code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'core.sparsecheckout', source: \`${gitDir}/config.worktree\`, value: 'bogus' }`.
    (b) bad `sparseCheckoutCone` alone ⇒ key `core.sparsecheckoutcone`. (c) both bad ⇒
@@ -771,7 +771,7 @@ for M1/O3 the `openRepository` call itself is the refusal under test:
    `source` = the worktree path. (c) local bad value + worktree bad value ⇒ the local one
    is named (O1 at unit level). (d) linked ctx: bad value in the linked worktree file
    only ⇒ the linked ctx refuses and the main ctx passes (if the full entry point cannot
-   be driven on a linked memory ctx, pin (d) on `assertWorktreeSparseBooleansValid`
+   be driven on a linked memory ctx, pin (d) on `assertWorktreeCoreBooleansValid`
    directly and say so in the test's Arrange comment). `sut = assertOperationalRepositorySettingsFirst`:
    (e) worktree bad value ⇒ refuses with the worktree source. Expected failure: the
    operational entry points resolve. GREEN: wire the call after `memoizeGateVerdict` in

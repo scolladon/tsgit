@@ -14,6 +14,7 @@ import {
   chmodSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -845,6 +846,66 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
             expect(readFileSync(join(pair.ours, 'f'), 'utf8')).toBe(
               readFileSync(join(pair.peer, 'f'), 'utf8'),
             );
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each([
+      {
+        scope: 'local config',
+        prepare: (dir: string) => sh(dir, 'config', 'core.fileMode', 'bogus'),
+        source: '.git/config',
+      },
+      {
+        scope: 'config.worktree with the extension on',
+        prepare: (dir: string) => {
+          sh(dir, 'config', 'extensions.worktreeConfig', 'true');
+          sh(dir, 'config', '--worktree', 'core.fileMode', 'bogus');
+        },
+        source: '.git/config.worktree',
+      },
+    ])('Given core.fileMode = bogus in $scope', ({ prepare, source }) => {
+      describe('When both tools run status and log', () => {
+        it(
+          'Then git exits 128 on the bad boolean and tsgit refuses with the same key and value',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, [BASE_FILE]);
+            for (const dir of [pair.peer, pair.ours]) prepare(dir);
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            const gitRuns = ['status', 'log'].map((command) =>
+              tryRunGitWithExit(['-C', pair.peer, command], { env: COMMIT_ENV }),
+            );
+            const refusals = await Promise.all(
+              [() => sut.status(), () => sut.log()].map(async (run) => {
+                try {
+                  await run();
+                } catch (error) {
+                  return (error as { readonly data: Record<string, unknown> }).data;
+                }
+                return undefined;
+              }),
+            );
+
+            // Assert
+            for (const gitRun of gitRuns) {
+              expect(gitRun.exitCode).toBe(128);
+              expect(gitRun.stderr).toContain(
+                "fatal: bad boolean config value 'bogus' for 'core.filemode'",
+              );
+            }
+            for (const refusal of refusals) {
+              expect(refusal).toMatchObject({
+                code: 'CONFIG_BAD_BOOLEAN_VALUE',
+                key: 'core.filemode',
+                value: 'bogus',
+                source: join(realpathSync(pair.ours), source),
+              });
+            }
           },
           ROW_TIMEOUT,
         );

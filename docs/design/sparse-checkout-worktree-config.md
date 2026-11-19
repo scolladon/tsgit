@@ -402,7 +402,7 @@ at the command). It skips the file when the extension is off (M2). The local fil
 tokenized first, so O6 also holds, and O3 holds because the worktree parse error comes
 before any command-time value check. So Part 3 only adds the boolean check.
 
-New `assertWorktreeSparseBooleansValid(ctx)` in
+New `assertWorktreeCoreBooleansValid(ctx)` in
 `src/application/primitives/internal/repo-state.ts`. It returns at once when
 `isWorktreeScopeActive(ctx)` is false. Otherwise it reads
 `readConfigSections({ ctx, scope: 'worktree' })` and refuses the first
@@ -417,7 +417,7 @@ Placement, as recommended by Decision 2:
 assertOperationalRepository(ctx):
   assertUsableHeadAndOpenEpoch(ctx)                      // unchanged
   root = memoizeGateVerdict(ctx, computeGateVerdict)     // unchanged: discovery, trust, local values
-  assertWorktreeSparseBooleansValid(ctx)                 // O1, O2: after local values
+  assertWorktreeCoreBooleansValid(ctx)                 // O1, O2: after local values
 ```
 
 `assertOperationalRepositorySettingsFirst` (`:421`) gets the same call after its memo.
@@ -513,7 +513,7 @@ bytes unchanged). `enableWorktreeConfig` gets its own suite, with one test per s
 isolation (extension already on ⇒ no I/O; `false` rewritten; `core.worktree` moved; no
 `core.worktree` ⇒ no worktree write).
 
-**Unit, gate** (`sut = assertWorktreeSparseBooleansValid` and the two operational
+**Unit, gate** (`sut = assertWorktreeCoreBooleansValid` and the two operational
 entry points): R10 and R12 each refuse with a specific `data` payload (code, key, source,
 value), asserted with try/catch. Each condition gets its own test. With the extension
 off, R11 passes. O1 and O2 name the local value. A `config.worktree` edit made after a
@@ -538,7 +538,7 @@ state (ADR-249).
   already green).
 
 Mutation: Stryker scoped to `read-sparse-config.ts`, `enable-worktree-config.ts`, the
-touched `sparse-checkout.ts` functions and `assertWorktreeSparseBooleansValid`, using the
+touched `sparse-checkout.ts` functions and `assertWorktreeCoreBooleansValid`, using the
 narrowed per-module suites (`.claude/workflow/mutation.md`).
 
 ### Row walk (lesson 037)

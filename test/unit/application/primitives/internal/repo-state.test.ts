@@ -492,6 +492,47 @@ describe('primitives/internal/repo-state', () => {
     });
   });
 
+  describe('Given core.filemode = bogus in local config', () => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE naming core.filemode', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfileMode = bogus\n');
+
+        // Act
+        const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+        // Assert
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.filemode',
+          value: 'bogus',
+          source: `${ctx.layout.gitDir}/config`,
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['valueless', '[core]\n\tfileMode\n'],
+    ['false', '[core]\n\tfileMode = false\n'],
+    ['0', '[core]\n\tfileMode = 0\n'],
+  ])('Given core.filemode %s in local config', (_label, text) => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+
+        // Act
+        const result = assertEagerConfigValid(ctx);
+
+        // Assert
+        await expect(result).resolves.toBeUndefined();
+      });
+    });
+  });
+
   describe('Given core.autocrlf = foo on line 3 and core.ignorecase = maybe on line 2', () => {
     describe('When assertEagerConfigValid', () => {
       it('Then the lower line wins', async () => {

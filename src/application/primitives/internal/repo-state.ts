@@ -54,9 +54,9 @@ import {
 } from '../config-read.js';
 import { readActiveWorktreeSections } from '../config-scoped-read.js';
 import {
+  type CoreKeyEntry,
+  coreKeyEntries,
   isWorktreeConfigExtensionOn,
-  type SparseKeyEntry,
-  sparseKeyEntries,
 } from '../read-sparse-config.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
 import { resolveWorktreeScopePath } from './config-scope.js';
@@ -173,6 +173,7 @@ const CORE_BOOLEAN_KEYS: ReadonlyArray<string> = [
   'ignorecase',
   'sparsecheckout',
   'sparsecheckoutcone',
+  'filemode',
 ];
 const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv', 'trustexitcode'];
 const DIFF_STRING_KEYS: ReadonlyArray<string> = [
@@ -412,7 +413,7 @@ const computeGateVerdict = async (ctx: Context): Promise<FilePath> => {
 export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
   await assertUsableHeadAndOpenEpoch(ctx);
   const root = await memoizeGateVerdict(ctx, computeGateVerdict);
-  await assertWorktreeSparseBooleansValid(ctx);
+  await assertWorktreeCoreBooleansValid(ctx);
   return root;
 };
 
@@ -433,25 +434,32 @@ export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Pr
   assertTrustedAndFormat(ctx, await assertDiscoveryAndRoot(ctx));
   await assertRepoSettingsValid(ctx);
   const root = await memoizeGateVerdict(ctx, computeGateVerdict);
-  await assertWorktreeSparseBooleansValid(ctx);
+  await assertWorktreeCoreBooleansValid(ctx);
   return root;
 };
 
 /** A valueless entry parses as true, so only a written value can be refused. */
 const isRefusedBoolean = (
-  entry: SparseKeyEntry,
-): entry is SparseKeyEntry & { readonly value: string } => !parseGitBoolean(entry.value).ok;
+  entry: CoreKeyEntry,
+): entry is CoreKeyEntry & { readonly value: string } => !parseGitBoolean(entry.value).ok;
+
+const WORKTREE_GATED_KEYS: ReadonlySet<string> = new Set([
+  'sparsecheckout',
+  'sparsecheckoutcone',
+  'filemode',
+]);
 
 /**
- * git's `repo_config_get_bool` on the sparse keys dies on a value its boolean
- * grammar refuses, wherever the layered config holds it. The local scope is
- * covered by the memoised eager gate; this covers `config.worktree`, kept
- * outside the memo because that verdict is keyed on the local file only.
- * Only the two sparse keys: git reads no other `[core]` boolean on this path.
+ * git's `git_default_core_config` dies on a bad `core.filemode`, and
+ * `repo_config_get_bool` on a bad sparse key, wherever the layered config
+ * holds them. The local scope is covered by the memoised eager gate; this
+ * covers `config.worktree`, kept outside the memo because that verdict is
+ * keyed on the local file only. `core.ignorecase` in the worktree file is not
+ * checked here.
  */
-export const assertWorktreeSparseBooleansValid = async (ctx: Context): Promise<void> => {
+export const assertWorktreeCoreBooleansValid = async (ctx: Context): Promise<void> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return;
-  const entries = sparseKeyEntries(await readActiveWorktreeSections(ctx));
+  const entries = coreKeyEntries(await readActiveWorktreeSections(ctx), WORKTREE_GATED_KEYS);
   const refused = entries.find(isRefusedBoolean);
   if (refused === undefined) return;
   const source = resolveWorktreeScopePath(ctx, { active: true });
