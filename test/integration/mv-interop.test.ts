@@ -468,35 +468,40 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       });
     });
 
+    const seedLongDirectoryTwins = async () => {
+      const destLength = pathMax - 150;
+      const whole = Math.floor(destLength / (Q200.length + 1));
+      const remainder = destLength - whole * (Q200.length + 1);
+      const steps = [...Array.from({ length: whole }, () => Q200), 'r'.repeat(remainder - 1)];
+      const dest = steps.join('/');
+      const twinsOf: string[] = [];
+      for (const side of ['git', 'tsgit']) {
+        const repo = newTwin(side);
+        for (const file of [`${L200}/f`, `${L200}/s/t`, 'b']) {
+          await mkdir(path.join(repo, path.dirname(file)), { recursive: true });
+          await writeFile(path.join(repo, file), 'x\n');
+        }
+        await writeFile(path.join(repo, `${L200}/u`), 'u\n');
+        runGit(['-C', repo, 'add', '--', `${L200}/f`, `${L200}/s/t`, 'b']);
+        execFileSync(
+          'sh',
+          ['-c', 'for c in "$@"; do mkdir "$c" && cd "$c" || exit 1; done', 'sh', ...steps],
+          {
+            cwd: repo,
+          },
+        );
+        twinsOf.push(repo);
+      }
+      const [gitRepo, tsgitRepo] = twinsOf as [string, string];
+      expect(Buffer.byteLength(`${dest}/${L200}`)).toBeGreaterThan(pathMax);
+      expect(Buffer.byteLength(path.join(tsgitRepo, dest, 'b'))).toBeLessThan(pathMax);
+      return { gitRepo, tsgitRepo, dest, steps };
+    };
+
     describe('When git and tsgit skip errors moving a long directory and a file under a deep destination (row H)', () => {
       it('Then both move the file, refuse the directory and agree on the index and the disk', async () => {
         // Arrange
-        const destLength = pathMax - 150;
-        const whole = Math.floor(destLength / (Q200.length + 1));
-        const remainder = destLength - whole * (Q200.length + 1);
-        const steps = [...Array.from({ length: whole }, () => Q200), 'r'.repeat(remainder - 1)];
-        const dest = steps.join('/');
-        const twinsOf: string[] = [];
-        for (const side of ['git', 'tsgit']) {
-          const repo = newTwin(side);
-          for (const file of [`${L200}/f`, `${L200}/s/t`, 'b']) {
-            await mkdir(path.join(repo, path.dirname(file)), { recursive: true });
-            await writeFile(path.join(repo, file), 'x\n');
-          }
-          await writeFile(path.join(repo, `${L200}/u`), 'u\n');
-          runGit(['-C', repo, 'add', '--', `${L200}/f`, `${L200}/s/t`, 'b']);
-          execFileSync(
-            'sh',
-            ['-c', 'for c in "$@"; do mkdir "$c" && cd "$c" || exit 1; done', 'sh', ...steps],
-            {
-              cwd: repo,
-            },
-          );
-          twinsOf.push(repo);
-        }
-        const [gitRepo, tsgitRepo] = twinsOf as [string, string];
-        expect(Buffer.byteLength(`${dest}/${L200}`)).toBeGreaterThan(pathMax);
-        expect(Buffer.byteLength(path.join(tsgitRepo, dest, 'b'))).toBeLessThan(pathMax);
+        const { gitRepo, tsgitRepo, dest, steps } = await seedLongDirectoryTwins();
         const sut = await openTrackedRepository(tsgitRepo);
 
         // Act
@@ -513,6 +518,59 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         for (const dir of [gitRepo, tsgitRepo]) {
           expect(await pathExists(dir, L200)).toBe(false);
           expect(await pathExists(dir, 'b')).toBe(false);
+          inChain(dir, steps, 'test -f b');
+        }
+      });
+    });
+
+    describe('When git and tsgit move the long directory first without skipErrors (row J)', () => {
+      it('Then both refuse naming the directory destination and move nothing', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, dest } = await seedLongDirectoryTwins();
+        const stageBefore = stageOf(tsgitRepo);
+        const sut = await openTrackedRepository(tsgitRepo);
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '--', L200, 'b', dest]);
+        const data = await sut.mv([L200, 'b'], dest).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(gitRun.exitCode).toBe(128);
+        expect(gitRun.stderr).toContain(
+          `renaming '${L200}' to '${dest}/${L200}' failed: File name too long`,
+        );
+        expect(data).toEqual({ code: 'PATH_TOO_LONG', path: `${dest}/${L200}` });
+        expect(stageOf(tsgitRepo)).toEqual(stageBefore);
+        expect(stageOf(gitRepo)).toEqual(stageBefore);
+        for (const dir of [gitRepo, tsgitRepo]) {
+          expect(await pathExists(dir, L200)).toBe(true);
+          expect(await pathExists(dir, 'b')).toBe(true);
+        }
+      });
+    });
+
+    describe('When git and tsgit skip errors moving the file before the long directory (row K)', () => {
+      it('Then both move the file, skip the directory, delete it and agree on the index', async () => {
+        // Arrange
+        const { gitRepo, tsgitRepo, dest, steps } = await seedLongDirectoryTwins();
+        const sut = await openTrackedRepository(tsgitRepo);
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', gitRepo, 'mv', '-k', '-v', '--', 'b', L200, dest]);
+        const result = await sut.mv(['b', L200], dest, { skipErrors: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result.skipped).toEqual([{ source: L200, reason: 'rename-failed' }]);
+        expect(gitRun.stdout.split('\n').filter((line) => line !== '')).toEqual(
+          mvVerboseLines(['b', L200], (source) => `${dest}/${source}`, result, [L200]),
+        );
+        expect(stageOf(tsgitRepo)).toEqual(stageOf(gitRepo));
+        for (const dir of [gitRepo, tsgitRepo]) {
+          expect(await pathExists(dir, L200)).toBe(false);
           inChain(dir, steps, 'test -f b');
         }
       });
@@ -691,7 +749,8 @@ describe.skipIf(!GIT_AVAILABLE || !CASE_INSENSITIVE)(
 
             // Assert
             expect(gitRun.exitCode).toBe(128);
-            expect(data).toMatchObject({ code: 'DIRECTORY_NOT_EMPTY' });
+            expect(gitRun.stderr).toContain("renaming 'y/D' to 'T/D' failed: Directory not empty");
+            expect(data).toEqual({ code: 'DIRECTORY_NOT_EMPTY', path: 'y/D' });
             expect(lsStage(pair.ours)).toBe(stageBefore);
             expect(lsStage(pair.peer)).toBe(stageBefore);
             expect(await pathExists(pair.ours, 'T/d/f')).toBe(true);
@@ -770,6 +829,7 @@ describe.skipIf(!GIT_AVAILABLE || !CASE_INSENSITIVE)(
 
           // Assert
           expect(gitRun.exitCode).toBe(0);
+          expect(result.skipped).toEqual([{ source: 'd', reason: 'rename-failed' }]);
           expect(linesOf(gitRun.stdout)).toEqual(
             mvVerboseLines(['d', 'e'], (source) => `D/${source}`, result, ['d', 'e']),
           );

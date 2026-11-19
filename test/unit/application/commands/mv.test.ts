@@ -1037,6 +1037,11 @@ describe('mv on a directory holding a lossy member', () => {
   });
 });
 
+const withoutDirectoryRename = (ctx: Context): Context => {
+  const { renameDirectory: _absent, ...fs } = ctx.fs;
+  return { ...ctx, fs };
+};
+
 describe('mv — a move the file system refuses', () => {
   const failingRename = (ctx: Context, fault: TsgitError): Context => ({
     ...ctx,
@@ -1057,11 +1062,6 @@ describe('mv — a move the file system refuses', () => {
       },
     },
   });
-
-  const withoutDirectoryRename = (ctx: Context): Context => {
-    const { renameDirectory: _absent, ...fs } = ctx.fs;
-    return { ...ctx, fs };
-  };
 
   describe('Given a rename the file system refuses as too long', () => {
     describe('When mv', () => {
@@ -1284,6 +1284,25 @@ describe('mv — skipErrors and a rename the file system refuses', () => {
     },
   });
 
+  describe('Given a tracked directory whose rename succeeds', () => {
+    describe('When mv with skipErrors', () => {
+      it('Then nothing is removed recursively', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/f': 'f' });
+        const rmRecursive = vi.fn(ctx.fs.rmRecursive.bind(ctx.fs));
+        const watched: Context = { ...ctx, fs: { ...ctx.fs, rmRecursive } };
+        const sut = mv;
+
+        // Act
+        const result = await sut(watched, ['d'], 'e', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped).toEqual([]);
+        expect(rmRecursive).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a tracked file whose rename refuses PATH_TOO_LONG', () => {
     describe('When mv with skipErrors', () => {
       it('Then base is skipped as rename-failed and index and disk keep base', async () => {
@@ -1484,11 +1503,6 @@ describe('mv — skipErrors and a rename the file system refuses', () => {
 });
 
 describe('mv — skipErrors and a partial entry-by-entry move', () => {
-  const withoutDirectoryRename = (ctx: Context): Context => {
-    const { renameDirectory: _absent, ...fs } = ctx.fs;
-    return { ...ctx, fs };
-  };
-
   const faultOnRename = (
     ctx: Context,
     { at, fault }: { at: number; fault: TsgitError },
@@ -1671,121 +1685,123 @@ describe('mv — skipErrors and a partial entry-by-entry move', () => {
       });
     });
   });
+});
 
-  describe('mv — a destination that differs only in case', () => {
-    const aliasing = (ctx: Context, alias: string, real: string): Context => ({
-      ...ctx,
-      fs: {
-        ...ctx.fs,
-        lstat: async (path: string) => {
-          const aliased = work(ctx, alias);
-          const mapped =
-            path === aliased || path.startsWith(`${aliased}/`)
-              ? work(ctx, real) + path.slice(aliased.length)
-              : path;
-          return ctx.fs.lstat(mapped);
-        },
+describe('mv — a destination that differs only in case', () => {
+  const aliasing = (ctx: Context, alias: string, real: string): Context => ({
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      lstat: async (path: string) => {
+        const aliased = work(ctx, alias);
+        const mapped =
+          path === aliased || path.startsWith(`${aliased}/`)
+            ? work(ctx, real) + path.slice(aliased.length)
+            : path;
+        return ctx.fs.lstat(mapped);
       },
-    });
-    const setIgnoreCase = (ctx: Context, value: string): Promise<void> =>
-      updateConfigEntries(ctx, [{ section: 'core', key: 'ignorecase', value }]);
+    },
+  });
+  const setIgnoreCase = (ctx: Context, value: string): Promise<void> =>
+    updateConfigEntries(ctx, [{ section: 'core', key: 'ignorecase', value }]);
 
-    describe('Given core.ignorecase true and F aliasing f', () => {
-      describe('When mv(f, F)', () => {
-        it('Then the index holds F, not f, and the disk holds F', async () => {
-          // Arrange
-          const ctx = await seedAndStage({ f: 'f' });
-          await setIgnoreCase(ctx, 'true');
-          const sut = mv;
+  describe('Given core.ignorecase true and F aliasing f', () => {
+    describe('When mv(f, F)', () => {
+      it('Then the index holds F, not f, and the disk holds F', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ f: 'f' });
+        await setIgnoreCase(ctx, 'true');
+        const sut = mv;
 
-          // Act
-          await sut(aliasing(ctx, 'F', 'f'), ['f'], 'F');
+        // Act
+        await sut(aliasing(ctx, 'F', 'f'), ['f'], 'F');
 
-          // Assert
-          expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['F']);
-          expect(await exists(ctx, 'F')).toBe(true);
-          expect(await exists(ctx, 'f')).toBe(false);
-        });
+        // Assert
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['F']);
+        expect(await exists(ctx, 'F')).toBe(true);
+        expect(await exists(ctx, 'f')).toBe(false);
       });
     });
+  });
 
-    describe.each([
-      { label: 'false', configure: (ctx: Context) => setIgnoreCase(ctx, 'false') },
-      { label: 'absent', configure: async () => undefined },
-    ])('Given core.ignorecase $label and F aliasing f', ({ configure }) => {
-      describe('When mv(f, F)', () => {
-        it('Then it refuses MV_DESTINATION_EXISTS and the index is unchanged', async () => {
-          // Arrange
-          const ctx = await seedAndStage({ f: 'f' });
-          await configure(ctx);
-          const sut = mv;
+  describe.each([
+    { label: 'false', configure: (ctx: Context) => setIgnoreCase(ctx, 'false') },
+    { label: 'absent', configure: async () => undefined },
+  ])('Given core.ignorecase $label and F aliasing f', ({ configure }) => {
+    describe('When mv(f, F)', () => {
+      it('Then it refuses MV_DESTINATION_EXISTS and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ f: 'f' });
+        await configure(ctx);
+        const sut = mv;
 
-          // Act
-          const error = await expectError(
-            () => sut(aliasing(ctx, 'F', 'f'), ['f'], 'F'),
-            'MV_DESTINATION_EXISTS',
-          );
+        // Act
+        const error = await expectError(
+          () => sut(aliasing(ctx, 'F', 'f'), ['f'], 'F'),
+          'MV_DESTINATION_EXISTS',
+        );
 
-          // Assert
-          expect(error.data).toMatchObject({ source: 'f', destination: 'F' });
-          expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['f']);
-        });
+        // Assert
+        expect(error.data).toMatchObject({ source: 'f', destination: 'F' });
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['f']);
       });
     });
+  });
 
-    describe('Given core.ignorecase true and an existing G that is not a case variant', () => {
-      describe('When mv(f, G)', () => {
-        it('Then it refuses MV_DESTINATION_EXISTS', async () => {
-          // Arrange
-          const ctx = await seedAndStage({ f: 'f', G: 'g' });
-          await setIgnoreCase(ctx, 'true');
-          const sut = mv;
+  describe('Given core.ignorecase true and an untracked G that is not a case variant', () => {
+    describe('When mv(f, G)', () => {
+      it('Then it refuses MV_DESTINATION_EXISTS and leaves G untouched', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ f: 'f' });
+        await ctx.fs.writeUtf8(work(ctx, 'G'), 'g');
+        await setIgnoreCase(ctx, 'true');
+        const sut = mv;
 
-          // Act
-          const error = await expectError(() => sut(ctx, ['f'], 'G'), 'MV_DESTINATION_EXISTS');
+        // Act
+        const error = await expectError(() => sut(ctx, ['f'], 'G'), 'MV_DESTINATION_EXISTS');
 
-          // Assert
-          expect(error.data).toMatchObject({ source: 'f', destination: 'G' });
-        });
+        // Assert
+        expect(error.data).toMatchObject({ source: 'f', destination: 'G' });
+        expect(await ctx.fs.readUtf8(work(ctx, 'G'))).toBe('g');
       });
     });
+  });
 
-    describe('Given core.ignorecase true, a directory a/d and A aliasing a', () => {
-      describe('When mv(a/d, A)', () => {
-        it('Then it refuses MV_DESTINATION_EXISTS with index and disk unchanged', async () => {
-          // Arrange
-          const ctx = await seedAndStage({ 'a/d/x': 'x' });
-          await setIgnoreCase(ctx, 'true');
-          const sut = mv;
+  describe('Given core.ignorecase true, a directory a/d and A aliasing a', () => {
+    describe('When mv(a/d, A)', () => {
+      it('Then it refuses MV_DESTINATION_EXISTS with index and disk unchanged', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a/d/x': 'x' });
+        await setIgnoreCase(ctx, 'true');
+        const sut = mv;
 
-          // Act
-          const error = await expectError(
-            () => sut(aliasing(ctx, 'A', 'a'), ['a/d'], 'A'),
-            'MV_DESTINATION_EXISTS',
-          );
+        // Act
+        const error = await expectError(
+          () => sut(aliasing(ctx, 'A', 'a'), ['a/d'], 'A'),
+          'MV_DESTINATION_EXISTS',
+        );
 
-          // Assert
-          expect(error.data).toMatchObject({ source: 'a/d', destination: 'A/d' });
-          expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['a/d/x']);
-          expect(await exists(ctx, 'a/d/x')).toBe(true);
-        });
+        // Assert
+        expect(error.data).toMatchObject({ source: 'a/d', destination: 'A/d' });
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['a/d/x']);
+        expect(await exists(ctx, 'a/d/x')).toBe(true);
       });
     });
+  });
 
-    describe('Given core.ignorecase true and A aliasing a', () => {
-      describe('When mv(a/g, A)', () => {
-        it('Then a/g moves to A/g', async () => {
-          // Arrange
-          const ctx = await seedAndStage({ 'a/g': 'g' });
-          await setIgnoreCase(ctx, 'true');
-          const sut = mv;
+  describe('Given core.ignorecase true and A aliasing a', () => {
+    describe('When mv(a/g, A)', () => {
+      it('Then a/g moves to A/g', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a/g': 'g' });
+        await setIgnoreCase(ctx, 'true');
+        const sut = mv;
 
-          // Act
-          await sut(aliasing(ctx, 'A', 'a'), ['a/g'], 'A');
+        // Act
+        await sut(aliasing(ctx, 'A', 'a'), ['a/g'], 'A');
 
-          // Assert
-          expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['A/g']);
-        });
+        // Assert
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['A/g']);
       });
     });
   });

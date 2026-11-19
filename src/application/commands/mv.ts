@@ -151,28 +151,35 @@ export const mv = async (
 
 interface MvRequest {
   readonly sources: ReadonlyArray<FilePath>;
+  readonly firstSource: FilePath;
   readonly destination: string;
   readonly destNoSlash: FilePath;
 }
 
 const parseRequest = (sources: ReadonlyArray<string>, destination: string): MvRequest => {
   const validatedSources = sources.map((source) => validatePath(wellFormed(source)));
-  if (validatedSources.length === 0) throw emptyPathspec();
+  const [firstSource] = validatedSources;
+  if (firstSource === undefined) throw emptyPathspec();
   assertNoOverlappingSources(validatedSources);
   const wellFormedDestination = wellFormed(destination);
   const destNoSlash = validatePath(stripTrailingSlash(wellFormedDestination));
-  return { sources: validatedSources, destination: wellFormedDestination, destNoSlash };
+  return {
+    sources: validatedSources,
+    firstSource,
+    destination: wellFormedDestination,
+    destNoSlash,
+  };
 };
 
 const planUnderLock = async (
   ctx: Context,
   byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
-  { sources, destination, destNoSlash }: MvRequest,
+  { sources, firstSource, destination, destNoSlash }: MvRequest,
   opts: MvOptions,
 ): Promise<Plan> => {
-  const mode = await resolveDestinationMode(ctx, sources[0] as FilePath, destination, destNoSlash);
+  const mode = await resolveDestinationMode(ctx, firstSource, destination, destNoSlash);
   if (mode.kind === 'rename' && sources.length > 1) {
-    throw mvDestinationNotDirectory(sources[0] as FilePath, mode.target);
+    throw mvDestinationNotDirectory(firstSource, mode.target);
   }
   const policy = await destinationPolicyOf(ctx, opts);
   const plan = await buildPlan(ctx, byPath, sources, mode, opts, policy);
@@ -272,14 +279,15 @@ const renameSkipsOf = (executed: ReadonlyArray<ExecutedItem>): ReadonlyArray<MvS
     .map(({ item }) => ({ source: item.source, reason: 'rename-failed' }));
 
 // After the whole loop: a later source may have been renamed into the abandoned
-// directory, so a per-item cleanup would delete it too early.
+// directory, so a per-item cleanup would delete it too early. A skipped file keeps
+// its index entry, so only a directory can classify as untracked here.
 const removeAbandonedSources = async (
   ctx: Context,
   byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
   executed: ReadonlyArray<ExecutedItem>,
 ): Promise<void> => {
   for (const { item, outcome } of executed) {
-    if (item.kind !== 'directory' || outcome !== 'skipped') continue;
+    if (outcome !== 'skipped') continue;
     if (classifySource(byPath, item.source).kind !== 'untracked') continue;
     await discardDirectory(ctx, item.source);
   }

@@ -53,12 +53,13 @@ const withoutDirectoryRename: ContextShape = (base) => {
 const moved = async (
   entries: Readonly<Record<string, TreeEntry>>,
   shape: ContextShape,
+  move: typeof renameInWorkingTree,
 ): Promise<{ readonly ctx: Context; readonly root: string }> => {
   const base = createMemoryContext();
   const root = `${base.layout.workDir}`;
   await seed(base, `${root}/old`, entries);
   const ctx = shape(base);
-  await renameInWorkingTree(ctx, 'old', 'new');
+  await move(ctx, 'old', 'new');
   return { ctx, root };
 };
 
@@ -69,10 +70,11 @@ describe('renameInWorkingTree entry by entry', () => {
         await fc.assert(
           fc.asyncProperty(directoryTreeArb(), async (entries) => {
             // Arrange
-            const oracle = await moved(entries, asIs);
+            const sut = renameInWorkingTree;
+            const oracle = await moved(entries, asIs, sut);
 
             // Act
-            const result = await moved(entries, withoutDirectoryRename);
+            const result = await moved(entries, withoutDirectoryRename, sut);
 
             // Assert
             expect(await listing(result.ctx, `${result.root}/new`)).toEqual(
