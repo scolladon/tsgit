@@ -65,7 +65,7 @@ differ only where a commit timestamp enters them).
 
 | Where | Symbol | Role today |
 |---|---|---|
-| `src/domain/objects/file-mode.ts` | `deriveWorkingMode(stat: { isSymbolicLink; mode }): FileMode` | symlink → `120000`; `mode & 0o111` → `100755`/`100644`. The trusted arm of git's rule, used everywhere |
+| `src/domain/objects/file-mode.ts` | `deriveWorkingMode(stat: { isSymbolicLink; mode }): FileMode` | symlink → `120000`; the owner exec bit (`S_IXUSR`, `0o100`) → `100755`/`100644`. The trusted arm of git's rule, used everywhere |
 | `src/application/primitives/compare-working-tree-entry.ts` | `compareFile(ctx, entry, absPath, stat, scope)` → `statOnlyVerdict`, `compareContent`; `compareGitlink` (`type-changed` arm); `ComparisonScope { provider?, indexMtime?, filterDriversConfigured?, scanner? }`; `compareAndRefresh`, `compareWorkingTreeDelta`, `compareWorkingTreeEntry` (public via `tsgit/primitives`), `racyContentMatcher` | **the seam.** `worktreeMode = deriveWorkingMode(stat)`, and `worktreeMode !== entry.mode` yields `mode-changed`. Consumers: `status`, `rm`, `stash` (change detection, list at `stash.ts` `'mode-changed'`), `clean-work-tree`, `refresh-index`, `find-would-overwrite` (merge family), `submodule-state`, `submodule-absorb`, `scan-tracked-entries` |
 | `src/application/primitives/internal/is-entry-stat-clean.ts` | `matchesCachedStat({ entry, indexMtime }, absPath, stat, contentMatches)` | `deriveWorkingMode(stat) !== entry.mode` → not clean. Consumers: `stale-entries.ts` `upgradeStaleNoops` (forced and path checkout rewrite), `sparse-left-dirty.ts` |
 | `src/application/primitives/internal/smudge-racily-clean.ts` | `statStillMatches` | the same mode test before the racy smudge |
