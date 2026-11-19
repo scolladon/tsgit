@@ -33,7 +33,12 @@ after being shown that git's `-k` arm writes into the repository's administrativ
 
 ## Consequences
 
-Without `skipErrors`, the refusal is `PATHSPEC_BEYOND_SYMLINK` naming the member's source and
-destination, raised at planning before anything moves. Under `skipErrors`, a directory source whose
-destination lies beyond a symbolic link is renamed as git renames it, and its members stay in the
-index under the source; the work tree then lacks them, as git's does.
+Without `skipErrors`, the refusal is a new `MV_DESTINATION_BEYOND_SYMLINK { source, destination }`
+naming the member's source and destination, raised at planning before anything moves
+(adopted-as-recommended — ADR-202's granular `MV_*` family; the existing `PATHSPEC_BEYOND_SYMLINK`
+carries only `path`). Under `skipErrors`, a directory source whose destination lies beyond a
+symbolic link is renamed as git renames it, and its members stay in the index under the source; the
+work tree then lacks them, as git's does. `skipped` holds one
+`{ source: <member>, reason: 'destination-beyond-symlink' }` per member, git's granularity, and the
+renamed directory appears in neither `moved` nor `skipped` (adopted-as-recommended — ADR-1223, no
+trade-off).
