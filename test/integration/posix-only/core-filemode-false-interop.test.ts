@@ -158,6 +158,20 @@ const writeFileWith = (name: string, content: string, permissions: number) => (d
 };
 const gitRemove = (name: string) => (dir: string) => sh(dir, 'rm', '-q', name);
 
+const AA_OURS_EXECUTABLE: ConflictShape = {
+  id: 'AA with ours 100755 and theirs 100644',
+  base: undefined,
+  prepareMain: writeFileWith('f', 'main\n', EXECUTABLE_PERMISSIONS),
+  prepareOther: writeFileWith('f', 'other\n', PLAIN_PERMISSIONS),
+};
+
+const DU_BASE_EXECUTABLE: ConflictShape = {
+  id: 'DU with base 100755 and theirs 100644',
+  base: EXECUTABLE_FILE,
+  prepareMain: gitRemove('f'),
+  prepareOther: writeFileWith('f', 'two\n', PLAIN_PERMISSIONS),
+};
+
 const CONFLICT_SHAPES: ReadonlyArray<ConflictShape> = [
   {
     id: 'UD with ours 100755 over base 100644',
@@ -165,19 +179,28 @@ const CONFLICT_SHAPES: ReadonlyArray<ConflictShape> = [
     prepareMain: writeFileWith('f', 'two\n', EXECUTABLE_PERMISSIONS),
     prepareOther: gitRemove('f'),
   },
-  {
-    id: 'AA with ours 100755 and theirs 100644',
-    base: undefined,
-    prepareMain: writeFileWith('f', 'main\n', EXECUTABLE_PERMISSIONS),
-    prepareOther: writeFileWith('f', 'other\n', PLAIN_PERMISSIONS),
-  },
-  {
-    id: 'DU with base 100755 and theirs 100644',
-    base: EXECUTABLE_FILE,
-    prepareMain: gitRemove('f'),
-    prepareOther: writeFileWith('f', 'two\n', PLAIN_PERMISSIONS),
-  },
+  AA_OURS_EXECUTABLE,
+  DU_BASE_EXECUTABLE,
 ];
+
+const DU_BASE_PLAIN_THEIRS_EXECUTABLE: ConflictShape = {
+  id: 'DU with base 100644 and theirs 100755',
+  base: BASE_FILE,
+  prepareMain: gitRemove('f'),
+  prepareOther: writeFileWith('f', 'two\n', EXECUTABLE_PERMISSIONS),
+};
+
+const conflictIn = (dir: string, shape: ConflictShape): void => {
+  sh(dir, 'checkout', '-q', '-b', 'other');
+  shape.prepareOther(dir);
+  sh(dir, 'add', '-A');
+  sh(dir, 'commit', '-q', '-m', 'other');
+  sh(dir, 'checkout', '-q', 'main');
+  shape.prepareMain(dir);
+  sh(dir, 'add', '-A');
+  sh(dir, 'commit', '-q', '-m', 'main');
+  tryRunGitWithExit(['-C', dir, 'merge', 'other'], { env: COMMIT_ENV });
+};
 
 const gitConflictModes = (dir: string): ReadonlyArray<string> =>
   sh(dir, 'status', '--porcelain=v2')
@@ -185,6 +208,95 @@ const gitConflictModes = (dir: string): ReadonlyArray<string> =>
     .filter((line) => line.startsWith('u '))
     .map((line) => line.split(' '))
     .map((cols) => `${cols[1]} ${cols[6]} ${cols[10]}`);
+
+interface AddRow {
+  readonly id: string;
+  readonly files: ReadonlyArray<SeedFile>;
+  readonly conflict?: ConflictShape;
+  readonly prepare: (dir: string) => void;
+  readonly path: string;
+  readonly expectedMode: string;
+  readonly expectedStatus?: ReadonlyArray<string>;
+}
+
+const removeAndWrite = (name: string, content: string, permissions: number) => (dir: string) => {
+  rmSync(join(dir, name));
+  writeFileWith(name, content, permissions)(dir);
+};
+
+const ADD_ROWS: ReadonlyArray<AddRow> = [
+  {
+    id: 'A1 tracked 100644 gaining the bit',
+    files: [BASE_FILE],
+    prepare: inOrder(setFileMode('false'), chmodTo(EXECUTABLE_PERMISSIONS)),
+    path: 'f',
+    expectedMode: '100644',
+  },
+  {
+    id: 'A2 tracked 100755 losing the bit',
+    files: [EXECUTABLE_FILE],
+    prepare: inOrder(setFileMode('false'), chmodTo(PLAIN_PERMISSIONS)),
+    path: 'f',
+    expectedMode: '100755',
+  },
+  {
+    id: 'A3 tracked 100755 losing the bit with new content',
+    files: [EXECUTABLE_FILE],
+    prepare: inOrder(
+      setFileMode('false'),
+      writeFileWith('f', 'two\n', PLAIN_PERMISSIONS),
+      chmodTo(PLAIN_PERMISSIONS),
+    ),
+    path: 'f',
+    expectedMode: '100755',
+  },
+  {
+    id: 'A5 untracked executable file',
+    files: [SEED_FILE],
+    prepare: inOrder(setFileMode('false'), writeFileWith('n', 'new\n', EXECUTABLE_PERMISSIONS)),
+    path: 'n',
+    expectedMode: '100644',
+  },
+  {
+    id: 'A6 tracked 100755 removed and recreated plain with new content',
+    files: [EXECUTABLE_FILE],
+    prepare: inOrder(setFileMode('false'), removeAndWrite('f', 'two\n', PLAIN_PERMISSIONS)),
+    path: 'f',
+    expectedMode: '100755',
+    expectedStatus: ['M 100755 100755 f'],
+  },
+  {
+    id: 'A13 symlink replaced by an executable file',
+    files: [{ path: 'l', content: '', linkTo: 'target' }],
+    prepare: inOrder(setFileMode('false'), removeAndWrite('l', 'target', EXECUTABLE_PERMISSIONS)),
+    path: 'l',
+    expectedMode: '100644',
+  },
+  {
+    id: 'A7 stage 2 executable beside stage 3 plain',
+    files: [SEED_FILE],
+    conflict: AA_OURS_EXECUTABLE,
+    prepare: inOrder(setFileMode('false'), chmodTo(PLAIN_PERMISSIONS)),
+    path: 'f',
+    expectedMode: '100755',
+  },
+  {
+    id: 'A9 stage 1 executable beside stage 3 plain',
+    files: [EXECUTABLE_FILE],
+    conflict: DU_BASE_EXECUTABLE,
+    prepare: inOrder(setFileMode('false'), chmodTo(PLAIN_PERMISSIONS)),
+    path: 'f',
+    expectedMode: '100755',
+  },
+  {
+    id: 'A10 stage 1 plain beside stage 3 executable',
+    files: [BASE_FILE],
+    conflict: DU_BASE_PLAIN_THEIRS_EXECUTABLE,
+    prepare: inOrder(setFileMode('false'), chmodTo(EXECUTABLE_PERMISSIONS)),
+    path: 'f',
+    expectedMode: '100644',
+  },
+];
 
 describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
   let pair: PeerPair;
@@ -370,6 +482,39 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
       });
     });
 
+    describe.each(ADD_ROWS)('Given the $id row and core.fileMode=false', (row) => {
+      describe('When both tools add the path', () => {
+        it(
+          'Then both stage the donor mode and agree on the index',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, row.files);
+            for (const dir of [pair.peer, pair.ours]) {
+              if (row.conflict !== undefined) conflictIn(dir, row.conflict);
+              row.prepare(dir);
+            }
+            const sut = await open({ cwd: pair.ours });
+            const oursBefore = await tsgitStatusRows(sut);
+            const gitBefore = gitStatusRows(pair.peer);
+
+            // Act
+            sh(pair.peer, 'add', row.path);
+            await sut.add([row.path]);
+
+            // Assert
+            if (row.expectedStatus !== undefined) {
+              expect(gitBefore).toEqual(row.expectedStatus);
+              expect(oursBefore).toEqual(row.expectedStatus);
+            }
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+            expect(lsStage(pair.ours)).toMatch(new RegExp(`^${row.expectedMode} `));
+            expect(ownerExec(pair.ours, row.path)).toBe(ownerExec(pair.peer, row.path));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
     describe.each(CONFLICT_SHAPES)('Given a $id conflict and core.fileMode=false', (shape) => {
       describe('When both tools report the status', () => {
         it(
@@ -378,15 +523,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
             // Arrange
             seedBoth(ignoreCase, [shape.base ?? SEED_FILE]);
             for (const dir of [pair.peer, pair.ours]) {
-              sh(dir, 'checkout', '-q', '-b', 'other');
-              shape.prepareOther(dir);
-              sh(dir, 'add', '-A');
-              sh(dir, 'commit', '-q', '-m', 'other');
-              sh(dir, 'checkout', '-q', 'main');
-              shape.prepareMain(dir);
-              sh(dir, 'add', '-A');
-              sh(dir, 'commit', '-q', '-m', 'main');
-              tryRunGitWithExit(['-C', dir, 'merge', 'other'], { env: COMMIT_ENV });
+              conflictIn(dir, shape);
               setFileMode('false')(dir);
               chmodTo(PLAIN_PERMISSIONS)(dir);
             }
