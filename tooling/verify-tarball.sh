@@ -516,7 +516,16 @@ done
 # core.symlinks, a symlinked or unreachable leading path, a non-file occupant),
 # the leading-symlink guard on conflict-stop retirement, gitlink retirement, and
 # stash's skip-worktree carry through apply --index.
-SIZE_CAP=$((1534 * 1024))
+# Raised 1534 -> 1538 KiB by mv's directory moves: the measured pack landed at
+# 1 574 250 B, 3 434 B over the old cap, attributable to the one-step directory
+# rename capability and its read-first entry-by-entry fallback, skipErrors
+# reproducing git mv -k (skipped renames, abandoned-source and partial-move
+# cleanup), the destination-beyond-a-symbolic-link refusal, the index replacement
+# rule for a path and the paths beneath it, case-only renames under
+# core.ignorecase, and the bad-source and empty-source-directory refusals —
+# runtime code in every distribution form, none removable without dropping the
+# behaviour.
+SIZE_CAP=$((1538 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
