@@ -5,7 +5,9 @@
 > `rename(2)`s the directory in one step. Move a directory in one `fs.rename` wherever the adapter
 > can. Keep a hardened leaf-by-leaf path for adapters that cannot (OPFS) behind a port capability.
 > Status: draft → self-reviewed ×3 → accepted → revised against ADR-1217..1222 (D4 deviates:
-> `skipErrors` copies git's data-destroying `-k` arms; ledger row 32.72 is folded)
+> `skipErrors` copies git's data-destroying `-k` arms; ledger row 32.72 is folded) → revised
+> against ADR-1223 (N1: a refused rename is a `skipped` entry, `'rename-failed'`) and ADR-1224
+> (N2 deviates: under `skipErrors` a partial entry-by-entry move is removed from the destination)
 
 ## Context
 
@@ -42,7 +44,7 @@ it. Since ADR-815..825 the memory adapter renames directories natively. The doc 
 | `src/application/commands/internal/working-tree.ts` | `renameInWorkingTree(ctx: Context, rawFrom: string, rawTo: string): Promise<void>` | validates both ends, then `moveNode` |
 | same | `moveNode(ctx, from: MoveEnd, to: MoveEnd)`, `moveLeaf(ctx, fromAbs, to: MoveEnd)`, `MoveEnd { abs, rel }`, `childOf` | `lstat` → directory: `readdir` + recurse + `rmRecursive(src)`; leaf: `mkdir(dirname(dst))` + `rename`. `moveLeaf` relabels `PATH_TOO_LONG` to `pathTooLong(to.rel)` (ADR-1194) |
 | `src/application/commands/mv.ts` | `mv` | under the index lock: plan → `applyToIndex` (in memory) → `renameInWorkingTree` per plan item → `lock.commit`. A throw releases the lock without a commit |
-| same | `PlanItem { source, target, entries }`, `Plan { planned, skipped }`, `buildPlan`, `applyToIndex(pathRules, byPath, planned)` (validates each repathed path with `validateIndexPath`, then `delete` + `set`), `plannedMoves`, `classifySource`, `refusal`, `MvSkipReason` | `skipErrors` today only collects planning refusals into `skipped`; an execution-time refusal throws whatever the flag |
+| same | `PlanItem { source, target, entries }`, `Plan { planned, skipped }`, `buildPlan`, `applyToIndex(pathRules, byPath, planned)` (validates each repathed path with `validateIndexPath`, then `delete` + `set`), `plannedMoves`, `classifySource`, `refusal`, `MvSkipReason` | `skipErrors` today only collects planning refusals into `skipped`; an execution-time refusal throws whatever the flag. `Verdict.skip` and `refusal(reason: MvSkipReason, …)` share the public union. `lstatOrUndefined(ctx, path)` maps every `lstat` failure to `undefined` |
 | `src/application/commands/internal/working-tree.ts` | `removeDirectory(ctx, rawPath)`, `repoPath`, `validateWorkingTreePathOn` | `removeDirectory` refuses a missing or non-directory path with `CHECKOUT_OVERWRITE_DIRTY`, then `rmRecursive` |
 | same | `validateMove`, `destinationFree(ctx, byPath, target, kind, force)`, `resolveDestinationMode` | planning refusals. `destinationFree` treats any `lstat` hit on `target` as "exists" (row 6) |
 | `src/ports/file-system.ts` | `FileSystem.rename`, `FileSystem.atomicRename?`, `FileSystem.rmdir?` | `rename`'s doc: on node and memory a directory source is renamed whole, and a destination inside the source refuses `UNSUPPORTED_OPERATION` (no `path`). On the browser a directory source refuses `FILE_NOT_FOUND` |
@@ -70,7 +72,10 @@ it. Since ADR-815..825 the memory adapter renames directories natively. The doc 
   paths.
 - This change's own ADRs: ADR-1217 (port capability), ADR-1218 (entry-by-entry path), ADR-1219
   (refusal surface), **ADR-1220** (`skipErrors` copies git's `-k` outcome, data loss included, and
-  folds ledger row 32.72), ADR-1221 (case-only rename under `core.ignorecase`), ADR-1222 (`fix(mv)!:`).
+  folds ledger row 32.72), ADR-1221 (case-only rename under `core.ignorecase`), ADR-1222 (`fix(mv)!:`),
+  **ADR-1223** (a refused rename under `skipErrors` is reported as `skipped`,
+  `reason: 'rename-failed'`), **ADR-1224** (under `skipErrors` a failed entry-by-entry move ends in
+  git's state: what it created at the destination is removed; without `skipErrors` ADR-1218 stands).
 - ADR-1170 (filing bar). Ledger row **32.72** (`mv -k` throws on a file rename the host refuses,
   where git skips) leaves `docs/known-divergences.md` (ADR-1220, D-2).
 
@@ -98,10 +103,21 @@ it. Since ADR-815..825 the memory adapter renames directories natively. The doc 
   deleted recursively — untracked files, empty subdirectories and nested trees included — when no
   index entry remains under it. The deletion is deliberate (ADR-1220, D-4) and happens on every
   adapter, whatever the `TsgitError` refusal (`EINVAL` alias, `PATH_TOO_LONG`, any other adapter
-  refusal; R7).
+  refusal; R7). `skipped` holds `{ source: <the directory>, reason: 'rename-failed' }` (ADR-1223);
+  its members stay in `moved`, which is the index truth.
 - **R12 — `skipErrors`, a file whose rename fails (rows F, I; ledger 32.72).** The call returns. That
   pair is skipped: its index entry stays at the source, the file stays on disk, and the other pairs
-  proceed.
+  proceed. The file is absent from `moved` and `skipped` holds `{ source, reason: 'rename-failed' }`
+  (ADR-1223).
+- **R14 — `skipErrors`, a partial entry-by-entry move (ADR-1224).** When a directory's move fails
+  after it created entries at the destination (the leaf path, R6), the destination path is removed
+  with everything beneath it, so the disk ends as git's (index repathed, source deleted by R11,
+  nothing at the destination). The removal happens only when all three hold: the destination was
+  absent immediately before this pair's move, it is present after the failure, and the directory's
+  source is abandoned (no lossy member keeps it, N3). The first guard is load-bearing: planning
+  proves the destination absent, but an earlier pair of the same call can make it exist through a
+  case alias (row L), and then it holds that pair's content. Without `skipErrors` nothing is
+  removed: ADR-1218's partial move stands.
 - **R13 — index validation still precedes the first rename.** Every repathed index entry is checked
   against the index-path rules before any working-tree rename, as today, so an `INVALID_INDEX_ENTRY`
   refusal still leaves disk untouched.
@@ -110,23 +126,28 @@ it. Since ADR-815..825 the memory adapter renames directories natively. The doc 
   source subtree happens before the first move. Every source directory, empty ones included, is
   recreated at the destination. The source is cleaned up only by empty-directory removal
   (`removeEmptyDirectoryTree`), never by `rmRecursive`, so an entry still under the source is never
-  deleted. A write fault after the first move leaves a partial move, which is documented
-  (non-atomic, like the browser's own `rename`). R11's deletion is `mv`'s `skipErrors` arm, a
-  separate step after the move has failed, not part of the move.
+  deleted. A write fault after the first move propagates and leaves a partial move, which is
+  documented (non-atomic, like the browser's own `rename`). The leaf path neither cleans up nor
+  reports progress. R11's source deletion and R14's destination removal are `mv`'s `skipErrors`
+  arm, separate steps after the move has failed, not part of the move.
 - **R7 — error data (ADR-249).** A refused one-step directory rename surfaces unchanged (ADR-1219). Any
   `PATH_TOO_LONG` raised by the rename names the repo-relative destination (ADR-1194). The
   absolute-source `PATH_TOO_LONG` of rows 1–3 can no longer arise, because no descendant is read.
   Every other adapter refusal passes through unchanged, carrying the adapter's own `path` as a file
   rename's refusal does today. That surface is outside this change. Under `skipErrors` a
   `TsgitError` raised by a pair's working-tree rename is consumed into R11/R12's outcome (git's
-  `if (ignore_errors) continue;` covers every `rename(2)` failure); anything that is not a
-  `TsgitError` is a defect and still propagates, index unwritten.
+  `if (ignore_errors) continue;` covers every `rename(2)` failure) and surfaces as the
+  `'rename-failed'` skip reason, without the error itself (ADR-1223; git prints nothing either);
+  anything that is not a `TsgitError` is a defect and still propagates, index unwritten.
 - **R8 — wrappers.** Every `FileSystem` wrapper forwards the new capability when the inner adapter
   has it, and omits it when the inner adapter lacks it. `wrapFsValidator` is the only one; it guards
   both paths as writes.
-- **R9 — case-only file rename (row 6, ADR-1221).** With `core.ignorecase=true`, `mv f F` and
-  `mv d/g d/G` succeed as git does. With `false`, they refuse `MV_DESTINATION_EXISTS` unless
-  `force` is set, as today.
+- **R9 — case-only file rename (row 6, ADR-1221).** With `core.ignorecase=true`, `mv f F`,
+  `mv d/g d/G` and `mv a/g A` (`A` aliasing `a`) succeed as git does. With `false`, they refuse
+  `MV_DESTINATION_EXISTS` unless `force` is set, as today. The escape is a **file-source** escape:
+  a directory source whose destination exists by case alias (`mv a/d A`) refuses
+  `MV_DESTINATION_EXISTS` under both values (row 6-d), as today. This is what makes every directory
+  destination absent at planning, the precondition R14 starts from.
 - **R10 — no hard-coded host limits.** Deep fixtures derive their depth from `getconf PATH_MAX <root>`.
   The case-insensitive rows probe the host instead of trusting `process.platform`.
 
@@ -158,6 +179,9 @@ built with relative `cd` steps because an absolute `mkdir` is `ENAMETOOLONG`.
 | I | tracked `M b X/keep` (`M` = `m`×100), `X` as H; 2/2 | `mv -k -v M b X` | exit 0. `M`'s rename fails, skipped: index keeps `M`, disk keeps `M`; `b` moves to `X/b` | not pinned (32.72's shape) |
 | 6 | tracked `f`, `d/g`; `core.ignorecase=true` | `mv f F` / `mv -f f F` / `mv d/g d/G` | exit 0, `R f -> F` / same / `R d/g -> d/G` | throws `MV_DESTINATION_EXISTS { source: 'f', destination: 'F' }` (session pin) |
 | 6′ | as 6, `core.ignorecase=false` | `mv f F` / `mv -f f F` / `mv d/g d/G` | exit 128 `destination exists` / exit 0 `R f -> F` / exit 128 | refuses / moves / refuses (parity) |
+| 6-f | tracked `a/g`, `a/d/f`; `A` aliases `a` (host); both values | `mv a/g A` | true: exit 0, `Renaming a/g to A/g`, ls-files `A/g a/d/f`. false: exit 128 `destination exists, source=a/g, destination=A/g` | — (the file escape, into-dir mode) |
+| 6-d | as 6-f; both values; 1/1 each | `mv a/d A` and `mv -k a/d A` | exit 128 `destination already exists, source=a/d, destination=A/d` under **both** values; `-k`: exit 0, nothing changes. Index and disk unchanged | refuses `MV_DESTINATION_EXISTS` (parity today; the escape must not reach a directory source) |
+| L | tracked `x/d/f`, `y/D/g`, `y/D/u`, `T/keep`; both values; 1/1 each | `mv x/d y/D T` / `mv -k -v x/d y/D T` | no `-k`: exit 128 `renaming 'y/D' to 'T/D' failed: Directory not empty`, index unchanged, disk `T/d/f` (first pair moved). `-k`: exit 0, ls-files `T/D/g T/D/u T/d/f T/keep`, disk `T/d/f T/keep` plus empty `x`, `y`: `y/D` deleted, **`T/d/f` kept** | — (R14's first guard) |
 | E | tracked `d/f`, empty `d/emp`, untracked `d/u` | `mv d e` | exit 0. Disk `e/emp e/f e/u` | returns OK. Disk `e/f e/u`: **`e/emp` lost** |
 
 Adapter probe (dist `NodeFileSystem`, same host):
@@ -173,7 +197,11 @@ any refusal non-destructive, but the code is unknown. No row asserts it.
 
 The revision re-pinned 5-k with a nested tracked `d/s/t`, a nested untracked `d/s/u` and an empty
 `d/emp`, and pinned 5-k′, C, H, K, J, F and I (same isolation; `-v` added only to observe the list
-order; every `-k` row 2/2). The tsgit column of C is dist built from 314c5bc7, 2/2.
+order; every `-k` row 2/2). The tsgit column of C is dist built from 314c5bc7, 2/2. The ADR-1224
+revision pinned 6-f, 6-d and L (same isolation, same host) to check R14's precondition, and 6-d
+again on a case-sensitive APFS scratch volume with a distinct pre-existing `A/d` (empty, and
+holding `A/d/x`), `core.ignorecase=true` and `false`: exit 128 `destination already exists` each
+time, `-k` exit 0 with nothing changed. git's directory-source check has no `ignore_case` escape.
 
 **git's `-k` mechanism** — a reading of `builtin/mv.c`'s work list that every pinned row is consistent
 with (the `-v` order exposes the list; the per-entry modes are inferred, not observed):
@@ -273,10 +301,18 @@ removeEmptyDirectoryTree(ctx, from.abs)                                         
   case-insensitive adapter: the moved entries stay under the source, the removal answers `false`, and
   nothing is lost. The `false` is ignored on purpose: what remains is exactly what the caller's
   renames put there.
-- A write fault after the first rename propagates. `mv` does not commit the index, so the work tree
-  is partially moved and the index is unchanged. This is the browser `rename`'s documented
-  degradation, restated in the `renameInWorkingTree` doc comment. No rollback (ADR-1218). Under
-  `skipErrors`, `mv` consumes that fault like any other directory refusal (§ 4, N2).
+- A write fault after the first rename propagates. Without `skipErrors`, `mv` does not commit the
+  index, so the work tree is partially moved and the index is unchanged. This is the browser
+  `rename`'s documented degradation, restated in the `renameInWorkingTree` doc comment. No rollback
+  (ADR-1218). Under `skipErrors`, `mv` consumes that fault like any other directory refusal and
+  removes what the move created at the destination (§ 4, R14, ADR-1224).
+- The leaf path does **not** clean up and does not report how far it got. It stays a command that
+  either completes or throws (CQS). Everything it writes lies under `to.abs`: the `mkdir` of
+  `mapTo(from)` (= `to.abs`) comes first, its parent exists (`MV_DESTINATION_DIRECTORY_MISSING` at
+  planning), and every later `mkdir` and `rename` targets a `mapTo` of a source descendant. So
+  "what the move created" is exactly the `to.abs` subtree whenever `to.abs` was absent before the
+  call, which `mv` can observe from outside with two `lstat`s. No flag, no progress record, no
+  boolean parameter crosses the boundary.
 
 ### 4. `mv.ts` — what changes
 
@@ -300,41 +336,86 @@ const executePlan = async (ctx, lock, byPath, { planned, skipped }: Plan, opts):
   applyToIndex(byPath, indexed);
   await removeAbandonedSources(ctx, byPath, executed);                              // after EVERY rename (row C)
   await lock.commit(Array.from(byPath.values()), 'update');
-  return { moved: movesOf(indexed), skipped: [...skipped, ...renameSkipsOf(executed)] }; // N1
+  return { moved: movesOf(indexed), skipped: [...skipped, ...renameSkipsOf(executed)] }; // ADR-1223
 };
 ```
 
 - `PlanItem` gains `readonly kind: 'file' | 'directory'`, copied from the `Verdict` `buildPlan`
-  already receives. It is internal and needed to pick the arm.
+  already receives, and `readonly retained: ReadonlyArray<IndexEntry>`, the lossy members
+  `validateMove` filters out under `skipErrors` (empty for a file and for a directory without one);
+  `Verdict`'s success arm carries it to `buildPlan`. Both are internal. `kind` picks the index arm; `retained` decides whether a failed directory's
+  source is abandoned (R14's third guard, N3).
+- `renameSkipsOf(executed)` maps each `outcome: 'skipped'` record to
+  `{ source: item.source, reason: 'rename-failed' }`, in plan order, after the planning skips.
 - `repathItem(pathRules, item)` is today's `applyToIndex` body for one item, minus the map writes:
   it returns `{ item, moves: ReadonlyArray<{ from: IndexEntry; to: IndexEntry }> }` and runs
   `validateIndexPath` on every `to`. All items are repathed before the first rename, so an
   `INVALID_INDEX_ENTRY` still refuses with disk untouched (R13). `applyToIndex(byPath, indexed)`
   keeps only the map writes (`delete` + `set`).
-- `renameEach` runs `renameOrSkip` per repathed item, in plan order, and returns
-  `ReadonlyArray<{ item; moves; outcome: 'renamed' | 'skipped' }>` (one record, no index arithmetic
-  across two parallel arrays):
+- `renameEach` picks one strategy per call, `const run = opts.skipErrors === true ? renameOrSkip :
+  renameOrThrow` (a strategy, not a boolean parameter), runs it per repathed item, in plan order,
+  and returns `ReadonlyArray<{ item; moves; outcome: 'renamed' | 'skipped' }>` (one record, no
+  index arithmetic across two parallel arrays):
 
   ```ts
-  const renameOrSkip = async (ctx, item, opts): Promise<RenameOutcome> => {
+  const renameOrThrow = async (ctx, item): Promise<RenameOutcome> => {
+    await renameInWorkingTree(ctx, item.source, item.target);
+    return 'renamed';
+  };
+
+  const renameOrSkip = async (ctx, item): Promise<RenameOutcome> => {
+    const targetWasAbsent = (await lstatOrUndefined(ctx, item.target)) === undefined; // R14 guard 1
     try {
       await renameInWorkingTree(ctx, item.source, item.target);
       return 'renamed';
     } catch (err) {
-      if (opts.skipErrors !== true || !(err instanceof TsgitError)) throw err;
+      if (!(err instanceof TsgitError)) throw err;
+      if (targetWasAbsent && abandonsSource(item)) await removePartialMove(ctx, item.target);
       return 'skipped';
     }
   };
+
+  const abandonsSource = (item: PlanItem): boolean =>          // R14 guard 3 (N3)
+    item.kind === 'directory' && item.retained.length === 0;
+
+  const removePartialMove = async (ctx, target: FilePath): Promise<void> => {
+    if ((await lstatOrUndefined(ctx, target)) === undefined) return;  // R14 guard 2
+    await discardDirectory(ctx, target);
+  };
   ```
 
-  The guard is two operands, each with its own row (mutation notes). The refusal is not lost: it
-  becomes the skipped outcome, which N1 reports.
+  Without `skipErrors` the path is `renameOrThrow`: no extra `lstat`, no removal, ADR-1218's
+  partial move stands. The refusal is not lost under `skipErrors`: it becomes the skipped outcome,
+  reported as `'rename-failed'` (ADR-1223).
+- **Why the removal lives in `mv.ts`, not in the leaf path.** The leaf path cannot tell a
+  `skipErrors` call from a plain one without a flag, and a flag is a boolean parameter. `mv` can
+  observe the only fact it needs (was `target` absent before, is it present now) with two reads,
+  and the removal is then the same for both strategies of `renameInWorkingTree`. On the one-step
+  path a refused `rename(2)` creates nothing at `target`, so guard 2 makes the removal a no-op
+  there, except under a case alias where `target` names an existing entry; guard 1 covers that
+  (row L, where `T/D` is `T/d`, already holding the first pair's content).
+- **Why the removal runs immediately, not after the loop.** A later pair's guard 1 must see the
+  disk git would show it. In git a failed `rename(2)` leaves nothing at `target`, so a later pair
+  whose target aliases it finds it absent. Deferring the removal would make that later pair see
+  the partial move as a pre-existing destination.
+- **Why guard 2 reads the disk instead of trusting the failure.** Row 5-k′: `lstat('S300')` on
+  node fails `PATH_TOO_LONG`, which `lstatOrUndefined` maps to absent, both before and after. Guard
+  2 then skips a removal that would raise the same `PATH_TOO_LONG` out of the skip arm.
+- **R14's precondition, checked per directory-mode branch.** Planning proves a directory's
+  `target` absent in the index and on disk in both modes: rename mode checks `target` itself,
+  into-dir mode checks `destDir/<basename>` (the existing `destDir` is not the target).
+  `destinationFree`'s `ignore_case` escape is restricted to file sources (row 6-d), so no case
+  alias lets a directory through, and `MV_INTO_SELF` refuses a target inside the source. The one
+  route by which a directory's target exists at execution is an earlier pair of the same call
+  creating it through a case alias (row L: `T/d` then `T/D`, distinct strings, so
+  `assertNoTargetCollision` passes). Guard 1 is therefore measured per pair, at execution, not
+  inherited from planning.
 - `movesIndex({ item, outcome })` is `outcome === 'renamed' || item.kind === 'directory'`: git's
   `INDEX` members of a directory never call `rename(2)`, a file's index work sits behind its own.
 - `removeAbandonedSources(ctx, byPath, executed)`: for each `{ kind: 'directory', outcome:
   'skipped' }` item, in plan order, when `classifySource(byPath, item.source).kind === 'untracked'`
   (no index entry left under it, git's `index_range_of_same_dir(src) < 1`, case-exact as git's
-  index lookup is), call the new `removeAbandonedDirectory(ctx, item.source)`. It runs after the
+  index lookup is), call the new `discardDirectory(ctx, item.source)`. It runs after the
   whole rename loop because git's does (row C). A renamed directory is not visited: its source no
   longer exists, and git's pass over it is a silent no-op. No later pair can recreate a renamed
   source's path: in rename mode there is one source, and in into-directory mode every target is
@@ -346,17 +427,27 @@ const executePlan = async (ctx, lock, byPath, { planned, skipped }: Plan, opts):
   ```ts
   /**
    * Delete the working-tree directory at `path` with everything beneath it, untracked content
-   * included. git deletes a directory source whose own rename failed under `-k` once no index
-   * entry remains under it; `mv` reproduces that loss on purpose so the work tree matches git's.
-   * A missing path is not an error.
+   * included. A failed directory rename under git's `-k` ends with the source deleted once no
+   * index entry remains under it, and with nothing at the destination; `mv` reproduces both on
+   * purpose so the work tree matches git's. A missing path is not an error.
    */
-  export const removeAbandonedDirectory = async (ctx: Context, rawPath: string): Promise<void> =>
+  export const discardDirectory = async (ctx: Context, rawPath: string): Promise<void> =>
     ctx.fs.rmRecursive(repoPath(ctx, validateWorkingTreePathOn(rawPath, ctx)));
   ```
 
-  `removeDirectory` is not reused: it refuses a missing path with `CHECKOUT_OVERWRITE_DIRTY`, a
-  checkout surface. `rmRecursive` is idempotent on a missing path and does not follow symlinks
-  (port contract); rows 5-k, H show git deleting nested and empty directories alike.
+  One primitive serves both of git's `-k` deletions: the abandoned source (R11) and the partial
+  move at the destination (R14). `removeDirectory` is not reused: it refuses a missing path with
+  `CHECKOUT_OVERWRITE_DIRTY`, a checkout surface. `rmRecursive` is idempotent on a missing path and
+  does not follow symlinks (port contract); rows 5-k, H show git deleting nested and empty
+  directories alike.
+- **R11 and R14 compose.** On a partial leaf-path failure the moved leaves sit under `target` and
+  the rest under `source`. R14 removes `target` at once; R11 removes `source` after the loop.
+  Disk ends as git's: neither exists. With a lossy member, neither removal runs (N3): the index
+  keeps the lossy entry under `source`, so R11's condition is false, and `abandonsSource` is false.
+  `abandonsSource` predicts R11's post-loop condition from planning data. The two agree because the
+  only way another pair's index entry lands case-exactly under a directory source is an into-dir
+  `destDir` inside that source, and then that source's own target is inside itself, so
+  `MV_INTO_SELF` skipped it at planning.
 - `mv` shrinks to orchestration (it is over 20 lines today); `executePlan` holds the execution.
 - **Row 6 (ADR-1221):** `destinationFree` gains git's `ignore_case` escape. git's `lstat(dst) == 0 &&
   (!ignore_case || strcasecmp(src, dst))` reads "exists" only when the names differ beyond ASCII
@@ -364,9 +455,14 @@ const executePlan = async (ctx, lock, byPath, { planned, skipped }: Plan, opts):
 
   ```ts
   const onDisk = (await lstatOrUndefined(ctx, target)) !== undefined
-    && !(ignoreCase && asciiLower(source) === asciiLower(target));
+    && !(kind === 'file' && ignoreCase && asciiLower(source) === asciiLower(target));
   const exists = byPath.has(keyOfPath(target)) || onDisk;
   ```
+
+  The `kind === 'file'` operand is git's: its directory-source branch refuses "destination already
+  exists" with no `ignore_case` escape (row 6-d, pinned on case-insensitive and case-sensitive
+  volumes). Without it, `mv a/d A` under `core.ignorecase=true` would pass planning, a refusal git
+  makes would be lost, and R14's absent-at-planning precondition would break.
 
   `ignoreCase` is read once per `mv` call (`(await readConfig(ctx)).core?.ignoreCase === true`,
   stash.ts precedent) and threaded through `buildPlan` → `validateMove` → `destinationFree` as part
@@ -374,7 +470,24 @@ const executePlan = async (ctx, lock, byPath, { planned, skipped }: Plan, opts):
   `force: boolean`; folding `force` and `ignoreCase` into one `DestinationPolicy` record removes the
   boolean-parameter smell in the touched function. `byPath.has` stays case-exact: the index holds
   `f`, not `F`, and git's check here is the `lstat` alone.
-- `MvResult`'s shape does not change unless N1 = B (`MvSkipReason` gains one member).
+- **`MvSkipReason` (ADR-1223).** The exported union gains `'rename-failed'`. The planning reasons
+  get an internal alias, so `Verdict.skip`, `buildPlan` and `refusal()` cannot carry the new
+  member and `refusal()`'s `switch` stays exhaustive without a dead arm:
+
+  ```ts
+  /** Per-source refusals that `skipErrors` collects rather than throwing. */
+  export type MvSkipReason =
+    | 'source-not-tracked' | 'bad-source' | 'destination-exists' | 'into-self'
+    | 'rename-failed';  // the working-tree rename was refused; see docs/use/commands/mv.md
+
+  type PlanSkipReason = Exclude<MvSkipReason, 'rename-failed'>;
+  // Verdict: { readonly skip: PlanSkipReason; … }
+  const refusal = (reason: PlanSkipReason, source: FilePath, target: FilePath): TsgitError => …
+  ```
+
+  `PlanSkipReason` is derived with `Exclude` and stays unexported, so the public surface gains one
+  literal and no new name (no forgotten-export entry in `reports/api.json`). `MvSkipped`'s shape is
+  unchanged: `{ source, reason }`.
 
 ### 5. Error data shapes (ADR-249)
 
@@ -385,13 +498,17 @@ No new error code (ADR-1219):
 | 1, 2, 3, E | success, git's data |
 | 5 (node, darwin) | `UNSUPPORTED_OPERATION { operation: 'filesystem', reason: 'EINVAL' }`, already documented in `docs/use/errors.md` for "a directory onto a destination inside itself". Index and disk unchanged |
 | 5 without `skipErrors`, too long | `PATH_TOO_LONG { path: 'S300' }`: the directory itself is the destination now, not `S300/f`. Nothing changed (row 5-k′'s shape, no `-k`) |
-| 5-k, 5-k′, C, H, K | returns. `moved` lists every member of the failed directory (index repathed); disk: the source deleted (R11). Reporting of the skip: N1 |
-| F, I | returns. The refused file is absent from `moved`; index and disk keep it (R12). Reporting: N1 |
+| 5-k, 5-k′, C, H, K | returns. `moved` lists every member of the failed directory (index repathed); `skipped` holds `{ source: <dir>, reason: 'rename-failed' }`; disk: the source deleted (R11) |
+| F, I | returns. The refused file is absent from `moved`; `skipped` holds `{ source: <file>, reason: 'rename-failed' }`; index and disk keep it (R12) |
+| L | returns. `moved` lists `x/d/f → T/d/f` and `y/D/g`, `y/D/u` → `T/D/…`; `skipped` holds `{ source: 'y/D', reason: 'rename-failed' }`; `y/D` deleted, `T/d/f` kept (R14 guard 1) |
+| leaf path, write fault after the first leaf, `skipErrors` | returns as 5-k: `skipped` `rename-failed`, index repathed, source and destination both gone (R11 + R14) |
+| leaf path, same fault, no `skipErrors` | rejects with the adapter's fault; index unchanged; moved leaves stay at the destination (ADR-1218) |
+| 6-d | `MV_DESTINATION_EXISTS { source: 'a/d', destination: 'A/d' }` under both `core.ignorecase` values (unchanged) |
 | 5-n | the plan (unchanged) |
 | one-step rename too long | `PATH_TOO_LONG { path: <repo-relative destination> }` (ADR-1194) |
 
-`reports/api.json` changes: one optional member on `FileSystem`; under N1 = B, one `MvSkipReason`
-member.
+`reports/api.json` changes: one optional member on `FileSystem`, and one literal
+(`'rename-failed'`) in `MvSkipReason` (ADR-1223). No new exported name.
 
 ### 6. Breaking-change assessment
 
@@ -404,7 +521,9 @@ member.
 | 5-k′ (directory) and F / I (file, ledger 32.72) under `skipErrors` | threw `PATH_TOO_LONG`, now returns with git's index and disk | refusal git does not make removed → `fix` (ADR-1048) |
 | 5-k under `skipErrors` | returned and still returns the same `moved`, index and (emptied) disk; on main by accident of the leaf loop, now by R11 on every adapter | no change in outcome |
 | C under `skipErrors` | returned and still returns the same index; the work tree now also loses what was renamed into the abandoned source, as git's does | wrong result → `fix`; data-destroying by design (ADR-1220) |
-| N1 = B only | `skipped` gains entries for execution-time refusals; `MvSkipReason` widens | an exhaustive `switch` over `MvSkipReason` stops compiling → breaking, covered by the same `!` |
+| `MvSkipReason` gains `'rename-failed'` (ADR-1223) | `skipped` gains entries for execution-time refusals; the union widens | a consumer's exhaustive `switch` over `MvSkipReason` stops compiling → breaking, covered by the same `!` |
+| leaf path under `skipErrors` (ADR-1224) | threw the adapter's write fault with a partial move on disk; now returns, and the partial move is removed with the source | refusal git does not make removed; data-destroying by design (D-4) → `fix` |
+| row 6-d | refuses today, still refuses: the `ignore_case` escape is scoped to file sources | no change |
 
 So the change is `fix(mv)!:` (ADR-1222). The `-k` arms add no throw to a returning call.
 
@@ -420,9 +539,19 @@ So the change is `fix(mv)!:` (ADR-1222). The `-k` arms add no throw to a returni
   section states, with the 5-k example: a refused *file* rename leaves that file where it is, in the
   index and on disk; a refused *directory* rename still moves its tracked entries in the index, then
   deletes the source directory with everything in it, untracked files included, and so does anything
-  another source of the same call moved into it. The `PATH_TOO_LONG` Throws line gains "unless
-  `skipErrors`"; the closing "first four are per-source" sentence names the execution-time skip too
-  (and its reason, under N1 = B).
+  another source of the same call moved into it. Both are reported in `skipped` with reason
+  `'rename-failed'`; a directory's members also appear in `moved`, because the index moved them.
+  On an adapter that moves a directory entry by entry (the browser), a move that fails partway
+  under `skipErrors` also removes what it had already placed at the destination, so the result is
+  the same as on node; without `skipErrors` the partial move stays. A directory holding a member
+  `mv` cannot address keeps its source, and under N3 = B a partial move of it stays at the
+destination (the lossy-member paragraph gains this). The
+  `PATH_TOO_LONG` Throws line gains "unless `skipErrors`". The closing "first four are per-source"
+  sentence becomes: the first four are planning refusals collected in `skipped` under their own
+  reason; a working-tree rename the file system refuses is collected as `'rename-failed'`; the rest
+  always throw. The `MvResult` block's `reason` comment lists the five reasons.
+- `docs/use/commands/mv.md`, case-only renames: the `core.ignorecase` sentence says it applies to a
+  file source only; a directory whose destination exists by case refuses whatever the setting.
 - `docs/use/errors.md`: no row change (`UNSUPPORTED_OPERATION` already covers row 5).
 - `docs/design/mv-atomic-rename.md`: untouched (history). This doc supersedes its leaf-loop drift.
 - `docs/known-divergences.md`: **remove row 32.72** and its code block (folded, ADR-1220).
@@ -435,12 +564,16 @@ path), ADR-1219 (D3: the adapter's refusal surfaces unchanged), ADR-1220 (D4: `s
 git's `-k` outcome, data loss included; ledger 32.72 folded), ADR-1221 (D5: case-only rename under
 `core.ignorecase`), ADR-1222 (D6: `fix(mv)!:`).
 
-New candidates raised by the D4 revision:
+N1, N2: Settled by ADR-1223, ADR-1224. (N1: a `skipped` entry `{ source, reason:
+'rename-failed' }`, `refusal()` typed on the planning reasons. N2: under `skipErrors` a partial
+entry-by-entry move is a refused directory rename and what it created at the destination is
+removed; without `skipErrors` ADR-1218 stands.)
+
+New candidate raised by the ADR-1224 revision:
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| N1 | How `MvResult` reports a pair whose working-tree rename was refused under `skipErrors` | **A** by absence only: a refused file is missing from `moved`, a refused directory's members stay in `moved` (the index did move); `skipped` unchanged. **B** A plus a `skipped` entry `{ source, reason: 'rename-failed' }` for both arms (new `MvSkipReason` member). **C** keep the refused file pair in `moved`, as git's `-v` prints `Renaming base to S300` before attempting it | **B** | ADR-249: the result carries the data, and "this source was not renamed on disk" is data git leaves only on disk. Under A a caller sees `d/f → D/d/f` for row 5-k and nothing tells it the directory was deleted; B names it. B widens a public union, but the release is already breaking (ADR-1222) and ADR-1220 rejected that member only as a vehicle for a *safe* skip. A matches ADR-1220's wording ("swallows") and adds no API; it is the choice if the user wants zero surface change. C makes `moved` disagree with the index (ADR-249's interop rebuild is from the index), and `-v` is display, not data |
-| N2 | `skipErrors` on the entry-by-entry path (adapters without `renameDirectory`) when a leaf write fails after the first move | **A** uniform: any `TsgitError` out of the directory move is a skipped directory rename; members already moved stay at the destination, the cleanup deletes the rest with the source. **B** on that path, a fault after the first move is not consumed: it throws, index unwritten (ADR-1218's partial move), and only a refusal before the first move is skipped. **C** A plus deleting the destination subtree the move created, so disk equals git's (destination absent) | **A** | ADR-1220's catch has no adapter carve-out, and the index ends as git's. The extra files at the destination are ADR-1218's documented degradation, not a new one, and the path is reachable only on OPFS / third-party adapters with no pinned fault. B makes `skipErrors` mean different things per adapter and needs the leaf path to expose "has anything moved". C deletes a second tree on an unpinned path to chase byte-equality git can only produce with an atomic rename |
+| N3 | Under `skipErrors`, a partial entry-by-entry move of a directory that keeps its source because a lossy member stays in the index. git has no such state: it repaths every member and deletes the source. The state comes from tsgit's own lossy-member rule (`validateMove` drops lossy members under `skipErrors`; `docs/use/commands/mv.md`: lossy entries are never touched on disk), which keeps the entry under the source, so R11 keeps the source. ADR-1224's "remove what the move created" assumed the source is deleted too; here the leaves already moved exist **only** at the destination | **A** remove the destination anyway: the leaves already moved are deleted while their source directory survives, a loss neither git nor the no-fault path produces. **B** do not remove the destination when the source is kept: the moved leaves stay at the destination, the rest in the source, nothing is lost (ADR-1218's degradation, restricted to this arm). **C** move the moved leaves back into the source, then let R11 decide: reaches git's state, but it is a rollback ADR-1218 rejected, and the move back can fault in turn | **B** | D-4 binds git's data-destroying arms; it does not license destroying data git keeps, which A does. C is the only exact match, but it adds a second fault surface and a rollback path for an arm that needs a lossy (non-UTF-8) index entry, an adapter without `renameDirectory` (OPFS cannot hold such a name) and a write fault mid-move, none pinned. B costs one guard operand (`item.retained.length === 0`) and stays inside ADR-1224's stated premise (index repathed, source deleted, nothing at the destination), which holds exactly when no lossy member keeps the source. The design is written for B; A drops `abandonsSource`'s second operand and the `retained` field, C adds a reverse-move step in `renameOrSkip` |
 
 Pre-decided by existing ADRs, not candidates: the `PATH_TOO_LONG` relabel to the repo-relative
 destination (ADR-1194); refusing before writing the index without `skipErrors` (mv design +
@@ -496,6 +629,11 @@ plan (ADR-201, row 5-n parity).
     propagates with **no** rename performed (R6). Leaf path, an entry that cannot be removed stays
     (stub `removeEmptyDirectoryTree`'s `rmdir` to refuse `DIRECTORY_NOT_EMPTY`; the source file is
     still readable).
+  - Leaf path, a `rename` fault on the second leaf: rejects with that very fault; the first leaf is
+    under `new`, the second still under `old`, and nothing is removed on either side (ADR-1218, no
+    cleanup in the primitive). The same call log asserts every `mkdir` / `rename` destination
+    starts with `<root>/new/` or equals `<root>/new`: the "everything written lies under `to.abs`"
+    invariant R14's removal relies on.
   - `PATH_TOO_LONG` relabel on the one-step path names `to.rel`; a `PERMISSION_DENIED` from it is
     rethrown as the same object (isolated guard tests, ADR-1194 shape).
 - `test/unit/application/commands/mv.test.ts`, `describe('mv — a move the file system refuses')`:
@@ -516,34 +654,69 @@ plan (ADR-201, row 5-n parity).
 
 Depends on P2 (the directory arm needs the one-step refusal to be reachable).
 
-- Files: `src/application/commands/mv.ts` — `PlanItem.kind`; `executePlan`, `repathItem`,
-  `renameEach` / `renameOrSkip`, `movesIndex`, `removeAbandonedSources` (§ 4); `applyToIndex` loses
-  its validation (moved into `repathItem`); `mv` calls `executePlan` after the dry-run return.
-  `src/application/commands/internal/working-tree.ts` — `removeAbandonedDirectory` beside
-  `removeDirectory`, reusing the module's `repoPath` and `validateWorkingTreePathOn`. Under N1 = B:
-  `MvSkipReason` gains `'rename-failed'`, `refusal()`'s `switch` gets no arm for it (it is never
-  thrown: `renameOrSkip` rethrows the original error when `skipErrors` is off), so the execution-time
-  reason needs its own type (`MvSkipReason = PlanSkipReason | 'rename-failed'`, `refusal` typed on
-  `PlanSkipReason`) to keep the `switch` exhaustive without a dead arm.
+- Files: `src/application/commands/mv.ts` — `PlanItem.kind` and `PlanItem.retained` (set in
+  `validateMove`'s success verdict from the lossy members it filters out); `executePlan`,
+  `repathItem`, `renameEach` with `renameOrThrow` / `renameOrSkip`, `abandonsSource`,
+  `removePartialMove`, `movesIndex`, `renameSkipsOf`, `removeAbandonedSources` (§ 4);
+  `applyToIndex` loses its validation (moved into `repathItem`); `mv` calls `executePlan` after the
+  dry-run return. `MvSkipReason` gains `'rename-failed'`; `type PlanSkipReason =
+  Exclude<MvSkipReason, 'rename-failed'>` (unexported) types `Verdict.skip` and `refusal(reason)`
+  (ADR-1223). The `MvSkipReason` doc comment says the fifth reason is collected at execution.
+  `src/application/commands/internal/working-tree.ts` — `discardDirectory` beside
+  `removeDirectory`, reusing the module's `repoPath` and `validateWorkingTreePathOn`.
 - Tests, `test/unit/application/commands/mv.test.ts`, a new
   `describe('mv — skipErrors and a move the file system refuses')` beside "a move the file system
   refuses", reusing `failingRename` (extended to stub `renameDirectory` when given a directory
   fault):
   - Given a tracked file whose rename refuses `PATH_TOO_LONG`, When `mv` with `skipErrors` → returns;
-    the file is absent from `moved`; index and disk keep it (row F; under N1 = B, `skipped` holds
-    `{ source: 'base', reason: 'rename-failed' }`).
+    the file is absent from `moved`; `skipped` equals `[{ source: 'base', reason: 'rename-failed' }]`;
+    index and disk keep it (row F). Kills `renameSkipsOf`'s literal and its filter.
+  - Given a planning skip (`ghost`, untracked) and a refused rename (`base`) in one call → `skipped`
+    equals `[{ source: 'ghost', reason: 'source-not-tracked' }, { source: 'base', reason:
+    'rename-failed' }]`: planning skips first, then execution skips in plan order.
   - Given two files where only the first rename refuses → the second moves in index and disk, the
     first stays (row I). Stub by path: the refusing stub throws only when `src` ends with the first
     name.
   - Given a directory `d` (tracked `d/f`, `d/s/t`, untracked `d/u`, empty `d/emp`) whose
-    `renameDirectory` refuses `EINVAL` → returns; index `D/d/f D/d/s/t`; `moved` lists both; the
-    work tree has no `d` (rows 5-k/5-k′ at unit level, memory adapter; the alias is simulated by the
-    refusing stub).
+    `renameDirectory` refuses `EINVAL` → returns; index `D/d/f D/d/s/t`; `moved` lists both;
+    `skipped` equals `[{ source: 'd', reason: 'rename-failed' }]`; the work tree has no `d` (rows
+    5-k/5-k′ at unit level, memory adapter; the alias is simulated by the refusing stub).
   - Given `d` refusing and `e` renaming into `d/e` (stub `renameDirectory` for `e` to call the real
     one with destination `d/e`) → after the call `d/e` is gone too: the cleanup runs after every
     rename (row C). Kills a per-item cleanup.
-  - Isolated guards of `renameOrSkip`: `skipErrors` off + `TsgitError` → rejects with that very
-    error, index unchanged; `skipErrors` on + a plain `Error` → rejects with it, index unchanged.
+  - Isolated guards of the strategy choice and `renameOrSkip`: `skipErrors` off + `TsgitError` →
+    rejects with that very error, index unchanged (kills the `skipErrors === true` ternary);
+    `skipErrors` on + a plain `Error` → rejects with it, index unchanged (kills `instanceof`).
+- Tests, same file, a new `describe('mv — skipErrors and a partial entry-by-entry move')` (R14,
+  ADR-1224). Fixture: memory adapter with the capability stripped by the omission idiom (P2), wrapped
+  by a local `faultOnRename(ctx, { at, fault })` that delegates every member to the inner fs and
+  makes the `at`-th `rename` call (1-based) throw `fault` (`permissionDenied`-style `TsgitError`),
+  so the leaf path has moved `at - 1` leaves when it fails. One row per guard:
+  - **Removal happens.** `d` = tracked `d/f d/g`, untracked `d/u`, empty `d/emp`; fault at the 2nd
+    rename; `mv(['d'], 'e', { skipErrors: true })` → returns; `skipped` `[{ source: 'd', reason:
+    'rename-failed' }]`; index `e/f e/g`; neither `d` nor `e` exists. Kills the `discardDirectory`
+    call in `removePartialMove`.
+  - **Guard 1, target present before.** Two sources into `T` whose second target aliases the first:
+    a path-folding wrapper maps `<root>/T/D…` to `<root>/T/d…` on every member (the memory adapter is
+    case-sensitive; this simulates row L's host, and planning's `lstat(T/D)` still finds nothing
+    because `x/d` has not moved yet). Tracked `x/d/f`, `y/D/g`, `y/D/u`; fault at the 3rd rename
+    (the 1st is `x/d/f`, the 2nd `y/D/g`) → returns; `T/d/f` (the first pair's file) still exists;
+    `y/D` is gone; `skipped` `[{ source: 'y/D', reason: 'rename-failed' }]`. Kills
+    `targetWasAbsent`.
+  - **Guard 2, target absent after.** The wrapper faults the first `mkdir` instead (the leaf path's
+    `mkdir(<root>/e)`, before any rename), so nothing exists at `e` → returns; a `rmRecursive` spy
+    is called with `<root>/d` only (R11), never with `<root>/e`. Kills the early return in
+    `removePartialMove`: the memory `rmRecursive` is idempotent, so only the spy sees the mutant.
+  - **Guard 3a, a file pair.** A file `base` → `S` whose stub `rename` writes `S` and then throws
+    (the browser adapter's read/write/rm order failing on the `rm`) → returns; `S` still exists
+    with `base`'s bytes, `base` exists, index keeps `base`. Kills `item.kind === 'directory'`.
+  - **Guard 3b, a lossy member (N3 = B).** `seedMember`'s `d/y` plus a second addressable `d/z`
+    and the lossy `d/<0xff>`, fault at the 2nd rename → returns; the first leaf stays under `e`, the
+    other under `d`, the lossy entry stays in the index under `d/`, `d` exists. Kills
+    `retained.length === 0`.
+  - **Without `skipErrors`.** Same fixture as "removal happens", no option → rejects with the
+    injected fault; index unchanged; the first leaf is under `e`, the rest under `d` (ADR-1218
+    stands). Kills a removal leaking into the throw path.
   - `movesIndex`: the file row above kills `outcome === 'renamed'`; the directory row kills
     `kind === 'directory'`.
   - Cleanup condition: a directory with a lossy member under `skipErrors` whose rename refuses →
@@ -552,8 +725,12 @@ Depends on P2 (the directory arm needs the one-step refusal to be reachable).
     `mv.test.ts` already uses for its lossy rows.
   - R13: a plan whose second item fails `validateIndexPath` → `INVALID_INDEX_ENTRY`, and the first
     item has **not** been renamed on disk (kills a per-item validate-then-rename interleave).
+- Context: `seedMember`, `indexView`, `captureError` live in `describe('mv on a directory holding a
+  lossy member')` of the same file; hoist `seedMember` to module scope (or parameterise it with the
+  extra member) rather than copy it. `failingRename` lives in `describe('mv — a move the file system
+  refuses')`; `faultOnRename` / the path-folding wrapper are new local helpers of the new describe.
 - Tests, `test/unit/application/commands/internal/working-tree.test.ts`,
-  `describe('removeAbandonedDirectory')`: removes a tree holding a file, a nested directory and an
+  `describe('discardDirectory')`: removes a tree holding a file, a nested directory and an
   empty directory; a missing path resolves without error; an invalid path (`../x`) refuses as the
   module's other writers do.
 
@@ -567,6 +744,10 @@ Depends on P2 (the directory arm needs the one-step refusal to be reachable).
   `false` it refuses `MV_DESTINATION_EXISTS { source: 'f', destination: 'F' }`. A non-case-equal
   existing destination under `true` still refuses (isolated guard). Seed `core.ignorecase` through
   the config writer the stash tests use.
+- Row 6-d at unit level (kills the `kind === 'file'` operand): a directory `a/d` into an existing
+  directory `A` with an `lstat` stub answering `A/d` with `a/d`'s stat, `core.ignoreCase = true` →
+  refuses `MV_DESTINATION_EXISTS { source: 'a/d', destination: 'A/d' }`, index and disk unchanged.
+  The file twin `mv a/g A` (row 6-f, stub answering `A/g`) moves under `true`.
 
 ### P5 — cross-tool interop
 
@@ -613,8 +794,30 @@ raises `PATH_TOO_LONG` past `PATH_MAX` (long-pathspec-refusals X2, out of scope)
   `snapshotOf`'s `status` is **not** compared here: git prints `File name too long` warnings for
   `S300/…` (pinned), tsgit's walk is out of scope. M9: `mv -k base S300`, git exit 0, tsgit returns;
   `snapshotOf` and `filesOf` equal to before in both (row F; replaces the ledger's code block).
-- Rows 6, 6′ (ADR-1221) — same host probe and `describe.each` over `core.ignorecase`; assert the
-  `ls-files -s` parity and the refusal parity.
+- Rows 6, 6′, 6-f, 6-d (ADR-1221) — same host probe and `describe.each` over `core.ignorecase`;
+  assert the `ls-files -s` parity and the refusal parity (6-d: git exit 128 under both values,
+  tsgit `MV_DESTINATION_EXISTS`; with `-k` / `skipErrors`, exit 0 and
+  `skipped` `[{ source: 'a/d', reason: 'destination-exists' }]`, nothing changed in either twin).
+- Row L — same host probe and `process.platform !== 'win32'` (Windows' directory-replace arm in
+  `NodeFileSystem.rename` is unpinned for an aliased non-empty destination, § Out of scope),
+  `describe.each` over `core.ignorecase`, tracked `x/d/f y/D/g y/D/u T/keep`. Without `-k`: git
+  exit 128, tsgit rejects `DIRECTORY_NOT_EMPTY` (node's `mapErrno` of `ENOTEMPTY`, git's
+  "Directory not empty" rebuilt from the code);
+  `ls-files -s` parity (unchanged) and disk parity (`T/d/f` moved in both). With `-k`: `ls-files -s`
+  parity (`T/D/g T/D/u T/d/f T/keep`), disk parity (`T/d/f T/keep`, `y/D` gone), tsgit `skipped`
+  `[{ source: 'y/D', reason: 'rename-failed' }]`. This is R14's guard 1 on node: the one-step
+  rename refuses, `T/D` is present after (it is `T/d`), so only guard 1 keeps the first pair's file.
+- **Rebuilding git's view of a refused rename (ADR-249, ADR-1223).** git `-k` prints nothing for a
+  refused `rename(2)` (rows 5-k, F: no stderr), so its only observable signals are the index and
+  the disk, which every row above compares. Rows 5-k, C, H, L, M8 and M9 also run git with `-v`
+  and rebuild its `Renaming X to Y` lines from tsgit's fields: one line per argv source (`source`
+  → the test's mapped target, whether that source is in `moved`, in `skipped` as
+  `'rename-failed'`, or a directory whose own line has no `moved` entry), then one line per
+  `moved` entry whose `from` lies under a directory source. git orders member lines by argv
+  source, `moved` by `from` bytes; the pinned rows' argv order is byte order, and a row where they
+  differ compares member lines as a set. Each test also asserts `skipped`
+  equals the pinned expectation, so the field that tells a caller the rename was refused is pinned
+  against the run where git deleted or kept the data.
 
 ### P6 — docs
 
@@ -648,11 +851,21 @@ P2 stay (ADR-136).
   memory: it must go through `rename`, not `renameDirectory` (assert which spy was called).
 - The read-before-write ordering in the leaf path is killed by the call-log row (P2). The
   `removeEmptyDirectoryTree` swap is killed by the "entry that cannot be removed stays" row.
-- `destinationFree` (ADR-1221): isolated rows for `ignoreCase` false + case-equal, true + case-equal, and
-  true + case-different. Three rows kill both `&&` operands and the `asciiLower` call.
-- `skipErrors` execution (P3): `renameOrSkip`'s two guard operands, `movesIndex`'s two operands,
-  the cleanup's `untracked` condition and its after-the-loop placement each have an isolated row in
-  P3. The `removeAbandonedDirectory` call itself is killed by the 5-k unit row (disk must be empty).
+- `destinationFree` (ADR-1221): isolated rows for `ignoreCase` false + case-equal, true + case-equal,
+  true + case-different, and true + case-equal with a directory source (row 6-d, P4). Four rows
+  kill the three `&&` operands and the `asciiLower` call.
+- `skipErrors` execution (P3): the strategy ternary and `renameOrSkip`'s `instanceof` guard,
+  `movesIndex`'s two operands, `renameSkipsOf`'s literal and filter, the cleanup's `untracked`
+  condition and its after-the-loop placement each have an isolated row in P3. The source-side
+  `discardDirectory` call is killed by the 5-k unit row (disk must be empty).
+- Partial-move removal (P3, R14): one row per guard — `targetWasAbsent` (path-folding row),
+  `removePartialMove`'s early return (`rmRecursive` spy row; the memory adapter's idempotent
+  `rmRecursive` hides it otherwise), `abandonsSource`'s `kind === 'directory'` (file-pair row) and
+  `retained.length === 0` (lossy row), the removal call itself ("removal happens" row), and the
+  no-`skipErrors` row for a removal leaking into `renameOrThrow`.
+- Equivalent-mutant watch: `abandonsSource` predicts R11's post-loop condition (§ 4, "R11 and R14
+  compose"). A mutant replacing `retained.length === 0` with `true` is **not** equivalent: the
+  lossy row sees the moved leaf deleted.
 - Stryker scope: `working-tree.ts`, `wrap-fs-validator.ts` (new block), the two adapter one-liners
   and `mv.ts` hunks. Run on narrowed eponymous suites (`.claude/workflow/mutation.md`).
 
@@ -661,7 +874,13 @@ P2 stay (ADR-136).
 - **`status`/walk past `PATH_MAX`** (long-pathspec-refusals X2): it is why rows 1–3 compare
   `ls-files` and disk, not `status`.
 - **Windows case-only directory rename**: unpinned (no host). The contract row for a destination
-  inside the source runs there, and the one-step rename makes any refusal non-destructive.
+  inside the source runs there, and the one-step rename makes any refusal non-destructive. Row L
+  (a directory renamed onto a non-empty case alias) is likewise not run on Windows, where
+  `NodeFileSystem.rename` takes its directory-replace arm.
+- **A partial non-atomic *file* rename under `skipErrors`** (the browser's read/write/rm `rename`
+  failing after the write): R14 is scoped to directory items, as ADR-1224 is; the file pair keeps
+  ADR-1220's R12 outcome and the browser `rename`'s documented non-atomicity. The P3 file-pair row
+  pins that the removal does not reach it.
 - **The leaf path's descendant `PATH_TOO_LONG` naming an absolute path**: unreachable on the
   first-party adapters without the capability (browser: no `PATH_MAX`). It keeps ADR-1194's
   "names itself" consequence.
