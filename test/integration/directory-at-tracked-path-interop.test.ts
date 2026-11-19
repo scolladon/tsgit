@@ -17,8 +17,10 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -88,7 +90,7 @@ const seedTwin = (
   writeFileSync(join(dir, TRACKED, 'inner'), 'inner\n');
 };
 
-type Replacement = 'directory' | 'exec-bit' | 'symlink' | 'none';
+type Replacement = 'directory' | 'exec-bit' | 'touch' | 'same-size-edit' | 'symlink' | 'none';
 
 /** git without nanosecond stat compares whole seconds: the change must land in a later second than the index entry's. */
 const NEXT_SECOND_MS = 1100;
@@ -100,6 +102,15 @@ const replaceAssumed = (dir: string, replacement: Replacement): void => {
   if (replacement === 'none') return;
   if (replacement === 'exec-bit') {
     chmodSync(join(dir, TRACKED), 0o755);
+    return;
+  }
+  if (replacement === 'touch') {
+    const now = new Date();
+    utimesSync(join(dir, TRACKED), now, now);
+    return;
+  }
+  if (replacement === 'same-size-edit') {
+    writeFileSync(join(dir, TRACKED), 'uno\n');
     return;
   }
   rmSync(join(dir, TRACKED));
@@ -510,6 +521,8 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
       (fileMode) => {
         describe.each([
           ['exec-bit', 'its exec bit set', 'file'],
+          ['touch', 'its stat touched with identical content', 'file'],
+          ['same-size-edit', 'a same-size content edit', 'file'],
           ['symlink', 'a symlink swapped in', 'symlink'],
         ] as const)('and %s', (replacement, _label, shape) => {
           const seedAssumed = (): void => {
@@ -565,13 +578,7 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
             );
           });
 
-          describe.each(
-            OVERWRITING_OPERATIONS.filter(
-              // git refuses a stale-stat entry under core.fileMode=false; tsgit's checkout and merge guards hash the content instead.
-              ({ label }) =>
-                !(label !== 'cherry-pick' && fileMode === 'false' && replacement === 'exec-bit'),
-            ),
-          )(
+          describe.each(OVERWRITING_OPERATIONS)(
             'When both tools $label a branch rewriting the path',
             ({ run, gitArgs, refusalCode }) => {
               it(
@@ -592,6 +599,43 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
                   expect(result.data).toMatchObject({ code: refusalCode, localChanges: [TRACKED] });
                   expect(lsStage(pair.ours)).toBe(indexBefore);
                   expect(onDisk(pair.ours)).toBe(onDisk(pair.peer));
+                },
+                ROW_TIMEOUT,
+              );
+            },
+          );
+        });
+
+        describe.each([
+          ['an assume-unchanged file left untouched', 'none', true],
+          ['a plain tracked file whose stat was touched', 'touch', false],
+        ] as const)('and %s', (_label, replacement, assumeUnchanged) => {
+          describe.each(OVERWRITING_OPERATIONS)(
+            'When both tools $label a branch rewriting the path',
+            ({ run, gitArgs }) => {
+              it(
+                'Then both proceed as no stat drift stands against the index entry',
+                async () => {
+                  // Arrange
+                  for (const dir of [pair.peer, pair.ours]) {
+                    seedAssumeUnchanged(dir, ignoreCase, fileMode, true, 'none');
+                    if (!assumeUnchanged) sh(dir, 'update-index', '--no-assume-unchanged', TRACKED);
+                  }
+                  sleepSync(NEXT_SECOND_MS);
+                  replaceAssumed(pair.peer, replacement);
+                  replaceAssumed(pair.ours, replacement);
+                  const sut = await open({ cwd: pair.ours });
+
+                  // Act
+                  const gitRun = gitAttempt(pair.peer, ...gitArgs);
+                  const result = await attempt(() => run(sut));
+
+                  // Assert
+                  expect(gitRun).toBe('ok');
+                  expect(result.status).toBe('ok');
+                  expect(readFileSync(join(pair.ours, TRACKED), 'utf8')).toBe(
+                    readFileSync(join(pair.peer, TRACKED), 'utf8'),
+                  );
                 },
                 ROW_TIMEOUT,
               );

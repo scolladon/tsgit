@@ -41,6 +41,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
+import { isStaleAssumedEntry } from './compare-working-tree-entry.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
@@ -280,6 +281,17 @@ const survivorClash = async (
   return (await holdsSurvivor(ctx, absPath, scope)) ? { class: 'untracked', path } : undefined;
 };
 
+// git's verify_uptodate ignores CE_VALID and refresh skips such an entry, so any drift of its
+// cached stat counts as a change before the content is looked at.
+const staleAssumedEntry = async (
+  scope: ClashScope,
+  path: FilePath,
+  stat: FileStat,
+): Promise<boolean> => {
+  const tracked = await scope.tracked(path);
+  return tracked !== undefined && isStaleAssumedEntry(tracked.entry, stat);
+};
+
 const evaluateChangedPath = async (
   ctx: Context,
   probe: () => Promise<DirtyProbe>,
@@ -298,6 +310,9 @@ const evaluateChangedPath = async (
   if (verdict.kind !== 'compare-content') return verdictClash(verdict);
   const dirtyProbe = await probe();
   if (modeChanged(dirtyProbe, entry.previousMode, verdict.stat)) {
+    return { class: 'local-changes', path: entry.path };
+  }
+  if (await staleAssumedEntry(scope, entry.path, verdict.stat)) {
     return { class: 'local-changes', path: entry.path };
   }
   const matches = await blobMatches(

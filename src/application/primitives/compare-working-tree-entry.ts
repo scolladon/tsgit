@@ -375,13 +375,15 @@ const directoryDelta = (entry: IndexEntry, scope: ComparisonScope): WorkingTreeD
  * git's `verify_uptodate` on an assume-valid entry: refresh leaves its stat data stale, so
  * `ie_match_stat` calls any stat drift a change without reading the content.
  */
+export const isStaleAssumedEntry = (entry: IndexEntry, stat: FileStat): boolean =>
+  entry.flags.assumeValid && !matchesContentStat(entry, stat);
+
 const staleAssumedStatDelta = (
   entry: IndexEntry,
   stat: FileStat,
   scope: ResolvedScope,
 ): WorkingTreeDelta | undefined => {
-  if (scope.ignoreAssumeValid !== true || !entry.flags.assumeValid) return undefined;
-  if (matchesContentStat(entry, stat)) return undefined;
+  if (scope.ignoreAssumeValid !== true || !isStaleAssumedEntry(entry, stat)) return undefined;
   const worktreeMode = indexModeFromStat(stat, entry.mode, scope.executableBit);
   return {
     status: isSameKind(worktreeMode, entry.mode) ? 'modified' : 'type-changed',

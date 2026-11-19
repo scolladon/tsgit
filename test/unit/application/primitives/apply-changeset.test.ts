@@ -5471,3 +5471,137 @@ describe('applyChangeset over an exec-bit-only local change', () => {
     });
   });
 });
+
+describe('applyChangeset over an assume-unchanged file whose cached stat drifted', () => {
+  const STALE_SECONDS = 5;
+
+  const arrange = async (assumeValid: boolean, drift: number) => {
+    const ctx = await buildSeededContext();
+    const oldId = await writeBlob(ctx, enc('original'));
+    const newId = await writeBlob(ctx, enc('updated'));
+    await ctx.fs.write(`${WORKDIR}/f.txt`, enc('original'));
+    const entry = indexEntryFromStat(
+      await ctx.fs.lstat(`${WORKDIR}/f.txt`),
+      FILE_MODE.REGULAR,
+      oldId,
+      'f.txt' as FilePath,
+    );
+    const index = {
+      version: 2 as const,
+      entries: [
+        {
+          ...entry,
+          mtimeSeconds: entry.mtimeSeconds - drift,
+          flags: { ...STAGE0_FLAGS, assumeValid },
+        },
+      ],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+    return { ctx, oldId, newId };
+  };
+
+  const refusalOf = async (run: Promise<unknown>): Promise<TsgitError | undefined> => {
+    try {
+      await run;
+    } catch (err) {
+      if (err instanceof TsgitError) return err;
+      throw err;
+    }
+    return undefined;
+  };
+
+  describe('Given an update of an assume-unchanged file whose stat drifted over identical content', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it refuses naming the path as a local change', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await arrange(true, STALE_SECONDS);
+        const sut = applyChangeset;
+
+        // Act
+        const error = await refusalOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(error?.data).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['f.txt'],
+          untracked: [],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('original');
+      });
+    });
+  });
+
+  describe('Given a delete of an assume-unchanged file whose stat drifted over identical content', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it refuses naming the path as a local change', async () => {
+        // Arrange
+        const { ctx, oldId } = await arrange(true, STALE_SECONDS);
+        const sut = applyChangeset;
+
+        // Act
+        const error = await refusalOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeDelete('f.txt', oldId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(error?.data).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['f.txt'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given an update of an assume-unchanged file whose stat still matches', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it applies', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await arrange(true, 0);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('updated');
+      });
+    });
+  });
+
+  describe('Given an update of a plain tracked file whose stat drifted over identical content', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it applies as its content is unchanged', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await arrange(false, STALE_SECONDS);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('updated');
+      });
+    });
+  });
+});
