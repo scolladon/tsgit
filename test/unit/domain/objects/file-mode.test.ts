@@ -152,11 +152,26 @@ describe('file-mode', () => {
       });
     });
 
-    describe('Given a regular file with a group/other-only execute bit', () => {
+    describe('Given a regular file with execute bits other than the owner one', () => {
       describe('When deriving the working mode', () => {
-        it("Then returns '100755' (any of the 0o111 bits counts)", () => {
+        it.each([0o641, 0o654, 0o614, 0o645])(
+          "Then returns '100644' (only the owner bit counts) for mode %o",
+          (mode) => {
+            // Arrange & Act
+            const result = deriveWorkingMode({ isSymbolicLink: false, mode });
+
+            // Assert
+            expect(result).toBe('100644');
+          },
+        );
+      });
+    });
+
+    describe('Given a regular file with the owner execute bit among others', () => {
+      describe('When deriving the working mode', () => {
+        it.each([0o100, 0o711, 0o755, 0o100700])("Then returns '100755' for mode %o", (mode) => {
           // Arrange & Act
-          const result = deriveWorkingMode({ isSymbolicLink: false, mode: 0o641 });
+          const result = deriveWorkingMode({ isSymbolicLink: false, mode });
 
           // Assert
           expect(result).toBe('100755');

@@ -45,6 +45,7 @@ const ROW_TIMEOUT = 60_000;
 const OWNER_EXEC = 0o100;
 const EXECUTABLE_PERMISSIONS = 0o755;
 const PLAIN_PERMISSIONS = 0o644;
+const GROUP_OTHER_EXEC_PERMISSIONS = 0o654;
 const UNSTAGED_COLUMN: Readonly<Record<ChangeKind, string>> = {
   modified: 'M',
   'mode-changed': 'M',
@@ -119,6 +120,12 @@ const inOrder =
   };
 
 const STATUS_ROWS: ReadonlyArray<StatusRow> = [
+  {
+    id: 'gained-group-other-bits-only-default-trust',
+    files: [BASE_FILE],
+    prepare: chmodTo(GROUP_OTHER_EXEC_PERMISSIONS),
+    expected: [],
+  },
   {
     id: 'gained-bit-ignored',
     files: [BASE_FILE],
@@ -815,6 +822,59 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
               expect(ownerExec(pair.peer, name)).toBe(executable);
               expect(ownerExec(pair.ours, name)).toBe(executable);
             }
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe('Given a new file with group and other execute bits but no owner one and the default core.fileMode', () => {
+      describe('When both tools add it', () => {
+        it(
+          'Then both stage 100644 and agree on the index',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, [SEED_FILE]);
+            for (const dir of [pair.peer, pair.ours]) {
+              writeSeedFile(dir, BASE_FILE);
+              chmodTo(GROUP_OTHER_EXEC_PERMISSIONS)(dir);
+            }
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            sh(pair.peer, 'add', 'f');
+            await sut.add(['f']);
+
+            // Assert
+            expect(lsStage(pair.peer)).toContain('100644');
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe('Given a file the target rewrites carrying group and other execute bits but no owner one', () => {
+      describe('When both tools switch with the default core.fileMode', () => {
+        it(
+          'Then both switch and agree on the index',
+          async () => {
+            // Arrange
+            const row = SWITCH_ROWS[0] as SwitchRow;
+            seedBoth(ignoreCase, row.files);
+            for (const dir of [pair.peer, pair.ours]) {
+              branchOffMain(dir, row);
+              chmodPath(row.chmodPath, GROUP_OTHER_EXEC_PERMISSIONS)(dir);
+            }
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            const git = gitSwitch(pair.peer, row);
+            await tsgitSwitch(sut, row);
+
+            // Assert
+            expect(git.exitCode).toBe(0);
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
           },
           ROW_TIMEOUT,
         );

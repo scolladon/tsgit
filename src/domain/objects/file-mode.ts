@@ -100,10 +100,13 @@ function matchesBytes(buf: Uint8Array, start: number, target: Uint8Array): boole
   return true;
 }
 
+const OWNER_EXECUTE_BIT = 0o100;
+
 /**
  * Derive a working-tree file's git mode from its `lstat`. A symbolic link is
  * `120000` regardless of its permission bits; a regular file is `100755` when
- * any of the `0o111` execute bits is set, else `100644`. This is the single
+ * the owner execute bit is set (git's `S_IXUSR`; group/other bits are
+ * ignored), else `100644`. This is the single
  * definition staging and the working-tree comparison both use, so an added file
  * and a later modified-check agree on the mode.
  */
@@ -112,7 +115,7 @@ export function deriveWorkingMode(stat: {
   readonly mode: number;
 }): FileMode {
   if (stat.isSymbolicLink) return FILE_MODE.SYMLINK;
-  return (stat.mode & 0o111) !== 0 ? FILE_MODE.EXECUTABLE : FILE_MODE.REGULAR;
+  return (stat.mode & OWNER_EXECUTE_BIT) !== 0 ? FILE_MODE.EXECUTABLE : FILE_MODE.REGULAR;
 }
 
 /** Whether the work file's executable bit is trusted: git's core.fileMode. */
