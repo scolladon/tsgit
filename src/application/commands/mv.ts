@@ -395,7 +395,7 @@ const validateMove = async (
   policy: DestinationPolicy,
 ): Promise<Verdict> => {
   const classified = classifySource(byPath, source);
-  if (classified.kind === 'untracked') return { skip: 'source-not-tracked' };
+  if (classified.kind === 'untracked') return { skip: await untrackedVerdictOf(ctx, source) };
   if (!(await sourceExistsOnDisk(ctx, source, classified.kind))) return { skip: 'bad-source' };
   const unmovable = unmovableMembers(classified.entries, source, target, opts);
   if (unmovable !== undefined) return unmovable;
@@ -523,6 +523,10 @@ const sourceExistsOnDisk = async (
   if (kind === 'directory') return stat.isDirectory && !stat.isSymbolicLink;
   return stat.isFile || stat.isSymbolicLink;
 };
+
+// git's `lstat` of the source fails before it consults the index, so an absent path is a bad source.
+const untrackedVerdictOf = async (ctx: Context, source: FilePath): Promise<PlanSkipReason> =>
+  (await lstatOrUndefined(ctx, source)) === undefined ? 'bad-source' : 'source-not-tracked';
 
 interface DestinationPolicy {
   readonly force: boolean;

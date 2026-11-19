@@ -48,6 +48,7 @@ const P256 = `${M127}/${'n'.repeat(128)}`; // tracked
 const P257 = `${M127}/${'n'.repeat(129)}`; // tracked
 const S255 = 's'.repeat(255); // tracked
 const P5000 = Array.from({ length: 25 }, () => 'p'.repeat(200)).join('/'); // 5024 bytes, never on disk
+const GIT_DIE_HEAD = 200;
 const S300 = 's'.repeat(300); // no host holds a 300-byte component
 const CJK100 = '\u6f22'.repeat(100); // 300 UTF-8 bytes, 100 characters
 const BASE = 'base';
@@ -966,7 +967,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       { id: 'M3', from: P5000 },
       { id: 'M3', from: `${DIR805}/nope` },
     ])('When git and tsgit move the missing $from to short (row $id)', (row) => {
-      it('Then both refuse it as an untracked source', async () => {
+      it('Then both refuse it as a bad source', async () => {
         // Arrange
         const { gitRepo, tsgitRepo, ctx } = await twins([]);
         const sut = mv;
@@ -978,10 +979,12 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         // Assert
         expect(gitRun.exitCode).toBe(GIT_EXIT_FATAL);
         expect(err.data).toEqual({
-          code: 'MV_SOURCE_NOT_TRACKED',
+          code: 'MV_BAD_SOURCE',
           source: row.from,
           destination: 'short',
         });
+        // git truncates a die message to 4095 bytes, so only the head of a long path survives
+        expect(gitRun.stderr).toContain(`bad source, source=${row.from.slice(0, GIT_DIE_HEAD)}`);
         expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
       });
     });
@@ -1056,7 +1059,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
         // Assert
         expect(gitRun.exitCode).toBe(0);
-        expect(result.skipped).toEqual([{ source: S300, reason: 'source-not-tracked' }]);
+        expect(result.skipped).toEqual([{ source: S300, reason: 'bad-source' }]);
         expect(snapshotOf(tsgitRepo)).toEqual(snapshotOf(gitRepo));
       });
     });

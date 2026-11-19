@@ -260,28 +260,118 @@ describe('mv', () => {
 
         // Assert
         expect(result.moved).toEqual([{ from: 'a.txt', to: 'dir/a.txt' }]);
-        expect(result.skipped).toEqual([{ source: 'ghost.txt', reason: 'source-not-tracked' }]);
+        expect(result.skipped).toEqual([{ source: 'ghost.txt', reason: 'bad-source' }]);
         expect(await readWork(ctx, 'dir/a.txt')).toBe('a');
       });
     });
   });
 
-  describe('Given an untracked source', () => {
+  describe('Given an untracked source absent from the working tree', () => {
     describe('When mv', () => {
-      it('Then throws MV_SOURCE_NOT_TRACKED carrying source and destination', async () => {
+      it('Then throws MV_BAD_SOURCE carrying source and destination', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
 
         // Act
+        const err = await expectError(() => mv(ctx, ['ghost.txt'], 'z.txt'), 'MV_BAD_SOURCE');
+
+        // Assert
+        if (err.data.code !== 'MV_BAD_SOURCE') throw new Error('unexpected error shape');
+        expect(err.data.source).toBe('ghost.txt');
+        expect(err.data.destination).toBe('z.txt');
+      });
+    });
+
+    describe('When mv into a directory', () => {
+      it('Then the destination is the path inside the directory', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'dir/keep': 'k' });
+
+        // Act
+        const err = await expectError(() => mv(ctx, ['ghost'], 'dir'), 'MV_BAD_SOURCE');
+
+        // Assert
+        if (err.data.code !== 'MV_BAD_SOURCE') throw new Error('unexpected error shape');
+        expect(err.data.source).toBe('ghost');
+        expect(err.data.destination).toBe('dir/ghost');
+      });
+    });
+
+    describe('When mv to a path under a missing parent', () => {
+      it('Then throws MV_BAD_SOURCE', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+
+        // Act / Assert
+        await expectError(() => mv(ctx, ['ghost.txt'], 'missing/z'), 'MV_BAD_SOURCE');
+      });
+    });
+
+    describe('When mv with dryRun', () => {
+      it('Then throws MV_BAD_SOURCE', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+
+        // Act / Assert
+        await expectError(() => mv(ctx, ['ghost.txt'], 'z.txt', { dryRun: true }), 'MV_BAD_SOURCE');
+      });
+    });
+  });
+
+  describe('Given an untracked file present on disk', () => {
+    describe('When mv', () => {
+      it('Then throws MV_SOURCE_NOT_TRACKED carrying source and destination', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        await ctx.fs.write(work(ctx, 'loose.txt'), new TextEncoder().encode('l'));
+
+        // Act
         const err = await expectError(
-          () => mv(ctx, ['ghost.txt'], 'z.txt'),
+          () => mv(ctx, ['loose.txt'], 'z.txt'),
           'MV_SOURCE_NOT_TRACKED',
         );
 
         // Assert
         if (err.data.code !== 'MV_SOURCE_NOT_TRACKED') throw new Error('unexpected error shape');
-        expect(err.data.source).toBe('ghost.txt');
+        expect(err.data.source).toBe('loose.txt');
         expect(err.data.destination).toBe('z.txt');
+      });
+    });
+  });
+
+  describe('Given an untracked dangling symbolic link', () => {
+    describe('When mv', () => {
+      it('Then throws MV_SOURCE_NOT_TRACKED because the link is present', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'a.txt': 'a' });
+        await ctx.fs.symlink('nowhere', work(ctx, 'dl2'));
+
+        // Act / Assert
+        await expectError(() => mv(ctx, ['dl2'], 'z'), 'MV_SOURCE_NOT_TRACKED');
+      });
+    });
+  });
+
+  describe('Given untracked, absent and tracked-then-removed sources into a directory', () => {
+    describe('When mv with skipErrors', () => {
+      it('Then each is skipped with its own reason and the good one moves', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ f: 'f', gone: 'g', 'dir/keep': 'k' });
+        await ctx.fs.rm(work(ctx, 'gone'));
+        await ctx.fs.write(work(ctx, 'loose.txt'), new TextEncoder().encode('l'));
+
+        // Act
+        const result = await mv(ctx, ['ghost', 'loose.txt', 'gone', 'f'], 'dir', {
+          skipErrors: true,
+        });
+
+        // Assert
+        expect(result.skipped).toEqual([
+          { source: 'ghost', reason: 'bad-source' },
+          { source: 'loose.txt', reason: 'source-not-tracked' },
+          { source: 'gone', reason: 'bad-source' },
+        ]);
+        expect(result.moved).toEqual([{ from: 'f', to: 'dir/f' }]);
       });
     });
   });
@@ -471,7 +561,7 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a', 'dir/keep.txt': 'k' });
 
         // Act
-        await expectError(() => mv(ctx, ['a.txt', 'ghost.txt'], 'dir'), 'MV_SOURCE_NOT_TRACKED');
+        await expectError(() => mv(ctx, ['a.txt', 'ghost.txt'], 'dir'), 'MV_BAD_SOURCE');
 
         // Assert — a.txt did NOT move; nothing landed in dir.
         expect(await exists(ctx, 'a.txt')).toBe(true);
@@ -591,7 +681,7 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a', 'b.txt': 'b' });
 
         // Act — reject pre-commit (untracked source) AFTER the lock is acquired.
-        await expectError(() => mv(ctx, ['ghost.txt'], 'z.txt'), 'MV_SOURCE_NOT_TRACKED');
+        await expectError(() => mv(ctx, ['ghost.txt'], 'z.txt'), 'MV_BAD_SOURCE');
 
         // Assert — a follow-up mv succeeds instead of RESOURCE_LOCKED.
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
@@ -607,7 +697,7 @@ describe('mv', () => {
         // Arrange — an index shorter than the hash trailer makes readIndex throw
         // INVALID_INDEX_HEADER; readIndexMap tolerates it as an empty index.
         const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([1, 2, 3]));
 
         // Act / Assert — empty index ⇒ 'a.txt' untracked ⇒ MV_SOURCE_NOT_TRACKED
@@ -623,7 +713,7 @@ describe('mv', () => {
         // Arrange — checksum-valid index whose single entry has no NUL terminator,
         // so parseIndex throws INVALID_INDEX_ENTRY (reached past the checksum).
         const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
         const payload = new Uint8Array(12 + 62 + 100);
         const view = new DataView(payload.buffer);
         view.setUint32(0, 0x44495243); // 'DIRC'
@@ -651,7 +741,7 @@ describe('mv', () => {
         // FILE_NOT_FOUND, simulating the file vanishing; readIndex propagates it and
         // readIndexMap tolerates it as an empty index.
         const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
         const indexFile = `${ctx.layout.gitDir}/index`;
         await ctx.fs.write(indexFile, new Uint8Array(32));
         const racingCtx: Context = {
@@ -1339,7 +1429,7 @@ describe('mv — skipErrors and a rename the file system refuses', () => {
 
         // Assert
         expect(result.skipped).toEqual([
-          { source: 'ghost', reason: 'source-not-tracked' },
+          { source: 'ghost', reason: 'bad-source' },
           { source: 'base', reason: 'rename-failed' },
         ]);
       });
@@ -1977,7 +2067,7 @@ describe('mv — a destination beyond a symbolic link', () => {
         expect(result.skipped).toEqual([
           { source: 'dir/a', reason: 'destination-beyond-symlink' },
           { source: 'dir/b', reason: 'destination-beyond-symlink' },
-          { source: 'ghost', reason: 'source-not-tracked' },
+          { source: 'ghost', reason: 'bad-source' },
         ]);
       });
     });

@@ -281,26 +281,81 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
     });
   });
 
-  describe('Given an untracked source path', () => {
+  describe('Given an untracked source path absent from the working tree', () => {
     describe('When repo.mv is asked to move it', () => {
-      it('Then it refuses like git mv and mutates nothing', async () => {
+      it('Then it refuses as a bad source like git mv and mutates nothing', async () => {
         // Arrange
         await seed([{ path: 'a.txt', content: 'hello\n' }]);
         const before = lsStage(pair.ours);
 
         // Act
-        const peerRun = tryRunGit(['-C', pair.peer, 'mv', 'ghost.txt', 'dest.txt']);
-        let code = '';
-        try {
-          await repo.mv(['ghost.txt'], 'dest.txt');
-        } catch (error) {
-          code = (error as TsgitError).data.code;
-        }
+        const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'ghost.txt', 'dest.txt']);
+        const data = await outcomeOf(() => repo.mv(['ghost.txt'], 'dest.txt'));
 
         // Assert
-        expect(peerRun.ok).toBe(false);
-        expect(code).toBe('MV_SOURCE_NOT_TRACKED');
+        expect(gitRun.exitCode).toBe(128);
+        expect(data).toMatchObject({ code: 'MV_BAD_SOURCE' });
+        const { source, destination } = data as { source: string; destination: string };
+        expect(gitRun.stderr).toContain(
+          `fatal: bad source, source=${source}, destination=${destination}`,
+        );
         expect(lsStage(pair.ours)).toBe(before);
+      });
+    });
+  });
+
+  describe('Given an untracked source path present in the working tree', () => {
+    describe('When repo.mv is asked to move it', () => {
+      it('Then it refuses as not under version control like git mv and mutates nothing', async () => {
+        // Arrange
+        await seed([{ path: 'a.txt', content: 'hello\n' }]);
+        await writeBoth({ path: 'loose.txt', content: 'loose\n' });
+        const before = lsStage(pair.ours);
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'loose.txt', 'dest.txt']);
+        const data = await outcomeOf(() => repo.mv(['loose.txt'], 'dest.txt'));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(128);
+        expect(data).toMatchObject({ code: 'MV_SOURCE_NOT_TRACKED' });
+        const { source, destination } = data as { source: string; destination: string };
+        expect(gitRun.stderr).toContain(
+          `fatal: not under version control, source=${source}, destination=${destination}`,
+        );
+        expect(lsStage(pair.ours)).toBe(before);
+      });
+    });
+  });
+
+  describe('Given absent, untracked, tracked-then-removed and good sources into a directory', () => {
+    describe('When repo.mv skips errors', () => {
+      it('Then git and tsgit skip the same sources and agree on the index', async () => {
+        // Arrange
+        await seed([
+          { path: 'gone', content: 'g\n' },
+          { path: 'f', content: 'f\n' },
+          { path: 'dir/keep', content: 'k\n' },
+        ]);
+        await writeBoth({ path: 'untracked', content: 'u\n' });
+        for (const dir of [pair.peer, pair.ours]) await rm(path.join(dir, 'gone'));
+        const sources = ['ghost', 'untracked', 'gone', 'f'];
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-k', '-v', ...sources, 'dir']);
+        const result = await repo.mv(sources, 'dir', { skipErrors: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result.skipped).toEqual([
+          { source: 'ghost', reason: 'bad-source' },
+          { source: 'untracked', reason: 'source-not-tracked' },
+          { source: 'gone', reason: 'bad-source' },
+        ]);
+        expect(linesOf(gitRun.stdout)).toEqual(
+          mvVerboseLines(sources, (source) => `dir/${source}`, result, []),
+        );
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
       });
     });
   });
@@ -1060,6 +1115,32 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
       await linkBoth('dang', 'nowhere', true);
       await linkBoth('pointer', 'f', true);
     };
+
+    describe('Given an untracked dangling link', () => {
+      beforeEach(async () => {
+        await seed(['f']);
+        await linkBoth('dl2', 'nowhere', false);
+      });
+
+      describe('When it is moved (row U6)', () => {
+        it('Then git and tsgit refuse it as not under version control', async () => {
+          // Arrange
+          const sut = repo;
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'dl2', 'z']);
+          const data = await outcomeOf(() => sut.mv(['dl2'], 'z'));
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(data).toMatchObject({ code: 'MV_SOURCE_NOT_TRACKED', source: 'dl2' });
+          expect(gitRun.stderr).toContain('fatal: not under version control, source=dl2');
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          await expectParity();
+        });
+      });
+    });
 
     describe('Given a tracked link to the git directory', () => {
       beforeEach(seedLinkedRepo);

@@ -118,8 +118,8 @@ A directory source selects its members by raw path bytes. A lossy member (a non-
 
 ## Throws
 
-- `MV_SOURCE_NOT_TRACKED` — a source is not in the index.
-- `MV_BAD_SOURCE` — a tracked source is missing from the working tree.
+- `MV_SOURCE_NOT_TRACKED` — a source present on disk is not in the index.
+- `MV_BAD_SOURCE` — a source is missing from the working tree, tracked or not.
 - `MV_DESTINATION_EXISTS` — the destination already exists and `force` was not set (or the source is a directory).
 - `MV_INTO_SELF` — a source is moved onto itself or into its own subtree.
 - `MV_DESTINATION_NOT_DIRECTORY` — multiple sources but the destination is not a directory.
