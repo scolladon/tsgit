@@ -1381,3 +1381,79 @@ Phase gate after this part: `npm run validate`.
 ### Commit
 
 `fix(mv): refuse an absent untracked source as a bad source as git mv does`
+
+## Part 16 — Add the refusal code for an empty source directory
+
+### Context
+
+Files edited: `src/domain/commands/error.ts`, `src/domain/commands/index.ts`, `src/domain/error.ts`
+(message case), `test/unit/domain/error.test.ts`, `test/unit/domain/exhaustiveness.ts`,
+`reports/api.json`. Separate from Part 11 because ADR-1228 (N8) ratified this code after Part 11
+landed. Mirror Part 11's `mvDestinationBeyondSymlink` arm exactly: a new
+`MV_SOURCE_DIRECTORY_EMPTY { source, destination }` (ADR-202 `MV_*` family). Git's message
+(git 2.56.0, rows U9): `source directory is empty, source=<s>, destination=<d>`.
+
+### TDD steps
+
+1. RED: `mvSourceDirectoryEmpty('ud','z')` data `{ code: 'MV_SOURCE_DIRECTORY_EMPTY', source: 'ud',
+   destination: 'z' }` and message
+   `MV_SOURCE_DIRECTORY_EMPTY: source directory is empty, source=ud, destination=z`; bind the call
+   result as `result`. GREEN: union arm, factory, barrel export, message case, exhaustiveness case.
+
+### Gate
+
+`npx vitest run test/unit/domain/error.test.ts && npx tsc --noEmit -p tsconfig.json &&
+./node_modules/.bin/biome check <touched-files> && npm run check:spelling &&
+node --experimental-strip-types tooling/audit-test-pyramid.ts`; regenerate `reports/api.json` with
+`npm run docs:json`.
+
+### Commit
+
+`feat(mv): add the refusal code for an empty source directory`
+
+## Part 17 — Refuse a source directory without a tracked member as git mv does
+
+### Context
+
+Files edited: `src/application/commands/mv.ts`, `test/unit/application/commands/mv.test.ts`,
+`test/integration/mv-interop.test.ts`, `docs/use/commands/mv.md`, `reports/api.json`.
+
+Design: N8 rows U9, U11 of "Pinned matrix — an absent untracked source" (git 2.56.0, 2/2):
+`mv ud z` (ud holds only untracked `ud/u`) and `mv emp z` (empty directory) exit 128
+`source directory is empty, source=ud, destination=z`; `mv -k -v ud emp f dir` exits 0 printing
+only `Renaming f to dir/f`, leaving `ud/u` and `emp`. ADR-1228 (N8): `'source-directory-empty'`
+joins `MvSkipReason`; Part 16's `mvSourceDirectoryEmpty` is the refusal.
+
+Anchors in `src/application/commands/mv.ts`: `MvSkipReason` (union, ~L90), `PlanSkipReason =
+Exclude<MvSkipReason, 'rename-failed'>`, `untrackedVerdictOf(ctx, source)` (~L528: `'bad-source'`
+when `lstat` finds nothing, else `'source-not-tracked'`), its call site in `validateMove`
+(`classified.kind === 'untracked'`), and `refusal(reason, source, target)` (~L632, exhaustive
+switch). The new verdict: `lstat` finds a plain directory (not a symlink) →
+`'source-directory-empty'`. An untracked file, an untracked dangling link and an untracked symlink
+to a directory keep `'source-not-tracked'` (U5, U6).
+
+### TDD steps
+
+1. RED: a directory holding only an untracked file, and an empty directory, each refuse
+   `MV_SOURCE_DIRECTORY_EMPTY` with source/destination, index and disk unchanged; dryRun too.
+   GREEN: `untrackedVerdictOf` distinguishes a plain directory; `refusal` maps the new reason.
+2. RED (skipErrors): `mv(['ud','emp','f'], 'dir', { skipErrors: true })` returns
+   `moved: [f → dir/f]`, `skipped` `ud`, `emp` with `'source-directory-empty'`; `ud/u`, `emp` stay.
+3. GUARD: an untracked file, an untracked dangling link and an untracked symlink to a directory
+   keep `MV_SOURCE_NOT_TRACKED`.
+4. GUARD (interop): U9 both shapes — git 128 with `source directory is empty, source=<s>,
+   destination=z` rebuilt from tsgit's fields; U11 — git `-k -v` stdout equals `mvVerboseLines`,
+   `lsStage` parity, disk parity.
+5. Docs: `mv.md` Throws list and `MvSkipReason` literals.
+
+### Gate
+
+`npx vitest run test/unit/application/commands/mv.test.ts test/integration/mv-interop.test.ts &&
+npx tsc --noEmit -p tsconfig.json && ./node_modules/.bin/biome check <touched-files> &&
+npm run check:spelling && npm run check:doc-links &&
+node --experimental-strip-types tooling/audit-test-pyramid.ts`; regenerate `reports/api.json`
+with `npm run docs:json`. Phase gate after this part: `npm run validate`.
+
+### Commit
+
+`fix(mv): refuse a source directory without a tracked member as git mv does`
