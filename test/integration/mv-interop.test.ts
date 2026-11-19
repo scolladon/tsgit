@@ -13,7 +13,8 @@
  *   interopSurface: mv
  */
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -514,6 +515,330 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           expect(await pathExists(dir, 'b')).toBe(false);
           inChain(dir, steps, 'test -f b');
         }
+      });
+    });
+  },
+);
+
+const isCaseInsensitiveHost = async (): Promise<boolean> => {
+  const probeDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-fold-probe-'));
+  try {
+    await writeFile(path.join(probeDir, 'Probe-File'), '');
+    return existsSync(path.join(probeDir, 'probe-file'));
+  } finally {
+    await rm(probeDir, { recursive: true, force: true });
+  }
+};
+
+const CASE_INSENSITIVE = await isCaseInsensitiveHost();
+
+const ERRNO_TEXT: Readonly<Record<string, string>> = { EINVAL: 'Invalid argument' };
+
+const diskEntries = async (dir: string): Promise<ReadonlyArray<string>> => {
+  const entries = await readdir(dir, { recursive: true });
+  return entries.filter((entry) => entry !== '.git' && !entry.startsWith(`.git${path.sep}`)).sort();
+};
+
+const outcomeOf = async (run: () => Promise<unknown>): Promise<TsgitError['data'] | undefined> => {
+  try {
+    await run();
+    return undefined;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+};
+
+const linesOf = (stdout: string): ReadonlyArray<string> =>
+  stdout.split('\n').filter((line) => line !== '');
+
+describe.skipIf(!GIT_AVAILABLE || !CASE_INSENSITIVE)(
+  'mv porcelain interop on a case-insensitive host',
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+    let ignorecase = 'true';
+
+    const prepare = async (value: string): Promise<void> => {
+      ignorecase = value;
+      pair = await makePeerPair('mv-fold');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      repo = await openRepository({ cwd: pair.ours });
+      await repo.init();
+      runGit(['-C', pair.peer, 'config', 'core.ignorecase', value]);
+      runGit(['-C', pair.ours, 'config', 'core.ignorecase', value]);
+    };
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    const writeBoth = async (file: string, tracked: boolean): Promise<void> => {
+      for (const dir of [pair.peer, pair.ours]) {
+        await mkdir(path.join(dir, path.dirname(file)), { recursive: true });
+        await writeFile(path.join(dir, file), `${file}\n`);
+      }
+      if (!tracked) return;
+      runGit(['-C', pair.peer, 'add', '--', file]);
+      await repo.add([file]);
+    };
+
+    const seed = async (tracked: ReadonlyArray<string>, untracked: ReadonlyArray<string> = []) => {
+      for (const file of tracked) await writeBoth(file, true);
+      for (const file of untracked) await writeBoth(file, false);
+    };
+
+    const mkdirBoth = async (rel: string): Promise<void> => {
+      await mkdir(path.join(pair.peer, rel), { recursive: true });
+      await mkdir(path.join(pair.ours, rel), { recursive: true });
+    };
+
+    const expectParity = async (): Promise<void> => {
+      expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+      expect(await diskEntries(pair.ours)).toEqual(await diskEntries(pair.peer));
+    };
+
+    describe.each(['true', 'false'])('Given core.ignorecase=%s', (value) => {
+      beforeEach(() => prepare(value));
+
+      describe('When a directory moves onto its own case variant (row 5)', () => {
+        it('Then git and tsgit both refuse with the filesystem error and leave every entry', async () => {
+          // Arrange
+          await seed(['d/f', 'd/g'], ['d/u']);
+          const stageBefore = lsStage(pair.ours);
+          const diskBefore = await diskEntries(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'd', 'D']);
+          const data = await outcomeOf(() => repo.mv(['d'], 'D'));
+
+          // Assert
+          const reason = (data as { reason: string }).reason;
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).toContain(
+            `renaming 'd' to 'D/d' failed: ${ERRNO_TEXT[reason] ?? reason}`,
+          );
+          expect(data).toMatchObject({ code: 'UNSUPPORTED_OPERATION', operation: 'filesystem' });
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          expect(lsStage(pair.peer)).toBe(stageBefore);
+          expect(await diskEntries(pair.ours)).toEqual(diskBefore);
+          expect(await diskEntries(pair.peer)).toEqual(diskBefore);
+          await expectParity();
+        });
+      });
+
+      describe('When a directory moves onto its case variant with skipErrors (row 5-k)', () => {
+        it('Then git and tsgit both delete the source as git deletes it and record the entries under D/d', async () => {
+          // Arrange
+          await seed(['d/f', 'd/g', 'd/s/t'], ['d/u', 'd/s/u']);
+          await mkdirBoth('d/emp');
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-k', '-v', 'd', 'D']);
+          const result = await repo.mv(['d'], 'D', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(result.skipped).toEqual([{ source: 'd', reason: 'rename-failed' }]);
+          expect(linesOf(gitRun.stdout)).toEqual(
+            mvVerboseLines(['d'], (source) => `D/${source}`, result, ['d']),
+          );
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          expect(lsStage(pair.ours)).toContain('D/d/f');
+          for (const dir of [pair.peer, pair.ours]) expect(await diskEntries(dir)).toEqual([]);
+        });
+      });
+
+      describe('When a directory holding a tracked directory moves onto a tracked sibling in another case (row 6-d)', () => {
+        it('Then both refuse, or skip it under skipErrors, and change nothing', async () => {
+          // Arrange
+          await seed(['a/g', 'a/d/f']);
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'a/d', 'A']);
+          const data = await outcomeOf(() => repo.mv(['a/d'], 'A'));
+          const gitSkip = tryRunGitWithExit(['-C', pair.peer, 'mv', '-k', 'a/d', 'A']);
+          const skipped = await repo.mv(['a/d'], 'A', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(data).toMatchObject({
+            code: 'MV_DESTINATION_EXISTS',
+            source: 'a/d',
+            destination: 'A/d',
+          });
+          expect(gitSkip.exitCode).toBe(0);
+          expect(skipped.skipped).toEqual([{ source: 'a/d', reason: 'destination-exists' }]);
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          await expectParity();
+        });
+      });
+
+      describe('When a directory moves onto a populated case variant under another parent (row L)', () => {
+        const rowFiles = ['x/d/f', 'y/D/g', 'y/D/u', 'T/keep'];
+
+        it.skipIf(process.platform === 'win32')(
+          'Then without skipErrors both refuse after moving the first directory',
+          async () => {
+            // Arrange
+            await seed(rowFiles);
+            const stageBefore = lsStage(pair.ours);
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', 'x/d', 'y/D', 'T']);
+            const data = await outcomeOf(() => repo.mv(['x/d', 'y/D'], 'T'));
+
+            // Assert
+            expect(gitRun.exitCode).toBe(128);
+            expect(data).toMatchObject({ code: 'DIRECTORY_NOT_EMPTY' });
+            expect(lsStage(pair.ours)).toBe(stageBefore);
+            expect(lsStage(pair.peer)).toBe(stageBefore);
+            expect(await pathExists(pair.ours, 'T/d/f')).toBe(true);
+            expect(await pathExists(pair.peer, 'T/d/f')).toBe(true);
+            await expectParity();
+          },
+        );
+
+        it.skipIf(process.platform === 'win32')(
+          'Then with skipErrors both skip the second directory and agree on index and disk',
+          async () => {
+            // Arrange
+            await seed(rowFiles);
+
+            // Act
+            const gitRun = tryRunGitWithExit([
+              '-C',
+              pair.peer,
+              'mv',
+              '-k',
+              '-v',
+              'x/d',
+              'y/D',
+              'T',
+            ]);
+            const result = await repo.mv(['x/d', 'y/D'], 'T', { skipErrors: true });
+
+            // Assert
+            expect(gitRun.exitCode).toBe(0);
+            expect(result.skipped).toEqual([{ source: 'y/D', reason: 'rename-failed' }]);
+            expect(linesOf(gitRun.stdout)).toEqual(
+              mvVerboseLines(['x/d', 'y/D'], (source) => `T/${path.basename(source)}`, result, [
+                'x/d',
+                'y/D',
+              ]),
+            );
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+            expect(lsStage(pair.ours)).toContain('T/D/g');
+            expect(lsStage(pair.ours)).toContain('T/d/f');
+            expect(await pathExists(pair.ours, 'y/D')).toBe(false);
+            await expectParity();
+          },
+        );
+      });
+    });
+
+    describe('Given core.ignorecase=true', () => {
+      beforeEach(() => prepare('true'));
+
+      describe('When git mv -n moves a directory onto its case variant (row 5-n)', () => {
+        it('Then tsgit reports git Renaming lines minus the directory own line', async () => {
+          // Arrange
+          await seed(['d/f', 'd/g'], ['d/u']);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-n', 'd', 'D']);
+          const result = await repo.mv(['d'], 'D', { dryRun: true });
+
+          // Assert
+          const renameLines = linesOf(gitRun.stdout).filter((line) => line.startsWith('Renaming '));
+          expect(gitRun.exitCode).toBe(0);
+          expect(renameLines.slice(1)).toEqual(
+            result.moved.map(({ from, to }) => `Renaming ${from} to ${to}`),
+          );
+        });
+      });
+
+      describe('When two directories move onto a case-variant target with skipErrors (row C)', () => {
+        it('Then both twins delete both sources and agree on the index', async () => {
+          // Arrange
+          await seed(['d/f', 'd/s/t', 'e/e1'], ['d/u']);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', '-k', '-v', 'd', 'e', 'D']);
+          const result = await repo.mv(['d', 'e'], 'D', { skipErrors: true });
+
+          // Assert
+          expect(gitRun.exitCode).toBe(0);
+          expect(linesOf(gitRun.stdout)).toEqual(
+            mvVerboseLines(['d', 'e'], (source) => `D/${source}`, result, ['d', 'e']),
+          );
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          for (const dir of [pair.peer, pair.ours]) expect(await diskEntries(dir)).toEqual([]);
+        });
+      });
+
+      describe.each([
+        { id: 'row 6', files: ['f', 'd/g'], argv: ['f', 'F'], force: false },
+        { id: 'row 6-prime', files: ['f', 'd/g'], argv: ['f', 'F'], force: true },
+        { id: 'row 6 nested', files: ['f', 'd/g'], argv: ['d/g', 'd/G'], force: false },
+        { id: 'row 6-f', files: ['a/g', 'a/d/f'], argv: ['a/g', 'A'], force: false },
+      ])('When a file moves onto its case variant ($id)', (row) => {
+        it('Then both succeed and agree on the index and the disk', async () => {
+          // Arrange
+          await seed(row.files);
+          const [source, target] = row.argv as [string, string];
+
+          // Act
+          const gitArgs = row.force ? ['mv', '-f', source, target] : ['mv', source, target];
+          runGit(['-C', pair.peer, ...gitArgs]);
+          await repo.mv([source], target, { force: row.force });
+
+          // Assert
+          await expectParity();
+        });
+      });
+    });
+
+    describe('Given core.ignorecase=false', () => {
+      beforeEach(() => prepare('false'));
+
+      describe.each([
+        { id: 'row 6', files: ['f', 'd/g'], argv: ['f', 'F'] },
+        { id: 'row 6 nested', files: ['f', 'd/g'], argv: ['d/g', 'd/G'] },
+        { id: 'row 6-f', files: ['a/g', 'a/d/f'], argv: ['a/g', 'A'] },
+      ])('When a file moves onto its case variant ($id)', (row) => {
+        it('Then both refuse and change nothing', async () => {
+          // Arrange
+          await seed(row.files);
+          const [source, target] = row.argv as [string, string];
+          const stageBefore = lsStage(pair.ours);
+
+          // Act
+          const gitRun = tryRunGitWithExit(['-C', pair.peer, 'mv', source, target]);
+          const data = await outcomeOf(() => repo.mv([source], target));
+
+          // Assert
+          expect(ignorecase).toBe('false');
+          expect(gitRun.exitCode).toBe(128);
+          expect(data).toMatchObject({ code: 'MV_DESTINATION_EXISTS' });
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          await expectParity();
+        });
+      });
+
+      describe('When mv -f moves a file onto its case variant (row 6-prime)', () => {
+        it('Then both move it and agree on the index and the disk', async () => {
+          // Arrange
+          await seed(['f', 'd/g']);
+
+          // Act
+          runGit(['-C', pair.peer, 'mv', '-f', 'f', 'F']);
+          await repo.mv(['f'], 'F', { force: true });
+
+          // Assert
+          await expectParity();
+        });
       });
     });
   },
