@@ -27,6 +27,7 @@ export {
   maxRefspecsExceeded,
   mergeHasConflicts,
   mvBadSource,
+  mvDestinationBeyondSymlink,
   mvDestinationDirectoryMissing,
   mvDestinationExists,
   mvDestinationNotDirectory,

@@ -55,6 +55,7 @@ import {
   hashFailed,
   httpError,
   mvBadSource,
+  mvDestinationBeyondSymlink,
   mvDestinationDirectoryMissing,
   mvDestinationExists,
   mvDestinationNotDirectory,
@@ -1015,6 +1016,25 @@ describe('domain error — AdapterError', () => {
           });
           expect(result.message).toBe(
             'MV_DESTINATION_EXISTS: destination exists, source=a.txt, destination=keep.txt',
+          );
+        });
+      });
+    });
+
+    describe("Given mvDestinationBeyondSymlink('dir/a', 'lnk/x/a')", () => {
+      describe('When checking data and message', () => {
+        it('Then code/source/destination and the faithful message render', () => {
+          // Arrange & Act
+          const sut = mvDestinationBeyondSymlink('dir/a' as FilePath, 'lnk/x/a' as FilePath);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'MV_DESTINATION_BEYOND_SYMLINK',
+            source: 'dir/a',
+            destination: 'lnk/x/a',
+          });
+          expect(sut.message).toBe(
+            'MV_DESTINATION_BEYOND_SYMLINK: destination is beyond a symbolic link, source=dir/a, destination=lnk/x/a',
           );
         });
       });
