@@ -251,6 +251,12 @@ A well-formed repository, but a configuration, layout or argument shape few call
   no sparse git: exit 1 (would be overwritten: dir) | tsgit: same refusal
   ```
 
+- **32.83** An octopus content conflict labels its markers `HEAD` / `<branch>` where git writes random `.merge_file_XXXXXX` temp names — pinned against git 2.56.0. `main` edits `f`, `last` edits `f`, `first` edits `top`; `git merge --no-edit first last` vs `repo.merge.run({ rev: ['first', 'last'] })` (`src/application/commands/merge.ts`). Both stop on the conflict with the same marker body; only the label lines differ, and git's labels are random per run (octopus merges through temp files), so byte parity is impossible. Not folded: out of scope.
+
+- **32.84** A non-cone sparse matcher costs ~2.6 s per 20k index paths with 62 literal rules — measured at a0cd84e1. `compileGlob`'s per-character step (`stepLiteral`, `src/domain/pathspec/compile-glob.ts`) allocates a `Uint8Array(path.length + 1)` per literal token, so a literal `withDirSuffix` pattern costs 1.5–2.4 µs per path against 0.2 µs for `*`; only `src/domain/sparse/non-cone.ts` passes `withDirSuffix`, and cone mode costs 5 ms. Fix shape: a literal-pattern fast path (prefix compare plus a `/` or end-of-path boundary). Non-cone mode is deprecated in git. Not folded: out of scope.
+
+- **32.85** Spike — `stash apply --index` of a stash holding a staged change to an excluded path leaves git's entry `H` with the file absent; tsgit leaves it `S` — pinned against git 2.56.0. Cone sparse on `b`, `a/f` staged `f2` through `update-index --no-skip-worktree` with work file `f1`, `git stash`, then `git stash apply --index` vs `repo.stash.apply({ restoreIndex: true })` (`src/application/commands/stash.ts`): both stage blob `9de77c1` and leave `a/` absent; git's `status` reports `MD a/f`, tsgit's `M  a/f`. Question: which step of git's `do_apply_stash` index restore clears the bit without writing the file, and does every `--index` restore of a skip-worktree path do it? Not folded: needs a probe.
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.

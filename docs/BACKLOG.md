@@ -43,7 +43,7 @@ moved 21 entries and 10 sub-rows there.
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
 | 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ · ~~32.56~~ | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
-| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · ~~32.44~~ · ~~32.60~~ · 32.67 · 32.74 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
+| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · ~~32.44~~ · ~~32.60~~ · 32.67 · 32.74 · 32.82 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B17, C6 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
@@ -786,6 +786,19 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   tsgit status()            -> clean:false, f unstaged 'mode-changed', worktree mode 100755
   ```
   Not folded: out of scope (the stat-clean checks and the config layer, outside the unborn-HEAD branch switch). Data-integrity.
+
+### Open (scoped 2026-11-19 — follow-ups surfaced by the sequencer-sparse-cone-writes run, triaged)
+
+- [ ] **32.82** A file present at a skip-worktree path stays hidden: `status` reports clean where git reports it modified — pinned against git 2.56.0 on a well-formed repository. Cone sparse on `b` (`/*\n!/*/\n/b/\n`, `read-tree -mu HEAD`), then a file written at the excluded path `a/f`. With the default `sparse.expectFilesOutsideOfPatterns = false`, git's index read (`clear_skip_worktree_from_present_files`) clears the bit of every skip-worktree entry whose file is present: `status` prints ` M a/f` and writes `H a/f` back, and a refused `stash apply` (exit 128) also leaves `H a/f`. tsgit's index read (`src/application/primitives/read-index.ts`) keeps `S a/f`: `status()` is clean, and `stash.apply()` refuses `STASH_APPLY_WOULD_OVERWRITE` with `S a/f` kept. Fix: when `core.sparseCheckout` is on and `sparse.expectFilesOutsideOfPatterns` is false, lstat skip-worktree entries at index read and clear the bit of present ones, bounding the cost the way git does (skip whole absent directories); pin one interop row per reader (status, stash apply, checkout, add).
+  ```
+  # git 2.56.0, scrubbed env; ls-files -t read with sparse.expectFilesOutsideOfPatterns=true
+  PRE                    -> S a/f S a/g H b/f H top ; a/f = junk (untracked file at the S path)
+  git status --porcelain -> " M a/f" ; index after: H a/f S a/g H b/f H top
+  tsgit status()         -> clean:true, changes [] ; index after: S a/f S a/g H b/f H top
+  git stash apply        -> exit 128 ; index: H a/f ; a/f = junk
+  tsgit stash.apply()    -> STASH_APPLY_WOULD_OVERWRITE ; index: S a/f ; a/f = junk
+  ```
+  Not folded: needs its own decision (every command's index read, outside the sequencer write path). Wrong-result.
 
 ## Phase 11 admin tail — completed 2026-05-17
 
