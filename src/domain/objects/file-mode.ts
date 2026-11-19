@@ -118,7 +118,7 @@ export function deriveWorkingMode(stat: {
 /** Whether the work file's executable bit is trusted: git's core.fileMode. */
 export type ExecutableBitTrust = 'trusted' | 'ignored';
 
-const isRegularFileMode = (mode: FileMode): boolean =>
+export const isRegularFileMode = (mode: FileMode): boolean =>
   mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
 
 /** git's ce_mode_from_stat, core.fileMode arm: an untrusted exec bit defers to the donor entry. */

@@ -5320,3 +5320,142 @@ describe('applyChangeset leaving occupants its pre-flight does not judge', () =>
     });
   });
 });
+
+describe('applyChangeset over an exec-bit-only local change', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const EXECUTABLE_STAT_MODE = 0o100755;
+
+  const withExecutableWorkFile = (ctx: Context): void => {
+    const probe = ctx.fs.lstatIfReachable;
+    if (probe === undefined) throw new Error('the memory adapter probes lstatIfReachable');
+    const original = probe.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'lstatIfReachable').mockImplementation(async (path) => {
+      const stat = await original(path);
+      return stat === undefined ? stat : { ...stat, mode: EXECUTABLE_STAT_MODE };
+    });
+  };
+
+  const refusalOf = async (run: Promise<unknown>): Promise<TsgitError> => {
+    try {
+      await run;
+    } catch (err) {
+      if (err instanceof TsgitError) return err;
+      throw err;
+    }
+    throw new Error('expected a refusal');
+  };
+
+  const seed = async (
+    fileMode?: string,
+  ): Promise<{ ctx: Context; oldId: ObjectId; newId: ObjectId }> => {
+    const ctx = await buildSeededContext();
+    if (fileMode !== undefined) {
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tfileMode = ${fileMode}\n`);
+      invalidateConfigCache(ctx);
+    }
+    const oldId = await writeBlob(ctx, enc('original'));
+    const newId = await writeBlob(ctx, enc('updated'));
+    await ctx.fs.write(`${WORKDIR}/f.txt`, enc('original'));
+    return { ctx, oldId, newId };
+  };
+
+  describe('Given an unforced update of a file whose exec bit was set locally, with the default config', () => {
+    describe('When the changeset is applied', () => {
+      it('Then it refuses with CHECKOUT_OVERWRITE_DIRTY naming the path', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await seed();
+        withExecutableWorkFile(ctx);
+        const sut = applyChangeset;
+
+        // Act
+        const error = await refusalOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(error.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        if (error.data.code !== 'CHECKOUT_OVERWRITE_DIRTY') throw error;
+        expect(error.data.localChanges).toEqual(['f.txt']);
+        expect(error.data.untracked).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an unforced delete of a file whose exec bit was set locally, with the default config', () => {
+    describe('When the changeset is applied', () => {
+      it('Then it refuses with CHECKOUT_OVERWRITE_DIRTY naming the path', async () => {
+        // Arrange
+        const { ctx, oldId } = await seed();
+        withExecutableWorkFile(ctx);
+        const sut = applyChangeset;
+
+        // Act
+        const error = await refusalOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeDelete('f.txt', oldId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(error.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        if (error.data.code !== 'CHECKOUT_OVERWRITE_DIRTY') throw error;
+        expect(error.data.localChanges).toEqual(['f.txt']);
+        expect(error.data.untracked).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the same exec-bit-only change with core.filemode = false', () => {
+    describe('When the changeset is applied', () => {
+      it('Then it applies', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await seed('false');
+        withExecutableWorkFile(ctx);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('updated');
+      });
+    });
+  });
+
+  describe('Given an update whose target only flips the mode over an untouched -x file', () => {
+    describe('When the changeset is applied', () => {
+      it('Then it applies', async () => {
+        // Arrange
+        const { ctx, oldId } = await seed();
+        const sut = applyChangeset;
+        const entry: ChangesetEntry = {
+          ...makeUpdate('f.txt', oldId, oldId),
+          mode: FILE_MODE.EXECUTABLE,
+        };
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([entry]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('original');
+      });
+    });
+  });
+});

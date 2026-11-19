@@ -28,7 +28,17 @@ import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
-import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
+import {
+  type ExecutableBitTrust,
+  indexModeFromStat,
+  isRegularFileMode,
+} from '../../domain/objects/file-mode.js';
+import {
+  FILE_MODE,
+  type FileMode,
+  type FilePath,
+  type ObjectId,
+} from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
@@ -78,6 +88,7 @@ import {
   type WorkingTreeWriter,
 } from './internal/write-converted-entry.js';
 import { everySourceLoadable } from './object-store.js';
+import { readExecutableBitTrust } from './read-executable-bit-trust.js';
 import { readIndex } from './read-index.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
@@ -128,12 +139,25 @@ const LINK_ENCODER = new TextEncoder();
 interface DirtyProbe {
   readonly provider: AttributeProvider;
   readonly settings: EolSettings;
+  readonly executableBit: ExecutableBitTrust;
 }
 
 const buildDirtyProbe = async (ctx: Context): Promise<DirtyProbe> => ({
   provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
+  executableBit: await readExecutableBitTrust(ctx),
 });
+
+// A trusted exec bit that no longer matches the entry's mode is a local change git
+// refuses to overwrite, whatever the content says.
+const modeChanged = (
+  probe: DirtyProbe,
+  previousMode: FileMode | undefined,
+  stat: FileStat,
+): boolean =>
+  previousMode !== undefined &&
+  isRegularFileMode(previousMode) &&
+  indexModeFromStat(stat, previousMode, probe.executableBit) !== previousMode;
 
 const readWorkingBytes = async (
   ctx: Context,
@@ -272,9 +296,13 @@ const evaluateChangedPath = async (
   if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
   const verdict = await classifyOccupant(ctx, { kind, path: entry.path }, scope);
   if (verdict.kind !== 'compare-content') return verdictClash(verdict);
+  const dirtyProbe = await probe();
+  if (modeChanged(dirtyProbe, entry.previousMode, verdict.stat)) {
+    return { class: 'local-changes', path: entry.path };
+  }
   const matches = await blobMatches(
     ctx,
-    await probe(),
+    dirtyProbe,
     entry.path,
     joinPath(scope.workdir, entry.path),
     previousId,

@@ -514,7 +514,10 @@ describe('classifyOccupant', () => {
         const result = await classifyChange(ctx, 'update', 'f', scopeOf(ctx));
 
         // Assert
-        expect(result).toEqual({ kind: 'compare-content' });
+        expect(result).toEqual({
+          kind: 'compare-content',
+          stat: expect.objectContaining({ isFile: true }),
+        });
       });
     });
   });
@@ -530,7 +533,10 @@ describe('classifyOccupant', () => {
         const result = await classifyChange(ctx, 'delete', 'f', scopeOf(ctx));
 
         // Assert
-        expect(result).toEqual({ kind: 'compare-content' });
+        expect(result).toEqual({
+          kind: 'compare-content',
+          stat: expect.objectContaining({ isFile: true }),
+        });
       });
     });
   });

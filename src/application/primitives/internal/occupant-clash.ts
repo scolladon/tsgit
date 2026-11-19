@@ -7,6 +7,7 @@ import { FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FileMode } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileStat } from '../../../ports/file-system.js';
 import { racyContentMatcher } from '../compare-working-tree-entry.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { createConcurrencyLimiter } from './concurrency-limiter.js';
@@ -47,15 +48,14 @@ export interface OccupantClash {
 export type OccupantVerdict =
   | { readonly kind: 'clash'; readonly clash: OccupantClash }
   | { readonly kind: 'clear' }
-  // A plain file or symlink stands at the path (the probe saw it): the caller hashes it against the index.
-  | { readonly kind: 'compare-content' };
+  // A plain file or symlink stands at the path (the probe saw it, `stat` is that lstat): the caller weighs it against the index.
+  | { readonly kind: 'compare-content'; readonly stat: FileStat };
 
 export type OccupantShape =
   | { readonly kind: 'add'; readonly path: FilePath; readonly mode: FileMode }
   | { readonly kind: 'update' | 'delete'; readonly path: FilePath };
 
 const CLEAR: OccupantVerdict = { kind: 'clear' };
-const COMPARE_CONTENT: OccupantVerdict = { kind: 'compare-content' };
 
 export const repoRelativePath = (ctx: Context, absPath: string): FilePath =>
   absPath.slice(requireWorkTree(ctx, 'isWorkingTreeDirty').length + 1) as FilePath;
@@ -188,7 +188,7 @@ const classifyChangedPath = async (
   const absPath = joinPath(scope.workdir, shape.path);
   const stat = await lstatIfReachable(ctx.fs, absPath);
   if (stat === undefined) return CLEAR;
-  if (!stat.isDirectory) return COMPARE_CONTENT;
+  if (!stat.isDirectory) return { kind: 'compare-content', stat };
   if (shape.kind === 'update') return localChange(shape.path);
   return (await holdsSurvivor(ctx, absPath, scope))
     ? untracked(shape.path)
