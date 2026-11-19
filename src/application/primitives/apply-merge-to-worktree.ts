@@ -6,8 +6,9 @@
  *
  * Three outcomes:
  * - `clean`    — the merged tree, materialised onto the working tree as the
- *                delta against `currentIndex` (only changed paths are touched),
- *                plus the post-write stage-0 index entries for the caller to
+ *                delta against `currentIndex` (only changed paths are touched,
+ *                and only those the sparse patterns select; the others are
+ *                left skip-worktree), plus the post-write stage-0 index entries for the caller to
  *                commit (or discard, as `stash apply` does).
  * - `conflict` — markers written to the working tree + stage-1/2/3 unmerged
  *                index entries (the caller commits them).
@@ -19,7 +20,7 @@
 import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries, recordedPaths } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
-import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { type GitIndex, type IndexEntry, skipWorktreeEntry } from '../../domain/git-index/index.js';
 import { escapedPathOf, viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { validateTreePath } from '../../domain/git-index/path-validator.js';
@@ -34,6 +35,7 @@ import {
 import { mergeEscapedTrees } from '../../domain/merge/three-way-tree.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
+import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import {
   buildBlobUnchanged,
@@ -64,6 +66,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { renormalizeAttributeLookup } from './internal/renormalize-attributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { retireSparseMovers, withRetiredSkipped } from './internal/sparse-movers.js';
 import { withConflictStopStats } from './internal/stat-conflict-index.js';
 import {
   createLeadingPathScanner,
@@ -80,6 +83,7 @@ import { removeWorkingTreeFile } from './internal/write-working-tree-file.js';
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
 import { mergeCollidingRenameSources } from './merge-colliding-rename-sources.js';
 import { readBlob } from './read-blob.js';
+import { loadSparseMatcher } from './read-sparse-checkout.js';
 import { readEolSettings } from './resolve-conversion.js';
 import { synthesizeResultTree, synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 import { writeObject } from './write-object.js';
@@ -218,7 +222,7 @@ export const gitlinkSurvivorId = (conflict: MergeConflict): ObjectId | undefined
 /** A `MergeOutcome` known to change a path the merge actually writes — the
  *  'conflict' variant is excluded before this type is ever reached (its own
  *  path lives on `MergeConflict`, handled separately). */
-type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
+export type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
 export type DeletedOutcome = Extract<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
 type WrittenOutcome = Exclude<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
 
@@ -338,13 +342,41 @@ const writeConflictWorktree = async (
   }
 };
 
+/** True when sparse checkout is on and the patterns exclude the path. */
+export const isExcluded = (sparse: SparseMatcher | undefined, path: FilePath): boolean =>
+  sparse !== undefined && !sparse(path);
+
+/** git writes a clean outcome only inside the patterns; a conflict is always written. */
+export const isMaterialised = (
+  outcome: ChangedOutcome,
+  sparse: SparseMatcher | undefined,
+): boolean => !isExcluded(sparse, outcome.path);
+
+/** The changed paths the conflict stop writes or removes: an excluded clean write is dropped. */
+const materialisedPaths = (
+  outcomes: ReadonlyArray<MergeOutcome>,
+  changed: ReadonlySet<FilePath>,
+  sparse: SparseMatcher | undefined,
+): ReadonlySet<FilePath> => {
+  const dropped = new Set(
+    outcomes
+      .filter((outcome): outcome is ChangedOutcome => outcome.status !== 'conflict')
+      .filter((outcome) => !isDeleted(outcome) && !isMaterialised(outcome, sparse))
+      .map((outcome) => outcome.path),
+  );
+  return new Set([...changed].filter((path) => !dropped.has(path)));
+};
+
 /** Stage-0 (clean) + stage-1/2/3 (conflicts) index entries, path/stage-sorted. */
 const buildUnmergedIndex = (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   merged: ReadonlyArray<IndexEntry>,
+  sparse: SparseMatcher | undefined,
 ): ReadonlyArray<IndexEntry> => {
-  const stage0 = [...blobBackedEntries(outcomes), ...merged];
+  const stage0 = [...blobBackedEntries(outcomes), ...merged].map((entry) =>
+    isExcluded(sparse, escapedPathOf(entry)) ? skipWorktreeEntry(entry) : entry,
+  );
   const combined = [...stage0, ...conflictsToIndexEntries(conflicts, zeroStat)];
   const byPath = pathComparatorFor(combined);
   // Stryker disable next-line ArithmeticOperator: equivalent — the stage branch only compares equal-path entries, which always arrive stage-ascending (conflictsToIndexEntries sorts conflict stages and rejects duplicate paths; stage-0 entries all share stage 0), so the comparator is a no-op on an already-ordered run regardless of sign.
@@ -468,25 +500,35 @@ const materialiseConflict = async (
   },
   changed: ReadonlySet<FilePath>,
   currentIndex: GitIndex,
+  sparse: SparseMatcher | undefined,
 ): Promise<ApplyMergeResult> => {
   // Whole-set path gate, hoisted above the write wave: a hostile name
   // anywhere in the batch refuses before the FIRST byte is written, not
   // partway through it.
   validateMergeWritePaths(indexPathRulesOf(ctx), merged.outcomes, merged.conflicts, changed);
-  await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
+  const materialised = materialisedPaths(merged.outcomes, changed, sparse);
+  await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, materialised);
   const mergedBlobs = await mergedBlobEntries(ctx, merged.outcomes);
   await writeAutoMerge(
     ctx,
     await conflictResultTree(ctx, merged.outcomes, merged.conflicts, mergedBlobs),
   );
+  const retirement = await retireSparseMovers(
+    ctx,
+    { currentIndex, conflicts: merged.conflicts },
+    sparse,
+  );
   return {
     kind: 'conflict',
     conflicts: merged.conflicts,
-    indexEntries: await withConflictStopStats(
-      ctx,
-      buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs),
-      currentIndex,
-      changed,
+    indexEntries: withRetiredSkipped(
+      await withConflictStopStats(
+        ctx,
+        buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs, sparse),
+        currentIndex,
+        materialised,
+      ),
+      retirement,
     ),
   };
 };
@@ -554,11 +596,13 @@ export const applyMergeToWorktree = async (
     };
   }
 
+  const sparse = await loadSparseMatcher(ctx);
   if (merged.cleanMerge) {
     const mergedTree = await synthesiseMergedTree(ctx, merged.outcomes);
     const materialized = await materializeTree(ctx, {
       targetTree: mergedTree,
       currentIndex: input.currentIndex,
+      ...(sparse !== undefined ? { sparse } : {}),
       // git's two-way rule: a path ours and the result agree on keeps its index entry and work file.
       headTree: input.oursTree,
       // Stryker disable next-line BooleanLiteral: equivalent — `findWouldOverwrite` has already returned every dirty path as `would-overwrite` above, so by here no changed path is dirty and `force: false` would behave identically (nothing to refuse).
@@ -570,7 +614,7 @@ export const applyMergeToWorktree = async (
       : mergedTree;
     return { kind: 'clean', mergedTree, indexTree, result: materialized };
   }
-  return materialiseConflict(ctx, merged, changed, input.currentIndex);
+  return materialiseConflict(ctx, merged, changed, input.currentIndex, sparse);
 };
 
 /**

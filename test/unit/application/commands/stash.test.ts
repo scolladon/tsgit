@@ -6,6 +6,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { hardResetWorktreeToCommit } from '../../../../src/application/commands/internal/reset-worktree.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { sparseCheckoutSet } from '../../../../src/application/commands/sparse-checkout.js';
 import {
   applyAutostash,
   createAutostash,
@@ -24,6 +25,7 @@ import { flattenTree } from '../../../../src/application/primitives/flatten-tree
 import { hashBlob } from '../../../../src/application/primitives/hash-blob.js';
 import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -2179,6 +2181,30 @@ describe('stash apply', () => {
         const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'a.txt');
         expect(entry?.id).toBe(await hashBlob(ctx, new TextEncoder().encode('staged\n')));
         expect(await read(ctx, 'a.txt')).toBe('committed\n');
+      });
+    });
+  });
+
+  describe('Given a stash staging only an executable bit the work tree leaves unset', () => {
+    describe('When apply runs with restoreIndex', () => {
+      it('Then the reinstated entry carries the staged executable mode', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const index = await readIndex(ctx);
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(
+          index.entries.map((e) => ({ ...e, mode: FILE_MODE.EXECUTABLE })),
+          'replace',
+        );
+        await stashPush(ctx, {});
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'a.txt');
+        expect(entry?.mode).toBe(FILE_MODE.EXECUTABLE);
       });
     });
   });
@@ -5089,6 +5115,190 @@ describe('stash push ref tail', () => {
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
         expect(await readReflog(ctx, 'HEAD' as RefName)).toEqual(headBefore);
+      });
+    });
+  });
+});
+
+describe('stash apply under a cone that excludes a/', () => {
+  const sparseRepo = async (stashed: (ctx: Context) => Promise<void>): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await write(ctx, 'a/f', 'f1\n');
+    await write(ctx, 'a/g', 'g1\n');
+    await write(ctx, 'b/f', 'f1\n');
+    await add(ctx, ['a/f', 'a/g', 'b/f']);
+    await commit(ctx, { message: 'base', author });
+    await stashed(ctx);
+    await stashPush(ctx, {});
+    await sparseCheckoutSet(ctx, { patterns: ['b'] });
+    return ctx;
+  };
+
+  const entryOf = async (ctx: Context, path: string) =>
+    (await readIndex(ctx)).entries.find((e) => e.path === path);
+
+  const present = async (ctx: Context, path: string): Promise<void> => {
+    const index = await readIndex(ctx);
+    const lock = await acquireIndexLock(ctx);
+    await lock.commit(
+      index.entries.map((e) =>
+        e.path === path ? { ...e, flags: { ...e.flags, skipWorktree: false } } : e,
+      ),
+      'replace',
+    );
+  };
+
+  const exists = (ctx: Context, path: string): Promise<boolean> =>
+    ctx.fs.exists(`${ctx.layout.workDir}/${path}`);
+
+  describe('Given a stash that changes an excluded path', () => {
+    describe('When stash apply runs', () => {
+      it('Then the path is written and loses its skip-worktree bit', async () => {
+        // Arrange
+        const ctx = await sparseRepo(async (c) => {
+          await write(c, 'a/f', 'f2\n');
+          await write(c, 'b/f', 'f2\n');
+        });
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await read(ctx, 'a/f')).toBe('f2\n');
+        expect((await entryOf(ctx, 'a/f'))?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a stash that stages an addition outside the cone', () => {
+    describe('When stash apply runs', () => {
+      it('Then the addition is written and stays staged without the bit', async () => {
+        // Arrange
+        const ctx = await sparseRepo(async (c) => {
+          await write(c, 'a/n', 'n1\n');
+          await add(c, ['a/n']);
+          await write(c, 'b/f', 'f2\n');
+        });
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await read(ctx, 'a/n')).toBe('n1\n');
+        const entry = await entryOf(ctx, 'a/n');
+        expect(entry?.flags.skipWorktree).toBe(false);
+        expect(entry?.id).toBe(await hashBlob(ctx, new TextEncoder().encode('n1\n')));
+      });
+    });
+  });
+
+  describe('Given an unchanged excluded path whose file is present and clean', () => {
+    describe('When stash apply runs', () => {
+      it('Then the path stays removed from the work tree and skip-worktree', async () => {
+        // Arrange
+        const ctx = await sparseRepo((c) => write(c, 'b/f', 'f2\n'));
+        await write(ctx, 'a/g', 'g1\n');
+        await present(ctx, 'a/g');
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect((await entryOf(ctx, 'a/g'))?.flags.skipWorktree).toBe(true);
+        expect(await exists(ctx, 'a/g')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a stash that changes an excluded path and an in-cone path that conflicts', () => {
+    describe('When stash apply stops on the conflict', () => {
+      it('Then the excluded change is neither written nor cleared of its bit', async () => {
+        // Arrange
+        const ctx = await sparseRepo(async (c) => {
+          await write(c, 'a/f', 'f2\n');
+          await write(c, 'b/f', 'f2\n');
+        });
+        await commitFile(ctx, 'b/f', 'main\n', 'advance');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await exists(ctx, 'a/f')).toBe(false);
+        expect((await entryOf(ctx, 'a/f'))?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a stash staging a change to an excluded path', () => {
+    describe('When stash apply runs with restoreIndex', () => {
+      it('Then the staged entry is skip-worktree and its file absent', async () => {
+        // Arrange
+        const ctx = await sparseRepo(async (c) => {
+          await write(c, 'a/f', 'f2\n');
+          await add(c, ['a/f']);
+          await write(c, 'a/f', 'f3\n');
+          await write(c, 'b/f', 'f2\n');
+        });
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        const entry = await entryOf(ctx, 'a/f');
+        expect(entry?.flags.skipWorktree).toBe(true);
+        expect(entry?.id).toBe(await hashBlob(ctx, new TextEncoder().encode('f2\n')));
+        expect(await exists(ctx, 'a/f')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a dirty excluded file kept present and a stash staging an in-cone change', () => {
+    describe('When stash apply runs with restoreIndex', () => {
+      it('Then the dirty file keeps its entry present and its content', async () => {
+        // Arrange
+        const ctx = await sparseRepo(async (c) => {
+          await write(c, 'b/f', 'f2\n');
+          await add(c, ['b/f']);
+        });
+        await write(ctx, 'a/g', 'dirty\n');
+        await present(ctx, 'a/g');
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect((await entryOf(ctx, 'a/g'))?.flags.skipWorktree).toBe(false);
+        expect(await read(ctx, 'a/g')).toBe('dirty\n');
+        expect(await read(ctx, 'b/f')).toBe('f2\n');
+      });
+    });
+  });
+
+  describe('Given an unchanged excluded entry and a stash staging an in-cone change', () => {
+    describe('When stash apply runs with restoreIndex', () => {
+      it('Then the excluded entry stays skip-worktree', async () => {
+        // Arrange
+        const ctx = await sparseRepo(async (c) => {
+          await write(c, 'b/f', 'f2\n');
+          await add(c, ['b/f']);
+        });
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect((await entryOf(ctx, 'a/f'))?.flags.skipWorktree).toBe(true);
+        expect(await exists(ctx, 'a/f')).toBe(false);
       });
     });
   });

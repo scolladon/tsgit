@@ -20,6 +20,7 @@ import {
 import {
   escapedPathOf,
   indexPathOfEscaped,
+  keyOfPath,
   viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
 import { posixIndexPathRules, validateTreePath } from '../../domain/git-index/path-validator.js';
@@ -63,11 +64,14 @@ import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
 import {
+  type ChangedOutcome,
   conflictResultTree,
   createMergeResultWriter,
   type DeletedOutcome,
   gitlinkSurvivorId,
   isDeleted,
+  isExcluded,
+  isMaterialised,
   removeChangedOutcome,
   removeDisplacedFile,
   survivingPathsOf,
@@ -110,6 +114,11 @@ import {
 } from '../primitives/internal/prune-emptied-directories.js';
 import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
+import {
+  NOTHING_RETIRED,
+  retireSparseMovers,
+  type SparseRetirement,
+} from '../primitives/internal/sparse-movers.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -1568,11 +1577,23 @@ const persistOctopusConflict = async (
   const remotes = commit.parents.filter((id) => id !== commit.ourId);
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, outcomes, marked, changed, matcher);
+    const retirement = await retireOnConflictStop(ctx, result.conflicts, matcher);
     const paths = sortedRecordedPaths(result.conflicts);
     await writeStopState(ctx, commit.opts, commit.ourId, remotes, paths);
-    return buildConflictIndexEntries(merged, result.conflicts, matcher, []);
+    const kept = keepingLeftDirty(matcher, retirement.leftDirty);
+    return buildConflictIndexEntries(merged, result.conflicts, kept, []);
   });
   return conflictOutcome(commit.opts, result.conflicts, remotes[0]!, commit.ourId);
+};
+
+/** The index is read only when sparse is on: without a matcher nothing can retire. */
+const retireOnConflictStop = async (
+  ctx: Context,
+  conflicts: ReadonlyArray<MergeConflict>,
+  matcher: SparseMatcher | undefined,
+): Promise<SparseRetirement> => {
+  if (matcher === undefined) return NOTHING_RETIRED;
+  return retireSparseMovers(ctx, { currentIndex: await readIndex(ctx), conflicts }, matcher);
 };
 
 type MergeTreeResult =
@@ -1923,6 +1944,13 @@ const persistConflictState = async (
 
 type ConflictedTree = Extract<MergeTreeResult, { readonly kind: 'conflict' }>;
 
+/** A dirty out-of-pattern file stays in the work tree, so its entry keeps no skip-worktree bit. */
+const keepingLeftDirty = (
+  matcher: SparseMatcher | undefined,
+  leftDirty: SparseRetirement['leftDirty'],
+): SparseMatcher | undefined =>
+  matcher === undefined ? matcher : (path) => matcher(path) || leftDirty.has(keyOfPath(path));
+
 /**
  * AUTO_MERGE, then — under the index lock — the working tree, the stop state
  * and the conflicted index. loadSparseMatcher is a pure config/pattern-file
@@ -1954,8 +1982,10 @@ const writeConflictState = async (
   );
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
+    const retirement = await retireOnConflictStop(ctx, result.conflicts, matcher);
     await writeStopState(ctx, opts, ourId, [theirId], sortedRecordedPaths(result.conflicts));
-    return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher, merged);
+    const kept = keepingLeftDirty(matcher, retirement.leftDirty);
+    return buildConflictIndexEntries(result.outcomes, result.conflicts, kept, merged);
   });
 };
 
@@ -2045,15 +2075,6 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
     }
   }
 };
-
-/** True iff a sparse matcher is active AND rejects the path. */
-const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
-  matcher !== undefined && !matcher(path);
-
-type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
-
-const isMaterialised = (outcome: ChangedOutcome, matcher: SparseMatcher | undefined): boolean =>
-  outcome.status === 'resolved-merged' || !isExcluded(matcher, outcome.path);
 
 /** Only a deletion can empty a directory; a sparse-excluded outcome is skipped, so it keeps none alive. */
 const survivingFor = (
@@ -2203,8 +2224,8 @@ const isWrite = (outcome: ChangedOutcome): outcome is PathedWrite => !isDeleted(
  * Sparse handling splits on where the content lives:
  * - `unchanged` / `resolved-known` are backed by a committed blob, so an
  *   excluded path is skipped — the working tree keeps only in-pattern files.
- * - `resolved-merged` carries its merged bytes in memory only; this write is
- *   their sole persistence, so the path is always materialised.
+ * - `resolved-merged` is written only inside the patterns; outside them its
+ *   line-merged bytes are already a blob in the index, staged skip-worktree.
  * - `resolved-deleted` is not handled here: the delete wave removes those
  *   before any write, so callers never pass one.
  */
@@ -2220,13 +2241,11 @@ export const writeOutcomeToTree = async (
   // on it (the conflict itself is validated by the parallel conflicts batch).
   if (outcome.status === 'conflict') return;
   validateTreePath(outcome.path, outcome.mode);
+  if (isExcluded(matcher, outcome.path)) return;
   if (outcome.status === 'resolved-merged') {
-    // The merged bytes exist only in memory — this write is their sole
-    // persistence, so the path is materialised regardless of the matcher.
     await writer.writeBytes(outcome.path, outcome.bytes, outcome.mode, scanner);
     return;
   }
-  if (isExcluded(matcher, outcome.path)) return;
   await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
 };
 
@@ -2320,8 +2339,10 @@ export const buildConflictIndexEntries = (
   merged: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
   // Blob-backed clean outcomes stage here; `merged` carries the line-merged
-  // paths, already written as blobs (resolved-deleted contributes nothing).
-  const stage0: IndexEntry[] = [...merged];
+  // paths, already blobs in the store (resolved-deleted contributes nothing).
+  const stage0: IndexEntry[] = merged.map((entry) =>
+    isExcluded(matcher, escapedPathOf(entry)) ? skipWorktreeEntry(entry) : entry,
+  );
   for (const outcome of outcomes) {
     if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
       // An excluded clean path is recorded skip-worktree so `status` does not

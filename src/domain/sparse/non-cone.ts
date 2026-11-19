@@ -19,9 +19,14 @@ const isRecursive = (tokenized: TokenizedIgnoreLine): boolean => {
 /**
  * Compile a tokenised `.gitignore`-syntax line into a `SparseRule`. A
  * recursive rule compiles with a `(/.*)?$` descendant suffix; a
- * non-recursive rule compiles with a plain `$`.
+ * non-recursive rule compiles with a plain `$`. `caseFold` folds ASCII case
+ * as `core.ignorecase` does.
  */
-export const compileSparseRule = (tokenized: TokenizedIgnoreLine, source: string): SparseRule => {
+export const compileSparseRule = (
+  tokenized: TokenizedIgnoreLine,
+  source: string,
+  options: { readonly caseFold?: boolean } = {},
+): SparseRule => {
   const recursive = isRecursive(tokenized);
   return {
     source,
@@ -29,6 +34,7 @@ export const compileSparseRule = (tokenized: TokenizedIgnoreLine, source: string
     matcher: compileGlob(tokenized.cleanPattern, {
       anchored: tokenized.anchored,
       withDirSuffix: recursive,
+      caseFold: options.caseFold === true,
     }),
   };
 };

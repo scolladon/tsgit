@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { compileGlob } from '../../../../src/domain/pathspec/compile-glob.js';
+import { arbCaseMask, flipAsciiCase } from '../path/arbitraries.js';
 import { arbLiteralPattern } from './arbitraries.js';
 
 const NUM_RUNS = 100;
@@ -52,6 +53,62 @@ describe('compileGlob properties', () => {
             expect(matcher.test(pattern)).toBe(true);
             expect(matcher.test(`${pattern}x`)).toBe(false);
           }),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+  });
+  describe('Given caseFold over a small alphabet', () => {
+    const arbText = fc.stringMatching(/^[aAbB/*?]{0,8}$/);
+    const arbPath = fc.stringMatching(/^[aAbB/]{0,8}$/);
+    const arbMask = arbCaseMask();
+
+    describe('When the path has its ASCII case flipped', () => {
+      it('Then the verdict is unchanged', () => {
+        fc.assert(
+          fc.property(
+            arbText,
+            arbPath,
+            arbMask,
+            fc.boolean(),
+            fc.boolean(),
+            (pattern, path, mask, anchored, withDirSuffix) => {
+              // Arrange
+              const sut = compileGlob(pattern, { anchored, withDirSuffix, caseFold: true });
+
+              // Act
+              const result = sut.test(flipAsciiCase(path, mask));
+
+              // Assert
+              expect(result).toBe(sut.test(path));
+            },
+          ),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+
+    describe('When the exact matcher accepts a path', () => {
+      it('Then the folding matcher accepts it too', () => {
+        fc.assert(
+          fc.property(
+            arbText,
+            arbPath,
+            fc.boolean(),
+            fc.boolean(),
+            (pattern, path, anchored, withDirSuffix) => {
+              // Arrange
+              const options = { anchored, withDirSuffix };
+              const exact = compileGlob(pattern, options);
+              const sut = compileGlob(pattern, { ...options, caseFold: true });
+
+              // Act
+              const result = sut.test(path);
+
+              // Assert
+              expect(result || !exact.test(path)).toBe(true);
+            },
+          ),
           { numRuns: NUM_RUNS },
         );
       });

@@ -416,3 +416,83 @@ describe('parseCone', () => {
     });
   });
 });
+
+describe('coneMatcher with ignoreCase', () => {
+  describe('Given a cone of b with ignoreCase', () => {
+    describe('When matching paths that differ from the cone by ASCII case', () => {
+      it.each(['B/f', 'B/c/d'])('Then %s is included', (p) => {
+        // Arrange
+        const sut = coneMatcher(buildConeSpec(['b']), { ignoreCase: true });
+
+        // Act
+        const result = sut(path(p));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a cone of a/b with ignoreCase', () => {
+    describe('When matching a parent directory file and a deep file in other case', () => {
+      it.each(['A/x', 'A/B/c/d'])('Then %s is included', (p) => {
+        // Arrange
+        const sut = coneMatcher(buildConeSpec(['a/b']), { ignoreCase: true });
+
+        // Act
+        const result = sut(path(p));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a cone of b with ignoreCase and outside paths', () => {
+    describe('When matching paths outside the cone', () => {
+      it.each([
+        { p: 'x/y', expected: false },
+        { p: 'TOP', expected: true },
+      ])('Then $p yields $expected', ({ p, expected }) => {
+        // Arrange
+        const sut = coneMatcher(buildConeSpec(['b']), { ignoreCase: true });
+
+        // Act
+        const result = sut(path(p));
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a cone of a non-ASCII directory with ignoreCase', () => {
+    describe('When matching its uppercase form', () => {
+      it('Then the non-ASCII letter stays distinct', () => {
+        // Arrange
+        const sut = coneMatcher(buildConeSpec(['é']), { ignoreCase: true });
+
+        // Act
+        const result = sut(path('É/f'));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a cone of b without ignoreCase', () => {
+    describe('When matching B/f', () => {
+      it('Then it is excluded', () => {
+        // Arrange
+        const sut = coneMatcher(buildConeSpec(['b']));
+
+        // Act
+        const result = sut(path('B/f'));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+});

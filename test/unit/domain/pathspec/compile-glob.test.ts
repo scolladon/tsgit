@@ -333,6 +333,52 @@ describe('compileGlob', () => {
     });
   });
 
+  describe('Given caseFold', () => {
+    describe('When the pattern and the path differ only by ASCII case', () => {
+      it.each([
+        ['B/f', true, 'b/F'],
+        ['*.TXT', false, 'dir/a.txt'],
+        ['?/F', true, 'b/f'],
+        ['src', true, 'SRC/x'],
+      ] as const)('Then %s (anchored %s) matches %s', (pattern, anchored, path) => {
+        // Arrange
+        const sut = compileGlob(pattern, { anchored, withDirSuffix: true, caseFold: true });
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the pattern and the path differ by a non-ASCII letter case', () => {
+      it('Then they stay distinct', () => {
+        // Arrange
+        const sut = compileGlob('É', { anchored: true, caseFold: true });
+
+        // Act
+        const result = sut.test('é');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When the option is absent', () => {
+      it('Then the comparison stays exact', () => {
+        // Arrange
+        const sut = compileGlob('B/f', { anchored: true });
+
+        // Act
+        const result = sut.test('b/f');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('equivalence with the original regex compiler', () => {
     const arbPattern = fc.string({
       unit: fc.constantFrom('a', 'b', '/', '*', '?', '.'),

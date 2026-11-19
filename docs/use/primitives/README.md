@@ -40,6 +40,8 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 
 `materializeTree`'s `headTree` follows git's two-way merge of a branch switch, with the empty tree as the old side when HEAD is unborn: a staged path the switch does not change is carried, and a staged file in the way of a target directory follows `core.ignoreCase` without sparse checkout, while under sparse checkout the directory side always wins; [`internals.md`](internals.md) has the rule in full.
 
+`materializeTree` and `applyMergeToWorktree` follow git's sparse rules: a clean change outside the patterns is not written and is staged skip-worktree, a conflict stop retires up-to-date out-of-pattern files, and a not-up-to-date one is kept with a warning. `loadSparseMatcher` folds ASCII case under `core.ignorecase`, and `readConfig`'s `core` gains `fileMode` and `symlinks`; [`internals.md`](internals.md) has the rules in full.
+
 For internal building blocks referenced from command pages (`materializeTree`, `computeChangeset`, `readHeadTree`, `detectMergeRenames`, `shiftMergeSide`, `readConfig`, `findWouldOverwrite`, `resolveConversion`, `fetchPack`, `buildPack`, `hasObject`, etc.) see [`internals.md`](internals.md).
 
 ### Re-exported types

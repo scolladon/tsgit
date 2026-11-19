@@ -2377,6 +2377,48 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a config with a [core] symlinks value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n  symlinks = false\n', expected: { symlinks: false } },
+        { config: '[core]\n  Symlinks = yes\n', expected: { symlinks: true } },
+        { config: '[core]\n  symlinks\n', expected: { symlinks: true } },
+        { config: '[core]\n  symlinks = maybe\n', expected: undefined },
+      ])('Then $config parses to core $expected', async ({ config, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a config with a [core] fileMode value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n  filemode = false\n', expected: { fileMode: false } },
+        { config: '[core]\n  FileMode = yes\n', expected: { fileMode: true } },
+        { config: '[core]\n  filemode\n', expected: { fileMode: true } },
+        { config: '[core]\n  filemode = maybe\n', expected: undefined },
+      ])('Then $config parses to core $expected', async ({ config, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core).toEqual(expected);
+      });
+    });
+  });
+
   describe('Given a config with a [core] ignoreCase value', () => {
     describe('When readConfig', () => {
       it.each([

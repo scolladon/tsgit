@@ -3145,3 +3145,543 @@ describe('Given a conflicting merge that deletes the last file of a directory wh
     });
   });
 });
+
+describe('Given sparse checkout selects b only', () => {
+  const CONE_CONFIG = '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n';
+  const B_ONLY = '/*\n!/*/\n/b/\n';
+  const A_AND_B = '/*\n!/*/\n/a/\n/b/\n';
+
+  const configure = async (ctx: Context, config: string, patterns: string): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, patterns);
+    invalidateConfigCache(ctx);
+  };
+
+  const treeOf = async (
+    ctx: Context,
+    files: Readonly<Record<string, string>>,
+  ): Promise<{ readonly tree: ObjectId; readonly ids: Readonly<Record<string, ObjectId>> }> => {
+    const ids: Record<string, ObjectId> = {};
+    const dirs = new Map<string, TreeEntry[]>();
+    for (const [path, content] of Object.entries(files)) {
+      const [dir = '', name = ''] = path.split('/');
+      const id = await writeBlob(ctx, content);
+      ids[path] = id;
+      dirs.set(dir, [...(dirs.get(dir) ?? []), treeEntry(FILE_MODE.REGULAR, name as FilePath, id)]);
+    }
+    const roots: TreeEntry[] = [];
+    for (const [dir, entries] of dirs) {
+      roots.push(treeEntry(FILE_MODE.DIRECTORY, dir as FilePath, await treeWith(ctx, entries)));
+    }
+    return { tree: await treeWith(ctx, roots), ids };
+  };
+
+  const skipped = (path: string, id: ObjectId): IndexEntry => ({
+    ...indexEntry(path, id),
+    flags: { ...STAGE0_FLAGS, skipWorktree: true },
+  });
+
+  const exists = (ctx: Context, path: string): Promise<boolean> =>
+    ctx.fs.exists(`${ctx.layout.workDir}/${path}`);
+
+  const entryOf = (
+    result: { readonly newIndexEntries: ReadonlyArray<IndexEntry> },
+    path: string,
+  ): IndexEntry | undefined => result.newIndexEntries.find((entry) => entry.path === path);
+
+  describe('When theirs changes a path inside and a path outside the cone', () => {
+    it('Then the outside path is skip-worktree under theirs and unwritten, the inside one written', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'f1\n' });
+      const theirs = await treeOf(ctx, { 'a/f': 'f2\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('f1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: base.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          skipped('a/f', base.ids['a/f'] as ObjectId),
+          indexEntry('b/f', base.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('clean');
+      if (result.kind !== 'clean') return;
+      expect(entryOf(result.result, 'a/f')?.flags.skipWorktree).toBe(true);
+      expect(entryOf(result.result, 'a/f')?.id).toBe(theirs.ids['a/f']);
+      expect(await exists(ctx, 'a/f')).toBe(false);
+      expect(entryOf(result.result, 'b/f')?.flags.skipWorktree).toBe(false);
+      expect(await readWork(ctx, 'b/f')).toBe('f2\n');
+    });
+  });
+
+  describe('When theirs adds a path outside the cone', () => {
+    it('Then it is skip-worktree under theirs and unwritten', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'b/f': 'f1\n' });
+      const theirs = await treeOf(ctx, { 'b/f': 'f1\n', 'a/n': 'n1\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('f1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: base.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([indexEntry('b/f', base.ids['b/f'] as ObjectId)]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('clean');
+      if (result.kind !== 'clean') return;
+      expect(entryOf(result.result, 'a/n')?.flags.skipWorktree).toBe(true);
+      expect(entryOf(result.result, 'a/n')?.id).toBe(theirs.ids['a/n']);
+      expect(await exists(ctx, 'a/n')).toBe(false);
+    });
+  });
+
+  describe('When theirs renames a path out of the cone and another into it', () => {
+    it('Then the leaver stays skip-worktree unwritten and the entrant is written', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f1\n' });
+      const theirs = await treeOf(ctx, { 'b/g': 'g1\n', 'a/h': 'f1\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('f1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: base.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          skipped('a/g', base.ids['a/g'] as ObjectId),
+          indexEntry('b/f', base.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('clean');
+      if (result.kind !== 'clean') return;
+      expect(entryOf(result.result, 'a/h')?.flags.skipWorktree).toBe(true);
+      expect(await exists(ctx, 'a/h')).toBe(false);
+      expect(entryOf(result.result, 'b/g')?.flags.skipWorktree).toBe(false);
+      expect(await readWork(ctx, 'b/g')).toBe('g1\n');
+    });
+  });
+
+  describe('When the patterns change between two calls', () => {
+    it('Then each call reads the patterns as they are', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'f1\n' });
+      const first = await treeOf(ctx, { 'a/f': 'f2\n', 'b/f': 'f1\n' });
+      const second = await treeOf(ctx, { 'a/f': 'f2\n', 'b/f': 'f1\n', 'a/x': 'x1\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('f1\n'));
+      const sut = applyMergeToWorktree;
+      const firstResult = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: base.tree,
+        theirsTree: first.tree,
+        currentIndex: index([
+          skipped('a/f', base.ids['a/f'] as ObjectId),
+          indexEntry('b/f', base.ids['b/f'] as ObjectId),
+        ]),
+      });
+      const leftUnwritten = !(await exists(ctx, 'a/f'));
+      await configure(ctx, CONE_CONFIG, A_AND_B);
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: first.tree,
+        oursTree: first.tree,
+        theirsTree: second.tree,
+        currentIndex: index([
+          skipped('a/f', first.ids['a/f'] as ObjectId),
+          indexEntry('b/f', first.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      if (firstResult.kind !== 'clean' || result.kind !== 'clean')
+        throw new Error('expected clean');
+      expect(entryOf(firstResult.result, 'a/f')?.flags.skipWorktree).toBe(true);
+      expect(leftUnwritten).toBe(true);
+      expect(entryOf(result.result, 'a/x')?.flags.skipWorktree).toBe(false);
+      expect(await readWork(ctx, 'a/x')).toBe('x1\n');
+    });
+  });
+
+  describe('When theirs deletes a path outside the cone', () => {
+    it('Then no entry and no file remain for it', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'f1\n' });
+      const theirs = await treeOf(ctx, { 'b/f': 'f1\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('f1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: base.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          skipped('a/f', base.ids['a/f'] as ObjectId),
+          indexEntry('b/f', base.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('clean');
+      if (result.kind !== 'clean') return;
+      expect(entryOf(result.result, 'a/f')).toBeUndefined();
+      expect(await exists(ctx, 'a/f')).toBe(false);
+    });
+  });
+
+  describe('When sparse checkout is off and theirs changes a path under a/', () => {
+    it('Then it is written as a regular entry with the same trees', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const base = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'f1\n' });
+      const theirs = await treeOf(ctx, { 'a/f': 'f2\n', 'b/f': 'f1\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/a/f`, new TextEncoder().encode('f1\n'));
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('f1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: base.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          indexEntry('a/f', base.ids['a/f'] as ObjectId),
+          indexEntry('b/f', base.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('clean');
+      if (result.kind !== 'clean') return;
+      expect(entryOf(result.result, 'a/f')?.flags.skipWorktree).toBe(false);
+      expect(await readWork(ctx, 'a/f')).toBe('f2\n');
+      expect(result.mergedTree).toBe(theirs.tree);
+      expect(result.indexTree).toBe(theirs.tree);
+    });
+  });
+
+  describe('When the same trees merge with and without sparse checkout', () => {
+    it('Then the merged and index trees are equal', async () => {
+      // Arrange
+      const sparseCtx = await buildSeededContext();
+      await configure(sparseCtx, CONE_CONFIG, B_ONLY);
+      const plainCtx = await buildSeededContext();
+      const run = async (ctx: Context, flagged: boolean) => {
+        const base = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'f1\n' });
+        const theirs = await treeOf(ctx, { 'a/f': 'f2\n', 'b/f': 'f2\n' });
+        const aEntry = base.ids['a/f'] as ObjectId;
+        return applyMergeToWorktree(ctx, {
+          baseTree: base.tree,
+          oursTree: base.tree,
+          theirsTree: theirs.tree,
+          currentIndex: index([
+            flagged ? skipped('a/f', aEntry) : indexEntry('a/f', aEntry),
+            indexEntry('b/f', base.ids['b/f'] as ObjectId),
+          ]),
+        });
+      };
+      await plainCtx.fs.write(`${plainCtx.layout.workDir}/a/f`, new TextEncoder().encode('f1\n'));
+      await plainCtx.fs.write(`${plainCtx.layout.workDir}/b/f`, new TextEncoder().encode('f1\n'));
+      await sparseCtx.fs.write(`${sparseCtx.layout.workDir}/b/f`, new TextEncoder().encode('f1\n'));
+
+      // Act
+      const sparse = await run(sparseCtx, true);
+      const plain = await run(plainCtx, false);
+
+      // Assert
+      if (sparse.kind !== 'clean' || plain.kind !== 'clean') throw new Error('expected clean');
+      expect(sparse.mergedTree).toBe(plain.mergedTree);
+      expect(sparse.indexTree).toBe(plain.indexTree);
+    });
+  });
+  describe('When b/f conflicts and theirs takes a change at a path outside the cone', () => {
+    it('Then the outside path is skip-worktree under theirs and unwritten, the conflict is staged and written', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/f': 'f2\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          skipped('a/f', base.ids['a/f'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      const outside = result.indexEntries.find((entry) => entry.path === 'a/f');
+      expect(outside?.flags.skipWorktree).toBe(true);
+      expect(outside?.flags.stage).toBe(0);
+      expect(outside?.id).toBe(theirs.ids['a/f']);
+      expect(await exists(ctx, 'a/f')).toBe(false);
+      expect(
+        result.indexEntries.filter((entry) => entry.path === 'b/f').map((e) => e.flags.stage),
+      ).toEqual([1, 2, 3]);
+      expect(await readWork(ctx, 'b/f')).toContain('<<<<<<<');
+    });
+  });
+
+  describe('When b/f conflicts and a path outside the cone line-merges', () => {
+    it('Then the outside path is skip-worktree under the merged blob, unwritten, and AUTO_MERGE holds it', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const lines = '1\n2\n3\n4\n5\n';
+      const oursLines = '1x\n2\n3\n4\n5\n';
+      const base = await treeOf(ctx, { 'a/f': lines, 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/f': oursLines, 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/f': '1\n2\n3\n4\n5x\n', 'b/f': 'f2\n' });
+      const mergedId = await writeBlob(ctx, '1x\n2\n3\n4\n5x\n');
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          skipped('a/f', ours.ids['a/f'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      const outside = result.indexEntries.find((entry) => entry.path === 'a/f');
+      expect(outside?.flags.skipWorktree).toBe(true);
+      expect(outside?.id).toBe(mergedId);
+      expect(await exists(ctx, 'a/f')).toBe(false);
+      const autoMerge = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).trim();
+      const recorded = await flattenTree(ctx, autoMerge as ObjectId);
+      expect(recorded.entries.get('a/f' as FilePath)?.id).toBe(mergedId);
+    });
+  });
+
+  describe('When theirs deletes a/x and changes a/y outside the cone while b/f conflicts', () => {
+    it('Then a/x is removed, a/y stays unwritten and the emptied directory a is pruned', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/x': 'x1\n', 'a/y': 'y1\n', 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/x': 'x1\n', 'a/y': 'y1\n', 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/y': 'y2\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/a/x`, new TextEncoder().encode('x1\n'));
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          indexEntry('a/x', ours.ids['a/x'] as ObjectId),
+          skipped('a/y', ours.ids['a/y'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      expect(await exists(ctx, 'a/x')).toBe(false);
+      expect(await exists(ctx, 'a/y')).toBe(false);
+      expect(await exists(ctx, 'a')).toBe(false);
+    });
+  });
+
+  describe('When a path outside the cone itself conflicts', () => {
+    it('Then its markers are written and its stages carry no skip-worktree bit', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/f': 'f2\n' });
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([skipped('a/f', ours.ids['a/f'] as ObjectId)]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      expect(result.indexEntries.map((entry) => entry.flags.stage)).toEqual([1, 2, 3]);
+      expect(result.indexEntries.some((entry) => entry.flags.skipWorktree)).toBe(false);
+      expect(await readWork(ctx, 'a/f')).toContain('<<<<<<<');
+    });
+  });
+
+  describe('When sparse checkout is off and b/f conflicts beside a change at a/f', () => {
+    it('Then a/f is written as a plain stage-0 entry', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const base = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/f': 'f1\n', 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/f': 'f2\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/a/f`, new TextEncoder().encode('f1\n'));
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          indexEntry('a/f', ours.ids['a/f'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      const entry = result.indexEntries.find((candidate) => candidate.path === 'a/f');
+      expect(entry?.flags.skipWorktree).toBe(false);
+      expect(entry?.id).toBe(theirs.ids['a/f']);
+      expect(await readWork(ctx, 'a/f')).toBe('f2\n');
+    });
+  });
+
+  describe('When b/f conflicts and a path outside the cone is unchanged with a prior skip-worktree entry', () => {
+    it('Then the entry stays skip-worktree under the same blob', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          skipped('a/g', ours.ids['a/g'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      const entry = result.indexEntries.find((candidate) => candidate.path === 'a/g');
+      expect(entry?.flags.skipWorktree).toBe(true);
+      expect(entry?.id).toBe(ours.ids['a/g']);
+      expect(await exists(ctx, 'a/g')).toBe(false);
+    });
+  });
+
+  describe('When b/f conflicts and a present out-of-pattern file a/g is clean', () => {
+    it('Then a/g leaves the work tree and its entry is skip-worktree under the same blob', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/a/g`, new TextEncoder().encode('g1\n'));
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          indexEntry('a/g', ours.ids['a/g'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      const entry = result.indexEntries.find((candidate) => candidate.path === 'a/g');
+      expect(entry?.flags.skipWorktree).toBe(true);
+      expect(entry?.id).toBe(ours.ids['a/g']);
+      expect(await exists(ctx, 'a/g')).toBe(false);
+    });
+  });
+
+  describe('When b/f conflicts and a present out-of-pattern file a/g holds local changes', () => {
+    it('Then a/g stays with its entry unmarked and one warning names it', async () => {
+      // Arrange
+      const seeded = await buildSeededContext();
+      const warn = vi.fn();
+      const ctx = { ...seeded, logger: { warn } };
+      await configure(ctx, CONE_CONFIG, B_ONLY);
+      const base = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f1\n' });
+      const ours = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'o1\n' });
+      const theirs = await treeOf(ctx, { 'a/g': 'g1\n', 'b/f': 'f2\n' });
+      await ctx.fs.write(`${ctx.layout.workDir}/a/g`, new TextEncoder().encode('dirty\n'));
+      await ctx.fs.write(`${ctx.layout.workDir}/b/f`, new TextEncoder().encode('o1\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base.tree,
+        oursTree: ours.tree,
+        theirsTree: theirs.tree,
+        currentIndex: index([
+          indexEntry('a/g', ours.ids['a/g'] as ObjectId),
+          indexEntry('b/f', ours.ids['b/f'] as ObjectId),
+        ]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      if (result.kind !== 'conflict') return;
+      const entry = result.indexEntries.find((candidate) => candidate.path === 'a/g');
+      expect(entry?.flags.skipWorktree).toBe(false);
+      expect(await readWork(ctx, 'a/g')).toBe('dirty\n');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        'The following paths are not up to date and were left despite sparse patterns:\n\ta/g\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+      );
+    });
+  });
+});

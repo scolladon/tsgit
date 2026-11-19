@@ -1,6 +1,7 @@
 import { invalidOption } from '../commands/error.js';
 import type { FilePath } from '../objects/object-id.js';
-import type { SparseMatcher, SparseSpec } from './sparse-pattern.js';
+import { asciiLower } from '../pretty/ascii.js';
+import type { SparseMatcher, SparseMatchOptions, SparseSpec } from './sparse-pattern.js';
 
 type ConeSpec = Extract<SparseSpec, { mode: 'cone' }>;
 
@@ -76,27 +77,42 @@ const dirname = (path: string): string => {
   return slash === -1 ? '' : path.slice(0, slash);
 };
 
+const inCone = (
+  parents: ReadonlySet<string>,
+  recursive: ReadonlySet<string>,
+  dir: string,
+): boolean => {
+  if (dir === '') return true;
+  if (parents.has(dir)) return true;
+  let ancestor = dir;
+  while (true) {
+    if (recursive.has(ancestor)) return true;
+    const slash = ancestor.lastIndexOf('/');
+    if (slash === -1) return false;
+    ancestor = ancestor.slice(0, slash);
+  }
+};
+
+const foldAll = (dirs: ReadonlySet<string>): ReadonlySet<string> =>
+  new Set([...dirs].map(asciiLower));
+
 /**
  * Build a matcher for a cone spec. A path is included iff its parent
  * directory is the root, OR is a parent dir, OR is under a recursive dir.
  *
  * The membership test is an in-place prefix walk — from the path's parent
- * directory it walks up via `lastIndexOf('/')`, allocating nothing per call
- * (the matcher runs once per target entry in `materializeTree`'s hot path).
+ * directory it walks up via `lastIndexOf('/')` (the matcher runs once per
+ * target entry in `materializeTree`'s hot path). The exact matcher allocates
+ * nothing per call; with `ignoreCase` the sets are folded once at build time
+ * and each call allocates one lowercased directory.
  */
-export const coneMatcher = (spec: ConeSpec): SparseMatcher => {
-  return (path: FilePath): boolean => {
-    const dir = dirname(path);
-    if (dir === '') return true;
-    if (spec.parents.has(dir)) return true;
-    let ancestor = dir;
-    while (true) {
-      if (spec.recursive.has(ancestor)) return true;
-      const slash = ancestor.lastIndexOf('/');
-      if (slash === -1) return false;
-      ancestor = ancestor.slice(0, slash);
-    }
-  };
+export const coneMatcher = (spec: ConeSpec, options: SparseMatchOptions = {}): SparseMatcher => {
+  if (options.ignoreCase !== true) {
+    return (path: FilePath): boolean => inCone(spec.parents, spec.recursive, dirname(path));
+  }
+  const parents = foldAll(spec.parents);
+  const recursive = foldAll(spec.recursive);
+  return (path: FilePath): boolean => inCone(parents, recursive, asciiLower(dirname(path)));
 };
 
 const CONE_HEADER = '/*\n!/*/\n';

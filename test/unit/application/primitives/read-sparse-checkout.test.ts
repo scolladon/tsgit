@@ -398,5 +398,31 @@ describe('primitives/read-sparse-checkout', () => {
         });
       });
     });
+
+    describe.each([
+      { label: 'core.ignorecase = true', config: '\tignorecase = true\n', accepts: true },
+      { label: 'core.ignorecase absent', config: '', accepts: false },
+      { label: 'core.ignorecase = false', config: '\tignorecase = false\n', accepts: false },
+    ])('Given a cone file and $label', ({ config, accepts }) => {
+      describe('When loadSparseMatcher', () => {
+        it('Then a differently cased path is matched only under ignorecase', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedConfig(
+            ctx,
+            `[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n${config}`,
+          );
+          await seedPatternFile(ctx, '/*\n!/*/\n/b/\n');
+
+          // Act
+          const sut = loadSparseMatcher;
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.('B/f' as FilePath)).toBe(accepts);
+          expect(result?.('b/f' as FilePath)).toBe(true);
+        });
+      });
+    });
   });
 });

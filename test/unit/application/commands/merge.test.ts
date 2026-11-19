@@ -31,6 +31,7 @@ import {
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { flattenEscapedTree } from '../../../../src/application/primitives/flatten-tree.js';
 import { survivingDirectoriesOf } from '../../../../src/application/primitives/internal/prune-emptied-directories.js';
+import * as sparseMoversMod from '../../../../src/application/primitives/internal/sparse-movers.js';
 import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
@@ -44,7 +45,10 @@ import { readReflog } from '../../../../src/application/primitives/reflog-store.
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
-import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
+import {
+  updateConfigEntries,
+  updateCoreConfig,
+} from '../../../../src/application/primitives/update-config.js';
 import { updateRef as seedRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
@@ -3836,6 +3840,10 @@ describe('buildConflictIndexEntries (direct)', () => {
 });
 
 describe('merge — sparse checkout', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // Matcher excluding any path that starts with `drop`.
   const excludesDrop = (p: FilePath): boolean => !p.startsWith('drop');
 
@@ -3925,10 +3933,8 @@ describe('merge — sparse checkout', () => {
 
   describe('Given a resolved-merged outcome whose path the sparse matcher excludes', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then the file is still written (merged bytes have no other persistence)', async () => {
-        // Arrange — `resolved-merged` carries its merged bytes in memory only;
-        // the working-tree write is their sole persistence, so it must happen
-        // even for an out-of-pattern path, unlike a blob-backed clean outcome.
+      it('Then the file is not written', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
         const outcome: MergeOutcome = {
@@ -3942,7 +3948,55 @@ describe('merge — sparse checkout', () => {
         await writeOutcomeToTree(outcome, excludesDrop, await createMergeResultWriter(ctx, [], []));
 
         // Assert
-        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/drop.txt`)).toBe('MERGED');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/drop.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a resolved-merged outcome whose path the sparse matcher includes', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then the merged bytes are written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const outcome: MergeOutcome = {
+          status: 'resolved-merged',
+          path: 'keep.txt' as FilePath,
+          bytes: new TextEncoder().encode('MERGED'),
+          mode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        await writeOutcomeToTree(outcome, excludesDrop, await createMergeResultWriter(ctx, [], []));
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/keep.txt`)).toBe('MERGED');
+      });
+    });
+  });
+
+  describe.each([
+    ['drop.txt', true],
+    ['keep.txt', false],
+  ] as const)('Given a line-merged entry at %s', (path, skipWorktree) => {
+    describe('When buildConflictIndexEntries runs', () => {
+      it(`Then its stage-0 entry has skipWorktree ${skipWorktree}`, () => {
+        // Arrange
+        const id = 'd'.repeat(40) as ObjectId;
+        const unmarked = buildConflictIndexEntries(
+          [{ status: 'unchanged', path: path as FilePath, id, mode: FILE_MODE.REGULAR }],
+          [],
+          undefined,
+          [],
+        );
+
+        // Act
+        const result = buildConflictIndexEntries([], [], excludesDrop, unmarked);
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.id).toBe(id);
+        expect(result[0]?.flags.skipWorktree).toBe(skipWorktree);
       });
     });
   });
@@ -4012,6 +4066,122 @@ describe('merge — sparse checkout', () => {
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a sparse repo whose out-of-pattern file is present on disk', () => {
+    const seedConflict = async (warn: (message: string) => void) => {
+      const base = createMemoryContext();
+      await init(base);
+      const ctx = { ...base, logger: { warn } };
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'base-a\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'shared-b\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/c.txt`, 'base-c\n');
+      await add(ctx, ['src/a.txt', 'docs/b.txt', 'docs/c.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'FEATURE-a\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/c.txt`, 'FEATURE-c\n');
+      await add(ctx, ['src/a.txt', 'docs/c.txt']);
+      await commit(ctx, { message: 'on-feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src/a.txt`, 'MAIN-a\n');
+      await add(ctx, ['src/a.txt']);
+      await commit(ctx, { message: 'on-main', author });
+      await enableSparseSrcOnly(ctx);
+      return ctx;
+    };
+
+    const skipBitOf = async (ctx: Context, path: string): Promise<boolean | undefined> =>
+      (await readIndex(ctx)).entries.find((e) => e.path === path)?.flags.skipWorktree;
+
+    describe('When a conflicting merge runs and the file is clean', () => {
+      it('Then the file is removed and its entry is skip-worktree', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = await seedConflict(warn);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
+        expect(await skipBitOf(ctx, 'docs/b.txt')).toBe(true);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When a conflicting merge runs and the file holds local changes', () => {
+      it('Then the file is kept, its entry is not skip-worktree, and one warning names it', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = await seedConflict(warn);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'dirty\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/docs/b.txt`)).toBe('dirty\n');
+        expect(await skipBitOf(ctx, 'docs/b.txt')).toBe(false);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          'The following paths are not up to date and were left despite sparse patterns:\n\tdocs/b.txt\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.',
+        );
+      });
+    });
+
+    describe('When a conflicting merge runs, the file holds local changes and the merge changes another excluded file cleanly', () => {
+      it('Then only the dirty file lacks the skip-worktree bit', async () => {
+        // Arrange
+        const ctx = await seedConflict(vi.fn());
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'dirty\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await skipBitOf(ctx, 'docs/b.txt')).toBe(false);
+        expect(await skipBitOf(ctx, 'docs/c.txt')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a repo without sparse checkout and a conflicting merge', () => {
+    describe('When the merge stops on the conflict', () => {
+      it('Then the index is not read on behalf of the sparse retirement', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'base\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'FEATURE\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'MAIN\n');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        const retire = vi.spyOn(sparseMoversMod, 'retireSparseMovers');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(retire).not.toHaveBeenCalled();
       });
     });
   });
@@ -6413,6 +6583,63 @@ describe('merge — several heads (octopus)', () => {
     });
   });
 
+  describe('Given a sparse repo whose out-of-pattern file is present on disk and an octopus that conflicts on its last head', () => {
+    const SPARSE_WARNING =
+      'The following paths are not up to date and were left despite sparse patterns:\n\tdocs/x\n\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
+
+    const seedSparseConflict = async (warn: (message: string) => void) => {
+      const base = await seedConflicting();
+      const ctx = { ...base, logger: { warn } };
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/x`, 'x\n');
+      await add(ctx, ['docs/x']);
+      await commit(ctx, { message: 'docs', author: t, committer: t });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/*\n!/*/\n/src/\n');
+      await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'true' });
+      return ctx;
+    };
+
+    const skipBitOf = async (ctx: Context, path: string): Promise<boolean | undefined> =>
+      (await readIndex(ctx)).entries.find((e) => e.path === path)?.flags.skipWorktree;
+
+    describe('When the octopus stops and the file is clean', () => {
+      it('Then the file is removed and its entry is skip-worktree, with no warning', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = await seedSparseConflict(warn);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'b2', 'c1'], author: t, committer: t });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/x`)).toBe(false);
+        expect(await skipBitOf(ctx, 'docs/x')).toBe(true);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When the octopus stops and the file holds local changes', () => {
+      it('Then the file is kept, its entry is not skip-worktree, and one warning names it', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = await seedSparseConflict(warn);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/x`, 'dirty\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'b2', 'c1'], author: t, committer: t });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/docs/x`)).toBe('dirty\n');
+        expect(await skipBitOf(ctx, 'docs/x')).toBe(false);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(SPARSE_WARNING);
+      });
+    });
+  });
+
   describe('Given an octopus left a conflict on its last head', () => {
     describe('When the conflict is resolved and committed', () => {
       it("Then the commit records HEAD and every MERGE_HEAD line as git's commit does", async () => {
@@ -7601,7 +7828,7 @@ describe('merge — trees holding a non-UTF-8 path', () => {
     });
 
     describe('When both sides cleanly edit a non-UTF-8 name in d that sparse checkout excludes and merge runs', () => {
-      it('Then d stays, as the merged content is materialised there despite the exclusion', async () => {
+      it('Then d is removed, as the excluded merged content is staged, not written', async () => {
         // Arrange
         const ctx = await seedEmptiedDirectory(
           [
@@ -7622,8 +7849,7 @@ describe('merge — trees holding a non-UTF-8 path', () => {
 
         // Assert
         expect(result.kind).toBe('conflict');
-        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
-        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
       });
     });
   });
