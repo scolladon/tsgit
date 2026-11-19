@@ -1159,6 +1159,36 @@ describe('mv — a move the file system refuses', () => {
     });
   });
 
+  describe('Given a directory whose source descendant lstat faults, without renameDirectory', () => {
+    describe('When mv', () => {
+      it('Then nothing moved and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/a': 'a', 'd/f': 'f' });
+        const fault = permissionDenied(work(ctx, 'd/f'));
+        const faulting = withoutDirectoryRename({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (path: string) => {
+              if (path === work(ctx, 'd/f')) throw fault;
+              return ctx.fs.lstat(path);
+            },
+          },
+        });
+        const sut = mv;
+
+        // Act
+        const outcome = sut(faulting, ['d'], 'e');
+
+        // Assert
+        await expect(outcome).rejects.toBe(fault);
+        expect(await exists(ctx, 'd/a')).toBe(true);
+        expect(await exists(ctx, 'e')).toBe(false);
+        expect(await indexEntry(ctx, 'd/a')).toBeDefined();
+      });
+    });
+  });
+
   describe('Given a directory move whose leaf rename the file system refuses as too long', () => {
     describe('When mv without renameDirectory', () => {
       it('Then it names that leaf inside the destination', async () => {

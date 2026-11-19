@@ -9,6 +9,7 @@ import {
   validateWorkingTreePathOn,
 } from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
+import { removeEmptyDirectoryTree } from '../../primitives/internal/empty-directories.js';
 import { isPathTooLong, lstatIfPresent } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
@@ -122,10 +123,11 @@ export const removeDirectory = async (ctx: Context, rawPath: string): Promise<vo
  * absolute paths, etc.) then relocates the node — carrying any untracked
  * contents along, faithful to `git mv`.
  *
- * A directory is renamed in one step where the port can (`renameDirectory`);
- * an adapter without it recurses into the entries and renames each leaf, then
- * removes the emptied source directory. The destination parent is created first
- * (a rename does not create parents).
+ * A directory is renamed in one step where the port can (`renameDirectory`).
+ * Otherwise the whole subtree is read first, every directory is recreated, each
+ * leaf is moved, and only the empty source directories are removed. A fault
+ * after the first move leaves a partial move, like the browser's own `rename`.
+ * The destination parent is created first (a rename does not create parents).
  */
 export const renameInWorkingTree = async (
   ctx: Context,
@@ -138,7 +140,7 @@ export const renameInWorkingTree = async (
   if (!isPlainDirectory(stat)) return renameNamingDestination(ctx, ctx.fs.rename, from, to);
   const renameDirectory = ctx.fs.renameDirectory;
   if (renameDirectory !== undefined) return renameNamingDestination(ctx, renameDirectory, from, to);
-  return moveNode(ctx, from, to);
+  return moveTreeEntryByEntry(ctx, from, to);
 };
 
 const moveEnd = (ctx: Context, rel: FilePath): MoveEnd => ({ abs: repoPath(ctx, rel), rel });
@@ -157,23 +159,41 @@ const childOf = (end: MoveEnd, name: string): MoveEnd => ({
   rel: `${end.rel}/${name}` as FilePath,
 });
 
-const moveNode = async (ctx: Context, from: MoveEnd, to: MoveEnd): Promise<void> => {
-  const fromAbs = from.abs;
-  const stat = await ctx.fs.lstat(fromAbs);
-  if (isPlainDirectory(stat)) {
-    for (const child of await ctx.fs.readdir(fromAbs)) {
-      await moveNode(ctx, childOf(from, child.name), childOf(to, child.name));
+/** The directories (pre-order, the root first) and leaves found beneath a directory. */
+interface Collected {
+  readonly dirs: readonly MoveEnd[];
+  readonly leaves: readonly MoveEnd[];
+}
+
+const collect = async (ctx: Context, dir: MoveEnd): Promise<Collected> => {
+  const dirs: MoveEnd[] = [dir];
+  const leaves: MoveEnd[] = [];
+  for (const entry of await ctx.fs.readdir(dir.abs)) {
+    const child = childOf(dir, entry.name);
+    if (!isPlainDirectory(await ctx.fs.lstat(child.abs))) {
+      leaves.push(child);
+      continue;
     }
-    // The loop emptied the directory; remove the shell. `rm` is leaf-only per
-    // the port (the Node adapter throws EISDIR on a directory), so the
-    // directory-capable `rmRecursive` is the portable removal here.
-    await ctx.fs.rmRecursive(fromAbs);
-    return;
+    const nested = await collect(ctx, child);
+    dirs.push(...nested.dirs);
+    leaves.push(...nested.leaves);
   }
-  // A root-level target (parent is the work-tree root, which always exists)
-  // yields an empty `dirname`; skip the mkdir rather than create an empty path
-  // the fs validator rejects. Non-root parents are created as before.
-  await renameNamingDestination(ctx, ctx.fs.rename, from, to);
+  return { dirs, leaves };
+};
+
+const mapTo = (end: MoveEnd, from: MoveEnd, to: MoveEnd): MoveEnd => ({
+  abs: to.abs + end.abs.slice(from.abs.length),
+  rel: (to.rel + end.rel.slice(from.rel.length)) as FilePath,
+});
+
+const moveTreeEntryByEntry = async (ctx: Context, from: MoveEnd, to: MoveEnd): Promise<void> => {
+  const { dirs, leaves } = await collect(ctx, from);
+  for (const dir of dirs) await ctx.fs.mkdir(mapTo(dir, from, to).abs);
+  for (const leaf of leaves) {
+    await renameNamingDestination(ctx, ctx.fs.rename, leaf, mapTo(leaf, from, to));
+  }
+  // What remains is exactly what the renames left behind, so a `false` needs no handling.
+  await removeEmptyDirectoryTree(ctx, from.abs);
 };
 
 type RenameOp = (from: string, to: string) => Promise<void>;
