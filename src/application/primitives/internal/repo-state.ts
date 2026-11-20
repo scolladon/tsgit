@@ -56,7 +56,11 @@ import {
   type ValuelessEntry,
 } from '../config-read.js';
 import { readActiveWorktreeSections } from '../config-scoped-read.js';
-import { coreKeyEntries, isWorktreeConfigExtensionOn } from '../read-sparse-config.js';
+import {
+  coreKeyEntries,
+  isWorktreeConfigExtensionOn,
+  sectionKeyEntries,
+} from '../read-sparse-config.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
 import { resolveWorktreeScopePath } from './config-scope.js';
 import { type HeadFile, validateHead } from './head-file.js';
@@ -175,6 +179,9 @@ const CORE_STRING_KEYS: ReadonlyArray<string> = [
 // `logallrefupdates` is deliberately excluded: it accepts a third literal
 // ("always") beyond git's boolean grammar, so it takes its own tri-state-aware
 // finder (`findFirstInvalidLogAllRefUpdates`) rather than this plain set.
+const SPARSE_BOOLEAN_KEYS: ReadonlyArray<string> = ['expectfilesoutsideofpatterns'];
+const SPARSE_GATED_KEYS: ReadonlySet<string> = new Set(SPARSE_BOOLEAN_KEYS);
+
 const CORE_BOOLEAN_KEYS: ReadonlyArray<string> = [
   'ignorecase',
   'sparsecheckout',
@@ -257,6 +264,7 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     ...(await coreCandidates(ctx)),
+    ...(await sparseCandidates(ctx)),
     ...(await autoSetupRebaseCandidates(ctx)),
     ...(await diffDriverCandidates(ctx)),
   ];
@@ -265,6 +273,16 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     undefined,
   );
   if (selected !== undefined) throwEagerCandidate(selected);
+};
+
+/** `[sparse]` booleans git refuses at config load, whether or not sparse checkout is on. */
+const sparseCandidates = async (
+  ctx: Context,
+): Promise<ReadonlyArray<EagerCandidate | undefined>> => {
+  const invalid = await findFirstInvalidBoolean(ctx, 'sparse', undefined, SPARSE_BOOLEAN_KEYS);
+  return [
+    invalid === undefined ? undefined : { kind: 'boolean', line: invalid.line, entry: invalid },
+  ];
 };
 
 /** `[core]` keys: string, compression, boolean, tri-state and enum entries git refuses at config load. */
@@ -477,9 +495,10 @@ const firstWorktreeRefusal = async (
   ctx: Context,
   path: string,
 ): Promise<EagerCandidate | undefined> => {
-  const [valueless, boolean, checkStat] = await Promise.all([
+  const [valueless, boolean, sparse, checkStat] = await Promise.all([
     findFirstValuelessEntryAt(ctx, path, 'core', undefined, [CHECK_STAT_KEY]),
     findFirstInvalidBooleanAt(ctx, path, 'core', WORKTREE_BOOLEAN_KEYS),
+    findFirstInvalidBooleanAt(ctx, path, 'sparse', SPARSE_BOOLEAN_KEYS),
     findFirstInvalidCheckStatAt(ctx, path),
   ]);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
@@ -487,6 +506,7 @@ const firstWorktreeRefusal = async (
       ? undefined
       : { kind: 'valueless', line: valueless.line, entry: valueless },
     boolean === undefined ? undefined : { kind: 'boolean', line: boolean.line, entry: boolean },
+    sparse === undefined ? undefined : { kind: 'boolean', line: sparse.line, entry: sparse },
     checkStat === undefined ? undefined : { kind: 'enum', line: checkStat.line, entry: checkStat },
   ];
   return candidates.reduce<EagerCandidate | undefined>(pickLowerLine, undefined);
@@ -503,8 +523,12 @@ const firstWorktreeRefusal = async (
  */
 export const assertWorktreeCoreBooleansValid = async (ctx: Context): Promise<void> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return;
-  const entries = coreKeyEntries(await readActiveWorktreeSections(ctx), WORKTREE_GATED_KEYS);
-  if (entries.length === 0) return;
+  const sections = await readActiveWorktreeSections(ctx);
+  const gated = [
+    ...coreKeyEntries(sections, WORKTREE_GATED_KEYS),
+    ...sectionKeyEntries(sections, 'sparse', SPARSE_GATED_KEYS),
+  ];
+  if (gated.length === 0) return;
   const refusal = await firstWorktreeRefusal(ctx, resolveWorktreeScopePath(ctx, { active: true }));
   if (refusal !== undefined) throwEagerCandidate(refusal);
 };

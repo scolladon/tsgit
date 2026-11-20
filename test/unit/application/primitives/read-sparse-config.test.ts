@@ -159,7 +159,7 @@ describe('primitives/read-sparse-config', () => {
         const result = await sut(ctx);
 
         // Assert
-        expect(result).toEqual(row.expected);
+        expect(result).toEqual({ ...row.expected, expectFilesOutsideOfPatterns: false });
       });
     });
   });
@@ -176,7 +176,11 @@ describe('primitives/read-sparse-config', () => {
         const result = await sut(ctx);
 
         // Assert
-        expect(result).toEqual({ enabled: false, cone: false });
+        expect(result).toEqual({
+          enabled: false,
+          cone: false,
+          expectFilesOutsideOfPatterns: false,
+        });
       });
     });
   });
@@ -196,8 +200,16 @@ describe('primitives/read-sparse-config', () => {
         const inMain = await sut(main);
 
         // Assert
-        expect(inLinked).toEqual({ enabled: true, cone: true });
-        expect(inMain).toEqual({ enabled: false, cone: false });
+        expect(inLinked).toEqual({
+          enabled: true,
+          cone: true,
+          expectFilesOutsideOfPatterns: false,
+        });
+        expect(inMain).toEqual({
+          enabled: false,
+          cone: false,
+          expectFilesOutsideOfPatterns: false,
+        });
       });
     });
   });
@@ -217,8 +229,12 @@ describe('primitives/read-sparse-config', () => {
         const inLinked = await sut(wt);
 
         // Assert
-        expect(inMain).toEqual({ enabled: true, cone: true });
-        expect(inLinked).toEqual({ enabled: false, cone: false });
+        expect(inMain).toEqual({ enabled: true, cone: true, expectFilesOutsideOfPatterns: false });
+        expect(inLinked).toEqual({
+          enabled: false,
+          cone: false,
+          expectFilesOutsideOfPatterns: false,
+        });
       });
     });
   });
@@ -240,8 +256,79 @@ describe('primitives/read-sparse-config', () => {
         const result = await sut(ctx);
 
         // Assert
-        expect(result).toEqual({ enabled: false, cone: false });
+        expect(result).toEqual({
+          enabled: false,
+          cone: false,
+          expectFilesOutsideOfPatterns: false,
+        });
         expect(calls().filter((c) => c.path.endsWith('/config.worktree'))).toEqual([]);
+      });
+    });
+  });
+});
+
+const EXPECT_KEY = 'expectFilesOutsideOfPatterns';
+
+describe('primitives/read-sparse-config expectFilesOutsideOfPatterns', () => {
+  beforeEach(() => {
+    __resetConfigCacheForTests();
+    __resetSectionsCacheForTests();
+  });
+
+  describe('Given an unset expectFilesOutsideOfPatterns', () => {
+    describe('When readSparseConfig runs', () => {
+      it('Then expectFilesOutsideOfPatterns is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedLocal(ctx, '');
+        const sut = readSparseConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.expectFilesOutsideOfPatterns).toBe(false);
+      });
+    });
+  });
+
+  describe.each([
+    [
+      'S4: config.worktree true with the extension on',
+      EXT_ON,
+      `[sparse]\n\t${EXPECT_KEY} = true\n`,
+      true,
+    ],
+    ['E4: local true', `[sparse]\n\t${EXPECT_KEY} = true\n`, '', true],
+    ['E4d: local 1', `[sparse]\n\t${EXPECT_KEY} = 1\n`, '', true],
+    [
+      'E4c: local true then false',
+      `[sparse]\n\t${EXPECT_KEY} = true\n\t${EXPECT_KEY} = false\n`,
+      '',
+      false,
+    ],
+    ['O4: local valueless', `[sparse]\n\t${EXPECT_KEY}\n`, '', true],
+    [
+      'E4b: local true, worktree false, extension on',
+      `${EXT_ON}[sparse]\n\t${EXPECT_KEY} = true\n`,
+      `[sparse]\n\t${EXPECT_KEY} = false\n`,
+      false,
+    ],
+    ['worktree true with the extension off', '', `[sparse]\n\t${EXPECT_KEY} = true\n`, false],
+  ])('Given %s', (_label, local, worktree, expected) => {
+    describe('When readSparseConfig runs', () => {
+      it(`Then expectFilesOutsideOfPatterns is ${String(expected)}`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedLocal(ctx, local);
+        await seedWorktree(ctx, worktree);
+        const sut = readSparseConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.expectFilesOutsideOfPatterns).toBe(expected);
       });
     });
   });

@@ -12,14 +12,16 @@ import { layoutFailsAcceptance } from './internal/layout-verdict.js';
 export interface SparseConfig {
   readonly enabled: boolean;
   readonly cone: boolean;
+  readonly expectFilesOutsideOfPatterns: boolean;
 }
 
 interface WorktreeSparseKeys {
   readonly enabled?: boolean | undefined;
   readonly cone?: boolean | undefined;
+  readonly expectFilesOutsideOfPatterns?: boolean | undefined;
 }
 
-/** One `[core]` entry as written in a config file, key lower-cased. */
+/** One entry as written in a config file, key lower-cased. */
 export interface CoreKeyEntry {
   readonly key: string;
   readonly value: string | null;
@@ -29,18 +31,28 @@ const CORE_SECTION = 'core';
 const ENABLED_KEY = 'sparsecheckout';
 const CONE_KEY = 'sparsecheckoutcone';
 const SPARSE_KEYS: ReadonlySet<string> = new Set([ENABLED_KEY, CONE_KEY]);
+const SPARSE_SECTION = 'sparse';
+const EXPECT_FILES_KEY = 'expectfilesoutsideofpatterns';
+const EXPECT_FILES_KEYS: ReadonlySet<string> = new Set([EXPECT_FILES_KEY]);
+
+/** Every wanted-key entry under a subsectionless `[<section>]`, in file order. */
+export const sectionKeyEntries = (
+  sections: ReadonlyArray<IniSection>,
+  wantedSection: string,
+  keys: ReadonlySet<string>,
+): ReadonlyArray<CoreKeyEntry> =>
+  sections
+    .filter((section) => section.section.toLowerCase() === wantedSection)
+    .filter((section) => section.subsection === undefined)
+    .flatMap((section) => section.entries)
+    .map((entry) => ({ key: entry.key.toLowerCase(), value: entry.value }))
+    .filter((entry) => keys.has(entry.key));
 
 /** Every wanted-key entry under a subsectionless `[core]`, in file order. */
 export const coreKeyEntries = (
   sections: ReadonlyArray<IniSection>,
   keys: ReadonlySet<string>,
-): ReadonlyArray<CoreKeyEntry> =>
-  sections
-    .filter((section) => section.section.toLowerCase() === CORE_SECTION)
-    .filter((section) => section.subsection === undefined)
-    .flatMap((section) => section.entries)
-    .map((entry) => ({ key: entry.key.toLowerCase(), value: entry.value }))
-    .filter((entry) => keys.has(entry.key));
+): ReadonlyArray<CoreKeyEntry> => sectionKeyEntries(sections, CORE_SECTION, keys);
 
 /** The last entry for `wanted` that parses as a git boolean; invalid entries are skipped. */
 export const lastValidBoolean = (
@@ -68,11 +80,22 @@ export const isWorktreeConfigExtensionOn = async (ctx: Context): Promise<boolean
 
 const readWorktreeKeys = async (ctx: Context): Promise<WorktreeSparseKeys> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return {};
-  const entries = coreKeyEntries(await readActiveWorktreeSections(ctx), SPARSE_KEYS);
+  const sections = await readActiveWorktreeSections(ctx);
+  const entries = coreKeyEntries(sections, SPARSE_KEYS);
+  const expectEntries = sectionKeyEntries(sections, SPARSE_SECTION, EXPECT_FILES_KEYS);
   return {
     enabled: lastValidBoolean(entries, ENABLED_KEY),
     cone: lastValidBoolean(entries, CONE_KEY),
+    expectFilesOutsideOfPatterns: lastValidBoolean(expectEntries, EXPECT_FILES_KEY),
   };
+};
+
+/** An invalid local value is inert here: the operational gate refuses it first. */
+const readLocalExpectFiles = async (ctx: Context): Promise<boolean | undefined> => {
+  const entry = await findLastEntry(ctx, SPARSE_SECTION, 'expectFilesOutsideOfPatterns');
+  if (entry === undefined) return undefined;
+  const parsed = parseGitBoolean(entry.value);
+  return parsed.ok ? parsed.value : undefined;
 };
 
 export const readSparseConfig = async (ctx: Context): Promise<SparseConfig> => {
@@ -81,5 +104,7 @@ export const readSparseConfig = async (ctx: Context): Promise<SparseConfig> => {
   return {
     enabled: worktree.enabled ?? local.core?.sparseCheckout ?? false,
     cone: worktree.cone ?? local.core?.sparseCheckoutCone ?? false,
+    expectFilesOutsideOfPatterns:
+      worktree.expectFilesOutsideOfPatterns ?? (await readLocalExpectFiles(ctx)) ?? false,
   };
 };
