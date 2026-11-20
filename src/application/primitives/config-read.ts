@@ -2589,7 +2589,23 @@ const findFirstRejectedBoolean = async (
   ctx: Context,
   target: BooleanWalkTarget,
 ): Promise<InvalidBooleanEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
+  const { tokens, source } = await readConfigEntry(ctx);
+  return firstRejectedInTokens(tokens, source, target);
+};
+
+/** `findFirstRejectedBoolean` over an arbitrary config file the cached local read does not cover. */
+const findFirstRejectedBooleanAt = async (
+  ctx: Context,
+  path: string,
+  target: BooleanWalkTarget,
+): Promise<InvalidBooleanEntry | undefined> =>
+  firstRejectedInTokens(tokenizeConfig(await ctx.fs.readUtf8(path), path), path, target);
+
+const firstRejectedInTokens = (
+  tokens: ReadonlyArray<ConfigToken>,
+  path: string,
+  target: BooleanWalkTarget,
+): InvalidBooleanEntry | undefined => {
   const keySet = new Set(target.keys.map((k) => k.toLowerCase()));
   const enters = (header: ConfigHeaderToken): boolean =>
     headerEntersTarget(header.section, header.subsection, target);
@@ -2889,6 +2905,38 @@ export const findFirstInvalidDisambiguate = async (
     accepts: (value) => parseDisambiguationHint(value) !== undefined,
     fixedKey: 'core.disambiguate',
   });
+
+const CHECK_STAT_TARGET: BooleanWalkTarget = {
+  section: 'core',
+  keys: ['checkstat'],
+  accepts: (value) => parseCheckStat(value) !== undefined,
+  fixedKey: 'core.checkstat',
+};
+
+/**
+ * `core.checkStat`-specific finder: `git_default_core_config` dies `invalid value`
+ * on a value other than `default`/`minimal` (case-insensitive), on every command.
+ * A valueless entry is a separate refusal (`findFirstValuelessEntry`).
+ */
+export const findFirstInvalidCheckStat = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> => findFirstRejectedBoolean(ctx, CHECK_STAT_TARGET);
+
+/** `findFirstInvalidCheckStat` over `config.worktree`, which the cached local read does not cover. */
+export const findFirstInvalidCheckStatAt = async (
+  ctx: Context,
+  path: string,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBooleanAt(ctx, path, CHECK_STAT_TARGET);
+
+/** `findFirstInvalidBoolean` over `config.worktree`, which the cached local read does not cover. */
+export const findFirstInvalidBooleanAt = async (
+  ctx: Context,
+  path: string,
+  section: string,
+  keys: ReadonlyArray<string>,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBooleanAt(ctx, path, { section, keys, accepts: acceptsGitBoolean });
 
 /** `branch.autoSetupRebase`'s literals, which git compares case-sensitively. */
 const AUTO_SETUP_REBASE_LITERALS: ReadonlySet<string> = new Set([

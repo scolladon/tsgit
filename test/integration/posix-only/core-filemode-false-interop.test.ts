@@ -1089,5 +1089,149 @@ describe.skipIf(!GIT_AVAILABLE)('core.fileMode interop', () => {
         );
       });
     });
+
+    const STAT_SCOPES = [
+      {
+        scope: 'local config',
+        prepare: (dir: string, key: string, value: string) => sh(dir, 'config', key, value),
+        source: '.git/config',
+      },
+      {
+        scope: 'config.worktree with the extension on',
+        prepare: (dir: string, key: string, value: string) => {
+          sh(dir, 'config', 'extensions.worktreeConfig', 'true');
+          sh(dir, 'config', '--worktree', key, value);
+        },
+        source: '.git/config.worktree',
+      },
+    ];
+    const STAT_KEY_ROWS = [
+      {
+        key: 'core.trustCtime',
+        stderr: "fatal: bad boolean config value 'bogus' for 'core.trustctime'",
+        data: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'core.trustctime', value: 'bogus' },
+      },
+      {
+        key: 'core.checkStat',
+        stderr: "error: invalid value for 'core.checkstat': 'bogus'",
+        data: { code: 'CONFIG_INVALID_ENUM_VALUE', key: 'core.checkstat', value: 'bogus' },
+      },
+    ];
+
+    describe.each(
+      STAT_KEY_ROWS.flatMap((row) => STAT_SCOPES.map((scope) => ({ ...row, ...scope }))),
+    )('Given $key = bogus in $scope', ({ key, prepare, source, stderr, data }) => {
+      describe('When both tools run status and log', () => {
+        it(
+          'Then git exits 128 and tsgit refuses with the same key and value',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, [BASE_FILE]);
+            for (const dir of [pair.peer, pair.ours]) prepare(dir, key, 'bogus');
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            const gitRuns = ['status', 'log'].map((command) =>
+              tryRunGitWithExit(['-C', pair.peer, command], { env: COMMIT_ENV }),
+            );
+            const refusals = await Promise.all(
+              [() => sut.status(), () => sut.log()].map(async (run) => {
+                try {
+                  await run();
+                } catch (error) {
+                  return (error as { readonly data: Record<string, unknown> }).data;
+                }
+                return undefined;
+              }),
+            );
+
+            // Assert
+            for (const gitRun of gitRuns) {
+              expect(gitRun.exitCode).toBe(128);
+              expect(gitRun.stderr).toContain(stderr);
+            }
+            for (const refusal of refusals) {
+              expect(refusal).toMatchObject({
+                ...data,
+                source: join(realpathSync(pair.ours), source),
+              });
+            }
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(STAT_SCOPES)('Given a valueless core.checkStat in $scope', (row) => {
+      describe('When both tools run status', () => {
+        it(
+          'Then git exits 128 on the missing value and tsgit refuses with CONFIG_MISSING_VALUE',
+          async () => {
+            // Arrange
+            seedBoth(ignoreCase, [BASE_FILE]);
+            const valueless = (dir: string): void => {
+              row.prepare(dir, 'core.checkStat', 'placeholder');
+              const file = join(dir, row.source);
+              writeFileSync(
+                file,
+                readFileSync(file, 'utf8').replace('checkStat = placeholder', 'checkStat'),
+              );
+            };
+            for (const dir of [pair.peer, pair.ours]) valueless(dir);
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            const gitRun = tryRunGitWithExit(['-C', pair.peer, 'status'], { env: COMMIT_ENV });
+            const caught = await sut.status().then(
+              () => undefined,
+              (error: { readonly data: Record<string, unknown> }) => error.data,
+            );
+
+            // Assert
+            expect(gitRun.exitCode).toBe(128);
+            expect(gitRun.stderr).toContain("error: missing value for 'core.checkstat'");
+            expect(caught).toMatchObject({
+              code: 'CONFIG_MISSING_VALUE',
+              key: 'core.checkstat',
+              source: join(realpathSync(pair.ours), row.source),
+            });
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe.each(['trustCtime', 'checkStat'])(
+      'Given a bad core.%s with the extension off',
+      (key) => {
+        describe('When both tools run status with the bad value only in config.worktree', () => {
+          it(
+            'Then both ignore the unread file',
+            async () => {
+              // Arrange
+              seedBoth(ignoreCase, [BASE_FILE]);
+              for (const dir of [pair.peer, pair.ours]) {
+                sh(dir, 'config', 'extensions.worktreeConfig', 'true');
+                sh(dir, 'config', '--worktree', `core.${key}`, 'bogus');
+                sh(dir, 'config', 'extensions.worktreeConfig', 'false');
+              }
+              const sut = await open({ cwd: pair.ours });
+
+              // Act
+              const gitRun = tryRunGitWithExit(['-C', pair.peer, 'status'], { env: COMMIT_ENV });
+              const result = await sut.status().then(
+                () => 'resolved',
+                () => 'refused',
+              );
+
+              // Assert
+              expect(gitRun.exitCode).toBe(0);
+              expect(result).toBe('resolved');
+            },
+            ROW_TIMEOUT,
+          );
+        });
+      },
+    );
   });
 });

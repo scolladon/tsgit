@@ -6,6 +6,7 @@ import {
   configMissingValue,
   operationInProgress,
 } from '../../../domain/commands/error.js';
+import { parseCheckStat } from '../../../domain/config/check-stat.js';
 import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import { notARepository, workTreeConfigInvalid, workTreeRequired } from '../../../domain/index.js';
 import { RefName } from '../../../domain/objects/index.js';
@@ -38,13 +39,17 @@ import {
   findFirstInvalidAutoSetupMerge,
   findFirstInvalidAutoSetupRebase,
   findFirstInvalidBoolean,
+  findFirstInvalidBooleanAt,
   findFirstInvalidBooleanInSection,
+  findFirstInvalidCheckStat,
+  findFirstInvalidCheckStatAt,
   findFirstInvalidCompression,
   findFirstInvalidDiffBinary,
   findFirstInvalidDisambiguate,
   findFirstInvalidLogAllRefUpdates,
   findFirstInvalidSafeCrlf,
   findFirstValuelessEntry,
+  findFirstValuelessEntryAt,
   findFirstValuelessInSection,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
@@ -165,7 +170,12 @@ export const isUsableHead = (head: HeadFile): boolean => {
   return false;
 };
 
-const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile', 'disambiguate'];
+const CORE_STRING_KEYS: ReadonlyArray<string> = [
+  'excludesfile',
+  'attributesfile',
+  'disambiguate',
+  'checkstat',
+];
 // `logallrefupdates` is deliberately excluded: it accepts a third literal
 // ("always") beyond git's boolean grammar, so it takes its own tri-state-aware
 // finder (`findFirstInvalidLogAllRefUpdates`) rather than this plain set.
@@ -174,6 +184,7 @@ const CORE_BOOLEAN_KEYS: ReadonlyArray<string> = [
   'sparsecheckout',
   'sparsecheckoutcone',
   'filemode',
+  'trustctime',
 ];
 const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv', 'trustexitcode'];
 const DIFF_STRING_KEYS: ReadonlyArray<string> = [
@@ -248,17 +259,27 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp, boolCore, logAllRefUpdates, autoCrlf, safeCrlf, autoSetupMerge, disambiguate] =
-    await Promise.all([
-      findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
-      findFirstInvalidCompression(ctx),
-      findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
-      findFirstInvalidLogAllRefUpdates(ctx),
-      findFirstInvalidAutoCrlf(ctx),
-      findFirstInvalidSafeCrlf(ctx),
-      findFirstInvalidAutoSetupMerge(ctx),
-      findFirstInvalidDisambiguate(ctx),
-    ]);
+  const [
+    str,
+    comp,
+    boolCore,
+    logAllRefUpdates,
+    autoCrlf,
+    safeCrlf,
+    autoSetupMerge,
+    disambiguate,
+    checkStat,
+  ] = await Promise.all([
+    findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
+    findFirstInvalidCompression(ctx),
+    findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
+    findFirstInvalidLogAllRefUpdates(ctx),
+    findFirstInvalidAutoCrlf(ctx),
+    findFirstInvalidSafeCrlf(ctx),
+    findFirstInvalidAutoSetupMerge(ctx),
+    findFirstInvalidDisambiguate(ctx),
+    findFirstInvalidCheckStat(ctx),
+  ]);
   const branchCandidates = await autoSetupRebaseCandidates(ctx);
   const diffCandidates = await diffDriverCandidates(ctx);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
@@ -276,6 +297,7 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     disambiguate === undefined
       ? undefined
       : { kind: 'enum', line: disambiguate.line, entry: disambiguate },
+    checkStat === undefined ? undefined : { kind: 'enum', line: checkStat.line, entry: checkStat },
     ...branchCandidates,
     ...diffCandidates,
   ];
@@ -438,32 +460,65 @@ export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Pr
   return root;
 };
 
-/** A valueless entry parses as true, so only a written value can be refused. */
-const isRefusedBoolean = (
-  entry: CoreKeyEntry,
-): entry is CoreKeyEntry & { readonly value: string } => !parseGitBoolean(entry.value).ok;
-
-const WORKTREE_GATED_KEYS: ReadonlySet<string> = new Set([
+const CHECK_STAT_KEY = 'checkstat';
+const WORKTREE_BOOLEAN_KEYS: ReadonlyArray<string> = [
   'sparsecheckout',
   'sparsecheckoutcone',
   'filemode',
+  'trustctime',
+];
+const WORKTREE_GATED_KEYS: ReadonlySet<string> = new Set([
+  ...WORKTREE_BOOLEAN_KEYS,
+  CHECK_STAT_KEY,
 ]);
 
 /**
- * git's `git_default_core_config` dies on a bad `core.filemode`, and
- * `repo_config_get_bool` on a bad sparse key, wherever the layered config
- * holds them. The local scope is covered by the memoised eager gate; this
- * covers `config.worktree`, kept outside the memo because that verdict is
- * keyed on the local file only. `core.ignorecase` in the worktree file is not
- * checked here.
+ * A valueless boolean parses as true, so only a written value can be refused;
+ * a valueless `checkstat` is refused too, as it has no default to fall back on.
+ */
+const isRefusedWorktreeEntry = (entry: CoreKeyEntry): boolean =>
+  entry.key === CHECK_STAT_KEY
+    ? parseCheckStat(entry.value) === undefined
+    : isRefusedBoolean(entry);
+
+const isRefusedBoolean = (entry: CoreKeyEntry): boolean =>
+  entry.value !== null && !parseGitBoolean(entry.value).ok;
+
+/** The refusal git meets first in `config.worktree`, in file order across the gated keys. */
+const firstWorktreeRefusal = async (
+  ctx: Context,
+  path: string,
+): Promise<EagerCandidate | undefined> => {
+  const [valueless, boolean, checkStat] = await Promise.all([
+    findFirstValuelessEntryAt(ctx, path, 'core', undefined, [CHECK_STAT_KEY]),
+    findFirstInvalidBooleanAt(ctx, path, 'core', WORKTREE_BOOLEAN_KEYS),
+    findFirstInvalidCheckStatAt(ctx, path),
+  ]);
+  const candidates: ReadonlyArray<EagerCandidate | undefined> = [
+    valueless === undefined
+      ? undefined
+      : { kind: 'valueless', line: valueless.line, entry: valueless },
+    boolean === undefined ? undefined : { kind: 'boolean', line: boolean.line, entry: boolean },
+    checkStat === undefined ? undefined : { kind: 'enum', line: checkStat.line, entry: checkStat },
+  ];
+  return candidates.reduce<EagerCandidate | undefined>(pickLowerLine, undefined);
+};
+
+/**
+ * git's `git_default_core_config` dies on a bad `core.filemode`, `core.trustctime`
+ * or `core.checkstat`, and `repo_config_get_bool` on a bad sparse key, wherever the
+ * layered config holds them. The local scope is covered by the memoised eager gate;
+ * this covers `config.worktree`, kept outside the memo because that verdict is
+ * keyed on the local file only. The cached sections decide cheaply whether anything
+ * is refused; only then is the file re-read for the refusal's line. `core.ignorecase`
+ * in the worktree file is not checked here.
  */
 export const assertWorktreeCoreBooleansValid = async (ctx: Context): Promise<void> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return;
   const entries = coreKeyEntries(await readActiveWorktreeSections(ctx), WORKTREE_GATED_KEYS);
-  const refused = entries.find(isRefusedBoolean);
-  if (refused === undefined) return;
-  const source = resolveWorktreeScopePath(ctx, { active: true });
-  throw configBadBooleanValue(`core.${refused.key}`, source, refused.value);
+  if (!entries.some(isRefusedWorktreeEntry)) return;
+  const refusal = await firstWorktreeRefusal(ctx, resolveWorktreeScopePath(ctx, { active: true }));
+  if (refusal !== undefined) throwEagerCandidate(refusal);
 };
 
 /**

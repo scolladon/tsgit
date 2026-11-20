@@ -1,7 +1,9 @@
 /**
  * Resolve the two keys that narrow git's stat comparison, `core.trustCtime` and
  * `core.checkStat`: the per-worktree `config.worktree`, when `extensions.worktreeConfig`
- * is on, overrides the shared local file.
+ * is on, overrides the shared local file. A bad value never reaches this reader through a
+ * command: the eager gate refuses it first, so the invalid entries skipped here only serve
+ * a direct caller.
  */
 import { parseCheckStat } from '../../domain/config/check-stat.js';
 import type { StatCheck } from '../../domain/git-index/stat-check.js';
