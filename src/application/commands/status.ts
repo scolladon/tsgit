@@ -642,7 +642,6 @@ const buildUnmergedEntries = async (
   groups: ReadonlyMap<FilePath, UnmergedEntryGroup>,
   workDir: string,
 ): Promise<UnmergedEntry[]> => {
-  if (groups.size === 0) return [];
   const probe = { workDir, executableBit: await readExecutableBitTrust(ctx) };
   return boundedMapFor(ctx, 'ioBound', [...groups], async ([path, group]) => {
     const worktreeMode = await readWorktreeMode(ctx, probe, path, unmergedModeDonor(group));
