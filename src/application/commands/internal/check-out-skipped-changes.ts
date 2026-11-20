@@ -30,6 +30,14 @@ const createWriter = (ctx: Context, merged: ReadonlyArray<IndexEntry>): WorkingT
 const byPath = (entries: ReadonlyArray<IndexEntry>): ReadonlyMap<IndexPathKey, IndexEntry> =>
   new Map(entries.map((e) => [indexPathKey(e), e]));
 
+const withoutBit = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  flags: { ...entry.flags, skipWorktree: false },
+});
+
+const wasPresent = (entry: IndexEntry, previous: ReadonlyMap<IndexPathKey, IndexEntry>): boolean =>
+  previous.get(indexPathKey(entry))?.flags.skipWorktree === false;
+
 const isChangedSkipped = (
   entry: IndexEntry,
   previous: ReadonlyMap<IndexPathKey, IndexEntry>,
@@ -53,8 +61,13 @@ export const checkOutSkippedChanges = async (
       result.push(entry);
       continue;
     }
+    // The merge hid a present entry: git's merge already removed the file (a leaked CE_WT_REMOVE), so settling writes nothing.
+    if (wasPresent(entry, previous)) {
+      result.push(withoutBit(entry));
+      continue;
+    }
     const stat = await writer.writeBlob(escapedPathOf(entry), entry.id, entry.mode);
-    const present = { ...entry, flags: { ...entry.flags, skipWorktree: false } };
+    const present = withoutBit(entry);
     result.push(stat === undefined ? present : withStatData(present, stat));
   }
   return result;

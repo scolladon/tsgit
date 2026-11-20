@@ -70,6 +70,31 @@ describe('checkOutSkippedChanges', () => {
     });
   });
 
+  describe('Given a pre-merge entry without the bit and a merged entry the merge hid with a new blob', () => {
+    describe('When the skipped changes are checked out', () => {
+      it('Then nothing is written and the entry loses its bit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const v1 = await writeBlob(ctx, 'one\n');
+        const v2 = await writeBlob(ctx, 'two two\n');
+
+        // Act
+        const result = await sut(
+          ctx,
+          [entryOf('a/f', v2, { skipWorktree: true })],
+          [entryOf('a/f', v1)],
+        );
+
+        // Assert
+        expect(await ctx.fs.exists(workPath(ctx, 'a/f'))).toBe(false);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.flags.skipWorktree).toBe(false);
+        expect(result[0]?.id).toBe(v2);
+        expect(result[0]?.fileSize).toBe(0);
+      });
+    });
+  });
+
   describe('Given a skip-worktree entry absent from the previous index', () => {
     describe('When the skipped changes are checked out', () => {
       it('Then the file is written and the bit cleared', async () => {
